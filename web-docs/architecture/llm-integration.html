@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Integration - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html" class="active">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib</a></li>
+                    <li><a href="../stdlib/networking.html">Networking</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <h1>🧠 STARKLANG — LLM Integration Interface Specification</h1>
+                <p><em>(Jarvis Protocol – Conversational AI & Code-Augmenting Model Runtime)</em></p>
+
+                <p>This document defines the native integration spec for Large Language Models (LLMs) in STARKLANG — enabling programmable, embedded AI orchestration, semantic command interfaces, and self-augmenting code intelligence via the Jarvis Runtime Layer.</p>
+
+                <h2>📌 Vision Statement</h2>
+
+                <blockquote>
+                    <p>STARKLANG must treat AI models like functions, not black boxes.</p>
+                </blockquote>
+
+                <ul>
+                    <li>LLMs are callable compute units</li>
+                    <li>Prompting is just another function call</li>
+                    <li>AI inference is streamable, composable, and observable</li>
+                    <li>The language becomes self-aware, self-reasoning, and self-scaling</li>
+                </ul>
+
+                <h2>📐 Design Philosophy</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Principle</th>
+                            <th>Strategy</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Prompt-as-code</td>
+                            <td><code>@llm</code> block or <code>llm.call()</code></td>
+                        </tr>
+                        <tr>
+                            <td>Modular model interface</td>
+                            <td><code>LLMClient</code> abstraction</td>
+                        </tr>
+                        <tr>
+                            <td>Multi-model compatible</td>
+                            <td>OpenAI, Claude, local, custom</td>
+                        </tr>
+                        <tr>
+                            <td>AI orchestration DSL</td>
+                            <td>Streaming prompt pipelines</td>
+                        </tr>
+                        <tr>
+                            <td>Code intelligence loop</td>
+                            <td>Self-reflective Jarvis runtime layer</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2>🧠 Core Constructs</h2>
+
+                <h3>✅ 1️⃣ LLM Client Interface</h3>
+
+                <pre><code class="stark">let model = LLMClient(provider="openai", model="gpt-4")
+let response = model.prompt("Summarize this text", context=article)</code></pre>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>.prompt(query, context?)</td>
+                            <td>One-shot prompt</td>
+                        </tr>
+                        <tr>
+                            <td>.stream(query)</td>
+                            <td>Token-wise streaming</td>
+                        </tr>
+                        <tr>
+                            <td>.chain(prompts)</td>
+                            <td>Multi-stage prompt chaining</td>
+                        </tr>
+                        <tr>
+                            <td>.call_prompt(promptBlock)</td>
+                            <td>Executes inline <code>@llm</code> block</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h3>✅ 2️⃣ <code>@llm</code> Block Syntax</h3>
+
+                <pre><code class="stark">@llm as summarize:
+    system: "You are a summary assistant"
+    user: "Summarize the following: {{text}}"</code></pre>
+
+                <p>Usage:</p>
+                <pre><code class="stark">let summary = summarize.call({ text: document })</code></pre>
+
+                <h3>✅ 3️⃣ Prompt Pipeline DSL</h3>
+
+                <pre><code class="stark">pipeline summarize_and_tag:
+    @llm as summarize:
+        user: "Summarize this: {{input}}"
+    @llm as tagger:
+        user: "Generate keywords for: {{input}}"
+
+summarize_and_tag.run(input=document)</code></pre>
+
+                <h3>✅ 4️⃣ Semantic Prompt Macros</h3>
+
+                <pre><code class="stark">@llm as refactor:
+    user: "Refactor this code: {{code}}"
+
+let result = refactor.call({ code: my_code_block })</code></pre>
+
+                <h3>✅ 5️⃣ Tool-augmented Prompt Agents</h3>
+
+                <pre><code class="stark">@llm as code_critic:
+    tools = [linter.suggest, profiler.summary]
+    user: "Analyze this code and apply tools: {{code}}"</code></pre>
+
+                <h2>🔌 Runtime LLM Router</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Feature</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Multi-provider abstraction</td>
+                            <td>OpenAI, Anthropic, Local LLMs</td>
+                        </tr>
+                        <tr>
+                            <td>Model fallback logic</td>
+                            <td>Retry chains, routing logic</td>
+                        </tr>
+                        <tr>
+                            <td>Token budget aware</td>
+                            <td>Auto-truncate large prompts</td>
+                        </tr>
+                        <tr>
+                            <td>Streaming hooks</td>
+                            <td>Token-by-token event handlers</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2>📦 Example: Embedded LLM Copilot</h2>
+
+                <pre><code class="stark">@llm as assistant:
+    system: "You are a developer assistant"
+    user: "{{query}}"
+
+fn handle_user_input(text: String):
+    let reply = assistant.call({ query: text })
+    print(reply)</code></pre>
+
+                <h2>📊 Observability Hooks</h2>
+
+                <ul>
+                    <li>trace_prompt()</li>
+                    <li>emit_llm_metric(tokens, duration)</li>
+                    <li>log_llm_call(name, model, tokens)</li>
+                </ul>
+
+                <h2>🔐 Security Considerations</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Concern</th>
+                            <th>Mitigation</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Prompt injection</td>
+                            <td>Linter & sandbox prompt templates</td>
+                        </tr>
+                        <tr>
+                            <td>Token cost audit</td>
+                            <td>Model budget reporter</td>
+                        </tr>
+                        <tr>
+                            <td>Data leakage</td>
+                            <td>Local model fallback, inline redaction filters</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2>🔮 Jarvis Runtime Protocol (Advanced)</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Layer</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Prompt Resolver</td>
+                            <td>Unifies block + dynamic prompting</td>
+                        </tr>
+                        <tr>
+                            <td>AI Planner</td>
+                            <td>Chains & orchestrates LLM tools</td>
+                        </tr>
+                        <tr>
+                            <td>Semantic AST Interpreter</td>
+                            <td>Understands code intent, passes to LLM</td>
+                        </tr>
+                        <tr>
+                            <td>Reflection Engine</td>
+                            <td>Lets code analyze & mutate itself</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2>🔥 Jarvis AI Orchestration Primitives (Future-Ready Concepts)</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Primitive</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>@self_reflect</td>
+                            <td>Code that analyzes itself and re-invokes</td>
+                        </tr>
+                        <tr>
+                            <td>@intent_map</td>
+                            <td>Auto-link prompts to code behavior</td>
+                        </tr>
+                        <tr>
+                            <td>@plan_execution</td>
+                            <td>AI agent decides optimal execution path</td>
+                        </tr>
+                        <tr>
+                            <td>@jarvis_callstack</td>
+                            <td>AI agent traces semantic call chain</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2>✅ Summary</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Feature</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>LLMClient Interface</td>
+                            <td>✅ Designed</td>
+                        </tr>
+                        <tr>
+                            <td>@llm Block Syntax</td>
+                            <td>✅ Specified</td>
+                        </tr>
+                        <tr>
+                            <td>Prompt Pipeline DSL</td>
+                            <td>✅ Drafted</td>
+                        </tr>
+                        <tr>
+                            <td>Runtime Router</td>
+                            <td>✅ Designed</td>
+                        </tr>
+                        <tr>
+                            <td>Tool-Augmented Agents</td>
+                            <td>✅ Designed</td>
+                        </tr>
+                        <tr>
+                            <td>Jarvis Reflection Engine</td>
+                            <td>⏳ Future</td>
+                        </tr>
+                        <tr>
+                            <td>Patent-Worthy Concepts</td>
+                            <td>✅ Ready</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p>STARKLANG's Jarvis Protocol enables self-augmenting codebases and programmable AI-nativeness, making it the world's first truly intelligent programming language.</p>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

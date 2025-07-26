@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Deployment Primitives - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html" class="active">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib</a></li>
+                    <li><a href="../stdlib/networking.html">Networking</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <h1>STARK Language — AI Model Deployment</h1>
+
+                <h2>Overview</h2>
+                <p>In STARK, AI model deployment is not an afterthought. It's embedded into the language core, making model serving, scaling, and optimization intuitive and declarative.</p>
+
+                <p>Deployment primitives in STARK allow developers to annotate, configure, and deploy their AI models directly through language syntax. These primitives abstract the complexities of model serving infrastructure, enabling smooth scalability and optimal inference performance.</p>
+
+                <h2>Core AI Deployment Concepts</h2>
+
+                <h3>1. <code>@inference_service</code> Annotation</h3>
+                <p>Marks a model as an inference service with automatic optimization and scaling.</p>
+
+                <pre><code class="stark">@inference_service(batch_size=32, max_latency_ms=100)
+fn sentiment_classifier(text: String) -> Classification:
+    let features = tokenize_and_embed(text)
+    return model.predict(features)</code></pre>
+
+                <p>Behind the scenes:</p>
+                <ul>
+                    <li>Automatic request batching for throughput</li>
+                    <li>GPU memory optimization</li>
+                    <li>Load balancing across model replicas</li>
+                    <li>Metrics collection and monitoring</li>
+                </ul>
+
+                <h3>2. <code>@model_endpoint</code> Annotation</h3>
+                <p>Exposes a model as a REST/gRPC endpoint with type-safe interfaces.</p>
+
+                <pre><code class="stark">@model_endpoint(path="/classify", method="POST")
+fn classify_text(request: ClassificationRequest) -> ClassificationResponse:
+    return sentiment_model.predict(request.text)</code></pre>
+
+                <p>Includes:</p>
+                <ul>
+                    <li>Auto-generated API schema</li>
+                    <li>Input validation and error handling</li>
+                    <li>Rate limiting and authentication hooks</li>
+                </ul>
+
+                <h3>3. <code>@batch_processor</code> Annotation</h3>
+                <p>Defines a batch processing job for offline inference.</p>
+
+                <pre><code class="stark">@batch_processor(schedule="0 2 * * *", input_format="jsonl")
+fn daily_embeddings_job(data_path: String):
+    let dataset = load_dataset(data_path)
+    let embeddings = embedding_model.batch_predict(dataset)
+    save_embeddings(embeddings, "embeddings.npy")</code></pre>
+
+                <p>Execution engine handles:</p>
+                <ul>
+                    <li>Distributed processing across workers</li>
+                    <li>Checkpoint/resume for large jobs</li>
+                    <li>Resource allocation and scheduling</li>
+                </ul>
+
+                <h3>4. <code>@model_pipeline</code> Blocks</h3>
+                <p>Define multi-stage AI inference pipelines with automatic optimization.</p>
+
+                <pre><code class="stark">@model_pipeline
+workflow TextAnalysis:
+    step tokenize -> embed
+    step embed -> classify
+    step classify -> postprocess</code></pre>
+
+                <p>Features:</p>
+                <ul>
+                    <li>Automatic pipeline optimization</li>
+                    <li>Stage-wise caching and batching</li>
+                    <li>GPU memory sharing between stages</li>
+                </ul>
+
+                <h3>5. <code>@model_config</code></h3>
+                <p>Model-specific configuration with environment-aware deployment.</p>
+
+                <pre><code class="stark">@model_config
+immutable let CLASSIFIER_CONFIG = {
+    model_path: ENV("MODEL_PATH"),
+    batch_size: 32,
+    device: "cuda:0",
+    quantization: "int8"
+}</code></pre>
+
+                <p>Supports:</p>
+                <ul>
+                    <li>Model versioning and A/B testing</li>
+                    <li>Hardware-specific optimizations</li>
+                    <li>Runtime configuration updates</li>
+                </ul>
+
+                <h3>6. <code>@auto_scale</code></h3>
+                <p>GPU-aware auto-scaling for model serving.</p>
+
+                <pre><code class="stark">@inference_service
+@auto_scale(min_replicas=1, max_replicas=10, target_gpu_util=70)
+fn image_classifier(image: Tensor&lt;UInt8&gt;[3, 224, 224]) -> Classification:
+    return vision_model.predict(image)</code></pre>
+
+                <p>Integrates with:</p>
+                <ul>
+                    <li>GPU cluster management</li>
+                    <li>Request queue monitoring</li>
+                    <li>Cost optimization engines</li>
+                </ul>
+
+                <h2>AI Deployment Artifact Generation</h2>
+                <p>STARK compiler toolchain (<code>starkc</code>) will generate AI-optimized deployment descriptors:</p>
+                <ul>
+                    <li><code>model-service.yaml</code> — Model serving metadata with GPU requirements</li>
+                    <li><code>inference.json</code> — Endpoint specifications with batching config</li>
+                    <li><code>pipeline.starkml</code> — Multi-model workflow definitions</li>
+                    <li><code>model.config</code> — Model-specific configuration and optimization hints</li>
+                </ul>
+
+                <p>All of these can be bundled into deployable artifacts for one-command deployment:</p>
+                <pre><code>stark deploy --target=k8s-gpu --env=prod --optimize=latency</code></pre>
+
+                <h2>AI Model Observability</h2>
+                <p>Each deployment primitive supports AI-specific observability:</p>
+                <ul>
+                    <li><code>model_metric()</code>, <code>latency_trace()</code>, and <code>inference_log()</code> functions</li>
+                    <li>Automatic A/B testing and model performance tracking</li>
+                    <li>Built-in model drift detection and alerting</li>
+                </ul>
+
+                <pre><code class="stark">@inference_service
+fn classifier(input: Tensor&lt;Float32&gt;) -> Classification:
+    inference_log("request_received", input.shape())
+    latency_trace("inference_start")
+    let result = model.predict(input)
+    model_metric("prediction_confidence", result.confidence)
+    return result</code></pre>
+
+                <h2>Future AI Extensions</h2>
+                <ul>
+                    <li><code>@edge_inference</code> for CDN-distributed model serving</li>
+                    <li><code>@federated_learning</code> for distributed model training</li>
+                    <li><code>@model_compression</code> for automatic optimization</li>
+                </ul>
+
+                <h2>Summary</h2>
+                <p>STARK makes AI model deployment a <strong>first-class construct</strong> in language design, not an external ops burden. By bridging ML workflows, performance optimization, and deployment automation, STARK enables ML engineers to deploy models effortlessly at production scale.</p>
+
+                <p>Welcome to AI-native deployment—Welcome to STARK.</p>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

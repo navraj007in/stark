@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Core Language Overview - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html" class="active">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib</a></li>
+                    <li><a href="../stdlib/networking.html">Networking</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <h1>STARK Core Language Specification Overview</h1>
+
+                <h2>Introduction</h2>
+                <p>This document provides an overview of the complete STARK core language specification. The core language focuses on AI/ML deployment and inference optimization, with tensor operations, model loading, and memory-safe execution as first-class features.</p>
+
+                <h2>Design Philosophy</h2>
+
+                <h3>Core Principles</h3>
+                <ol>
+                    <li><strong>AI-Native Design</strong>: Tensor operations and ML workflows as primary abstractions</li>
+                    <li><strong>Memory Safety</strong>: Prevent common memory errors through ownership and borrowing</li>
+                    <li><strong>Inference Performance</strong>: Zero-cost abstractions optimized for model serving</li>
+                    <li><strong>Python Interoperability</strong>: Seamless loading of existing PyTorch/TensorFlow models</li>
+                    <li><strong>Production Readiness</strong>: Predictable performance for real-time AI applications</li>
+                </ol>
+
+                <h3>Language Goals</h3>
+                <ul>
+                    <li>AI/ML deployment capabilities with production-grade performance</li>
+                    <li>Compile-time guarantees for memory and type safety in tensor operations</li>
+                    <li>2-10x faster inference than Python-based solutions</li>
+                    <li>Seamless integration with existing ML model formats</li>
+                    <li>Clear and maintainable AI workflow code</li>
+                </ul>
+
+                <h2>Specification Structure</h2>
+
+                <h3>1. Lexical Grammar (<a href="./lexical-grammar.html">01-Lexical-Grammar.md</a>)</h3>
+                <p>Defines how source code is tokenized:</p>
+                <ul>
+                    <li><strong>Keywords</strong>: Control flow, declarations, types, operators</li>
+                    <li><strong>Identifiers</strong>: Variables, functions, types (snake_case/PascalCase)</li>
+                    <li><strong>Literals</strong>: Integers, floats, strings, characters, booleans</li>
+                    <li><strong>Operators</strong>: Arithmetic, comparison, logical, bitwise, assignment</li>
+                    <li><strong>Comments</strong>: Single-line (<code>//</code>) and multi-line (<code>/* */</code>)</li>
+                    <li><strong>Whitespace</strong>: Space, tab, newline handling</li>
+                </ul>
+
+                <h3>2. Syntax Grammar (<a href="./syntax-grammar.html">02-Syntax-Grammar.md</a>)</h3>
+                <p>Defines the concrete syntax using EBNF:</p>
+                <ul>
+                    <li><strong>Program Structure</strong>: Items (functions, structs, enums, traits)</li>
+                    <li><strong>Expressions</strong>: Precedence, associativity, type inference</li>
+                    <li><strong>Statements</strong>: Variable declarations, control flow, returns</li>
+                    <li><strong>Type Syntax</strong>: Primitives, composites, references, functions</li>
+                    <li><strong>Pattern Matching</strong>: Destructuring and exhaustiveness</li>
+                </ul>
+
+                <h3>3. Type System (<a href="./type-system.html">03-Type-System.md</a>)</h3>
+                <p>Comprehensive type system with safety guarantees:</p>
+                <ul>
+                    <li><strong>Primitive Types</strong>: Integers, floats, booleans, characters, strings</li>
+                    <li><strong>Composite Types</strong>: Arrays, tuples, structs, enums</li>
+                    <li><strong>Reference Types</strong>: Immutable and mutable references</li>
+                    <li><strong>Ownership Model</strong>: Move semantics, borrowing rules</li>
+                    <li><strong>Type Inference</strong>: Local and function return type inference</li>
+                    <li><strong>Trait System</strong>: Interfaces and generic constraints</li>
+                </ul>
+
+                <h3>4. Semantic Analysis (<a href="./semantic-analysis.html">04-Semantic-Analysis.md</a>)</h3>
+                <p>Rules for meaningful program validation:</p>
+                <ul>
+                    <li><strong>Symbol Resolution</strong>: Scoping, shadowing, name lookup</li>
+                    <li><strong>Type Checking</strong>: Assignment compatibility, function calls</li>
+                    <li><strong>Ownership Analysis</strong>: Move tracking, borrow checking</li>
+                    <li><strong>Control Flow</strong>: Reachability, return path analysis</li>
+                    <li><strong>Pattern Exhaustiveness</strong>: Match completeness checking</li>
+                    <li><strong>Error Reporting</strong>: Comprehensive diagnostics with suggestions</li>
+                </ul>
+
+                <h3>5. Memory Model (<a href="./memory-model.html">05-Memory-Model.md</a>)</h3>
+                <p>Memory safety through compile-time analysis:</p>
+                <ul>
+                    <li><strong>Ownership Rules</strong>: Single ownership, automatic cleanup</li>
+                    <li><strong>Move Semantics</strong>: Explicit ownership transfer</li>
+                    <li><strong>Borrowing System</strong>: Immutable and mutable references</li>
+                    <li><strong>Lifetime Tracking</strong>: Reference validity guarantees</li>
+                    <li><strong>Stack vs Heap</strong>: Allocation strategy and layout</li>
+                    <li><strong>Drop System</strong>: Automatic and manual resource cleanup</li>
+                </ul>
+
+                <h3>6. Standard Library (<a href="./standard-library.html">06-Standard-Library.md</a>)</h3>
+                <p>Essential types and functions for practical programming:</p>
+                <ul>
+                    <li><strong>Core Types</strong>: Option, Result, Box, Vec, HashMap</li>
+                    <li><strong>String Handling</strong>: Unicode-aware string operations</li>
+                    <li><strong>Collections</strong>: Dynamic arrays, hash tables, sets</li>
+                    <li><strong>IO Operations</strong>: File handling, console output</li>
+                    <li><strong>Math Functions</strong>: Arithmetic, trigonometric, random numbers</li>
+                    <li><strong>Error Handling</strong>: Structured error types and propagation</li>
+                </ul>
+
+                <h2>Core Language Features</h2>
+
+                <h3>Variables and Mutability</h3>
+                <pre><code class="stark">let x = 42              // Immutable by default
+let mut y = 10          // Explicitly mutable
+const MAX_SIZE: Int32 = 1000  // Compile-time constant</code></pre>
+
+                <h3>Functions</h3>
+                <pre><code class="stark">fn add(a: Int32, b: Int32) -> Int32 {
+    a + b
+}
+
+fn greet(name: &str) {
+    println("Hello, " + name)
+}</code></pre>
+
+                <h3>AI/ML Data Types</h3>
+                <pre><code class="stark">// Tensor types (core AI primitive)
+let features: Tensor&lt;Float32&gt;[batch, 128] = load_data("input.json")
+let weights: Tensor&lt;Float32&gt;[128, 10] = tensor_zeros([128, 10])
+
+// Model loading
+let model: Model = load_pytorch_model("classifier.pt")
+let llm: LLMClient = LLMClient(provider="openai", model="gpt-4")
+
+// Dataset handling
+let dataset: Dataset&lt;Tuple&lt;Tensor&lt;Float32&gt;[128], Int32&gt;&gt; = 
+    load_dataset("train.csv").batch(32).shuffle(42)
+
+// Traditional types still available
+struct Point {
+    x: Float64,
+    y: Float64
+}</code></pre>
+
+                <h3>AI Workflow Control Flow</h3>
+                <pre><code class="stark">// Batch processing
+for batch in dataset {
+    let predictions = model.predict(batch.features)
+    let accuracy = evaluate(predictions, batch.labels)
+    println("Batch accuracy: " + accuracy.to_string())
+}
+
+// LLM integration with pattern matching
+@llm as classifier:
+    system: "You are a text classifier"
+    user: "Classify this text: {{input}}"
+
+match classifier.call({input: text}) {
+    "positive" => handle_positive(),
+    "negative" => handle_negative(),
+    "neutral" => handle_neutral()
+}
+
+// Tensor operations
+let logits = model.forward(features)
+let probabilities = softmax(logits)
+let prediction = argmax(probabilities)</code></pre>
+
+                <h3>AI Error Handling</h3>
+                <pre><code class="stark">fn load_model(path: &str) -> Result&lt;Model, ModelError&gt; {
+    if !file_exists(path) {
+        Err(ModelError::FileNotFound(path.to_string()))
+    } else {
+        load_pytorch_model(path)
+    }
+}
+
+fn run_inference(model: &Model, input: Tensor&lt;Float32&gt;) -> Result&lt;Tensor&lt;Float32&gt;, InferenceError&gt; {
+    if input.shape()[0] != model.input_shape()[0] {
+        Err(InferenceError::ShapeMismatch)
+    } else {
+        Ok(model.predict(input)?)
+    }
+}</code></pre>
+
+                <h3>Memory-Safe Tensor Operations</h3>
+                <pre><code class="stark">fn process_tensor(tensor: Tensor&lt;Float32&gt;) -> Tensor&lt;Float32&gt; {
+    // tensor is owned by this function
+    tensor.map(|x| x * 2.0)
+}
+
+fn compute_statistics(tensor: &Tensor&lt;Float32&gt;) -> (Float32, Float32) {
+    (tensor.mean(), tensor.std())  // Can read but not modify
+}
+
+fn normalize_in_place(tensor: &mut Tensor&lt;Float32&gt;) {
+    let mean = tensor.mean();
+    let std = tensor.std();
+    tensor.map_mut(|x| (x - mean) / std);  // Can read and modify
+}</code></pre>
+
+                <h2>Implementation Phases</h2>
+
+                <h3>Phase 1: AI Core MVP</h3>
+                <p><strong>Goal</strong>: Basic AI deployment capability</p>
+                <ul>
+                    <li>Lexer and parser for tensor-aware syntax</li>
+                    <li>Type checker with tensor shape validation</li>
+                    <li>Tensor operations and memory management</li>
+                    <li>Python model loading (PyTorch/TensorFlow)</li>
+                    <li>Basic inference runtime</li>
+                </ul>
+
+                <h3>Phase 2: Production AI Runtime</h3>
+                <p><strong>Goal</strong>: Production-ready AI deployment</p>
+                <ul>
+                    <li>Optimizing compiler for tensor operations</li>
+                    <li>Full tensor library implementation</li>
+                    <li>LLM integration (<code>@llm</code> blocks)</li>
+                    <li>Batch processing and streaming inference</li>
+                    <li>Performance profiling and optimization</li>
+                </ul>
+
+                <h3>Phase 3: Advanced AI Features</h3>
+                <p><strong>Goal</strong>: Complete AI deployment ecosystem</p>
+                <ul>
+                    <li>Multi-model serving and routing</li>
+                    <li>Dynamic batching and caching</li>
+                    <li>Edge deployment optimization</li>
+                    <li>Model quantization and compression</li>
+                    <li>Integration with popular ML frameworks</li>
+                </ul>
+
+                <h2>Comparison with AI/ML Languages</h2>
+
+                <h3>vs Python</h3>
+                <ul>
+                    <li><strong>Similarities</strong>: Readable syntax, good for ML workflows</li>
+                    <li><strong>Differences</strong>: Compiled performance, memory safety, tensor types</li>
+                    <li><strong>AI Focus</strong>: 2-10x faster inference, seamless model loading</li>
+                </ul>
+
+                <h3>vs Mojo</h3>
+                <ul>
+                    <li><strong>Similarities</strong>: Python interop, performance focus</li>
+                    <li><strong>Differences</strong>: Memory safety, production deployment focus</li>
+                    <li><strong>Trade-offs</strong>: Research flexibility vs production reliability</li>
+                </ul>
+
+                <h3>vs Julia</h3>
+                <ul>
+                    <li><strong>Similarities</strong>: Performance, mathematical computing</li>
+                    <li><strong>Differences</strong>: Better Python ecosystem integration, AI-native design</li>
+                    <li><strong>Trade-offs</strong>: General computing vs AI specialization</li>
+                </ul>
+
+                <h3>vs JAX/PyTorch JIT</h3>
+                <ul>
+                    <li><strong>Similarities</strong>: Compilation, optimization</li>
+                    <li><strong>Differences</strong>: Full language vs library, deployment focus</li>
+                    <li><strong>Trade-offs</strong>: Python flexibility vs standalone performance</li>
+                </ul>
+
+                <h2>Success Criteria</h2>
+
+                <h3>AI Performance</h3>
+                <ul>
+                    <li>[ ] 2-10x faster inference than Python equivalents</li>
+                    <li>[ ] 50-80% memory reduction vs Python runtime</li>
+                    <li>[ ] Zero-copy tensor operations</li>
+                    <li>[ ] Sub-millisecond model loading</li>
+                </ul>
+
+                <h3>Correctness</h3>
+                <ul>
+                    <li>[ ] Memory safety verified for tensor operations</li>
+                    <li>[ ] Shape checking prevents runtime tensor errors</li>
+                    <li>[ ] Comprehensive AI workflow test suite</li>
+                    <li>[ ] Formal verification of ownership in tensor sharing</li>
+                </ul>
+
+                <h3>Ecosystem Integration</h3>
+                <ul>
+                    <li>[ ] Seamless PyTorch/TensorFlow model loading</li>
+                    <li>[ ] Python library interoperability for preprocessing</li>
+                    <li>[ ] ONNX export/import support</li>
+                    <li>[ ] Integration with popular ML serving frameworks</li>
+                </ul>
+
+                <h3>Developer Experience</h3>
+                <ul>
+                    <li>[ ] Clear tensor shape error messages</li>
+                    <li>[ ] AI-focused IDE support and debugging</li>
+                    <li>[ ] Model performance profiling tools</li>
+                    <li>[ ] Migration guides from Python ML codebases</li>
+                </ul>
+
+                <h2>Next Steps</h2>
+
+                <ol>
+                    <li><strong>Implement Tensor-Aware Lexer</strong>: Start with tokenization including tensor syntax</li>
+                    <li><strong>Build AI-Focused Parser</strong>: Parse tensor operations, model loading, and @llm blocks</li>
+                    <li><strong>Tensor Type Checker</strong>: Develop shape inference and tensor type validation</li>
+                    <li><strong>Memory-Safe Tensor Operations</strong>: Implement ownership tracking for tensor sharing</li>
+                    <li><strong>Python Model Loader</strong>: Create PyTorch/TensorFlow model import functionality</li>
+                    <li><strong>AI Standard Library</strong>: Implement Tensor, Dataset, Model, and LLMClient types</li>
+                    <li><strong>Inference Runtime</strong>: Develop optimized execution engine for tensor operations</li>
+                    <li><strong>Performance Benchmarking</strong>: Compare against Python equivalents</li>
+                </ol>
+
+                <p>This specification provides a focused foundation for implementing a memory-safe, high-performance AI deployment language that bridges the gap between Python research and production inference systems.</p>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

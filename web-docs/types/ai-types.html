@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Types (Core) - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html" class="active">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib</a></li>
+                    <li><a href="../stdlib/networking.html">Networking</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <h1>🤖 STARK Language — Core AI Types Specification</h1>
+
+                <p>This document defines the fundamental AI/ML data structures in STARKLANG. These are not extensions but core language primitives, designed to make AI deployment efficient, safe, and expressive.</p>
+
+                <h2>📦 Core AI Types</h2>
+
+                <h3>1️⃣ Tensor&lt;T&gt;[...Shape] - Core Primitive</h3>
+
+                <p>The fundamental data structure for all AI computations in STARK.</p>
+
+                <pre><code class="stark">let features: Tensor&lt;Float32&gt;[batch, 128]
+let weights: Tensor&lt;Float32&gt;[128, 10] 
+let image: Tensor&lt;UInt8&gt;[3, 224, 224]</code></pre>
+
+                <h4>Compile-Time Shape Safety:</h4>
+                <ul>
+                    <li>Shape mismatches caught at compile time</li>
+                    <li>Automatic shape inference in operations</li>
+                    <li>Zero-cost abstractions for tensor operations</li>
+                </ul>
+
+                <h4>Core Methods:</h4>
+                <pre><code class="stark">tensor.shape() -> [Int; N]           // Compile-time known shape
+tensor.matmul(other: Tensor&lt;T&gt;[M, K]) -> Tensor&lt;T&gt;[N, K]
+tensor.map(fn: T -> U) -> Tensor&lt;U&gt;[...Shape]
+tensor.reduce_sum(axis: Int) -> Tensor&lt;T&gt;[...ReducedShape]</code></pre>
+
+                <h4>Memory Layout:</h4>
+                <ul>
+                    <li>Contiguous memory with configurable layouts (row-major, column-major)</li>
+                    <li>GPU memory support with automatic transfers</li>
+                    <li>Zero-copy views and slicing</li>
+                </ul>
+
+                <h3>2️⃣ Dataset&lt;T&gt; - Streaming Data Pipeline</h3>
+
+                <p>Efficient, lazy-evaluated data processing for AI workflows.</p>
+
+                <pre><code class="stark">let train_data: Dataset&lt;(Tensor&lt;Float32&gt;[128], Int32)&gt;
+let images: Dataset&lt;Tensor&lt;UInt8&gt;[3, 224, 224]&gt;</code></pre>
+
+                <h4>Pipeline Operations:</h4>
+                <pre><code class="stark">dataset
+  .batch(32)                                    // Create batches
+  .map(|x| preprocess(x))                      // Transform data
+  .shuffle(1000)                               // Shuffle with buffer
+  .prefetch(4)                                 // Async prefetching</code></pre>
+
+                <h4>Memory Efficiency:</h4>
+                <ul>
+                    <li>Lazy evaluation - only process when consumed</li>
+                    <li>Streaming from disk/network without loading everything</li>
+                    <li>Automatic memory management for large datasets</li>
+                    <li>GPU pipeline support for zero-copy transfers</li>
+                </ul>
+
+                <h3>3️⃣ Model&lt;Input, Output&gt; - Inference Engine</h3>
+
+                <p>Type-safe model abstraction with shape validation and performance optimization.</p>
+
+                <pre><code class="stark">let classifier: Model&lt;Tensor&lt;Float32&gt;[batch, 128], Tensor&lt;Float32&gt;[batch, 10]&gt;
+let embedder: Model&lt;Vec&lt;String&gt;, Tensor&lt;Float32&gt;[batch, 384]&gt;</code></pre>
+
+                <h4>Model Loading:</h4>
+                <pre><code class="stark">let model = load_pytorch_model("classifier.pt")  // Automatic shape inference
+let onnx_model = load_onnx_model("model.onnx")
+let huggingface_model = load_hf_model("bert-base-uncased")</code></pre>
+
+                <h4>Inference Methods:</h4>
+                <pre><code class="stark">model.predict(input: Input) -> Output
+model.batch_predict(inputs: Vec&lt;Input&gt;) -> Vec&lt;Output&gt;
+model.stream_predict(inputs: Dataset&lt;Input&gt;) -> Dataset&lt;Output&gt;</code></pre>
+
+                <h4>Performance Features:</h4>
+                <ul>
+                    <li>Automatic batching for throughput optimization</li>
+                    <li>Device placement (CPU/GPU) with automatic transfers</li>
+                    <li>Model quantization and compression</li>
+                    <li>Execution profiling and optimization hints</li>
+                </ul>
+
+                <h2>🧠 Supporting Types (Future Extensions)</h2>
+
+                <ul>
+                    <li><code>LossFunction</code>: e.g., <code>CrossEntropy</code>, <code>MSE</code></li>
+                    <li><code>Optimizer</code>: e.g., <code>SGD</code>, <code>Adam</code></li>
+                    <li><code>MLGraph</code>: DAG of models/operators</li>
+                    <li><code>Metric</code>: Evaluation and scoring abstractions</li>
+                </ul>
+
+                <h2>✨ AI Type Design Philosophy</h2>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Goal</th>
+                            <th>Mechanism</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Type Safety</td>
+                            <td>Shape-checked tensors</td>
+                        </tr>
+                        <tr>
+                            <td>Performance</td>
+                            <td>Backend-neutral tensor engine</td>
+                        </tr>
+                        <tr>
+                            <td>Composability</td>
+                            <td>Pipelines, map/filter DSL</td>
+                        </tr>
+                        <tr>
+                            <td>Portability</td>
+                            <td>Export to ONNX, deploy as service</td>
+                        </tr>
+                        <tr>
+                            <td>ML-Native Semantics</td>
+                            <td>Model + Dataset + Pipeline cohesion</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2>📌 Example: Complete AI Deployment Pipeline</h2>
+
+                <pre><code class="stark">// Load pre-trained model with automatic shape inference
+let model = load_pytorch_model("sentiment_classifier.pt")
+// Type: Model&lt;Tensor&lt;Float32&gt;[batch, 512], Tensor&lt;Float32&gt;[batch, 3]&gt;
+
+// Create streaming data pipeline
+let text_stream: Dataset&lt;String&gt; = load_text_stream("reviews.jsonl")
+let processed = text_stream
+    .map(|text| tokenize_and_embed(text))  // String -> Tensor&lt;Float32&gt;[512]
+    .batch(32)                             // Batch for efficiency
+    .prefetch(2)                          // Async prefetching
+
+// Run inference with automatic batching
+for batch in processed {
+    let predictions = model.predict(batch)  // Tensor&lt;Float32&gt;[32, 3]
+    let labels = argmax(predictions, axis=1) // Tensor&lt;Int32&gt;[32]
+    
+    // Process results
+    for (text, label) in zip(batch.unbatch(), labels.unbatch()) {
+        handle_classification(text, label)
+    }
+}</code></pre>
+
+                <p>These core AI types make STARK uniquely suited for production ML deployment, providing type safety, performance optimization, and seamless integration with existing ML ecosystems. They are fundamental language primitives, not library additions, enabling compile-time optimizations and safety guarantees that are impossible in general-purpose languages.</p>
+
+                <h1>🧱 STARK Language — Advanced & Future-Oriented Types</h1>
+
+                <p>This document outlines additional powerful types in STARKLANG designed for safety, flexibility, and next-gen programming paradigms. These types enhance developer ergonomics, ensure runtime robustness, and support emerging paradigms such as functional programming, streaming data, and safe concurrency.</p>
+
+                <h2>✅ 1. Option</h2>
+
+                <p>A type-safe replacement for null. Guarantees explicit handling of absent values.</p>
+
+                <pre><code class="stark">let maybe_user: Option&lt;UserProfile&gt; = None</code></pre>
+
+                <h3>Variants:</h3>
+
+                <pre><code class="stark">enum Option&lt;T&gt;:
+    Some(value: T)
+    None</code></pre>
+
+                <h3>Methods:</h3>
+
+                <ul>
+                    <li><code>.is_some()</code></li>
+                    <li><code>.unwrap()</code> (with panic fallback)</li>
+                    <li><code>.unwrap_or(default: T)</code></li>
+                    <li><code>.map(fn)</code></li>
+                </ul>
+
+                <h2>✅ 2. Result&lt;T, E&gt;</h2>
+
+                <p>Robust error handling and propagation using algebraic types.</p>
+
+                <pre><code class="stark">fn divide(a: Float32, b: Float32) -> Result&lt;Float32, String&gt;:
+    if b == 0.0:
+        return Err("Division by zero")
+    return Ok(a / b)</code></pre>
+
+                <h3>Variants:</h3>
+
+                <pre><code class="stark">enum Result&lt;T, E&gt;:
+    Ok(value: T)
+    Err(error: E)</code></pre>
+
+                <h3>Methods:</h3>
+
+                <ul>
+                    <li><code>.is_ok()</code>, <code>.is_err()</code></li>
+                    <li><code>.unwrap()</code>, <code>.unwrap_or()</code></li>
+                    <li><code>.map(fn)</code>, <code>.map_err(fn)</code></li>
+                </ul>
+
+                <h2>🔷 3. Union&lt;T1 | T2 | ...&gt;</h2>
+
+                <p>A flexible type that can hold one of several types.</p>
+
+                <pre><code class="stark">let mixed: Union&lt;Int | Float32 | String&gt;</code></pre>
+
+                <p>Handled via <strong>pattern matching</strong>:</p>
+
+                <pre><code class="stark">match mixed:
+  Int(i): print("Int: " + str(i))
+  Float32(f): print("Float: " + str(f))
+  String(s): print("String: " + s)</code></pre>
+
+                <h2>🔷 4. Stream</h2>
+
+                <p>A lazy, async-capable, chainable data processing abstraction.</p>
+
+                <pre><code class="stark">let stream: Stream&lt;Int&gt; = range(0, 100)
+  .map(fn(x) => x * x)
+  .filter(fn(x) => x % 2 == 0)</code></pre>
+
+                <h3>Methods:</h3>
+
+                <ul>
+                    <li><code>.map(fn)</code>, <code>.filter(fn)</code></li>
+                    <li><code>.reduce(fn, init)</code></li>
+                    <li><code>.collect()</code></li>
+                </ul>
+
+                <p>Supports both <strong>lazy evaluation</strong> and <strong>stream-based pipelines</strong>.</p>
+
+                <h2>🔷 5. TaggedRecord</h2>
+
+                <p>Schema-aware struct with tagged metadata.</p>
+
+                <pre><code class="stark">record Invoice:
+    id: String @tag("primary")
+    total: Float32 @tag("currency:USD")</code></pre>
+
+                <p>Useful for <strong>serialization</strong>, <strong>schema validation</strong>, and <strong>ETL/data pipelines</strong>.</p>
+
+                <h2>⚪ 6. Ref / Pointer</h2>
+
+                <p>Low-level reference to memory-allocated object (useful for FFI/systems integration).</p>
+
+                <pre><code class="stark">let ptr: Ref&lt;UserProfile&gt; = ref user</code></pre>
+
+                <p>Supports dereferencing, pointer equality, and pass-by-ref semantics.</p>
+
+                <h2>⚪ 7. Bitfield</h2>
+
+                <p>Compact bit-based flag structures for systems/embedded use.</p>
+
+                <pre><code class="stark">bitfield Flags:
+    READ: 0
+    WRITE: 1
+    EXEC: 2</code></pre>
+
+                <p>Bitwise manipulation: <code>flags.set(READ)</code>, <code>flags.has(EXEC)</code></p>
+
+                <h2>⚪ 8. Persistent Collections</h2>
+
+                <p>Immutable data structures for functional-style programming.</p>
+
+                <ul>
+                    <li><code>PersistentList&lt;T&gt;</code></li>
+                    <li><code>PersistentMap&lt;K, V&gt;</code></li>
+                </ul>
+
+                <p>Enable structural sharing and safe concurrent reads.</p>
+
+                <h2>⏳ 9. Channel</h2>
+
+                <p>Concurrency primitive for <strong>actor systems</strong>, <strong>thread isolates</strong>, and message-passing models.</p>
+
+                <pre><code class="stark">let ch: Channel&lt;Int&gt; = channel()
+spawn fn producer():
+    ch.send(42)
+
+let val = ch.recv()</code></pre>
+
+                <h2>⏳ 10. Future</h2>
+
+                <p>Async task result holder, supports chaining and callbacks.</p>
+
+                <pre><code class="stark">let result: Future&lt;Int&gt; = async fn compute(): return 99</code></pre>
+
+                <p>Support methods:</p>
+
+                <ul>
+                    <li><code>.await()</code></li>
+                    <li><code>.then(fn)</code></li>
+                    <li><code>.catch(fn)</code></li>
+                </ul>
+
+                <p>These types extend STARKLANG's capability beyond a typical language into a <strong>developer-first, AI-native, concurrency-safe ecosystem</strong>—built for the real-world challenges of the future.</p>
+            </div>
+        </main>
+    </div>
+</body>
+</html>
