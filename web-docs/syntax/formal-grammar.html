@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Formal Grammar (EBNF) - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li class="active"><a href="../syntax/formal-grammar.html">Formal Grammar (EBNF)</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib</a></li>
+                    <li><a href="../stdlib/networking.html">Networking</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <h1>STARK Language Formal Grammar Specification</h1>
+                
+                <p>This document provides the complete formal grammar specification for the STARK programming language using Extended Backus-Naur Form (EBNF) notation.</p>
+
+                <h2>Grammar Notation</h2>
+                <ul>
+                    <li><code>::=</code> - Definition</li>
+                    <li><code>|</code> - Alternation (OR)</li>
+                    <li><code>{}</code> - Zero or more repetitions</li>
+                    <li><code>[]</code> - Optional element</li>
+                    <li><code>()</code> - Grouping</li>
+                    <li><code>&lt;&gt;</code> - Non-terminal symbols</li>
+                    <li>Terminal symbols are enclosed in quotes</li>
+                </ul>
+
+                <h2>1. Lexical Grammar</h2>
+
+                <h3>1.1 Whitespace and Comments</h3>
+                <pre><code>&lt;whitespace&gt;        ::= ' ' | '\t' | '\r' | '\n'
+&lt;comment&gt;           ::= &lt;line_comment&gt; | &lt;block_comment&gt;
+&lt;line_comment&gt;      ::= '//' {&lt;any_char_except_newline&gt;} '\n'
+&lt;block_comment&gt;     ::= '/*' {&lt;any_char&gt;} '*/'</code></pre>
+
+                <h3>1.2 Identifiers and Keywords</h3>
+                <pre><code>&lt;identifier&gt;        ::= &lt;letter&gt; {&lt;letter&gt; | &lt;digit&gt; | '_'}
+&lt;letter&gt;            ::= 'a'..'z' | 'A'..'Z'
+&lt;digit&gt;             ::= '0'..'9'
+
+&lt;keyword&gt;           ::= 'fn' | 'let' | 'immutable' | 'if' | 'else' | 'while' | 'for' | 'in'
+                     | 'return' | 'break' | 'continue' | 'match' | 'case'
+                     | 'struct' | 'enum' | 'trait' | 'impl' | 'self' | 'Self'
+                     | 'import' | 'export' | 'as' | 'from' | 'module' | 'package'
+                     | 'async' | 'await' | 'spawn' | 'actor' | 'send' | 'receive'
+                     | 'true' | 'false' | 'null' | 'and' | 'or' | 'not'
+                     | 'type' | 'alias' | 'where' | 'with'
+                     | 'tensor' | 'model' | 'dataset' | 'pipeline'
+                     | 'try' | 'catch' | 'finally' | 'throw'
+                     | 'public' | 'private' | 'protected' | 'internal'
+                     | 'cloud' | 'serverless' | 'service' | 'deploy'</code></pre>
+
+                <h3>1.3 Literals</h3>
+                <pre><code>&lt;literal&gt;           ::= &lt;integer_literal&gt; | &lt;float_literal&gt; | &lt;string_literal&gt; 
+                     | &lt;char_literal&gt; | &lt;bool_literal&gt; | &lt;null_literal&gt;
+                     | &lt;tensor_literal&gt;
+
+&lt;integer_literal&gt;   ::= &lt;decimal_int&gt; | &lt;hex_int&gt; | &lt;binary_int&gt; | &lt;octal_int&gt;
+&lt;decimal_int&gt;       ::= &lt;digit&gt; {&lt;digit&gt; | '_'}
+&lt;hex_int&gt;           ::= '0x' &lt;hex_digit&gt; {&lt;hex_digit&gt; | '_'}
+&lt;binary_int&gt;        ::= '0b' &lt;binary_digit&gt; {&lt;binary_digit&gt; | '_'}
+&lt;octal_int&gt;         ::= '0o' &lt;octal_digit&gt; {&lt;octal_digit&gt; | '_'}
+
+&lt;float_literal&gt;     ::= &lt;decimal_int&gt; '.' &lt;decimal_int&gt; [&lt;exponent&gt;]
+                     | &lt;decimal_int&gt; &lt;exponent&gt;
+&lt;exponent&gt;          ::= ('e' | 'E') ['+' | '-'] &lt;decimal_int&gt;
+
+&lt;string_literal&gt;    ::= '"' {&lt;string_char&gt;} '"' 
+                     | "'" {&lt;string_char&gt;} "'"
+                     | 'f"' {&lt;string_char&gt; | '{' &lt;expression&gt; '}'} '"'
+&lt;char_literal&gt;      ::= "'" &lt;char&gt; "'"
+
+&lt;bool_literal&gt;      ::= 'true' | 'false'
+&lt;null_literal&gt;      ::= 'null'
+
+&lt;tensor_literal&gt;    ::= 'tensor' '[' &lt;tensor_elements&gt; ']' ['@' &lt;device&gt;]
+&lt;tensor_elements&gt;   ::= &lt;expression&gt; {',' &lt;expression&gt;}
+&lt;device&gt;            ::= 'cpu' | 'gpu' | 'tpu' | &lt;identifier&gt;</code></pre>
+
+                <h3>1.4 Operators and Delimiters</h3>
+                <pre><code>&lt;operator&gt;          ::= '+' | '-' | '*' | '/' | '%' | '**' | '@'
+                     | '==' | '!=' | '&lt;' | '&lt;=' | '&gt;' | '&gt;='
+                     | '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '**='
+                     | '&amp;' | '|' | '^' | '~' | '&lt;&lt;' | '&gt;&gt;'
+                     | '&amp;&amp;' | '||' | '!'
+                     | '.' | '..' | '..=' | '-&gt;' | '=&gt;' | '::'
+
+&lt;delimiter&gt;         ::= '(' | ')' | '[' | ']' | '{' | '}' 
+                     | ',' | ';' | ':' | '?' | '!'</code></pre>
+
+                <h2>2. Syntactic Grammar</h2>
+
+                <h3>2.1 Program Structure</h3>
+                <pre><code>&lt;program&gt;           ::= {&lt;module_item&gt;}
+
+&lt;module_item&gt;       ::= &lt;import_decl&gt;
+                     | &lt;export_decl&gt;
+                     | &lt;function_decl&gt;
+                     | &lt;struct_decl&gt;
+                     | &lt;enum_decl&gt;
+                     | &lt;trait_decl&gt;
+                     | &lt;impl_decl&gt;
+                     | &lt;type_alias&gt;
+                     | &lt;global_let&gt;
+                     | &lt;actor_decl&gt;
+                     | &lt;model_decl&gt;
+                     | &lt;pipeline_decl&gt;</code></pre>
+
+                <h3>2.2 Import and Export</h3>
+                <pre><code>&lt;import_decl&gt;       ::= 'import' &lt;import_path&gt; [&lt;import_items&gt;] ';'
+&lt;import_path&gt;       ::= &lt;identifier&gt; {'.' &lt;identifier&gt;}
+&lt;import_items&gt;      ::= '::' '{' &lt;import_item&gt; {',' &lt;import_item&gt;} '}'
+                     | '::' '*'
+                     | 'as' &lt;identifier&gt;
+&lt;import_item&gt;       ::= &lt;identifier&gt; ['as' &lt;identifier&gt;]
+
+&lt;export_decl&gt;       ::= 'export' &lt;module_item&gt;
+                     | 'export' '{' &lt;identifier&gt; {',' &lt;identifier&gt;} '}'</code></pre>
+
+                <h3>2.3 Type System</h3>
+                <pre><code>&lt;type&gt;              ::= &lt;primitive_type&gt;
+                     | &lt;composite_type&gt;
+                     | &lt;reference_type&gt;
+                     | &lt;function_type&gt;
+                     | &lt;generic_type&gt;
+                     | &lt;ai_type&gt;
+                     | &lt;qualified_type&gt;
+                     | '?'&lt;type&gt;
+
+&lt;primitive_type&gt;    ::= 'i8' | 'i16' | 'i32' | 'i64' | 'i128'
+                     | 'u8' | 'u16' | 'u32' | 'u64' | 'u128'
+                     | 'f32' | 'f64'
+                     | 'bool' | 'char' | 'str'
+
+&lt;composite_type&gt;    ::= '[' &lt;type&gt; ']'
+                     | '[' &lt;type&gt; ';' &lt;expression&gt; ']'
+                     | 'List' '&lt;' &lt;type&gt; '&gt;'
+                     | 'Array' '&lt;' &lt;type&gt; ',' &lt;expression&gt; '&gt;'
+                     | 'Map' '&lt;' &lt;type&gt; ',' &lt;type&gt; '&gt;'
+                     | 'Set' '&lt;' &lt;type&gt; '&gt;'
+                     | '(' &lt;type_list&gt; ')'
+
+&lt;reference_type&gt;    ::= '&amp;' ['mut'] &lt;type&gt;
+                     | '*' ['const' | 'mut'] &lt;type&gt;
+
+&lt;function_type&gt;     ::= 'fn' '(' [&lt;type_list&gt;] ')' ['-&gt;' &lt;type&gt;]
+
+&lt;generic_type&gt;      ::= &lt;identifier&gt; '&lt;' &lt;type_args&gt; '&gt;'
+&lt;type_args&gt;         ::= &lt;type&gt; {',' &lt;type&gt;}
+&lt;type_list&gt;         ::= &lt;type&gt; {',' &lt;type&gt;}
+
+&lt;ai_type&gt;           ::= 'Tensor' '&lt;' &lt;type&gt; ',' &lt;shape_spec&gt; '&gt;'
+                     | 'Model' '&lt;' &lt;input_spec&gt; ',' &lt;output_spec&gt; '&gt;'
+                     | 'Dataset' '&lt;' &lt;type&gt; '&gt;'
+                     | 'Graph' '&lt;' &lt;node_type&gt; ',' &lt;edge_type&gt; '&gt;'
+
+&lt;shape_spec&gt;        ::= '[' &lt;dimension&gt; {',' &lt;dimension&gt;} ']'
+&lt;dimension&gt;         ::= &lt;integer_literal&gt; | &lt;identifier&gt; | '?'
+
+&lt;qualified_type&gt;    ::= &lt;type&gt; ['where' &lt;type_constraints&gt;]
+&lt;type_constraints&gt;  ::= &lt;type_constraint&gt; {',' &lt;type_constraint&gt;}
+&lt;type_constraint&gt;   ::= &lt;identifier&gt; ':' &lt;trait_bounds&gt;
+&lt;trait_bounds&gt;      ::= &lt;trait_bound&gt; {'+' &lt;trait_bound&gt;}
+&lt;trait_bound&gt;       ::= &lt;identifier&gt; ['&lt;' &lt;type_args&gt; '&gt;']</code></pre>
+
+                <h3>2.4 Declarations</h3>
+                <pre><code>&lt;function_decl&gt;     ::= [&lt;attributes&gt;] [&lt;visibility&gt;] ['async'] 'fn' &lt;identifier&gt; 
+                        [&lt;generic_params&gt;] '(' [&lt;parameters&gt;] ')' ['-&gt;' &lt;type&gt;]
+                        [&lt;where_clause&gt;] &lt;block&gt;
+
+&lt;struct_decl&gt;       ::= [&lt;attributes&gt;] [&lt;visibility&gt;] 'struct' &lt;identifier&gt;
+                        [&lt;generic_params&gt;] [&lt;where_clause&gt;] &lt;struct_body&gt;
+
+&lt;struct_body&gt;       ::= '{' &lt;field_list&gt; '}'
+                     | '(' &lt;type_list&gt; ')' ';'
+                     | ';'
+
+&lt;field_list&gt;        ::= &lt;field&gt; {',' &lt;field&gt;} [',']
+&lt;field&gt;             ::= [&lt;visibility&gt;] &lt;identifier&gt; ':' &lt;type&gt;
+
+&lt;enum_decl&gt;         ::= [&lt;attributes&gt;] [&lt;visibility&gt;] 'enum' &lt;identifier&gt;
+                        [&lt;generic_params&gt;] [&lt;where_clause&gt;] '{' &lt;variant_list&gt; '}'
+
+&lt;variant_list&gt;      ::= &lt;variant&gt; {',' &lt;variant&gt;} [',']
+&lt;variant&gt;           ::= &lt;identifier&gt; [&lt;variant_data&gt;]
+&lt;variant_data&gt;      ::= '(' &lt;type_list&gt; ')'
+                     | '{' &lt;field_list&gt; '}'
+
+&lt;trait_decl&gt;        ::= [&lt;attributes&gt;] [&lt;visibility&gt;] 'trait' &lt;identifier&gt;
+                        [&lt;generic_params&gt;] [&lt;where_clause&gt;] '{' {&lt;trait_item&gt;} '}'
+
+&lt;trait_item&gt;        ::= &lt;trait_function&gt;
+                     | &lt;trait_type&gt;
+                     | &lt;trait_const&gt;
+
+&lt;trait_function&gt;    ::= ['async'] 'fn' &lt;identifier&gt; [&lt;generic_params&gt;]
+                        '(' [&lt;parameters&gt;] ')' ['-&gt;' &lt;type&gt;] [&lt;where_clause&gt;] [&lt;block&gt;]
+
+&lt;impl_decl&gt;         ::= [&lt;attributes&gt;] 'impl' [&lt;generic_params&gt;] &lt;type&gt;
+                        ['for' &lt;type&gt;] [&lt;where_clause&gt;] '{' {&lt;impl_item&gt;} '}'
+
+&lt;impl_item&gt;         ::= &lt;function_decl&gt;
+                     | &lt;type_alias&gt;
+                     | &lt;const_decl&gt;
+
+&lt;type_alias&gt;        ::= [&lt;visibility&gt;] 'type' &lt;identifier&gt; [&lt;generic_params&gt;] 
+                        '=' &lt;type&gt; [&lt;where_clause&gt;] ';'</code></pre>
+
+                <h3>2.5 Actor Model</h3>
+                <pre><code>&lt;actor_decl&gt;        ::= [&lt;attributes&gt;] [&lt;visibility&gt;] 'actor' &lt;identifier&gt;
+                        [&lt;generic_params&gt;] '{' {&lt;actor_item&gt;} '}'
+
+&lt;actor_item&gt;        ::= &lt;state_decl&gt;
+                     | &lt;message_handler&gt;
+                     | &lt;function_decl&gt;
+
+&lt;state_decl&gt;        ::= [&lt;visibility&gt;] 'state' &lt;identifier&gt; ':' &lt;type&gt; ['=' &lt;expression&gt;] ';'
+
+&lt;message_handler&gt;   ::= 'receive' &lt;pattern&gt; [&lt;guard&gt;] &lt;block&gt;
+
+&lt;actor_spawn&gt;       ::= 'spawn' &lt;expression&gt; '(' [&lt;expression_list&gt;] ')'
+
+&lt;send_expr&gt;         ::= &lt;expression&gt; '!' &lt;expression&gt;
+                     | &lt;expression&gt; '.send' '(' &lt;expression&gt; ')'</code></pre>
+
+                <h3>2.6 AI/ML Constructs</h3>
+                <pre><code>&lt;model_decl&gt;        ::= [&lt;attributes&gt;] [&lt;visibility&gt;] 'model' &lt;identifier&gt;
+                        [&lt;generic_params&gt;] '{' &lt;model_body&gt; '}'
+
+&lt;model_body&gt;        ::= {&lt;layer_decl&gt;} [&lt;forward_decl&gt;]
+
+&lt;layer_decl&gt;        ::= &lt;identifier&gt; ':' &lt;layer_type&gt; '(' &lt;layer_params&gt; ')' ';'
+
+&lt;layer_type&gt;        ::= 'Linear' | 'Conv2d' | 'LSTM' | 'Transformer' 
+                     | 'Attention' | &lt;identifier&gt;
+
+&lt;forward_decl&gt;      ::= 'forward' '(' &lt;parameters&gt; ')' '-&gt;' &lt;type&gt; &lt;block&gt;
+
+&lt;pipeline_decl&gt;     ::= [&lt;attributes&gt;] [&lt;visibility&gt;] 'pipeline' &lt;identifier&gt;
+                        '{' {&lt;pipeline_stage&gt;} '}'
+
+&lt;pipeline_stage&gt;    ::= &lt;identifier&gt; ':' &lt;stage_type&gt; &lt;stage_config&gt; ';'
+
+&lt;stage_type&gt;        ::= 'load' | 'preprocess' | 'train' | 'validate' 
+                     | 'deploy' | &lt;identifier&gt;
+
+&lt;tensor_ops&gt;        ::= &lt;expression&gt; '@' &lt;expression&gt;  // Matrix multiplication
+                     | &lt;expression&gt; '.T'               // Transpose
+                     | &lt;expression&gt; '.reshape' '(' &lt;shape_spec&gt; ')'
+                     | &lt;expression&gt; '.grad' '(' ')'</code></pre>
+
+                <h3>2.7 Statements</h3>
+                <pre><code>&lt;statement&gt;         ::= &lt;let_stmt&gt;
+                     | &lt;expression_stmt&gt;
+                     | &lt;if_stmt&gt;
+                     | &lt;while_stmt&gt;
+                     | &lt;for_stmt&gt;
+                     | &lt;match_stmt&gt;
+                     | &lt;return_stmt&gt;
+                     | &lt;break_stmt&gt;
+                     | &lt;continue_stmt&gt;
+                     | &lt;block&gt;
+                     | &lt;async_block&gt;
+                     | &lt;cloud_stmt&gt;
+
+&lt;let_stmt&gt;          ::= ['immutable'] 'let' &lt;pattern&gt; [':' &lt;type&gt;] '=' &lt;expression&gt; ';'
+
+&lt;expression_stmt&gt;   ::= &lt;expression&gt; ';'
+
+&lt;if_stmt&gt;           ::= 'if' &lt;expression&gt; &lt;block&gt; ['else' (&lt;if_stmt&gt; | &lt;block&gt;)]
+
+&lt;while_stmt&gt;        ::= 'while' &lt;expression&gt; &lt;block&gt;
+
+&lt;for_stmt&gt;          ::= 'for' &lt;pattern&gt; 'in' &lt;expression&gt; &lt;block&gt;
+
+&lt;match_stmt&gt;        ::= 'match' &lt;expression&gt; '{' &lt;match_arm_list&gt; '}'
+&lt;match_arm_list&gt;    ::= &lt;match_arm&gt; {',' &lt;match_arm&gt;} [',']
+&lt;match_arm&gt;         ::= &lt;pattern&gt; [&lt;guard&gt;] '=&gt;' (&lt;expression&gt; | &lt;block&gt;)
+&lt;guard&gt;             ::= 'if' &lt;expression&gt;
+
+&lt;return_stmt&gt;       ::= 'return' [&lt;expression&gt;] ';'
+&lt;break_stmt&gt;        ::= 'break' [&lt;label&gt;] [&lt;expression&gt;] ';'
+&lt;continue_stmt&gt;     ::= 'continue' [&lt;label&gt;] ';'
+
+&lt;block&gt;             ::= '{' {&lt;statement&gt;} [&lt;expression&gt;] '}'
+&lt;async_block&gt;       ::= 'async' &lt;block&gt;</code></pre>
+
+                <h3>2.8 Cloud-Native Constructs</h3>
+                <pre><code>&lt;cloud_stmt&gt;        ::= &lt;serverless_decl&gt;
+                     | &lt;service_decl&gt;
+                     | &lt;deploy_stmt&gt;
+
+&lt;serverless_decl&gt;   ::= '@serverless' ['(' &lt;serverless_config&gt; ')'] &lt;function_decl&gt;
+
+&lt;serverless_config&gt; ::= &lt;config_item&gt; {',' &lt;config_item&gt;}
+&lt;config_item&gt;       ::= &lt;identifier&gt; ':' &lt;literal&gt;
+
+&lt;service_decl&gt;      ::= '@service' ['(' &lt;service_config&gt; ')'] &lt;struct_decl&gt;
+
+&lt;deploy_stmt&gt;       ::= 'deploy' &lt;expression&gt; 'to' &lt;cloud_target&gt; 
+                        ['with' &lt;deploy_config&gt;] ';'
+
+&lt;cloud_target&gt;      ::= 'aws' | 'gcp' | 'azure' | &lt;string_literal&gt;</code></pre>
+
+                <h3>2.9 Expressions</h3>
+                <pre><code>&lt;expression&gt;        ::= &lt;assignment_expr&gt;
+
+&lt;assignment_expr&gt;   ::= &lt;logical_or_expr&gt; [&lt;assignment_op&gt; &lt;assignment_expr&gt;]
+&lt;assignment_op&gt;     ::= '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '**='
+
+&lt;logical_or_expr&gt;   ::= &lt;logical_and_expr&gt; {'||' &lt;logical_and_expr&gt;}
+&lt;logical_and_expr&gt;  ::= &lt;bitwise_or_expr&gt; {'&amp;&amp;' &lt;bitwise_or_expr&gt;}
+&lt;bitwise_or_expr&gt;   ::= &lt;bitwise_xor_expr&gt; {'|' &lt;bitwise_xor_expr&gt;}
+&lt;bitwise_xor_expr&gt;  ::= &lt;bitwise_and_expr&gt; {'^' &lt;bitwise_and_expr&gt;}
+&lt;bitwise_and_expr&gt;  ::= &lt;equality_expr&gt; {'&amp;' &lt;equality_expr&gt;}
+
+&lt;equality_expr&gt;     ::= &lt;relational_expr&gt; {('==' | '!=') &lt;relational_expr&gt;}
+&lt;relational_expr&gt;   ::= &lt;shift_expr&gt; {('&lt;' | '&lt;=' | '&gt;' | '&gt;=') &lt;shift_expr&gt;}
+&lt;shift_expr&gt;        ::= &lt;additive_expr&gt; {('&lt;&lt;' | '&gt;&gt;') &lt;additive_expr&gt;}
+
+&lt;additive_expr&gt;     ::= &lt;multiplicative_expr&gt; {('+' | '-') &lt;multiplicative_expr&gt;}
+&lt;multiplicative_expr&gt; ::= &lt;power_expr&gt; {('*' | '/' | '%' | '@') &lt;power_expr&gt;}
+&lt;power_expr&gt;        ::= &lt;unary_expr&gt; ['**' &lt;power_expr&gt;]
+
+&lt;unary_expr&gt;        ::= &lt;unary_op&gt; &lt;unary_expr&gt;
+                     | &lt;postfix_expr&gt;
+&lt;unary_op&gt;          ::= '+' | '-' | '!' | '~' | '&amp;' | '*'
+
+&lt;postfix_expr&gt;      ::= &lt;primary_expr&gt; {&lt;postfix_op&gt;}
+&lt;postfix_op&gt;        ::= '[' &lt;expression&gt; ']'
+                     | '.' &lt;identifier&gt;
+                     | '.' &lt;integer_literal&gt;
+                     | '(' [&lt;expression_list&gt;] ')'
+                     | '?' | '!'
+
+&lt;primary_expr&gt;      ::= &lt;literal&gt;
+                     | &lt;identifier&gt;
+                     | &lt;self_expr&gt;
+                     | &lt;paren_expr&gt;
+                     | &lt;tuple_expr&gt;
+                     | &lt;array_expr&gt;
+                     | &lt;struct_expr&gt;
+                     | &lt;closure_expr&gt;
+                     | &lt;if_expr&gt;
+                     | &lt;match_expr&gt;
+                     | &lt;await_expr&gt;
+                     | &lt;tensor_expr&gt;
+
+&lt;self_expr&gt;         ::= 'self' | 'Self'
+&lt;paren_expr&gt;        ::= '(' &lt;expression&gt; ')'
+&lt;tuple_expr&gt;        ::= '(' [&lt;expression_list&gt;] ')'
+&lt;array_expr&gt;        ::= '[' [&lt;expression_list&gt;] ']'
+                     | '[' &lt;expression&gt; ';' &lt;expression&gt; ']'
+
+&lt;struct_expr&gt;       ::= &lt;identifier&gt; '{' [&lt;field_init_list&gt;] '}'
+&lt;field_init_list&gt;   ::= &lt;field_init&gt; {',' &lt;field_init&gt;} [',']
+&lt;field_init&gt;        ::= &lt;identifier&gt; [':' &lt;expression&gt;]
+
+&lt;closure_expr&gt;      ::= '|' [&lt;parameters&gt;] '|' ['-&gt;' &lt;type&gt;] &lt;expression&gt;
+                     | '||' ['-&gt;' &lt;type&gt;] &lt;expression&gt;
+
+&lt;if_expr&gt;           ::= 'if' &lt;expression&gt; &lt;block&gt; 'else' &lt;block&gt;
+&lt;match_expr&gt;        ::= 'match' &lt;expression&gt; '{' &lt;match_arm_list&gt; '}'
+
+&lt;await_expr&gt;        ::= &lt;expression&gt; '.await'
+
+&lt;expression_list&gt;   ::= &lt;expression&gt; {',' &lt;expression&gt;}</code></pre>
+
+                <h3>2.10 Patterns</h3>
+                <pre><code>&lt;pattern&gt;           ::= &lt;literal_pattern&gt;
+                     | &lt;identifier_pattern&gt;
+                     | &lt;wildcard_pattern&gt;
+                     | &lt;tuple_pattern&gt;
+                     | &lt;array_pattern&gt;
+                     | &lt;struct_pattern&gt;
+                     | &lt;enum_pattern&gt;
+                     | &lt;range_pattern&gt;
+                     | &lt;reference_pattern&gt;
+
+&lt;literal_pattern&gt;   ::= &lt;literal&gt;
+&lt;identifier_pattern&gt; ::= ['ref'] ['mut'] &lt;identifier&gt;
+&lt;wildcard_pattern&gt;  ::= '_'
+
+&lt;tuple_pattern&gt;     ::= '(' [&lt;pattern_list&gt;] ')'
+&lt;array_pattern&gt;     ::= '[' [&lt;pattern_list&gt;] ']'
+&lt;pattern_list&gt;      ::= &lt;pattern&gt; {',' &lt;pattern&gt;}
+
+&lt;struct_pattern&gt;    ::= &lt;identifier&gt; '{' [&lt;field_pattern_list&gt;] '}'
+&lt;field_pattern_list&gt; ::= &lt;field_pattern&gt; {',' &lt;field_pattern&gt;} [',']
+&lt;field_pattern&gt;     ::= &lt;identifier&gt; [':' &lt;pattern&gt;]
+
+&lt;enum_pattern&gt;      ::= &lt;identifier&gt; [&lt;enum_pattern_data&gt;]
+&lt;enum_pattern_data&gt; ::= '(' [&lt;pattern_list&gt;] ')'
+                     | '{' [&lt;field_pattern_list&gt;] '}'
+
+&lt;range_pattern&gt;     ::= &lt;expression&gt; '..' [&lt;expression&gt;]
+                     | &lt;expression&gt; '..=' &lt;expression&gt;
+
+&lt;reference_pattern&gt; ::= '&amp;' ['mut'] &lt;pattern&gt;</code></pre>
+
+                <h3>2.11 Attributes</h3>
+                <pre><code>&lt;attributes&gt;        ::= {&lt;attribute&gt;}
+&lt;attribute&gt;         ::= '#[' &lt;attr_content&gt; ']'
+                     | '#![' &lt;attr_content&gt; ']'
+
+&lt;attr_content&gt;      ::= &lt;identifier&gt; ['(' &lt;attr_args&gt; ')']
+&lt;attr_args&gt;         ::= &lt;literal&gt; {',' &lt;literal&gt;}
+                     | &lt;identifier&gt; '=' &lt;literal&gt; {',' &lt;identifier&gt; '=' &lt;literal&gt;}</code></pre>
+
+                <h3>2.12 Generic Parameters and Where Clauses</h3>
+                <pre><code>&lt;generic_params&gt;    ::= '&lt;' &lt;generic_param_list&gt; '&gt;'
+&lt;generic_param_list&gt; ::= &lt;generic_param&gt; {',' &lt;generic_param&gt;}
+&lt;generic_param&gt;     ::= &lt;lifetime_param&gt;
+                     | &lt;type_param&gt;
+                     | &lt;const_param&gt;
+
+&lt;lifetime_param&gt;    ::= "'" &lt;identifier&gt; [':' &lt;lifetime_bounds&gt;]
+&lt;type_param&gt;        ::= &lt;identifier&gt; [':' &lt;trait_bounds&gt;] ['=' &lt;type&gt;]
+&lt;const_param&gt;       ::= 'const' &lt;identifier&gt; ':' &lt;type&gt;
+
+&lt;where_clause&gt;      ::= 'where' &lt;where_predicates&gt;
+&lt;where_predicates&gt;  ::= &lt;where_predicate&gt; {',' &lt;where_predicate&gt;}
+&lt;where_predicate&gt;   ::= &lt;type&gt; ':' &lt;trait_bounds&gt;
+                     | "'" &lt;identifier&gt; ':' &lt;lifetime_bounds&gt;
+
+&lt;lifetime_bounds&gt;   ::= &lt;lifetime&gt; {'+' &lt;lifetime&gt;}
+&lt;lifetime&gt;          ::= "'" &lt;identifier&gt; | "'static"</code></pre>
+
+                <h3>2.13 Visibility</h3>
+                <pre><code>&lt;visibility&gt;        ::= 'public'
+                     | 'private'
+                     | 'protected'
+                     | 'internal'
+                     | 'public' '(' &lt;visibility_scope&gt; ')'
+
+&lt;visibility_scope&gt;  ::= 'crate' | 'super' | 'module'</code></pre>
+
+                <h2>3. Precedence and Associativity</h2>
+                
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Precedence</th>
+                            <th>Operator</th>
+                            <th>Associativity</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1 (highest)</td>
+                            <td><code>()</code> <code>[]</code> <code>.</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td><code>!</code> <code>~</code> unary<code>-</code> unary<code>+</code></td>
+                            <td>Right</td>
+                        </tr>
+                        <tr>
+                            <td>3</td>
+                            <td><code>**</code></td>
+                            <td>Right</td>
+                        </tr>
+                        <tr>
+                            <td>4</td>
+                            <td><code>*</code> <code>/</code> <code>%</code> <code>@</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>5</td>
+                            <td><code>+</code> <code>-</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>6</td>
+                            <td><code>&lt;&lt;</code> <code>&gt;&gt;</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>7</td>
+                            <td><code>&amp;</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>8</td>
+                            <td><code>^</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>9</td>
+                            <td><code>|</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>10</td>
+                            <td><code>&lt;</code> <code>&lt;=</code> <code>&gt;</code> <code>&gt;=</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>11</td>
+                            <td><code>==</code> <code>!=</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>12</td>
+                            <td><code>&amp;&amp;</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>13</td>
+                            <td><code>||</code></td>
+                            <td>Left</td>
+                        </tr>
+                        <tr>
+                            <td>14</td>
+                            <td><code>..</code> <code>..=</code></td>
+                            <td>None</td>
+                        </tr>
+                        <tr>
+                            <td>15</td>
+                            <td><code>=</code> <code>+=</code> <code>-=</code> etc.</td>
+                            <td>Right</td>
+                        </tr>
+                        <tr>
+                            <td>16 (lowest)</td>
+                            <td><code>return</code> <code>break</code></td>
+                            <td>None</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2>4. Context-Sensitive Rules</h2>
+
+                <ol>
+                    <li><strong>Indentation</strong>: STARK uses significant indentation similar to Python. A new indentation level creates a new block scope.</li>
+                    
+                    <li><strong>Type Inference</strong>: Types can be omitted in many contexts where they can be inferred:
+                        <ul>
+                            <li>Local variable declarations</li>
+                            <li>Closure parameters</li>
+                            <li>Generic type arguments in some contexts</li>
+                        </ul>
+                    </li>
+                    
+                    <li><strong>Async Context</strong>: <code>await</code> can only be used inside async functions or async blocks.</li>
+                    
+                    <li><strong>Memory Safety</strong>: The compiler enforces:
+                        <ul>
+                            <li>Ownership rules (single owner, move semantics)</li>
+                            <li>Borrowing rules (multiple immutable OR single mutable reference)</li>
+                            <li>Lifetime tracking</li>
+                        </ul>
+                    </li>
+                    
+                    <li><strong>Tensor Operations</strong>: The <code>@</code> operator is overloaded for matrix multiplication and requires tensor types.</li>
+                </ol>
+
+                <h2>5. Examples</h2>
+
+                <h3>Hello World</h3>
+                <pre><code class="stark">fn main() {
+    print("Hello, World!")
+}</code></pre>
+
+                <h3>Async Actor</h3>
+                <pre><code class="stark">actor Counter {
+    state count: i32 = 0
+    
+    receive Increment {
+        self.count += 1
+    }
+    
+    receive GetCount -&gt; i32 {
+        return self.count
+    }
+}
+
+async fn main() {
+    let counter = spawn Counter()
+    counter ! Increment
+    let count = (counter ! GetCount).await
+    print(f"Count: {count}")
+}</code></pre>
+
+                <h3>ML Pipeline</h3>
+                <pre><code class="stark">pipeline ImageClassifier {
+    load: Dataset&lt;Image&gt; from "data/images"
+    
+    preprocess: {
+        resize(224, 224),
+        normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    }
+    
+    model: ResNet(layers=50, num_classes=1000)
+    
+    train: {
+        optimizer: Adam(lr=0.001),
+        loss: CrossEntropy(),
+        epochs: 100,
+        batch_size: 32
+    }
+    
+    validate: accuracy_score
+    
+    deploy: @serverless(memory=2048, timeout=300)
+}</code></pre>
+
+                <p>This formal grammar provides a complete specification for parsing STARK language source code and can be used as the basis for implementing a parser, syntax highlighter, or language server.</p>
+            </div>
+        </main>
+    </div>
+</body>
+</html>
