@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>STARK Language — Overview</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background-color: #f5f7fa;
+      color: #222;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 999;
+      background: #ffffff;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: center;
+      gap: 2rem;
+    }
+
+    nav a {
+      text-decoration: none;
+      color: #007acc;
+      font-weight: bold;
+      transition: color 0.3s ease;
+    }
+
+    nav a:hover {
+      color: #005b99;
+    }
+
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    header h1 {
+      font-size: 2.6rem;
+      color: #2c3e50;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.5rem;
+      margin-top: 2rem;
+    }
+
+    .card {
+      background: #ffffff;
+      border-radius: 10px;
+      padding: 1.5rem;
+      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.06);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      text-align: center;
+    }
+
+    .card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+    }
+
+    .card a {
+      text-decoration: none;
+      color: #007acc;
+      font-size: 1.1rem;
+      font-weight: bold;
+      display: block;
+    }
+
+    .card p {
+      color: #555;
+      font-size: 0.95rem;
+      margin-top: 0.5rem;
+    }
+
+    footer {
+      text-align: center;
+      font-size: 0.9rem;
+      color: #888;
+      margin-top: 4rem;
+      padding-bottom: 2rem;
+    }
+
+    @media (max-width: 600px) {
+      nav {
+        flex-direction: column;
+        gap: 0.5rem;
+        text-align: center;
+      }
+
+      header h1 {
+        font-size: 2rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navigation Bar -->
+  <nav>
+    <a href="overview.html">Overview</a>
+    <a href="index.html">Roadmap</a>
+    <a href="mission.html">Mission</a>
+    <a href="vision.html">Vision</a>
+    <a href="comparison.html">Comparison</a>
+    <a href="docs.html">All Docs</a>
+  </nav>
+
+  <div class="container">
+    <header>
+      <h1>📚 STARK Language — Overview</h1>
+      <p style="color:#555; max-width:700px; margin: 0 auto;">
+        Your complete guide to the STARK programming language — explore each document to understand its vision, architecture, and groundbreaking capabilities.
+      </p>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <a href="Feature-Roadmap.html">🚀 Feature Roadmap</a>
+        <p>Phases and milestones of STARK’s evolution.</p>
+      </div>
+      <div class="card">
+        <a href="Mission-Statement.html">🎯 Mission Statement</a>
+        <p>The purpose, philosophy, and promise of STARK.</p>
+      </div>
+      <div class="card">
+        <a href="Vision.html">👁️ Vision</a>
+        <p>The future of programming reimagined through STARK.</p>
+      </div>
+      <div class="card">
+        <a href="STARK-vs-Others.html">⚔️ STARK vs Others</a>
+        <p>Compare STARK against Python, Rust, Go, Julia, and Mojo.</p>
+      </div>
+      <div class="card">
+        <a href="types.html">🔢 Types</a>
+        <p>Primitive and composite types in STARK.</p>
+      </div>
+      <div class="card">
+        <a href="syntax.html">📝 Syntax</a>
+        <p>STARK’s expressive and powerful syntax features.</p>
+      </div>
+      <div class="card">
+        <a href="concurrency.html">⚡ Concurrency</a>
+        <p>Async, actors, parallelism and execution model.</p>
+      </div>
+      <div class="card">
+        <a href="ai-ml.html">🧠 AI/ML Integration</a>
+        <p>Built-in tensors, models, pipelines, and training.</p>
+      </div>
+      <div class="card">
+        <a href="cloud.html">☁️ Cloud-Native</a>
+        <p>Serverless, deployment keywords, observability hooks.</p>
+      </div>
+      <div class="card">
+        <a href="tooling.html">🛠 Developer Tooling</a>
+        <p>REPL, hot reload, compiler, code assistant, and more.</p>
+      </div>
+      <div class="card">
+        <a href="starkvm.html">🧩 STARKVM</a>
+        <p>Architecture of the STARK virtual machine and bytecode.</p>
+      </div>
+      <div class="card">
+        <a href="docs.html">📂 All Docs Index</a>
+        <p>Browse everything in one place.</p>
+      </div>
+    </div>
+
+    <footer>© 2025 STARKLANG — All rights reserved</footer>
+  </div>
+
+</body>
+</html>

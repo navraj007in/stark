@@ -1,0 +1,4 @@
+// 🦾 STARK Language - Hello World Program
+
+fn main():
+    print("Hello, World from STARK!")

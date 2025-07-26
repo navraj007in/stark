@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>STARK Language — Feature Roadmap</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background-color: #f5f7fa;
+      color: #222;
+    }
+
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 999;
+      background: #ffffff;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: center;
+      gap: 2rem;
+    }
+
+    nav a {
+      text-decoration: none;
+      color: #007acc;
+      font-weight: bold;
+      transition: color 0.3s ease;
+    }
+
+    nav a:hover {
+      color: #005b99;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    header h1 {
+      font-size: 2.8rem;
+      color: #2c3e50;
+      margin-bottom: 0.5rem;
+    }
+
+    .subheader {
+      font-size: 1.15rem;
+      color: #555;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+
+    section {
+      background: #fff;
+      padding: 2rem;
+      margin-bottom: 2rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    }
+
+    h2 {
+      color: #007acc;
+      margin-top: 0;
+      border-bottom: 2px solid #e0e0e0;
+      padding-bottom: 0.4rem;
+    }
+
+    ul {
+      padding-left: 1.5rem;
+      margin-top: 1rem;
+    }
+
+    li {
+      margin-bottom: 0.5rem;
+      line-height: 1.6;
+    }
+
+    .status-complete::before {
+      content: "✅ ";
+      color: #2e7d32;
+    }
+
+    .status-inprogress::before {
+      content: "🔄 ";
+      color: #f57c00;
+    }
+
+    .note {
+      font-style: italic;
+      color: #333;
+      background-color: #fff3cd;
+      border-left: 6px solid #ffeeba;
+      padding: 1rem 1.5rem;
+      margin-top: 2rem;
+      border-radius: 10px;
+    }
+
+    code {
+      background-color: #eef1f5;
+      padding: 3px 6px;
+      border-radius: 4px;
+      font-size: 0.95em;
+    }
+
+    footer {
+      text-align: center;
+      font-size: 0.9rem;
+      color: #888;
+      margin-top: 4rem;
+      padding-bottom: 2rem;
+    }
+
+    @media (max-width: 600px) {
+      nav {
+        flex-direction: column;
+        gap: 0.5rem;
+        text-align: center;
+      }
+      header h1 {
+        font-size: 2rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navigation Bar -->
+  <nav>
+    <a href="index.html">Roadmap</a>
+    <a href="types.html">Types</a>
+    <a href="syntax.html">Syntax</a>
+    <a href="concurrency.html">Concurrency</a>
+    <a href="ai-ml.html">AI/ML</a>
+    <a href="cloud.html">Cloud</a>
+    <a href="tooling.html">Tooling</a>
+    <a href="starkvm.html">STARKVM</a>
+    <a href="docs.html">All Docs</a>
+  </nav>
+
+  <div class="container">
+    <header>
+      <h1>🗺️ STARK Language — Feature Roadmap</h1>
+      <div class="subheader">
+        Welcome to the future. This roadmap outlines STARK's journey from bold vision to developer obsession. Every milestone represents a step closer to building the most intelligent, scalable, and empowering programming ecosystem ever created.
+      </div>
+    </header>
+
+    <section>
+      <h2>🔥 Phase 1: Core Language Foundations (MVP)</h2>
+      <ul>
+        <li class="status-complete">Define and document all <strong>Primitive Types</strong></li>
+        <li class="status-complete">Implement <strong>Composite Types</strong> (Array, List, Tuple, Map, Struct, Enum)</li>
+        <li class="status-complete">Draft a <strong>Strong Type System</strong> with Inference, Optional Types, and Generics</li>
+        <li class="status-complete">Establish <strong>STARK Bytecode Format & STARKVM Architecture</strong></li>
+        <li class="status-complete">Create <strong>Basic Syntax and Control Flow Constructs</strong></li>
+        <li class="status-complete">Define <strong>Function, Module, and Package Systems</strong></li>
+        <li class="status-complete">Integrate <strong>ARC + GC Hybrid Memory Management</strong></li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>⚡ Phase 2: Concurrency & Execution Model</h2>
+      <ul>
+        <li class="status-inprogress">Implement <strong>Async/Await Syntax</strong></li>
+        <li class="status-inprogress">Native support for <strong>Actor-Based Concurrency</strong></li>
+        <li class="status-inprogress">Add <strong>Parallel Map, Stream Processing, and Pipeline Constructs</strong></li>
+        <li class="status-inprogress">Introduce <strong>Thread Isolates & Safe Shared Memory Zones</strong></li>
+        <li class="status-inprogress">Compile-time concurrency diagnostics & warnings</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>🧠 Phase 3: AI/ML Native Integration</h2>
+      <ul>
+        <li class="status-inprogress">Define core <strong>AI Types</strong>: <code>Tensor</code>, <code>Model</code>, <code>Dataset</code>, <code>Graph</code></li>
+        <li class="status-inprogress">Built-in <strong>Tensor Ops</strong>, Auto-diff, and ML Pipelines</li>
+        <li class="status-inprogress">Native syntax for <strong>Training, Evaluation, and Deployment</strong></li>
+        <li class="status-inprogress">Integration with <strong>GPU/TPU/Cloud AI Accelerators</strong></li>
+        <li class="status-inprogress">Support for <strong>ONNX & other model formats</strong></li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>☁️ Phase 4: Cloud-Native Ecosystem</h2>
+      <ul>
+        <li class="status-inprogress">STARK-native <strong>Serverless Function Declaration</strong></li>
+        <li class="status-inprogress"><strong>Module Packaging and Auto-Deployment Primitives</strong></li>
+        <li class="status-inprogress">Native <strong>Observability Hooks</strong> (Logging, Metrics, Tracing)</li>
+        <li class="status-inprogress">Built-in <strong>Secrets and Config Handling</strong></li>
+        <li class="status-inprogress"><strong>Infrastructure-as-Code DSL</strong> (Lightweight, YAML-killer)</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>💻 Phase 5: Developer Experience & Tooling</h2>
+      <ul>
+        <li class="status-inprogress">Full <strong>REPL + Interactive Shell</strong></li>
+        <li class="status-inprogress"><strong>Hot Reloading Modules</strong></li>
+        <li class="status-inprogress">Built-in <strong>Testing Framework</strong></li>
+        <li class="status-inprogress">Compiler with <strong>Smart Type Hints & Suggestions</strong></li>
+        <li class="status-inprogress"><strong>Package Manager (starkpkg)</strong></li>
+        <li class="status-inprogress"><strong>AI-powered Code Assistant CLI (Jarvis Mode)</strong></li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>🚀 Phase 6: Performance Optimization</h2>
+      <ul>
+        <li class="status-inprogress">Implement <strong>JIT Compiler for Hot Code Paths</strong></li>
+        <li class="status-inprogress">Add <strong>STARKVM Optimizations</strong> for Multi-core Scheduling</li>
+        <li class="status-inprogress">GPU Kernel Compilation for Tensor-heavy Ops</li>
+        <li class="status-inprogress">Bytecode Compression & Fast Startup Snapshots</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>🧪 Phase 7: Experimental & Future Add-ons</h2>
+      <ul>
+        <li class="status-inprogress"><strong>Lifetime Annotations & Borrow Checker (Rust-lite)</strong></li>
+        <li class="status-inprogress"><strong>Schema-Aware Serialization & Tagged Records</strong></li>
+        <li class="status-inprogress"><strong>Immutable Persistent Data Structures</strong></li>
+        <li class="status-inprogress"><strong>Built-in LLM Orchestration Interface</strong></li>
+        <li class="status-inprogress"><strong>STARK for Edge Devices (MiniVM Runtime)</strong></li>
+      </ul>
+    </section>
+
+    <div class="note">
+      This is not a feature list — it’s a manifesto for a language that dares to evolve with the future, not chase the past.<br><br>
+      Stay tuned. This roadmap is not static. It's alive—just like the revolution we're building.
+    </div>
+
+    <footer>© 2025 STARKLANG — All rights reserved</footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,17 @@
+// ⚡ STARK Language - Parallel Processing Showcase
+
+// Simulate a CPU-heavy task
+fn heavy_compute(task_id: Int) -> Int:
+    print("Task " + str(task_id) + " started")
+    let result = task_id * task_id  // Pretend this is heavy work
+    sleep(500)  // Simulated delay (500ms)
+    print("Task " + str(task_id) + " done")
+    return result
+
+fn main():
+    let tasks: List<Int> = [1, 2, 3, 4, 5]
+    
+    // Parallel execution using built-in parallel_map
+    let results = parallel_map(heavy_compute, tasks)
+
+    print("Results: " + str(results))

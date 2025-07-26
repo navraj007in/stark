@@ -1,0 +1,40 @@
+// 🚀 STARK Language - Mini ML Pipeline Showcase
+
+// Define a simple data structure
+struct DataPoint:
+    features: Array<Float32>[3]
+    label: Int
+
+// A pretend model for demonstration
+struct LinearModel:
+    weights: Array<Float32>[3]
+    bias: Float32
+
+fn predict(model: LinearModel, input: Array<Float32>[3]) -> Float32:
+    let mut result: Float32 = model.bias
+    for i in range(0, 3):
+        result += model.weights[i] * input[i]
+    return result
+
+fn evaluate(model: LinearModel, data: List<DataPoint>) -> Float32:
+    let mut correct = 0
+    for point in data:
+        let prediction = predict(model, point.features)
+        let predicted_label = if prediction > 0.5: 1 else: 0
+        if predicted_label == point.label:
+            correct += 1
+    return correct / data.length()
+
+fn main():
+    let model = LinearModel(
+        weights = [0.3, -0.2, 0.5],
+        bias = 0.1
+    )
+
+    let data: List<DataPoint> = List()
+    data.append(DataPoint(features = [1.0, 0.5, -1.2], label = 1))
+    data.append(DataPoint(features = [-0.4, 0.8, 0.3], label = 0))
+    data.append(DataPoint(features = [0.9, -0.1, 0.6], label = 1))
+
+    let accuracy = evaluate(model, data)
+    print("Model Accuracy: " + str(accuracy))

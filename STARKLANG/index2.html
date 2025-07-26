@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STARKLANG: AI-Native Programming Language</title>
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Roboto', sans-serif;
+      margin: 0;
+      padding: 0;
+      background-color: #121212;
+      color: #fff;
+    }
+    header {
+      padding: 40px 20px;
+      text-align: center;
+      background: linear-gradient(135deg, #6200ea, #3700b3);
+    }
+    header h1 {
+      font-size: 3rem;
+      margin-bottom: 10px;
+    }
+    header p {
+      font-size: 1.25rem;
+      opacity: 0.9;
+    }
+    .btn {
+      margin-top: 20px;
+      display: inline-block;
+      padding: 12px 25px;
+      color: #fff;
+      background-color: #03dac6;
+      text-decoration: none;
+      border-radius: 5px;
+      transition: background-color 0.3s;
+    }
+    .btn:hover {
+      background-color: #018786;
+    }
+    section {
+      padding: 60px 20px;
+      text-align: center;
+    }
+    .features {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 20px;
+    }
+    .feature-card {
+      flex: 1;
+      min-width: 250px;
+      padding: 20px;
+      background: #1f1f1f;
+      border-radius: 10px;
+    }
+    .feature-card h3 {
+      margin-top: 0;
+      color: #bb86fc;
+    }
+    pre {
+      background: #1f1f1f;
+      padding: 15px;
+      overflow-x: auto;
+      border-radius: 8px;
+      text-align: left;
+      display: inline-block;
+      margin-top: 20px;
+    }
+    footer {
+      background: #181818;
+      padding: 20px;
+      text-align: center;
+      font-size: 0.9rem;
+    }
+    footer a {
+      color: #bb86fc;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>STARKLANG</h1>
+  <p>High-performance, AI-native, cloud-first programming language built for intelligent concurrency and seamless scalability.</p>
+  <a href="#" class="btn">Explore Documentation</a>
+</header>
+
+<section>
+  <h2>Core Features</h2>
+  <div class="features">
+    <div class="feature-card">
+      <h3>AI & ML Native</h3>
+      <p>Built-in primitives for tensor operations, model training, and ML pipelines.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Intelligent Concurrency</h3>
+      <p>Async by default with native support for actors and parallel computation.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Cloud-First Architecture</h3>
+      <p>Serverless functions and automatic containerization for seamless deployments.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Developer Experience</h3>
+      <p>Human-readable syntax, AI-assisted coding, and instant hot-reload.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Quick Example</h2>
+  <pre><code>
+fn main():
+    let results = parallel_map(worker_process, range(0, 100))
+    print(results)
+  </code></pre>
+</section>
+
+<footer>
+  <p>Join our community on <a href="#">GitHub</a> or <a href="#">Discord</a> | &copy; 2025 STARKLANG</p>
+</footer>
+
+</body>
+</html>
