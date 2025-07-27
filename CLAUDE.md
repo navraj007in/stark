@@ -135,11 +135,11 @@ gpu = ["cuda", "opencl"]
 pytorch = ["torch", "torchvision"]
 ```
 
-## Standard Library APIs
+## Core Standard Library APIs
 
 ### 1. TensorLib - Core Tensor Operations
 ```stark
-// GPU-accelerated tensor operations
+// GPU-accelerated tensor operations with compile-time shape checking
 fn matmul<T>(a: Tensor<T, [?, ?]>, b: Tensor<T, [?, ?]>) -> Tensor<T, [?, ?]>
 fn conv2d<T>(input: Tensor<T, [?, ?, ?, ?]>, weight: Tensor<T, [?, ?, ?, ?]>) -> Tensor<T, [?, ?, ?, ?]>
 fn softmax<T>(input: Tensor<T, [?, ?]>, dim: i32) -> Tensor<T, [?, ?]>
@@ -147,7 +147,7 @@ fn softmax<T>(input: Tensor<T, [?, ?]>, dim: i32) -> Tensor<T, [?, ?]>
 
 ### 2. DatasetLib - Data Loading & Preprocessing
 ```stark
-// Streaming data pipeline
+// Streaming data pipeline with lazy evaluation
 let dataset = Dataset::from_csv("data.csv")?
     .map(|row| preprocess(row))
     .batch(32)
@@ -157,7 +157,7 @@ let dataset = Dataset::from_csv("data.csv")?
 
 ### 3. ModelLib - Neural Network Framework
 ```stark
-// High-level model building
+// High-level model building with automatic differentiation
 let model = Sequential::new()
     .add(Dense::new(784, 128))
     .add(ReLU::new())
@@ -167,7 +167,7 @@ let model = Sequential::new()
 
 ### 4. NetworkingLib - HTTP, WebSocket, gRPC
 ```stark
-// Model serving endpoint
+// High-performance model serving
 let server = HttpServer::new()
     .route("/predict", post(inference_handler))
     .with_cors()
@@ -175,14 +175,33 @@ let server = HttpServer::new()
     .bind("0.0.0.0:8080")?;
 ```
 
-### 5. CloudLib - Deployment & Orchestration
+## Ecosystem Extensions (Community-Driven)
+
+### Cloud-Native Packages
 ```stark
-// Multi-cloud deployment
-let deployment = CloudDeployment::new()
-    .provider(CloudProvider::AWS)
-    .instance_type("g4dn.xlarge")
+// These will be separate packages in the STARK ecosystem
+use stark_aws::{ECS, Lambda, SageMaker};
+use stark_gcp::{CloudRun, VertexAI};
+use stark_azure::{ContainerInstances, MachineLearning};
+use stark_k8s::{Deployment, Service, Ingress};
+
+// Multi-cloud deployment through ecosystem packages
+let deployment = stark_aws::deploy()
+    .service(ECS::new("my-model"))
     .auto_scaling(min: 1, max: 10)
     .deploy(model_artifact)?;
+```
+
+### Specialized ML Frameworks
+```stark
+// Computer vision extensions
+use stark_cv::{YOLO, FasterRCNN, MaskRCNN};
+use stark_nlp::{BERT, GPT, T5, Tokenizers};
+use stark_audio::{Whisper, WaveNet, MelSpectrogram};
+
+// Deployment and serving extensions
+use stark_serve::{TorchServe, TensorRT, ONNXRuntime};
+use stark_monitor::{Prometheus, Grafana, MLflow};
 ```
 
 ## Architecture Components
@@ -213,7 +232,7 @@ Type Checker → Optimization → Bytecode Generation → STARK VM
 - [x] Concurrency Model with actors and async/await
 - [x] Error Handling System with Result/Option types
 - [x] Module System and Package Manager
-- [x] All 5 Standard Library API specifications
+- [x] Core Standard Library API specifications (4 libraries)
 - [x] Web documentation with comprehensive examples
 - [x] README and project documentation
 
@@ -291,27 +310,33 @@ Type Checker → Optimization → Bytecode Generation → STARK VM
    - IntelliSense support
    - Debugging integration
 
-3. **Additional Standard Libraries** (6-8 weeks)
+3. **Additional Core Libraries** (4-6 weeks)
    - DatasetLib, ModelLib implementation
-   - NetworkingLib, CloudLib
-   - Framework interoperability
+   - NetworkingLib completion
+   - Framework interoperability (PyTorch, TensorFlow)
 
 **Milestone**: Complete developer ecosystem
 
-### Phase 4: Production Features (3-4 months)
+### Phase 4: Production Features & Ecosystem (3-4 months)
 **Priority: Low**
 
-1. **Advanced Tooling** (4-6 weeks)
+1. **Advanced Tooling** (3-4 weeks)
    - Debugger and profiler
    - Performance analysis
-   - Cross-compilation
+   - Cross-compilation support
 
-2. **Ecosystem Integration** (4-6 weeks)
-   - PyTorch/TensorFlow interop
-   - ONNX support
-   - Cloud platform integration
+2. **Ecosystem Foundation** (2-3 weeks)
+   - Package registry infrastructure
+   - Community contribution guidelines
+   - Extension development framework
 
-**Milestone**: Production-ready language with full ecosystem
+3. **Cloud-Native Ecosystem** (Community-Driven)
+   - stark_aws, stark_gcp, stark_azure packages
+   - stark_k8s for Kubernetes deployment
+   - stark_serve for model serving
+   - stark_monitor for observability
+
+**Milestone**: Production-ready language with thriving ecosystem
 
 ## Technical Decisions & Constraints
 
@@ -335,6 +360,7 @@ Type Checker → Optimization → Bytecode Generation → STARK VM
 - **Safety vs Performance**: Ownership model with GC escape hatch
 - **Simplicity vs Power**: High-level abstractions with low-level access
 - **Compatibility vs Innovation**: Python interop while being AI-native
+- **Core vs Ecosystem**: Focus core language on AI/ML primitives, cloud features as extensions
 - **Development Speed vs Optimization**: Staged implementation approach
 
 ## Success Metrics
