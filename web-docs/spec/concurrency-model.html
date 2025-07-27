@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Concurrency Model - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/concurrency-model.html" class="active">Concurrency Model</a></li>
+                    <li><a href="../spec/error-handling.html">Error Handling System</a></li>
+                    <li><a href="../spec/module-system.html">Module System & Package Manager</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/formal-grammar.html">Formal Grammar (EBNF)</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib API</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib API</a></li>
+                    <li><a href="../stdlib/model-lib.html">ModelLib API</a></li>
+                    <li><a href="../stdlib/networking-lib.html">NetworkingLib API</a></li>
+                    <li><a href="../stdlib/cloud-lib.html">CloudLib API</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <header class="page-header">
+                    <h1>⚡ Concurrency Model Specification</h1>
+                    <p class="subtitle">Actor-Based Concurrency with Async/Await for AI/ML Workloads</p>
+                </header>
+
+                <div class="doc-section">
+                    <h2>Overview</h2>
+                    <p>STARK employs a sophisticated concurrency model combining async/await with an actor-based message passing system, optimized for AI/ML workloads.</p>
+                    
+                    <h3>Concurrency Philosophy</h3>
+                    <p>STARK's concurrency is built around:</p>
+                    <ul>
+                        <li><strong>Structured Concurrency</strong> - Clear hierarchical task management with automatic cleanup</li>
+                        <li><strong>Actor-Based Isolation</strong> - Message passing for safe concurrent state management</li>
+                        <li><strong>Data Parallelism</strong> - First-class support for parallel tensor operations</li>
+                        <li><strong>Work Stealing</strong> - Efficient load balancing across CPU cores and devices</li>
+                        <li><strong>Zero-Cost Abstractions</strong> - Compile-time optimization of async operations</li>
+                        <li><strong>ML-Optimized</strong> - Specialized primitives for training and inference workloads</li>
+                    </ul>
+
+                    <div class="code-example">
+                        <h4>High-Level Concurrency Overview</h4>
+                        <pre><code class="stark">// High-level concurrency overview
+async fn ml_training_pipeline() {
+    // Structured concurrency with automatic cleanup
+    let training_scope = async_scope! {
+        // Data loading in parallel
+        let data_loader = spawn_task("data", async {
+            load_and_preprocess_data("train.csv").await
+        });
+        
+        // Model initialization
+        let model = spawn_task("model", async {
+            create_and_initialize_model(&config).await
+        });
+        
+        // Wait for both to complete
+        let (dataset, model) = join!(data_loader, model);
+        
+        // Actor-based training coordinator
+        let trainer = TrainingActor::new(model?, dataset?);
+        trainer.start_training(epochs: 100).await
+    };
+    
+    training_scope.await?;
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Async/Await Execution Model</h2>
+                    
+                    <h3>Future and Task Abstractions</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Core Future trait
+trait Future {
+    type Output;
+    
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>;
+}
+
+enum Poll<T> {
+    Ready(T),
+    Pending
+}
+
+// Task spawning and management
+struct Task<T> {
+    id: TaskId,
+    name: Option<String>,
+    future: Pin<Box<dyn Future<Output = T> + Send>>,
+    waker: Option<Waker>,
+    executor: ExecutorRef
+}
+
+// Task spawning functions
+fn spawn<T: Send + 'static>(future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>;
+fn spawn_local<T: 'static>(future: impl Future<Output = T> + 'static) -> LocalJoinHandle<T>;
+fn spawn_blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T>;
+
+// Named task spawning for debugging/monitoring
+fn spawn_task<T: Send + 'static>(
+    name: &str, 
+    future: impl Future<Output = T> + Send + 'static
+) -> JoinHandle<T>;</code></pre>
+                    </div>
+
+                    <h3>Structured Concurrency</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Structured concurrency scope
+macro_rules! async_scope {
+    ($body:block) => {
+        async move {
+            let scope = ConcurrencyScope::new();
+            let result = async move $body.await;
+            scope.shutdown().await;
+            result
+        }
+    }
+}
+
+// Join combinators
+async fn join<A, B>(a: impl Future<Output = A>, b: impl Future<Output = B>) -> (A, B);
+async fn try_join<A, B, E>(
+    a: impl Future<Output = Result<A, E>>, 
+    b: impl Future<Output = Result<B, E>>
+) -> Result<(A, B), E>;
+
+// Select combinators
+async fn select<A, B>(a: impl Future<Output = A>, b: impl Future<Output = B>) -> Either<A, B>;
+
+// Timeout and cancellation
+async fn timeout<T>(duration: Duration, future: impl Future<Output = T>) -> Result<T, TimeoutError>;
+
+// Cancellation token for cooperative cancellation
+struct CancellationToken {
+    inner: Arc<CancellationInner>
+}
+
+impl CancellationToken {
+    fn new() -> Self;
+    fn child_token(&self) -> Self;
+    
+    fn cancel(&self);
+    fn is_cancelled(&self) -> bool;
+    async fn cancelled(&self);
+    
+    fn run_until_cancelled<T>(&self, future: impl Future<Output = T>) -> Option<T>;
+}</code></pre>
+                    </div>
+
+                    <h3>Runtime Configuration</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Runtime configuration
+struct RuntimeConfig {
+    worker_threads: Option<usize>,
+    max_blocking_threads: usize,
+    thread_stack_size: Option<usize>,
+    thread_name_prefix: String,
+    enable_io: bool,
+    enable_time: bool,
+    enable_metrics: bool,
+    scheduler: SchedulerType
+}
+
+enum SchedulerType {
+    WorkStealing,
+    FIFO,
+    Custom(Box<dyn SchedulerFactory>)
+}
+
+// Runtime execution
+struct Runtime {
+    config: RuntimeConfig,
+    executor: Arc<Executor>
+}
+
+impl Runtime {
+    fn new() -> Self {
+        RuntimeBuilder::new().build()
+    }
+    
+    fn block_on<T>(&self, future: impl Future<Output = T>) -> T;
+    fn spawn<T: Send + 'static>(&self, future: impl Future<Output = T> + Send + 'static) -> JoinHandle<T>;
+    fn spawn_blocking<T: Send + 'static>(&self, f: impl FnOnce() -> T + Send + 'static) -> JoinHandle<T>;
+    
+    async fn shutdown(self);
+    fn metrics(&self) -> RuntimeMetrics;
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Actor System Implementation</h2>
+                    
+                    <h3>Actor Trait and Lifecycle</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Core Actor trait
+trait Actor {
+    type Message: Send + 'static;
+    type Error: std::error::Error + Send + Sync + 'static;
+    
+    // Actor initialization
+    async fn started(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    
+    // Handle incoming messages
+    async fn handle_message(&mut self, message: Self::Message) -> Result<(), Self::Error>;
+    
+    // Actor cleanup
+    async fn stopped(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    
+    // Error handling
+    async fn handle_error(&mut self, error: Self::Error) -> ErrorAction {
+        ErrorAction::Stop
+    }
+}
+
+enum ErrorAction {
+    Continue,   // Continue processing messages
+    Restart,    // Restart the actor
+    Stop        // Stop the actor
+}
+
+// Actor reference for sending messages
+struct ActorRef<M> {
+    id: ActorId,
+    sender: mpsc::UnboundedSender<M>,
+    system: WeakActorSystem
+}
+
+impl<M: Send + 'static> ActorRef<M> {
+    async fn send(&self, message: M) -> Result<(), SendError>;
+    fn try_send(&self, message: M) -> Result<(), TrySendError>;
+    async fn ask<R>(&self, message: impl FnOnce(oneshot::Sender<R>) -> M) -> Result<R, AskError>;
+    
+    fn id(&self) -> ActorId;
+    fn is_alive(&self) -> bool;
+    async fn stop(&self);
+}</code></pre>
+                    </div>
+
+                    <h3>Message Passing Protocols</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Request-Response pattern
+struct Request<T, R> {
+    data: T,
+    reply_to: oneshot::Sender<R>
+}
+
+impl<T, R> Request<T, R> {
+    fn new(data: T) -> (Self, oneshot::Receiver<R>) {
+        let (tx, rx) = oneshot::channel();
+        (Request { data, reply_to: tx }, rx)
+    }
+    
+    fn respond(self, response: R) {
+        let _ = self.reply_to.send(response);
+    }
+}
+
+// Event pattern (fire-and-forget)
+struct Event<T> {
+    data: T,
+    timestamp: Instant,
+    source: ActorId
+}
+
+// Command pattern
+struct Command<T> {
+    data: T,
+    correlation_id: Option<String>
+}
+
+// Publish-Subscribe messaging
+struct EventBus {
+    subscribers: HashMap<TypeId, Vec<ActorRef<Box<dyn Any + Send>>>>
+}
+
+impl EventBus {
+    fn new() -> Self;
+    
+    fn subscribe<T: Send + 'static>(&mut self, subscriber: ActorRef<T>);
+    fn unsubscribe<T: Send + 'static>(&mut self, subscriber: &ActorRef<T>);
+    fn publish<T: Send + 'static>(&self, event: T);
+}</code></pre>
+                    </div>
+
+                    <h3>Supervision and Fault Tolerance</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Supervisor strategies
+enum SupervisionStrategy {
+    OneForOne,      // Restart only the failed actor
+    OneForAll,      // Restart all children when one fails
+    RestForOne,     // Restart failed actor and all actors started after it
+    Custom(Box<dyn SupervisorStrategy>)
+}
+
+enum SupervisorAction {
+    Restart,
+    Stop,
+    Escalate,
+    Ignore
+}
+
+// Supervisor configuration
+struct SupervisorConfig {
+    strategy: SupervisionStrategy,
+    max_restarts: u32,
+    restart_window: Duration,
+    backoff_strategy: BackoffStrategy
+}
+
+enum BackoffStrategy {
+    None,
+    Linear { initial: Duration, increment: Duration, max: Duration },
+    Exponential { initial: Duration, factor: f64, max: Duration },
+    Custom(Box<dyn Fn(u32) -> Duration + Send + Sync>)
+}
+
+// Circuit breaker for actor communication
+struct ActorCircuitBreaker {
+    failure_threshold: u32,
+    success_threshold: u32,
+    timeout: Duration,
+    state: CircuitState,
+    failure_count: u32,
+    last_failure: Option<Instant>
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>ML-Specific Concurrency Patterns</h2>
+                    
+                    <h3>Data Parallel Processing</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Parallel data processing for ML workloads
+struct DataParallel<T> {
+    data: Vec<T>,
+    chunk_size: usize,
+    num_workers: usize
+}
+
+impl<T: Send + Sync + 'static> DataParallel<T> {
+    fn new(data: Vec<T>) -> Self;
+    fn with_chunk_size(mut self, size: usize) -> Self;
+    fn with_workers(mut self, workers: usize) -> Self;
+    
+    async fn map<U, F>(self, f: F) -> Vec<U> 
+    where 
+        U: Send + 'static,
+        F: Fn(T) -> U + Send + Sync + 'static;
+        
+    async fn map_async<U, F, Fut>(self, f: F) -> Vec<U>
+    where
+        U: Send + 'static,
+        F: Fn(T) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = U> + Send;
+}
+
+// Tensor-aware parallel operations
+trait TensorParallel<T> {
+    async fn parallel_apply<F>(&self, f: F) -> Self
+    where 
+        F: Fn(&[T]) -> Vec<T> + Send + Sync + 'static;
+        
+    async fn parallel_map_chunks<F, U>(&self, chunk_size: usize, f: F) -> Tensor<U>
+    where
+        F: Fn(&[T]) -> Vec<U> + Send + Sync + 'static,
+        U: Send + Sync + 'static;
+}</code></pre>
+                    </div>
+
+                    <h3>Training Pipeline Coordination</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Training coordinator actor
+struct TrainingCoordinator {
+    model: Model,
+    optimizer: Optimizer,
+    dataset: Arc<Dataset>,
+    config: TrainingConfig,
+    metrics: TrainingMetrics,
+    workers: Vec<ActorRef<TrainingWorkerMessage>>,
+    epoch: u32,
+    global_step: u64
+}
+
+impl Actor for TrainingCoordinator {
+    type Message = TrainingMessage;
+    type Error = TrainingError;
+    
+    async fn handle_message(&mut self, message: TrainingMessage) -> Result<(), TrainingError> {
+        match message {
+            TrainingMessage::StartEpoch { epoch } => {
+                self.start_epoch(epoch).await
+            }
+            TrainingMessage::BatchCompleted { worker_id, batch_id, gradients, metrics } => {
+                self.aggregate_gradients(worker_id, batch_id, gradients, metrics).await
+            }
+            TrainingMessage::EpochCompleted { epoch, metrics } => {
+                self.finish_epoch(epoch, metrics).await
+            }
+        }
+    }
+}
+
+// Training worker actor
+struct TrainingWorker {
+    worker_id: usize,
+    model: Model,
+    dataset: Arc<Dataset>,
+    coordinator: ActorRef<TrainingMessage>,
+    current_batch: Option<Batch>
+}
+
+// Distributed training coordination
+struct DistributedTrainer {
+    world_size: usize,
+    rank: usize,
+    coordinator: ActorRef<DistributedMessage>,
+    all_reduce_group: CommunicationGroup
+}
+
+enum DistributedMessage {
+    AllReduce { tensors: Vec<Tensor>, reply_to: oneshot::Sender<Vec<Tensor>> },
+    AllGather { tensor: Tensor, reply_to: oneshot::Sender<Vec<Tensor>> },
+    Broadcast { tensor: Tensor, root: usize, reply_to: oneshot::Sender<Tensor> },
+    Barrier { reply_to: oneshot::Sender<()> }
+}</code></pre>
+                    </div>
+
+                    <h3>Inference Pipeline</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Inference server actor
+struct InferenceServer {
+    model: Arc<Model>,
+    batch_processor: BatchProcessor<InferenceRequest>,
+    request_queue: ActorRef<QueueMessage<InferenceRequest>>,
+    response_router: ActorRef<ResponseMessage>,
+    metrics: InferenceMetrics
+}
+
+// Request batching actor
+struct BatchingActor {
+    max_batch_size: usize,
+    max_wait_time: Duration,
+    pending_requests: Vec<InferenceRequest>,
+    batch_timer: Option<tokio::time::Interval>,
+    processor: ActorRef<InferenceServerMessage>
+}
+
+// Load balancing actor
+struct LoadBalancer {
+    workers: Vec<ActorRef<InferenceServerMessage>>,
+    strategy: LoadBalancingStrategy,
+    health_checker: ActorRef<HealthCheckMessage>,
+    metrics: LoadBalancerMetrics
+}
+
+enum LoadBalancingStrategy {
+    RoundRobin,
+    LeastConnections,
+    WeightedRoundRobin { weights: Vec<f32> },
+    ConsistentHashing,
+    Custom(Box<dyn Fn(&[WorkerInfo]) -> usize + Send + Sync>)
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Key Benefits</h2>
+                    <div class="benefits-grid">
+                        <div class="benefit-card">
+                            <h3>🏗️ Structured Concurrency</h3>
+                            <p>Hierarchical task management with automatic cleanup and resource management</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🛡️ Actor Isolation</h3>
+                            <p>Message passing for safe concurrent state management without data races</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>⚡ Work Stealing</h3>
+                            <p>Efficient load balancing and task scheduling across CPU cores and devices</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🤖 ML-Optimized</h3>
+                            <p>Specialized patterns for data/model parallelism and distributed training</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🔧 Fault Tolerance</h3>
+                            <p>Supervision strategies, circuit breakers, and error recovery mechanisms</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>📊 Production Ready</h3>
+                            <p>Load balancing, monitoring integration, and performance metrics</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

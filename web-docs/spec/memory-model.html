@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Model - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html" class="active">Memory Model</a></li>
+                    <li><a href="../spec/concurrency-model.html">Concurrency Model</a></li>
+                    <li><a href="../spec/error-handling.html">Error Handling System</a></li>
+                    <li><a href="../spec/module-system.html">Module System & Package Manager</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/formal-grammar.html">Formal Grammar (EBNF)</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib API</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib API</a></li>
+                    <li><a href="../stdlib/model-lib.html">ModelLib API</a></li>
+                    <li><a href="../stdlib/networking-lib.html">NetworkingLib API</a></li>
+                    <li><a href="../stdlib/cloud-lib.html">CloudLib API</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <header class="page-header">
+                    <h1>🧠 Memory Model Specification</h1>
+                    <p class="subtitle">Hybrid Memory Management for AI/ML Workloads</p>
+                </header>
+
+                <div class="doc-section">
+                    <h2>Overview</h2>
+                    <p>STARK employs a hybrid memory management system that combines ownership-based memory safety with garbage collection for high-level objects, optimized specifically for AI/ML workloads.</p>
+                    
+                    <h3>Memory Management Strategy</h3>
+                    <p>STARK uses a <strong>dual-tier memory management system</strong>:</p>
+                    <ul>
+                        <li><strong>Stack-Allocated & Owned Memory</strong> - For performance-critical data (tensors, primitives)</li>
+                        <li><strong>Garbage-Collected Memory</strong> - For high-level objects and complex data structures</li>
+                    </ul>
+
+                    <div class="code-example">
+                        <h4>Memory Management Examples</h4>
+                        <pre><code class="stark">// Stack-allocated and owned (zero-cost)
+let tensor = Tensor::<f32, [1024, 1024]>::zeros();  // Stack metadata, owned data
+let array = [1, 2, 3, 4, 5];                       // Stack-allocated array
+
+// Garbage-collected (managed)
+let model = torch::load_model("resnet50.pt");       // GC-managed complex object
+let dataset = Dataset::from_csv("data.csv");        // GC-managed with lazy loading
+let cache: Map<str, Model> = Map::new();           // GC-managed collections</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Ownership and Borrowing System</h2>
+                    
+                    <h3>Ownership Rules</h3>
+                    <p>STARK follows ownership principles similar to Rust but with relaxed rules for AI/ML ergonomics:</p>
+                    <ol>
+                        <li>Each value has exactly one owner</li>
+                        <li>When the owner goes out of scope, the value is dropped</li>
+                        <li>There can be multiple immutable borrows OR one mutable borrow</li>
+                        <li>Borrows must be valid for their entire lifetime</li>
+                    </ol>
+
+                    <div class="code-example">
+                        <h4>Ownership Examples</h4>
+                        <pre><code class="stark">fn ownership_example() {
+    let tensor1 = Tensor::rand([1000, 1000]);
+    let tensor2 = tensor1;               // Move (tensor1 is no longer valid)
+    // print(tensor1.shape());          // ERROR: tensor1 moved
+    print(tensor2.shape());             // OK: tensor2 owns the data
+    
+    let tensor3 = tensor2.clone();      // Explicit deep copy
+    print(tensor2.shape());             // OK: tensor2 still owns its data
+    print(tensor3.shape());             // OK: tensor3 owns separate data
+}</code></pre>
+                    </div>
+
+                    <h3>Borrowing and References</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Immutable borrowing
+fn immutable_borrows() {
+    let tensor = Tensor::ones([512, 512]);
+    let ref1 = &tensor;                 // Immutable borrow
+    let ref2 = &tensor;                 // Multiple immutable borrows OK
+    
+    print(f"Shape: {ref1.shape()}");    // OK
+    print(f"Device: {ref2.device()}");  // OK
+    // tensor.fill_(0.0);               // ERROR: Cannot mutate while borrowed
+}
+
+// Mutable borrowing
+fn mutable_borrows() {
+    let mut tensor = Tensor::zeros([256, 256]);
+    let ref_mut = &mut tensor;          // Mutable borrow
+    // let ref2 = &tensor;              // ERROR: Cannot borrow while mutably borrowed
+    
+    ref_mut.fill_(1.0);                 // OK: Mutate through mutable reference
+    // print(tensor.sum());             // ERROR: Cannot use tensor while borrowed
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Garbage Collection System</h2>
+                    
+                    <h3>Hybrid GC Design</h3>
+                    <p>STARK uses a <strong>generational, concurrent, low-latency garbage collector</strong> for managed objects:</p>
+
+                    <div class="code-example">
+                        <h4>GC-Managed Types</h4>
+                        <pre><code class="stark">// GC-managed types (automatically allocated on GC heap)
+struct Model {
+    layers: Vec<Layer>,           // GC-managed vector
+    optimizer: Box<Optimizer>,   // GC-managed box
+    metadata: Map<str, Any>      // GC-managed map
+}
+
+struct Dataset {
+    data_source: DataSource,     // GC-managed trait object
+    transforms: Vec<Transform>,  // GC-managed vector of closures
+    cache: LRUCache<str, Tensor> // GC-managed cache
+}
+
+// Mixed ownership (owned data + GC references)
+struct TrainingLoop {
+    model: Gc<Model>,            // GC reference to model
+    dataset: Gc<Dataset>,        // GC reference to dataset
+    batch_size: i32,             // Stack-allocated primitive
+    learning_rate: f32,          // Stack-allocated primitive
+    current_batch: Tensor<f32, [?, ?]> // Owned tensor data
+}</code></pre>
+                    </div>
+
+                    <h3>GC Configuration</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// GC modes for different workloads
+enum GCMode {
+    Throughput,      // Optimize for throughput (larger heaps, less frequent GC)
+    LowLatency,      // Optimize for low latency (concurrent GC, small pauses)
+    Memory,          // Optimize for memory usage (frequent GC, compact heaps)
+    Training,        // Optimized for ML training (batch-aware collection)
+    Inference        // Optimized for inference (predictable, low-latency)
+}
+
+// Training-specific GC integration
+fn training_loop_with_gc() {
+    // Configure GC for training workload
+    gc::configure(GCConfig {
+        mode: GCMode::Training,
+        max_heap_size: Some(8 * 1024 * 1024 * 1024), // 8GB
+        young_gen_size: 512 * 1024 * 1024,           // 512MB
+        concurrent_threads: 4,
+        pause_target: Duration::milliseconds(10),
+        throughput_target: 0.95
+    });
+    
+    for epoch in 0..100 {
+        for batch in dataset.batches(batch_size) {
+            // Training step with owned tensors (no GC pressure)
+            let predictions = model.forward(&batch.inputs);
+            let loss = loss_fn(&predictions, &batch.targets);
+            
+            // GC cleanup between batches
+            if batch.id % 10 == 0 {
+                gc::collect_young(); // Quick young generation cleanup
+            }
+        }
+        
+        // Full GC between epochs
+        gc::collect();
+    }
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Memory Safety Guarantees</h2>
+                    
+                    <h3>Compile-Time Safety Checks</h3>
+                    <p>The borrow checker prevents common memory errors:</p>
+                    <ul>
+                        <li><strong>Use after free prevention</strong> - Values cannot be used after being moved or dropped</li>
+                        <li><strong>Double free prevention</strong> - Values can only be dropped once</li>
+                        <li><strong>Dangling pointer prevention</strong> - References cannot outlive the data they reference</li>
+                        <li><strong>Data race prevention</strong> - Mutable access is exclusive</li>
+                        <li><strong>Iterator invalidation prevention</strong> - Collections cannot be modified while being iterated</li>
+                    </ul>
+
+                    <div class="code-example">
+                        <h4>Memory Safety Examples</h4>
+                        <pre><code class="stark">fn memory_safety_examples() {
+    // 1. Use after free prevention
+    let tensor = Tensor::rand([100, 100]);
+    drop(tensor);
+    // print(tensor.shape());        // ERROR: tensor used after drop
+    
+    // 2. Double free prevention
+    let tensor = Tensor::rand([100, 100]);
+    drop(tensor);
+    // drop(tensor);                 // ERROR: tensor already dropped
+    
+    // 3. Dangling pointer prevention  
+    let reference: &Tensor<f32, [?, ?]>;
+    {
+        let tensor = Tensor::rand([100, 100]);
+        reference = &tensor;
+    }
+    // print(reference.shape());     // ERROR: tensor dropped, reference invalid
+    
+    // 4. Data race prevention
+    let mut tensor = Tensor::zeros([100, 100]);
+    let ref1 = &tensor;
+    // let ref2 = &mut tensor;       // ERROR: cannot borrow mutably while borrowed
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Performance Characteristics</h2>
+                    
+                    <h3>Memory Allocation Performance</h3>
+                    <div class="comparison-table">
+                        <table>
+                            <tr>
+                                <th>Allocation Type</th>
+                                <th>Performance</th>
+                                <th>Use Case</th>
+                                <th>Example</th>
+                            </tr>
+                            <tr>
+                                <td>Stack allocation</td>
+                                <td>Fastest (microseconds)</td>
+                                <td>Small, fixed-size data</td>
+                                <td><code>[f32; 1024]</code></td>
+                            </tr>
+                            <tr>
+                                <td>Owned heap allocation</td>
+                                <td>Fast (milliseconds)</td>
+                                <td>Large tensors, predictable</td>
+                                <td><code>Tensor::zeros()</code></td>
+                            </tr>
+                            <tr>
+                                <td>GC allocation</td>
+                                <td>Moderate overhead</td>
+                                <td>Complex objects, graphs</td>
+                                <td><code>Model::new()</code></td>
+                            </tr>
+                            <tr>
+                                <td>Arena allocation</td>
+                                <td>Fastest for batches</td>
+                                <td>Temporary batch operations</td>
+                                <td><code>with_arena()</code></td>
+                            </tr>
+                        </table>
+                    </div>
+
+                    <h3>GC Performance Tuning</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Configuration for inference workloads
+gc::configure(GCConfig {
+    mode: GCMode::LowLatency,
+    pause_target: Duration::milliseconds(5),   // Max 5ms pauses
+    concurrent_threads: 2,                     // Concurrent collection
+    throughput_target: 0.99                    // 99% app throughput
+});
+
+// Configuration for training workloads
+gc::configure(GCConfig {
+    mode: GCMode::Training,
+    pause_target: Duration::milliseconds(20),  // Can tolerate longer pauses
+    concurrent_threads: 4,                     // More GC threads
+    throughput_target: 0.95                    // 95% app throughput
+});</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Key Benefits</h2>
+                    <div class="benefits-grid">
+                        <div class="benefit-card">
+                            <h3>🚀 Performance</h3>
+                            <p>Zero-cost abstractions for tensor operations with predictable memory layout</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🛡️ Safety</h3>
+                            <p>Compile-time memory safety without runtime overhead for critical paths</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🧠 AI-Optimized</h3>
+                            <p>Hybrid system balances tensor performance with ML object graph management</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>⚙️ Configurable</h3>
+                            <p>Different GC modes for training, inference, and production workloads</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

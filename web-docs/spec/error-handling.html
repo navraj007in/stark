@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error Handling System - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/concurrency-model.html">Concurrency Model</a></li>
+                    <li><a href="../spec/error-handling.html" class="active">Error Handling System</a></li>
+                    <li><a href="../spec/module-system.html">Module System & Package Manager</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/formal-grammar.html">Formal Grammar (EBNF)</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib API</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib API</a></li>
+                    <li><a href="../stdlib/model-lib.html">ModelLib API</a></li>
+                    <li><a href="../stdlib/networking-lib.html">NetworkingLib API</a></li>
+                    <li><a href="../stdlib/cloud-lib.html">CloudLib API</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <header class="page-header">
+                    <h1>🚨 Error Handling System Specification</h1>
+                    <p class="subtitle">Type-Safe Error Handling for Production ML Systems</p>
+                </header>
+
+                <div class="doc-section">
+                    <h2>Overview</h2>
+                    <p>STARK employs a comprehensive error handling system that combines algebraic error types (Result/Option) with structured exception handling, optimized for AI/ML workflows.</p>
+                    
+                    <h3>Error Handling Philosophy</h3>
+                    <p>STARK's error handling is designed around:</p>
+                    <ul>
+                        <li><strong>Type Safety</strong> - Errors are part of the type system, preventing unhandled errors</li>
+                        <li><strong>Explicit Error Handling</strong> - Errors must be explicitly handled or propagated</li>
+                        <li><strong>Rich Error Context</strong> - Detailed error information for debugging and monitoring</li>
+                        <li><strong>Composable Error Types</strong> - Easy composition and transformation of errors</li>
+                        <li><strong>Performance</strong> - Zero-cost error handling for the happy path</li>
+                        <li><strong>ML-Specific Errors</strong> - Domain-specific error types for AI/ML operations</li>
+                    </ul>
+
+                    <div class="code-example">
+                        <h4>High-Level Error Handling Overview</h4>
+                        <pre><code class="stark">// High-level error handling overview
+async fn ml_pipeline() -> Result<TrainingMetrics, MLError> {
+    // Type-safe error propagation with ?
+    let dataset = Dataset::load("train.csv")?;
+    let model = Model::from_config(&config)?;
+    
+    // Error context with custom error types
+    let metrics = train_model(model, dataset)
+        .await
+        .context("Failed to train model")?;
+    
+    // Error recovery with fallback
+    save_model(&model, "model.onnx")
+        .or_else(|e| {
+            warn!("Primary save failed: {e}, trying backup location");
+            save_model(&model, "backup/model.onnx")
+        })?;
+    
+    Ok(metrics)
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Result and Option Types</h2>
+                    
+                    <h3>Core Types Definition</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Result type for operations that may fail
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+impl<T, E> Result<T, E> {
+    // Construction
+    fn ok(value: T) -> Result<T, E> { Result::Ok(value) }
+    fn err(error: E) -> Result<T, E> { Result::Err(error) }
+    
+    // Query methods
+    fn is_ok(&self) -> bool;
+    fn is_err(&self) -> bool;
+    
+    // Transform methods
+    fn map<U, F: FnOnce(T) -> U>(self, op: F) -> Result<U, E>;
+    fn map_err<F, O: FnOnce(E) -> F>(self, op: O) -> Result<T, F>;
+    
+    // Boolean operations
+    fn and_then<U, F: FnOnce(T) -> Result<U, E>>(self, op: F) -> Result<U, E>;
+    fn or_else<F, O: FnOnce(E) -> Result<T, F>>(self, op: O) -> Result<T, F>;
+    
+    // Unwrap methods (panic on error)
+    fn unwrap(self) -> T where E: Debug;
+    fn expect(self, msg: &str) -> T where E: Debug;
+    
+    // Safe unwrap methods
+    fn unwrap_or(self, default: T) -> T;
+    fn unwrap_or_else<F: FnOnce(E) -> T>(self, op: F) -> T;
+}
+
+// Option type for nullable values
+enum Option<T> {
+    Some(T),
+    None
+}
+
+impl<T> Option<T> {
+    // Construction
+    fn some(value: T) -> Option<T> { Option::Some(value) }
+    fn none() -> Option<T> { Option::None }
+    
+    // Query methods
+    fn is_some(&self) -> bool;
+    fn is_none(&self) -> bool;
+    
+    // Transform methods
+    fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Option<U>;
+    fn and_then<U, F: FnOnce(T) -> Option<U>>(self, f: F) -> Option<U>;
+    fn filter<P: FnOnce(&T) -> bool>(self, predicate: P) -> Option<T>;
+    
+    // Conversion methods
+    fn ok_or<E>(self, err: E) -> Result<T, E>;
+    fn ok_or_else<E, F: FnOnce() -> E>(self, err: F) -> Result<T, E>;
+}</code></pre>
+                    </div>
+
+                    <h3>The Try Operator (?)</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Basic error propagation
+fn process_ml_pipeline() -> Result<ModelMetrics, MLError> {
+    let dataset = load_dataset("train.csv")?;          // Propagate DatasetError
+    let model = create_model(&config)?;                // Propagate ModelError
+    let optimizer = create_optimizer(&opt_config)?;    // Propagate OptimizerError
+    
+    let metrics = train_model(model, dataset, optimizer)?; // Propagate TrainingError
+    save_model(&model, "output.onnx")?;                // Propagate IOError
+    
+    Ok(metrics)
+}
+
+// Option propagation
+fn find_best_checkpoint(directory: &str) -> Option<String> {
+    let entries = std::fs::read_dir(directory).ok()?;
+    let mut best_checkpoint = None;
+    let mut best_metric = 0.0;
+    
+    for entry in entries {
+        let path = entry.ok()?.path();
+        let metadata = parse_checkpoint_metadata(&path)?;
+        
+        if metadata.validation_accuracy > best_metric {
+            best_metric = metadata.validation_accuracy;
+            best_checkpoint = Some(path.to_string_lossy().to_string());
+        }
+    }
+    
+    best_checkpoint
+}</code></pre>
+                    </div>
+
+                    <h3>Error Composition and Conversion</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Automatic error conversion with From trait
+trait From<T> {
+    fn from(value: T) -> Self;
+}
+
+// Error composition with multiple error types
+enum CombinedError {
+    Io(IOError),
+    Parse(ParseError),
+    Validation(ValidationError),
+    Network(NetworkError)
+}
+
+impl From<IOError> for CombinedError {
+    fn from(err: IOError) -> Self { CombinedError::Io(err) }
+}
+
+impl From<ParseError> for CombinedError {
+    fn from(err: ParseError) -> Self { CombinedError::Parse(err) }
+}
+
+// Error boxing for dynamic error types
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+fn flexible_operation() -> Result<String, BoxError> {
+    let data = risky_io_operation()?;           // Any error implementing Error
+    let processed = complex_computation(data)?;  // Any error implementing Error
+    Ok(processed)
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>ML-Specific Error Types</h2>
+                    
+                    <h3>Tensor Operation Errors</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Tensor operation errors
+#[derive(Debug)]
+enum TensorError {
+    ShapeMismatch { 
+        operation: String,
+        expected: Vec<i32>, 
+        actual: Vec<i32> 
+    },
+    DeviceMismatch { 
+        expected: Device, 
+        actual: Device 
+    },
+    DTypeMismatch { 
+        expected: DataType, 
+        actual: DataType 
+    },
+    IndexOutOfBounds { 
+        index: Vec<i32>, 
+        shape: Vec<i32> 
+    },
+    CudaError { 
+        code: i32, 
+        message: String 
+    },
+    OutOfMemory { 
+        requested: usize, 
+        available: usize, 
+        device: Device 
+    }
+}
+
+impl Display for TensorError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            TensorError::ShapeMismatch { operation, expected, actual } =>
+                write!(f, "Shape mismatch in {operation}: expected {expected:?}, got {actual:?}"),
+            TensorError::DeviceMismatch { expected, actual } =>
+                write!(f, "Device mismatch: expected {expected:?}, got {actual:?}"),
+            TensorError::CudaError { code, message } =>
+                write!(f, "CUDA error {code}: {message}"),
+            TensorError::OutOfMemory { requested, available, device } =>
+                write!(f, "Out of memory on {device:?}: requested {requested}, available {available}")
+        }
+    }
+}</code></pre>
+                    </div>
+
+                    <h3>Model Errors</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Model errors
+#[derive(Debug)]
+enum ModelError {
+    LoadingFailed { 
+        path: String, 
+        format: String, 
+        reason: String 
+    },
+    SavingFailed { 
+        path: String, 
+        reason: String 
+    },
+    InvalidArchitecture { 
+        expected: String, 
+        found: String 
+    },
+    MissingWeights { 
+        layer: String 
+    },
+    IncompatibleWeights { 
+        layer: String, 
+        expected_shape: Vec<i32>, 
+        actual_shape: Vec<i32> 
+    },
+    ForwardPassFailed { 
+        layer: String, 
+        input_shape: Vec<i32>, 
+        reason: String 
+    },
+    BackwardPassFailed { 
+        layer: String, 
+        gradient_shape: Vec<i32>, 
+        reason: String 
+    },
+    ConvergenceError { 
+        epoch: u32, 
+        loss: f64, 
+        threshold: f64 
+    }
+}</code></pre>
+                    </div>
+
+                    <h3>Training and Dataset Errors</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Training errors
+#[derive(Debug)]
+enum TrainingError {
+    DatasetError { 
+        source: Box<dyn Error + Send + Sync> 
+    },
+    ModelError { 
+        source: ModelError 
+    },
+    OptimizerError { 
+        optimizer: String, 
+        reason: String 
+    },
+    LossComputation { 
+        predictions_shape: Vec<i32>, 
+        targets_shape: Vec<i32> 
+    },
+    CheckpointError { 
+        epoch: u32, 
+        path: String, 
+        reason: String 
+    },
+    EarlyStopping { 
+        epoch: u32, 
+        patience: u32, 
+        best_metric: f64, 
+        current_metric: f64 
+    },
+    NumericalInstability { 
+        epoch: u32, 
+        batch: u32, 
+        value: f64 
+    }
+}
+
+// Dataset errors
+#[derive(Debug)]
+enum DatasetError {
+    LoadingFailed { 
+        source: String, 
+        reason: String 
+    },
+    TransformFailed { 
+        transform: String, 
+        item_index: usize, 
+        reason: String 
+    },
+    BatchingFailed { 
+        batch_size: usize, 
+        available_items: usize 
+    },
+    SchemaValidation { 
+        expected_columns: Vec<String>, 
+        found_columns: Vec<String> 
+    },
+    CorruptedData { 
+        item_index: usize, 
+        details: String 
+    }
+}</code></pre>
+                    </div>
+
+                    <h3>Inference Errors</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Inference errors
+#[derive(Debug)]
+enum InferenceError {
+    ModelNotLoaded,
+    InvalidInput { 
+        expected_shape: Vec<i32>, 
+        actual_shape: Vec<i32> 
+    },
+    PostprocessingFailed { 
+        reason: String 
+    },
+    BatchSizeMismatch { 
+        expected: usize, 
+        actual: usize 
+    },
+    TimeoutExceeded { 
+        timeout: Duration, 
+        elapsed: Duration 
+    },
+    ResourceExhausted { 
+        resource: String 
+    }
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Error Context and Chaining</h2>
+                    
+                    <h3>Error Context</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Context extension trait
+trait Context<T> {
+    fn context<C: Display>(self, context: C) -> Result<T, ContextError>;
+    fn with_context<C: Display, F: FnOnce() -> C>(self, f: F) -> Result<T, ContextError>;
+}
+
+impl<T, E: std::error::Error + Send + Sync + 'static> Context<T> for Result<T, E> {
+    fn context<C: Display>(self, context: C) -> Result<T, ContextError> {
+        self.map_err(|e| ContextError::new(e).context(context))
+    }
+    
+    fn with_context<C: Display, F: FnOnce() -> C>(self, f: F) -> Result<T, ContextError> {
+        self.map_err(|e| ContextError::new(e).context(f()))
+    }
+}
+
+// Usage example with rich error context
+async fn train_with_context(config: &TrainingConfig) -> Result<ModelMetrics, ContextError> {
+    let dataset = Dataset::load(&config.dataset_path)
+        .context("Failed to load training dataset")?;
+    
+    let model = Model::from_config(&config.model)
+        .with_context(|| format!("Failed to create model with architecture '{}'", 
+                                config.model.architecture))?;
+    
+    let optimizer = create_optimizer(&config.optimizer)
+        .with_context(|| format!("Failed to create {} optimizer", 
+                                config.optimizer.name))?;
+    
+    let metrics = train_model(model, dataset, optimizer).await
+        .context("Training failed")?;
+    
+    save_checkpoint(&model, &config.checkpoint_path)
+        .with_context(|| format!("Failed to save checkpoint to '{}'", 
+                                config.checkpoint_path))?;
+    
+    Ok(metrics)
+}</code></pre>
+                    </div>
+
+                    <h3>Error Chain Display</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Error chain display
+fn display_error_chain(error: &dyn Error) {
+    eprintln!("Error: {}", error);
+    
+    let mut source = error.source();
+    let mut level = 1;
+    
+    while let Some(err) = source {
+        eprintln!("  {}: {}", level, err);
+        source = err.source();
+        level += 1;
+    }
+}
+
+// Chain of errors
+trait ErrorChain {
+    fn iter_chain(&self) -> ErrorChainIter<'_>;
+    fn find_root_cause(&self) -> &dyn Error;
+}
+
+impl<T: Error> ErrorChain for T {
+    fn iter_chain(&self) -> ErrorChainIter<'_> {
+        ErrorChainIter { current: Some(self) }
+    }
+    
+    fn find_root_cause(&self) -> &dyn Error {
+        let mut current = self as &dyn Error;
+        while let Some(source) = current.source() {
+            current = source;
+        }
+        current
+    }
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Error Recovery and Fallbacks</h2>
+                    
+                    <h3>Retry with Exponential Backoff</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Retry with exponential backoff
+struct RetryConfig {
+    max_attempts: u32,
+    base_delay: Duration,
+    max_delay: Duration,
+    backoff_factor: f64
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        RetryConfig {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(100),
+            max_delay: Duration::from_secs(30),
+            backoff_factor: 2.0
+        }
+    }
+}
+
+async fn retry_with_backoff<T, E, F, Fut>(
+    mut operation: F,
+    config: RetryConfig
+) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::fmt::Display
+{
+    let mut attempt = 0;
+    let mut delay = config.base_delay;
+    
+    loop {
+        attempt += 1;
+        
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                if attempt >= config.max_attempts {
+                    error!("Operation failed after {} attempts, last error: {}", 
+                          attempt, error);
+                    return Err(error);
+                }
+                
+                warn!("Attempt {} failed: {}, retrying in {:?}", 
+                     attempt, error, delay);
+                
+                sleep(delay).await;
+                
+                // Exponential backoff
+                delay = std::cmp::min(
+                    Duration::from_secs_f64(
+                        delay.as_secs_f64() * config.backoff_factor
+                    ),
+                    config.max_delay
+                );
+            }
+        }
+    }
+}</code></pre>
+                    </div>
+
+                    <h3>Circuit Breaker Pattern</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Circuit breaker pattern
+struct CircuitBreaker {
+    failure_threshold: u32,
+    success_threshold: u32,
+    timeout: Duration,
+    state: CircuitState,
+    failure_count: u32,
+    success_count: u32,
+    last_failure_time: Option<Instant>
+}
+
+enum CircuitState {
+    Closed,    // Normal operation
+    Open,      // Failing, reject requests
+    HalfOpen   // Testing if service recovered
+}
+
+impl CircuitBreaker {
+    fn new(failure_threshold: u32, timeout: Duration) -> Self {
+        CircuitBreaker {
+            failure_threshold,
+            success_threshold: failure_threshold / 2,
+            timeout,
+            state: CircuitState::Closed,
+            failure_count: 0,
+            success_count: 0,
+            last_failure_time: None
+        }
+    }
+    
+    async fn call<T, E, F, Fut>(&mut self, operation: F) -> Result<T, CircuitBreakerError<E>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<T, E>>
+    {
+        match self.state {
+            CircuitState::Closed => {
+                match operation().await {
+                    Ok(result) => {
+                        self.on_success();
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        self.on_failure();
+                        Err(CircuitBreakerError::OperationFailed(error))
+                    }
+                }
+            }
+            CircuitState::Open => {
+                if let Some(last_failure) = self.last_failure_time {
+                    if last_failure.elapsed() > self.timeout {
+                        self.state = CircuitState::HalfOpen;
+                        self.call(operation).await
+                    } else {
+                        Err(CircuitBreakerError::CircuitOpen)
+                    }
+                } else {
+                    Err(CircuitBreakerError::CircuitOpen)
+                }
+            }
+            CircuitState::HalfOpen => {
+                match operation().await {
+                    Ok(result) => {
+                        self.success_count += 1;
+                        if self.success_count >= self.success_threshold {
+                            self.state = CircuitState::Closed;
+                            self.failure_count = 0;
+                            self.success_count = 0;
+                        }
+                        Ok(result)
+                    }
+                    Err(error) => {
+                        self.state = CircuitState::Open;
+                        self.last_failure_time = Some(Instant::now());
+                        Err(CircuitBreakerError::OperationFailed(error))
+                    }
+                }
+            }
+        }
+    }
+}</code></pre>
+                    </div>
+
+                    <h3>Error Recovery with Multiple Attempts</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Error recovery with multiple attempts
+async fn robust_model_loading(paths: &[String]) -> Result<Model, ModelError> {
+    let mut last_error = None;
+    
+    for (i, path) in paths.iter().enumerate() {
+        match Model::load(path).await {
+            Ok(model) => {
+                if i > 0 {
+                    warn!("Loaded model from fallback path: {}", path);
+                }
+                return Ok(model);
+            }
+            Err(e) => {
+                warn!("Failed to load model from {}: {}", path, e);
+                last_error = Some(e);
+            }
+        }
+    }
+    
+    Err(last_error.unwrap_or_else(|| ModelError::LoadingFailed {
+        path: "no paths provided".to_string(),
+        format: "unknown".to_string(),
+        reason: "no model paths specified".to_string()
+    }))
+}
+
+// Graceful degradation
+async fn inference_with_fallback(
+    input: Tensor<f32, [?, ?]>,
+    primary_model: &Model,
+    fallback_model: Option<&Model>
+) -> Result<Tensor<f32, [?, ?]>, InferenceError> {
+    match primary_model.predict(&input).await {
+        Ok(result) => Ok(result),
+        Err(e) => {
+            warn!("Primary model failed: {}, trying fallback", e);
+            
+            if let Some(fallback) = fallback_model {
+                fallback.predict(&input).await
+                    .map_err(|fallback_err| {
+                        error!("Both primary and fallback models failed");
+                        error!("Primary error: {}", e);
+                        error!("Fallback error: {}", fallback_err);
+                        fallback_err
+                    })
+            } else {
+                Err(e)
+            }
+        }
+    }
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Production Features</h2>
+                    
+                    <h3>Error Aggregation</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Collect multiple errors
+fn validate_all_inputs(inputs: &[Input]) -> Result<(), ValidationErrors> {
+    let mut errors = Vec::new();
+    
+    for (i, input) in inputs.iter().enumerate() {
+        if let Err(e) = validate_input(input) {
+            errors.push(IndexedError { index: i, error: e });
+        }
+    }
+    
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(ValidationErrors { errors })
+    }
+}
+
+#[derive(Debug)]
+struct ValidationErrors {
+    errors: Vec<IndexedError<ValidationError>>
+}
+
+#[derive(Debug)]
+struct IndexedError<E> {
+    index: usize,
+    error: E
+}</code></pre>
+                    </div>
+
+                    <h3>Error Reporting and Monitoring</h3>
+                    <div class="code-example">
+                        <pre><code class="stark">// Error reporting and logging
+struct ErrorReporter {
+    logger: Logger,
+    metrics: MetricsCollector,
+    alerting: AlertingService
+}
+
+impl ErrorReporter {
+    async fn report_error(&self, error: &dyn Error, context: ErrorContext) {
+        // Log error with full context
+        error!("Error occurred: {}", error);
+        self.log_error_chain(error);
+        
+        // Collect metrics
+        self.metrics.increment_error_counter(&context.operation, &error.to_string());
+        
+        // Send alerts for critical errors
+        if context.severity >= Severity::Critical {
+            let alert = Alert {
+                title: format!("Critical error in {}", context.operation),
+                description: error.to_string(),
+                severity: context.severity,
+                timestamp: Utc::now(),
+                context: context.clone()
+            };
+            
+            if let Err(e) = self.alerting.send_alert(alert).await {
+                warn!("Failed to send alert: {}", e);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ErrorContext {
+    operation: String,
+    severity: Severity,
+    user_id: Option<String>,
+    request_id: Option<String>,
+    additional_context: HashMap<String, String>
+}</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Key Benefits</h2>
+                    <div class="benefits-grid">
+                        <div class="benefit-card">
+                            <h3>🛡️ Type Safety</h3>
+                            <p>Errors are part of the type system, preventing unhandled error conditions</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>⚡ Zero Cost</h3>
+                            <p>No runtime overhead for error handling in the happy path</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🤖 ML-Optimized</h3>
+                            <p>Domain-specific error types for tensor operations, training, and inference</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🔧 Composable</h3>
+                            <p>Easy composition and transformation of errors across system boundaries</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>📊 Rich Context</h3>
+                            <p>Detailed error information with chaining and contextual information</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🏭 Production Ready</h3>
+                            <p>Circuit breakers, retry mechanisms, monitoring, and alerting integration</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

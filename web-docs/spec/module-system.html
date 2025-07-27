@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Module System & Package Manager - STARK Language Documentation</title>
+    <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Navigation Sidebar -->
+        <nav class="sidebar">
+            <div class="logo">
+                <h1>🌟 STARK</h1>
+                <p>AI-Native Programming Language</p>
+            </div>
+            
+            <div class="nav-section">
+                <h3>📖 Overview</h3>
+                <ul>
+                    <li><a href="../overview/mission-statement.html">Mission Statement</a></li>
+                    <li><a href="../overview/vision.html">Vision</a></li>
+                    <li><a href="../overview/stark-vs-others.html">STARK vs Other Languages</a></li>
+                    <li><a href="../overview/feature-roadmap.html">Feature Roadmap</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📋 Core Specification</h3>
+                <ul>
+                    <li><a href="../spec/core-language-overview.html">Core Language Overview</a></li>
+                    <li><a href="../spec/lexical-grammar.html">Lexical Grammar</a></li>
+                    <li><a href="../spec/syntax-grammar.html">Syntax Grammar</a></li>
+                    <li><a href="../spec/type-system.html">Type System</a></li>
+                    <li><a href="../spec/semantic-analysis.html">Semantic Analysis</a></li>
+                    <li><a href="../spec/memory-model.html">Memory Model</a></li>
+                    <li><a href="../spec/concurrency-model.html">Concurrency Model</a></li>
+                    <li><a href="../spec/error-handling.html">Error Handling System</a></li>
+                    <li><a href="../spec/module-system.html" class="active">Module System & Package Manager</a></li>
+                    <li><a href="../spec/standard-library.html">Standard Library</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🏗️ Architecture</h3>
+                <ul>
+                    <li><a href="../architecture/starkvm.html">STARK VM</a></li>
+                    <li><a href="../architecture/compiler-architecture.html">Compiler Architecture</a></li>
+                    <li><a href="../architecture/execution-model.html">Execution Model</a></li>
+                    <li><a href="../architecture/jit-compiler.html">JIT Compiler</a></li>
+                    <li><a href="../architecture/llm-integration.html">LLM Integration</a></li>
+                    <li><a href="../architecture/module-system.html">Module System</a></li>
+                    <li><a href="../architecture/package-manager.html">Package Manager</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🤖 AI Type System</h3>
+                <ul>
+                    <li><a href="../types/ai-types.html">AI Types (Core)</a></li>
+                    <li><a href="../types/primitive-types.html">Primitive Types</a></li>
+                    <li><a href="../types/composite-types.html">Composite Types</a></li>
+                    <li><a href="../types/ownership-memory-model.html">Ownership & Memory Model</a></li>
+                    <li><a href="../types/pattern-matching.html">Pattern Matching</a></li>
+                    <li><a href="../types/traits-constraints.html">Traits & Constraints</a></li>
+                    <li><a href="../types/type-inference.html">Type Inference</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📝 Syntax</h3>
+                <ul>
+                    <li><a href="../syntax/basic-syntax.html">Basic Syntax</a></li>
+                    <li><a href="../syntax/control-structures.html">Control Structures</a></li>
+                    <li><a href="../syntax/functions-modules.html">Functions & Modules</a></li>
+                    <li><a href="../syntax/bnf-specifications.html">BNF Specifications</a></li>
+                    <li><a href="../syntax/formal-grammar.html">Formal Grammar (EBNF)</a></li>
+                    <li><a href="../syntax/syntax-highlighting.html">Syntax Highlighting</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚡ AI Concurrency</h3>
+                <ul>
+                    <li><a href="../concurrency/ai-concurrency-primitives.html">AI Concurrency Primitives</a></li>
+                    <li><a href="../concurrency/actor-system.html">Actor System</a></li>
+                    <li><a href="../concurrency/async-await.html">Async/Await</a></li>
+                    <li><a href="../concurrency/parallel-patterns.html">Parallel Patterns</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🚀 AI Deployment</h3>
+                <ul>
+                    <li><a href="../deployment/ai-deployment-primitives.html">AI Deployment Primitives</a></li>
+                    <li><a href="../deployment/serverless-support.html">Serverless Support</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>📚 Standard Library</h3>
+                <ul>
+                    <li><a href="../stdlib/tensor-lib.html">TensorLib API</a></li>
+                    <li><a href="../stdlib/dataset-lib.html">DatasetLib API</a></li>
+                    <li><a href="../stdlib/model-lib.html">ModelLib API</a></li>
+                    <li><a href="../stdlib/networking-lib.html">NetworkingLib API</a></li>
+                    <li><a href="../stdlib/cloud-lib.html">CloudLib API</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>🔧 Toolchain</h3>
+                <ul>
+                    <li><a href="../toolchain/compiler-stages.html">Compiler Stages</a></li>
+                    <li><a href="../toolchain/bytecode-format.html">Bytecode Format</a></li>
+                    <li><a href="../toolchain/dev-tooling.html">Development Tooling</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>⚙️ Runtime</h3>
+                <ul>
+                    <li><a href="../runtime/memory-management.html">Memory Management</a></li>
+                    <li><a href="../runtime/garbage-collector.html">Garbage Collector</a></li>
+                </ul>
+            </div>
+
+            <div class="nav-section">
+                <h3>💡 Examples</h3>
+                <ul>
+                    <li><a href="../examples/hello-world.html">Hello World</a></li>
+                    <li><a href="../examples/ml-pipeline.html">ML Pipeline</a></li>
+                </ul>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="content">
+            <div class="doc-content">
+                <header class="page-header">
+                    <h1>🧩 Module System & Package Manager</h1>
+                    <p class="subtitle">Hierarchical Modules with Comprehensive Dependency Management</p>
+                </header>
+
+                <div class="doc-section">
+                    <h2>Overview</h2>
+                    <p>The STARK module system provides a hierarchical namespace organization with explicit import/export declarations, semantic versioning, and a powerful package manager for dependency resolution.</p>
+                    
+                    <h3>Key Features</h3>
+                    <ul>
+                        <li><strong>Hierarchical Modules</strong> - Clean namespace organization with explicit boundaries</li>
+                        <li><strong>Semantic Versioning</strong> - Full SemVer support with sophisticated dependency resolution</li>
+                        <li><strong>Security-First</strong> - Package signing, vulnerability scanning, and supply chain security</li>
+                        <li><strong>Workspace Support</strong> - Multi-package projects with shared dependencies</li>
+                        <li><strong>Cross-Platform</strong> - Platform-specific dependencies and conditional compilation</li>
+                        <li><strong>Registry Ecosystem</strong> - Multiple registry support including private/corporate registries</li>
+                    </ul>
+
+                    <div class="code-example">
+                        <h4>Module System Overview</h4>
+                        <pre><code class="stark">// Module declaration (optional for file-level modules)
+module ml::vision::detection;
+
+// Imports from standard library
+use std::tensor::{Tensor, Device};
+use std::dataset::{Dataset, DataLoader};
+use std::model::{Model, Loss, Optimizer};
+
+// Imports from external packages
+use opencv::{Mat, imread, imwrite};
+use torchvision::transforms::{Resize, Normalize};
+
+// Imports from local modules
+use super::backbone::{ResNet, Backbone};
+use crate::utils::{Timer, Logger};
+
+// Module contents
+pub struct YOLODetector {
+    backbone: Box<dyn Backbone>,
+    head: DetectionHead,
+    anchors: Tensor<f32, [?, 2]>
+}
+
+impl YOLODetector {
+    pub fn new(num_classes: i32) -> Self { ... }
+    pub fn detect(image: Tensor<f32, [3, 640, 640]>) -> [Detection] { ... }
+    
+    // Private function (not exported)
+    fn nms(boxes: [BoundingBox], threshold: f32) -> [BoundingBox] { ... }
+}
+
+// Export specific items
+pub use backbone::ResNet50;
+pub use utils::Timer as PerfTimer;</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Module Hierarchy and File Organization</h2>
+                    
+                    <div class="file-tree">
+                        <h4>Project Structure</h4>
+                        <pre>src/
+├── lib.stark              // Root module (defines crate public API)
+├── ml/
+│   ├── mod.stark          // ml module declaration
+│   ├── vision/
+│   │   ├── mod.stark      // ml::vision module
+│   │   ├── detection.stark // ml::vision::detection
+│   │   ├── classification.stark
+│   │   └── segmentation.stark
+│   ├── nlp/
+│   │   ├── mod.stark
+│   │   ├── tokenizers.stark
+│   │   └── transformers.stark
+│   └── audio/
+│       ├── mod.stark
+│       └── preprocessing.stark
+├── utils/
+│   ├── mod.stark
+│   ├── logging.stark
+│   └── metrics.stark
+└── examples/
+    ├── yolo_detection.stark
+    └── sentiment_analysis.stark</pre>
+                    </div>
+
+                    <h3>Import and Export Syntax</h3>
+                    <div class="code-example">
+                        <h4>Import Declarations</h4>
+                        <pre><code class="stark">// Basic imports
+use std::tensor::Tensor;                    // Import single item
+use std::dataset::{Dataset, DataLoader};   // Import multiple items
+use std::model::*;                          // Import all public items (discouraged)
+
+// Qualified imports
+use std::tensor;                            // Import module, use as tensor::Tensor
+use std::dataset as data;                   // Import with alias
+
+// Relative imports
+use super::backbone::ResNet;                // Parent module
+use crate::utils::Logger;                   // Crate root
+use self::submodule::Helper;                // Current module's submodule
+
+// Conditional imports (platform/feature specific)
+#[cfg(feature = "gpu")]
+use cuda::kernels::*;
+
+#[cfg(target_os = "linux")]
+use linux_specific::optimizations;
+
+// External package imports
+use numpy as np;                            // Python interop
+use opencv::{Mat, Size};                    // C++ library binding
+use @huggingface/transformers::{AutoModel, AutoTokenizer};  // External registry
+
+// Version-specific imports
+use torch@">=1.13,<2.0"::{nn, optim};     // Version constraints
+use tensorflow@"2.12.0"::{keras};          // Exact version
+
+// Optional imports with fallbacks
+use gpu_accelerated::fast_conv2d catch std::tensor::conv2d;</code></pre>
+                    </div>
+
+                    <div class="code-example">
+                        <h4>Export Declarations</h4>
+                        <pre><code class="stark">// Public exports (available to external crates)
+pub fn train_model() -> Model { ... }
+pub struct NeuralNetwork { ... }
+pub enum ActivationFunction { ... }
+pub const DEFAULT_LEARNING_RATE: f32 = 0.001;
+
+// Conditional exports
+#[cfg(feature = "experimental")]
+pub fn experimental_feature() { ... }
+
+// Re-exports from submodules
+pub use vision::{Detection, Classification, Segmentation};
+pub use nlp::transformers::{BERT, GPT, T5};
+
+// Renamed exports
+pub use internal::ComplexName as SimpleName;
+
+// Module-level visibility modifiers
+pub(crate) fn internal_api() { ... }        // Visible within crate
+pub(super) fn parent_accessible() { ... }   // Visible to parent module
+pub(in crate::ml) fn ml_only() { ... }     // Visible within ml module tree</code></pre>
+                    </div>
+
+                    <h3>Module Resolution Rules</h3>
+                    <div class="resolution-order">
+                        <h4>Resolution order for <code>use ml::vision::detection::YOLOv5</code>:</h4>
+                        <ol>
+                            <li><strong>Current crate modules:</strong><br>
+                                <code>src/ml/vision/detection.stark → YOLOv5</code></li>
+                            <li><strong>Standard library:</strong><br>
+                                <code>std::ml::vision::detection::YOLOv5</code></li>
+                            <li><strong>External dependencies (Package.stark):</strong><br>
+                                <code>ml-toolkit::vision::detection::YOLOv5</code></li>
+                            <li><strong>Global package registry:</strong><br>
+                                <code>@pytorch/vision::detection::YOLOv5</code></li>
+                        </ol>
+
+                        <h4>Disambiguation with explicit paths:</h4>
+                        <div class="code-example">
+                            <pre><code class="stark">use crate::ml::vision::detection::YOLOv5;     // Local module
+use std::ml::vision::detection::YOLOv5;       // Standard library
+use pytorch_vision::detection::YOLOv5;        // External dependency
+use @pytorch/vision::detection::YOLOv5;       // Registry package</code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Package.stark Manifest Format</h2>
+                    
+                    <div class="code-example">
+                        <h4>Complete Package.stark Example</h4>
+                        <pre><code class="toml"># Package.stark - Project manifest file
+[package]
+name = "stark-cv"
+version = "0.3.1"
+description = "Computer Vision library for STARK"
+authors = ["AI Research Team <ai@company.com>"]
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/company/stark-cv"
+repository = "https://github.com/company/stark-cv.git"
+documentation = "https://docs.company.com/stark-cv"
+readme = "README.md"
+keywords = ["computer-vision", "ai", "ml", "deep-learning"]
+categories = ["machine-learning", "computer-vision"]
+edition = "2024"
+rust-version = "1.70"  # Minimum STARK version
+
+# Binary targets
+[[bin]]
+name = "stark-cv-cli"
+path = "src/bin/cli.stark"
+required-features = ["cli"]
+
+# Library configuration
+[lib]
+name = "stark_cv"
+path = "src/lib.stark"
+crate-type = ["cdylib", "rlib"]  # Both dynamic and static linking
+
+# Dependencies
+[dependencies]
+# Standard dependencies
+stark-std = "1.0"
+tensor-lib = "2.1.0"
+dataset-lib = "1.8"
+
+# External dependencies with version constraints
+opencv = { version = "4.8", features = ["contrib", "opencv_dnn"] }
+numpy = "1.24"
+torch = { version = ">=2.0,<3.0", optional = true }
+
+# Git dependencies
+ml-commons = { git = "https://github.com/ml-commons/stark", branch = "main" }
+internal-tools = { git = "ssh://git@internal.com/ml/tools.git", tag = "v1.2.0" }
+
+# Path dependencies (local development)
+shared-models = { path = "../shared-models" }
+
+# Registry dependencies
+transformers = { registry = "huggingface", version = "4.30" }
+vision-models = { registry = "pytorch", version = "0.15.0" }
+
+# Platform-specific dependencies
+[target.'cfg(target_os = "linux")'.dependencies]
+cuda-toolkit = "11.8"
+tensorrt = { version = "8.6", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal-performance-shaders = "14.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = "0.3"
+
+# Development dependencies (for tests, examples, benchmarks)
+[dev-dependencies]
+stark-test = "1.0"
+criterion = "0.5"  # Benchmarking
+proptest = "1.2"   # Property-based testing
+tempfile = "3.0"
+
+# Build dependencies (for build scripts)
+[build-dependencies]
+cmake = "0.1"
+pkg-config = "0.3"
+cc = "1.0"</code></pre>
+                    </div>
+
+                    <div class="code-example">
+                        <h4>Feature Flags</h4>
+                        <pre><code class="toml"># Feature flags
+[features]
+default = ["std", "tensor-ops"]
+
+# Core features
+std = ["stark-std/std"]
+no-std = []
+tensor-ops = ["tensor-lib/ops"]
+
+# Optional ML frameworks
+pytorch = ["torch", "torchvision"]
+tensorflow = ["tensorflow-rs"]
+onnx = ["onnxruntime"]
+
+# Hardware acceleration
+gpu = ["cuda", "opencl"]
+cuda = ["cuda-toolkit", "cuDNN"]
+opencl = ["opencl-sys"]
+metal = ["metal-performance-shaders"]
+tensorrt = ["tensorrt-sys"]
+
+# Optimization levels
+fast = ["tensor-ops/simd", "gpu"]
+experimental = ["unstable-features"]
+
+# Python interoperability
+python = ["pyo3", "numpy"]
+
+# Web assembly support
+wasm = ["wasm-bindgen", "web-sys"]
+
+# CLI tools
+cli = ["clap", "colored", "indicatif"]</code></pre>
+                    </div>
+
+                    <div class="code-example">
+                        <h4>Workspace Configuration</h4>
+                        <pre><code class="toml"># Workspace configuration (for multi-package projects)
+[workspace]
+members = [
+    "packages/stark-cv-core",
+    "packages/stark-cv-models", 
+    "packages/stark-cv-datasets",
+    "packages/stark-cv-cli"
+]
+
+exclude = [
+    "examples/*",
+    "benchmarks/*"
+]
+
+resolver = "2"
+
+# Workspace dependencies (shared across workspace members)
+[workspace.dependencies]
+stark-std = "1.0"
+tensor-lib = "2.1.0"
+serde = "1.0"
+
+# Profile configurations
+[profile.release]
+opt-level = 3
+debug = 0
+debug-assertions = false
+overflow-checks = false
+lto = "fat"
+panic = "abort"
+codegen-units = 1
+strip = "symbols"
+
+# Custom profiles for specific use cases
+[profile.gpu-optimized]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+target-cpu = "native"
+
+[profile.memory-optimized]
+inherits = "release"
+opt-level = "s"  # Optimize for size
+lto = "thin"
+panic = "abort"</code></pre>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Dependency Management and Versioning</h2>
+                    
+                    <h3>Semantic Versioning (SemVer) Support</h3>
+                    <div class="code-example">
+                        <pre><code class="toml"># Version specification formats in Package.stark
+
+# Exact version
+opencv = "4.8.0"
+
+# SemVer ranges
+tensor-lib = "^2.1.0"    # >=2.1.0, <3.0.0 (compatible)
+dataset = "~1.8.0"       # >=1.8.0, <1.9.0 (bugfix updates)
+ml-utils = ">=1.5,<2.0"  # Range specification
+
+# Pre-release versions
+experimental-ai = "3.0.0-alpha.1"
+beta-features = "2.5.0-beta"
+nightly = "1.0.0-nightly.20241126"
+
+# Version with build metadata
+custom-build = "1.2.3+build.456"
+
+# Git-based versioning
+ml-research = { git = "https://github.com/research/stark-ml", rev = "abc123" }
+internal = { git = "...", tag = "v2.1.0" }
+latest = { git = "...", branch = "main" }</code></pre>
+                    </div>
+
+                    <h3>Lock File Format (Package.lock)</h3>
+                    <div class="code-example">
+                        <pre><code class="toml"># Package.lock - Exact dependency tree for reproducible builds
+# This file is automatically generated by stark package manager.
+# Do not edit manually.
+
+version = 3
+
+[[package]]
+name = "stark-cv"
+version = "0.3.1"
+dependencies = [
+    "opencv",
+    "tensor-lib", 
+    "dataset-lib"
+]
+
+[[package]]
+name = "opencv"
+version = "4.8.1"
+source = "registry+https://packages.stark-lang.org/"
+checksum = "sha256:1234567890abcdef..."
+dependencies = [
+    "opencv-sys"
+]
+
+[[package]]
+name = "tensor-lib"
+version = "2.1.3"
+source = "registry+https://packages.stark-lang.org/"
+checksum = "sha256:abcdef1234567890..."
+dependencies = [
+    "blas-sys",
+    "cuda-sys"
+]
+
+[[package]]
+name = "ml-research"
+version = "0.1.0"
+source = "git+https://github.com/research/stark-ml#abc123def456"
+dependencies = [
+    "experimental-features"
+]
+
+# Package metadata and resolution information
+[metadata]
+resolver = "stark-resolver-v2"
+generated-at = "2024-11-26T10:30:00Z"
+stark-version = "1.0.0"
+
+# Checksums for security verification
+[metadata.checksums]
+"opencv 4.8.1" = "sha256:1234567890abcdef..."
+"tensor-lib 2.1.3" = "sha256:abcdef1234567890..."</code></pre>
+                    </div>
+
+                    <h3>Dependency Resolution Algorithm</h3>
+                    <div class="resolution-algorithm">
+                        <h4>Dependency resolution follows these principles:</h4>
+                        <ol>
+                            <li><strong>Semantic Version Resolution</strong>
+                                <ul>
+                                    <li>Use highest compatible version within constraints</li>
+                                    <li>Prefer stable versions over pre-release</li>
+                                    <li>Respect minimum version requirements</li>
+                                </ul>
+                            </li>
+                            <li><strong>Conflict Resolution Strategy</strong>
+                                <ul>
+                                    <li>Multiple versions of same package are not allowed</li>
+                                    <li>Use "minimal version selection" algorithm</li>
+                                    <li>Fail fast on incompatible constraints</li>
+                                </ul>
+                            </li>
+                            <li><strong>Feature Unification</strong>
+                                <ul>
+                                    <li>Features are additive across the dependency graph</li>
+                                    <li>If any dependency enables a feature, it's enabled everywhere</li>
+                                    <li>Optional dependencies are only included if required</li>
+                                </ul>
+                            </li>
+                            <li><strong>Platform-Specific Resolution</strong>
+                                <ul>
+                                    <li>Resolve platform-specific dependencies based on target</li>
+                                    <li>Support cross-compilation scenarios</li>
+                                    <li>Handle conditional dependencies correctly</li>
+                                </ul>
+                            </li>
+                        </ol>
+
+                        <div class="code-example">
+                            <h4>Resolution Examples</h4>
+                            <pre><code class="stark">// Example resolution process:
+Package A requires: opencv ^4.8.0
+Package B requires: opencv ~4.8.1  
+Package C requires: opencv >=4.8.0,<4.9.0
+
+Resolution: opencv 4.8.1 (highest compatible version)
+
+// Conflict example:
+Package A requires: tensor-lib ^2.0.0
+Package B requires: tensor-lib ^3.0.0
+
+Resolution: ERROR - No compatible version found</code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Package Manager Commands</h2>
+                    
+                    <div class="command-reference">
+                        <h3>Core Commands</h3>
+                        <div class="command-grid">
+                            <div class="command-card">
+                                <h4>Project Management</h4>
+                                <pre><code class="bash"># Project initialization
+stark new my-project                    # Create new project
+stark new --lib my-library             # Create library project
+stark new --bin my-binary              # Create binary project
+stark init                             # Initialize in existing directory</code></pre>
+                            </div>
+
+                            <div class="command-card">
+                                <h4>Dependency Management</h4>
+                                <pre><code class="bash"># Dependency management
+stark add opencv@4.8                   # Add dependency
+stark add --dev criterion              # Add dev dependency
+stark add --optional pytorch           # Add optional dependency
+stark add --features "gpu,cuda" tensor-lib  # Add with specific features
+stark remove opencv                    # Remove dependency
+stark update                           # Update all dependencies
+stark update opencv                    # Update specific dependency</code></pre>
+                            </div>
+
+                            <div class="command-card">
+                                <h4>Building and Testing</h4>
+                                <pre><code class="bash"># Building and testing
+stark build                            # Build project
+stark build --release                  # Release build
+stark build --target wasm32-wasi       # Cross-compilation
+stark test                             # Run tests
+stark test --integration              # Run integration tests
+stark bench                           # Run benchmarks
+stark check                           # Check without building</code></pre>
+                            </div>
+
+                            <div class="command-card">
+                                <h4>Documentation</h4>
+                                <pre><code class="bash"># Documentation
+stark doc                             # Generate documentation  
+stark doc --open                      # Generate and open docs
+stark doc --no-deps                   # Skip dependency docs</code></pre>
+                            </div>
+
+                            <div class="command-card">
+                                <h4>Package Publishing</h4>
+                                <pre><code class="bash"># Package publishing
+stark login                           # Login to registry
+stark logout                          # Logout from registry
+stark publish                         # Publish to registry
+stark publish --registry internal     # Publish to specific registry
+stark yank 1.0.0                     # Yank published version
+stark owner --add user@email.com      # Add package owner</code></pre>
+                            </div>
+
+                            <div class="command-card">
+                                <h4>Package Information</h4>
+                                <pre><code class="bash"># Package information
+stark search "computer vision"         # Search packages
+stark info opencv                     # Package information
+stark deps                           # Show dependency tree
+stark deps --duplicates              # Show duplicate dependencies
+stark licenses                       # Show dependency licenses
+stark audit                          # Security vulnerability audit</code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Security and Trust</h2>
+                    
+                    <h3>Package Verification</h3>
+                    <div class="code-example">
+                        <pre><code class="toml"># Package signing and verification
+[package.metadata.security]
+signing-key = "ed25519:1234567890abcdef..."
+require-signatures = true
+trusted-publishers = [
+    "stark-lang-team",
+    "pytorch-team", 
+    "nvidia"
+]
+
+# Security policies in .stark/config.toml
+[security]
+require-signatures = true
+allow-git-dependencies = false
+audit-on-install = true
+max-package-size = "100MB"
+
+blocked-packages = [
+    "malicious-package@*",
+    "vulnerable-lib@<1.2.0"
+]
+
+trusted-keys = [
+    "ed25519:abcdef1234567890...",
+    "rsa:fedcba0987654321..."
+]
+
+# Audit database integration
+[audit]
+database = "https://security.stark-lang.org/advisory-db"
+ignore = [
+    "STARK-2024-001",  # Ignore specific advisory
+]</code></pre>
+                    </div>
+
+                    <h3>Supply Chain Security</h3>
+                    <div class="command-reference">
+                        <h4>Security Commands</h4>
+                        <pre><code class="bash"># Security commands
+stark audit                           # Check for vulnerabilities
+stark audit --fix                     # Auto-fix vulnerable dependencies
+stark verify                         # Verify package signatures
+stark sbom                           # Generate Software Bill of Materials
+stark license-check                   # Verify license compatibility</code></pre>
+
+                        <div class="security-output">
+                            <h4>Example Security Audit Output</h4>
+                            <pre><code class="bash">$ stark audit
+    Checking 145 dependencies for security advisories
+    Found 2 vulnerabilities:
+    
+    ┌─────────────────────────────────────────────────────────────┐
+    │                        Advisory                              │
+    │                        ━━━━━━━━                              │
+    │ Package      ┆ tensor-lib                                    │
+    │ Version      ┆ 2.0.1                                        │
+    │ Advisory     ┆ STARK-2024-0123                              │
+    │ Severity     ┆ High                                         │
+    │ Description  ┆ Buffer overflow in tensor operations         │
+    │ Solution     ┆ Upgrade to >= 2.0.2                         │
+    └─────────────────────────────────────────────────────────────┘
+    
+    Run `stark audit --fix` to upgrade vulnerable dependencies.</code></pre>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="doc-section">
+                    <h2>Key Benefits</h2>
+                    <div class="benefits-grid">
+                        <div class="benefit-card">
+                            <h3>🏗️ Hierarchical Organization</h3>
+                            <p>Clear namespace management with explicit imports/exports and module boundaries</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>📦 Rich Package Management</h3>
+                            <p>Comprehensive Package.stark format supporting all modern package management features</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🔄 Semantic Versioning</h3>
+                            <p>Full SemVer support with sophisticated dependency resolution and conflict handling</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🛡️ Security First</h3>
+                            <p>Package signing, vulnerability scanning, and comprehensive supply chain security</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🏢 Workspace Support</h3>
+                            <p>Multi-package projects with shared dependencies, metadata, and coordinated releases</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🌐 Cross-Platform</h3>
+                            <p>Platform-specific dependencies, conditional compilation, and cross-compilation support</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>🏪 Registry Ecosystem</h3>
+                            <p>Multiple registry support with private/corporate registry integration and authentication</p>
+                        </div>
+                        <div class="benefit-card">
+                            <h3>⚡ Developer Experience</h3>
+                            <p>Rich CLI commands, helpful tooling, and comprehensive package management workflows</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+</body>
+</html>
