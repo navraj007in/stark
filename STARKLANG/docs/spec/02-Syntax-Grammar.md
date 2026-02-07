@@ -21,13 +21,17 @@ This document defines the concrete syntax grammar for STARK using Extended Backu
 ```ebnf
 Program ::= Item*
 
-Item ::= Function
+Item ::= Visibility? (Function
        | Struct
        | Enum  
        | Trait
        | Impl
        | Const
+       | TypeAlias
        | Use
+       | Module)
+
+Visibility ::= 'pub' | 'priv'
 ```
 
 ### Function Definition
@@ -70,6 +74,19 @@ Impl ::= 'impl' Type '{' ImplItem* '}'
 ImplItem ::= Function
 ```
 
+### Module Definition
+```ebnf
+Module ::= 'mod' IDENTIFIER ';'
+        | 'mod' IDENTIFIER ModuleBlock
+
+ModuleBlock ::= '{' Item* '}'
+```
+
+### Type Alias
+```ebnf
+TypeAlias ::= 'type' IDENTIFIER '=' Type ';'
+```
+
 ### Statements
 ```ebnf
 Statement ::= ';'                    // Empty statement
@@ -80,7 +97,9 @@ Statement ::= ';'                    // Empty statement
             | 'continue' ';'
             | Block
 
-LetStatement ::= IDENTIFIER ':' Type '=' Expression ';'
+LetStatement ::= IDENTIFIER ':' Type ';'
+               | 'mut' IDENTIFIER ':' Type ';'
+               | IDENTIFIER ':' Type '=' Expression ';'
                | IDENTIFIER '=' Expression ';'
                | 'mut' IDENTIFIER ':' Type '=' Expression ';'
                | 'mut' IDENTIFIER '=' Expression ';'
@@ -116,7 +135,7 @@ AdditiveExpression ::= MultiplicativeExpression (('+' | '-') MultiplicativeExpre
 
 MultiplicativeExpression ::= ExponentiationExpression (('*' | '/' | '%') ExponentiationExpression)*
 
-ExponentiationExpression ::= UnaryExpression ('**' UnaryExpression)*
+ExponentiationExpression ::= UnaryExpression ('**' ExponentiationExpression)?
 
 UnaryExpression ::= PostfixExpression
                   | '-' UnaryExpression
@@ -130,6 +149,7 @@ PostfixExpression ::= PrimaryExpression
                     | PostfixExpression '[' Expression ']'        // Array access
                     | PostfixExpression '.' IDENTIFIER            // Field access
                     | PostfixExpression '.' INTEGER               // Tuple access
+                    | PostfixExpression '?'                       // Try operator
 
 ArgumentList ::= Expression (',' Expression)* ','?
 
@@ -173,7 +193,6 @@ Literal ::= INTEGER
           | STRING
           | CHAR
           | BOOLEAN
-          | 'null'
 
 ArrayLiteral ::= '[' ExpressionList? ']'
 
@@ -201,7 +220,7 @@ Type ::= PrimitiveType
 PrimitiveType ::= 'Int8' | 'Int16' | 'Int32' | 'Int64'
                 | 'UInt8' | 'UInt16' | 'UInt32' | 'UInt64'
                 | 'Float32' | 'Float64'
-                | 'Bool' | 'Char' | 'String' | 'Unit'
+                | 'Bool' | 'Char' | 'String' | 'Unit' | 'str'
 
 TypeList ::= Type (',' Type)* ','?
 ```
@@ -210,13 +229,21 @@ TypeList ::= Type (',' Type)* ','?
 ```ebnf
 Const ::= 'const' IDENTIFIER ':' Type '=' Expression ';'
 
-Use ::= 'use' Path ';'
+Use ::= 'use' UseTree ';'
 
-Path ::= IDENTIFIER ('::' IDENTIFIER)*
+UseTree ::= Path ('as' IDENTIFIER)?
+          | Path '::' '*'
+          | Path '::' 'self'
+          | Path '::' '{' UseTreeList? '}'
+
+UseTreeList ::= UseTree (',' UseTree)* ','?
+
+Path ::= PathSegment ('::' PathSegment)*
+PathSegment ::= IDENTIFIER | 'self' | 'super' | 'crate'
 ```
 
 ## Operator Precedence (Highest to Lowest)
-1. Primary expressions, field access, array access, function calls
+1. Primary expressions, field access, array access, function calls, try operator (`?`)
 2. Unary operators (-, !, ~, &, *)
 3. Exponentiation (**)
 4. Multiplicative (*, /, %)
@@ -260,3 +287,5 @@ AsyncFunction ::= 'async' 'fn' IDENTIFIER '(' ParameterList? ')' ('->' Type)? Bl
 // Lambda expressions (future)
 Lambda ::= '|' ParameterList? '|' (Expression | Block)
 ```
+## Conformance
+A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

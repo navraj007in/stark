@@ -225,6 +225,11 @@ if condition {
 print(z)                  // Error: z might not be initialized
 ```
 
+Rules:
+- `let name: Type;` declares a variable without initializing it.
+- A variable must be definitely assigned before any read.
+- All control-flow paths must assign before use.
+
 #### Double Initialization
 ```stark
 let mut x: Int32 = 42
@@ -264,6 +269,10 @@ fn caller2() -> Int32 {
     x * 2
 }
 ```
+
+Rules:
+- `expr?` propagates `Err` or `None` to the nearest enclosing function returning `Result<_, E>` or `Option<_>`.
+- The enclosing function return type must be compatible with the propagated type.
 
 ### 10. Trait Constraint Checking
 
@@ -393,3 +402,5 @@ struct ErrorReporter {
     error_limit: usize
 }
 ```
+## Conformance
+A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

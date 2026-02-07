@@ -392,3 +392,5 @@ Error: borrow of moved value
 - Higher-ranked trait bounds
 - Associated types with lifetime parameters
 - Async/await with proper lifetime handling
+## Conformance
+A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

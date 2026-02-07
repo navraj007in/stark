@@ -40,11 +40,19 @@ Default floating point type is `Float64`.
 Bool    // Boolean: true or false
 Char    // Unicode scalar value (32-bit)
 Unit    // Unit type: () - represents no meaningful value
+str     // String slice (unsized), typically used behind references: &str
 ```
 
 ### String Type
 ```stark
 String  // UTF-8 encoded string, heap-allocated, growable
+```
+
+### String Slice Type
+```stark
+// str is an unsized string slice type. It is used via references.
+let s: &str = "hello"
+let owned: String = String::from(s)
 ```
 
 ## Composite Types
@@ -296,6 +304,13 @@ fn caller() -> Result<Int32, String> {
 }
 ```
 
+### Try Operator (`?`) Typing
+The try operator is defined for `Result<T, E>` and `Option<T>`:
+- If `expr` has type `Result<T, E>`, then `expr?` has type `T` and propagates `Err(E)` to the nearest enclosing function returning `Result<_, E>`.
+- If `expr` has type `Option<T>`, then `expr?` has type `T` and propagates `None` to the nearest enclosing function returning `Option<_>`.
+
+The enclosing function's return type must be compatible with the propagated type.
+
 ## Type System Extensions (Future)
 
 ### Generics
@@ -348,3 +363,5 @@ fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
 3. Perform type inference using Hindley-Milner algorithm
 4. Check type constraints and ownership rules
 5. Generate type-annotated AST for code generation
+## Conformance
+A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

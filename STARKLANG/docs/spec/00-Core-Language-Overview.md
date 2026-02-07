@@ -1,23 +1,22 @@
 # STARK Core Language Specification Overview
 
 ## Introduction
-This document provides an overview of the complete STARK core language specification. The core language focuses on AI/ML deployment and inference optimization, with tensor operations, model loading, and memory-safe execution as first-class features.
+This document provides an overview of the complete STARK core language specification. The documents in `docs/spec/` are normative for Core v1. The core language defines the general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and standard library). Non-core extensions are defined separately.
 
 ## Design Philosophy
 
 ### Core Principles
-1. **AI-Native Design**: Tensor operations and ML workflows as primary abstractions
-2. **Memory Safety**: Prevent common memory errors through ownership and borrowing
-3. **Inference Performance**: Zero-cost abstractions optimized for model serving
-4. **Python Interoperability**: Seamless loading of existing PyTorch/TensorFlow models
-5. **Production Readiness**: Predictable performance for real-time AI applications
+1. **Memory Safety**: Prevent common memory errors through ownership and borrowing
+2. **Performance**: Zero-cost abstractions and predictable execution
+3. **Clarity**: Simple, explicit syntax and semantics
+4. **Pragmatism**: A minimal, implementable Core v1
+5. **Interoperability**: Clear boundaries for future extensions
 
 ### Language Goals
-- AI/ML deployment capabilities with production-grade performance
-- Compile-time guarantees for memory and type safety in tensor operations
-- 2-10x faster inference than Python-based solutions
-- Seamless integration with existing ML model formats
-- Clear and maintainable AI workflow code
+- A safe, compiled, general-purpose language core
+- Compile-time guarantees for memory and type safety
+- Simple, predictable semantics suitable for tooling
+- Clear extension points for domain-specific features
 
 ## Specification Structure
 
@@ -33,7 +32,7 @@ Defines how source code is tokenized:
 ### 2. Syntax Grammar ([02-Syntax-Grammar.md](./02-Syntax-Grammar.md))
 Defines the concrete syntax using EBNF:
 - **Program Structure**: Items (functions, structs, enums, traits)
-- **Expressions**: Precedence, associativity, type inference
+- **Expressions**: Precedence, associativity
 - **Statements**: Variable declarations, control flow, returns
 - **Type Syntax**: Primitives, composites, references, functions
 - **Pattern Matching**: Destructuring and exhaustiveness
@@ -74,6 +73,16 @@ Essential types and functions for practical programming:
 - **Math Functions**: Arithmetic, trigonometric, random numbers
 - **Error Handling**: Structured error types and propagation
 
+### 7. Modules and Packages ([07-Modules-and-Packages.md](./07-Modules-and-Packages.md))
+Defines module structure, visibility, and import resolution:
+- **Modules**: File and directory layout
+- **Visibility**: `pub`/`priv` rules
+- **Imports**: `use` paths, trees, and aliasing
+- **Packages**: Manifest and dependency resolution
+
+### 8. Non-Core Extensions (../extensions/AI-Extensions.md)
+Non-core language extensions live outside Core v1 and are optional. See `docs/extensions/AI-Extensions.md`.
+
 ## Core Language Features
 
 ### Variables and Mutability
@@ -94,173 +103,56 @@ fn greet(name: &str) {
 }
 ```
 
-### AI/ML Data Types
+### Ownership and Borrowing
 ```stark
-// Tensor types (core AI primitive)
-let features: Tensor<Float32>[batch, 128] = load_data("input.json")
-let weights: Tensor<Float32>[128, 10] = tensor_zeros([128, 10])
-
-// Model loading
-let model: Model = load_pytorch_model("classifier.pt")
-let llm: LLMClient = LLMClient(provider="openai", model="gpt-4")
-
-// Dataset handling
-let dataset: Dataset<Tuple<Tensor<Float32>[128], Int32>> = 
-    load_dataset("train.csv").batch(32).shuffle(42)
-
-// Traditional types still available
-struct Point {
-    x: Float64,
-    y: Float64
-}
-```
-
-### AI Workflow Control Flow
-```stark
-// Batch processing
-for batch in dataset {
-    let predictions = model.predict(batch.features)
-    let accuracy = evaluate(predictions, batch.labels)
-    println("Batch accuracy: " + accuracy.to_string())
+fn consume(s: String) {
+    // s is owned here
 }
 
-// LLM integration with pattern matching
-@llm as classifier:
-    system: "You are a text classifier"
-    user: "Classify this text: {{input}}"
-
-match classifier.call({input: text}) {
-    "positive" => handle_positive(),
-    "negative" => handle_negative(),
-    "neutral" => handle_neutral()
+fn borrow(s: &String) -> Int32 {
+    s.len()
 }
 
-// Tensor operations
-let logits = model.forward(features)
-let probabilities = softmax(logits)
-let prediction = argmax(probabilities)
-```
-
-### AI Error Handling
-```stark
-fn load_model(path: &str) -> Result<Model, ModelError> {
-    if !file_exists(path) {
-        Err(ModelError::FileNotFound(path.to_string()))
-    } else {
-        load_pytorch_model(path)
-    }
-}
-
-fn run_inference(model: &Model, input: Tensor<Float32>) -> Result<Tensor<Float32>, InferenceError> {
-    if input.shape()[0] != model.input_shape()[0] {
-        Err(InferenceError::ShapeMismatch)
-    } else {
-        Ok(model.predict(input)?)
-    }
-}
-```
-
-### Memory-Safe Tensor Operations
-```stark
-fn process_tensor(tensor: Tensor<Float32>) -> Tensor<Float32> {
-    // tensor is owned by this function
-    tensor.map(|x| x * 2.0)
-}
-
-fn compute_statistics(tensor: &Tensor<Float32>) -> (Float32, Float32) {
-    (tensor.mean(), tensor.std())  // Can read but not modify
-}
-
-fn normalize_in_place(tensor: &mut Tensor<Float32>) {
-    let mean = tensor.mean();
-    let std = tensor.std();
-    tensor.map_mut(|x| (x - mean) / std);  // Can read and modify
+fn mutate(s: &mut String) {
+    s.push('!')
 }
 ```
 
 ## Implementation Phases
 
-### Phase 1: AI Core MVP
-**Goal**: Basic AI deployment capability
-- Lexer and parser for tensor-aware syntax
-- Type checker with tensor shape validation
-- Tensor operations and memory management
-- Python model loading (PyTorch/TensorFlow)
-- Basic inference runtime
+### Phase 1: Core MVP
+**Goal**: A complete, implementable Core v1
+- Lexer and parser for core syntax
+- Type checker with ownership analysis
+- Module system and import resolution
+- Minimal standard library
 
-### Phase 2: Production AI Runtime
-**Goal**: Production-ready AI deployment
-- Optimizing compiler for tensor operations
-- Full tensor library implementation
-- LLM integration (`@llm` blocks)
-- Batch processing and streaming inference
-- Performance profiling and optimization
-
-### Phase 3: Advanced AI Features
-**Goal**: Complete AI deployment ecosystem
-- Multi-model serving and routing
-- Dynamic batching and caching
-- Edge deployment optimization
-- Model quantization and compression
-- Integration with popular ML frameworks
-
-## Comparison with AI/ML Languages
-
-### vs Python
-- **Similarities**: Readable syntax, good for ML workflows
-- **Differences**: Compiled performance, memory safety, tensor types
-- **AI Focus**: 2-10x faster inference, seamless model loading
-
-### vs Mojo
-- **Similarities**: Python interop, performance focus
-- **Differences**: Memory safety, production deployment focus
-- **Trade-offs**: Research flexibility vs production reliability
-
-### vs Julia
-- **Similarities**: Performance, mathematical computing
-- **Differences**: Better Python ecosystem integration, AI-native design
-- **Trade-offs**: General computing vs AI specialization
-
-### vs JAX/PyTorch JIT
-- **Similarities**: Compilation, optimization
-- **Differences**: Full language vs library, deployment focus
-- **Trade-offs**: Python flexibility vs standalone performance
+### Phase 2: Tooling and Stability
+**Goal**: A stable core suitable for real use
+- Improved diagnostics and error recovery
+- Formatter and basic tooling support
+- Expanded standard library coverage
 
 ## Success Criteria
 
-### AI Performance
-- [ ] 2-10x faster inference than Python equivalents
-- [ ] 50-80% memory reduction vs Python runtime
-- [ ] Zero-copy tensor operations
-- [ ] Sub-millisecond model loading
-
 ### Correctness
-- [ ] Memory safety verified for tensor operations
-- [ ] Shape checking prevents runtime tensor errors
-- [ ] Comprehensive AI workflow test suite
-- [ ] Formal verification of ownership in tensor sharing
-
-### Ecosystem Integration
-- [ ] Seamless PyTorch/TensorFlow model loading
-- [ ] Python library interoperability for preprocessing
-- [ ] ONNX export/import support
-- [ ] Integration with popular ML serving frameworks
+- [ ] Memory safety enforced by ownership and borrowing
+- [ ] Deterministic type checking and inference
+- [ ] Exhaustive match checking
 
 ### Developer Experience
-- [ ] Clear tensor shape error messages
-- [ ] AI-focused IDE support and debugging
-- [ ] Model performance profiling tools
-- [ ] Migration guides from Python ML codebases
+- [ ] Clear, actionable error messages
+- [ ] Predictable module and import rules
+- [ ] Stable core language surface
 
 ## Next Steps
 
-1. **Implement Tensor-Aware Lexer**: Start with tokenization including tensor syntax
-2. **Build AI-Focused Parser**: Parse tensor operations, model loading, and @llm blocks
-3. **Tensor Type Checker**: Develop shape inference and tensor type validation
-4. **Memory-Safe Tensor Operations**: Implement ownership tracking for tensor sharing
-5. **Python Model Loader**: Create PyTorch/TensorFlow model import functionality
-6. **AI Standard Library**: Implement Tensor, Dataset, Model, and LLMClient types
-7. **Inference Runtime**: Develop optimized execution engine for tensor operations
-8. **Performance Benchmarking**: Compare against Python equivalents
+1. **Finalize Core Grammar**: Resolve remaining ambiguities in syntax and lexing
+2. **Solidify Type Rules**: Confirm inference and trait constraints
+3. **Define Module Rules**: Ensure deterministic resolution and visibility
+4. **Validate Stdlib Surface**: Confirm minimal APIs and behaviors
 
-This specification provides a focused foundation for implementing a memory-safe, high-performance AI deployment language that bridges the gap between Python research and production inference systems.
+This specification provides a focused foundation for implementing a safe, performant, general-purpose language core.
+
+## Conformance
+A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

@@ -1,5 +1,7 @@
 # STARKLANG Package Manifest Format
 
+> Non-Normative Note: This document provides architectural guidance and may evolve. The normative Core v1 language specification lives in `docs/spec/`.
+
 This document defines the formal structure and specification of the STARKLANG package manifest file: `starkpkg.json`. It acts as the declarative configuration for a project or library, guiding compilation, dependency resolution, build output, execution behavior, and metadata definition.
 
 ---

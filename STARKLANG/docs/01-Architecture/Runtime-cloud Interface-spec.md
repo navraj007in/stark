@@ -1,5 +1,7 @@
 # STARKLANG Runtime-CloudInterface Specification
 
+> Non-Normative Note: This document provides architectural guidance and may evolve. The normative Core v1 language specification lives in `docs/spec/`.
+
 This document outlines how STARKLANG programs interact with cloud infrastructure during runtime execution. It defines the interface contract between STARKVM and the underlying cloud environment, particularly for serverless functions, containerized services, actor-based workloads, and ML pipelines.
 
 ---

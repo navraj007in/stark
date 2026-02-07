@@ -1,5 +1,7 @@
 # STARKLANG Module System and Workspace Resolution
 
+> Non-Normative Note: This document provides architectural guidance and may evolve. The normative Core v1 language specification lives in `docs/spec/`.
+
 This document outlines how STARKLANG organizes and resolves modules, packages, and workspaces. It covers the structure, import resolution, visibility rules, multi-module projects, and workspace tooling support for large-scale development.
 
 ---

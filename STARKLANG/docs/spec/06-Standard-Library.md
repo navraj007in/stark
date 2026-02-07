@@ -22,7 +22,7 @@ Automatically imported into every STARK program:
 ```stark
 // Basic types (no import needed)
 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64
-Float32, Float64, Bool, Char, String, Unit
+Float32, Float64, Bool, Char, String, str, Unit
 
 // Essential traits
 trait Copy
@@ -43,9 +43,9 @@ enum Result<T, E> {
 }
 
 // Essential functions
-fn print(value: String)
-fn println(value: String)
-fn panic(message: String) -> !
+fn print(value: &str)
+fn println(value: &str)
+fn panic(message: &str) -> !
 ```
 
 ## Core Module (std::core)
@@ -488,3 +488,5 @@ impl Ord for Int32 {
 - HashMap<T> uses open addressing with Robin Hood hashing
 - String operations are UTF-8 aware
 - Iterator chains compile to efficient loops
+## Conformance
+A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

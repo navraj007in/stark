@@ -1,5 +1,7 @@
 # STARKLANG Execution Modes and Entrypoint Model
 
+> Non-Normative Note: This document provides architectural guidance and may evolve. The normative Core v1 language specification lives in `docs/spec/`.
+
 This document defines the execution semantics of STARKLANG programs within the STARKVM runtime. It outlines the supported execution modes, how entrypoints are defined, and how the STARK compiler and VM interpret different program types.
 
 ---

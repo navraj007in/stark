@@ -1,5 +1,7 @@
 # STARKLANG Compiler Bootstrap Lifecycle
 
+> Non-Normative Note: This document provides architectural guidance and may evolve. The normative Core v1 language specification lives in `docs/spec/`.
+
 This document defines the end-to-end lifecycle of how STARKLANG source code is transformed from `.stark` source files into executable bytecode packages consumed by the STARKVM. It also outlines the CLI interface, compiler phases, build artifacts, and tooling integration required for seamless development and deployment.
 
 ---

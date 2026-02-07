@@ -8,27 +8,27 @@ This document defines the lexical structure of STARK - how source code is broken
 ### 1. Keywords
 ```
 // Control Flow
-if, else, elif, match, case, default
+if, else, match
 for, while, loop, break, continue, return
 
 // Declarations
-fn, struct, enum, trait, impl, let, mut, const
+fn, struct, enum, trait, impl, let, mut, const, type, use, mod
 
 // Types
 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64
-Float32, Float64, Bool, String, Char, Unit
-
-// Memory & Ownership
-ref, move, copy, drop
+Float32, Float64, Bool, String, Char, Unit, str
 
 // Visibility
 pub, priv
+
+// Module Paths
+self, super, crate
 
 // Operators
 and, or, not, in, is, as
 
 // Literals
-true, false, null
+true, false
 ```
 
 ### 2. Identifiers
@@ -177,7 +177,7 @@ Rules:
 - Newline (U+000A)
 - Carriage Return (U+000D)
 
-Newlines are significant for statement termination when not inside delimiters.
+Whitespace separates tokens and is otherwise ignored. Statement termination is defined by semicolons in the syntax grammar.
 
 ### 8. Token Precedence
 When multiple token patterns could match:
@@ -188,15 +188,14 @@ When multiple token patterns could match:
 ### 9. Reserved Tokens
 Reserved for future use:
 ```
-async, await, yield, where, macro, unsafe, extern
+async, await, yield, where, macro, unsafe, extern, import, export, null
 ```
 
 ## Lexical Analysis Rules
 
 1. **Maximal Munch**: Always match the longest possible token
-2. **Whitespace**: Ignored except for statement separation
-3. **Line Continuation**: Backslash at end of line continues statement
-4. **Encoding**: Source files must be valid UTF-8
+2. **Whitespace**: Ignored except for token separation
+3. **Encoding**: Source files must be valid UTF-8
 
 ## Error Handling
 
@@ -204,3 +203,5 @@ Invalid tokens should produce specific error messages:
 - Invalid character: "Unexpected character 'X' at line Y:Z"
 - Unterminated string: "Unterminated string literal at line Y:Z"
 - Invalid number: "Invalid number format at line Y:Z"
+## Conformance
+A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

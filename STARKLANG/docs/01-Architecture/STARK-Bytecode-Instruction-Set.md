@@ -1,5 +1,7 @@
 # STARK VM Bytecode Instruction Set Specification
 
+> Non-Normative Note: This document provides architectural guidance and may evolve. The normative Core v1 language specification lives in `docs/spec/`.
+
 ## Overview
 
 The STARK Virtual Machine (STARKVM) is a stack-based virtual machine optimized for AI/ML workloads. It features:
