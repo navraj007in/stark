@@ -488,5 +488,11 @@ impl Ord for Int32 {
 - HashMap<T> uses open addressing with Robin Hood hashing
 - String operations are UTF-8 aware
 - Iterator chains compile to efficient loops
+
+## Behavioral Requirements (Core v1)
+- Indexing `Vec<T>` with `[]` MUST perform bounds checking and MUST trap on out-of-bounds access.
+- `get`/`get_mut` MUST return `None` for out-of-bounds indices and MUST NOT trap.
+- `String::substring(start, end)` MUST validate UTF-8 boundaries and MUST trap on invalid boundaries or ranges.
+- IO functions MUST return `Result` with a non-`Ok` variant on failure and MUST NOT silently ignore errors.
 ## Conformance
 A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

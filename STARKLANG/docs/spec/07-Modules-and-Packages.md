@@ -88,6 +88,12 @@ Dependency modules are accessed via their package name:
 use TensorLib::tensor::Tensor;
 ```
 
+### Dependency Version Resolution (Core v1)
+- Version strings follow semantic versioning.
+- If multiple versions satisfy a constraint, the highest version MUST be selected.
+- If no version satisfies a constraint, compilation MUST fail with an error.
+- The source of packages (registry, cache, or local path) is implementation-defined, but the chosen version MUST be reported in build output.
+
 ## Standard Library
 The standard library is available under the `std` package name:
 ```stark

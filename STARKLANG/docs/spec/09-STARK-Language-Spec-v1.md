@@ -36,3 +36,12 @@ The key words **MUST**, **SHOULD**, and **MAY** are to be interpreted as follows
 
 ## Conformance
 An implementation claiming Core v1 conformance MUST implement the normative Core v1 documents listed above, and MUST document any deviations or extensions.
+
+## Conformance Checklist (Core v1)
+1. Lexer recognizes all tokens and keywords per `01-Lexical-Grammar.md`.
+2. Parser accepts all grammar productions in `02-Syntax-Grammar.md`.
+3. Type checker enforces ownership, borrowing, generics, and trait coherence rules in `03-Type-System.md`.
+4. Semantic analysis enforces exhaustiveness, initialization, and runtime error semantics in `04-Semantic-Analysis.md`.
+5. Memory model guarantees ownership and borrowing invariants in `05-Memory-Model.md`.
+6. Standard library implements required behavior in `06-Standard-Library.md`.
+7. Module and package resolution follow `07-Modules-and-Packages.md`.

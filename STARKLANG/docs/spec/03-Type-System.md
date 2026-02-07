@@ -326,6 +326,37 @@ fn max<T: Ord>(a: T, b: T) -> T {
 }
 ```
 
+## Generics (Core v1)
+Core v1 supports parametric polymorphism for functions, structs, enums, and traits.
+
+Rules:
+- Generic parameters are introduced with `<T, U, ...>` after the item name.
+- Generic parameters are in scope within the item body and signatures.
+- All generic parameters used in an item MUST be declared by that item.
+- Instantiation occurs at use sites; Core v1 permits monomorphization or dictionary-passing, but the observable behavior MUST be equivalent.
+
+### Trait Bounds
+```stark
+fn max<T: Ord>(a: T, b: T) -> T { if a > b { a } else { b } }
+```
+
+Rules:
+- A bound `T: Trait` requires a visible `impl Trait for T`.
+- Multiple bounds are allowed: `T: TraitA + TraitB`.
+
+## Trait Coherence (Core v1)
+To avoid ambiguous implementations, Core v1 applies the orphan rule:
+- An `impl` is valid only if either the trait or the type is defined in the current package.
+
+Additionally:
+- If multiple applicable `impl` blocks could apply to the same type at a call site, the program is ill-formed.
+- Blanket implementations (e.g., `impl<T: Trait> OtherTrait for T`) are permitted but must not violate coherence.
+
+## Numeric Semantics (Core v1)
+- Integer overflow and underflow are runtime errors and MUST trap.
+- Division or modulo by zero is a runtime error and MUST trap.
+- Floating-point operations follow IEEE-754 semantics (NaN, +/-Inf).
+
 ### Associated Types
 ```stark
 trait Iterator {

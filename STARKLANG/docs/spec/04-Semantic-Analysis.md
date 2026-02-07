@@ -181,6 +181,12 @@ fn valid_match(c: Color) -> String {
 }
 ```
 
+Rules:
+- A `match` over an enum type is exhaustive if every variant is covered, or a wildcard (`_`) arm exists.
+- Tuple patterns are exhaustive if each element position is exhaustive for its type.
+- Literal patterns are exhaustive only for finite domains (e.g., `Bool` with `true` and `false`).
+- If a match is not exhaustive, it is a compile-time error.
+
 #### Pattern Type Checking
 ```stark
 let x: Int32 = 42
@@ -273,6 +279,10 @@ fn caller2() -> Int32 {
 Rules:
 - `expr?` propagates `Err` or `None` to the nearest enclosing function returning `Result<_, E>` or `Option<_>`.
 - The enclosing function return type must be compatible with the propagated type.
+
+## Runtime Error Semantics (Core v1)
+- A runtime error (e.g., integer overflow, division by zero, out-of-bounds indexing) MUST terminate the current program execution.
+- `panic(...)` is a runtime error that terminates the program after emitting the provided message.
 
 ### 10. Trait Constraint Checking
 
