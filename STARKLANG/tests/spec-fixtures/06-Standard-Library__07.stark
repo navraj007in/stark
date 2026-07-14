@@ -1,0 +1,14 @@
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+impl<T, E> Result<T, E> {
+    fn is_ok(&self) -> Bool;
+    fn is_err(&self) -> Bool;
+    fn unwrap(self) -> T;
+    fn unwrap_or(self, default: T) -> T;
+    fn map<U>(self, f: fn(T) -> U) -> Result<U, E>;
+    fn map_err<F>(self, f: fn(E) -> F) -> Result<T, F>;
+    fn and_then<U>(self, f: fn(T) -> Result<U, E>) -> Result<U, E>;
+}

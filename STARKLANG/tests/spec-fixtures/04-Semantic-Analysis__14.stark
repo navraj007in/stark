@@ -1,0 +1,12 @@
+let x = 42;
+x = 43;                   // Error: x is not mutable
+
+let mut y = 42;
+y = 43;                   // OK: y is mutable
+
+struct Point { x: Int32, y: Int32 }
+let p = Point { x: 1, y: 2 };
+p.x = 10;                 // Error: p is not mutable
+
+let mut p2 = Point { x: 1, y: 2 };
+p2.x = 10;                // OK: p2 is mutable

@@ -1,0 +1,6 @@
+let x = 10;       // x: Int32
+{
+    let x = "hi"; // Shadows outer x, x: String
+    // Inner x takes precedence
+}
+// Outer x visible again

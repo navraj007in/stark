@@ -1,0 +1,3 @@
+let mut x: Int32 = 42;
+x = 43;                   // OK: reassignment
+let x = 44;               // Error: redeclaration in same scope

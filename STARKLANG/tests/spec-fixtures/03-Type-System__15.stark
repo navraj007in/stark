@@ -1,0 +1,3 @@
+fn(T1, T2) -> R    // Function taking T1, T2 and returning R
+fn() -> R          // Function taking no parameters, returning R
+fn(T)              // Function taking T, returning Unit

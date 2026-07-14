@@ -1,0 +1,6 @@
+let mut x: Int32 = 10;
+x = 20;                    // OK: same type
+x = "hello";               // Error: type mismatch
+
+let y: Int32 = 10;
+y = 20;                    // Error: y is not mutable

@@ -1,0 +1,14 @@
+trait Error {
+    fn message(&self) -> String;
+}
+
+// Standard error types
+struct GenericError {
+    message: String
+}
+
+impl Error for GenericError {
+    fn message(&self) -> String {
+        self.message.clone()
+    }
+}

@@ -1,0 +1,8 @@
+let s1 = String::from("hello");
+let s2 = s1;              // s1 moved to s2
+print(s1);                // Error: use of moved value
+
+fn take_ownership(s: String) { }
+let s3 = String::from("world");
+take_ownership(s3);       // s3 moved into function
+print(s3);                // Error: use of moved value

@@ -1,0 +1,13 @@
+// Implementation-provided; internals opaque
+struct HashSet<T> { /* implementation-defined */ }
+
+impl<T: Hash + Eq> HashSet<T> {
+    fn new() -> HashSet<T>;
+    fn insert(&mut self, value: T) -> Bool;
+    fn remove(&mut self, value: &T) -> Bool;
+    fn contains(&self, value: &T) -> Bool;
+    fn len(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn clear(&mut self);
+    fn iter(&self) -> Iter<T>;
+}

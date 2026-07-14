@@ -1,0 +1,3 @@
+let s1 = String::from("hello");
+let s2 = s1;                // Move
+let s3 = s2.clone();        // Explicit copy (if Clone implemented)

@@ -1,0 +1,5 @@
+"Hello, World!"
+"Line 1\nLine 2"
+"\x41\x42\x43"
+"\u{1F600}"
+r"Raw string with \n literal backslashes"

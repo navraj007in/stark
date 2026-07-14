@@ -1,0 +1,3 @@
+let a = String::from("hello");
+let b = a;  // a is moved to b, a is no longer valid
+// print(a);  // Error: use of moved value

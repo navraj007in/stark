@@ -1,0 +1,9 @@
+trait Iterator {
+    type Item;
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
+impl Iterator for Counter {
+    type Item = Int32;
+    fn next(&mut self) -> Option<Int32> { ... }
+}

@@ -1,0 +1,8 @@
+fn invalid_return() -> &Int32 {
+    let x = 42;
+    &x                    // Error: returning reference to local variable
+}
+
+fn valid_return(x: &Int32) -> &Int32 {
+    x                     // OK: returning input reference
+}

@@ -1,0 +1,34 @@
+// Copy trait for basic types
+impl Copy for Int8 { }
+impl Copy for Int16 { }
+impl Copy for Int32 { }
+impl Copy for Int64 { }
+impl Copy for UInt8 { }
+impl Copy for UInt16 { }
+impl Copy for UInt32 { }
+impl Copy for UInt64 { }
+impl Copy for Float32 { }
+impl Copy for Float64 { }
+impl Copy for Bool { }
+impl Copy for Char { }
+impl Copy for Unit { }
+
+// Clone for all Copy types (blanket implementation)
+impl<T: Copy> Clone for T {
+    fn clone(&self) -> T { *self }
+}
+
+// Eq trait for basic types
+impl Eq for Int32 {
+    fn eq(&self, other: &Int32) -> Bool { *self == *other }
+}
+// ... similar for other types
+
+// Ord trait for basic types
+impl Ord for Int32 {
+    fn cmp(&self, other: &Int32) -> Ordering {
+        if *self < *other { Ordering::Less }
+        else if *self > *other { Ordering::Greater }
+        else { Ordering::Equal }
+    }
+}

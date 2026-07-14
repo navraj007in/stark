@@ -3,6 +3,12 @@
 ## Introduction
 This document provides an overview of the complete STARK core language specification. The documents in `docs/spec/` are normative for Core v1. The core language defines the general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and standard library). Non-core extensions are defined separately.
 
+**Maturity: normative draft.** Core v1 is the authoritative definition of the
+language, but it has not yet been validated by a conforming implementation.
+Until a reference lexer/parser/type-checker exists and every normative code
+example is machine-checked, readers should expect the spec to contain
+residual defects, and implementers should report ambiguities as spec bugs.
+
 ## Design Philosophy
 
 ### Core Principles
@@ -43,7 +49,7 @@ Comprehensive type system with safety guarantees:
 - **Composite Types**: Arrays, tuples, structs, enums
 - **Reference Types**: Immutable and mutable references
 - **Ownership Model**: Move semantics, borrowing rules
-- **Type Inference**: Local and function return type inference
+- **Type Inference**: Local type inference (function signatures are fully explicit)
 - **Trait System**: Interfaces and generic constraints
 
 ### 4. Semantic Analysis ([04-Semantic-Analysis.md](./04-Semantic-Analysis.md))
@@ -87,9 +93,9 @@ Non-core language extensions live outside Core v1 and are optional. See `docs/ex
 
 ### Variables and Mutability
 ```stark
-let x = 42              // Immutable by default
-let mut y = 10          // Explicitly mutable
-const MAX_SIZE: Int32 = 1000  // Compile-time constant
+let x = 42;             // Immutable by default
+let mut y = 10;         // Explicitly mutable
+const MAX_SIZE: Int32 = 1000;  // Compile-time constant
 ```
 
 ### Functions
@@ -99,7 +105,7 @@ fn add(a: Int32, b: Int32) -> Int32 {
 }
 
 fn greet(name: &str) {
-    println("Hello, " + name)
+    println(name);
 }
 ```
 
@@ -109,12 +115,12 @@ fn consume(s: String) {
     // s is owned here
 }
 
-fn borrow(s: &String) -> Int32 {
+fn borrow(s: &String) -> UInt64 {
     s.len()
 }
 
 fn mutate(s: &mut String) {
-    s.push('!')
+    s.push('!');
 }
 ```
 
@@ -183,11 +189,11 @@ Float32, Float64, Bool, String, Char, Unit, str
 // Visibility
 pub, priv
 
-// Module Paths
-self, super, crate
+// Module Paths and Self Type
+self, Self, super, crate
 
 // Operators
-and, or, not, in, is, as
+in, as
 
 // Literals
 true, false
@@ -209,14 +215,23 @@ Rules:
 
 #### Integer Literals
 ```
-DECIMAL_INT := [0-9][0-9_]*
-HEX_INT     := 0[xX][0-9a-fA-F][0-9a-fA-F_]*
-BINARY_INT  := 0[bB][01][01_]*
-OCTAL_INT   := 0[oO][0-7][0-7_]*
+DECIMAL_INT := [0-9] ('_'? [0-9])*
+HEX_INT     := 0[xX] [0-9a-fA-F] ('_'? [0-9a-fA-F])*
+BINARY_INT  := 0[bB] [01] ('_'? [01])*
+OCTAL_INT   := 0[oO] [0-7] ('_'? [0-7])*
 
-// Type suffixes
 INT_SUFFIX := (i8|i16|i32|i64|u8|u16|u32|u64)
+
+INTEGER := (DECIMAL_INT | HEX_INT | BINARY_INT | OCTAL_INT) INT_SUFFIX?
 ```
+
+Rules:
+- Underscores are digit separators and may appear only *between* two digits —
+  never leading, trailing, or consecutive (`1__2` and `12_` are invalid).
+- A suffix fixes the literal's type: `i8`→`Int8`, `i16`→`Int16`, `i32`→`Int32`,
+  `i64`→`Int64`, `u8`→`UInt8`, `u16`→`UInt16`, `u32`→`UInt32`, `u64`→`UInt64`.
+  A suffixed literal whose value does not fit the named type is a compile-time
+  error.
 
 Examples:
 ```stark
@@ -231,13 +246,18 @@ Examples:
 
 #### Floating Point Literals
 ```
-FLOAT := DECIMAL_INT '.' [0-9][0-9_]* [EXPONENT]?
-       | DECIMAL_INT EXPONENT
-EXPONENT := [eE][+-]?[0-9][0-9_]*
+FLOAT_BODY := DECIMAL_INT '.' [0-9] ('_'? [0-9])* EXPONENT?
+            | DECIMAL_INT EXPONENT
+EXPONENT := [eE] [+-]? [0-9] ('_'? [0-9])*
 
-// Type suffixes
 FLOAT_SUFFIX := (f32|f64)
+
+FLOAT := FLOAT_BODY FLOAT_SUFFIX?
 ```
+
+Rules:
+- The underscore rules for integer literals apply (separators between digits only).
+- A suffix fixes the literal's type: `f32`→`Float32`, `f64`→`Float64`.
 
 Examples:
 ```stark
@@ -310,10 +330,19 @@ BOOL := true | false
 = += -= *= /= %= **= &= |= ^= <<= >>=
 ```
 
+#### Range
+```
+.. ..=
+```
+
 #### Other
 ```
-? : :: . -> => @ # $
+? :: . -> =>
 ```
+
+Notes:
+- `?` is the try operator (postfix). There is no ternary conditional operator; `if` is an expression.
+- `:` appears only as a delimiter (type annotations, struct fields), not as an operator.
 
 ### 5. Delimiters
 ```
@@ -348,9 +377,10 @@ When multiple token patterns could match:
 3. Comments are ignored in token stream
 
 ### 9. Reserved Tokens
-Reserved for future use:
+Reserved for future use (recognized as keywords but not used by any Core v1 grammar production):
 ```
-async, await, yield, where, macro, unsafe, extern, import, export, null
+async, await, yield, where, macro, unsafe, extern, import, export, null,
+and, or, not, is, dyn
 ```
 
 ## Lexical Analysis Rules
@@ -407,28 +437,71 @@ Item ::= Visibility? (Function
 Visibility ::= 'pub' | 'priv'
 ```
 
+### Generic Parameters and Arguments
+```ebnf
+GenericParams ::= '<' GenericParam (',' GenericParam)* ','? '>'
+
+GenericParam ::= IDENTIFIER (':' TraitBounds)?
+
+TraitBounds ::= TraitBound ('+' TraitBound)*
+
+TraitBound ::= Path GenericArgs?
+
+GenericArgs ::= '<' GenericArg (',' GenericArg)* ','? '>'
+
+GenericArg ::= Type
+             | IDENTIFIER '=' Type          // Associated type binding, e.g. Iterator<Item = T>
+```
+
+Notes:
+- Generic parameters may appear on functions, structs, enums, traits, impl blocks, and type aliases.
+- Generic arguments in *expressions* are inferred at the use site. The only
+  explicit form is `path::<Args>` on a path expression (see
+  `PathExpression`), for calls where inference is impossible, e.g.
+  `size_of::<Int32>()`.
+
 ### Function Definition
 ```ebnf
-Function ::= 'fn' IDENTIFIER '(' ParameterList? ')' ('->' Type)? Block
+Function ::= FunctionSig Block
 
-ParameterList ::= Parameter (',' Parameter)* ','?
+FunctionSig ::= 'fn' IDENTIFIER GenericParams? '(' ParameterList? ')' ('->' ReturnType)?
+
+ReturnType ::= Type | '!'                   // '!' is the never type (diverging function)
+
+ParameterList ::= Receiver (',' Parameter)* ','?
+                | Parameter (',' Parameter)* ','?
+
+Receiver ::= 'self'
+           | '&' 'self'
+           | '&' 'mut' 'self'
 
 Parameter ::= IDENTIFIER ':' Type
             | 'mut' IDENTIFIER ':' Type
 
-Block ::= '{' Statement* '}'
+Block ::= '{' Statement* Expression? '}'
 ```
+
+Block semantics:
+- The optional final `Expression` has no terminating semicolon and is the
+  block's value; a block without one evaluates to `Unit`.
+- Disambiguation: at each position inside a block, the parser first attempts
+  to parse a `Statement`; a trailing `Expression` is recognized only
+  immediately before `}`. An expression followed by `;` is always a statement.
+
+Notes:
+- A receiver is only valid on functions declared inside a `trait` or `impl` block.
+- A function without a `->` annotation returns `Unit`. Return types are never inferred.
 
 ### Data Type Definitions
 ```ebnf
-Struct ::= 'struct' IDENTIFIER '{' FieldList? '}'
+Struct ::= 'struct' IDENTIFIER GenericParams? '{' FieldList? '}'
 
 FieldList ::= Field (',' Field)* ','?
 
 Field ::= IDENTIFIER ':' Type
         | 'pub' IDENTIFIER ':' Type
 
-Enum ::= 'enum' IDENTIFIER '{' VariantList? '}'
+Enum ::= 'enum' IDENTIFIER GenericParams? '{' VariantList? '}'
 
 VariantList ::= Variant (',' Variant)* ','?
 
@@ -436,15 +509,19 @@ Variant ::= IDENTIFIER
           | IDENTIFIER '(' TypeList ')'
           | IDENTIFIER '{' FieldList '}'
 
-Trait ::= 'trait' IDENTIFIER '{' TraitItem* '}'
+Trait ::= 'trait' IDENTIFIER GenericParams? '{' TraitItem* '}'
 
-TraitItem ::= Function
-            | Type
+TraitItem ::= FunctionSig ';'               // Required method (signature only)
+            | FunctionSig Block             // Method with default body
+            | AssociatedType
 
-Impl ::= 'impl' Type '{' ImplItem* '}'
-       | 'impl' IDENTIFIER 'for' Type '{' ImplItem* '}'
+AssociatedType ::= 'type' IDENTIFIER ';'
 
-ImplItem ::= Function
+Impl ::= 'impl' GenericParams? Type '{' ImplItem* '}'
+       | 'impl' GenericParams? TraitBound 'for' Type '{' ImplItem* '}'
+
+ImplItem ::= Visibility? Function
+           | 'type' IDENTIFIER '=' Type ';' // Associated type value
 ```
 
 ### Module Definition
@@ -457,7 +534,7 @@ ModuleBlock ::= '{' Item* '}'
 
 ### Type Alias
 ```ebnf
-TypeAlias ::= 'type' IDENTIFIER '=' Type ';'
+TypeAlias ::= 'type' IDENTIFIER GenericParams? '=' Type ';'
 ```
 
 ### Statements
@@ -482,19 +559,39 @@ LetStatement ::= IDENTIFIER ':' Type ';'
 ```ebnf
 Expression ::= AssignmentExpression
 
-AssignmentExpression ::= LogicalOrExpression
-                       | LogicalOrExpression AssignOp AssignmentExpression
+AssignmentExpression ::= RangeExpression
+                       | RangeExpression AssignOp AssignmentExpression
 
 AssignOp ::= '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '**='
            | '&=' | '|=' | '^=' | '<<=' | '>>='
+```
+
+### Place Expressions
+The left-hand side of an assignment must be a *place expression* — an
+expression that denotes a memory location. Place expressions are:
+
+```ebnf
+PlaceExpression ::= Path                              // Variable
+                  | PlaceExpression '.' IDENTIFIER    // Field
+                  | PlaceExpression '.' INTEGER       // Tuple field
+                  | PlaceExpression '[' Expression ']' // Index
+                  | '*' Expression                    // Dereference
+                  | '(' PlaceExpression ')'
+```
+
+Assignment to any other expression form is a compile-time error (checked
+semantically; the grammar accepts any expression on the left).
+
+```ebnf
+RangeExpression ::= LogicalOrExpression (('..' | '..=') LogicalOrExpression)?
 
 LogicalOrExpression ::= LogicalAndExpression ('||' LogicalAndExpression)*
 
 LogicalAndExpression ::= EqualityExpression ('&&' EqualityExpression)*
 
-EqualityExpression ::= RelationalExpression (('==' | '!=') RelationalExpression)*
+EqualityExpression ::= RelationalExpression (('==' | '!=') RelationalExpression)?
 
-RelationalExpression ::= BitwiseOrExpression (('<' | '<=' | '>' | '>=') BitwiseOrExpression)*
+RelationalExpression ::= BitwiseOrExpression (('<' | '<=' | '>' | '>=') BitwiseOrExpression)?
 
 BitwiseOrExpression ::= BitwiseXorExpression ('|' BitwiseXorExpression)*
 
@@ -508,34 +605,48 @@ AdditiveExpression ::= MultiplicativeExpression (('+' | '-') MultiplicativeExpre
 
 MultiplicativeExpression ::= ExponentiationExpression (('*' | '/' | '%') ExponentiationExpression)*
 
-ExponentiationExpression ::= UnaryExpression ('**' ExponentiationExpression)?
+ExponentiationExpression ::= CastExpression ('**' ExponentiationExpression)?
+
+CastExpression ::= UnaryExpression ('as' Type)*
 
 UnaryExpression ::= PostfixExpression
                   | '-' UnaryExpression
                   | '!' UnaryExpression
                   | '~' UnaryExpression
-                  | '&' UnaryExpression        // Reference
+                  | '&' 'mut'? UnaryExpression // Reference (immutable or mutable borrow)
                   | '*' UnaryExpression        // Dereference
 
 PostfixExpression ::= PrimaryExpression
                     | PostfixExpression '(' ArgumentList? ')'     // Function call
-                    | PostfixExpression '[' Expression ']'        // Array access
-                    | PostfixExpression '.' IDENTIFIER            // Field access
+                    | PostfixExpression '[' Expression ']'        // Index (or slice, when the index is a range)
+                    | PostfixExpression '.' IDENTIFIER            // Field access / method reference
                     | PostfixExpression '.' INTEGER               // Tuple access
                     | PostfixExpression '?'                       // Try operator
 
 ArgumentList ::= Expression (',' Expression)* ','?
 
-PrimaryExpression ::= IDENTIFIER
+PrimaryExpression ::= PathExpression
                     | Literal
-                    | '(' Expression ')'
+                    | '(' Expression ')'    // Grouping
+                    | TupleLiteral
                     | ArrayLiteral
                     | StructLiteral
                     | IfExpression
                     | MatchExpression
                     | LoopExpression
                     | Block
+
+PathExpression ::= Path ('::' GenericArgs)?  // e.g. x, String::from, Color::Red, size_of::<Int32>
 ```
+
+Notes:
+- `path::<Args>` (explicit generic arguments on a path expression) is
+  permitted only when type inference cannot determine the arguments, e.g.
+  `size_of::<Int32>()`. It is the only form of expression-level generic
+  arguments in Core v1.
+- Chained comparisons (`a < b < c`, `a == b == c`) are syntax errors:
+  the relational and equality productions are non-associative (at most one
+  operator). Parenthesize to compare a Bool result explicitly.
 
 ### Control Flow Expressions
 ```ebnf
@@ -545,19 +656,30 @@ MatchExpression ::= 'match' Expression '{' MatchArm* '}'
 
 MatchArm ::= Pattern '=>' Expression ','?
 
-Pattern ::= IDENTIFIER
-          | Literal
+Pattern ::= Literal
           | '_'                                    // Wildcard
-          | IDENTIFIER '(' PatternList? ')'        // Enum variant
+          | IDENTIFIER                             // Binding (or unit variant/const, see note)
+          | Path                                   // Unit enum variant or const, e.g. Color::Red
+          | Path '(' PatternList? ')'              // Tuple enum variant, e.g. Option::Some(x)
+          | Path '{' FieldPatternList? '}'         // Struct or struct enum variant
           | '(' PatternList? ')'                   // Tuple
           | '[' PatternList? ']'                   // Array
 
 PatternList ::= Pattern (',' Pattern)* ','?
 
+FieldPatternList ::= FieldPattern (',' FieldPattern)* ','?
+
+FieldPattern ::= IDENTIFIER ':' Pattern
+               | IDENTIFIER                        // Shorthand: binds field to same-named variable
+
 LoopExpression ::= 'loop' Block
                  | 'while' Expression Block
                  | 'for' IDENTIFIER 'in' Expression Block
 ```
+
+Note on pattern name resolution: a single `IDENTIFIER` pattern that resolves to a
+unit enum variant or a constant in scope matches by value; otherwise it introduces
+a new binding. Multi-segment `Path` patterns always match by value.
 
 ### Literals
 ```ebnf
@@ -567,11 +689,16 @@ Literal ::= INTEGER
           | CHAR
           | BOOLEAN
 
+TupleLiteral ::= '(' ')'                                  // Unit value
+               | '(' Expression ',' ')'                   // Single-element tuple
+               | '(' Expression (',' Expression)+ ','? ')' // N-element tuple
+
 ArrayLiteral ::= '[' ExpressionList? ']'
+               | '[' Expression ';' Expression ']'        // Repeat: [value; count]
 
 ExpressionList ::= Expression (',' Expression)* ','?
 
-StructLiteral ::= IDENTIFIER '{' FieldInitList? '}'
+StructLiteral ::= Path '{' FieldInitList? '}'
 
 FieldInitList ::= FieldInit (',' FieldInit)* ','?
 
@@ -579,16 +706,35 @@ FieldInit ::= IDENTIFIER ':' Expression
             | IDENTIFIER                    // Shorthand: field: field
 ```
 
+Notes:
+- `(expr)` is grouping; `(expr,)` is a single-element tuple; `()` is the unit
+  value. The trailing comma distinguishes the 1-tuple from grouping.
+- In `[value; count]`, `count` must be a compile-time constant expression of
+  an unsigned integer type, and `value`'s type must implement `Copy` (the
+  value is copied `count` times).
+
+### Struct Literal Restriction
+To avoid ambiguity with block-taking constructs, a struct literal may NOT appear
+as the outermost expression in:
+- the condition of an `if` or `while`,
+- the scrutinee of a `match`,
+- the iterable of a `for`.
+
+Wrap the struct literal in parentheses in these positions:
+```stark
+if (Config { verbose: true }).verbose { do_thing(); }
+```
+
 ### Types
 ```ebnf
 Type ::= PrimitiveType
-       | IDENTIFIER                        // Named type
+       | Path GenericArgs?                 // Named type, possibly generic: Vec<Int32>, Option<T>
        | '[' Type ';' INTEGER ']'          // Array type
-       | '[' Type ']'                      // Slice type
+       | '[' Type ']'                      // Slice type (unsized; used behind references)
        | '(' TypeList? ')'                 // Tuple type
        | '&' Type                          // Reference type
        | '&' 'mut' Type                    // Mutable reference type
-       | Type '->' Type                    // Function type
+       | 'fn' '(' TypeList? ')' ('->' Type)?  // Function type (non-capturing)
 
 PrimitiveType ::= 'Int8' | 'Int16' | 'Int32' | 'Int64'
                 | 'UInt8' | 'UInt16' | 'UInt32' | 'UInt64'
@@ -597,6 +743,10 @@ PrimitiveType ::= 'Int8' | 'Int16' | 'Int32' | 'Int64'
 
 TypeList ::= Type (',' Type)* ','?
 ```
+
+Notes:
+- A function type without `->` returns `Unit`.
+- The never type `!` may appear only as a function return type (see `ReturnType`).
 
 ### Other Constructs
 ```ebnf
@@ -612,29 +762,39 @@ UseTree ::= Path ('as' IDENTIFIER)?
 UseTreeList ::= UseTree (',' UseTree)* ','?
 
 Path ::= PathSegment ('::' PathSegment)*
-PathSegment ::= IDENTIFIER | 'self' | 'super' | 'crate'
+PathSegment ::= IDENTIFIER | 'self' | 'Self' | 'super' | 'crate'
 ```
+
+Notes:
+- `Self` is valid only inside a `trait` or `impl` block, and only as the
+  *first* segment of a path. As a complete one-segment path in type position
+  it denotes the implementing type; with further segments it projects an
+  associated item, e.g. `Self::Item`.
+- `self`, `super`, and `crate` are likewise valid only as leading segments
+  (`self`/`super` may repeat at the front: `super::super::x`).
 
 ## Operator Precedence (Highest to Lowest)
 1. Primary expressions, field access, array access, function calls, try operator (`?`)
-2. Unary operators (-, !, ~, &, *)
-3. Exponentiation (**)
-4. Multiplicative (*, /, %)
-5. Additive (+, -)
-6. Shift (<<, >>)
-7. Bitwise AND (&)
-8. Bitwise XOR (^)
-9. Bitwise OR (|)
-10. Relational (<, <=, >, >=)
-11. Equality (==, !=)
-12. Logical AND (&&)
-13. Logical OR (||)
-14. Assignment (=, +=, -=, etc.)
+2. Unary operators (-, !, ~, &, &mut, *)
+3. Cast (`as`)
+4. Exponentiation (**)
+5. Multiplicative (*, /, %)
+6. Additive (+, -)
+7. Shift (<<, >>)
+8. Bitwise AND (&)
+9. Bitwise XOR (^)
+10. Bitwise OR (|)
+11. Relational (<, <=, >, >=)
+12. Equality (==, !=)
+13. Logical AND (&&)
+14. Logical OR (||)
+15. Range (.., ..=)
+16. Assignment (=, +=, -=, etc.)
 
 ## Associativity
 - Left associative: Most binary operators
 - Right associative: Assignment operators, exponentiation
-- Non-associative: Comparison operators
+- Non-associative: Comparison operators, range operators
 
 ## Statement vs Expression
 - Statements do not return values and end with semicolons
@@ -648,17 +808,27 @@ PathSegment ::= IDENTIFIER | 'self' | 'super' | 'crate'
 - Newlines are not significant except for line comments
 - Trailing commas are allowed in lists
 
+## Parsing Notes
+- `>>` in a generic argument position (e.g. `Vec<Vec<Int32>>`) MUST be re-tokenized
+  as two `>` tokens by the parser.
+- In expression position, a bare `<` after an identifier is always the
+  relational operator; explicit generic arguments require the `::<` form
+  (turbofish), so no lookahead disambiguation is required.
+
 ## Grammar Extensions for Future Features
 Reserved grammar constructs for later implementation:
 ```ebnf
-// Generic types (future)
-GenericType ::= IDENTIFIER '<' TypeList '>'
-
 // Async functions (future)
 AsyncFunction ::= 'async' 'fn' IDENTIFIER '(' ParameterList? ')' ('->' Type)? Block
 
-// Lambda expressions (future)
+// Lambda expressions / capturing closures (future)
 Lambda ::= '|' ParameterList? '|' (Expression | Block)
+
+// Open-ended ranges (future)
+OpenRange ::= Expression '..' | '..' Expression | '..'
+
+// Lifetime annotations (future)
+LifetimeParam ::= '\'' IDENTIFIER
 ```
 ## Conformance
 A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.
@@ -719,23 +889,62 @@ String  // UTF-8 encoded string, heap-allocated, growable
 ### String Slice Type
 ```stark
 // str is an unsized string slice type. It is used via references.
-let s: &str = "hello"
-let owned: String = String::from(s)
+let s: &str = "hello";
+let owned: String = String::from(s);
 ```
+
+### Never Type
+`!` (the never type) is the type of expressions that never produce a value,
+such as calls to `panic`. It may appear only as a function return type.
+
+```stark
+fn panic(message: &str) -> !
+```
+
+Rules:
+- An expression of type `!` coerces to any other type. This allows, for example,
+  `panic(...)` to appear in one arm of an `if` or `match` whose other arms
+  produce a value.
+- A function returning `!` MUST NOT return normally.
 
 ## Composite Types
 
 ### Array Types
 ```stark
-[T; N]   // Fixed-size array of N elements of type T
-[T]      // Dynamic array (slice) of elements of type T
+[T; N]   // Fixed-size array of N elements of type T (sized)
+[T]      // Slice of elements of type T (unsized)
 ```
 
-Examples:
+A slice `[T]` is an *unsized* view into a contiguous sequence (an array, or the
+elements of a `Vec<T>`). Like `str`, it is used behind references:
+
 ```stark
-let fixed: [Int32; 5] = [1, 2, 3, 4, 5]
-let dynamic: [Int32] = [1, 2, 3]
+let fixed: [Int32; 5] = [1, 2, 3, 4, 5];
+let view: &[Int32] = &fixed;          // Array reference coerces to slice reference
+let part: &[Int32] = &fixed[1..4];    // Slicing with a range yields &[T]
 ```
+
+A local variable cannot have the bare unsized type `[T]`; use `[T; N]` for a
+fixed-size array or `Vec<T>` (standard library) for a growable one.
+
+Indexing rules:
+- `expr[i]` where `i` is an integer denotes a *place* of type `T`
+  (bounds-checked; traps on out-of-bounds).
+- `expr[r]` where `r` is a `Range` denotes a *place* of the unsized slice type
+  `[T]`; traps if the range is out of bounds or inverted. Because `[T]` is
+  unsized, a slice place must be borrowed immediately: `&expr[r]` has type
+  `&[T]` and `&mut expr[r]` has type `&mut [T]`.
+
+### Range Type
+The range operators produce values of the standard library `Range<T>` type:
+
+```stark
+let r = 0..10;      // Range<Int32>: 0,1,...,9 (half-open)
+let ri = 0..=9;     // RangeInclusive<Int32>: 0,1,...,9
+```
+
+Ranges over integer types implement `Iterator` and may be used with `for` loops
+and slicing.
 
 ### Tuple Types
 ```stark
@@ -748,9 +957,9 @@ let dynamic: [Int32] = [1, 2, 3]
 
 Examples:
 ```stark
-let empty: () = ()
-let single: (Int32,) = (42,)
-let pair: (Int32, String) = (42, "hello")
+let empty: () = ();
+let single: (Int32,) = (42,);
+let pair: (Int32, String) = (42, "hello");
 ```
 
 ### Struct Types
@@ -766,6 +975,12 @@ struct Person {
     pub email: String  // Public field
 }
 ```
+
+Restriction (Core v1): struct and enum declarations MUST NOT declare fields
+whose *written* type is a reference type (`&T`, `&mut T`). Instantiating a
+generic type with a reference type argument (e.g. `Option<&T>`) is permitted;
+the resulting value is *borrow-carrying* — see "References and Lifetimes"
+below.
 
 ### Enum Types
 ```stark
@@ -793,6 +1008,10 @@ enum Result<T, E> {
 ```
 
 ## Function Types
+Function types are written with the `fn` keyword and denote *non-capturing*
+functions (named functions or function references). Capturing closures are a
+future extension.
+
 ```stark
 fn(T1, T2) -> R    // Function taking T1, T2 and returning R
 fn() -> R          // Function taking no parameters, returning R
@@ -801,9 +1020,18 @@ fn(T)              // Function taking T, returning Unit
 
 ## Type Aliases
 ```stark
-type Age = Int32
-type Point2D = (Float64, Float64)
-type ErrorCode = Int32
+type Age = Int32;
+type Point2D = (Float64, Float64);
+type ErrorCode = Int32;
+```
+
+## The Self Type
+Within a `trait` or `impl` block, `Self` refers to the implementing type:
+
+```stark
+trait Eq {
+    fn eq(&self, other: &Self) -> Bool;
+}
 ```
 
 ## Ownership and Borrowing
@@ -815,9 +1043,9 @@ type ErrorCode = Int32
 
 ### Move Semantics
 ```stark
-let a = String::new("hello")
-let b = a  // a is moved to b, a is no longer valid
-// print(a)  // Error: use of moved value
+let a = String::from("hello");
+let b = a;  // a is moved to b, a is no longer valid
+// print(a);  // Error: use of moved value
 ```
 
 ### Borrowing Rules
@@ -834,35 +1062,125 @@ fn borrow_mutable(s: &mut String) {
     // Can read and modify
 }
 
-let mut text = String::new("hello")
-borrow_immutable(&text)        // OK
-borrow_mutable(&mut text)      // OK
-// borrow_immutable(&text)     // Error: cannot borrow as immutable while mutable borrow exists
+let mut text = String::from("hello");
+borrow_immutable(&text);       // OK
+borrow_mutable(&mut text);     // OK
 ```
+
+## References and Lifetimes (Core v1)
+Core v1 has no lifetime annotations. Instead, it enforces the following
+conservative rules, which are normative:
+
+1. **No declared reference fields.** Struct, enum variant, and tuple struct
+   declarations MUST NOT write a reference type (`&T`, `&mut T`) as a field
+   type. (Generic *instantiation* with a reference argument is allowed; see
+   Borrow-Carrying Types below.)
+2. **References derive from parameters.** A function may return a reference
+   (or borrow-carrying value) only if every control-flow path derives it from
+   one of its reference parameters (directly, by field/index projection, or by
+   calling a function that itself obeys this rule). Returning a reference
+   derived from a local variable or a by-value parameter is a compile-time
+   error.
+3. **Shortest-input-lifetime rule.** The lifetime of a returned reference (or
+   borrow-carrying value) is the *shortest* of the lifetimes of all reference
+   parameters from which it could have been derived. Callers MUST treat it as
+   invalidated as soon as the shortest-lived of those arguments is
+   invalidated.
+4. **Local borrows are lexically scoped.** A borrow bound to a variable
+   (`let r = &x;`) lasts from its creation to the end of its enclosing block
+   (or until the borrower is explicitly dropped with `drop(...)`). The borrow
+   checker enforces the exclusive/shared rules over that entire region — even
+   if the reference is never used again. To end such a borrow early, introduce
+   an inner block or call `drop`. A *temporary* borrow that is not bound to a
+   variable (e.g. `f(&x);`) ends at the end of its enclosing statement, so
+   `f(&x); g(&mut x);` is legal.
+
+```stark
+let mut s = String::from("hello");
+{
+    let r = &s;           // Borrow begins
+    println(r.as_str());
+}                         // Borrow ends with the block
+s.push('!');              // OK: no live borrow
+```
+
+Example of rule 3:
+```stark
+fn longest(x: &str, y: &str) -> &str {
+    if x.len() > y.len() { x } else { y }
+}
+// The returned reference is valid only while BOTH x's and y's referents
+// are valid, regardless of which branch was taken.
+```
+
+These rules reject some safe programs (that is intentional). Lifetime
+annotations that relax rule 3, user structs with declared reference fields,
+and non-lexical (last-use) borrow regions are future extensions; because the
+lexical rule is strictly more conservative, adopting last-use regions later
+cannot break conforming programs.
+
+### Borrow-Carrying Types
+A type is **borrow-carrying** if it is:
+- a reference type `&T` or `&mut T`; or
+- a generic type with at least one borrow-carrying type argument
+  (e.g. `Option<&T>`, `(Int32, &str)`); or
+- an implementation-provided borrowed view type (the standard library's
+  borrowed iterators such as `VecIter<T>`, `CharsIter`, `KeysIter<K>`, and
+  the slice types behind references).
+
+A borrow-carrying value is treated *as if it were a reference* for all rules
+in this section:
+- It counts as a live borrow of the value(s) it was derived from — shared for
+  `&`-derived values, exclusive for `&mut`-derived values — for the borrow
+  region defined by rule 4.
+- It MUST NOT be stored in a user-declared struct or enum field, returned
+  except under rules 2–3, or otherwise escape the lifetime of its source.
+- Binding it with `let` is permitted; the binding is subject to rule 4.
+
+This is a taint rule: borrow-carrying-ness propagates through generic
+instantiation and function returns, and the checker tracks the source
+variables each borrow-carrying value may borrow from. It is what makes APIs
+like `Vec::get(&self, i) -> Option<&T>` sound without lifetime annotations:
+the returned `Option<&T>` is an active shared borrow of the `Vec` until it
+goes out of scope.
 
 ## Type Inference
 
 ### Local Type Inference
+Types of `let` bindings are inferred from their initializers. Inference is
+local: it uses the initializer expression and, where necessary, later uses
+within the same function body. Function signatures are always fully explicit,
+so inference never crosses function boundaries.
+
 ```stark
-let x = 42          // Inferred as Int32
-let y = 3.14        // Inferred as Float64
-let z = [1, 2, 3]   // Inferred as [Int32]
+let x = 42;             // Inferred as Int32
+let y = 3.14;           // Inferred as Float64
+let z = [1, 2, 3];      // Inferred as [Int32; 3]
 ```
 
-### Function Return Type Inference
+### Function Return Types
+Function return types are NOT inferred. A function without a `->` annotation
+returns `Unit`.
+
 ```stark
-fn add(a: Int32, b: Int32) {  // Return type inferred as Int32
+fn add(a: Int32, b: Int32) -> Int32 {
     a + b
+}
+
+fn greet(name: &str) {      // Returns Unit
+    println(name);
 }
 ```
 
 ### Generic Type Inference
+Generic arguments at call sites are inferred from argument and expected types:
+
 ```stark
 fn identity<T>(x: T) -> T {
     x
 }
 
-let result = identity(42)  // T inferred as Int32
+let result = identity(42);  // T inferred as Int32
 ```
 
 ## Subtyping and Coercion
@@ -870,9 +1188,16 @@ let result = identity(42)  // T inferred as Int32
 ### Numeric Coercions
 No implicit numeric conversions. Explicit casting required:
 ```stark
-let x: Int32 = 42
-let y: Int64 = x as Int64  // Explicit cast required
+let x: Int32 = 42;
+let y: Int64 = x as Int64;  // Explicit cast required
 ```
+
+Cast semantics (`as`):
+- Between integer types: value-preserving if in range; a cast whose value does
+  not fit the target type is a runtime error and MUST trap.
+- Between floating point types: rounds to nearest representable value.
+- Integer to float and float to integer: float-to-int truncates toward zero and
+  MUST trap if the result does not fit the target type (including NaN/Inf).
 
 ### Reference Coercions
 ```stark
@@ -886,16 +1211,21 @@ let y: Int64 = x as Int64  // Explicit cast required
 &mut [T; N] -> &mut [T]  // Mutable array reference to mutable slice reference
 ```
 
+### Never Coercion
+```stark
+! -> T              // The never type coerces to any type
+```
+
 ## Trait System (Basic)
 
 ### Trait Definition
 ```stark
 trait Display {
-    fn fmt(&self) -> String
+    fn fmt(&self) -> String;
 }
 
 trait Eq {
-    fn eq(&self, other: &Self) -> Bool
+    fn eq(&self, other: &Self) -> Bool;
 }
 ```
 
@@ -914,33 +1244,150 @@ impl Eq for Point {
 }
 ```
 
+### Associated Types
+Traits may declare associated types; implementations assign them:
+
+```stark
+trait Iterator {
+    type Item;
+    fn next(&mut self) -> Option<Self::Item>;
+}
+
+impl Iterator for Counter {
+    type Item = Int32;
+    fn next(&mut self) -> Option<Int32> { ... }
+}
+```
+
+Bounds may constrain associated types with bindings: `I: Iterator<Item = T>`.
+
 ## Type Checking Rules
 
 ### Assignment Compatibility
 ```stark
-let x: T = expr  // expr must have type T or be coercible to T
+let x: T = expr;  // expr must have type T or be coercible to T
 ```
 
 ### Function Call Compatibility
 ```stark
 fn f(param: T) { ... }
-f(arg)  // arg must have type T or be coercible to T
+f(arg);  // arg must have type T or be coercible to T
 ```
 
 ### Arithmetic Operations
 ```stark
 // Binary arithmetic requires same types
-let result = x + y  // x and y must have the same numeric type
+let result = x + y;  // x and y must have the same numeric type
 
 // Comparison operators
-let cmp = x < y     // x and y must have the same comparable type
+let cmp = x < y;     // x and y must have the same comparable type
 ```
 
 ### Logical Operations
 ```stark
-let result = a && b  // a and b must be Bool
-let result = !x      // x must be Bool
+let result = a && b;  // a and b must be Bool
+let result = !x;      // x must be Bool
 ```
+
+### For Loops
+`for x in expr` requires `expr` to have a type that implements `Iterator`;
+the loop variable binds successive `Item` values. Integer ranges implement
+`Iterator`; slices and collections provide `.iter()` methods (see the
+standard library specification).
+
+```stark
+for i in 0..10 {
+    println(i.fmt());
+}
+```
+
+### Control Flow Typing
+- **`if`/`else`**: an `if` with an `else` is an expression whose branches must
+  unify to a single type (identical types, or unifiable via the `!` coercion —
+  e.g. one branch may `panic`). An `if` *without* `else` has type `Unit`, and
+  its branch must also have type `Unit`.
+- **`match`**: all arm expressions must unify to a single type (with `!`
+  coercion permitted per arm).
+- **`loop`**: a `loop` expression's type is the unified type of the operands
+  of its `break value;` statements; if every `break` is bare (no value) or the
+  loop has no `break`, the type is `Unit` (a `loop` with no `break` has type
+  `!`).
+- **`while` / `for`**: always have type `Unit`. `break` inside `while`/`for`
+  MUST NOT carry a value.
+- **Block**: the type of the trailing expression, or `Unit` if there is none.
+
+### Method Calls and Auto-Borrowing
+A method call `recv.m(args)` is resolved as follows:
+
+1. **Candidate collection.** Candidates are, in priority order:
+   (a) inherent methods — `fn m` in `impl RecvType { ... }` blocks;
+   (b) trait methods — `fn m` from any trait that RecvType implements, where
+   the trait is *in scope* (defined in, or imported via `use` into, the
+   current module, or in the prelude). Inherent methods shadow trait methods
+   of the same name.
+2. **Ambiguity.** If two or more traits in scope supply an applicable `m` and
+   no inherent method exists, the call is a compile-time error. Disambiguate
+   with a fully-qualified call, passing the receiver explicitly:
+   `TraitName::m(&recv, args)`.
+3. **Receiver coercion (auto-borrowing).** Let `S` be the receiver
+   expression's type. Candidates are matched trying these receiver forms in
+   order: `self: S` (by value), `self: &S` (auto-borrow: the compiler inserts
+   `&`), `self: &mut S` (auto-mutable-borrow: the compiler inserts `&mut`;
+   requires the receiver to be a mutable place). Auto-borrows follow the
+   normal borrow rules.
+4. **Auto-dereference.** If `S` is `&T` or `&mut T` and no candidate matches
+   on `S`, resolution retries with `T` (one level of dereference, applied
+   repeatedly for nested references). Combined with step 3 this allows
+   `(&v).len()` and `v.len()` to resolve identically.
+5. **Visibility.** Private methods are callable only per the module rules
+   (07-Modules-and-Packages.md).
+
+Trait methods can always be called in fully-qualified function form —
+`Display::fmt(&x)` — since a method is an ordinary function whose first
+parameter is the receiver.
+
+### Operators and Traits
+Operator expressions on **primitive types** have built-in meaning (Numeric
+Semantics below). On **generic type parameters**, operators desugar to trait
+method calls, so the corresponding bound is required:
+
+| Operator | Requires bound | Desugars to |
+| --- | --- | --- |
+| `==`, `!=` | `T: Eq` | `Eq::eq(&a, &b)` (negated for `!=`) |
+| `<`, `<=`, `>`, `>=` | `T: Ord` | `Ord::cmp(&a, &b)` compared to `Ordering` |
+| `+ - * / % **`, bitwise, shifts | `T: Num` | primitive operation after monomorphization |
+
+`Num` is a compiler-known marker trait implemented by exactly the built-in
+numeric types (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`); user
+types cannot implement it in Core v1. Operator overloading for user-defined
+types (Add/Sub/... traits) is a future extension. `&&`, `||`, and `!` (on
+`Bool`) are built-in, short-circuiting, and not overloadable.
+
+```stark
+fn max<T: Ord>(a: T, b: T) -> T {
+    if a > b { a } else { b }   // a > b desugars to Ord::cmp(&a, &b)
+}
+```
+
+### Copy and Drop (Soundness Rules)
+- `Copy` may be implemented for a type only if **all** of its fields are
+  `Copy`. Violations are compile-time errors.
+- A type MUST NOT implement both `Copy` and `Drop` (a copyable type would run
+  its destructor once per copy).
+- `Drop::drop` MUST NOT be called explicitly; use the free function
+  `drop(value)`, which takes ownership and runs the destructor exactly once.
+  After `drop(v)`, `v` is moved-from.
+- Every owned value's destructor runs **exactly once**: at end of scope, at
+  explicit `drop`, or when its owner is consumed — never twice. For values
+  moved on only some control-flow paths, the implementation MUST track
+  initialization state (e.g. drop flags) to preserve exactly-once semantics.
+- **Partial moves**: moving a field out of a struct is permitted only if the
+  struct's type does not implement `Drop`. After a partial move, the whole
+  value may no longer be used or moved, but its remaining fields may be.
+- **Reinitialization**: assigning a new value to a moved-from `let mut`
+  variable makes it valid again (definite-assignment tracking).
+- Moving an element out of an indexed place (`v[i]`) is a compile-time error;
+  use APIs that transfer ownership explicitly (e.g. `Vec::remove`, `Vec::pop`).
 
 ## Error Types and Handling
 
@@ -967,7 +1414,7 @@ fn might_fail() -> Result<Int32, String> {
 }
 
 fn caller() -> Result<Int32, String> {
-    let value = might_fail()?  // Early return on error
+    let value = might_fail()?;  // Early return on error
     Ok(value * 2)
 }
 ```
@@ -979,21 +1426,6 @@ The try operator is defined for `Result<T, E>` and `Option<T>`:
 
 The enclosing function's return type must be compatible with the propagated type.
 
-## Type System Extensions (Future)
-
-### Generics
-```stark
-struct Vec<T> {
-    data: [T],
-    len: Int32,
-    cap: Int32
-}
-
-fn max<T: Ord>(a: T, b: T) -> T {
-    if a > b { a } else { b }
-}
-```
-
 ## Generics (Core v1)
 Core v1 supports parametric polymorphism for functions, structs, enums, and traits.
 
@@ -1002,6 +1434,22 @@ Rules:
 - Generic parameters are in scope within the item body and signatures.
 - All generic parameters used in an item MUST be declared by that item.
 - Instantiation occurs at use sites; Core v1 permits monomorphization or dictionary-passing, but the observable behavior MUST be equivalent.
+- Generic arguments in expressions are inferred. When inference is impossible
+  (no parameter or usable result type mentions the type parameter), explicit
+  arguments are supplied with the turbofish form on a path expression:
+  `size_of::<Int32>()`. This is the only expression-level generic-argument
+  syntax in Core v1.
+
+```stark
+struct Pair<T> {
+    first: T,
+    second: T
+}
+
+fn max<T: Ord>(a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+```
 
 ### Trait Bounds
 ```stark
@@ -1011,6 +1459,7 @@ fn max<T: Ord>(a: T, b: T) -> T { if a > b { a } else { b } }
 Rules:
 - A bound `T: Trait` requires a visible `impl Trait for T`.
 - Multiple bounds are allowed: `T: TraitA + TraitB`.
+- Bounds may bind associated types: `I: Iterator<Item = T>`.
 
 ## Trait Coherence (Core v1)
 To avoid ambiguous implementations, Core v1 applies the orphan rule:
@@ -1021,24 +1470,11 @@ Additionally:
 - Blanket implementations (e.g., `impl<T: Trait> OtherTrait for T`) are permitted but must not violate coherence.
 
 ## Numeric Semantics (Core v1)
-- Integer overflow and underflow are runtime errors and MUST trap.
+- Integer overflow and underflow are runtime errors and MUST trap. This applies
+  in every build configuration; there is no mode in which overflow wraps
+  silently.
 - Division or modulo by zero is a runtime error and MUST trap.
 - Floating-point operations follow IEEE-754 semantics (NaN, +/-Inf).
-
-### Associated Types
-```stark
-trait Iterator {
-    type Item
-    fn next(&mut self) -> Option<Self::Item>
-}
-```
-
-### Lifetime Parameters
-```stark
-fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
-    if x.len() > y.len() { x } else { y }
-}
-```
 
 ## Type Safety Guarantees
 
@@ -1047,6 +1483,23 @@ fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
 3. **No use-after-free**: Ownership system prevents dangling pointers
 4. **No data races**: Borrowing rules prevent concurrent access violations
 5. **No memory leaks**: Automatic memory management through ownership
+
+## Type System Extensions (Future)
+
+### Lifetime Parameters
+```stark
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+```
+
+### Trait Objects
+Dynamic dispatch via `dyn Trait` is a future extension; `dyn` is a reserved
+keyword.
+
+### Capturing Closures
+Lambda expressions that capture their environment are a future extension; the
+`fn(...)` function types in Core v1 are non-capturing.
 
 ## Implementation Notes
 
@@ -1059,7 +1512,8 @@ fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
 ### Type Checking Algorithm
 1. Parse source into AST
 2. Build symbol table with declarations
-3. Perform type inference using Hindley-Milner algorithm
+3. Perform local type inference by unification within function bodies
+   (function signatures are fully annotated, so no global inference is needed)
 4. Check type constraints and ownership rules
 5. Generate type-annotated AST for code generation
 ## Conformance
@@ -1080,17 +1534,17 @@ Build symbol tables for scopes and declarations.
 
 #### Scope Rules
 ```stark
-// Global scope
-fn global_function() { }
-const GLOBAL_CONST: Int32 = 42
+// Module scope
+fn module_function() { }
+const MODULE_CONST: Int32 = 42;
 
 fn example() {
     // Function scope
-    let local_var = 10
+    let local_var = 10;
     
     {
         // Block scope
-        let block_var = 20
+        let block_var = 20;
         // block_var accessible here
         // local_var accessible here
     }
@@ -1100,16 +1554,28 @@ fn example() {
 ```
 
 #### Name Resolution Order
-1. Current scope
-2. Parent scopes (innermost to outermost)
-3. Global scope
-4. Built-in names
+Name resolution distinguishes *lexical* scopes (inside function bodies) from
+*module* scopes.
+
+Within a function body, an unqualified name is resolved lexically:
+1. Current block scope
+2. Enclosing block scopes (innermost to outermost)
+3. Function parameters
+
+If not found lexically, the name is resolved at module level per the module
+system rules (see 07-Modules-and-Packages.md):
+4. Items declared in the current module
+5. Items brought into scope by `use`
+6. Built-in names (prelude)
+
+Unqualified names never implicitly search parent modules or the crate root;
+those require explicit `super::` or `crate::` paths.
 
 #### Shadowing Rules
 ```stark
-let x = 10        // x: Int32
+let x = 10;       // x: Int32
 {
-    let x = "hi"  // Shadows outer x, x: String
+    let x = "hi"; // Shadows outer x, x: String
     // Inner x takes precedence
 }
 // Outer x visible again
@@ -1119,61 +1585,66 @@ let x = 10        // x: Int32
 
 #### Variable Declarations
 ```stark
-let x: Int32 = 42      // Type annotation matches literal
-let y = 42             // Type inferred as Int32
-let z: String = 42     // Error: type mismatch
+let x: Int32 = 42;     // Type annotation matches literal
+let y = 42;            // Type inferred as Int32
+let z: String = 42;    // Error: type mismatch
 ```
 
 #### Function Calls
 ```stark
 fn add(a: Int32, b: Int32) -> Int32 { a + b }
 
-let result = add(1, 2)     // OK: arguments match parameters
-let error = add(1.0, 2)    // Error: Float64 cannot be Int32
-let error2 = add(1)        // Error: wrong number of arguments
+let result = add(1, 2);    // OK: arguments match parameters
+let error = add(1.0, 2);   // Error: Float64 cannot be Int32
+let error2 = add(1);       // Error: wrong number of arguments
 ```
 
 #### Assignment Compatibility
 ```stark
-let mut x: Int32 = 10
-x = 20                     // OK: same type
-x = "hello"                // Error: type mismatch
+let mut x: Int32 = 10;
+x = 20;                    // OK: same type
+x = "hello";               // Error: type mismatch
 
-let y: Int32 = 10
-y = 20                     // Error: y is not mutable
+let y: Int32 = 10;
+y = 20;                    // Error: y is not mutable
 ```
 
 ### 3. Ownership and Borrowing Analysis
 
 #### Move Semantics Validation
 ```stark
-let s1 = String::new("hello")
-let s2 = s1               // s1 moved to s2
-print(s1)                 // Error: use of moved value
+let s1 = String::from("hello");
+let s2 = s1;              // s1 moved to s2
+print(s1);                // Error: use of moved value
 
 fn take_ownership(s: String) { }
-let s3 = String::new("world")
-take_ownership(s3)        // s3 moved into function
-print(s3)                 // Error: use of moved value
+let s3 = String::from("world");
+take_ownership(s3);       // s3 moved into function
+print(s3);                // Error: use of moved value
 ```
 
 #### Borrow Checking
 ```stark
-let mut s = String::new("hello")
-let r1 = &s               // Immutable borrow
-let r2 = &s               // OK: multiple immutable borrows
-let r3 = &mut s           // Error: cannot borrow mutably while immutably borrowed
+let mut s = String::from("hello");
+let r1 = &s;              // Immutable borrow
+let r2 = &s;              // OK: multiple immutable borrows
+let r3 = &mut s;          // Error: cannot borrow mutably while immutably borrowed
 
-let mut s2 = String::new("world")
-let r4 = &mut s2          // Mutable borrow
-let r5 = &s2              // Error: cannot borrow immutably while mutably borrowed
-let r6 = &mut s2          // Error: cannot have multiple mutable borrows
+let mut s2 = String::from("world");
+let r4 = &mut s2;         // Mutable borrow
+let r5 = &s2;             // Error: cannot borrow immutably while mutably borrowed
+let r6 = &mut s2;         // Error: cannot have multiple mutable borrows
 ```
 
 #### Lifetime Validation
+Returned references must obey the Core v1 reference rules defined in
+03-Type-System.md ("References and Lifetimes"): a returned reference must
+derive from a reference parameter on every path, and callers treat it as
+having the shortest lifetime among the reference arguments it may derive from.
+
 ```stark
 fn invalid_return() -> &Int32 {
-    let x = 42
+    let x = 42;
     &x                    // Error: returning reference to local variable
 }
 
@@ -1187,21 +1658,21 @@ fn valid_return(x: &Int32) -> &Int32 {
 #### Unreachable Code Detection
 ```stark
 fn example() -> Int32 {
-    return 42
-    let x = 10            // Warning: unreachable code
+    return 42;
+    let x = 10;           // Warning: unreachable code
 }
 ```
 
 #### Return Path Analysis
 ```stark
 fn missing_return() -> Int32 {
-    let x = 42
+    let x = 42;
     // Error: not all paths return a value
 }
 
 fn conditional_return(flag: Bool) -> Int32 {
     if flag {
-        return 1
+        return 1;
     }
     // Error: missing return in else branch
 }
@@ -1218,12 +1689,12 @@ fn valid_return(flag: Bool) -> Int32 {
 #### Break/Continue Validation
 ```stark
 fn invalid_break() {
-    break                 // Error: break outside of loop
+    break;                // Error: break outside of loop
 }
 
 fn valid_break() {
     loop {
-        break             // OK: break inside loop
+        break;            // OK: break inside loop
     }
 }
 ```
@@ -1259,74 +1730,84 @@ Rules:
 
 #### Pattern Type Checking
 ```stark
-let x: Int32 = 42
+let x: Int32 = 42;
 match x {
     "hello" => "string",          // Error: pattern type mismatch
-    42 => "number"                // OK
+    42 => "number",               // OK
+    _ => "other"
 }
 ```
 
 ### 6. Mutability Analysis
 
 #### Mutable Access Validation
-```stark
-let x = 42
-x = 43                    // Error: x is not mutable
+Assignment to an initialized immutable variable is an error. (Exception: the
+single initializing assignment of a deferred-initialization `let` — see
+Initialization Analysis.)
 
-let mut y = 42
-y = 43                    // OK: y is mutable
+```stark
+let x = 42;
+x = 43;                   // Error: x is not mutable
+
+let mut y = 42;
+y = 43;                   // OK: y is mutable
 
 struct Point { x: Int32, y: Int32 }
-let p = Point { x: 1, y: 2 }
-p.x = 10                  // Error: p is not mutable
+let p = Point { x: 1, y: 2 };
+p.x = 10;                 // Error: p is not mutable
 
-let mut p2 = Point { x: 1, y: 2 }
-p2.x = 10                 // OK: p2 is mutable
+let mut p2 = Point { x: 1, y: 2 };
+p2.x = 10;                // OK: p2 is mutable
 ```
 
 ### 7. Initialization Analysis
 
 #### Use Before Initialization
 ```stark
-let x: Int32
-print(x)                  // Error: use of uninitialized variable
+let x: Int32;
+print(x.fmt());           // Error: use of uninitialized variable
 
-let y: Int32 = if true { 42 } else { 24 }
-print(y)                  // OK: y is initialized in all branches
+let y: Int32 = if true { 42 } else { 24 };
+print(y.fmt());           // OK: y is initialized in all branches
 
-let z: Int32
+let z: Int32;
 if condition {
-    z = 42
+    z = 42;
 }
-print(z)                  // Error: z might not be initialized
+print(z.fmt());           // Error: z might not be initialized
 ```
 
 Rules:
 - `let name: Type;` declares a variable without initializing it.
 - A variable must be definitely assigned before any read.
 - All control-flow paths must assign before use.
+- **Deferred initialization of immutable variables**: an *uninitialized*
+  immutable `let` may be assigned exactly once on each control-flow path;
+  this first assignment is initialization, not mutation. Any assignment to an
+  already-initialized immutable variable is an error (see Mutability
+  Analysis).
 
 #### Double Initialization
 ```stark
-let mut x: Int32 = 42
-x = 43                    // OK: reassignment
-let x = 44                // Error: redeclaration in same scope
+let mut x: Int32 = 42;
+x = 43;                   // OK: reassignment
+let x = 44;               // Error: redeclaration in same scope
 ```
 
 ### 8. Array Bounds Analysis
 
 #### Static Bounds Checking
 ```stark
-let arr: [Int32; 3] = [1, 2, 3]
-let x = arr[2]            // OK: index in bounds
-let y = arr[5]            // Error: index out of bounds (if determinable)
+let arr: [Int32; 3] = [1, 2, 3];
+let x = arr[2];           // OK: index in bounds
+let y = arr[5];           // Error: index out of bounds (if determinable)
 ```
 
 #### Dynamic Bounds Checking
 ```stark
-let arr: [Int32] = [1, 2, 3]
-let idx = get_index()
-let x = arr[idx]          // Runtime bounds check required
+let arr: [Int32; 3] = [1, 2, 3];
+let idx = get_index();
+let x = arr[idx];         // Runtime bounds check required
 ```
 
 ### 9. Error Propagation Analysis
@@ -1336,12 +1817,12 @@ let x = arr[idx]          // Runtime bounds check required
 fn might_fail() -> Result<Int32, String> { ... }
 
 fn caller1() -> Result<Int32, String> {
-    let x = might_fail()?     // OK: compatible error types
+    let x = might_fail()?;    // OK: compatible error types
     Ok(x * 2)
 }
 
 fn caller2() -> Int32 {
-    let x = might_fail()?     // Error: function doesn't return Result
+    let x = might_fail()?;    // Error: function doesn't return Result
     x * 2
 }
 ```
@@ -1351,24 +1832,28 @@ Rules:
 - The enclosing function return type must be compatible with the propagated type.
 
 ## Runtime Error Semantics (Core v1)
-- A runtime error (e.g., integer overflow, division by zero, out-of-bounds indexing) MUST terminate the current program execution.
+- A runtime error (e.g., integer overflow, division by zero, out-of-bounds indexing, failing `as` cast) MUST terminate the current program execution.
 - `panic(...)` is a runtime error that terminates the program after emitting the provided message.
+- Termination is an **abort**: the program stops immediately with a non-zero
+  exit status. Destructors (`Drop`) are NOT run for live values, and no
+  unwinding or recovery mechanism exists in Core v1. (Catchable panics and
+  unwind-with-destructors are possible future extensions.)
 
 ### 10. Trait Constraint Checking
 
 #### Trait Bounds Validation
 ```stark
 trait Display {
-    fn fmt(&self) -> String
+    fn fmt(&self) -> String;
 }
 
 fn print_it<T: Display>(item: T) {
-    print(item.fmt())         // OK: T implements Display
+    print(item.fmt());        // OK: T implements Display
 }
 
 struct Point { x: Int32, y: Int32 }
 
-print_it(Point { x: 1, y: 2 })  // Error: Point doesn't implement Display
+print_it(Point { x: 1, y: 2 });  // Error: Point doesn't implement Display
 ```
 
 ## Error Reporting
@@ -1509,53 +1994,54 @@ STARK's memory model ensures memory safety without garbage collection through co
 ### 3. Lifetimes
 - All references have a lifetime
 - References cannot outlive the data they point to
-- Lifetimes are mostly inferred by the compiler
+- Core v1 has no lifetime annotations; the conservative rules in
+  03-Type-System.md ("References and Lifetimes") apply
 
 ## Memory Layout
 
 ### Stack Allocation
 ```stark
 // Stack-allocated values
-let x: Int32 = 42           // x stored on stack
-let y: [Int32; 4] = [1,2,3,4]  // y stored on stack
+let x: Int32 = 42;              // x stored on stack
+let y: [Int32; 4] = [1, 2, 3, 4];  // y stored on stack
 
 struct Point { x: Float64, y: Float64 }
-let p: Point = Point { x: 1.0, y: 2.0 }  // p stored on stack
+let p: Point = Point { x: 1.0, y: 2.0 };  // p stored on stack
 ```
 
 ### Heap Allocation
 ```stark
 // Heap-allocated values
-let s: String = String::new("hello")     // String data on heap
-let v: Vec<Int32> = Vec::new()          // Vec data on heap
-let b: Box<Int32> = Box::new(42)        // Boxed value on heap
+let s: String = String::from("hello");   // String data on heap
+let v: Vec<Int32> = Vec::new();          // Vec data on heap
+let b: Box<Int32> = Box::new(42);        // Boxed value on heap
 ```
 
 ### Reference Layout
 ```stark
 // References are pointers (8 bytes on 64-bit)
-let x: Int32 = 42
-let r: &Int32 = &x          // r contains address of x
+let x: Int32 = 42;
+let r: &Int32 = &x;         // r contains address of x
 
-// Slices contain pointer + length
-let arr: [Int32; 5] = [1,2,3,4,5]
-let slice: &[Int32] = &arr[1..4]  // pointer + length (16 bytes)
+// Slice references contain pointer + length
+let arr: [Int32; 5] = [1, 2, 3, 4, 5];
+let slice: &[Int32] = &arr[1..4];  // pointer + length (16 bytes)
 ```
 
 ## Ownership Rules
 
 ### Rule 1: Single Ownership
 ```stark
-let s1 = String::new("hello")
-let s2 = s1                 // Ownership moved from s1 to s2
-// println(s1)              // Error: s1 no longer valid
-println(s2)                 // OK: s2 owns the string
+let s1 = String::from("hello");
+let s2 = s1;                // Ownership moved from s1 to s2
+// println(s2.as_str());    // OK: s2 owns the string
+// println(s1.as_str());    // Error: s1 no longer valid
 ```
 
 ### Rule 2: Automatic Cleanup
 ```stark
 {
-    let s = String::new("hello")  // s owns the string
+    let s = String::from("hello");  // s owns the string
     // String is automatically freed when s goes out of scope
 }
 ```
@@ -1564,14 +2050,14 @@ println(s2)                 // OK: s2 owns the string
 ```stark
 fn take_ownership(s: String) {
     // s is owned by this function
-    println(s)
+    println(s.as_str());
     // s is dropped when function returns
 }
 
 fn main() {
-    let s = String::new("hello")
-    take_ownership(s)       // Ownership transferred to function
-    // println(s)           // Error: s no longer valid
+    let s = String::from("hello");
+    take_ownership(s);      // Ownership transferred to function
+    // println(s.as_str()); // Error: s no longer valid
 }
 ```
 
@@ -1592,50 +2078,70 @@ Int32, Float64, Bool, Char, &T, [T; N] where T: Copy
 
 ### Move in Assignments
 ```stark
-let s1 = String::new("hello")
-let s2 = s1                 // Move
-let s3 = s2.clone()         // Explicit copy (if Clone implemented)
+let s1 = String::from("hello");
+let s2 = s1;                // Move
+let s3 = s2.clone();        // Explicit copy (if Clone implemented)
 ```
 
 ### Move in Function Calls
 ```stark
 fn process(s: String) { ... }
 
-let my_string = String::new("hello")
-process(my_string)          // my_string moved into function
+let my_string = String::from("hello");
+process(my_string);         // my_string moved into function
 // my_string no longer accessible
 ```
 
 ### Move in Returns
 ```stark
 fn create_string() -> String {
-    let s = String::new("hello")
+    let s = String::from("hello");
     s                       // Ownership moved to caller
 }
+```
+
+### Partial Moves, Reinitialization, and Indexed Places
+The normative rules are in 03-Type-System.md ("Copy and Drop"):
+
+```stark
+struct Person { name: String, age: Int32 }
+
+let p = Person { name: String::from("Alice"), age: 30 };
+let n = p.name;             // Partial move (Person does not implement Drop)
+let a = p.age;              // OK: remaining Copy field still readable
+// let q = p;               // Error: p is partially moved
+
+let mut s = String::from("one");
+let t = s;                  // s moved out
+s = String::from("two");    // OK: reinitialization revalidates s
+
+let v: Vec<String> = make();
+// let x = v[0];            // Error: cannot move out of indexed place
+let x = &v[0];              // OK: borrow instead (or use Vec::remove/pop)
 ```
 
 ## Borrowing System
 
 ### Immutable Borrowing
 ```stark
-fn read_string(s: &String) -> Int32 {
+fn read_string(s: &String) -> UInt64 {
     s.len()                 // Can read but not modify
 }
 
-let my_string = String::new("hello")
-let length = read_string(&my_string)  // Borrow my_string
-println(my_string)          // my_string still accessible
+let my_string = String::from("hello");
+let length = read_string(&my_string);  // Borrow my_string
+println(my_string.as_str()); // my_string still accessible
 ```
 
 ### Mutable Borrowing
 ```stark
 fn modify_string(s: &mut String) {
-    s.push('!')             // Can read and modify
+    s.push('!');            // Can read and modify
 }
 
-let mut my_string = String::new("hello")
-modify_string(&mut my_string)         // Mutable borrow
-println(my_string)          // Prints "hello!"
+let mut my_string = String::from("hello");
+modify_string(&mut my_string);        // Mutable borrow
+println(my_string.as_str()); // Prints "hello!"
 ```
 
 ### Borrowing Rules
@@ -1643,25 +2149,34 @@ println(my_string)          // Prints "hello!"
 2. References must always be valid
 
 ```stark
-let mut s = String::new("hello")
+let mut s = String::from("hello");
 
 // Multiple immutable borrows - OK
-let r1 = &s
-let r2 = &s
-println("{} {}", r1, r2)
+let r1 = &s;
+let r2 = &s;
 
 // Mutable and immutable borrow - Error
-let r3 = &s
-let r4 = &mut s             // Error: cannot borrow mutably while immutably borrowed
+let r3 = &s;
+let r4 = &mut s;            // Error: cannot borrow mutably while immutably borrowed
 
 // Multiple mutable borrows - Error
-let r5 = &mut s
-let r6 = &mut s             // Error: cannot borrow mutably twice
+let r5 = &mut s;
+let r6 = &mut s;            // Error: cannot borrow mutably twice
 ```
 
 ## Lifetime System
 
 ### Lifetime Basics
+Core v1 applies the normative reference rules from 03-Type-System.md:
+returned references must derive from reference parameters; callers treat a
+returned reference as having the *shortest* lifetime among the reference
+arguments it may derive from; borrows bound to variables are lexically scoped
+(to end of block), while unbound temporary borrows end with their statement.
+User struct/enum declarations may not declare reference fields, but generic
+types instantiated with references (e.g. `Option<&T>`) are permitted as
+*borrow-carrying values* subject to the same rules as references — see
+"Borrow-Carrying Types" in 03-Type-System.md.
+
 ```stark
 fn longest(x: &str, y: &str) -> &str {
     if x.len() > y.len() {
@@ -1670,7 +2185,8 @@ fn longest(x: &str, y: &str) -> &str {
         y
     }
 }
-// Compiler infers that return value has same lifetime as input parameters
+// The returned reference is treated as valid only while both x's and y's
+// referents are valid (shortest-input-lifetime rule).
 ```
 
 ### Lifetime Annotations (Future Feature)
@@ -1683,7 +2199,7 @@ fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
 ### Dangling Reference Prevention
 ```stark
 fn invalid() -> &Int32 {
-    let x = 42
+    let x = 42;
     &x                      // Error: returning reference to local variable
 }
 
@@ -1697,24 +2213,24 @@ fn valid(x: &Int32) -> &Int32 {
 ### Stack vs Heap Decision
 ```stark
 // Stack allocated (small, known size)
-let point = Point { x: 1.0, y: 2.0 }
-let array = [1, 2, 3, 4, 5]
+let point = Point { x: 1.0, y: 2.0 };
+let array = [1, 2, 3, 4, 5];
 
 // Heap allocated (dynamic size, large objects)
-let string = String::new("hello")
-let vector = Vec::new()
-let boxed = Box::new(large_object)
+let string = String::from("hello");
+let vector: Vec<Int32> = Vec::new();
+let boxed = Box::new(large_object);
 ```
 
 ### Reference Counting (Rc/Arc)
 ```stark
 // Single-threaded reference counting (future feature)
-let data = Rc::new(vec![1, 2, 3])
-let data2 = data.clone()    // Increment reference count
+let data = Rc::new(v);
+let data2 = data.clone();   // Increment reference count
 
 // Multi-threaded reference counting (future feature)
-let shared = Arc::new(vec![1, 2, 3])
-let shared2 = shared.clone()
+let shared = Arc::new(v);
+let shared2 = shared.clone();
 ```
 
 ## Drop and Destructors
@@ -1729,12 +2245,12 @@ struct FileHandle {
 impl Drop for FileHandle {
     fn drop(&mut self) {
         // Close file handle
-        close_file(self.handle)
+        close_file(self.handle);
     }
 }
 
 {
-    let file = FileHandle { path: "test.txt".to_string(), handle: 42 }
+    let file = FileHandle { path: String::from("test.txt"), handle: 42 };
     // file.drop() called automatically when leaving scope
 }
 ```
@@ -1742,19 +2258,32 @@ impl Drop for FileHandle {
 ### Drop Order
 ```stark
 {
-    let x = String::new("first")
-    let y = String::new("second")
-    let z = String::new("third")
+    let x = String::from("first");
+    let y = String::from("second");
+    let z = String::from("third");
     // Drop order: z, y, x (reverse declaration order)
 }
 ```
 
 ### Manual Drop
 ```stark
-let s = String::new("hello")
-drop(s)                     // Explicitly drop s
-// println(s)               // Error: s has been dropped
+let s = String::from("hello");
+drop(s);                    // Explicitly drop s
+// println(s.as_str());     // Error: s has been dropped
 ```
+
+### Drop Soundness (Core v1)
+Normative rules (see also "Copy and Drop" in 03-Type-System.md):
+- Destructors run **exactly once** per value — at scope exit, at explicit
+  `drop(value)`, or when the owner is consumed. Implementations MUST track
+  initialization state (drop flags) for values moved on only some paths.
+- `Drop::drop` cannot be called explicitly; only the `drop(value)` free
+  function is allowed.
+- A type cannot implement both `Copy` and `Drop`.
+- Fields cannot be moved out of a value whose type implements `Drop`.
+- On a runtime error or `panic`, the program aborts immediately and
+  destructors are NOT run (see 04-Semantic-Analysis.md, Runtime Error
+  Semantics).
 
 ## Copy vs Move Types
 
@@ -1764,12 +2293,14 @@ Implement `Copy` trait - assignment creates a copy, not a move:
 // Built-in Copy types
 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64
 Float32, Float64, Bool, Char, Unit
-&T (references), [T; N] where T: Copy
+&T (immutable references), [T; N] where T: Copy
+
+// Note: &mut T is NOT Copy (mutable borrows are exclusive and move)
 
 // Usage
-let x: Int32 = 42
-let y = x                   // x is copied, still accessible
-println("{} {}", x, y)      // OK: both x and y valid
+let x: Int32 = 42;
+let y = x;                  // x is copied, still accessible
+// Both x and y valid here
 ```
 
 ### Move Types
@@ -1784,35 +2315,35 @@ struct Person {
     age: Int32
 }
 
-let p1 = Person { name: "Alice".to_string(), age: 30 }
-let p2 = p1                 // p1 moved to p2
-// println(p1.name)         // Error: p1 no longer valid
+let p1 = Person { name: String::from("Alice"), age: 30 };
+let p2 = p1;                // p1 moved to p2
+// println(p1.name.as_str());  // Error: p1 no longer valid
 ```
 
 ## Smart Pointers
 
 ### Box<T> - Heap Allocation
 ```stark
-let boxed_int = Box::new(42)
-let large_array = Box::new([0; 1000])  // Allocate large array on heap
+let boxed_int = Box::new(42);
+let large_array = Box::new([0; 1000]);  // Allocate large array on heap
 ```
 
 ### Rc<T> - Reference Counting (Future)
 ```stark
-let data = Rc::new(vec![1, 2, 3])
-let reference1 = data.clone()    // Increment reference count
-let reference2 = data.clone()    // Increment reference count
+let data = Rc::new(some_value);
+let reference1 = data.clone();   // Increment reference count
+let reference2 = data.clone();   // Increment reference count
 // Data deallocated when all references dropped
 ```
 
 ### RefCell<T> - Interior Mutability (Future)
 ```stark
-let data = RefCell::new(42)
+let data = RefCell::new(42);
 {
-    let mut borrowed = data.borrow_mut()  // Runtime borrow check
-    *borrowed = 43
+    let mut borrowed = data.borrow_mut();  // Runtime borrow check
+    *borrowed = 43;
 }
-println(data.borrow())      // Prints 43
+// data.borrow() now yields 43
 ```
 
 ## Memory Safety Guarantees
@@ -1828,7 +2359,8 @@ println(data.borrow())      // Prints 43
 ### Runtime Checks
 Some checks remain at runtime:
 - Array bounds checking (unless optimized away)
-- Integer overflow (in debug mode)
+- Integer overflow (traps in ALL build configurations; see Numeric Semantics
+  in 03-Type-System.md)
 - RefCell borrow checking (future feature)
 
 ## Performance Considerations
@@ -1841,7 +2373,7 @@ Some checks remain at runtime:
 ### Optimization Opportunities
 - Dead code elimination for unused values
 - Lifetime optimization to reduce copies
-- Stack allocation for escaped values when possible
+- Stack allocation for values that do not escape
 
 ### Memory Layout Optimization
 - Struct field reordering to minimize padding
@@ -1862,12 +2394,12 @@ Some checks remain at runtime:
 Error: borrow of moved value
   --> example.stark:10:5
    |
- 8 |     let s1 = String::new("hello");
+ 8 |     let s1 = String::from("hello");
    |         -- move occurs because `s1` has type `String`
  9 |     let s2 = s1;
    |              -- value moved here
-10 |     println(s1);
-   |     ^^ value borrowed here after move
+10 |     println(s1.as_str());
+   |             ^^ value borrowed here after move
 ```
 
 ### Integration with Type System
@@ -1879,6 +2411,7 @@ Error: borrow of moved value
 
 ### Advanced Features
 - Lifetime parameters and annotations
+- Reference-carrying structs (requires lifetime annotations)
 - Higher-ranked trait bounds
 - Associated types with lifetime parameters
 - Async/await with proper lifetime handling
@@ -1892,6 +2425,45 @@ A conforming Core v1 implementation MUST follow the requirements in this documen
 
 ## Overview
 The STARK standard library provides essential types, functions, and modules for core programming tasks. This specification defines the minimal standard library for the initial implementation.
+
+## Notation
+The code blocks in this document are **API notation**, not compilable STARK
+source: function signatures are listed without bodies, and `impl` blocks mix
+signatures with prose comments. The *signatures and behaviors* are normative;
+the listing style is not. (The Core v1 grammar has no body-less function form
+outside `trait` blocks.)
+
+## Implementation-Provided Types
+Several standard library types (`Box<T>`, `Vec<T>`, `String`, `HashMap<K, V>`)
+manage raw memory internally. Raw pointers and `unsafe` code are NOT part of
+the Core v1 language surface; these types are *implementation-provided*: their
+public APIs are normative, their internal representation is not expressible in
+Core v1 source and is implementation-defined. Struct bodies shown for these
+types in this document are illustrative only.
+
+## Iterator and View Types
+The iterator types returned by the APIs below (`VecIter<T>`, `KeysIter<K>`,
+`ValuesIter<V>`, `Iter<K, V>`, `Iter<T>`, `CharsIter`, `SplitIter`,
+`MapIter<I, U>`, `FilterIter<I>`) are implementation-provided opaque structs.
+Each implements `Iterator` with the obvious `Item`:
+
+| Type | Produced by | `Item` |
+| --- | --- | --- |
+| `VecIter<T>` | `Vec::iter` | `&T` |
+| `KeysIter<K>` | `HashMap::keys` | `&K` |
+| `ValuesIter<V>` | `HashMap::values` | `&V` |
+| `Iter<K, V>` | `HashMap::iter` | `(&K, &V)` |
+| `Iter<T>` | `HashSet::iter` | `&T` |
+| `CharsIter` | `String::chars`, `str::chars` | `Char` |
+| `SplitIter` | `String::split` | `&str` |
+| `MapIter<I, U>` | `Iterator::map` | `U` |
+| `FilterIter<I>` | `Iterator::filter` | `I::Item` |
+
+Iterators whose `Item` is a reference (and `CharsIter`/`SplitIter`, which
+borrow their source) are **borrow-carrying types** in the sense of
+03-Type-System.md: they hold a live borrow of the collection they iterate and
+obey all reference rules (no storage in user structs, lexically scoped, cannot
+outlive their source).
 
 ## Core Module Structure
 ```
@@ -1920,8 +2492,17 @@ trait Clone
 trait Drop
 trait Eq
 trait Ord
+trait Hash
+trait Default
+trait Display
 
-// Essential types
+// Essential enums
+enum Ordering {
+    Less,
+    Equal,
+    Greater
+}
+
 enum Option<T> {
     Some(T),
     None
@@ -1935,27 +2516,102 @@ enum Result<T, E> {
 // Essential functions
 fn print(value: &str)
 fn println(value: &str)
-fn panic(message: &str) -> !
+fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never Type)
 ```
 
 ## Core Module (std::core)
 
-### Memory Management
+### Essential Trait Definitions
 ```stark
-// Box - heap allocation
-struct Box<T> {
-    ptr: *mut T
+trait Clone {
+    fn clone(&self) -> Self;
 }
 
+trait Eq {
+    fn eq(&self, other: &Self) -> Bool;
+}
+
+trait Ord {
+    fn cmp(&self, other: &Self) -> Ordering;
+}
+
+trait Hash {
+    fn hash(&self) -> UInt64;
+}
+
+trait Default {
+    fn default() -> Self;
+}
+
+trait Display {
+    fn fmt(&self) -> String;
+}
+
+trait Drop {
+    fn drop(&mut self);
+}
+
+// Copy is a marker trait (no methods); Copy: Clone.
+// Soundness rules (all-fields-Copy, Copy/Drop exclusivity) are in
+// 03-Type-System.md, "Copy and Drop".
+trait Copy
+
+// Num is a compiler-known marker trait implemented by exactly the built-in
+// numeric types; it enables arithmetic operators on generic parameters
+// (see 03-Type-System.md, "Operators and Traits"). Not user-implementable.
+trait Num
+```
+
+### Indexing Traits
+The `[]` operator desugars to these traits:
+
+```stark
+trait Index<Idx> {
+    type Output;
+    fn index(&self, index: Idx) -> &Self::Output;
+}
+
+trait IndexMut<Idx> {
+    fn index_mut(&mut self, index: Idx) -> &mut Self::Output;
+}
+```
+
+### Range Types
+The range operators `..` and `..=` produce these types:
+
+```stark
+struct Range<T> {
+    start: T,
+    end: T
+}
+
+struct RangeInclusive<T> {
+    start: T,
+    end: T
+}
+
+// Ranges over integer types are iterable
+impl Iterator for Range<Int32> {
+    type Item = Int32;
+    fn next(&mut self) -> Option<Int32>;
+}
+// ... similarly for the other integer types, and for RangeInclusive
+```
+
+### Memory Management
+```stark
+// Box - heap allocation (implementation-provided; internals opaque)
+struct Box<T> { /* implementation-defined */ }
+
 impl<T> Box<T> {
-    fn new(value: T) -> Box<T>
-    fn into_inner(self) -> T
+    fn new(value: T) -> Box<T>;
+    fn into_inner(self) -> T;
 }
 
 // Manual memory management
 fn drop<T>(value: T)
-fn size_of<T>() -> UInt64
-fn align_of<T>() -> UInt64
+fn size_of<T>() -> UInt64      // T not inferable: call as size_of::<Int32>()
+fn align_of<T>() -> UInt64     // T not inferable: call as align_of::<Int32>()
 ```
 
 ### Option Type
@@ -1966,12 +2622,12 @@ enum Option<T> {
 }
 
 impl<T> Option<T> {
-    fn is_some(&self) -> Bool
-    fn is_none(&self) -> Bool
-    fn unwrap(self) -> T
-    fn unwrap_or(self, default: T) -> T
-    fn map<U>(self, f: fn(T) -> U) -> Option<U>
-    fn and_then<U>(self, f: fn(T) -> Option<U>) -> Option<U>
+    fn is_some(&self) -> Bool;
+    fn is_none(&self) -> Bool;
+    fn unwrap(self) -> T;
+    fn unwrap_or(self, default: T) -> T;
+    fn map<U>(self, f: fn(T) -> U) -> Option<U>;
+    fn and_then<U>(self, f: fn(T) -> Option<U>) -> Option<U>;
 }
 ```
 
@@ -1983,13 +2639,13 @@ enum Result<T, E> {
 }
 
 impl<T, E> Result<T, E> {
-    fn is_ok(&self) -> Bool
-    fn is_err(&self) -> Bool
-    fn unwrap(self) -> T
-    fn unwrap_or(self, default: T) -> T
-    fn map<U>(self, f: fn(T) -> U) -> Result<U, E>
-    fn map_err<F>(self, f: fn(E) -> F) -> Result<T, F>
-    fn and_then<U>(self, f: fn(T) -> Result<U, E>) -> Result<U, E>
+    fn is_ok(&self) -> Bool;
+    fn is_err(&self) -> Bool;
+    fn unwrap(self) -> T;
+    fn unwrap_or(self, default: T) -> T;
+    fn map<U>(self, f: fn(T) -> U) -> Result<U, E>;
+    fn map_err<F>(self, f: fn(E) -> F) -> Result<T, F>;
+    fn and_then<U>(self, f: fn(T) -> Result<U, E>) -> Result<U, E>;
 }
 ```
 
@@ -1997,78 +2653,75 @@ impl<T, E> Result<T, E> {
 
 ### Vec<T> - Dynamic Array
 ```stark
-struct Vec<T> {
-    ptr: *mut T,
-    len: UInt64,
-    cap: UInt64
-}
+// Implementation-provided; internals opaque
+struct Vec<T> { /* implementation-defined */ }
 
 impl<T> Vec<T> {
-    fn new() -> Vec<T>
-    fn with_capacity(capacity: UInt64) -> Vec<T>
-    fn push(&mut self, item: T)
-    fn pop(&mut self) -> Option<T>
-    fn len(&self) -> UInt64
-    fn capacity(&self) -> UInt64
-    fn is_empty(&self) -> Bool
-    fn get(&self, index: UInt64) -> Option<&T>
-    fn get_mut(&mut self, index: UInt64) -> Option<&mut T>
-    fn insert(&mut self, index: UInt64, item: T)
-    fn remove(&mut self, index: UInt64) -> T
-    fn clear(&mut self)
-    fn append(&mut self, other: &mut Vec<T>)
-    fn extend(&mut self, iter: impl Iterator<Item = T>)
+    fn new() -> Vec<T>;
+    fn with_capacity(capacity: UInt64) -> Vec<T>;
+    fn push(&mut self, item: T);
+    fn pop(&mut self) -> Option<T>;
+    fn len(&self) -> UInt64;
+    fn capacity(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn get(&self, index: UInt64) -> Option<&T>;
+    fn get_mut(&mut self, index: UInt64) -> Option<&mut T>;
+    fn insert(&mut self, index: UInt64, item: T);
+    fn remove(&mut self, index: UInt64) -> T;
+    fn clear(&mut self);
+    fn append(&mut self, other: &mut Vec<T>);
+    fn extend<I: Iterator<Item = T>>(&mut self, iter: I);
+    fn iter(&self) -> VecIter<T>;
+    fn as_slice(&self) -> &[T];
 }
 
 // Index access
 impl<T> Index<UInt64> for Vec<T> {
-    type Output = T
-    fn index(&self, index: UInt64) -> &T
+    type Output = T;
+    fn index(&self, index: UInt64) -> &T;
 }
 
 impl<T> IndexMut<UInt64> for Vec<T> {
-    fn index_mut(&mut self, index: UInt64) -> &mut T
+    fn index_mut(&mut self, index: UInt64) -> &mut T;
 }
 ```
 
 ### HashMap<K, V> - Hash Table
 ```stark
-struct HashMap<K, V> {
-    // Internal implementation details
-}
+// Implementation-provided; internals opaque
+struct HashMap<K, V> { /* implementation-defined */ }
 
 impl<K: Hash + Eq, V> HashMap<K, V> {
-    fn new() -> HashMap<K, V>
-    fn with_capacity(capacity: UInt64) -> HashMap<K, V>
-    fn insert(&mut self, key: K, value: V) -> Option<V>
-    fn get(&self, key: &K) -> Option<&V>
-    fn get_mut(&mut self, key: &K) -> Option<&mut V>
-    fn remove(&mut self, key: &K) -> Option<V>
-    fn contains_key(&self, key: &K) -> Bool
-    fn len(&self) -> UInt64
-    fn is_empty(&self) -> Bool
-    fn clear(&mut self)
-    fn keys(&self) -> KeysIter<K>
-    fn values(&self) -> ValuesIter<V>
-    fn iter(&self) -> Iter<K, V>
+    fn new() -> HashMap<K, V>;
+    fn with_capacity(capacity: UInt64) -> HashMap<K, V>;
+    fn insert(&mut self, key: K, value: V) -> Option<V>;
+    fn get(&self, key: &K) -> Option<&V>;
+    fn get_mut(&mut self, key: &K) -> Option<&mut V>;
+    fn remove(&mut self, key: &K) -> Option<V>;
+    fn contains_key(&self, key: &K) -> Bool;
+    fn len(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn clear(&mut self);
+    fn keys(&self) -> KeysIter<K>;
+    fn values(&self) -> ValuesIter<V>;
+    fn iter(&self) -> Iter<K, V>;
 }
 ```
 
 ### HashSet<T> - Hash Set
 ```stark
-struct HashSet<T> {
-    map: HashMap<T, Unit>
-}
+// Implementation-provided; internals opaque
+struct HashSet<T> { /* implementation-defined */ }
 
 impl<T: Hash + Eq> HashSet<T> {
-    fn new() -> HashSet<T>
-    fn insert(&mut self, value: T) -> Bool
-    fn remove(&mut self, value: &T) -> Bool
-    fn contains(&self, value: &T) -> Bool
-    fn len(&self) -> UInt64
-    fn is_empty(&self) -> Bool
-    fn clear(&mut self)
-    fn iter(&self) -> Iter<T>
+    fn new() -> HashSet<T>;
+    fn insert(&mut self, value: T) -> Bool;
+    fn remove(&mut self, value: &T) -> Bool;
+    fn contains(&self, value: &T) -> Bool;
+    fn len(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn clear(&mut self);
+    fn iter(&self) -> Iter<T>;
 }
 ```
 
@@ -2076,43 +2729,42 @@ impl<T: Hash + Eq> HashSet<T> {
 
 ### String Type
 ```stark
-struct String {
-    bytes: Vec<UInt8>
-}
+// Implementation-provided; internals opaque (UTF-8 byte buffer)
+struct String { /* implementation-defined */ }
 
 impl String {
-    fn new() -> String
-    fn with_capacity(capacity: UInt64) -> String
-    fn from(s: &str) -> String
-    fn len(&self) -> UInt64
-    fn is_empty(&self) -> Bool
-    fn push(&mut self, ch: Char)
-    fn push_str(&mut self, s: &str)
-    fn pop(&mut self) -> Option<Char>
-    fn clear(&mut self)
-    fn chars(&self) -> CharsIter
-    fn bytes(&self) -> &[UInt8]
-    fn as_str(&self) -> &str
-    fn into_bytes(self) -> Vec<UInt8>
-    fn substring(&self, start: UInt64, end: UInt64) -> &str
-    fn contains(&self, pattern: &str) -> Bool
-    fn starts_with(&self, pattern: &str) -> Bool
-    fn ends_with(&self, pattern: &str) -> Bool
-    fn find(&self, pattern: &str) -> Option<UInt64>
-    fn replace(&self, from: &str, to: &str) -> String
-    fn split(&self, delimiter: &str) -> SplitIter
-    fn trim(&self) -> &str
-    fn to_lowercase(&self) -> String
-    fn to_uppercase(&self) -> String
+    fn new() -> String;               // Empty string
+    fn with_capacity(capacity: UInt64) -> String;
+    fn from(s: &str) -> String;       // Construct from a string slice/literal
+    fn len(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn push(&mut self, ch: Char);
+    fn push_str(&mut self, s: &str);
+    fn pop(&mut self) -> Option<Char>;
+    fn clear(&mut self);
+    fn chars(&self) -> CharsIter;
+    fn bytes(&self) -> &[UInt8];
+    fn as_str(&self) -> &str;
+    fn into_bytes(self) -> Vec<UInt8>;
+    fn substring(&self, start: UInt64, end: UInt64) -> &str;
+    fn contains(&self, pattern: &str) -> Bool;
+    fn starts_with(&self, pattern: &str) -> Bool;
+    fn ends_with(&self, pattern: &str) -> Bool;
+    fn find(&self, pattern: &str) -> Option<UInt64>;
+    fn replace(&self, from: &str, to: &str) -> String;
+    fn split(&self, delimiter: &str) -> SplitIter;
+    fn trim(&self) -> &str;
+    fn to_lowercase(&self) -> String;
+    fn to_uppercase(&self) -> String;
 }
 
 // String literals (&str)
 impl str {
-    fn len(&self) -> UInt64
-    fn is_empty(&self) -> Bool
-    fn chars(&self) -> CharsIter
-    fn bytes(&self) -> &[UInt8]
-    fn to_string(&self) -> String
+    fn len(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn chars(&self) -> CharsIter;
+    fn bytes(&self) -> &[UInt8];
+    fn to_string(&self) -> String;
     // ... similar methods to String
 }
 ```
@@ -2122,8 +2774,8 @@ impl str {
 ### Basic Operations
 ```stark
 // Constants
-const PI: Float64 = 3.141592653589793
-const E: Float64 = 2.718281828459045
+const PI: Float64 = 3.141592653589793;
+const E: Float64 = 2.718281828459045;
 
 // Basic functions
 fn abs<T: Num>(x: T) -> T
@@ -2159,10 +2811,10 @@ struct Random {
 }
 
 impl Random {
-    fn new(seed: UInt64) -> Random
-    fn next_int(&mut self) -> UInt64
-    fn next_float(&mut self) -> Float64
-    fn range(&mut self, min: Int32, max: Int32) -> Int32
+    fn new(seed: UInt64) -> Random;
+    fn next_int(&mut self) -> UInt64;
+    fn next_float(&mut self) -> Float64;
+    fn range(&mut self, min: Int32, max: Int32) -> Int32;
 }
 ```
 
@@ -2177,17 +2829,15 @@ fn eprint(text: &str)     // stderr
 fn eprintln(text: &str)   // stderr
 
 // Simple file operations
-struct File {
-    handle: Int32
-}
+struct File { /* implementation-defined */ }
 
 impl File {
-    fn open(path: &str) -> Result<File, IOError>
-    fn create(path: &str) -> Result<File, IOError>
-    fn read_to_string(&mut self) -> Result<String, IOError>
-    fn write(&mut self, data: &[UInt8]) -> Result<UInt64, IOError>
-    fn write_str(&mut self, text: &str) -> Result<UInt64, IOError>
-    fn close(self) -> Result<Unit, IOError>
+    fn open(path: &str) -> Result<File, IOError>;
+    fn create(path: &str) -> Result<File, IOError>;
+    fn read_to_string(&mut self) -> Result<String, IOError>;
+    fn write(&mut self, data: &[UInt8]) -> Result<UInt64, IOError>;
+    fn write_str(&mut self, text: &str) -> Result<UInt64, IOError>;
+    fn close(self) -> Result<Unit, IOError>;
 }
 
 // Error types
@@ -2209,8 +2859,7 @@ fn write_file(path: &str, content: &str) -> Result<Unit, IOError>
 ### Error Trait
 ```stark
 trait Error {
-    fn message(&self) -> String
-    fn source(&self) -> Option<&dyn Error>
+    fn message(&self) -> String;
 }
 
 // Standard error types
@@ -2222,85 +2871,91 @@ impl Error for GenericError {
     fn message(&self) -> String {
         self.message.clone()
     }
-    
-    fn source(&self) -> Option<&dyn Error> {
-        None
-    }
 }
 ```
+
+Note: error *chaining* (a `source()` method returning a trait object) requires
+`dyn Trait` support, which is a future extension. Core v1 errors carry a
+message only; richer error types can embed context in their own fields.
 
 ## Memory Module (std::mem)
 
 ### Memory Utilities
 ```stark
 // Memory operations
-fn size_of<T>() -> UInt64
-fn align_of<T>() -> UInt64
+fn size_of<T>() -> UInt64      // Call with turbofish: size_of::<Int32>()
+fn align_of<T>() -> UInt64     // Call with turbofish: align_of::<Int32>()
 fn swap<T>(a: &mut T, b: &mut T)
 fn replace<T>(dest: &mut T, src: T) -> T
 fn take<T: Default>(dest: &mut T) -> T
-
-// Unsafe memory operations (future)
-fn copy<T>(src: *const T, dst: *mut T, count: UInt64)
-fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: UInt64)
 ```
+
+Raw-pointer copy operations (`copy`, `copy_nonoverlapping`) require raw
+pointers and `unsafe`, which are not part of Core v1; they are deferred to a
+future extension.
 
 ## Iterator Trait (std::iter)
 
 ### Basic Iterator Interface
 ```stark
 trait Iterator {
-    type Item
+    type Item;
     
-    fn next(&mut self) -> Option<Self::Item>
+    fn next(&mut self) -> Option<Self::Item>;
     
     // Default implementations
-    fn count(self) -> UInt64
-    fn collect<C: FromIterator<Self::Item>>(self) -> C
-    fn map<U>(self, f: fn(Self::Item) -> U) -> MapIter<Self, U>
-    fn filter(self, predicate: fn(&Self::Item) -> Bool) -> FilterIter<Self>
-    fn fold<B>(self, init: B, f: fn(B, Self::Item) -> B) -> B
-    fn reduce(self, f: fn(Self::Item, Self::Item) -> Self::Item) -> Option<Self::Item>
-    fn any(self, predicate: fn(Self::Item) -> Bool) -> Bool
-    fn all(self, predicate: fn(Self::Item) -> Bool) -> Bool
-    fn find(self, predicate: fn(&Self::Item) -> Bool) -> Option<Self::Item>
+    fn count(self) -> UInt64;
+    fn collect<C: FromIterator<Self::Item>>(self) -> C;
+    fn map<U>(self, f: fn(Self::Item) -> U) -> MapIter<Self, U>;
+    fn filter(self, predicate: fn(&Self::Item) -> Bool) -> FilterIter<Self>;
+    fn fold<B>(self, init: B, f: fn(B, Self::Item) -> B) -> B;
+    fn reduce(self, f: fn(Self::Item, Self::Item) -> Self::Item) -> Option<Self::Item>;
+    fn any(self, predicate: fn(Self::Item) -> Bool) -> Bool;
+    fn all(self, predicate: fn(Self::Item) -> Bool) -> Bool;
+    fn find(self, predicate: fn(&Self::Item) -> Bool) -> Option<Self::Item>;
 }
 
 trait FromIterator<T> {
-    fn from_iter<I: Iterator<Item = T>>(iter: I) -> Self
+    fn from_iter<I: Iterator<Item = T>>(iter: I) -> Self;
 }
 ```
+
+Limitation (Core v1): the combinator parameters above are *non-capturing*
+function types (`fn(...)`). They accept named functions and function
+references but cannot capture local variables. Capturing closures are a
+future extension; until then, prefer explicit loops when state must be
+carried into the operation.
 
 ## Conversion Traits
 
 ### Basic Conversion
 ```stark
 trait From<T> {
-    fn from(value: T) -> Self
+    fn from(value: T) -> Self;
 }
 
 trait Into<T> {
-    fn into(self) -> T
+    fn into(self) -> T;
 }
 
 trait TryFrom<T> {
-    type Error
-    fn try_from(value: T) -> Result<Self, Self::Error>
+    type Error;
+    fn try_from(value: T) -> Result<Self, Self::Error>;
 }
 
 trait TryInto<T> {
-    type Error
-    fn try_into(self) -> Result<T, Self::Error>
+    type Error;
+    fn try_into(self) -> Result<T, Self::Error>;
 }
 
 // String conversion
 trait ToString {
-    fn to_string(&self) -> String
+    fn to_string(&self) -> String;
 }
 
 trait FromStr {
-    type Error
-    fn from_str(s: &str) -> Result<Self, Self::Error>
+    type Error;
+    fn from_str(s: &str) -> Result<Self, Self::Error>;
 }
 ```
 
@@ -2323,7 +2978,7 @@ impl Copy for Bool { }
 impl Copy for Char { }
 impl Copy for Unit { }
 
-// Clone trait for all types
+// Clone for all Copy types (blanket implementation)
 impl<T: Copy> Clone for T {
     fn clone(&self) -> T { *self }
 }
@@ -2344,26 +2999,30 @@ impl Ord for Int32 {
 }
 ```
 
-## Implementation Priorities
+## Conformance Profiles
+Two standard-library conformance profiles are defined. A conforming
+implementation MUST state which profile it implements.
 
-### Phase 1 (MVP)
-- Basic types (primitives, String, Option, Result)
-- Vec<T> dynamic array
-- Basic IO (print, println, simple file operations)
-- Essential traits (Copy, Clone, Eq, Ord)
+### Profile: `core-min` (MVP)
+The minimum standard library for Core v1 conformance:
+- Prelude: primitive types, `Option`, `Result`, `Ordering`, essential traits
+  (`Copy`, `Clone`, `Drop`, `Eq`, `Ord`, `Num`), `print`, `println`, `panic`
+- `String` and `str` (construction, `len`, `push`/`push_str`, `as_str`,
+  `chars`)
+- `Vec<T>` (construction, `push`, `pop`, `len`, `get`/`get_mut`, indexing)
+- `Range`/`RangeInclusive` with integer `Iterator` impls (for `for` loops)
+- `Box<T>`
+- `drop`, `size_of`, `align_of`
 
-### Phase 2 (Enhanced)
-- HashMap<K, V> and HashSet<T>
-- Iterator trait and basic iterators
-- Math module with common functions
-- Enhanced string operations
+### Profile: `std-full`
+Everything in this document: `core-min` plus `HashMap`, `HashSet`, the
+`Iterator` trait with combinators and all iterator/view types, the full
+`String` API, the math module, file IO, `std::mem` utilities, the conversion
+traits, and `Hash`/`Default`/`Display`/`Index`/`IndexMut`.
 
-### Phase 3 (Complete)
-- Advanced memory utilities
-- Full IO system with buffering
-- Regular expressions
-- Time and date handling
-- Thread and concurrency primitives (future)
+Items in *neither* profile (informative future work, not required for any
+Core v1 conformance claim): buffered IO, regular expressions, time/date,
+threads and concurrency primitives, `Rc`/`Arc`/`RefCell`.
 
 ## Platform Considerations
 
@@ -2382,10 +3041,14 @@ impl Ord for Int32 {
 ## Behavioral Requirements (Core v1)
 - Indexing `Vec<T>` with `[]` MUST perform bounds checking and MUST trap on out-of-bounds access.
 - `get`/`get_mut` MUST return `None` for out-of-bounds indices and MUST NOT trap.
+- Slicing an array, slice, or `Vec<T>` with a range MUST trap if the range is out of bounds or inverted.
 - `String::substring(start, end)` MUST validate UTF-8 boundaries and MUST trap on invalid boundaries or ranges.
 - IO functions MUST return `Result` with a non-`Ok` variant on failure and MUST NOT silently ignore errors.
 ## Conformance
-A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.
+A conforming Core v1 implementation MUST implement at least the `core-min`
+profile, MUST state which profile it implements, and MUST follow the
+requirements in this document for every item it provides. Any deviations or
+extensions MUST be explicitly documented by the implementation.
 
 
 ---
@@ -2459,13 +3122,55 @@ Visibility applies to:
 
 ## Name Resolution Order
 Within a module, names are resolved in the following order:
-1. Local scope
+1. Local (lexical) scope — block scopes and function parameters, as defined in
+   04-Semantic-Analysis.md
 2. Items declared in the current module
 3. Items brought into scope by `use`
-4. Items in parent modules via explicit `super::` paths
-5. Items in `crate` via explicit `crate::` paths
+4. Built-in names (prelude)
 
-Unqualified names do not implicitly search parent or crate scopes.
+Unqualified names do not implicitly search parent or crate scopes. Items in
+parent modules or the crate root require explicit `super::` or `crate::`
+paths. (Note: *lexical* scopes inside a function body do nest — step 1 — but
+*module* scopes never nest implicitly.)
+
+## Manifest Schema (`starkpkg.json`)
+The manifest is a JSON object with the following fields:
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `name` | string | yes | Package name: `[a-z][a-z0-9_-]*`, 1–64 chars. Used as the import root for dependents. |
+| `version` | string | yes | Semantic version `MAJOR.MINOR.PATCH` (numeric components; optional `-prerelease` tag). |
+| `entry` | string | no | Package-root-relative path to the root source file. Default `src/main.stark`. MUST exist and MUST be inside the package directory. |
+| `dependencies` | object | no | Map from package name to a *version constraint string* or a *dependency object*. |
+
+A dependency object has exactly one of:
+- `{ "version": "<constraint>" }` — resolved from a registry or cache, or
+- `{ "path": "<relative-path>" }` — a local package directory containing its
+  own `starkpkg.json`.
+
+Version constraint syntax:
+- `"1.2.3"` — exactly that version
+- `"^1.2.3"` — `>=1.2.3` and `<2.0.0` (compatible-with)
+- `">=1.2, <2.0"` — comma-separated comparator list (`>=`, `>`, `<=`, `<`, `=`),
+  all of which must hold
+
+Validation: unknown top-level fields are ignored (forward compatibility);
+a missing/invalid required field, a malformed constraint, a `path` escaping
+the workspace, or a dependency whose name violates the name rule is a
+manifest error and compilation MUST fail.
+
+Example:
+```json
+{
+  "name": "my-app",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "tensor-lib": "^2.1.0",
+    "utils": { "path": "../utils" }
+  }
+}
+```
 
 ## Packages and Dependencies
 Dependencies are declared in `starkpkg.json` under `dependencies`.
@@ -2494,7 +3199,14 @@ use std::collections::Vec;
 ```
 
 ## Cycles
-Direct cyclic module dependencies are a compile-time error.
+- **Package dependency cycles** — direct (`A → A`) or transitive
+  (`A → B → C → A`) — are a compile-time error.
+- **Module declarations** (`mod`) form a tree rooted at the package entry
+  file, so `mod` cycles cannot occur; declaring the same module twice is an
+  error.
+- **`use` imports** between modules of the same package MAY be mutually
+  recursive (module A may `use` items from B and vice versa); this is not a
+  cycle error.
 
 ## Errors
 - Importing an unknown module or item is a compile-time error.
@@ -2505,3 +3217,4 @@ A conforming Core v1 implementation MUST follow the requirements in this documen
 
 
 ---
+

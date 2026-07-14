@@ -10,17 +10,17 @@ Build symbol tables for scopes and declarations.
 
 #### Scope Rules
 ```stark
-// Global scope
-fn global_function() { }
-const GLOBAL_CONST: Int32 = 42
+// Module scope
+fn module_function() { }
+const MODULE_CONST: Int32 = 42;
 
 fn example() {
     // Function scope
-    let local_var = 10
+    let local_var = 10;
     
     {
         // Block scope
-        let block_var = 20
+        let block_var = 20;
         // block_var accessible here
         // local_var accessible here
     }
@@ -30,16 +30,28 @@ fn example() {
 ```
 
 #### Name Resolution Order
-1. Current scope
-2. Parent scopes (innermost to outermost)
-3. Global scope
-4. Built-in names
+Name resolution distinguishes *lexical* scopes (inside function bodies) from
+*module* scopes.
+
+Within a function body, an unqualified name is resolved lexically:
+1. Current block scope
+2. Enclosing block scopes (innermost to outermost)
+3. Function parameters
+
+If not found lexically, the name is resolved at module level per the module
+system rules (see 07-Modules-and-Packages.md):
+4. Items declared in the current module
+5. Items brought into scope by `use`
+6. Built-in names (prelude)
+
+Unqualified names never implicitly search parent modules or the crate root;
+those require explicit `super::` or `crate::` paths.
 
 #### Shadowing Rules
 ```stark
-let x = 10        // x: Int32
+let x = 10;       // x: Int32
 {
-    let x = "hi"  // Shadows outer x, x: String
+    let x = "hi"; // Shadows outer x, x: String
     // Inner x takes precedence
 }
 // Outer x visible again
@@ -49,61 +61,66 @@ let x = 10        // x: Int32
 
 #### Variable Declarations
 ```stark
-let x: Int32 = 42      // Type annotation matches literal
-let y = 42             // Type inferred as Int32
-let z: String = 42     // Error: type mismatch
+let x: Int32 = 42;     // Type annotation matches literal
+let y = 42;            // Type inferred as Int32
+let z: String = 42;    // Error: type mismatch
 ```
 
 #### Function Calls
 ```stark
 fn add(a: Int32, b: Int32) -> Int32 { a + b }
 
-let result = add(1, 2)     // OK: arguments match parameters
-let error = add(1.0, 2)    // Error: Float64 cannot be Int32
-let error2 = add(1)        // Error: wrong number of arguments
+let result = add(1, 2);    // OK: arguments match parameters
+let error = add(1.0, 2);   // Error: Float64 cannot be Int32
+let error2 = add(1);       // Error: wrong number of arguments
 ```
 
 #### Assignment Compatibility
 ```stark
-let mut x: Int32 = 10
-x = 20                     // OK: same type
-x = "hello"                // Error: type mismatch
+let mut x: Int32 = 10;
+x = 20;                    // OK: same type
+x = "hello";               // Error: type mismatch
 
-let y: Int32 = 10
-y = 20                     // Error: y is not mutable
+let y: Int32 = 10;
+y = 20;                    // Error: y is not mutable
 ```
 
 ### 3. Ownership and Borrowing Analysis
 
 #### Move Semantics Validation
 ```stark
-let s1 = String::new("hello")
-let s2 = s1               // s1 moved to s2
-print(s1)                 // Error: use of moved value
+let s1 = String::from("hello");
+let s2 = s1;              // s1 moved to s2
+print(s1);                // Error: use of moved value
 
 fn take_ownership(s: String) { }
-let s3 = String::new("world")
-take_ownership(s3)        // s3 moved into function
-print(s3)                 // Error: use of moved value
+let s3 = String::from("world");
+take_ownership(s3);       // s3 moved into function
+print(s3);                // Error: use of moved value
 ```
 
 #### Borrow Checking
 ```stark
-let mut s = String::new("hello")
-let r1 = &s               // Immutable borrow
-let r2 = &s               // OK: multiple immutable borrows
-let r3 = &mut s           // Error: cannot borrow mutably while immutably borrowed
+let mut s = String::from("hello");
+let r1 = &s;              // Immutable borrow
+let r2 = &s;              // OK: multiple immutable borrows
+let r3 = &mut s;          // Error: cannot borrow mutably while immutably borrowed
 
-let mut s2 = String::new("world")
-let r4 = &mut s2          // Mutable borrow
-let r5 = &s2              // Error: cannot borrow immutably while mutably borrowed
-let r6 = &mut s2          // Error: cannot have multiple mutable borrows
+let mut s2 = String::from("world");
+let r4 = &mut s2;         // Mutable borrow
+let r5 = &s2;             // Error: cannot borrow immutably while mutably borrowed
+let r6 = &mut s2;         // Error: cannot have multiple mutable borrows
 ```
 
 #### Lifetime Validation
+Returned references must obey the Core v1 reference rules defined in
+03-Type-System.md ("References and Lifetimes"): a returned reference must
+derive from a reference parameter on every path, and callers treat it as
+having the shortest lifetime among the reference arguments it may derive from.
+
 ```stark
 fn invalid_return() -> &Int32 {
-    let x = 42
+    let x = 42;
     &x                    // Error: returning reference to local variable
 }
 
@@ -117,21 +134,21 @@ fn valid_return(x: &Int32) -> &Int32 {
 #### Unreachable Code Detection
 ```stark
 fn example() -> Int32 {
-    return 42
-    let x = 10            // Warning: unreachable code
+    return 42;
+    let x = 10;           // Warning: unreachable code
 }
 ```
 
 #### Return Path Analysis
 ```stark
 fn missing_return() -> Int32 {
-    let x = 42
+    let x = 42;
     // Error: not all paths return a value
 }
 
 fn conditional_return(flag: Bool) -> Int32 {
     if flag {
-        return 1
+        return 1;
     }
     // Error: missing return in else branch
 }
@@ -148,12 +165,12 @@ fn valid_return(flag: Bool) -> Int32 {
 #### Break/Continue Validation
 ```stark
 fn invalid_break() {
-    break                 // Error: break outside of loop
+    break;                // Error: break outside of loop
 }
 
 fn valid_break() {
     loop {
-        break             // OK: break inside loop
+        break;            // OK: break inside loop
     }
 }
 ```
@@ -189,74 +206,84 @@ Rules:
 
 #### Pattern Type Checking
 ```stark
-let x: Int32 = 42
+let x: Int32 = 42;
 match x {
     "hello" => "string",          // Error: pattern type mismatch
-    42 => "number"                // OK
+    42 => "number",               // OK
+    _ => "other"
 }
 ```
 
 ### 6. Mutability Analysis
 
 #### Mutable Access Validation
-```stark
-let x = 42
-x = 43                    // Error: x is not mutable
+Assignment to an initialized immutable variable is an error. (Exception: the
+single initializing assignment of a deferred-initialization `let` — see
+Initialization Analysis.)
 
-let mut y = 42
-y = 43                    // OK: y is mutable
+```stark
+let x = 42;
+x = 43;                   // Error: x is not mutable
+
+let mut y = 42;
+y = 43;                   // OK: y is mutable
 
 struct Point { x: Int32, y: Int32 }
-let p = Point { x: 1, y: 2 }
-p.x = 10                  // Error: p is not mutable
+let p = Point { x: 1, y: 2 };
+p.x = 10;                 // Error: p is not mutable
 
-let mut p2 = Point { x: 1, y: 2 }
-p2.x = 10                 // OK: p2 is mutable
+let mut p2 = Point { x: 1, y: 2 };
+p2.x = 10;                // OK: p2 is mutable
 ```
 
 ### 7. Initialization Analysis
 
 #### Use Before Initialization
 ```stark
-let x: Int32
-print(x)                  // Error: use of uninitialized variable
+let x: Int32;
+print(x.fmt());           // Error: use of uninitialized variable
 
-let y: Int32 = if true { 42 } else { 24 }
-print(y)                  // OK: y is initialized in all branches
+let y: Int32 = if true { 42 } else { 24 };
+print(y.fmt());           // OK: y is initialized in all branches
 
-let z: Int32
+let z: Int32;
 if condition {
-    z = 42
+    z = 42;
 }
-print(z)                  // Error: z might not be initialized
+print(z.fmt());           // Error: z might not be initialized
 ```
 
 Rules:
 - `let name: Type;` declares a variable without initializing it.
 - A variable must be definitely assigned before any read.
 - All control-flow paths must assign before use.
+- **Deferred initialization of immutable variables**: an *uninitialized*
+  immutable `let` may be assigned exactly once on each control-flow path;
+  this first assignment is initialization, not mutation. Any assignment to an
+  already-initialized immutable variable is an error (see Mutability
+  Analysis).
 
 #### Double Initialization
 ```stark
-let mut x: Int32 = 42
-x = 43                    // OK: reassignment
-let x = 44                // Error: redeclaration in same scope
+let mut x: Int32 = 42;
+x = 43;                   // OK: reassignment
+let x = 44;               // Error: redeclaration in same scope
 ```
 
 ### 8. Array Bounds Analysis
 
 #### Static Bounds Checking
 ```stark
-let arr: [Int32; 3] = [1, 2, 3]
-let x = arr[2]            // OK: index in bounds
-let y = arr[5]            // Error: index out of bounds (if determinable)
+let arr: [Int32; 3] = [1, 2, 3];
+let x = arr[2];           // OK: index in bounds
+let y = arr[5];           // Error: index out of bounds (if determinable)
 ```
 
 #### Dynamic Bounds Checking
 ```stark
-let arr: [Int32] = [1, 2, 3]
-let idx = get_index()
-let x = arr[idx]          // Runtime bounds check required
+let arr: [Int32; 3] = [1, 2, 3];
+let idx = get_index();
+let x = arr[idx];         // Runtime bounds check required
 ```
 
 ### 9. Error Propagation Analysis
@@ -266,12 +293,12 @@ let x = arr[idx]          // Runtime bounds check required
 fn might_fail() -> Result<Int32, String> { ... }
 
 fn caller1() -> Result<Int32, String> {
-    let x = might_fail()?     // OK: compatible error types
+    let x = might_fail()?;    // OK: compatible error types
     Ok(x * 2)
 }
 
 fn caller2() -> Int32 {
-    let x = might_fail()?     // Error: function doesn't return Result
+    let x = might_fail()?;    // Error: function doesn't return Result
     x * 2
 }
 ```
@@ -281,24 +308,28 @@ Rules:
 - The enclosing function return type must be compatible with the propagated type.
 
 ## Runtime Error Semantics (Core v1)
-- A runtime error (e.g., integer overflow, division by zero, out-of-bounds indexing) MUST terminate the current program execution.
+- A runtime error (e.g., integer overflow, division by zero, out-of-bounds indexing, failing `as` cast) MUST terminate the current program execution.
 - `panic(...)` is a runtime error that terminates the program after emitting the provided message.
+- Termination is an **abort**: the program stops immediately with a non-zero
+  exit status. Destructors (`Drop`) are NOT run for live values, and no
+  unwinding or recovery mechanism exists in Core v1. (Catchable panics and
+  unwind-with-destructors are possible future extensions.)
 
 ### 10. Trait Constraint Checking
 
 #### Trait Bounds Validation
 ```stark
 trait Display {
-    fn fmt(&self) -> String
+    fn fmt(&self) -> String;
 }
 
 fn print_it<T: Display>(item: T) {
-    print(item.fmt())         // OK: T implements Display
+    print(item.fmt());        // OK: T implements Display
 }
 
 struct Point { x: Int32, y: Int32 }
 
-print_it(Point { x: 1, y: 2 })  // Error: Point doesn't implement Display
+print_it(Point { x: 1, y: 2 });  // Error: Point doesn't implement Display
 ```
 
 ## Error Reporting

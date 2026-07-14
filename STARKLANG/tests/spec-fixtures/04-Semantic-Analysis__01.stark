@@ -1,0 +1,17 @@
+// Module scope
+fn module_function() { }
+const MODULE_CONST: Int32 = 42;
+
+fn example() {
+    // Function scope
+    let local_var = 10;
+    
+    {
+        // Block scope
+        let block_var = 20;
+        // block_var accessible here
+        // local_var accessible here
+    }
+    // block_var not accessible here
+    // local_var still accessible
+}

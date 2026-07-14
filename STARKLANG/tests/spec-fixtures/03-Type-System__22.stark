@@ -1,0 +1,3 @@
+let x = 42;             // Inferred as Int32
+let y = 3.14;           // Inferred as Float64
+let z = [1, 2, 3];      // Inferred as [Int32; 3]

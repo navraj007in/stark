@@ -1,0 +1,11 @@
+fn might_fail() -> Result<Int32, String> { ... }
+
+fn caller1() -> Result<Int32, String> {
+    let x = might_fail()?;    // OK: compatible error types
+    Ok(x * 2)
+}
+
+fn caller2() -> Int32 {
+    let x = might_fail()?;    // Error: function doesn't return Result
+    x * 2
+}

@@ -1,0 +1,4 @@
+fn create_string() -> String {
+    let s = String::from("hello");
+    s                       // Ownership moved to caller
+}

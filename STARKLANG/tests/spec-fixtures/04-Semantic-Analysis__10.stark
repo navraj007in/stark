@@ -1,0 +1,19 @@
+fn missing_return() -> Int32 {
+    let x = 42;
+    // Error: not all paths return a value
+}
+
+fn conditional_return(flag: Bool) -> Int32 {
+    if flag {
+        return 1;
+    }
+    // Error: missing return in else branch
+}
+
+fn valid_return(flag: Bool) -> Int32 {
+    if flag {
+        1
+    } else {
+        2
+    }                     // OK: both branches return
+}

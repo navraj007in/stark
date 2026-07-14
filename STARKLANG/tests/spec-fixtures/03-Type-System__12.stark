@@ -1,0 +1,10 @@
+struct Point {
+    x: Float64,
+    y: Float64
+}
+
+struct Person {
+    name: String,
+    age: Int32,
+    pub email: String  // Public field
+}

@@ -67,13 +67,55 @@ Visibility applies to:
 
 ## Name Resolution Order
 Within a module, names are resolved in the following order:
-1. Local scope
+1. Local (lexical) scope — block scopes and function parameters, as defined in
+   04-Semantic-Analysis.md
 2. Items declared in the current module
 3. Items brought into scope by `use`
-4. Items in parent modules via explicit `super::` paths
-5. Items in `crate` via explicit `crate::` paths
+4. Built-in names (prelude)
 
-Unqualified names do not implicitly search parent or crate scopes.
+Unqualified names do not implicitly search parent or crate scopes. Items in
+parent modules or the crate root require explicit `super::` or `crate::`
+paths. (Note: *lexical* scopes inside a function body do nest — step 1 — but
+*module* scopes never nest implicitly.)
+
+## Manifest Schema (`starkpkg.json`)
+The manifest is a JSON object with the following fields:
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `name` | string | yes | Package name: `[a-z][a-z0-9_-]*`, 1–64 chars. Used as the import root for dependents. |
+| `version` | string | yes | Semantic version `MAJOR.MINOR.PATCH` (numeric components; optional `-prerelease` tag). |
+| `entry` | string | no | Package-root-relative path to the root source file. Default `src/main.stark`. MUST exist and MUST be inside the package directory. |
+| `dependencies` | object | no | Map from package name to a *version constraint string* or a *dependency object*. |
+
+A dependency object has exactly one of:
+- `{ "version": "<constraint>" }` — resolved from a registry or cache, or
+- `{ "path": "<relative-path>" }` — a local package directory containing its
+  own `starkpkg.json`.
+
+Version constraint syntax:
+- `"1.2.3"` — exactly that version
+- `"^1.2.3"` — `>=1.2.3` and `<2.0.0` (compatible-with)
+- `">=1.2, <2.0"` — comma-separated comparator list (`>=`, `>`, `<=`, `<`, `=`),
+  all of which must hold
+
+Validation: unknown top-level fields are ignored (forward compatibility);
+a missing/invalid required field, a malformed constraint, a `path` escaping
+the workspace, or a dependency whose name violates the name rule is a
+manifest error and compilation MUST fail.
+
+Example:
+```json
+{
+  "name": "my-app",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "tensor-lib": "^2.1.0",
+    "utils": { "path": "../utils" }
+  }
+}
+```
 
 ## Packages and Dependencies
 Dependencies are declared in `starkpkg.json` under `dependencies`.
@@ -102,7 +144,14 @@ use std::collections::Vec;
 ```
 
 ## Cycles
-Direct cyclic module dependencies are a compile-time error.
+- **Package dependency cycles** — direct (`A → A`) or transitive
+  (`A → B → C → A`) — are a compile-time error.
+- **Module declarations** (`mod`) form a tree rooted at the package entry
+  file, so `mod` cycles cannot occur; declaring the same module twice is an
+  error.
+- **`use` imports** between modules of the same package MAY be mutually
+  recursive (module A may `use` items from B and vice versa); this is not a
+  cycle error.
 
 ## Errors
 - Importing an unknown module or item is a compile-time error.

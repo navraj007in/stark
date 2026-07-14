@@ -1,0 +1,3 @@
+// str is an unsized string slice type. It is used via references.
+let s: &str = "hello";
+let owned: String = String::from(s);

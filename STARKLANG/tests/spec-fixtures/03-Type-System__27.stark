@@ -1,0 +1,2 @@
+&[T; N] -> &[T]     // Array reference to slice reference
+&mut [T; N] -> &mut [T]  // Mutable array reference to mutable slice reference

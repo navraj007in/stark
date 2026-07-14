@@ -237,6 +237,9 @@
   </style>
 </head>
 <body>
+<header id="title-block-header">
+<h1 class="title">STARK-Core-v1</h1>
+</header>
 <h1 id="stark-core-language-specification-overview">STARK Core Language
 Specification Overview</h1>
 <h2 id="introduction">Introduction</h2>
@@ -245,6 +248,12 @@ language specification. The documents in <code>docs/spec/</code> are
 normative for Core v1. The core language defines the general-purpose
 language surface (lexing, syntax, types, semantics, memory, modules, and
 standard library). Non-core extensions are defined separately.</p>
+<p><strong>Maturity: normative draft.</strong> Core v1 is the
+authoritative definition of the language, but it has not yet been
+validated by a conforming implementation. Until a reference
+lexer/parser/type-checker exists and every normative code example is
+machine-checked, readers should expect the spec to contain residual
+defects, and implementers should report ambiguities as spec bugs.</p>
 <h2 id="design-philosophy">Design Philosophy</h2>
 <h3 id="core-principles">Core Principles</h3>
 <ol type="1">
@@ -291,9 +300,9 @@ Types</strong>: Integers, floats, booleans, characters, strings -
 <strong>Composite Types</strong>: Arrays, tuples, structs, enums -
 <strong>Reference Types</strong>: Immutable and mutable references -
 <strong>Ownership Model</strong>: Move semantics, borrowing rules -
-<strong>Type Inference</strong>: Local and function return type
-inference - <strong>Trait System</strong>: Interfaces and generic
-constraints</p>
+<strong>Type Inference</strong>: Local type inference (function
+signatures are fully explicit) - <strong>Trait System</strong>:
+Interfaces and generic constraints</p>
 <h3 id="semantic-analysis-04-semantic-analysis.md">4. Semantic Analysis
 (<a href="./04-Semantic-Analysis.md">04-Semantic-Analysis.md</a>)</h3>
 <p>Rules for meaningful program validation: - <strong>Symbol
@@ -337,28 +346,28 @@ Extensions (../extensions/AI-Extensions.md)</h3>
 See <code>docs/extensions/AI-Extensions.md</code>.</p>
 <h2 id="core-language-features">Core Language Features</h2>
 <h3 id="variables-and-mutability">Variables and Mutability</h3>
-<pre class="stark"><code>let x = 42              // Immutable by default
-let mut y = 10          // Explicitly mutable
-const MAX_SIZE: Int32 = 1000  // Compile-time constant</code></pre>
+<pre class="stark"><code>let x = 42;             // Immutable by default
+let mut y = 10;         // Explicitly mutable
+const MAX_SIZE: Int32 = 1000;  // Compile-time constant</code></pre>
 <h3 id="functions">Functions</h3>
 <pre class="stark"><code>fn add(a: Int32, b: Int32) -&gt; Int32 {
     a + b
 }
 
 fn greet(name: &amp;str) {
-    println(&quot;Hello, &quot; + name)
+    println(name);
 }</code></pre>
 <h3 id="ownership-and-borrowing">Ownership and Borrowing</h3>
 <pre class="stark"><code>fn consume(s: String) {
     // s is owned here
 }
 
-fn borrow(s: &amp;String) -&gt; Int32 {
+fn borrow(s: &amp;String) -&gt; UInt64 {
     s.len()
 }
 
 fn mutate(s: &amp;mut String) {
-    s.push(&#39;!&#39;)
+    s.push(&#39;!&#39;);
 }</code></pre>
 <h2 id="implementation-phases">Implementation Phases</h2>
 <h3 id="phase-1-core-mvp">Phase 1: Core MVP</h3>
@@ -428,11 +437,11 @@ Float32, Float64, Bool, String, Char, Unit, str
 // Visibility
 pub, priv
 
-// Module Paths
-self, super, crate
+// Module Paths and Self Type
+self, Self, super, crate
 
 // Operators
-and, or, not, in, is, as
+in, as
 
 // Literals
 true, false</code></pre>
@@ -443,13 +452,25 @@ digits, underscores - Case sensitive - Cannot be keywords - Maximum
 length: 255 characters</p>
 <h3 id="literals">3. Literals</h3>
 <h4 id="integer-literals">Integer Literals</h4>
-<pre><code>DECIMAL_INT := [0-9][0-9_]*
-HEX_INT     := 0[xX][0-9a-fA-F][0-9a-fA-F_]*
-BINARY_INT  := 0[bB][01][01_]*
-OCTAL_INT   := 0[oO][0-7][0-7_]*
+<pre><code>DECIMAL_INT := [0-9] (&#39;_&#39;? [0-9])*
+HEX_INT     := 0[xX] [0-9a-fA-F] (&#39;_&#39;? [0-9a-fA-F])*
+BINARY_INT  := 0[bB] [01] (&#39;_&#39;? [01])*
+OCTAL_INT   := 0[oO] [0-7] (&#39;_&#39;? [0-7])*
 
-// Type suffixes
-INT_SUFFIX := (i8|i16|i32|i64|u8|u16|u32|u64)</code></pre>
+INT_SUFFIX := (i8|i16|i32|i64|u8|u16|u32|u64)
+
+INTEGER := (DECIMAL_INT | HEX_INT | BINARY_INT | OCTAL_INT) INT_SUFFIX?</code></pre>
+<p>Rules: - Underscores are digit separators and may appear only
+<em>between</em> two digits — never leading, trailing, or consecutive
+(<code>1__2</code> and <code>12_</code> are invalid). - A suffix fixes
+the literal’s type: <code>i8</code>→<code>Int8</code>,
+<code>i16</code>→<code>Int16</code>,
+<code>i32</code>→<code>Int32</code>,
+<code>i64</code>→<code>Int64</code>, <code>u8</code>→<code>UInt8</code>,
+<code>u16</code>→<code>UInt16</code>,
+<code>u32</code>→<code>UInt32</code>,
+<code>u64</code>→<code>UInt64</code>. A suffixed literal whose value
+does not fit the named type is a compile-time error.</p>
 <p>Examples:</p>
 <pre class="stark"><code>42
 1_000_000
@@ -459,12 +480,17 @@ INT_SUFFIX := (i8|i16|i32|i64|u8|u16|u32|u64)</code></pre>
 42i32
 255u8</code></pre>
 <h4 id="floating-point-literals">Floating Point Literals</h4>
-<pre><code>FLOAT := DECIMAL_INT &#39;.&#39; [0-9][0-9_]* [EXPONENT]?
-       | DECIMAL_INT EXPONENT
-EXPONENT := [eE][+-]?[0-9][0-9_]*
+<pre><code>FLOAT_BODY := DECIMAL_INT &#39;.&#39; [0-9] (&#39;_&#39;? [0-9])* EXPONENT?
+            | DECIMAL_INT EXPONENT
+EXPONENT := [eE] [+-]? [0-9] (&#39;_&#39;? [0-9])*
 
-// Type suffixes
-FLOAT_SUFFIX := (f32|f64)</code></pre>
+FLOAT_SUFFIX := (f32|f64)
+
+FLOAT := FLOAT_BODY FLOAT_SUFFIX?</code></pre>
+<p>Rules: - The underscore rules for integer literals apply (separators
+between digits only). - A suffix fixes the literal’s type:
+<code>f32</code>→<code>Float32</code>,
+<code>f64</code>→<code>Float64</code>.</p>
 <p>Examples:</p>
 <pre class="stark"><code>3.14
 1.0e10
@@ -502,8 +528,14 @@ CHAR_CONTENT := [^&#39;\\]</code></pre>
 <pre><code>&amp; | ^ ~ &lt;&lt; &gt;&gt;</code></pre>
 <h4 id="assignment">Assignment</h4>
 <pre><code>= += -= *= /= %= **= &amp;= |= ^= &lt;&lt;= &gt;&gt;=</code></pre>
+<h4 id="range">Range</h4>
+<pre><code>.. ..=</code></pre>
 <h4 id="other">Other</h4>
-<pre><code>? : :: . -&gt; =&gt; @ # $</code></pre>
+<pre><code>? :: . -&gt; =&gt;</code></pre>
+<p>Notes: - <code>?</code> is the try operator (postfix). There is no
+ternary conditional operator; <code>if</code> is an expression. -
+<code>:</code> appears only as a delimiter (type annotations, struct
+fields), not as an operator.</p>
 <h3 id="delimiters">5. Delimiters</h3>
 <pre><code>( ) [ ] { } , ; :</code></pre>
 <h3 id="comments">6. Comments</h3>
@@ -529,8 +561,10 @@ termination is defined by semicolons in the syntax grammar.</p>
 over identifiers 2. Longer operators take precedence over shorter ones
 3. Comments are ignored in token stream</p>
 <h3 id="reserved-tokens">9. Reserved Tokens</h3>
-<p>Reserved for future use:</p>
-<pre><code>async, await, yield, where, macro, unsafe, extern, import, export, null</code></pre>
+<p>Reserved for future use (recognized as keywords but not used by any
+Core v1 grammar production):</p>
+<pre><code>async, await, yield, where, macro, unsafe, extern, import, export, null,
+and, or, not, is, dyn</code></pre>
 <h2 id="lexical-analysis-rules">Lexical Analysis Rules</h2>
 <ol type="1">
 <li><strong>Maximal Munch</strong>: Always match the longest possible
@@ -577,24 +611,64 @@ Item ::= Visibility? (Function
        | Module)
 
 Visibility ::= &#39;pub&#39; | &#39;priv&#39;</code></pre>
-<h3 id="function-definition">Function Definition</h3>
-<pre class="ebnf"><code>Function ::= &#39;fn&#39; IDENTIFIER &#39;(&#39; ParameterList? &#39;)&#39; (&#39;-&gt;&#39; Type)? Block
+<h3 id="generic-parameters-and-arguments">Generic Parameters and
+Arguments</h3>
+<pre class="ebnf"><code>GenericParams ::= &#39;&lt;&#39; GenericParam (&#39;,&#39; GenericParam)* &#39;,&#39;? &#39;&gt;&#39;
 
-ParameterList ::= Parameter (&#39;,&#39; Parameter)* &#39;,&#39;?
+GenericParam ::= IDENTIFIER (&#39;:&#39; TraitBounds)?
+
+TraitBounds ::= TraitBound (&#39;+&#39; TraitBound)*
+
+TraitBound ::= Path GenericArgs?
+
+GenericArgs ::= &#39;&lt;&#39; GenericArg (&#39;,&#39; GenericArg)* &#39;,&#39;? &#39;&gt;&#39;
+
+GenericArg ::= Type
+             | IDENTIFIER &#39;=&#39; Type          // Associated type binding, e.g. Iterator&lt;Item = T&gt;</code></pre>
+<p>Notes: - Generic parameters may appear on functions, structs, enums,
+traits, impl blocks, and type aliases. - Generic arguments in
+<em>expressions</em> are inferred at the use site. The only explicit
+form is <code>path::&lt;Args&gt;</code> on a path expression (see
+<code>PathExpression</code>), for calls where inference is impossible,
+e.g. <code>size_of::&lt;Int32&gt;()</code>.</p>
+<h3 id="function-definition">Function Definition</h3>
+<pre class="ebnf"><code>Function ::= FunctionSig Block
+
+FunctionSig ::= &#39;fn&#39; IDENTIFIER GenericParams? &#39;(&#39; ParameterList? &#39;)&#39; (&#39;-&gt;&#39; ReturnType)?
+
+ReturnType ::= Type | &#39;!&#39;                   // &#39;!&#39; is the never type (diverging function)
+
+ParameterList ::= Receiver (&#39;,&#39; Parameter)* &#39;,&#39;?
+                | Parameter (&#39;,&#39; Parameter)* &#39;,&#39;?
+
+Receiver ::= &#39;self&#39;
+           | &#39;&amp;&#39; &#39;self&#39;
+           | &#39;&amp;&#39; &#39;mut&#39; &#39;self&#39;
 
 Parameter ::= IDENTIFIER &#39;:&#39; Type
             | &#39;mut&#39; IDENTIFIER &#39;:&#39; Type
 
-Block ::= &#39;{&#39; Statement* &#39;}&#39;</code></pre>
+Block ::= &#39;{&#39; Statement* Expression? &#39;}&#39;</code></pre>
+<p>Block semantics: - The optional final <code>Expression</code> has no
+terminating semicolon and is the block’s value; a block without one
+evaluates to <code>Unit</code>. - Disambiguation: at each position
+inside a block, the parser first attempts to parse a
+<code>Statement</code>; a trailing <code>Expression</code> is recognized
+only immediately before <code>}</code>. An expression followed by
+<code>;</code> is always a statement.</p>
+<p>Notes: - A receiver is only valid on functions declared inside a
+<code>trait</code> or <code>impl</code> block. - A function without a
+<code>-&gt;</code> annotation returns <code>Unit</code>. Return types
+are never inferred.</p>
 <h3 id="data-type-definitions">Data Type Definitions</h3>
-<pre class="ebnf"><code>Struct ::= &#39;struct&#39; IDENTIFIER &#39;{&#39; FieldList? &#39;}&#39;
+<pre class="ebnf"><code>Struct ::= &#39;struct&#39; IDENTIFIER GenericParams? &#39;{&#39; FieldList? &#39;}&#39;
 
 FieldList ::= Field (&#39;,&#39; Field)* &#39;,&#39;?
 
 Field ::= IDENTIFIER &#39;:&#39; Type
         | &#39;pub&#39; IDENTIFIER &#39;:&#39; Type
 
-Enum ::= &#39;enum&#39; IDENTIFIER &#39;{&#39; VariantList? &#39;}&#39;
+Enum ::= &#39;enum&#39; IDENTIFIER GenericParams? &#39;{&#39; VariantList? &#39;}&#39;
 
 VariantList ::= Variant (&#39;,&#39; Variant)* &#39;,&#39;?
 
@@ -602,22 +676,26 @@ Variant ::= IDENTIFIER
           | IDENTIFIER &#39;(&#39; TypeList &#39;)&#39;
           | IDENTIFIER &#39;{&#39; FieldList &#39;}&#39;
 
-Trait ::= &#39;trait&#39; IDENTIFIER &#39;{&#39; TraitItem* &#39;}&#39;
+Trait ::= &#39;trait&#39; IDENTIFIER GenericParams? &#39;{&#39; TraitItem* &#39;}&#39;
 
-TraitItem ::= Function
-            | Type
+TraitItem ::= FunctionSig &#39;;&#39;               // Required method (signature only)
+            | FunctionSig Block             // Method with default body
+            | AssociatedType
 
-Impl ::= &#39;impl&#39; Type &#39;{&#39; ImplItem* &#39;}&#39;
-       | &#39;impl&#39; IDENTIFIER &#39;for&#39; Type &#39;{&#39; ImplItem* &#39;}&#39;
+AssociatedType ::= &#39;type&#39; IDENTIFIER &#39;;&#39;
 
-ImplItem ::= Function</code></pre>
+Impl ::= &#39;impl&#39; GenericParams? Type &#39;{&#39; ImplItem* &#39;}&#39;
+       | &#39;impl&#39; GenericParams? TraitBound &#39;for&#39; Type &#39;{&#39; ImplItem* &#39;}&#39;
+
+ImplItem ::= Visibility? Function
+           | &#39;type&#39; IDENTIFIER &#39;=&#39; Type &#39;;&#39; // Associated type value</code></pre>
 <h3 id="module-definition">Module Definition</h3>
 <pre class="ebnf"><code>Module ::= &#39;mod&#39; IDENTIFIER &#39;;&#39;
         | &#39;mod&#39; IDENTIFIER ModuleBlock
 
 ModuleBlock ::= &#39;{&#39; Item* &#39;}&#39;</code></pre>
 <h3 id="type-alias">Type Alias</h3>
-<pre class="ebnf"><code>TypeAlias ::= &#39;type&#39; IDENTIFIER &#39;=&#39; Type &#39;;&#39;</code></pre>
+<pre class="ebnf"><code>TypeAlias ::= &#39;type&#39; IDENTIFIER GenericParams? &#39;=&#39; Type &#39;;&#39;</code></pre>
 <h3 id="statements">Statements</h3>
 <pre class="ebnf"><code>Statement ::= &#39;;&#39;                    // Empty statement
             | Expression &#39;;&#39;         // Expression statement
@@ -636,19 +714,33 @@ LetStatement ::= IDENTIFIER &#39;:&#39; Type &#39;;&#39;
 <h3 id="expressions">Expressions</h3>
 <pre class="ebnf"><code>Expression ::= AssignmentExpression
 
-AssignmentExpression ::= LogicalOrExpression
-                       | LogicalOrExpression AssignOp AssignmentExpression
+AssignmentExpression ::= RangeExpression
+                       | RangeExpression AssignOp AssignmentExpression
 
 AssignOp ::= &#39;=&#39; | &#39;+=&#39; | &#39;-=&#39; | &#39;*=&#39; | &#39;/=&#39; | &#39;%=&#39; | &#39;**=&#39;
-           | &#39;&amp;=&#39; | &#39;|=&#39; | &#39;^=&#39; | &#39;&lt;&lt;=&#39; | &#39;&gt;&gt;=&#39;
+           | &#39;&amp;=&#39; | &#39;|=&#39; | &#39;^=&#39; | &#39;&lt;&lt;=&#39; | &#39;&gt;&gt;=&#39;</code></pre>
+<h3 id="place-expressions">Place Expressions</h3>
+<p>The left-hand side of an assignment must be a <em>place
+expression</em> — an expression that denotes a memory location. Place
+expressions are:</p>
+<pre class="ebnf"><code>PlaceExpression ::= Path                              // Variable
+                  | PlaceExpression &#39;.&#39; IDENTIFIER    // Field
+                  | PlaceExpression &#39;.&#39; INTEGER       // Tuple field
+                  | PlaceExpression &#39;[&#39; Expression &#39;]&#39; // Index
+                  | &#39;*&#39; Expression                    // Dereference
+                  | &#39;(&#39; PlaceExpression &#39;)&#39;</code></pre>
+<p>Assignment to any other expression form is a compile-time error
+(checked semantically; the grammar accepts any expression on the
+left).</p>
+<pre class="ebnf"><code>RangeExpression ::= LogicalOrExpression ((&#39;..&#39; | &#39;..=&#39;) LogicalOrExpression)?
 
 LogicalOrExpression ::= LogicalAndExpression (&#39;||&#39; LogicalAndExpression)*
 
 LogicalAndExpression ::= EqualityExpression (&#39;&amp;&amp;&#39; EqualityExpression)*
 
-EqualityExpression ::= RelationalExpression ((&#39;==&#39; | &#39;!=&#39;) RelationalExpression)*
+EqualityExpression ::= RelationalExpression ((&#39;==&#39; | &#39;!=&#39;) RelationalExpression)?
 
-RelationalExpression ::= BitwiseOrExpression ((&#39;&lt;&#39; | &#39;&lt;=&#39; | &#39;&gt;&#39; | &#39;&gt;=&#39;) BitwiseOrExpression)*
+RelationalExpression ::= BitwiseOrExpression ((&#39;&lt;&#39; | &#39;&lt;=&#39; | &#39;&gt;&#39; | &#39;&gt;=&#39;) BitwiseOrExpression)?
 
 BitwiseOrExpression ::= BitwiseXorExpression (&#39;|&#39; BitwiseXorExpression)*
 
@@ -662,33 +754,46 @@ AdditiveExpression ::= MultiplicativeExpression ((&#39;+&#39; | &#39;-&#39;) Mul
 
 MultiplicativeExpression ::= ExponentiationExpression ((&#39;*&#39; | &#39;/&#39; | &#39;%&#39;) ExponentiationExpression)*
 
-ExponentiationExpression ::= UnaryExpression (&#39;**&#39; ExponentiationExpression)?
+ExponentiationExpression ::= CastExpression (&#39;**&#39; ExponentiationExpression)?
+
+CastExpression ::= UnaryExpression (&#39;as&#39; Type)*
 
 UnaryExpression ::= PostfixExpression
                   | &#39;-&#39; UnaryExpression
                   | &#39;!&#39; UnaryExpression
                   | &#39;~&#39; UnaryExpression
-                  | &#39;&amp;&#39; UnaryExpression        // Reference
+                  | &#39;&amp;&#39; &#39;mut&#39;? UnaryExpression // Reference (immutable or mutable borrow)
                   | &#39;*&#39; UnaryExpression        // Dereference
 
 PostfixExpression ::= PrimaryExpression
                     | PostfixExpression &#39;(&#39; ArgumentList? &#39;)&#39;     // Function call
-                    | PostfixExpression &#39;[&#39; Expression &#39;]&#39;        // Array access
-                    | PostfixExpression &#39;.&#39; IDENTIFIER            // Field access
+                    | PostfixExpression &#39;[&#39; Expression &#39;]&#39;        // Index (or slice, when the index is a range)
+                    | PostfixExpression &#39;.&#39; IDENTIFIER            // Field access / method reference
                     | PostfixExpression &#39;.&#39; INTEGER               // Tuple access
                     | PostfixExpression &#39;?&#39;                       // Try operator
 
 ArgumentList ::= Expression (&#39;,&#39; Expression)* &#39;,&#39;?
 
-PrimaryExpression ::= IDENTIFIER
+PrimaryExpression ::= PathExpression
                     | Literal
-                    | &#39;(&#39; Expression &#39;)&#39;
+                    | &#39;(&#39; Expression &#39;)&#39;    // Grouping
+                    | TupleLiteral
                     | ArrayLiteral
                     | StructLiteral
                     | IfExpression
                     | MatchExpression
                     | LoopExpression
-                    | Block</code></pre>
+                    | Block
+
+PathExpression ::= Path (&#39;::&#39; GenericArgs)?  // e.g. x, String::from, Color::Red, size_of::&lt;Int32&gt;</code></pre>
+<p>Notes: - <code>path::&lt;Args&gt;</code> (explicit generic arguments
+on a path expression) is permitted only when type inference cannot
+determine the arguments, e.g. <code>size_of::&lt;Int32&gt;()</code>. It
+is the only form of expression-level generic arguments in Core v1. -
+Chained comparisons (<code>a &lt; b &lt; c</code>,
+<code>a == b == c</code>) are syntax errors: the relational and equality
+productions are non-associative (at most one operator). Parenthesize to
+compare a Bool result explicitly.</p>
 <h3 id="control-flow-expressions">Control Flow Expressions</h3>
 <pre class="ebnf"><code>IfExpression ::= &#39;if&#39; Expression Block (&#39;else&#39; &#39;if&#39; Expression Block)* (&#39;else&#39; Block)?
 
@@ -696,18 +801,29 @@ MatchExpression ::= &#39;match&#39; Expression &#39;{&#39; MatchArm* &#39;}&#39;
 
 MatchArm ::= Pattern &#39;=&gt;&#39; Expression &#39;,&#39;?
 
-Pattern ::= IDENTIFIER
-          | Literal
+Pattern ::= Literal
           | &#39;_&#39;                                    // Wildcard
-          | IDENTIFIER &#39;(&#39; PatternList? &#39;)&#39;        // Enum variant
+          | IDENTIFIER                             // Binding (or unit variant/const, see note)
+          | Path                                   // Unit enum variant or const, e.g. Color::Red
+          | Path &#39;(&#39; PatternList? &#39;)&#39;              // Tuple enum variant, e.g. Option::Some(x)
+          | Path &#39;{&#39; FieldPatternList? &#39;}&#39;         // Struct or struct enum variant
           | &#39;(&#39; PatternList? &#39;)&#39;                   // Tuple
           | &#39;[&#39; PatternList? &#39;]&#39;                   // Array
 
 PatternList ::= Pattern (&#39;,&#39; Pattern)* &#39;,&#39;?
 
+FieldPatternList ::= FieldPattern (&#39;,&#39; FieldPattern)* &#39;,&#39;?
+
+FieldPattern ::= IDENTIFIER &#39;:&#39; Pattern
+               | IDENTIFIER                        // Shorthand: binds field to same-named variable
+
 LoopExpression ::= &#39;loop&#39; Block
                  | &#39;while&#39; Expression Block
                  | &#39;for&#39; IDENTIFIER &#39;in&#39; Expression Block</code></pre>
+<p>Note on pattern name resolution: a single <code>IDENTIFIER</code>
+pattern that resolves to a unit enum variant or a constant in scope
+matches by value; otherwise it introduces a new binding. Multi-segment
+<code>Path</code> patterns always match by value.</p>
 <h3 id="literals-1">Literals</h3>
 <pre class="ebnf"><code>Literal ::= INTEGER
           | FLOAT
@@ -715,25 +831,44 @@ LoopExpression ::= &#39;loop&#39; Block
           | CHAR
           | BOOLEAN
 
+TupleLiteral ::= &#39;(&#39; &#39;)&#39;                                  // Unit value
+               | &#39;(&#39; Expression &#39;,&#39; &#39;)&#39;                   // Single-element tuple
+               | &#39;(&#39; Expression (&#39;,&#39; Expression)+ &#39;,&#39;? &#39;)&#39; // N-element tuple
+
 ArrayLiteral ::= &#39;[&#39; ExpressionList? &#39;]&#39;
+               | &#39;[&#39; Expression &#39;;&#39; Expression &#39;]&#39;        // Repeat: [value; count]
 
 ExpressionList ::= Expression (&#39;,&#39; Expression)* &#39;,&#39;?
 
-StructLiteral ::= IDENTIFIER &#39;{&#39; FieldInitList? &#39;}&#39;
+StructLiteral ::= Path &#39;{&#39; FieldInitList? &#39;}&#39;
 
 FieldInitList ::= FieldInit (&#39;,&#39; FieldInit)* &#39;,&#39;?
 
 FieldInit ::= IDENTIFIER &#39;:&#39; Expression
             | IDENTIFIER                    // Shorthand: field: field</code></pre>
+<p>Notes: - <code>(expr)</code> is grouping; <code>(expr,)</code> is a
+single-element tuple; <code>()</code> is the unit value. The trailing
+comma distinguishes the 1-tuple from grouping. - In
+<code>[value; count]</code>, <code>count</code> must be a compile-time
+constant expression of an unsigned integer type, and
+<code>value</code>’s type must implement <code>Copy</code> (the value is
+copied <code>count</code> times).</p>
+<h3 id="struct-literal-restriction">Struct Literal Restriction</h3>
+<p>To avoid ambiguity with block-taking constructs, a struct literal may
+NOT appear as the outermost expression in: - the condition of an
+<code>if</code> or <code>while</code>, - the scrutinee of a
+<code>match</code>, - the iterable of a <code>for</code>.</p>
+<p>Wrap the struct literal in parentheses in these positions:</p>
+<pre class="stark"><code>if (Config { verbose: true }).verbose { do_thing(); }</code></pre>
 <h3 id="types">Types</h3>
 <pre class="ebnf"><code>Type ::= PrimitiveType
-       | IDENTIFIER                        // Named type
+       | Path GenericArgs?                 // Named type, possibly generic: Vec&lt;Int32&gt;, Option&lt;T&gt;
        | &#39;[&#39; Type &#39;;&#39; INTEGER &#39;]&#39;          // Array type
-       | &#39;[&#39; Type &#39;]&#39;                      // Slice type
+       | &#39;[&#39; Type &#39;]&#39;                      // Slice type (unsized; used behind references)
        | &#39;(&#39; TypeList? &#39;)&#39;                 // Tuple type
        | &#39;&amp;&#39; Type                          // Reference type
        | &#39;&amp;&#39; &#39;mut&#39; Type                    // Mutable reference type
-       | Type &#39;-&gt;&#39; Type                    // Function type
+       | &#39;fn&#39; &#39;(&#39; TypeList? &#39;)&#39; (&#39;-&gt;&#39; Type)?  // Function type (non-capturing)
 
 PrimitiveType ::= &#39;Int8&#39; | &#39;Int16&#39; | &#39;Int32&#39; | &#39;Int64&#39;
                 | &#39;UInt8&#39; | &#39;UInt16&#39; | &#39;UInt32&#39; | &#39;UInt64&#39;
@@ -741,6 +876,9 @@ PrimitiveType ::= &#39;Int8&#39; | &#39;Int16&#39; | &#39;Int32&#39; | &#39;Int6
                 | &#39;Bool&#39; | &#39;Char&#39; | &#39;String&#39; | &#39;Unit&#39; | &#39;str&#39;
 
 TypeList ::= Type (&#39;,&#39; Type)* &#39;,&#39;?</code></pre>
+<p>Notes: - A function type without <code>-&gt;</code> returns
+<code>Unit</code>. - The never type <code>!</code> may appear only as a
+function return type (see <code>ReturnType</code>).</p>
 <h3 id="other-constructs">Other Constructs</h3>
 <pre class="ebnf"><code>Const ::= &#39;const&#39; IDENTIFIER &#39;:&#39; Type &#39;=&#39; Expression &#39;;&#39;
 
@@ -754,13 +892,22 @@ UseTree ::= Path (&#39;as&#39; IDENTIFIER)?
 UseTreeList ::= UseTree (&#39;,&#39; UseTree)* &#39;,&#39;?
 
 Path ::= PathSegment (&#39;::&#39; PathSegment)*
-PathSegment ::= IDENTIFIER | &#39;self&#39; | &#39;super&#39; | &#39;crate&#39;</code></pre>
+PathSegment ::= IDENTIFIER | &#39;self&#39; | &#39;Self&#39; | &#39;super&#39; | &#39;crate&#39;</code></pre>
+<p>Notes: - <code>Self</code> is valid only inside a <code>trait</code>
+or <code>impl</code> block, and only as the <em>first</em> segment of a
+path. As a complete one-segment path in type position it denotes the
+implementing type; with further segments it projects an associated item,
+e.g. <code>Self::Item</code>. - <code>self</code>, <code>super</code>,
+and <code>crate</code> are likewise valid only as leading segments
+(<code>self</code>/<code>super</code> may repeat at the front:
+<code>super::super::x</code>).</p>
 <h2 id="operator-precedence-highest-to-lowest">Operator Precedence
 (Highest to Lowest)</h2>
 <ol type="1">
 <li>Primary expressions, field access, array access, function calls, try
 operator (<code>?</code>)</li>
-<li>Unary operators (-, !, ~, &amp;, *)</li>
+<li>Unary operators (-, !, ~, &amp;, &amp;mut, *)</li>
+<li>Cast (<code>as</code>)</li>
 <li>Exponentiation (**)</li>
 <li>Multiplicative (*, /, %)</li>
 <li>Additive (+, -)</li>
@@ -772,13 +919,14 @@ operator (<code>?</code>)</li>
 <li>Equality (==, !=)</li>
 <li>Logical AND (&amp;&amp;)</li>
 <li>Logical OR (||)</li>
+<li>Range (.., ..=)</li>
 <li>Assignment (=, +=, -=, etc.)</li>
 </ol>
 <h2 id="associativity">Associativity</h2>
 <ul>
 <li>Left associative: Most binary operators</li>
 <li>Right associative: Assignment operators, exponentiation</li>
-<li>Non-associative: Comparison operators</li>
+<li>Non-associative: Comparison operators, range operators</li>
 </ul>
 <h2 id="statement-vs-expression">Statement vs Expression</h2>
 <ul>
@@ -796,17 +944,30 @@ none)</li>
 <li>Newlines are not significant except for line comments</li>
 <li>Trailing commas are allowed in lists</li>
 </ul>
+<h2 id="parsing-notes">Parsing Notes</h2>
+<ul>
+<li><code>&gt;&gt;</code> in a generic argument position
+(e.g. <code>Vec&lt;Vec&lt;Int32&gt;&gt;</code>) MUST be re-tokenized as
+two <code>&gt;</code> tokens by the parser.</li>
+<li>In expression position, a bare <code>&lt;</code> after an identifier
+is always the relational operator; explicit generic arguments require
+the <code>::&lt;</code> form (turbofish), so no lookahead disambiguation
+is required.</li>
+</ul>
 <h2 id="grammar-extensions-for-future-features">Grammar Extensions for
 Future Features</h2>
 <p>Reserved grammar constructs for later implementation:</p>
-<pre class="ebnf"><code>// Generic types (future)
-GenericType ::= IDENTIFIER &#39;&lt;&#39; TypeList &#39;&gt;&#39;
-
-// Async functions (future)
+<pre class="ebnf"><code>// Async functions (future)
 AsyncFunction ::= &#39;async&#39; &#39;fn&#39; IDENTIFIER &#39;(&#39; ParameterList? &#39;)&#39; (&#39;-&gt;&#39; Type)? Block
 
-// Lambda expressions (future)
-Lambda ::= &#39;|&#39; ParameterList? &#39;|&#39; (Expression | Block)</code></pre>
+// Lambda expressions / capturing closures (future)
+Lambda ::= &#39;|&#39; ParameterList? &#39;|&#39; (Expression | Block)
+
+// Open-ended ranges (future)
+OpenRange ::= Expression &#39;..&#39; | &#39;..&#39; Expression | &#39;..&#39;
+
+// Lifetime annotations (future)
+LifetimeParam ::= &#39;\&#39;&#39; IDENTIFIER</code></pre>
 <h2 id="conformance-1">Conformance</h2>
 <p>A conforming Core v1 implementation MUST follow the requirements in
 this document. Any deviations or extensions MUST be explicitly
@@ -855,15 +1016,48 @@ str     // String slice (unsized), typically used behind references: &amp;str</c
 <pre class="stark"><code>String  // UTF-8 encoded string, heap-allocated, growable</code></pre>
 <h3 id="string-slice-type">String Slice Type</h3>
 <pre class="stark"><code>// str is an unsized string slice type. It is used via references.
-let s: &amp;str = &quot;hello&quot;
-let owned: String = String::from(s)</code></pre>
+let s: &amp;str = &quot;hello&quot;;
+let owned: String = String::from(s);</code></pre>
+<h3 id="never-type">Never Type</h3>
+<p><code>!</code> (the never type) is the type of expressions that never
+produce a value, such as calls to <code>panic</code>. It may appear only
+as a function return type.</p>
+<pre class="stark"><code>fn panic(message: &amp;str) -&gt; !</code></pre>
+<p>Rules: - An expression of type <code>!</code> coerces to any other
+type. This allows, for example, <code>panic(...)</code> to appear in one
+arm of an <code>if</code> or <code>match</code> whose other arms produce
+a value. - A function returning <code>!</code> MUST NOT return
+normally.</p>
 <h2 id="composite-types">Composite Types</h2>
 <h3 id="array-types">Array Types</h3>
-<pre class="stark"><code>[T; N]   // Fixed-size array of N elements of type T
-[T]      // Dynamic array (slice) of elements of type T</code></pre>
-<p>Examples:</p>
-<pre class="stark"><code>let fixed: [Int32; 5] = [1, 2, 3, 4, 5]
-let dynamic: [Int32] = [1, 2, 3]</code></pre>
+<pre class="stark"><code>[T; N]   // Fixed-size array of N elements of type T (sized)
+[T]      // Slice of elements of type T (unsized)</code></pre>
+<p>A slice <code>[T]</code> is an <em>unsized</em> view into a
+contiguous sequence (an array, or the elements of a
+<code>Vec&lt;T&gt;</code>). Like <code>str</code>, it is used behind
+references:</p>
+<pre class="stark"><code>let fixed: [Int32; 5] = [1, 2, 3, 4, 5];
+let view: &amp;[Int32] = &amp;fixed;          // Array reference coerces to slice reference
+let part: &amp;[Int32] = &amp;fixed[1..4];    // Slicing with a range yields &amp;[T]</code></pre>
+<p>A local variable cannot have the bare unsized type <code>[T]</code>;
+use <code>[T; N]</code> for a fixed-size array or
+<code>Vec&lt;T&gt;</code> (standard library) for a growable one.</p>
+<p>Indexing rules: - <code>expr[i]</code> where <code>i</code> is an
+integer denotes a <em>place</em> of type <code>T</code> (bounds-checked;
+traps on out-of-bounds). - <code>expr[r]</code> where <code>r</code> is
+a <code>Range</code> denotes a <em>place</em> of the unsized slice type
+<code>[T]</code>; traps if the range is out of bounds or inverted.
+Because <code>[T]</code> is unsized, a slice place must be borrowed
+immediately: <code>&amp;expr[r]</code> has type <code>&amp;[T]</code>
+and <code>&amp;mut expr[r]</code> has type
+<code>&amp;mut [T]</code>.</p>
+<h3 id="range-type">Range Type</h3>
+<p>The range operators produce values of the standard library
+<code>Range&lt;T&gt;</code> type:</p>
+<pre class="stark"><code>let r = 0..10;      // Range&lt;Int32&gt;: 0,1,...,9 (half-open)
+let ri = 0..=9;     // RangeInclusive&lt;Int32&gt;: 0,1,...,9</code></pre>
+<p>Ranges over integer types implement <code>Iterator</code> and may be
+used with <code>for</code> loops and slicing.</p>
 <h3 id="tuple-types">Tuple Types</h3>
 <pre class="stark"><code>()           // Empty tuple (Unit type)
 (T,)         // Single-element tuple
@@ -871,9 +1065,9 @@ let dynamic: [Int32] = [1, 2, 3]</code></pre>
 (T1, T2, T3) // Three-element tuple
 // ... up to reasonable limit (e.g., 16 elements)</code></pre>
 <p>Examples:</p>
-<pre class="stark"><code>let empty: () = ()
-let single: (Int32,) = (42,)
-let pair: (Int32, String) = (42, &quot;hello&quot;)</code></pre>
+<pre class="stark"><code>let empty: () = ();
+let single: (Int32,) = (42,);
+let pair: (Int32, String) = (42, &quot;hello&quot;);</code></pre>
 <h3 id="struct-types">Struct Types</h3>
 <pre class="stark"><code>struct Point {
     x: Float64,
@@ -885,6 +1079,13 @@ struct Person {
     age: Int32,
     pub email: String  // Public field
 }</code></pre>
+<p>Restriction (Core v1): struct and enum declarations MUST NOT declare
+fields whose <em>written</em> type is a reference type
+(<code>&amp;T</code>, <code>&amp;mut T</code>). Instantiating a generic
+type with a reference type argument
+(e.g. <code>Option&lt;&amp;T&gt;</code>) is permitted; the resulting
+value is <em>borrow-carrying</em> — see “References and Lifetimes”
+below.</p>
 <h3 id="enum-types">Enum Types</h3>
 <pre class="stark"><code>enum Color {
     Red,
@@ -905,13 +1106,22 @@ enum Result&lt;T, E&gt; {
 <pre class="stark"><code>&amp;T       // Immutable reference to T
 &amp;mut T   // Mutable reference to T</code></pre>
 <h2 id="function-types">Function Types</h2>
+<p>Function types are written with the <code>fn</code> keyword and
+denote <em>non-capturing</em> functions (named functions or function
+references). Capturing closures are a future extension.</p>
 <pre class="stark"><code>fn(T1, T2) -&gt; R    // Function taking T1, T2 and returning R
 fn() -&gt; R          // Function taking no parameters, returning R
 fn(T)              // Function taking T, returning Unit</code></pre>
 <h2 id="type-aliases">Type Aliases</h2>
-<pre class="stark"><code>type Age = Int32
-type Point2D = (Float64, Float64)
-type ErrorCode = Int32</code></pre>
+<pre class="stark"><code>type Age = Int32;
+type Point2D = (Float64, Float64);
+type ErrorCode = Int32;</code></pre>
+<h2 id="the-self-type">The Self Type</h2>
+<p>Within a <code>trait</code> or <code>impl</code> block,
+<code>Self</code> refers to the implementing type:</p>
+<pre class="stark"><code>trait Eq {
+    fn eq(&amp;self, other: &amp;Self) -&gt; Bool;
+}</code></pre>
 <h2 id="ownership-and-borrowing-1">Ownership and Borrowing</h2>
 <h3 id="ownership-rules">Ownership Rules</h3>
 <ol type="1">
@@ -921,9 +1131,9 @@ type ErrorCode = Int32</code></pre>
 access)</li>
 </ol>
 <h3 id="move-semantics">Move Semantics</h3>
-<pre class="stark"><code>let a = String::new(&quot;hello&quot;)
-let b = a  // a is moved to b, a is no longer valid
-// print(a)  // Error: use of moved value</code></pre>
+<pre class="stark"><code>let a = String::from(&quot;hello&quot;);
+let b = a;  // a is moved to b, a is no longer valid
+// print(a);  // Error: use of moved value</code></pre>
 <h3 id="borrowing-rules">Borrowing Rules</h3>
 <ol type="1">
 <li>You can have either one mutable reference or any number of immutable
@@ -939,45 +1149,138 @@ fn borrow_mutable(s: &amp;mut String) {
     // Can read and modify
 }
 
-let mut text = String::new(&quot;hello&quot;)
-borrow_immutable(&amp;text)        // OK
-borrow_mutable(&amp;mut text)      // OK
-// borrow_immutable(&amp;text)     // Error: cannot borrow as immutable while mutable borrow exists</code></pre>
+let mut text = String::from(&quot;hello&quot;);
+borrow_immutable(&amp;text);       // OK
+borrow_mutable(&amp;mut text);     // OK</code></pre>
+<h2 id="references-and-lifetimes-core-v1">References and Lifetimes (Core
+v1)</h2>
+<p>Core v1 has no lifetime annotations. Instead, it enforces the
+following conservative rules, which are normative:</p>
+<ol type="1">
+<li><strong>No declared reference fields.</strong> Struct, enum variant,
+and tuple struct declarations MUST NOT write a reference type
+(<code>&amp;T</code>, <code>&amp;mut T</code>) as a field type. (Generic
+<em>instantiation</em> with a reference argument is allowed; see
+Borrow-Carrying Types below.)</li>
+<li><strong>References derive from parameters.</strong> A function may
+return a reference (or borrow-carrying value) only if every control-flow
+path derives it from one of its reference parameters (directly, by
+field/index projection, or by calling a function that itself obeys this
+rule). Returning a reference derived from a local variable or a by-value
+parameter is a compile-time error.</li>
+<li><strong>Shortest-input-lifetime rule.</strong> The lifetime of a
+returned reference (or borrow-carrying value) is the <em>shortest</em>
+of the lifetimes of all reference parameters from which it could have
+been derived. Callers MUST treat it as invalidated as soon as the
+shortest-lived of those arguments is invalidated.</li>
+<li><strong>Local borrows are lexically scoped.</strong> A borrow bound
+to a variable (<code>let r = &amp;x;</code>) lasts from its creation to
+the end of its enclosing block (or until the borrower is explicitly
+dropped with <code>drop(...)</code>). The borrow checker enforces the
+exclusive/shared rules over that entire region — even if the reference
+is never used again. To end such a borrow early, introduce an inner
+block or call <code>drop</code>. A <em>temporary</em> borrow that is not
+bound to a variable (e.g. <code>f(&amp;x);</code>) ends at the end of
+its enclosing statement, so <code>f(&amp;x); g(&amp;mut x);</code> is
+legal.</li>
+</ol>
+<pre class="stark"><code>let mut s = String::from(&quot;hello&quot;);
+{
+    let r = &amp;s;           // Borrow begins
+    println(r.as_str());
+}                         // Borrow ends with the block
+s.push(&#39;!&#39;);              // OK: no live borrow</code></pre>
+<p>Example of rule 3:</p>
+<pre class="stark"><code>fn longest(x: &amp;str, y: &amp;str) -&gt; &amp;str {
+    if x.len() &gt; y.len() { x } else { y }
+}
+// The returned reference is valid only while BOTH x&#39;s and y&#39;s referents
+// are valid, regardless of which branch was taken.</code></pre>
+<p>These rules reject some safe programs (that is intentional). Lifetime
+annotations that relax rule 3, user structs with declared reference
+fields, and non-lexical (last-use) borrow regions are future extensions;
+because the lexical rule is strictly more conservative, adopting
+last-use regions later cannot break conforming programs.</p>
+<h3 id="borrow-carrying-types">Borrow-Carrying Types</h3>
+<p>A type is <strong>borrow-carrying</strong> if it is: - a reference
+type <code>&amp;T</code> or <code>&amp;mut T</code>; or - a generic type
+with at least one borrow-carrying type argument
+(e.g. <code>Option&lt;&amp;T&gt;</code>,
+<code>(Int32, &amp;str)</code>); or - an implementation-provided
+borrowed view type (the standard library’s borrowed iterators such as
+<code>VecIter&lt;T&gt;</code>, <code>CharsIter</code>,
+<code>KeysIter&lt;K&gt;</code>, and the slice types behind
+references).</p>
+<p>A borrow-carrying value is treated <em>as if it were a reference</em>
+for all rules in this section: - It counts as a live borrow of the
+value(s) it was derived from — shared for <code>&amp;</code>-derived
+values, exclusive for <code>&amp;mut</code>-derived values — for the
+borrow region defined by rule 4. - It MUST NOT be stored in a
+user-declared struct or enum field, returned except under rules 2–3, or
+otherwise escape the lifetime of its source. - Binding it with
+<code>let</code> is permitted; the binding is subject to rule 4.</p>
+<p>This is a taint rule: borrow-carrying-ness propagates through generic
+instantiation and function returns, and the checker tracks the source
+variables each borrow-carrying value may borrow from. It is what makes
+APIs like <code>Vec::get(&amp;self, i) -&gt; Option&lt;&amp;T&gt;</code>
+sound without lifetime annotations: the returned
+<code>Option&lt;&amp;T&gt;</code> is an active shared borrow of the
+<code>Vec</code> until it goes out of scope.</p>
 <h2 id="type-inference">Type Inference</h2>
 <h3 id="local-type-inference">Local Type Inference</h3>
-<pre class="stark"><code>let x = 42          // Inferred as Int32
-let y = 3.14        // Inferred as Float64
-let z = [1, 2, 3]   // Inferred as [Int32]</code></pre>
-<h3 id="function-return-type-inference">Function Return Type
-Inference</h3>
-<pre class="stark"><code>fn add(a: Int32, b: Int32) {  // Return type inferred as Int32
+<p>Types of <code>let</code> bindings are inferred from their
+initializers. Inference is local: it uses the initializer expression
+and, where necessary, later uses within the same function body. Function
+signatures are always fully explicit, so inference never crosses
+function boundaries.</p>
+<pre class="stark"><code>let x = 42;             // Inferred as Int32
+let y = 3.14;           // Inferred as Float64
+let z = [1, 2, 3];      // Inferred as [Int32; 3]</code></pre>
+<h3 id="function-return-types">Function Return Types</h3>
+<p>Function return types are NOT inferred. A function without a
+<code>-&gt;</code> annotation returns <code>Unit</code>.</p>
+<pre class="stark"><code>fn add(a: Int32, b: Int32) -&gt; Int32 {
     a + b
+}
+
+fn greet(name: &amp;str) {      // Returns Unit
+    println(name);
 }</code></pre>
 <h3 id="generic-type-inference">Generic Type Inference</h3>
+<p>Generic arguments at call sites are inferred from argument and
+expected types:</p>
 <pre class="stark"><code>fn identity&lt;T&gt;(x: T) -&gt; T {
     x
 }
 
-let result = identity(42)  // T inferred as Int32</code></pre>
+let result = identity(42);  // T inferred as Int32</code></pre>
 <h2 id="subtyping-and-coercion">Subtyping and Coercion</h2>
 <h3 id="numeric-coercions">Numeric Coercions</h3>
 <p>No implicit numeric conversions. Explicit casting required:</p>
-<pre class="stark"><code>let x: Int32 = 42
-let y: Int64 = x as Int64  // Explicit cast required</code></pre>
+<pre class="stark"><code>let x: Int32 = 42;
+let y: Int64 = x as Int64;  // Explicit cast required</code></pre>
+<p>Cast semantics (<code>as</code>): - Between integer types:
+value-preserving if in range; a cast whose value does not fit the target
+type is a runtime error and MUST trap. - Between floating point types:
+rounds to nearest representable value. - Integer to float and float to
+integer: float-to-int truncates toward zero and MUST trap if the result
+does not fit the target type (including NaN/Inf).</p>
 <h3 id="reference-coercions">Reference Coercions</h3>
 <pre class="stark"><code>&amp;mut T -&gt; &amp;T        // Mutable reference to immutable reference
 &amp;T -&gt; &amp;T            // Same type (identity)</code></pre>
 <h3 id="array-to-slice-coercion">Array to Slice Coercion</h3>
 <pre class="stark"><code>&amp;[T; N] -&gt; &amp;[T]     // Array reference to slice reference
 &amp;mut [T; N] -&gt; &amp;mut [T]  // Mutable array reference to mutable slice reference</code></pre>
+<h3 id="never-coercion">Never Coercion</h3>
+<pre class="stark"><code>! -&gt; T              // The never type coerces to any type</code></pre>
 <h2 id="trait-system-basic">Trait System (Basic)</h2>
 <h3 id="trait-definition">Trait Definition</h3>
 <pre class="stark"><code>trait Display {
-    fn fmt(&amp;self) -&gt; String
+    fn fmt(&amp;self) -&gt; String;
 }
 
 trait Eq {
-    fn eq(&amp;self, other: &amp;Self) -&gt; Bool
+    fn eq(&amp;self, other: &amp;Self) -&gt; Bool;
 }</code></pre>
 <h3 id="trait-implementation">Trait Implementation</h3>
 <pre class="stark"><code>impl Display for Int32 {
@@ -991,21 +1294,185 @@ impl Eq for Point {
         self.x == other.x &amp;&amp; self.y == other.y
     }
 }</code></pre>
+<h3 id="associated-types">Associated Types</h3>
+<p>Traits may declare associated types; implementations assign them:</p>
+<pre class="stark"><code>trait Iterator {
+    type Item;
+    fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;;
+}
+
+impl Iterator for Counter {
+    type Item = Int32;
+    fn next(&amp;mut self) -&gt; Option&lt;Int32&gt; { ... }
+}</code></pre>
+<p>Bounds may constrain associated types with bindings:
+<code>I: Iterator&lt;Item = T&gt;</code>.</p>
 <h2 id="type-checking-rules">Type Checking Rules</h2>
 <h3 id="assignment-compatibility">Assignment Compatibility</h3>
-<pre class="stark"><code>let x: T = expr  // expr must have type T or be coercible to T</code></pre>
+<pre class="stark"><code>let x: T = expr;  // expr must have type T or be coercible to T</code></pre>
 <h3 id="function-call-compatibility">Function Call Compatibility</h3>
 <pre class="stark"><code>fn f(param: T) { ... }
-f(arg)  // arg must have type T or be coercible to T</code></pre>
+f(arg);  // arg must have type T or be coercible to T</code></pre>
 <h3 id="arithmetic-operations">Arithmetic Operations</h3>
 <pre class="stark"><code>// Binary arithmetic requires same types
-let result = x + y  // x and y must have the same numeric type
+let result = x + y;  // x and y must have the same numeric type
 
 // Comparison operators
-let cmp = x &lt; y     // x and y must have the same comparable type</code></pre>
+let cmp = x &lt; y;     // x and y must have the same comparable type</code></pre>
 <h3 id="logical-operations">Logical Operations</h3>
-<pre class="stark"><code>let result = a &amp;&amp; b  // a and b must be Bool
-let result = !x      // x must be Bool</code></pre>
+<pre class="stark"><code>let result = a &amp;&amp; b;  // a and b must be Bool
+let result = !x;      // x must be Bool</code></pre>
+<h3 id="for-loops">For Loops</h3>
+<p><code>for x in expr</code> requires <code>expr</code> to have a type
+that implements <code>Iterator</code>; the loop variable binds
+successive <code>Item</code> values. Integer ranges implement
+<code>Iterator</code>; slices and collections provide
+<code>.iter()</code> methods (see the standard library
+specification).</p>
+<pre class="stark"><code>for i in 0..10 {
+    println(i.fmt());
+}</code></pre>
+<h3 id="control-flow-typing">Control Flow Typing</h3>
+<ul>
+<li><strong><code>if</code>/<code>else</code></strong>: an
+<code>if</code> with an <code>else</code> is an expression whose
+branches must unify to a single type (identical types, or unifiable via
+the <code>!</code> coercion — e.g. one branch may <code>panic</code>).
+An <code>if</code> <em>without</em> <code>else</code> has type
+<code>Unit</code>, and its branch must also have type
+<code>Unit</code>.</li>
+<li><strong><code>match</code></strong>: all arm expressions must unify
+to a single type (with <code>!</code> coercion permitted per arm).</li>
+<li><strong><code>loop</code></strong>: a <code>loop</code> expression’s
+type is the unified type of the operands of its
+<code>break value;</code> statements; if every <code>break</code> is
+bare (no value) or the loop has no <code>break</code>, the type is
+<code>Unit</code> (a <code>loop</code> with no <code>break</code> has
+type <code>!</code>).</li>
+<li><strong><code>while</code> / <code>for</code></strong>: always have
+type <code>Unit</code>. <code>break</code> inside
+<code>while</code>/<code>for</code> MUST NOT carry a value.</li>
+<li><strong>Block</strong>: the type of the trailing expression, or
+<code>Unit</code> if there is none.</li>
+</ul>
+<h3 id="method-calls-and-auto-borrowing">Method Calls and
+Auto-Borrowing</h3>
+<p>A method call <code>recv.m(args)</code> is resolved as follows:</p>
+<ol type="1">
+<li><strong>Candidate collection.</strong> Candidates are, in priority
+order:
+<ol type="a">
+<li>inherent methods — <code>fn m</code> in
+<code>impl RecvType { ... }</code> blocks;</li>
+<li>trait methods — <code>fn m</code> from any trait that RecvType
+implements, where the trait is <em>in scope</em> (defined in, or
+imported via <code>use</code> into, the current module, or in the
+prelude). Inherent methods shadow trait methods of the same name.</li>
+</ol></li>
+<li><strong>Ambiguity.</strong> If two or more traits in scope supply an
+applicable <code>m</code> and no inherent method exists, the call is a
+compile-time error. Disambiguate with a fully-qualified call, passing
+the receiver explicitly:
+<code>TraitName::m(&amp;recv, args)</code>.</li>
+<li><strong>Receiver coercion (auto-borrowing).</strong> Let
+<code>S</code> be the receiver expression’s type. Candidates are matched
+trying these receiver forms in order: <code>self: S</code> (by value),
+<code>self: &amp;S</code> (auto-borrow: the compiler inserts
+<code>&amp;</code>), <code>self: &amp;mut S</code> (auto-mutable-borrow:
+the compiler inserts <code>&amp;mut</code>; requires the receiver to be
+a mutable place). Auto-borrows follow the normal borrow rules.</li>
+<li><strong>Auto-dereference.</strong> If <code>S</code> is
+<code>&amp;T</code> or <code>&amp;mut T</code> and no candidate matches
+on <code>S</code>, resolution retries with <code>T</code> (one level of
+dereference, applied repeatedly for nested references). Combined with
+step 3 this allows <code>(&amp;v).len()</code> and <code>v.len()</code>
+to resolve identically.</li>
+<li><strong>Visibility.</strong> Private methods are callable only per
+the module rules (07-Modules-and-Packages.md).</li>
+</ol>
+<p>Trait methods can always be called in fully-qualified function form —
+<code>Display::fmt(&amp;x)</code> — since a method is an ordinary
+function whose first parameter is the receiver.</p>
+<h3 id="operators-and-traits">Operators and Traits</h3>
+<p>Operator expressions on <strong>primitive types</strong> have
+built-in meaning (Numeric Semantics below). On <strong>generic type
+parameters</strong>, operators desugar to trait method calls, so the
+corresponding bound is required:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Operator</th>
+<th>Requires bound</th>
+<th>Desugars to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>==</code>, <code>!=</code></td>
+<td><code>T: Eq</code></td>
+<td><code>Eq::eq(&amp;a, &amp;b)</code> (negated for
+<code>!=</code>)</td>
+</tr>
+<tr>
+<td><code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>,
+<code>&gt;=</code></td>
+<td><code>T: Ord</code></td>
+<td><code>Ord::cmp(&amp;a, &amp;b)</code> compared to
+<code>Ordering</code></td>
+</tr>
+<tr>
+<td><code>+ - * / % **</code>, bitwise, shifts</td>
+<td><code>T: Num</code></td>
+<td>primitive operation after monomorphization</td>
+</tr>
+</tbody>
+</table>
+<p><code>Num</code> is a compiler-known marker trait implemented by
+exactly the built-in numeric types
+(<code>Int8</code>–<code>Int64</code>,
+<code>UInt8</code>–<code>UInt64</code>, <code>Float32</code>,
+<code>Float64</code>); user types cannot implement it in Core v1.
+Operator overloading for user-defined types (Add/Sub/… traits) is a
+future extension. <code>&amp;&amp;</code>, <code>||</code>, and
+<code>!</code> (on <code>Bool</code>) are built-in, short-circuiting,
+and not overloadable.</p>
+<pre class="stark"><code>fn max&lt;T: Ord&gt;(a: T, b: T) -&gt; T {
+    if a &gt; b { a } else { b }   // a &gt; b desugars to Ord::cmp(&amp;a, &amp;b)
+}</code></pre>
+<h3 id="copy-and-drop-soundness-rules">Copy and Drop (Soundness
+Rules)</h3>
+<ul>
+<li><code>Copy</code> may be implemented for a type only if
+<strong>all</strong> of its fields are <code>Copy</code>. Violations are
+compile-time errors.</li>
+<li>A type MUST NOT implement both <code>Copy</code> and
+<code>Drop</code> (a copyable type would run its destructor once per
+copy).</li>
+<li><code>Drop::drop</code> MUST NOT be called explicitly; use the free
+function <code>drop(value)</code>, which takes ownership and runs the
+destructor exactly once. After <code>drop(v)</code>, <code>v</code> is
+moved-from.</li>
+<li>Every owned value’s destructor runs <strong>exactly once</strong>:
+at end of scope, at explicit <code>drop</code>, or when its owner is
+consumed — never twice. For values moved on only some control-flow
+paths, the implementation MUST track initialization state (e.g. drop
+flags) to preserve exactly-once semantics.</li>
+<li><strong>Partial moves</strong>: moving a field out of a struct is
+permitted only if the struct’s type does not implement
+<code>Drop</code>. After a partial move, the whole value may no longer
+be used or moved, but its remaining fields may be.</li>
+<li><strong>Reinitialization</strong>: assigning a new value to a
+moved-from <code>let mut</code> variable makes it valid again
+(definite-assignment tracking).</li>
+<li>Moving an element out of an indexed place (<code>v[i]</code>) is a
+compile-time error; use APIs that transfer ownership explicitly
+(e.g. <code>Vec::remove</code>, <code>Vec::pop</code>).</li>
+</ul>
 <h2 id="error-types-and-handling">Error Types and Handling</h2>
 <h3 id="option-type">Option Type</h3>
 <pre class="stark"><code>enum Option&lt;T&gt; {
@@ -1023,7 +1490,7 @@ let result = !x      // x must be Bool</code></pre>
 }
 
 fn caller() -&gt; Result&lt;Int32, String&gt; {
-    let value = might_fail()?  // Early return on error
+    let value = might_fail()?;  // Early return on error
     Ok(value * 2)
 }</code></pre>
 <h3 id="try-operator-typing">Try Operator (<code>?</code>) Typing</h3>
@@ -1038,18 +1505,6 @@ enclosing function returning <code>Result&lt;_, E&gt;</code>. - If
 <code>Option&lt;_&gt;</code>.</p>
 <p>The enclosing function’s return type must be compatible with the
 propagated type.</p>
-<h2 id="type-system-extensions-future">Type System Extensions
-(Future)</h2>
-<h3 id="generics">Generics</h3>
-<pre class="stark"><code>struct Vec&lt;T&gt; {
-    data: [T],
-    len: Int32,
-    cap: Int32
-}
-
-fn max&lt;T: Ord&gt;(a: T, b: T) -&gt; T {
-    if a &gt; b { a } else { b }
-}</code></pre>
 <h2 id="generics-core-v1">Generics (Core v1)</h2>
 <p>Core v1 supports parametric polymorphism for functions, structs,
 enums, and traits.</p>
@@ -1058,12 +1513,26 @@ enums, and traits.</p>
 are in scope within the item body and signatures. - All generic
 parameters used in an item MUST be declared by that item. -
 Instantiation occurs at use sites; Core v1 permits monomorphization or
-dictionary-passing, but the observable behavior MUST be equivalent.</p>
+dictionary-passing, but the observable behavior MUST be equivalent. -
+Generic arguments in expressions are inferred. When inference is
+impossible (no parameter or usable result type mentions the type
+parameter), explicit arguments are supplied with the turbofish form on a
+path expression: <code>size_of::&lt;Int32&gt;()</code>. This is the only
+expression-level generic-argument syntax in Core v1.</p>
+<pre class="stark"><code>struct Pair&lt;T&gt; {
+    first: T,
+    second: T
+}
+
+fn max&lt;T: Ord&gt;(a: T, b: T) -&gt; T {
+    if a &gt; b { a } else { b }
+}</code></pre>
 <h3 id="trait-bounds">Trait Bounds</h3>
 <pre class="stark"><code>fn max&lt;T: Ord&gt;(a: T, b: T) -&gt; T { if a &gt; b { a } else { b } }</code></pre>
 <p>Rules: - A bound <code>T: Trait</code> requires a visible
 <code>impl Trait for T</code>. - Multiple bounds are allowed:
-<code>T: TraitA + TraitB</code>.</p>
+<code>T: TraitA + TraitB</code>. - Bounds may bind associated types:
+<code>I: Iterator&lt;Item = T&gt;</code>.</p>
 <h2 id="trait-coherence-core-v1">Trait Coherence (Core v1)</h2>
 <p>To avoid ambiguous implementations, Core v1 applies the orphan rule:
 - An <code>impl</code> is valid only if either the trait or the type is
@@ -1075,21 +1544,13 @@ Blanket implementations (e.g.,
 must not violate coherence.</p>
 <h2 id="numeric-semantics-core-v1">Numeric Semantics (Core v1)</h2>
 <ul>
-<li>Integer overflow and underflow are runtime errors and MUST
-trap.</li>
+<li>Integer overflow and underflow are runtime errors and MUST trap.
+This applies in every build configuration; there is no mode in which
+overflow wraps silently.</li>
 <li>Division or modulo by zero is a runtime error and MUST trap.</li>
 <li>Floating-point operations follow IEEE-754 semantics (NaN,
 +/-Inf).</li>
 </ul>
-<h3 id="associated-types">Associated Types</h3>
-<pre class="stark"><code>trait Iterator {
-    type Item
-    fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;
-}</code></pre>
-<h3 id="lifetime-parameters">Lifetime Parameters</h3>
-<pre class="stark"><code>fn longest&lt;&#39;a&gt;(x: &amp;&#39;a str, y: &amp;&#39;a str) -&gt; &amp;&#39;a str {
-    if x.len() &gt; y.len() { x } else { y }
-}</code></pre>
 <h2 id="type-safety-guarantees">Type Safety Guarantees</h2>
 <ol type="1">
 <li><strong>No null pointer dereferences</strong>: Option type prevents
@@ -1102,6 +1563,19 @@ access violations</li>
 <li><strong>No memory leaks</strong>: Automatic memory management
 through ownership</li>
 </ol>
+<h2 id="type-system-extensions-future">Type System Extensions
+(Future)</h2>
+<h3 id="lifetime-parameters">Lifetime Parameters</h3>
+<pre class="stark"><code>fn longest&lt;&#39;a&gt;(x: &amp;&#39;a str, y: &amp;&#39;a str) -&gt; &amp;&#39;a str {
+    if x.len() &gt; y.len() { x } else { y }
+}</code></pre>
+<h3 id="trait-objects">Trait Objects</h3>
+<p>Dynamic dispatch via <code>dyn Trait</code> is a future extension;
+<code>dyn</code> is a reserved keyword.</p>
+<h3 id="capturing-closures">Capturing Closures</h3>
+<p>Lambda expressions that capture their environment are a future
+extension; the <code>fn(...)</code> function types in Core v1 are
+non-capturing.</p>
 <h2 id="implementation-notes">Implementation Notes</h2>
 <h3 id="type-representation">Type Representation</h3>
 <ul>
@@ -1114,7 +1588,9 @@ through ownership</li>
 <ol type="1">
 <li>Parse source into AST</li>
 <li>Build symbol table with declarations</li>
-<li>Perform type inference using Hindley-Milner algorithm</li>
+<li>Perform local type inference by unification within function bodies
+(function signatures are fully annotated, so no global inference is
+needed)</li>
 <li>Check type constraints and ownership rules</li>
 <li>Generate type-annotated AST for code generation ## Conformance A
 conforming Core v1 implementation MUST follow the requirements in this
@@ -1132,17 +1608,17 @@ generation.</p>
 <h3 id="symbol-table-construction">1. Symbol Table Construction</h3>
 <p>Build symbol tables for scopes and declarations.</p>
 <h4 id="scope-rules">Scope Rules</h4>
-<pre class="stark"><code>// Global scope
-fn global_function() { }
-const GLOBAL_CONST: Int32 = 42
+<pre class="stark"><code>// Module scope
+fn module_function() { }
+const MODULE_CONST: Int32 = 42;
 
 fn example() {
     // Function scope
-    let local_var = 10
+    let local_var = 10;
     
     {
         // Block scope
-        let block_var = 20
+        let block_var = 20;
         // block_var accessible here
         // local_var accessible here
     }
@@ -1150,61 +1626,72 @@ fn example() {
     // local_var still accessible
 }</code></pre>
 <h4 id="name-resolution-order">Name Resolution Order</h4>
-<ol type="1">
-<li>Current scope</li>
-<li>Parent scopes (innermost to outermost)</li>
-<li>Global scope</li>
-<li>Built-in names</li>
-</ol>
+<p>Name resolution distinguishes <em>lexical</em> scopes (inside
+function bodies) from <em>module</em> scopes.</p>
+<p>Within a function body, an unqualified name is resolved lexically: 1.
+Current block scope 2. Enclosing block scopes (innermost to outermost)
+3. Function parameters</p>
+<p>If not found lexically, the name is resolved at module level per the
+module system rules (see 07-Modules-and-Packages.md): 4. Items declared
+in the current module 5. Items brought into scope by <code>use</code> 6.
+Built-in names (prelude)</p>
+<p>Unqualified names never implicitly search parent modules or the crate
+root; those require explicit <code>super::</code> or
+<code>crate::</code> paths.</p>
 <h4 id="shadowing-rules">Shadowing Rules</h4>
-<pre class="stark"><code>let x = 10        // x: Int32
+<pre class="stark"><code>let x = 10;       // x: Int32
 {
-    let x = &quot;hi&quot;  // Shadows outer x, x: String
+    let x = &quot;hi&quot;; // Shadows outer x, x: String
     // Inner x takes precedence
 }
 // Outer x visible again</code></pre>
 <h3 id="type-checking">2. Type Checking</h3>
 <h4 id="variable-declarations">Variable Declarations</h4>
-<pre class="stark"><code>let x: Int32 = 42      // Type annotation matches literal
-let y = 42             // Type inferred as Int32
-let z: String = 42     // Error: type mismatch</code></pre>
+<pre class="stark"><code>let x: Int32 = 42;     // Type annotation matches literal
+let y = 42;            // Type inferred as Int32
+let z: String = 42;    // Error: type mismatch</code></pre>
 <h4 id="function-calls">Function Calls</h4>
 <pre class="stark"><code>fn add(a: Int32, b: Int32) -&gt; Int32 { a + b }
 
-let result = add(1, 2)     // OK: arguments match parameters
-let error = add(1.0, 2)    // Error: Float64 cannot be Int32
-let error2 = add(1)        // Error: wrong number of arguments</code></pre>
+let result = add(1, 2);    // OK: arguments match parameters
+let error = add(1.0, 2);   // Error: Float64 cannot be Int32
+let error2 = add(1);       // Error: wrong number of arguments</code></pre>
 <h4 id="assignment-compatibility-1">Assignment Compatibility</h4>
-<pre class="stark"><code>let mut x: Int32 = 10
-x = 20                     // OK: same type
-x = &quot;hello&quot;                // Error: type mismatch
+<pre class="stark"><code>let mut x: Int32 = 10;
+x = 20;                    // OK: same type
+x = &quot;hello&quot;;               // Error: type mismatch
 
-let y: Int32 = 10
-y = 20                     // Error: y is not mutable</code></pre>
+let y: Int32 = 10;
+y = 20;                    // Error: y is not mutable</code></pre>
 <h3 id="ownership-and-borrowing-analysis">3. Ownership and Borrowing
 Analysis</h3>
 <h4 id="move-semantics-validation">Move Semantics Validation</h4>
-<pre class="stark"><code>let s1 = String::new(&quot;hello&quot;)
-let s2 = s1               // s1 moved to s2
-print(s1)                 // Error: use of moved value
+<pre class="stark"><code>let s1 = String::from(&quot;hello&quot;);
+let s2 = s1;              // s1 moved to s2
+print(s1);                // Error: use of moved value
 
 fn take_ownership(s: String) { }
-let s3 = String::new(&quot;world&quot;)
-take_ownership(s3)        // s3 moved into function
-print(s3)                 // Error: use of moved value</code></pre>
+let s3 = String::from(&quot;world&quot;);
+take_ownership(s3);       // s3 moved into function
+print(s3);                // Error: use of moved value</code></pre>
 <h4 id="borrow-checking">Borrow Checking</h4>
-<pre class="stark"><code>let mut s = String::new(&quot;hello&quot;)
-let r1 = &amp;s               // Immutable borrow
-let r2 = &amp;s               // OK: multiple immutable borrows
-let r3 = &amp;mut s           // Error: cannot borrow mutably while immutably borrowed
+<pre class="stark"><code>let mut s = String::from(&quot;hello&quot;);
+let r1 = &amp;s;              // Immutable borrow
+let r2 = &amp;s;              // OK: multiple immutable borrows
+let r3 = &amp;mut s;          // Error: cannot borrow mutably while immutably borrowed
 
-let mut s2 = String::new(&quot;world&quot;)
-let r4 = &amp;mut s2          // Mutable borrow
-let r5 = &amp;s2              // Error: cannot borrow immutably while mutably borrowed
-let r6 = &amp;mut s2          // Error: cannot have multiple mutable borrows</code></pre>
+let mut s2 = String::from(&quot;world&quot;);
+let r4 = &amp;mut s2;         // Mutable borrow
+let r5 = &amp;s2;             // Error: cannot borrow immutably while mutably borrowed
+let r6 = &amp;mut s2;         // Error: cannot have multiple mutable borrows</code></pre>
 <h4 id="lifetime-validation">Lifetime Validation</h4>
+<p>Returned references must obey the Core v1 reference rules defined in
+03-Type-System.md (“References and Lifetimes”): a returned reference
+must derive from a reference parameter on every path, and callers treat
+it as having the shortest lifetime among the reference arguments it may
+derive from.</p>
 <pre class="stark"><code>fn invalid_return() -&gt; &amp;Int32 {
-    let x = 42
+    let x = 42;
     &amp;x                    // Error: returning reference to local variable
 }
 
@@ -1214,18 +1701,18 @@ fn valid_return(x: &amp;Int32) -&gt; &amp;Int32 {
 <h3 id="control-flow-analysis">4. Control Flow Analysis</h3>
 <h4 id="unreachable-code-detection">Unreachable Code Detection</h4>
 <pre class="stark"><code>fn example() -&gt; Int32 {
-    return 42
-    let x = 10            // Warning: unreachable code
+    return 42;
+    let x = 10;           // Warning: unreachable code
 }</code></pre>
 <h4 id="return-path-analysis">Return Path Analysis</h4>
 <pre class="stark"><code>fn missing_return() -&gt; Int32 {
-    let x = 42
+    let x = 42;
     // Error: not all paths return a value
 }
 
 fn conditional_return(flag: Bool) -&gt; Int32 {
     if flag {
-        return 1
+        return 1;
     }
     // Error: missing return in else branch
 }
@@ -1239,12 +1726,12 @@ fn valid_return(flag: Bool) -&gt; Int32 {
 }</code></pre>
 <h4 id="breakcontinue-validation">Break/Continue Validation</h4>
 <pre class="stark"><code>fn invalid_break() {
-    break                 // Error: break outside of loop
+    break;                // Error: break outside of loop
 }
 
 fn valid_break() {
     loop {
-        break             // OK: break inside loop
+        break;            // OK: break inside loop
     }
 }</code></pre>
 <h3 id="pattern-matching-analysis">5. Pattern Matching Analysis</h3>
@@ -1273,65 +1760,75 @@ its type. - Literal patterns are exhaustive only for finite domains
 (e.g., <code>Bool</code> with <code>true</code> and <code>false</code>).
 - If a match is not exhaustive, it is a compile-time error.</p>
 <h4 id="pattern-type-checking">Pattern Type Checking</h4>
-<pre class="stark"><code>let x: Int32 = 42
+<pre class="stark"><code>let x: Int32 = 42;
 match x {
     &quot;hello&quot; =&gt; &quot;string&quot;,          // Error: pattern type mismatch
-    42 =&gt; &quot;number&quot;                // OK
+    42 =&gt; &quot;number&quot;,               // OK
+    _ =&gt; &quot;other&quot;
 }</code></pre>
 <h3 id="mutability-analysis">6. Mutability Analysis</h3>
 <h4 id="mutable-access-validation">Mutable Access Validation</h4>
-<pre class="stark"><code>let x = 42
-x = 43                    // Error: x is not mutable
+<p>Assignment to an initialized immutable variable is an error.
+(Exception: the single initializing assignment of a
+deferred-initialization <code>let</code> — see Initialization
+Analysis.)</p>
+<pre class="stark"><code>let x = 42;
+x = 43;                   // Error: x is not mutable
 
-let mut y = 42
-y = 43                    // OK: y is mutable
+let mut y = 42;
+y = 43;                   // OK: y is mutable
 
 struct Point { x: Int32, y: Int32 }
-let p = Point { x: 1, y: 2 }
-p.x = 10                  // Error: p is not mutable
+let p = Point { x: 1, y: 2 };
+p.x = 10;                 // Error: p is not mutable
 
-let mut p2 = Point { x: 1, y: 2 }
-p2.x = 10                 // OK: p2 is mutable</code></pre>
+let mut p2 = Point { x: 1, y: 2 };
+p2.x = 10;                // OK: p2 is mutable</code></pre>
 <h3 id="initialization-analysis">7. Initialization Analysis</h3>
 <h4 id="use-before-initialization">Use Before Initialization</h4>
-<pre class="stark"><code>let x: Int32
-print(x)                  // Error: use of uninitialized variable
+<pre class="stark"><code>let x: Int32;
+print(x.fmt());           // Error: use of uninitialized variable
 
-let y: Int32 = if true { 42 } else { 24 }
-print(y)                  // OK: y is initialized in all branches
+let y: Int32 = if true { 42 } else { 24 };
+print(y.fmt());           // OK: y is initialized in all branches
 
-let z: Int32
+let z: Int32;
 if condition {
-    z = 42
+    z = 42;
 }
-print(z)                  // Error: z might not be initialized</code></pre>
+print(z.fmt());           // Error: z might not be initialized</code></pre>
 <p>Rules: - <code>let name: Type;</code> declares a variable without
 initializing it. - A variable must be definitely assigned before any
-read. - All control-flow paths must assign before use.</p>
+read. - All control-flow paths must assign before use. -
+<strong>Deferred initialization of immutable variables</strong>: an
+<em>uninitialized</em> immutable <code>let</code> may be assigned
+exactly once on each control-flow path; this first assignment is
+initialization, not mutation. Any assignment to an already-initialized
+immutable variable is an error (see Mutability Analysis).</p>
 <h4 id="double-initialization">Double Initialization</h4>
-<pre class="stark"><code>let mut x: Int32 = 42
-x = 43                    // OK: reassignment
-let x = 44                // Error: redeclaration in same scope</code></pre>
+<pre class="stark"><code>let mut x: Int32 = 42;
+x = 43;                   // OK: reassignment
+let x = 44;               // Error: redeclaration in same scope</code></pre>
 <h3 id="array-bounds-analysis">8. Array Bounds Analysis</h3>
 <h4 id="static-bounds-checking">Static Bounds Checking</h4>
-<pre class="stark"><code>let arr: [Int32; 3] = [1, 2, 3]
-let x = arr[2]            // OK: index in bounds
-let y = arr[5]            // Error: index out of bounds (if determinable)</code></pre>
+<pre class="stark"><code>let arr: [Int32; 3] = [1, 2, 3];
+let x = arr[2];           // OK: index in bounds
+let y = arr[5];           // Error: index out of bounds (if determinable)</code></pre>
 <h4 id="dynamic-bounds-checking">Dynamic Bounds Checking</h4>
-<pre class="stark"><code>let arr: [Int32] = [1, 2, 3]
-let idx = get_index()
-let x = arr[idx]          // Runtime bounds check required</code></pre>
+<pre class="stark"><code>let arr: [Int32; 3] = [1, 2, 3];
+let idx = get_index();
+let x = arr[idx];         // Runtime bounds check required</code></pre>
 <h3 id="error-propagation-analysis">9. Error Propagation Analysis</h3>
 <h4 id="question-mark-operator">Question Mark Operator</h4>
 <pre class="stark"><code>fn might_fail() -&gt; Result&lt;Int32, String&gt; { ... }
 
 fn caller1() -&gt; Result&lt;Int32, String&gt; {
-    let x = might_fail()?     // OK: compatible error types
+    let x = might_fail()?;    // OK: compatible error types
     Ok(x * 2)
 }
 
 fn caller2() -&gt; Int32 {
-    let x = might_fail()?     // Error: function doesn&#39;t return Result
+    let x = might_fail()?;    // Error: function doesn&#39;t return Result
     x * 2
 }</code></pre>
 <p>Rules: - <code>expr?</code> propagates <code>Err</code> or
@@ -1343,24 +1840,29 @@ type.</p>
 v1)</h2>
 <ul>
 <li>A runtime error (e.g., integer overflow, division by zero,
-out-of-bounds indexing) MUST terminate the current program
-execution.</li>
+out-of-bounds indexing, failing <code>as</code> cast) MUST terminate the
+current program execution.</li>
 <li><code>panic(...)</code> is a runtime error that terminates the
 program after emitting the provided message.</li>
+<li>Termination is an <strong>abort</strong>: the program stops
+immediately with a non-zero exit status. Destructors (<code>Drop</code>)
+are NOT run for live values, and no unwinding or recovery mechanism
+exists in Core v1. (Catchable panics and unwind-with-destructors are
+possible future extensions.)</li>
 </ul>
 <h3 id="trait-constraint-checking">10. Trait Constraint Checking</h3>
 <h4 id="trait-bounds-validation">Trait Bounds Validation</h4>
 <pre class="stark"><code>trait Display {
-    fn fmt(&amp;self) -&gt; String
+    fn fmt(&amp;self) -&gt; String;
 }
 
 fn print_it&lt;T: Display&gt;(item: T) {
-    print(item.fmt())         // OK: T implements Display
+    print(item.fmt());        // OK: T implements Display
 }
 
 struct Point { x: Int32, y: Int32 }
 
-print_it(Point { x: 1, y: 2 })  // Error: Point doesn&#39;t implement Display</code></pre>
+print_it(Point { x: 1, y: 2 });  // Error: Point doesn&#39;t implement Display</code></pre>
 <h2 id="error-reporting">Error Reporting</h2>
 <h3 id="error-message-format">Error Message Format</h3>
 <pre><code>Error: [ERROR_CODE] [BRIEF_DESCRIPTION]
@@ -1451,34 +1953,34 @@ bounds</li>
 <h2 id="implementation-considerations">Implementation
 Considerations</h2>
 <h3 id="symbol-table-structure">Symbol Table Structure</h3>
-<div class="sourceCode" id="cb93"><pre
-class="sourceCode rust"><code class="sourceCode rust"><span id="cb93-1"><a href="#cb93-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> SymbolTable <span class="op">{</span></span>
-<span id="cb93-2"><a href="#cb93-2" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">:</span> HashMap<span class="op">&lt;</span><span class="dt">String</span><span class="op">,</span> Symbol<span class="op">&gt;,</span></span>
-<span id="cb93-3"><a href="#cb93-3" aria-hidden="true" tabindex="-1"></a>    parent<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;&amp;</span>SymbolTable<span class="op">&gt;,</span></span>
-<span id="cb93-4"><a href="#cb93-4" aria-hidden="true" tabindex="-1"></a>    children<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SymbolTable<span class="op">&gt;</span></span>
-<span id="cb93-5"><a href="#cb93-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
-<span id="cb93-6"><a href="#cb93-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb93-7"><a href="#cb93-7" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> Symbol <span class="op">{</span></span>
-<span id="cb93-8"><a href="#cb93-8" aria-hidden="true" tabindex="-1"></a>    Variable <span class="op">{</span> ty<span class="op">:</span> Type<span class="op">,</span> mutable<span class="op">:</span> <span class="dt">bool</span><span class="op">,</span> initialized<span class="op">:</span> <span class="dt">bool</span> <span class="op">},</span></span>
-<span id="cb93-9"><a href="#cb93-9" aria-hidden="true" tabindex="-1"></a>    Function <span class="op">{</span> params<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>Type<span class="op">&gt;,</span> return_ty<span class="op">:</span> Type <span class="op">},</span></span>
-<span id="cb93-10"><a href="#cb93-10" aria-hidden="true" tabindex="-1"></a>    Type <span class="op">{</span> definition<span class="op">:</span> TypeDef <span class="op">},</span></span>
-<span id="cb93-11"><a href="#cb93-11" aria-hidden="true" tabindex="-1"></a>    Constant <span class="op">{</span> ty<span class="op">:</span> Type<span class="op">,</span> value<span class="op">:</span> Value <span class="op">}</span></span>
-<span id="cb93-12"><a href="#cb93-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb106"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb106-1"><a href="#cb106-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> SymbolTable <span class="op">{</span></span>
+<span id="cb106-2"><a href="#cb106-2" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">:</span> HashMap<span class="op">&lt;</span><span class="dt">String</span><span class="op">,</span> Symbol<span class="op">&gt;,</span></span>
+<span id="cb106-3"><a href="#cb106-3" aria-hidden="true" tabindex="-1"></a>    parent<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;&amp;</span>SymbolTable<span class="op">&gt;,</span></span>
+<span id="cb106-4"><a href="#cb106-4" aria-hidden="true" tabindex="-1"></a>    children<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SymbolTable<span class="op">&gt;</span></span>
+<span id="cb106-5"><a href="#cb106-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb106-6"><a href="#cb106-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb106-7"><a href="#cb106-7" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> Symbol <span class="op">{</span></span>
+<span id="cb106-8"><a href="#cb106-8" aria-hidden="true" tabindex="-1"></a>    Variable <span class="op">{</span> ty<span class="op">:</span> Type<span class="op">,</span> mutable<span class="op">:</span> <span class="dt">bool</span><span class="op">,</span> initialized<span class="op">:</span> <span class="dt">bool</span> <span class="op">},</span></span>
+<span id="cb106-9"><a href="#cb106-9" aria-hidden="true" tabindex="-1"></a>    Function <span class="op">{</span> params<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>Type<span class="op">&gt;,</span> return_ty<span class="op">:</span> Type <span class="op">},</span></span>
+<span id="cb106-10"><a href="#cb106-10" aria-hidden="true" tabindex="-1"></a>    Type <span class="op">{</span> definition<span class="op">:</span> TypeDef <span class="op">},</span></span>
+<span id="cb106-11"><a href="#cb106-11" aria-hidden="true" tabindex="-1"></a>    Constant <span class="op">{</span> ty<span class="op">:</span> Type<span class="op">,</span> value<span class="op">:</span> Value <span class="op">}</span></span>
+<span id="cb106-12"><a href="#cb106-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
 <h3 id="type-checking-context">Type Checking Context</h3>
-<div class="sourceCode" id="cb94"><pre
-class="sourceCode rust"><code class="sourceCode rust"><span id="cb94-1"><a href="#cb94-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> TypeContext <span class="op">{</span></span>
-<span id="cb94-2"><a href="#cb94-2" aria-hidden="true" tabindex="-1"></a>    current_function<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>FunctionId<span class="op">&gt;,</span></span>
-<span id="cb94-3"><a href="#cb94-3" aria-hidden="true" tabindex="-1"></a>    expected_return_type<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>Type<span class="op">&gt;,</span></span>
-<span id="cb94-4"><a href="#cb94-4" aria-hidden="true" tabindex="-1"></a>    loop_depth<span class="op">:</span> <span class="dt">usize</span><span class="op">,</span></span>
-<span id="cb94-5"><a href="#cb94-5" aria-hidden="true" tabindex="-1"></a>    borrowed_values<span class="op">:</span> HashMap<span class="op">&lt;</span>ValueId<span class="op">,</span> BorrowInfo<span class="op">&gt;</span></span>
-<span id="cb94-6"><a href="#cb94-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb107"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb107-1"><a href="#cb107-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> TypeContext <span class="op">{</span></span>
+<span id="cb107-2"><a href="#cb107-2" aria-hidden="true" tabindex="-1"></a>    current_function<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>FunctionId<span class="op">&gt;,</span></span>
+<span id="cb107-3"><a href="#cb107-3" aria-hidden="true" tabindex="-1"></a>    expected_return_type<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>Type<span class="op">&gt;,</span></span>
+<span id="cb107-4"><a href="#cb107-4" aria-hidden="true" tabindex="-1"></a>    loop_depth<span class="op">:</span> <span class="dt">usize</span><span class="op">,</span></span>
+<span id="cb107-5"><a href="#cb107-5" aria-hidden="true" tabindex="-1"></a>    borrowed_values<span class="op">:</span> HashMap<span class="op">&lt;</span>ValueId<span class="op">,</span> BorrowInfo<span class="op">&gt;</span></span>
+<span id="cb107-6"><a href="#cb107-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
 <h3 id="error-collection">Error Collection</h3>
-<div class="sourceCode" id="cb95"><pre
-class="sourceCode rust"><code class="sourceCode rust"><span id="cb95-1"><a href="#cb95-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ErrorReporter <span class="op">{</span></span>
-<span id="cb95-2"><a href="#cb95-2" aria-hidden="true" tabindex="-1"></a>    errors<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SemanticError<span class="op">&gt;,</span></span>
-<span id="cb95-3"><a href="#cb95-3" aria-hidden="true" tabindex="-1"></a>    warnings<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SemanticWarning<span class="op">&gt;,</span></span>
-<span id="cb95-4"><a href="#cb95-4" aria-hidden="true" tabindex="-1"></a>    error_limit<span class="op">:</span> <span class="dt">usize</span></span>
-<span id="cb95-5"><a href="#cb95-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb108"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb108-1"><a href="#cb108-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ErrorReporter <span class="op">{</span></span>
+<span id="cb108-2"><a href="#cb108-2" aria-hidden="true" tabindex="-1"></a>    errors<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SemanticError<span class="op">&gt;,</span></span>
+<span id="cb108-3"><a href="#cb108-3" aria-hidden="true" tabindex="-1"></a>    warnings<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SemanticWarning<span class="op">&gt;,</span></span>
+<span id="cb108-4"><a href="#cb108-4" aria-hidden="true" tabindex="-1"></a>    error_limit<span class="op">:</span> <span class="dt">usize</span></span>
+<span id="cb108-5"><a href="#cb108-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
 <h2 id="conformance-2">Conformance</h2>
 <p>A conforming Core v1 implementation MUST follow the requirements in
 this document. Any deviations or extensions MUST be explicitly
@@ -1508,51 +2010,52 @@ simplifications for the initial implementation.</p>
 <ul>
 <li>All references have a lifetime</li>
 <li>References cannot outlive the data they point to</li>
-<li>Lifetimes are mostly inferred by the compiler</li>
+<li>Core v1 has no lifetime annotations; the conservative rules in
+03-Type-System.md (“References and Lifetimes”) apply</li>
 </ul>
 <h2 id="memory-layout">Memory Layout</h2>
 <h3 id="stack-allocation">Stack Allocation</h3>
 <pre class="stark"><code>// Stack-allocated values
-let x: Int32 = 42           // x stored on stack
-let y: [Int32; 4] = [1,2,3,4]  // y stored on stack
+let x: Int32 = 42;              // x stored on stack
+let y: [Int32; 4] = [1, 2, 3, 4];  // y stored on stack
 
 struct Point { x: Float64, y: Float64 }
-let p: Point = Point { x: 1.0, y: 2.0 }  // p stored on stack</code></pre>
+let p: Point = Point { x: 1.0, y: 2.0 };  // p stored on stack</code></pre>
 <h3 id="heap-allocation">Heap Allocation</h3>
 <pre class="stark"><code>// Heap-allocated values
-let s: String = String::new(&quot;hello&quot;)     // String data on heap
-let v: Vec&lt;Int32&gt; = Vec::new()          // Vec data on heap
-let b: Box&lt;Int32&gt; = Box::new(42)        // Boxed value on heap</code></pre>
+let s: String = String::from(&quot;hello&quot;);   // String data on heap
+let v: Vec&lt;Int32&gt; = Vec::new();          // Vec data on heap
+let b: Box&lt;Int32&gt; = Box::new(42);        // Boxed value on heap</code></pre>
 <h3 id="reference-layout">Reference Layout</h3>
 <pre class="stark"><code>// References are pointers (8 bytes on 64-bit)
-let x: Int32 = 42
-let r: &amp;Int32 = &amp;x          // r contains address of x
+let x: Int32 = 42;
+let r: &amp;Int32 = &amp;x;         // r contains address of x
 
-// Slices contain pointer + length
-let arr: [Int32; 5] = [1,2,3,4,5]
-let slice: &amp;[Int32] = &amp;arr[1..4]  // pointer + length (16 bytes)</code></pre>
+// Slice references contain pointer + length
+let arr: [Int32; 5] = [1, 2, 3, 4, 5];
+let slice: &amp;[Int32] = &amp;arr[1..4];  // pointer + length (16 bytes)</code></pre>
 <h2 id="ownership-rules-1">Ownership Rules</h2>
 <h3 id="rule-1-single-ownership">Rule 1: Single Ownership</h3>
-<pre class="stark"><code>let s1 = String::new(&quot;hello&quot;)
-let s2 = s1                 // Ownership moved from s1 to s2
-// println(s1)              // Error: s1 no longer valid
-println(s2)                 // OK: s2 owns the string</code></pre>
+<pre class="stark"><code>let s1 = String::from(&quot;hello&quot;);
+let s2 = s1;                // Ownership moved from s1 to s2
+// println(s2.as_str());    // OK: s2 owns the string
+// println(s1.as_str());    // Error: s1 no longer valid</code></pre>
 <h3 id="rule-2-automatic-cleanup">Rule 2: Automatic Cleanup</h3>
 <pre class="stark"><code>{
-    let s = String::new(&quot;hello&quot;)  // s owns the string
+    let s = String::from(&quot;hello&quot;);  // s owns the string
     // String is automatically freed when s goes out of scope
 }</code></pre>
 <h3 id="rule-3-function-parameters">Rule 3: Function Parameters</h3>
 <pre class="stark"><code>fn take_ownership(s: String) {
     // s is owned by this function
-    println(s)
+    println(s.as_str());
     // s is dropped when function returns
 }
 
 fn main() {
-    let s = String::new(&quot;hello&quot;)
-    take_ownership(s)       // Ownership transferred to function
-    // println(s)           // Error: s no longer valid
+    let s = String::from(&quot;hello&quot;);
+    take_ownership(s);      // Ownership transferred to function
+    // println(s.as_str()); // Error: s no longer valid
 }</code></pre>
 <h2 id="move-semantics-1">Move Semantics</h2>
 <h3 id="what-gets-moved">What Gets Moved</h3>
@@ -1564,59 +2067,85 @@ String, Vec&lt;T&gt;, Box&lt;T&gt;, custom structs without Copy
 // Types that are copied by default (implement Copy)
 Int32, Float64, Bool, Char, &amp;T, [T; N] where T: Copy</code></pre>
 <h3 id="move-in-assignments">Move in Assignments</h3>
-<pre class="stark"><code>let s1 = String::new(&quot;hello&quot;)
-let s2 = s1                 // Move
-let s3 = s2.clone()         // Explicit copy (if Clone implemented)</code></pre>
+<pre class="stark"><code>let s1 = String::from(&quot;hello&quot;);
+let s2 = s1;                // Move
+let s3 = s2.clone();        // Explicit copy (if Clone implemented)</code></pre>
 <h3 id="move-in-function-calls">Move in Function Calls</h3>
 <pre class="stark"><code>fn process(s: String) { ... }
 
-let my_string = String::new(&quot;hello&quot;)
-process(my_string)          // my_string moved into function
+let my_string = String::from(&quot;hello&quot;);
+process(my_string);         // my_string moved into function
 // my_string no longer accessible</code></pre>
 <h3 id="move-in-returns">Move in Returns</h3>
 <pre class="stark"><code>fn create_string() -&gt; String {
-    let s = String::new(&quot;hello&quot;)
+    let s = String::from(&quot;hello&quot;);
     s                       // Ownership moved to caller
 }</code></pre>
+<h3 id="partial-moves-reinitialization-and-indexed-places">Partial
+Moves, Reinitialization, and Indexed Places</h3>
+<p>The normative rules are in 03-Type-System.md (“Copy and Drop”):</p>
+<pre class="stark"><code>struct Person { name: String, age: Int32 }
+
+let p = Person { name: String::from(&quot;Alice&quot;), age: 30 };
+let n = p.name;             // Partial move (Person does not implement Drop)
+let a = p.age;              // OK: remaining Copy field still readable
+// let q = p;               // Error: p is partially moved
+
+let mut s = String::from(&quot;one&quot;);
+let t = s;                  // s moved out
+s = String::from(&quot;two&quot;);    // OK: reinitialization revalidates s
+
+let v: Vec&lt;String&gt; = make();
+// let x = v[0];            // Error: cannot move out of indexed place
+let x = &amp;v[0];              // OK: borrow instead (or use Vec::remove/pop)</code></pre>
 <h2 id="borrowing-system">Borrowing System</h2>
 <h3 id="immutable-borrowing">Immutable Borrowing</h3>
-<pre class="stark"><code>fn read_string(s: &amp;String) -&gt; Int32 {
+<pre class="stark"><code>fn read_string(s: &amp;String) -&gt; UInt64 {
     s.len()                 // Can read but not modify
 }
 
-let my_string = String::new(&quot;hello&quot;)
-let length = read_string(&amp;my_string)  // Borrow my_string
-println(my_string)          // my_string still accessible</code></pre>
+let my_string = String::from(&quot;hello&quot;);
+let length = read_string(&amp;my_string);  // Borrow my_string
+println(my_string.as_str()); // my_string still accessible</code></pre>
 <h3 id="mutable-borrowing">Mutable Borrowing</h3>
 <pre class="stark"><code>fn modify_string(s: &amp;mut String) {
-    s.push(&#39;!&#39;)             // Can read and modify
+    s.push(&#39;!&#39;);            // Can read and modify
 }
 
-let mut my_string = String::new(&quot;hello&quot;)
-modify_string(&amp;mut my_string)         // Mutable borrow
-println(my_string)          // Prints &quot;hello!&quot;</code></pre>
+let mut my_string = String::from(&quot;hello&quot;);
+modify_string(&amp;mut my_string);        // Mutable borrow
+println(my_string.as_str()); // Prints &quot;hello!&quot;</code></pre>
 <h3 id="borrowing-rules-1">Borrowing Rules</h3>
 <ol type="1">
 <li><strong>Either</strong> one mutable borrow <strong>OR</strong> any
 number of immutable borrows</li>
 <li>References must always be valid</li>
 </ol>
-<pre class="stark"><code>let mut s = String::new(&quot;hello&quot;)
+<pre class="stark"><code>let mut s = String::from(&quot;hello&quot;);
 
 // Multiple immutable borrows - OK
-let r1 = &amp;s
-let r2 = &amp;s
-println(&quot;{} {}&quot;, r1, r2)
+let r1 = &amp;s;
+let r2 = &amp;s;
 
 // Mutable and immutable borrow - Error
-let r3 = &amp;s
-let r4 = &amp;mut s             // Error: cannot borrow mutably while immutably borrowed
+let r3 = &amp;s;
+let r4 = &amp;mut s;            // Error: cannot borrow mutably while immutably borrowed
 
 // Multiple mutable borrows - Error
-let r5 = &amp;mut s
-let r6 = &amp;mut s             // Error: cannot borrow mutably twice</code></pre>
+let r5 = &amp;mut s;
+let r6 = &amp;mut s;            // Error: cannot borrow mutably twice</code></pre>
 <h2 id="lifetime-system">Lifetime System</h2>
 <h3 id="lifetime-basics">Lifetime Basics</h3>
+<p>Core v1 applies the normative reference rules from 03-Type-System.md:
+returned references must derive from reference parameters; callers treat
+a returned reference as having the <em>shortest</em> lifetime among the
+reference arguments it may derive from; borrows bound to variables are
+lexically scoped (to end of block), while unbound temporary borrows end
+with their statement. User struct/enum declarations may not declare
+reference fields, but generic types instantiated with references
+(e.g. <code>Option&lt;&amp;T&gt;</code>) are permitted as
+<em>borrow-carrying values</em> subject to the same rules as references
+— see “Borrow-Carrying Types” in 03-Type-System.md.</p>
 <pre class="stark"><code>fn longest(x: &amp;str, y: &amp;str) -&gt; &amp;str {
     if x.len() &gt; y.len() {
         x
@@ -1624,7 +2153,8 @@ let r6 = &amp;mut s             // Error: cannot borrow mutably twice</code></pr
         y
     }
 }
-// Compiler infers that return value has same lifetime as input parameters</code></pre>
+// The returned reference is treated as valid only while both x&#39;s and y&#39;s
+// referents are valid (shortest-input-lifetime rule).</code></pre>
 <h3 id="lifetime-annotations-future-feature">Lifetime Annotations
 (Future Feature)</h3>
 <pre class="stark"><code>fn longest&lt;&#39;a&gt;(x: &amp;&#39;a str, y: &amp;&#39;a str) -&gt; &amp;&#39;a str {
@@ -1633,7 +2163,7 @@ let r6 = &amp;mut s             // Error: cannot borrow mutably twice</code></pr
 <h3 id="dangling-reference-prevention">Dangling Reference
 Prevention</h3>
 <pre class="stark"><code>fn invalid() -&gt; &amp;Int32 {
-    let x = 42
+    let x = 42;
     &amp;x                      // Error: returning reference to local variable
 }
 
@@ -1643,21 +2173,21 @@ fn valid(x: &amp;Int32) -&gt; &amp;Int32 {
 <h2 id="memory-management-strategies">Memory Management Strategies</h2>
 <h3 id="stack-vs-heap-decision">Stack vs Heap Decision</h3>
 <pre class="stark"><code>// Stack allocated (small, known size)
-let point = Point { x: 1.0, y: 2.0 }
-let array = [1, 2, 3, 4, 5]
+let point = Point { x: 1.0, y: 2.0 };
+let array = [1, 2, 3, 4, 5];
 
 // Heap allocated (dynamic size, large objects)
-let string = String::new(&quot;hello&quot;)
-let vector = Vec::new()
-let boxed = Box::new(large_object)</code></pre>
+let string = String::from(&quot;hello&quot;);
+let vector: Vec&lt;Int32&gt; = Vec::new();
+let boxed = Box::new(large_object);</code></pre>
 <h3 id="reference-counting-rcarc">Reference Counting (Rc/Arc)</h3>
 <pre class="stark"><code>// Single-threaded reference counting (future feature)
-let data = Rc::new(vec![1, 2, 3])
-let data2 = data.clone()    // Increment reference count
+let data = Rc::new(v);
+let data2 = data.clone();   // Increment reference count
 
 // Multi-threaded reference counting (future feature)
-let shared = Arc::new(vec![1, 2, 3])
-let shared2 = shared.clone()</code></pre>
+let shared = Arc::new(v);
+let shared2 = shared.clone();</code></pre>
 <h2 id="drop-and-destructors">Drop and Destructors</h2>
 <h3 id="automatic-drop">Automatic Drop</h3>
 <pre class="stark"><code>struct FileHandle {
@@ -1668,25 +2198,37 @@ let shared2 = shared.clone()</code></pre>
 impl Drop for FileHandle {
     fn drop(&amp;mut self) {
         // Close file handle
-        close_file(self.handle)
+        close_file(self.handle);
     }
 }
 
 {
-    let file = FileHandle { path: &quot;test.txt&quot;.to_string(), handle: 42 }
+    let file = FileHandle { path: String::from(&quot;test.txt&quot;), handle: 42 };
     // file.drop() called automatically when leaving scope
 }</code></pre>
 <h3 id="drop-order">Drop Order</h3>
 <pre class="stark"><code>{
-    let x = String::new(&quot;first&quot;)
-    let y = String::new(&quot;second&quot;)
-    let z = String::new(&quot;third&quot;)
+    let x = String::from(&quot;first&quot;);
+    let y = String::from(&quot;second&quot;);
+    let z = String::from(&quot;third&quot;);
     // Drop order: z, y, x (reverse declaration order)
 }</code></pre>
 <h3 id="manual-drop">Manual Drop</h3>
-<pre class="stark"><code>let s = String::new(&quot;hello&quot;)
-drop(s)                     // Explicitly drop s
-// println(s)               // Error: s has been dropped</code></pre>
+<pre class="stark"><code>let s = String::from(&quot;hello&quot;);
+drop(s);                    // Explicitly drop s
+// println(s.as_str());     // Error: s has been dropped</code></pre>
+<h3 id="drop-soundness-core-v1">Drop Soundness (Core v1)</h3>
+<p>Normative rules (see also “Copy and Drop” in 03-Type-System.md): -
+Destructors run <strong>exactly once</strong> per value — at scope exit,
+at explicit <code>drop(value)</code>, or when the owner is consumed.
+Implementations MUST track initialization state (drop flags) for values
+moved on only some paths. - <code>Drop::drop</code> cannot be called
+explicitly; only the <code>drop(value)</code> free function is allowed.
+- A type cannot implement both <code>Copy</code> and <code>Drop</code>.
+- Fields cannot be moved out of a value whose type implements
+<code>Drop</code>. - On a runtime error or <code>panic</code>, the
+program aborts immediately and destructors are NOT run (see
+04-Semantic-Analysis.md, Runtime Error Semantics).</p>
 <h2 id="copy-vs-move-types">Copy vs Move Types</h2>
 <h3 id="copy-types">Copy Types</h3>
 <p>Implement <code>Copy</code> trait - assignment creates a copy, not a
@@ -1694,12 +2236,14 @@ move:</p>
 <pre class="stark"><code>// Built-in Copy types
 Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64
 Float32, Float64, Bool, Char, Unit
-&amp;T (references), [T; N] where T: Copy
+&amp;T (immutable references), [T; N] where T: Copy
+
+// Note: &amp;mut T is NOT Copy (mutable borrows are exclusive and move)
 
 // Usage
-let x: Int32 = 42
-let y = x                   // x is copied, still accessible
-println(&quot;{} {}&quot;, x, y)      // OK: both x and y valid</code></pre>
+let x: Int32 = 42;
+let y = x;                  // x is copied, still accessible
+// Both x and y valid here</code></pre>
 <h3 id="move-types">Move Types</h3>
 <p>Do not implement <code>Copy</code> - assignment moves ownership:</p>
 <pre class="stark"><code>// Built-in Move types
@@ -1711,27 +2255,27 @@ struct Person {
     age: Int32
 }
 
-let p1 = Person { name: &quot;Alice&quot;.to_string(), age: 30 }
-let p2 = p1                 // p1 moved to p2
-// println(p1.name)         // Error: p1 no longer valid</code></pre>
+let p1 = Person { name: String::from(&quot;Alice&quot;), age: 30 };
+let p2 = p1;                // p1 moved to p2
+// println(p1.name.as_str());  // Error: p1 no longer valid</code></pre>
 <h2 id="smart-pointers">Smart Pointers</h2>
 <h3 id="box---heap-allocation">Box<T> - Heap Allocation</h3>
-<pre class="stark"><code>let boxed_int = Box::new(42)
-let large_array = Box::new([0; 1000])  // Allocate large array on heap</code></pre>
+<pre class="stark"><code>let boxed_int = Box::new(42);
+let large_array = Box::new([0; 1000]);  // Allocate large array on heap</code></pre>
 <h3 id="rc---reference-counting-future">Rc<T> - Reference Counting
 (Future)</h3>
-<pre class="stark"><code>let data = Rc::new(vec![1, 2, 3])
-let reference1 = data.clone()    // Increment reference count
-let reference2 = data.clone()    // Increment reference count
+<pre class="stark"><code>let data = Rc::new(some_value);
+let reference1 = data.clone();   // Increment reference count
+let reference2 = data.clone();   // Increment reference count
 // Data deallocated when all references dropped</code></pre>
 <h3 id="refcell---interior-mutability-future">RefCell<T> - Interior
 Mutability (Future)</h3>
-<pre class="stark"><code>let data = RefCell::new(42)
+<pre class="stark"><code>let data = RefCell::new(42);
 {
-    let mut borrowed = data.borrow_mut()  // Runtime borrow check
-    *borrowed = 43
+    let mut borrowed = data.borrow_mut();  // Runtime borrow check
+    *borrowed = 43;
 }
-println(data.borrow())      // Prints 43</code></pre>
+// data.borrow() now yields 43</code></pre>
 <h2 id="memory-safety-guarantees">Memory Safety Guarantees</h2>
 <h3 id="what-stark-prevents">What STARK Prevents</h3>
 <ol type="1">
@@ -1749,8 +2293,9 @@ access</li>
 </ol>
 <h3 id="runtime-checks">Runtime Checks</h3>
 <p>Some checks remain at runtime: - Array bounds checking (unless
-optimized away) - Integer overflow (in debug mode) - RefCell borrow
-checking (future feature)</p>
+optimized away) - Integer overflow (traps in ALL build configurations;
+see Numeric Semantics in 03-Type-System.md) - RefCell borrow checking
+(future feature)</p>
 <h2 id="performance-considerations">Performance Considerations</h2>
 <h3 id="zero-cost-abstractions">Zero-Cost Abstractions</h3>
 <ul>
@@ -1762,7 +2307,7 @@ checking (future feature)</p>
 <ul>
 <li>Dead code elimination for unused values</li>
 <li>Lifetime optimization to reduce copies</li>
-<li>Stack allocation for escaped values when possible</li>
+<li>Stack allocation for values that do not escape</li>
 </ul>
 <h3 id="memory-layout-optimization">Memory Layout Optimization</h3>
 <ul>
@@ -1787,12 +2332,12 @@ allocation</li>
 <pre><code>Error: borrow of moved value
   --&gt; example.stark:10:5
    |
- 8 |     let s1 = String::new(&quot;hello&quot;);
+ 8 |     let s1 = String::from(&quot;hello&quot;);
    |         -- move occurs because `s1` has type `String`
  9 |     let s2 = s1;
    |              -- value moved here
-10 |     println(s1);
-   |     ^^ value borrowed here after move</code></pre>
+10 |     println(s1.as_str());
+   |             ^^ value borrowed here after move</code></pre>
 <h3 id="integration-with-type-system">Integration with Type System</h3>
 <ul>
 <li>Ownership information included in type signatures</li>
@@ -1803,6 +2348,7 @@ allocation</li>
 <h3 id="advanced-features">Advanced Features</h3>
 <ul>
 <li>Lifetime parameters and annotations</li>
+<li>Reference-carrying structs (requires lifetime annotations)</li>
 <li>Higher-ranked trait bounds</li>
 <li>Associated types with lifetime parameters</li>
 <li>Async/await with proper lifetime handling ## Conformance A
@@ -1817,6 +2363,94 @@ Specification</h1>
 <p>The STARK standard library provides essential types, functions, and
 modules for core programming tasks. This specification defines the
 minimal standard library for the initial implementation.</p>
+<h2 id="notation">Notation</h2>
+<p>The code blocks in this document are <strong>API notation</strong>,
+not compilable STARK source: function signatures are listed without
+bodies, and <code>impl</code> blocks mix signatures with prose comments.
+The <em>signatures and behaviors</em> are normative; the listing style
+is not. (The Core v1 grammar has no body-less function form outside
+<code>trait</code> blocks.)</p>
+<h2 id="implementation-provided-types">Implementation-Provided
+Types</h2>
+<p>Several standard library types (<code>Box&lt;T&gt;</code>,
+<code>Vec&lt;T&gt;</code>, <code>String</code>,
+<code>HashMap&lt;K, V&gt;</code>) manage raw memory internally. Raw
+pointers and <code>unsafe</code> code are NOT part of the Core v1
+language surface; these types are <em>implementation-provided</em>:
+their public APIs are normative, their internal representation is not
+expressible in Core v1 source and is implementation-defined. Struct
+bodies shown for these types in this document are illustrative only.</p>
+<h2 id="iterator-and-view-types">Iterator and View Types</h2>
+<p>The iterator types returned by the APIs below
+(<code>VecIter&lt;T&gt;</code>, <code>KeysIter&lt;K&gt;</code>,
+<code>ValuesIter&lt;V&gt;</code>, <code>Iter&lt;K, V&gt;</code>,
+<code>Iter&lt;T&gt;</code>, <code>CharsIter</code>,
+<code>SplitIter</code>, <code>MapIter&lt;I, U&gt;</code>,
+<code>FilterIter&lt;I&gt;</code>) are implementation-provided opaque
+structs. Each implements <code>Iterator</code> with the obvious
+<code>Item</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Type</th>
+<th>Produced by</th>
+<th><code>Item</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>VecIter&lt;T&gt;</code></td>
+<td><code>Vec::iter</code></td>
+<td><code>&amp;T</code></td>
+</tr>
+<tr>
+<td><code>KeysIter&lt;K&gt;</code></td>
+<td><code>HashMap::keys</code></td>
+<td><code>&amp;K</code></td>
+</tr>
+<tr>
+<td><code>ValuesIter&lt;V&gt;</code></td>
+<td><code>HashMap::values</code></td>
+<td><code>&amp;V</code></td>
+</tr>
+<tr>
+<td><code>Iter&lt;K, V&gt;</code></td>
+<td><code>HashMap::iter</code></td>
+<td><code>(&amp;K, &amp;V)</code></td>
+</tr>
+<tr>
+<td><code>Iter&lt;T&gt;</code></td>
+<td><code>HashSet::iter</code></td>
+<td><code>&amp;T</code></td>
+</tr>
+<tr>
+<td><code>CharsIter</code></td>
+<td><code>String::chars</code>, <code>str::chars</code></td>
+<td><code>Char</code></td>
+</tr>
+<tr>
+<td><code>SplitIter</code></td>
+<td><code>String::split</code></td>
+<td><code>&amp;str</code></td>
+</tr>
+<tr>
+<td><code>MapIter&lt;I, U&gt;</code></td>
+<td><code>Iterator::map</code></td>
+<td><code>U</code></td>
+</tr>
+<tr>
+<td><code>FilterIter&lt;I&gt;</code></td>
+<td><code>Iterator::filter</code></td>
+<td><code>I::Item</code></td>
+</tr>
+</tbody>
+</table>
+<p>Iterators whose <code>Item</code> is a reference (and
+<code>CharsIter</code>/<code>SplitIter</code>, which borrow their
+source) are <strong>borrow-carrying types</strong> in the sense of
+03-Type-System.md: they hold a live borrow of the collection they
+iterate and obey all reference rules (no storage in user structs,
+lexically scoped, cannot outlive their source).</p>
 <h2 id="core-module-structure">Core Module Structure</h2>
 <pre><code>std/
 ├── core/           // Core language items
@@ -1839,8 +2473,17 @@ trait Clone
 trait Drop
 trait Eq
 trait Ord
+trait Hash
+trait Default
+trait Display
 
-// Essential types
+// Essential enums
+enum Ordering {
+    Less,
+    Equal,
+    Greater
+}
+
 enum Option&lt;T&gt; {
     Some(T),
     None
@@ -1854,23 +2497,88 @@ enum Result&lt;T, E&gt; {
 // Essential functions
 fn print(value: &amp;str)
 fn println(value: &amp;str)
-fn panic(message: &amp;str) -&gt; !</code></pre>
+fn panic(message: &amp;str) -&gt; !    // Never returns; see 03-Type-System.md (Never Type)</code></pre>
 <h2 id="core-module-stdcore">Core Module (std::core)</h2>
-<h3 id="memory-management">Memory Management</h3>
-<pre class="stark"><code>// Box - heap allocation
-struct Box&lt;T&gt; {
-    ptr: *mut T
+<h3 id="essential-trait-definitions">Essential Trait Definitions</h3>
+<pre class="stark"><code>trait Clone {
+    fn clone(&amp;self) -&gt; Self;
 }
 
+trait Eq {
+    fn eq(&amp;self, other: &amp;Self) -&gt; Bool;
+}
+
+trait Ord {
+    fn cmp(&amp;self, other: &amp;Self) -&gt; Ordering;
+}
+
+trait Hash {
+    fn hash(&amp;self) -&gt; UInt64;
+}
+
+trait Default {
+    fn default() -&gt; Self;
+}
+
+trait Display {
+    fn fmt(&amp;self) -&gt; String;
+}
+
+trait Drop {
+    fn drop(&amp;mut self);
+}
+
+// Copy is a marker trait (no methods); Copy: Clone.
+// Soundness rules (all-fields-Copy, Copy/Drop exclusivity) are in
+// 03-Type-System.md, &quot;Copy and Drop&quot;.
+trait Copy
+
+// Num is a compiler-known marker trait implemented by exactly the built-in
+// numeric types; it enables arithmetic operators on generic parameters
+// (see 03-Type-System.md, &quot;Operators and Traits&quot;). Not user-implementable.
+trait Num</code></pre>
+<h3 id="indexing-traits">Indexing Traits</h3>
+<p>The <code>[]</code> operator desugars to these traits:</p>
+<pre class="stark"><code>trait Index&lt;Idx&gt; {
+    type Output;
+    fn index(&amp;self, index: Idx) -&gt; &amp;Self::Output;
+}
+
+trait IndexMut&lt;Idx&gt; {
+    fn index_mut(&amp;mut self, index: Idx) -&gt; &amp;mut Self::Output;
+}</code></pre>
+<h3 id="range-types">Range Types</h3>
+<p>The range operators <code>..</code> and <code>..=</code> produce
+these types:</p>
+<pre class="stark"><code>struct Range&lt;T&gt; {
+    start: T,
+    end: T
+}
+
+struct RangeInclusive&lt;T&gt; {
+    start: T,
+    end: T
+}
+
+// Ranges over integer types are iterable
+impl Iterator for Range&lt;Int32&gt; {
+    type Item = Int32;
+    fn next(&amp;mut self) -&gt; Option&lt;Int32&gt;;
+}
+// ... similarly for the other integer types, and for RangeInclusive</code></pre>
+<h3 id="memory-management">Memory Management</h3>
+<pre class="stark"><code>// Box - heap allocation (implementation-provided; internals opaque)
+struct Box&lt;T&gt; { /* implementation-defined */ }
+
 impl&lt;T&gt; Box&lt;T&gt; {
-    fn new(value: T) -&gt; Box&lt;T&gt;
-    fn into_inner(self) -&gt; T
+    fn new(value: T) -&gt; Box&lt;T&gt;;
+    fn into_inner(self) -&gt; T;
 }
 
 // Manual memory management
 fn drop&lt;T&gt;(value: T)
-fn size_of&lt;T&gt;() -&gt; UInt64
-fn align_of&lt;T&gt;() -&gt; UInt64</code></pre>
+fn size_of&lt;T&gt;() -&gt; UInt64      // T not inferable: call as size_of::&lt;Int32&gt;()
+fn align_of&lt;T&gt;() -&gt; UInt64     // T not inferable: call as align_of::&lt;Int32&gt;()</code></pre>
 <h3 id="option-type-1">Option Type</h3>
 <pre class="stark"><code>enum Option&lt;T&gt; {
     Some(T),
@@ -1878,12 +2586,12 @@ fn align_of&lt;T&gt;() -&gt; UInt64</code></pre>
 }
 
 impl&lt;T&gt; Option&lt;T&gt; {
-    fn is_some(&amp;self) -&gt; Bool
-    fn is_none(&amp;self) -&gt; Bool
-    fn unwrap(self) -&gt; T
-    fn unwrap_or(self, default: T) -&gt; T
-    fn map&lt;U&gt;(self, f: fn(T) -&gt; U) -&gt; Option&lt;U&gt;
-    fn and_then&lt;U&gt;(self, f: fn(T) -&gt; Option&lt;U&gt;) -&gt; Option&lt;U&gt;
+    fn is_some(&amp;self) -&gt; Bool;
+    fn is_none(&amp;self) -&gt; Bool;
+    fn unwrap(self) -&gt; T;
+    fn unwrap_or(self, default: T) -&gt; T;
+    fn map&lt;U&gt;(self, f: fn(T) -&gt; U) -&gt; Option&lt;U&gt;;
+    fn and_then&lt;U&gt;(self, f: fn(T) -&gt; Option&lt;U&gt;) -&gt; Option&lt;U&gt;;
 }</code></pre>
 <h3 id="result-type-1">Result Type</h3>
 <pre class="stark"><code>enum Result&lt;T, E&gt; {
@@ -1892,130 +2600,126 @@ impl&lt;T&gt; Option&lt;T&gt; {
 }
 
 impl&lt;T, E&gt; Result&lt;T, E&gt; {
-    fn is_ok(&amp;self) -&gt; Bool
-    fn is_err(&amp;self) -&gt; Bool
-    fn unwrap(self) -&gt; T
-    fn unwrap_or(self, default: T) -&gt; T
-    fn map&lt;U&gt;(self, f: fn(T) -&gt; U) -&gt; Result&lt;U, E&gt;
-    fn map_err&lt;F&gt;(self, f: fn(E) -&gt; F) -&gt; Result&lt;T, F&gt;
-    fn and_then&lt;U&gt;(self, f: fn(T) -&gt; Result&lt;U, E&gt;) -&gt; Result&lt;U, E&gt;
+    fn is_ok(&amp;self) -&gt; Bool;
+    fn is_err(&amp;self) -&gt; Bool;
+    fn unwrap(self) -&gt; T;
+    fn unwrap_or(self, default: T) -&gt; T;
+    fn map&lt;U&gt;(self, f: fn(T) -&gt; U) -&gt; Result&lt;U, E&gt;;
+    fn map_err&lt;F&gt;(self, f: fn(E) -&gt; F) -&gt; Result&lt;T, F&gt;;
+    fn and_then&lt;U&gt;(self, f: fn(T) -&gt; Result&lt;U, E&gt;) -&gt; Result&lt;U, E&gt;;
 }</code></pre>
 <h2 id="collections-module-stdcollections">Collections Module
 (std::collections)</h2>
 <h3 id="vec---dynamic-array">Vec<T> - Dynamic Array</h3>
-<pre class="stark"><code>struct Vec&lt;T&gt; {
-    ptr: *mut T,
-    len: UInt64,
-    cap: UInt64
-}
+<pre class="stark"><code>// Implementation-provided; internals opaque
+struct Vec&lt;T&gt; { /* implementation-defined */ }
 
 impl&lt;T&gt; Vec&lt;T&gt; {
-    fn new() -&gt; Vec&lt;T&gt;
-    fn with_capacity(capacity: UInt64) -&gt; Vec&lt;T&gt;
-    fn push(&amp;mut self, item: T)
-    fn pop(&amp;mut self) -&gt; Option&lt;T&gt;
-    fn len(&amp;self) -&gt; UInt64
-    fn capacity(&amp;self) -&gt; UInt64
-    fn is_empty(&amp;self) -&gt; Bool
-    fn get(&amp;self, index: UInt64) -&gt; Option&lt;&amp;T&gt;
-    fn get_mut(&amp;mut self, index: UInt64) -&gt; Option&lt;&amp;mut T&gt;
-    fn insert(&amp;mut self, index: UInt64, item: T)
-    fn remove(&amp;mut self, index: UInt64) -&gt; T
-    fn clear(&amp;mut self)
-    fn append(&amp;mut self, other: &amp;mut Vec&lt;T&gt;)
-    fn extend(&amp;mut self, iter: impl Iterator&lt;Item = T&gt;)
+    fn new() -&gt; Vec&lt;T&gt;;
+    fn with_capacity(capacity: UInt64) -&gt; Vec&lt;T&gt;;
+    fn push(&amp;mut self, item: T);
+    fn pop(&amp;mut self) -&gt; Option&lt;T&gt;;
+    fn len(&amp;self) -&gt; UInt64;
+    fn capacity(&amp;self) -&gt; UInt64;
+    fn is_empty(&amp;self) -&gt; Bool;
+    fn get(&amp;self, index: UInt64) -&gt; Option&lt;&amp;T&gt;;
+    fn get_mut(&amp;mut self, index: UInt64) -&gt; Option&lt;&amp;mut T&gt;;
+    fn insert(&amp;mut self, index: UInt64, item: T);
+    fn remove(&amp;mut self, index: UInt64) -&gt; T;
+    fn clear(&amp;mut self);
+    fn append(&amp;mut self, other: &amp;mut Vec&lt;T&gt;);
+    fn extend&lt;I: Iterator&lt;Item = T&gt;&gt;(&amp;mut self, iter: I);
+    fn iter(&amp;self) -&gt; VecIter&lt;T&gt;;
+    fn as_slice(&amp;self) -&gt; &amp;[T];
 }
 
 // Index access
 impl&lt;T&gt; Index&lt;UInt64&gt; for Vec&lt;T&gt; {
-    type Output = T
-    fn index(&amp;self, index: UInt64) -&gt; &amp;T
+    type Output = T;
+    fn index(&amp;self, index: UInt64) -&gt; &amp;T;
 }
 
 impl&lt;T&gt; IndexMut&lt;UInt64&gt; for Vec&lt;T&gt; {
-    fn index_mut(&amp;mut self, index: UInt64) -&gt; &amp;mut T
+    fn index_mut(&amp;mut self, index: UInt64) -&gt; &amp;mut T;
 }</code></pre>
 <h3 id="hashmapk-v---hash-table">HashMap&lt;K, V&gt; - Hash Table</h3>
-<pre class="stark"><code>struct HashMap&lt;K, V&gt; {
-    // Internal implementation details
-}
+<pre class="stark"><code>// Implementation-provided; internals opaque
+struct HashMap&lt;K, V&gt; { /* implementation-defined */ }
 
 impl&lt;K: Hash + Eq, V&gt; HashMap&lt;K, V&gt; {
-    fn new() -&gt; HashMap&lt;K, V&gt;
-    fn with_capacity(capacity: UInt64) -&gt; HashMap&lt;K, V&gt;
-    fn insert(&amp;mut self, key: K, value: V) -&gt; Option&lt;V&gt;
-    fn get(&amp;self, key: &amp;K) -&gt; Option&lt;&amp;V&gt;
-    fn get_mut(&amp;mut self, key: &amp;K) -&gt; Option&lt;&amp;mut V&gt;
-    fn remove(&amp;mut self, key: &amp;K) -&gt; Option&lt;V&gt;
-    fn contains_key(&amp;self, key: &amp;K) -&gt; Bool
-    fn len(&amp;self) -&gt; UInt64
-    fn is_empty(&amp;self) -&gt; Bool
-    fn clear(&amp;mut self)
-    fn keys(&amp;self) -&gt; KeysIter&lt;K&gt;
-    fn values(&amp;self) -&gt; ValuesIter&lt;V&gt;
-    fn iter(&amp;self) -&gt; Iter&lt;K, V&gt;
+    fn new() -&gt; HashMap&lt;K, V&gt;;
+    fn with_capacity(capacity: UInt64) -&gt; HashMap&lt;K, V&gt;;
+    fn insert(&amp;mut self, key: K, value: V) -&gt; Option&lt;V&gt;;
+    fn get(&amp;self, key: &amp;K) -&gt; Option&lt;&amp;V&gt;;
+    fn get_mut(&amp;mut self, key: &amp;K) -&gt; Option&lt;&amp;mut V&gt;;
+    fn remove(&amp;mut self, key: &amp;K) -&gt; Option&lt;V&gt;;
+    fn contains_key(&amp;self, key: &amp;K) -&gt; Bool;
+    fn len(&amp;self) -&gt; UInt64;
+    fn is_empty(&amp;self) -&gt; Bool;
+    fn clear(&amp;mut self);
+    fn keys(&amp;self) -&gt; KeysIter&lt;K&gt;;
+    fn values(&amp;self) -&gt; ValuesIter&lt;V&gt;;
+    fn iter(&amp;self) -&gt; Iter&lt;K, V&gt;;
 }</code></pre>
 <h3 id="hashset---hash-set">HashSet<T> - Hash Set</h3>
-<pre class="stark"><code>struct HashSet&lt;T&gt; {
-    map: HashMap&lt;T, Unit&gt;
-}
+<pre class="stark"><code>// Implementation-provided; internals opaque
+struct HashSet&lt;T&gt; { /* implementation-defined */ }
 
 impl&lt;T: Hash + Eq&gt; HashSet&lt;T&gt; {
-    fn new() -&gt; HashSet&lt;T&gt;
-    fn insert(&amp;mut self, value: T) -&gt; Bool
-    fn remove(&amp;mut self, value: &amp;T) -&gt; Bool
-    fn contains(&amp;self, value: &amp;T) -&gt; Bool
-    fn len(&amp;self) -&gt; UInt64
-    fn is_empty(&amp;self) -&gt; Bool
-    fn clear(&amp;mut self)
-    fn iter(&amp;self) -&gt; Iter&lt;T&gt;
+    fn new() -&gt; HashSet&lt;T&gt;;
+    fn insert(&amp;mut self, value: T) -&gt; Bool;
+    fn remove(&amp;mut self, value: &amp;T) -&gt; Bool;
+    fn contains(&amp;self, value: &amp;T) -&gt; Bool;
+    fn len(&amp;self) -&gt; UInt64;
+    fn is_empty(&amp;self) -&gt; Bool;
+    fn clear(&amp;mut self);
+    fn iter(&amp;self) -&gt; Iter&lt;T&gt;;
 }</code></pre>
 <h2 id="string-module-stdstring">String Module (std::string)</h2>
 <h3 id="string-type-1">String Type</h3>
-<pre class="stark"><code>struct String {
-    bytes: Vec&lt;UInt8&gt;
-}
+<pre class="stark"><code>// Implementation-provided; internals opaque (UTF-8 byte buffer)
+struct String { /* implementation-defined */ }
 
 impl String {
-    fn new() -&gt; String
-    fn with_capacity(capacity: UInt64) -&gt; String
-    fn from(s: &amp;str) -&gt; String
-    fn len(&amp;self) -&gt; UInt64
-    fn is_empty(&amp;self) -&gt; Bool
-    fn push(&amp;mut self, ch: Char)
-    fn push_str(&amp;mut self, s: &amp;str)
-    fn pop(&amp;mut self) -&gt; Option&lt;Char&gt;
-    fn clear(&amp;mut self)
-    fn chars(&amp;self) -&gt; CharsIter
-    fn bytes(&amp;self) -&gt; &amp;[UInt8]
-    fn as_str(&amp;self) -&gt; &amp;str
-    fn into_bytes(self) -&gt; Vec&lt;UInt8&gt;
-    fn substring(&amp;self, start: UInt64, end: UInt64) -&gt; &amp;str
-    fn contains(&amp;self, pattern: &amp;str) -&gt; Bool
-    fn starts_with(&amp;self, pattern: &amp;str) -&gt; Bool
-    fn ends_with(&amp;self, pattern: &amp;str) -&gt; Bool
-    fn find(&amp;self, pattern: &amp;str) -&gt; Option&lt;UInt64&gt;
-    fn replace(&amp;self, from: &amp;str, to: &amp;str) -&gt; String
-    fn split(&amp;self, delimiter: &amp;str) -&gt; SplitIter
-    fn trim(&amp;self) -&gt; &amp;str
-    fn to_lowercase(&amp;self) -&gt; String
-    fn to_uppercase(&amp;self) -&gt; String
+    fn new() -&gt; String;               // Empty string
+    fn with_capacity(capacity: UInt64) -&gt; String;
+    fn from(s: &amp;str) -&gt; String;       // Construct from a string slice/literal
+    fn len(&amp;self) -&gt; UInt64;
+    fn is_empty(&amp;self) -&gt; Bool;
+    fn push(&amp;mut self, ch: Char);
+    fn push_str(&amp;mut self, s: &amp;str);
+    fn pop(&amp;mut self) -&gt; Option&lt;Char&gt;;
+    fn clear(&amp;mut self);
+    fn chars(&amp;self) -&gt; CharsIter;
+    fn bytes(&amp;self) -&gt; &amp;[UInt8];
+    fn as_str(&amp;self) -&gt; &amp;str;
+    fn into_bytes(self) -&gt; Vec&lt;UInt8&gt;;
+    fn substring(&amp;self, start: UInt64, end: UInt64) -&gt; &amp;str;
+    fn contains(&amp;self, pattern: &amp;str) -&gt; Bool;
+    fn starts_with(&amp;self, pattern: &amp;str) -&gt; Bool;
+    fn ends_with(&amp;self, pattern: &amp;str) -&gt; Bool;
+    fn find(&amp;self, pattern: &amp;str) -&gt; Option&lt;UInt64&gt;;
+    fn replace(&amp;self, from: &amp;str, to: &amp;str) -&gt; String;
+    fn split(&amp;self, delimiter: &amp;str) -&gt; SplitIter;
+    fn trim(&amp;self) -&gt; &amp;str;
+    fn to_lowercase(&amp;self) -&gt; String;
+    fn to_uppercase(&amp;self) -&gt; String;
 }
 
 // String literals (&amp;str)
 impl str {
-    fn len(&amp;self) -&gt; UInt64
-    fn is_empty(&amp;self) -&gt; Bool
-    fn chars(&amp;self) -&gt; CharsIter
-    fn bytes(&amp;self) -&gt; &amp;[UInt8]
-    fn to_string(&amp;self) -&gt; String
+    fn len(&amp;self) -&gt; UInt64;
+    fn is_empty(&amp;self) -&gt; Bool;
+    fn chars(&amp;self) -&gt; CharsIter;
+    fn bytes(&amp;self) -&gt; &amp;[UInt8];
+    fn to_string(&amp;self) -&gt; String;
     // ... similar methods to String
 }</code></pre>
 <h2 id="math-module-stdmath">Math Module (std::math)</h2>
 <h3 id="basic-operations">Basic Operations</h3>
 <pre class="stark"><code>// Constants
-const PI: Float64 = 3.141592653589793
-const E: Float64 = 2.718281828459045
+const PI: Float64 = 3.141592653589793;
+const E: Float64 = 2.718281828459045;
 
 // Basic functions
 fn abs&lt;T: Num&gt;(x: T) -&gt; T
@@ -2051,10 +2755,10 @@ struct Random {
 }
 
 impl Random {
-    fn new(seed: UInt64) -&gt; Random
-    fn next_int(&amp;mut self) -&gt; UInt64
-    fn next_float(&amp;mut self) -&gt; Float64
-    fn range(&amp;mut self, min: Int32, max: Int32) -&gt; Int32
+    fn new(seed: UInt64) -&gt; Random;
+    fn next_int(&amp;mut self) -&gt; UInt64;
+    fn next_float(&amp;mut self) -&gt; Float64;
+    fn range(&amp;mut self, min: Int32, max: Int32) -&gt; Int32;
 }</code></pre>
 <h2 id="io-module-stdio">IO Module (std::io)</h2>
 <h3 id="basic-io-operations">Basic IO Operations</h3>
@@ -2065,17 +2769,15 @@ fn eprint(text: &amp;str)     // stderr
 fn eprintln(text: &amp;str)   // stderr
 
 // Simple file operations
-struct File {
-    handle: Int32
-}
+struct File { /* implementation-defined */ }
 
 impl File {
-    fn open(path: &amp;str) -&gt; Result&lt;File, IOError&gt;
-    fn create(path: &amp;str) -&gt; Result&lt;File, IOError&gt;
-    fn read_to_string(&amp;mut self) -&gt; Result&lt;String, IOError&gt;
-    fn write(&amp;mut self, data: &amp;[UInt8]) -&gt; Result&lt;UInt64, IOError&gt;
-    fn write_str(&amp;mut self, text: &amp;str) -&gt; Result&lt;UInt64, IOError&gt;
-    fn close(self) -&gt; Result&lt;Unit, IOError&gt;
+    fn open(path: &amp;str) -&gt; Result&lt;File, IOError&gt;;
+    fn create(path: &amp;str) -&gt; Result&lt;File, IOError&gt;;
+    fn read_to_string(&amp;mut self) -&gt; Result&lt;String, IOError&gt;;
+    fn write(&amp;mut self, data: &amp;[UInt8]) -&gt; Result&lt;UInt64, IOError&gt;;
+    fn write_str(&amp;mut self, text: &amp;str) -&gt; Result&lt;UInt64, IOError&gt;;
+    fn close(self) -&gt; Result&lt;Unit, IOError&gt;;
 }
 
 // Error types
@@ -2093,8 +2795,7 @@ fn write_file(path: &amp;str, content: &amp;str) -&gt; Result&lt;Unit, IOError&g
 <h2 id="error-module-stderror">Error Module (std::error)</h2>
 <h3 id="error-trait">Error Trait</h3>
 <pre class="stark"><code>trait Error {
-    fn message(&amp;self) -&gt; String
-    fn source(&amp;self) -&gt; Option&lt;&amp;dyn Error&gt;
+    fn message(&amp;self) -&gt; String;
 }
 
 // Standard error types
@@ -2106,73 +2807,78 @@ impl Error for GenericError {
     fn message(&amp;self) -&gt; String {
         self.message.clone()
     }
-    
-    fn source(&amp;self) -&gt; Option&lt;&amp;dyn Error&gt; {
-        None
-    }
 }</code></pre>
+<p>Note: error <em>chaining</em> (a <code>source()</code> method
+returning a trait object) requires <code>dyn Trait</code> support, which
+is a future extension. Core v1 errors carry a message only; richer error
+types can embed context in their own fields.</p>
 <h2 id="memory-module-stdmem">Memory Module (std::mem)</h2>
 <h3 id="memory-utilities">Memory Utilities</h3>
 <pre class="stark"><code>// Memory operations
-fn size_of&lt;T&gt;() -&gt; UInt64
-fn align_of&lt;T&gt;() -&gt; UInt64
+fn size_of&lt;T&gt;() -&gt; UInt64      // Call with turbofish: size_of::&lt;Int32&gt;()
+fn align_of&lt;T&gt;() -&gt; UInt64     // Call with turbofish: align_of::&lt;Int32&gt;()
 fn swap&lt;T&gt;(a: &amp;mut T, b: &amp;mut T)
 fn replace&lt;T&gt;(dest: &amp;mut T, src: T) -&gt; T
-fn take&lt;T: Default&gt;(dest: &amp;mut T) -&gt; T
-
-// Unsafe memory operations (future)
-fn copy&lt;T&gt;(src: *const T, dst: *mut T, count: UInt64)
-fn copy_nonoverlapping&lt;T&gt;(src: *const T, dst: *mut T, count: UInt64)</code></pre>
+fn take&lt;T: Default&gt;(dest: &amp;mut T) -&gt; T</code></pre>
+<p>Raw-pointer copy operations (<code>copy</code>,
+<code>copy_nonoverlapping</code>) require raw pointers and
+<code>unsafe</code>, which are not part of Core v1; they are deferred to
+a future extension.</p>
 <h2 id="iterator-trait-stditer">Iterator Trait (std::iter)</h2>
 <h3 id="basic-iterator-interface">Basic Iterator Interface</h3>
 <pre class="stark"><code>trait Iterator {
-    type Item
+    type Item;
     
-    fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;
+    fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;;
     
     // Default implementations
-    fn count(self) -&gt; UInt64
-    fn collect&lt;C: FromIterator&lt;Self::Item&gt;&gt;(self) -&gt; C
-    fn map&lt;U&gt;(self, f: fn(Self::Item) -&gt; U) -&gt; MapIter&lt;Self, U&gt;
-    fn filter(self, predicate: fn(&amp;Self::Item) -&gt; Bool) -&gt; FilterIter&lt;Self&gt;
-    fn fold&lt;B&gt;(self, init: B, f: fn(B, Self::Item) -&gt; B) -&gt; B
-    fn reduce(self, f: fn(Self::Item, Self::Item) -&gt; Self::Item) -&gt; Option&lt;Self::Item&gt;
-    fn any(self, predicate: fn(Self::Item) -&gt; Bool) -&gt; Bool
-    fn all(self, predicate: fn(Self::Item) -&gt; Bool) -&gt; Bool
-    fn find(self, predicate: fn(&amp;Self::Item) -&gt; Bool) -&gt; Option&lt;Self::Item&gt;
+    fn count(self) -&gt; UInt64;
+    fn collect&lt;C: FromIterator&lt;Self::Item&gt;&gt;(self) -&gt; C;
+    fn map&lt;U&gt;(self, f: fn(Self::Item) -&gt; U) -&gt; MapIter&lt;Self, U&gt;;
+    fn filter(self, predicate: fn(&amp;Self::Item) -&gt; Bool) -&gt; FilterIter&lt;Self&gt;;
+    fn fold&lt;B&gt;(self, init: B, f: fn(B, Self::Item) -&gt; B) -&gt; B;
+    fn reduce(self, f: fn(Self::Item, Self::Item) -&gt; Self::Item) -&gt; Option&lt;Self::Item&gt;;
+    fn any(self, predicate: fn(Self::Item) -&gt; Bool) -&gt; Bool;
+    fn all(self, predicate: fn(Self::Item) -&gt; Bool) -&gt; Bool;
+    fn find(self, predicate: fn(&amp;Self::Item) -&gt; Bool) -&gt; Option&lt;Self::Item&gt;;
 }
 
 trait FromIterator&lt;T&gt; {
-    fn from_iter&lt;I: Iterator&lt;Item = T&gt;&gt;(iter: I) -&gt; Self
+    fn from_iter&lt;I: Iterator&lt;Item = T&gt;&gt;(iter: I) -&gt; Self;
 }</code></pre>
+<p>Limitation (Core v1): the combinator parameters above are
+<em>non-capturing</em> function types (<code>fn(...)</code>). They
+accept named functions and function references but cannot capture local
+variables. Capturing closures are a future extension; until then, prefer
+explicit loops when state must be carried into the operation.</p>
 <h2 id="conversion-traits">Conversion Traits</h2>
 <h3 id="basic-conversion">Basic Conversion</h3>
 <pre class="stark"><code>trait From&lt;T&gt; {
-    fn from(value: T) -&gt; Self
+    fn from(value: T) -&gt; Self;
 }
 
 trait Into&lt;T&gt; {
-    fn into(self) -&gt; T
+    fn into(self) -&gt; T;
 }
 
 trait TryFrom&lt;T&gt; {
-    type Error
-    fn try_from(value: T) -&gt; Result&lt;Self, Self::Error&gt;
+    type Error;
+    fn try_from(value: T) -&gt; Result&lt;Self, Self::Error&gt;;
 }
 
 trait TryInto&lt;T&gt; {
-    type Error
-    fn try_into(self) -&gt; Result&lt;T, Self::Error&gt;
+    type Error;
+    fn try_into(self) -&gt; Result&lt;T, Self::Error&gt;;
 }
 
 // String conversion
 trait ToString {
-    fn to_string(&amp;self) -&gt; String
+    fn to_string(&amp;self) -&gt; String;
 }
 
 trait FromStr {
-    type Error
-    fn from_str(s: &amp;str) -&gt; Result&lt;Self, Self::Error&gt;
+    type Error;
+    fn from_str(s: &amp;str) -&gt; Result&lt;Self, Self::Error&gt;;
 }</code></pre>
 <h2 id="essential-trait-implementations">Essential Trait
 Implementations</h2>
@@ -2192,7 +2898,7 @@ impl Copy for Bool { }
 impl Copy for Char { }
 impl Copy for Unit { }
 
-// Clone trait for all types
+// Clone for all Copy types (blanket implementation)
 impl&lt;T: Copy&gt; Clone for T {
     fn clone(&amp;self) -&gt; T { *self }
 }
@@ -2211,29 +2917,36 @@ impl Ord for Int32 {
         else { Ordering::Equal }
     }
 }</code></pre>
-<h2 id="implementation-priorities">Implementation Priorities</h2>
-<h3 id="phase-1-mvp">Phase 1 (MVP)</h3>
-<ul>
-<li>Basic types (primitives, String, Option, Result)</li>
-<li>Vec<T> dynamic array</li>
-<li>Basic IO (print, println, simple file operations)</li>
-<li>Essential traits (Copy, Clone, Eq, Ord)</li>
-</ul>
-<h3 id="phase-2-enhanced">Phase 2 (Enhanced)</h3>
-<ul>
-<li>HashMap&lt;K, V&gt; and HashSet<T></li>
-<li>Iterator trait and basic iterators</li>
-<li>Math module with common functions</li>
-<li>Enhanced string operations</li>
-</ul>
-<h3 id="phase-3-complete">Phase 3 (Complete)</h3>
-<ul>
-<li>Advanced memory utilities</li>
-<li>Full IO system with buffering</li>
-<li>Regular expressions</li>
-<li>Time and date handling</li>
-<li>Thread and concurrency primitives (future)</li>
-</ul>
+<h2 id="conformance-profiles">Conformance Profiles</h2>
+<p>Two standard-library conformance profiles are defined. A conforming
+implementation MUST state which profile it implements.</p>
+<h3 id="profile-core-min-mvp">Profile: <code>core-min</code> (MVP)</h3>
+<p>The minimum standard library for Core v1 conformance: - Prelude:
+primitive types, <code>Option</code>, <code>Result</code>,
+<code>Ordering</code>, essential traits (<code>Copy</code>,
+<code>Clone</code>, <code>Drop</code>, <code>Eq</code>,
+<code>Ord</code>, <code>Num</code>), <code>print</code>,
+<code>println</code>, <code>panic</code> - <code>String</code> and
+<code>str</code> (construction, <code>len</code>,
+<code>push</code>/<code>push_str</code>, <code>as_str</code>,
+<code>chars</code>) - <code>Vec&lt;T&gt;</code> (construction,
+<code>push</code>, <code>pop</code>, <code>len</code>,
+<code>get</code>/<code>get_mut</code>, indexing) -
+<code>Range</code>/<code>RangeInclusive</code> with integer
+<code>Iterator</code> impls (for <code>for</code> loops) -
+<code>Box&lt;T&gt;</code> - <code>drop</code>, <code>size_of</code>,
+<code>align_of</code></p>
+<h3 id="profile-std-full">Profile: <code>std-full</code></h3>
+<p>Everything in this document: <code>core-min</code> plus
+<code>HashMap</code>, <code>HashSet</code>, the <code>Iterator</code>
+trait with combinators and all iterator/view types, the full
+<code>String</code> API, the math module, file IO, <code>std::mem</code>
+utilities, the conversion traits, and
+<code>Hash</code>/<code>Default</code>/<code>Display</code>/<code>Index</code>/<code>IndexMut</code>.</p>
+<p>Items in <em>neither</em> profile (informative future work, not
+required for any Core v1 conformance claim): buffered IO, regular
+expressions, time/date, threads and concurrency primitives,
+<code>Rc</code>/<code>Arc</code>/<code>RefCell</code>.</p>
 <h2 id="platform-considerations">Platform Considerations</h2>
 <h3 id="cross-platform-abstractions">Cross-platform Abstractions</h3>
 <ul>
@@ -2256,12 +2969,16 @@ v1)</h2>
 bounds checking and MUST trap on out-of-bounds access.</li>
 <li><code>get</code>/<code>get_mut</code> MUST return <code>None</code>
 for out-of-bounds indices and MUST NOT trap.</li>
+<li>Slicing an array, slice, or <code>Vec&lt;T&gt;</code> with a range
+MUST trap if the range is out of bounds or inverted.</li>
 <li><code>String::substring(start, end)</code> MUST validate UTF-8
 boundaries and MUST trap on invalid boundaries or ranges.</li>
 <li>IO functions MUST return <code>Result</code> with a
 non-<code>Ok</code> variant on failure and MUST NOT silently ignore
-errors. ## Conformance A conforming Core v1 implementation MUST follow
-the requirements in this document. Any deviations or extensions MUST be
+errors. ## Conformance A conforming Core v1 implementation MUST
+implement at least the <code>core-min</code> profile, MUST state which
+profile it implements, and MUST follow the requirements in this document
+for every item it provides. Any deviations or extensions MUST be
 explicitly documented by the implementation.</li>
 </ul>
 <hr />
@@ -2327,12 +3044,91 @@ default).</li>
 blocks, consts, type aliases, and modules.</p>
 <h2 id="name-resolution-order-1">Name Resolution Order</h2>
 <p>Within a module, names are resolved in the following order: 1. Local
-scope 2. Items declared in the current module 3. Items brought into
-scope by <code>use</code> 4. Items in parent modules via explicit
-<code>super::</code> paths 5. Items in <code>crate</code> via explicit
-<code>crate::</code> paths</p>
-<p>Unqualified names do not implicitly search parent or crate
-scopes.</p>
+(lexical) scope — block scopes and function parameters, as defined in
+04-Semantic-Analysis.md 2. Items declared in the current module 3. Items
+brought into scope by <code>use</code> 4. Built-in names (prelude)</p>
+<p>Unqualified names do not implicitly search parent or crate scopes.
+Items in parent modules or the crate root require explicit
+<code>super::</code> or <code>crate::</code> paths. (Note:
+<em>lexical</em> scopes inside a function body do nest — step 1 — but
+<em>module</em> scopes never nest implicitly.)</p>
+<h2 id="manifest-schema-starkpkg.json">Manifest Schema
+(<code>starkpkg.json</code>)</h2>
+<p>The manifest is a JSON object with the following fields:</p>
+<table>
+<colgroup>
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+<col style="width: 25%" />
+</colgroup>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Required</th>
+<th>Rules</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Package name: <code>[a-z][a-z0-9_-]*</code>, 1–64 chars. Used as the
+import root for dependents.</td>
+</tr>
+<tr>
+<td><code>version</code></td>
+<td>string</td>
+<td>yes</td>
+<td>Semantic version <code>MAJOR.MINOR.PATCH</code> (numeric components;
+optional <code>-prerelease</code> tag).</td>
+</tr>
+<tr>
+<td><code>entry</code></td>
+<td>string</td>
+<td>no</td>
+<td>Package-root-relative path to the root source file. Default
+<code>src/main.stark</code>. MUST exist and MUST be inside the package
+directory.</td>
+</tr>
+<tr>
+<td><code>dependencies</code></td>
+<td>object</td>
+<td>no</td>
+<td>Map from package name to a <em>version constraint string</em> or a
+<em>dependency object</em>.</td>
+</tr>
+</tbody>
+</table>
+<p>A dependency object has exactly one of: -
+<code>{ "version": "&lt;constraint&gt;" }</code> — resolved from a
+registry or cache, or - <code>{ "path": "&lt;relative-path&gt;" }</code>
+— a local package directory containing its own
+<code>starkpkg.json</code>.</p>
+<p>Version constraint syntax: - <code>"1.2.3"</code> — exactly that
+version - <code>"^1.2.3"</code> — <code>&gt;=1.2.3</code> and
+<code>&lt;2.0.0</code> (compatible-with) -
+<code>"&gt;=1.2, &lt;2.0"</code> — comma-separated comparator list
+(<code>&gt;=</code>, <code>&gt;</code>, <code>&lt;=</code>,
+<code>&lt;</code>, <code>=</code>), all of which must hold</p>
+<p>Validation: unknown top-level fields are ignored (forward
+compatibility); a missing/invalid required field, a malformed
+constraint, a <code>path</code> escaping the workspace, or a dependency
+whose name violates the name rule is a manifest error and compilation
+MUST fail.</p>
+<p>Example:</p>
+<div class="sourceCode" id="cb159"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb159-1"><a href="#cb159-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb159-2"><a href="#cb159-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
+<span id="cb159-3"><a href="#cb159-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb159-4"><a href="#cb159-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
+<span id="cb159-5"><a href="#cb159-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb159-6"><a href="#cb159-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb159-7"><a href="#cb159-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
+<span id="cb159-8"><a href="#cb159-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb159-9"><a href="#cb159-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <h2 id="packages-and-dependencies">Packages and Dependencies</h2>
 <p>Dependencies are declared in <code>starkpkg.json</code> under
 <code>dependencies</code>.</p>
@@ -2359,7 +3155,17 @@ name:</p>
 <pre class="stark"><code>use std::io;
 use std::collections::Vec;</code></pre>
 <h2 id="cycles">Cycles</h2>
-<p>Direct cyclic module dependencies are a compile-time error.</p>
+<ul>
+<li><strong>Package dependency cycles</strong> — direct
+(<code>A → A</code>) or transitive (<code>A → B → C → A</code>) — are a
+compile-time error.</li>
+<li><strong>Module declarations</strong> (<code>mod</code>) form a tree
+rooted at the package entry file, so <code>mod</code> cycles cannot
+occur; declaring the same module twice is an error.</li>
+<li><strong><code>use</code> imports</strong> between modules of the
+same package MAY be mutually recursive (module A may <code>use</code>
+items from B and vice versa); this is not a cycle error.</li>
+</ul>
 <h2 id="errors">Errors</h2>
 <ul>
 <li>Importing an unknown module or item is a compile-time error.</li>

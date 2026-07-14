@@ -1,0 +1,5 @@
+fn longest(x: &str, y: &str) -> &str {
+    if x.len() > y.len() { x } else { y }
+}
+// The returned reference is valid only while BOTH x's and y's referents
+// are valid, regardless of which branch was taken.

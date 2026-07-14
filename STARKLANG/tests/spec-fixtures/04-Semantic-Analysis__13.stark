@@ -1,0 +1,6 @@
+let x: Int32 = 42;
+match x {
+    "hello" => "string",          // Error: pattern type mismatch
+    42 => "number",               // OK
+    _ => "other"
+}

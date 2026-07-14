@@ -1,0 +1,9 @@
+fn longest(x: &str, y: &str) -> &str {
+    if x.len() > y.len() {
+        x
+    } else {
+        y
+    }
+}
+// The returned reference is treated as valid only while both x's and y's
+// referents are valid (shortest-input-lifetime rule).

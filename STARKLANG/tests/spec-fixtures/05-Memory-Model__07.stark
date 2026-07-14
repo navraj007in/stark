@@ -1,0 +1,5 @@
+// Types that are moved by default
+String, Vec<T>, Box<T>, custom structs without Copy
+
+// Types that are copied by default (implement Copy)
+Int32, Float64, Bool, Char, &T, [T; N] where T: Copy

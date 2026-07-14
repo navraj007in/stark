@@ -1,0 +1,2 @@
+&mut T -> &T        // Mutable reference to immutable reference
+&T -> &T            // Same type (identity)

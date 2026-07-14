@@ -1,0 +1,16 @@
+struct Range<T> {
+    start: T,
+    end: T
+}
+
+struct RangeInclusive<T> {
+    start: T,
+    end: T
+}
+
+// Ranges over integer types are iterable
+impl Iterator for Range<Int32> {
+    type Item = Int32;
+    fn next(&mut self) -> Option<Int32>;
+}
+// ... similarly for the other integer types, and for RangeInclusive

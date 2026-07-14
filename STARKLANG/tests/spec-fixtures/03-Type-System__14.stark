@@ -1,0 +1,2 @@
+&T       // Immutable reference to T
+&mut T   // Mutable reference to T

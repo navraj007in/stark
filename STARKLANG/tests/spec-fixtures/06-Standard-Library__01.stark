@@ -1,0 +1,35 @@
+// Basic types (no import needed)
+Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64
+Float32, Float64, Bool, Char, String, str, Unit
+
+// Essential traits
+trait Copy
+trait Clone
+trait Drop
+trait Eq
+trait Ord
+trait Hash
+trait Default
+trait Display
+
+// Essential enums
+enum Ordering {
+    Less,
+    Equal,
+    Greater
+}
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+// Essential functions
+fn print(value: &str)
+fn println(value: &str)
+fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never Type)

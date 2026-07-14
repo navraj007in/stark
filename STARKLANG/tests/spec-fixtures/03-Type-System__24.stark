@@ -1,0 +1,5 @@
+fn identity<T>(x: T) -> T {
+    x
+}
+
+let result = identity(42);  // T inferred as Int32

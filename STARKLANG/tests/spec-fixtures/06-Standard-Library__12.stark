@@ -1,0 +1,43 @@
+// Constants
+const PI: Float64 = 3.141592653589793;
+const E: Float64 = 2.718281828459045;
+
+// Basic functions
+fn abs<T: Num>(x: T) -> T
+fn min<T: Ord>(a: T, b: T) -> T
+fn max<T: Ord>(a: T, b: T) -> T
+fn clamp<T: Ord>(value: T, min: T, max: T) -> T
+
+// Floating point functions
+fn sqrt(x: Float64) -> Float64
+fn pow(base: Float64, exp: Float64) -> Float64
+fn log(x: Float64) -> Float64
+fn log10(x: Float64) -> Float64
+fn exp(x: Float64) -> Float64
+
+// Trigonometric functions
+fn sin(x: Float64) -> Float64
+fn cos(x: Float64) -> Float64
+fn tan(x: Float64) -> Float64
+fn asin(x: Float64) -> Float64
+fn acos(x: Float64) -> Float64
+fn atan(x: Float64) -> Float64
+fn atan2(y: Float64, x: Float64) -> Float64
+
+// Rounding functions
+fn floor(x: Float64) -> Float64
+fn ceil(x: Float64) -> Float64
+fn round(x: Float64) -> Float64
+fn trunc(x: Float64) -> Float64
+
+// Random numbers (simple linear congruential generator)
+struct Random {
+    seed: UInt64
+}
+
+impl Random {
+    fn new(seed: UInt64) -> Random;
+    fn next_int(&mut self) -> UInt64;
+    fn next_float(&mut self) -> Float64;
+    fn range(&mut self, min: Int32, max: Int32) -> Int32;
+}

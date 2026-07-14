@@ -1,0 +1,37 @@
+trait Clone {
+    fn clone(&self) -> Self;
+}
+
+trait Eq {
+    fn eq(&self, other: &Self) -> Bool;
+}
+
+trait Ord {
+    fn cmp(&self, other: &Self) -> Ordering;
+}
+
+trait Hash {
+    fn hash(&self) -> UInt64;
+}
+
+trait Default {
+    fn default() -> Self;
+}
+
+trait Display {
+    fn fmt(&self) -> String;
+}
+
+trait Drop {
+    fn drop(&mut self);
+}
+
+// Copy is a marker trait (no methods); Copy: Clone.
+// Soundness rules (all-fields-Copy, Copy/Drop exclusivity) are in
+// 03-Type-System.md, "Copy and Drop".
+trait Copy
+
+// Num is a compiler-known marker trait implemented by exactly the built-in
+// numeric types; it enables arithmetic operators on generic parameters
+// (see 03-Type-System.md, "Operators and Traits"). Not user-implementable.
+trait Num

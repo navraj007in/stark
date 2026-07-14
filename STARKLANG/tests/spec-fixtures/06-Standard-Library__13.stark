@@ -1,0 +1,30 @@
+// Standard streams
+fn print(text: &str)
+fn println(text: &str)
+fn eprint(text: &str)     // stderr
+fn eprintln(text: &str)   // stderr
+
+// Simple file operations
+struct File { /* implementation-defined */ }
+
+impl File {
+    fn open(path: &str) -> Result<File, IOError>;
+    fn create(path: &str) -> Result<File, IOError>;
+    fn read_to_string(&mut self) -> Result<String, IOError>;
+    fn write(&mut self, data: &[UInt8]) -> Result<UInt64, IOError>;
+    fn write_str(&mut self, text: &str) -> Result<UInt64, IOError>;
+    fn close(self) -> Result<Unit, IOError>;
+}
+
+// Error types
+enum IOError {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    InvalidInput,
+    Other(String)
+}
+
+// Utility functions
+fn read_file(path: &str) -> Result<String, IOError>
+fn write_file(path: &str, content: &str) -> Result<Unit, IOError>

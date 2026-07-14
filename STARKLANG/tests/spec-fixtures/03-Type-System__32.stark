@@ -1,0 +1,1 @@
+let x: T = expr;  // expr must have type T or be coercible to T

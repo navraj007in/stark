@@ -1,0 +1,2 @@
+let r = 0..10;      // Range<Int32>: 0,1,...,9 (half-open)
+let ri = 0..=9;     // RangeInclusive<Int32>: 0,1,...,9

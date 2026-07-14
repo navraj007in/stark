@@ -1,0 +1,31 @@
+// Implementation-provided; internals opaque
+struct Vec<T> { /* implementation-defined */ }
+
+impl<T> Vec<T> {
+    fn new() -> Vec<T>;
+    fn with_capacity(capacity: UInt64) -> Vec<T>;
+    fn push(&mut self, item: T);
+    fn pop(&mut self) -> Option<T>;
+    fn len(&self) -> UInt64;
+    fn capacity(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn get(&self, index: UInt64) -> Option<&T>;
+    fn get_mut(&mut self, index: UInt64) -> Option<&mut T>;
+    fn insert(&mut self, index: UInt64, item: T);
+    fn remove(&mut self, index: UInt64) -> T;
+    fn clear(&mut self);
+    fn append(&mut self, other: &mut Vec<T>);
+    fn extend<I: Iterator<Item = T>>(&mut self, iter: I);
+    fn iter(&self) -> VecIter<T>;
+    fn as_slice(&self) -> &[T];
+}
+
+// Index access
+impl<T> Index<UInt64> for Vec<T> {
+    type Output = T;
+    fn index(&self, index: UInt64) -> &T;
+}
+
+impl<T> IndexMut<UInt64> for Vec<T> {
+    fn index_mut(&mut self, index: UInt64) -> &mut T;
+}

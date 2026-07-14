@@ -1,0 +1,3 @@
+let x = 42;             // Immutable by default
+let mut y = 10;         // Explicitly mutable
+const MAX_SIZE: Int32 = 1000;  // Compile-time constant

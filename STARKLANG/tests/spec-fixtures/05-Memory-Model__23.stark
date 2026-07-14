@@ -1,0 +1,11 @@
+// Built-in Copy types
+Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64
+Float32, Float64, Bool, Char, Unit
+&T (immutable references), [T; N] where T: Copy
+
+// Note: &mut T is NOT Copy (mutable borrows are exclusive and move)
+
+// Usage
+let x: Int32 = 42;
+let y = x;                  // x is copied, still accessible
+// Both x and y valid here

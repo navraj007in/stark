@@ -1,0 +1,11 @@
+trait Display {
+    fn fmt(&self) -> String;
+}
+
+fn print_it<T: Display>(item: T) {
+    print(item.fmt());        // OK: T implements Display
+}
+
+struct Point { x: Int32, y: Int32 }
+
+print_it(Point { x: 1, y: 2 });  // Error: Point doesn't implement Display

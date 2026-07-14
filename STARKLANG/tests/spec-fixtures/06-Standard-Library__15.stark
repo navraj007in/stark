@@ -1,0 +1,6 @@
+// Memory operations
+fn size_of<T>() -> UInt64      // Call with turbofish: size_of::<Int32>()
+fn align_of<T>() -> UInt64     // Call with turbofish: align_of::<Int32>()
+fn swap<T>(a: &mut T, b: &mut T)
+fn replace<T>(dest: &mut T, src: T) -> T
+fn take<T: Default>(dest: &mut T) -> T

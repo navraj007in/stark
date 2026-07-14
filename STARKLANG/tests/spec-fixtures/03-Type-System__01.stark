@@ -1,0 +1,9 @@
+Int8    // 8-bit signed integer (-128 to 127)
+Int16   // 16-bit signed integer (-32,768 to 32,767)
+Int32   // 32-bit signed integer (-2^31 to 2^31-1)
+Int64   // 64-bit signed integer (-2^63 to 2^63-1)
+
+UInt8   // 8-bit unsigned integer (0 to 255)
+UInt16  // 16-bit unsigned integer (0 to 65,535)
+UInt32  // 32-bit unsigned integer (0 to 2^32-1)
+UInt64  // 64-bit unsigned integer (0 to 2^64-1)

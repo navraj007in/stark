@@ -1,0 +1,4 @@
+Bool    // Boolean: true or false
+Char    // Unicode scalar value (32-bit)
+Unit    // Unit type: () - represents no meaningful value
+str     // String slice (unsized), typically used behind references: &str

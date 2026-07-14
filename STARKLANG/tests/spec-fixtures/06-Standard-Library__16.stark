@@ -1,0 +1,20 @@
+trait Iterator {
+    type Item;
+    
+    fn next(&mut self) -> Option<Self::Item>;
+    
+    // Default implementations
+    fn count(self) -> UInt64;
+    fn collect<C: FromIterator<Self::Item>>(self) -> C;
+    fn map<U>(self, f: fn(Self::Item) -> U) -> MapIter<Self, U>;
+    fn filter(self, predicate: fn(&Self::Item) -> Bool) -> FilterIter<Self>;
+    fn fold<B>(self, init: B, f: fn(B, Self::Item) -> B) -> B;
+    fn reduce(self, f: fn(Self::Item, Self::Item) -> Self::Item) -> Option<Self::Item>;
+    fn any(self, predicate: fn(Self::Item) -> Bool) -> Bool;
+    fn all(self, predicate: fn(Self::Item) -> Bool) -> Bool;
+    fn find(self, predicate: fn(&Self::Item) -> Bool) -> Option<Self::Item>;
+}
+
+trait FromIterator<T> {
+    fn from_iter<I: Iterator<Item = T>>(iter: I) -> Self;
+}

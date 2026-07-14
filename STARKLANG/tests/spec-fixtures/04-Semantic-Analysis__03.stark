@@ -1,0 +1,3 @@
+let x: Int32 = 42;     // Type annotation matches literal
+let y = 42;            // Type inferred as Int32
+let z: String = 42;    // Error: type mismatch

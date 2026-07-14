@@ -1,0 +1,11 @@
+fn take_ownership(s: String) {
+    // s is owned by this function
+    println(s.as_str());
+    // s is dropped when function returns
+}
+
+fn main() {
+    let s = String::from("hello");
+    take_ownership(s);      // Ownership transferred to function
+    // println(s.as_str()); // Error: s no longer valid
+}

@@ -1,0 +1,8 @@
+fn might_fail() -> Result<Int32, String> {
+    // ...
+}
+
+fn caller() -> Result<Int32, String> {
+    let value = might_fail()?;  // Early return on error
+    Ok(value * 2)
+}

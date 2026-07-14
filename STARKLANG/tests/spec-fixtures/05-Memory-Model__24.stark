@@ -1,0 +1,12 @@
+// Built-in Move types
+String, Vec<T>, Box<T>, HashMap<K, V>
+
+// Custom types are Move by default
+struct Person {
+    name: String,
+    age: Int32
+}
+
+let p1 = Person { name: String::from("Alice"), age: 30 };
+let p2 = p1;                // p1 moved to p2
+// println(p1.name.as_str());  // Error: p1 no longer valid

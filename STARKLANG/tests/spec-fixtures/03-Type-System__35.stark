@@ -1,0 +1,2 @@
+let result = a && b;  // a and b must be Bool
+let result = !x;      // x must be Bool

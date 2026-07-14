@@ -1,0 +1,17 @@
+enum Color { Red, Green, Blue }
+
+fn check_color(c: Color) -> String {
+    match c {
+        Color::Red => "red",
+        Color::Green => "green"
+        // Error: non-exhaustive pattern (missing Blue)
+    }
+}
+
+fn valid_match(c: Color) -> String {
+    match c {
+        Color::Red => "red",
+        Color::Green => "green",
+        Color::Blue => "blue"     // OK: exhaustive
+    }
+}

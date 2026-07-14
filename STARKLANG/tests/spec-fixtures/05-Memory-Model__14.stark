@@ -1,0 +1,13 @@
+let mut s = String::from("hello");
+
+// Multiple immutable borrows - OK
+let r1 = &s;
+let r2 = &s;
+
+// Mutable and immutable borrow - Error
+let r3 = &s;
+let r4 = &mut s;            // Error: cannot borrow mutably while immutably borrowed
+
+// Multiple mutable borrows - Error
+let r5 = &mut s;
+let r6 = &mut s;            // Error: cannot borrow mutably twice

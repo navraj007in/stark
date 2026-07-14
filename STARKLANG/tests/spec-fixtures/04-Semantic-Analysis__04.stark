@@ -1,0 +1,5 @@
+fn add(a: Int32, b: Int32) -> Int32 { a + b }
+
+let result = add(1, 2);    // OK: arguments match parameters
+let error = add(1.0, 2);   // Error: Float64 cannot be Int32
+let error2 = add(1);       // Error: wrong number of arguments

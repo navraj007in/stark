@@ -3,6 +3,10 @@
 ## Scope
 This document summarizes the Core v1 language specification. The normative documents are in `docs/spec/` and are listed below. Non-core extensions are defined separately and are optional.
 
+**Maturity: normative draft.** Core v1 is the authoritative definition, but it
+has not yet been validated by a conforming implementation; implementers should
+report ambiguities as spec bugs.
+
 ## Terminology
 The key words **MUST**, **SHOULD**, and **MAY** are to be interpreted as follows:
 - **MUST**: an absolute requirement for conformance.
@@ -43,5 +47,5 @@ An implementation claiming Core v1 conformance MUST implement the normative Core
 3. Type checker enforces ownership, borrowing, generics, and trait coherence rules in `03-Type-System.md`.
 4. Semantic analysis enforces exhaustiveness, initialization, and runtime error semantics in `04-Semantic-Analysis.md`.
 5. Memory model guarantees ownership and borrowing invariants in `05-Memory-Model.md`.
-6. Standard library implements required behavior in `06-Standard-Library.md`.
-7. Module and package resolution follow `07-Modules-and-Packages.md`.
+6. Standard library implements at least the `core-min` conformance profile in `06-Standard-Library.md` and states its profile.
+7. Module and package resolution follow `07-Modules-and-Packages.md`, including the manifest schema.

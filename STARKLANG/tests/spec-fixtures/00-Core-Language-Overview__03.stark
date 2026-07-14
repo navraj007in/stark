@@ -1,0 +1,11 @@
+fn consume(s: String) {
+    // s is owned here
+}
+
+fn borrow(s: &String) -> UInt64 {
+    s.len()
+}
+
+fn mutate(s: &mut String) {
+    s.push('!');
+}

@@ -3,6 +3,12 @@
 ## Introduction
 This document provides an overview of the complete STARK core language specification. The documents in `docs/spec/` are normative for Core v1. The core language defines the general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and standard library). Non-core extensions are defined separately.
 
+**Maturity: normative draft.** Core v1 is the authoritative definition of the
+language, but it has not yet been validated by a conforming implementation.
+Until a reference lexer/parser/type-checker exists and every normative code
+example is machine-checked, readers should expect the spec to contain
+residual defects, and implementers should report ambiguities as spec bugs.
+
 ## Design Philosophy
 
 ### Core Principles
@@ -43,7 +49,7 @@ Comprehensive type system with safety guarantees:
 - **Composite Types**: Arrays, tuples, structs, enums
 - **Reference Types**: Immutable and mutable references
 - **Ownership Model**: Move semantics, borrowing rules
-- **Type Inference**: Local and function return type inference
+- **Type Inference**: Local type inference (function signatures are fully explicit)
 - **Trait System**: Interfaces and generic constraints
 
 ### 4. Semantic Analysis ([04-Semantic-Analysis.md](./04-Semantic-Analysis.md))
@@ -87,9 +93,9 @@ Non-core language extensions live outside Core v1 and are optional. See `docs/ex
 
 ### Variables and Mutability
 ```stark
-let x = 42              // Immutable by default
-let mut y = 10          // Explicitly mutable
-const MAX_SIZE: Int32 = 1000  // Compile-time constant
+let x = 42;             // Immutable by default
+let mut y = 10;         // Explicitly mutable
+const MAX_SIZE: Int32 = 1000;  // Compile-time constant
 ```
 
 ### Functions
@@ -99,7 +105,7 @@ fn add(a: Int32, b: Int32) -> Int32 {
 }
 
 fn greet(name: &str) {
-    println("Hello, " + name)
+    println(name);
 }
 ```
 
@@ -109,12 +115,12 @@ fn consume(s: String) {
     // s is owned here
 }
 
-fn borrow(s: &String) -> Int32 {
+fn borrow(s: &String) -> UInt64 {
     s.len()
 }
 
 fn mutate(s: &mut String) {
-    s.push('!')
+    s.push('!');
 }
 ```
 

@@ -1,0 +1,6 @@
+let mut s = String::from("hello");
+{
+    let r = &s;           // Borrow begins
+    println(r.as_str());
+}                         // Borrow ends with the block
+s.push('!');              // OK: no live borrow

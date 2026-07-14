@@ -1,0 +1,5 @@
+// Binary arithmetic requires same types
+let result = x + y;  // x and y must have the same numeric type
+
+// Comparison operators
+let cmp = x < y;     // x and y must have the same comparable type

@@ -1,0 +1,11 @@
+impl Display for Int32 {
+    fn fmt(&self) -> String {
+        // Convert integer to string
+    }
+}
+
+impl Eq for Point {
+    fn eq(&self, other: &Point) -> Bool {
+        self.x == other.x && self.y == other.y
+    }
+}

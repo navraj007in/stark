@@ -1,0 +1,6 @@
+{
+    let x = String::from("first");
+    let y = String::from("second");
+    let z = String::from("third");
+    // Drop order: z, y, x (reverse declaration order)
+}

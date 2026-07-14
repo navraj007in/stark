@@ -1,0 +1,9 @@
+let mut s = String::from("hello");
+let r1 = &s;              // Immutable borrow
+let r2 = &s;              // OK: multiple immutable borrows
+let r3 = &mut s;          // Error: cannot borrow mutably while immutably borrowed
+
+let mut s2 = String::from("world");
+let r4 = &mut s2;         // Mutable borrow
+let r5 = &s2;             // Error: cannot borrow immutably while mutably borrowed
+let r6 = &mut s2;         // Error: cannot have multiple mutable borrows

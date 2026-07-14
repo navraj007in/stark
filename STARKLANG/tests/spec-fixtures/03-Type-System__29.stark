@@ -1,0 +1,7 @@
+trait Display {
+    fn fmt(&self) -> String;
+}
+
+trait Eq {
+    fn eq(&self, other: &Self) -> Bool;
+}

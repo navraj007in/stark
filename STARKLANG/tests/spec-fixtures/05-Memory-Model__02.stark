@@ -1,0 +1,4 @@
+// Heap-allocated values
+let s: String = String::from("hello");   // String data on heap
+let v: Vec<Int32> = Vec::new();          // Vec data on heap
+let b: Box<Int32> = Box::new(42);        // Boxed value on heap

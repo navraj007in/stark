@@ -1,0 +1,4 @@
+fn example() -> Int32 {
+    return 42;
+    let x = 10;           // Warning: unreachable code
+}

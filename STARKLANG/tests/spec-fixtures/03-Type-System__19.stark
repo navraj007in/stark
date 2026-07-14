@@ -1,0 +1,11 @@
+fn borrow_immutable(s: &String) {
+    // Can read but not modify
+}
+
+fn borrow_mutable(s: &mut String) {
+    // Can read and modify
+}
+
+let mut text = String::from("hello");
+borrow_immutable(&text);       // OK
+borrow_mutable(&mut text);     // OK

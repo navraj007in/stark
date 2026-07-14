@@ -1,0 +1,12 @@
+// Box - heap allocation (implementation-provided; internals opaque)
+struct Box<T> { /* implementation-defined */ }
+
+impl<T> Box<T> {
+    fn new(value: T) -> Box<T>;
+    fn into_inner(self) -> T;
+}
+
+// Manual memory management
+fn drop<T>(value: T)
+fn size_of<T>() -> UInt64      // T not inferable: call as size_of::<Int32>()
+fn align_of<T>() -> UInt64     // T not inferable: call as align_of::<Int32>()

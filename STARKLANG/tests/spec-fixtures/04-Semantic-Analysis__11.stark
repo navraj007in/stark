@@ -1,0 +1,9 @@
+fn invalid_break() {
+    break;                // Error: break outside of loop
+}
+
+fn valid_break() {
+    loop {
+        break;            // OK: break inside loop
+    }
+}

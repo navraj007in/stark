@@ -1,0 +1,11 @@
+let x: Int32;
+print(x.fmt());           // Error: use of uninitialized variable
+
+let y: Int32 = if true { 42 } else { 24 };
+print(y.fmt());           // OK: y is initialized in all branches
+
+let z: Int32;
+if condition {
+    z = 42;
+}
+print(z.fmt());           // Error: z might not be initialized

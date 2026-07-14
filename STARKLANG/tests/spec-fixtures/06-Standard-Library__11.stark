@@ -1,0 +1,38 @@
+// Implementation-provided; internals opaque (UTF-8 byte buffer)
+struct String { /* implementation-defined */ }
+
+impl String {
+    fn new() -> String;               // Empty string
+    fn with_capacity(capacity: UInt64) -> String;
+    fn from(s: &str) -> String;       // Construct from a string slice/literal
+    fn len(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn push(&mut self, ch: Char);
+    fn push_str(&mut self, s: &str);
+    fn pop(&mut self) -> Option<Char>;
+    fn clear(&mut self);
+    fn chars(&self) -> CharsIter;
+    fn bytes(&self) -> &[UInt8];
+    fn as_str(&self) -> &str;
+    fn into_bytes(self) -> Vec<UInt8>;
+    fn substring(&self, start: UInt64, end: UInt64) -> &str;
+    fn contains(&self, pattern: &str) -> Bool;
+    fn starts_with(&self, pattern: &str) -> Bool;
+    fn ends_with(&self, pattern: &str) -> Bool;
+    fn find(&self, pattern: &str) -> Option<UInt64>;
+    fn replace(&self, from: &str, to: &str) -> String;
+    fn split(&self, delimiter: &str) -> SplitIter;
+    fn trim(&self) -> &str;
+    fn to_lowercase(&self) -> String;
+    fn to_uppercase(&self) -> String;
+}
+
+// String literals (&str)
+impl str {
+    fn len(&self) -> UInt64;
+    fn is_empty(&self) -> Bool;
+    fn chars(&self) -> CharsIter;
+    fn bytes(&self) -> &[UInt8];
+    fn to_string(&self) -> String;
+    // ... similar methods to String
+}

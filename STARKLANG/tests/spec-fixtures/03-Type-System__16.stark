@@ -1,0 +1,3 @@
+type Age = Int32;
+type Point2D = (Float64, Float64);
+type ErrorCode = Int32;

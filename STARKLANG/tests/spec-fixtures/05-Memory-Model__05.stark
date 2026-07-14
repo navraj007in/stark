@@ -1,0 +1,4 @@
+{
+    let s = String::from("hello");  // s owns the string
+    // String is automatically freed when s goes out of scope
+}

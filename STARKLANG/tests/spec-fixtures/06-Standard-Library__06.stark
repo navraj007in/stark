@@ -1,0 +1,13 @@
+enum Option<T> {
+    Some(T),
+    None
+}
+
+impl<T> Option<T> {
+    fn is_some(&self) -> Bool;
+    fn is_none(&self) -> Bool;
+    fn unwrap(self) -> T;
+    fn unwrap_or(self, default: T) -> T;
+    fn map<U>(self, f: fn(T) -> U) -> Option<U>;
+    fn and_then<U>(self, f: fn(T) -> Option<U>) -> Option<U>;
+}

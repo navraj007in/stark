@@ -1,0 +1,2 @@
+let x: Int32 = 42;
+let y: Int64 = x as Int64;  // Explicit cast required

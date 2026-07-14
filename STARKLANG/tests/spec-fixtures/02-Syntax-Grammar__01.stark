@@ -1,0 +1,1 @@
+if (Config { verbose: true }).verbose { do_thing(); }

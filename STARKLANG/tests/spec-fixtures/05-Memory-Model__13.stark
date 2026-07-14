@@ -1,0 +1,7 @@
+fn modify_string(s: &mut String) {
+    s.push('!');            // Can read and modify
+}
+
+let mut my_string = String::from("hello");
+modify_string(&mut my_string);        // Mutable borrow
+println(my_string.as_str()); // Prints "hello!"

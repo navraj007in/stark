@@ -1,0 +1,5 @@
+fn process(s: String) { ... }
+
+let my_string = String::from("hello");
+process(my_string);         // my_string moved into function
+// my_string no longer accessible

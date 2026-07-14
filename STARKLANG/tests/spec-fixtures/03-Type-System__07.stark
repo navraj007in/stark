@@ -1,0 +1,2 @@
+[T; N]   // Fixed-size array of N elements of type T (sized)
+[T]      // Slice of elements of type T (unsized)

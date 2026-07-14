@@ -1,0 +1,3 @@
+let fixed: [Int32; 5] = [1, 2, 3, 4, 5];
+let view: &[Int32] = &fixed;          // Array reference coerces to slice reference
+let part: &[Int32] = &fixed[1..4];    // Slicing with a range yields &[T]

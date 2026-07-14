@@ -21,11 +21,11 @@ Float32, Float64, Bool, String, Char, Unit, str
 // Visibility
 pub, priv
 
-// Module Paths
-self, super, crate
+// Module Paths and Self Type
+self, Self, super, crate
 
 // Operators
-and, or, not, in, is, as
+in, as
 
 // Literals
 true, false
@@ -47,14 +47,23 @@ Rules:
 
 #### Integer Literals
 ```
-DECIMAL_INT := [0-9][0-9_]*
-HEX_INT     := 0[xX][0-9a-fA-F][0-9a-fA-F_]*
-BINARY_INT  := 0[bB][01][01_]*
-OCTAL_INT   := 0[oO][0-7][0-7_]*
+DECIMAL_INT := [0-9] ('_'? [0-9])*
+HEX_INT     := 0[xX] [0-9a-fA-F] ('_'? [0-9a-fA-F])*
+BINARY_INT  := 0[bB] [01] ('_'? [01])*
+OCTAL_INT   := 0[oO] [0-7] ('_'? [0-7])*
 
-// Type suffixes
 INT_SUFFIX := (i8|i16|i32|i64|u8|u16|u32|u64)
+
+INTEGER := (DECIMAL_INT | HEX_INT | BINARY_INT | OCTAL_INT) INT_SUFFIX?
 ```
+
+Rules:
+- Underscores are digit separators and may appear only *between* two digits —
+  never leading, trailing, or consecutive (`1__2` and `12_` are invalid).
+- A suffix fixes the literal's type: `i8`→`Int8`, `i16`→`Int16`, `i32`→`Int32`,
+  `i64`→`Int64`, `u8`→`UInt8`, `u16`→`UInt16`, `u32`→`UInt32`, `u64`→`UInt64`.
+  A suffixed literal whose value does not fit the named type is a compile-time
+  error.
 
 Examples:
 ```stark
@@ -69,13 +78,18 @@ Examples:
 
 #### Floating Point Literals
 ```
-FLOAT := DECIMAL_INT '.' [0-9][0-9_]* [EXPONENT]?
-       | DECIMAL_INT EXPONENT
-EXPONENT := [eE][+-]?[0-9][0-9_]*
+FLOAT_BODY := DECIMAL_INT '.' [0-9] ('_'? [0-9])* EXPONENT?
+            | DECIMAL_INT EXPONENT
+EXPONENT := [eE] [+-]? [0-9] ('_'? [0-9])*
 
-// Type suffixes
 FLOAT_SUFFIX := (f32|f64)
+
+FLOAT := FLOAT_BODY FLOAT_SUFFIX?
 ```
+
+Rules:
+- The underscore rules for integer literals apply (separators between digits only).
+- A suffix fixes the literal's type: `f32`→`Float32`, `f64`→`Float64`.
 
 Examples:
 ```stark
@@ -148,10 +162,19 @@ BOOL := true | false
 = += -= *= /= %= **= &= |= ^= <<= >>=
 ```
 
+#### Range
+```
+.. ..=
+```
+
 #### Other
 ```
-? : :: . -> => @ # $
+? :: . -> =>
 ```
+
+Notes:
+- `?` is the try operator (postfix). There is no ternary conditional operator; `if` is an expression.
+- `:` appears only as a delimiter (type annotations, struct fields), not as an operator.
 
 ### 5. Delimiters
 ```
@@ -186,9 +209,10 @@ When multiple token patterns could match:
 3. Comments are ignored in token stream
 
 ### 9. Reserved Tokens
-Reserved for future use:
+Reserved for future use (recognized as keywords but not used by any Core v1 grammar production):
 ```
-async, await, yield, where, macro, unsafe, extern, import, export, null
+async, await, yield, where, macro, unsafe, extern, import, export, null,
+and, or, not, is, dyn
 ```
 
 ## Lexical Analysis Rules

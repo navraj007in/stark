@@ -1,0 +1,7 @@
+// References are pointers (8 bytes on 64-bit)
+let x: Int32 = 42;
+let r: &Int32 = &x;         // r contains address of x
+
+// Slice references contain pointer + length
+let arr: [Int32; 5] = [1, 2, 3, 4, 5];
+let slice: &[Int32] = &arr[1..4];  // pointer + length (16 bytes)

@@ -1,0 +1,5 @@
+()           // Empty tuple (Unit type)
+(T,)         // Single-element tuple
+(T1, T2)     // Two-element tuple
+(T1, T2, T3) // Three-element tuple
+// ... up to reasonable limit (e.g., 16 elements)

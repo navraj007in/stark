@@ -1,0 +1,2 @@
+fn f(param: T) { ... }
+f(arg);  // arg must have type T or be coercible to T

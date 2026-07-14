@@ -1,0 +1,27 @@
+trait From<T> {
+    fn from(value: T) -> Self;
+}
+
+trait Into<T> {
+    fn into(self) -> T;
+}
+
+trait TryFrom<T> {
+    type Error;
+    fn try_from(value: T) -> Result<Self, Self::Error>;
+}
+
+trait TryInto<T> {
+    type Error;
+    fn try_into(self) -> Result<T, Self::Error>;
+}
+
+// String conversion
+trait ToString {
+    fn to_string(&self) -> String;
+}
+
+trait FromStr {
+    type Error;
+    fn from_str(s: &str) -> Result<Self, Self::Error>;
+}
