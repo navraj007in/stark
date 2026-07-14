@@ -101,9 +101,13 @@ conflict table.
 - Specification: Core v1 complete draft (all 8 documents normative).
 - Compiler/runtime: **not started**. The Python code in `STARKLANG/compiler/`
   is a pre-pivot prototype and must not be extended for Core v1 work.
-- Next milestone: Core v1 lexer + parser with a spec-derived test suite, then
-  type checker with ownership analysis, then a minimal interpreter/VM.
-- Recommended implementation language: Rust.
+- Delivery is governed by `STARKLANG/docs/ROADMAP.md` (Gates 1–6 with
+  evidence-based exit criteria) and executed per `STARKLANG/docs/PLAN.md`
+  (standing decisions T1–T12, work packages). Current gate: Gate 1 — Rust
+  lexer + parser in a new top-level `starkc/` workspace, validated against
+  the fixture manifest in `STARKLANG/tests/spec-fixtures/`.
+- Scope discipline: work outside the current gate needs a roadmap-governed
+  proposal; see ROADMAP.md §4 non-goals.
 
 ## Working Conventions for This Repo
 

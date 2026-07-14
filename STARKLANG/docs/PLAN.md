@@ -1,0 +1,241 @@
+# STARK Implementation Plan
+
+**Status:** active engineering plan · **Subordinate to:** [ROADMAP.md](./ROADMAP.md)
+
+The roadmap defines *what evidence* advances the project (Gates 1–6). This
+document defines *how the work is executed*: technical decisions, work
+packages, test strategy, and risks. Where the two disagree, the roadmap wins.
+Effort figures are relative sizing for sequencing, not calendar commitments
+(per roadmap governance, no gate opens on a date).
+
+Resolution is deliberately uneven: Gate 1 is planned at work-package detail,
+Gates 2–3 at milestone detail, Gates 4–5 at decision-and-shape detail. Each
+gate's plan is refined when the preceding gate is near exit — planning Gate 4
+task-by-task today would encode guesses that Gate 2 will invalidate.
+
+---
+
+## 0. Standing Technical Decisions
+
+Decisions that apply across all gates. Changing one requires noting the
+reversal here with rationale.
+
+| # | Decision | Choice | Rationale |
+| --- | --- | --- | --- |
+| T1 | Implementation language | Rust, stable toolchain only | Memory-safe compiler for a memory-safe language; best-in-class parsing/diagnostics ecosystem; matches spec's own recommendation. No nightly features — contributors and CI stay simple. |
+| T2 | Repo location | New top-level `starkc/` Cargo workspace | Clean break from the pre-pivot Python in `STARKLANG/compiler/` (which stays archived-in-place with its README notice). |
+| T3 | Crate layout | Single crate `starkc`, internal modules (`lexer`, `ast`, `parser`, `diag`, later `resolve`, `types`, `borrow`) | Premature crate-splitting creates interface churn; split only when compile times or ownership boundaries demand it. |
+| T4 | Lexer | Hand-written | The spec requires nested block comments and maximal munch with `>>` re-tokenization support — awkward in lexer generators, trivial by hand. |
+| T5 | Parser | Hand-written recursive descent; Pratt (precedence-climbing) for expressions | Core v1's grammar was written for RD (one-token lookahead + the two documented parsing notes). Best diagnostics control. No parser generator dependency. |
+| T6 | AST | Plain owned tree (`Box`/`Vec`), every node carries a `Span` | Simplest thing that supports Gate 2; arena/ID-based HIR is introduced in Gate 2 *if* name resolution needs it, not before. |
+| T7 | Diagnostics | `codespan-reporting` (or equivalent single-purpose crate) emitting the exact format specified in 04-Semantic-Analysis.md, with `E####`/`W####` codes from the spec | The error format is normative; adopting it from day one makes diagnostics testable against the spec. |
+| T8 | Testing | Fixture manifest + snapshot tests (`insta` or golden files) + unit tests | See §2. Fixtures are the conformance backbone; snapshots make diagnostic regressions visible in review. |
+| T9 | CI | GitHub Actions: `cargo fmt --check`, `clippy -D warnings`, `cargo test`, fixture conformance job | The fixture job is the mechanized version of the spec's own "every example must parse" rule. |
+| T10 | Spec-bug protocol | Implementation never diverges silently: a grammar/semantics defect found while implementing produces, in one commit — the spec fix, regenerated `STARK-Core-v1.{md,html,pdf}`, regenerated fixtures, and the compiler change | Continues the discipline that fixed the earlier drift; per CLAUDE.md conventions. |
+| T11 | Execution strategy (Gate 3) | Tree-walking interpreter over the checked AST | Fastest path to "programs run"; the roadmap explicitly permits it and forbids requiring a VM. Lowering/codegen decisions belong to Gate 5. |
+| T12 | Model backend (Gates 4–5) | ONNX Runtime via generated Rust host glue (`ort` crate); IREE kept as a documented alternative, not built | ORT is the lowest-integration-cost path to a native artifact; the prototype's value is in the frontend checks, not the executor. Revisit at Gate 6. |
+
+---
+
+## 1. Gate 1 — Core Front End (lexer + parser)
+
+**Objective (from roadmap):** parse the normative Core v1 grammar with useful
+diagnostics; every classified fixture has a deterministic expected result.
+
+**Relative size:** ~4 work packages of a few days each, one of ~1–2 weeks
+(WP1.4). Sequence is strict: each WP builds on the previous.
+
+### WP1.1 — Scaffold and CI (small)
+- `starkc/` workspace: `cargo init`, module skeleton, `Span`/`SourceFile`
+  types, CLI stub `starkc parse <file>` (prints "not implemented").
+- GitHub Actions workflow per T9 (fixture job initially allowed to fail).
+- README note in `starkc/` linking to spec, roadmap, and this plan.
+
+*Done when:* CI is green on the skeleton; `starkc parse x.stark` runs and
+reports a stub error with correct file/line plumbing.
+
+### WP1.2 — Lexer (medium)
+Implement `01-Lexical-Grammar.md` in full:
+- All token kinds; keywords vs reserved words vs identifiers (reserved words
+  lex as distinct tokens so the parser can say "reserved for future use").
+- Literals with suffixes and the strict underscore rule; nested block
+  comments; raw strings; char escapes including `\u{...}`.
+- Maximal munch; `>>` emitted as one token with parser-side splitting support
+  (store as `Shr` carrying two joinable `Gt` spans).
+- Lexer errors exactly as specified (unterminated string, invalid number,
+  unexpected character) with spans.
+
+*Tests:* unit tests per token class, including the spec's own literal
+examples and pathological cases (`1__2`, `12_`, `0x_FF`, nested `/* /* */ */`,
+unterminated raw string). Property test (optional): lex→concat round-trip
+stability on generated token streams.
+
+*Done when:* every `01-*` fixture and unit case lexes to the expected stream.
+
+### WP1.3 — Fixture triage and conformance harness (small, high leverage)
+- Hand-review all 121 fixtures; record verdicts in
+  `STARKLANG/tests/spec-fixtures/manifest.toml`:
+  - `parse-pass` — must parse cleanly (most examples);
+  - `parse-fail` — must be rejected *by the parser* (chained comparisons,
+    malformed literals);
+  - `semantic-error` — must parse, fails in Gate 2 (the `// Error:` borrow/
+    type examples); the manifest records the expected `E####` code now,
+    enforced later;
+  - `notation` — API listings excluded from parsing (stdlib signature blocks,
+    type catalogs), per 06's Notation section.
+- Harness: a `cargo test` target that runs the parser over the manifest and
+  fails on any verdict mismatch; emits a conformance summary table.
+- Extend `tools/extract-spec-examples.sh` to fail if extraction produces a
+  fixture set that diverges from the manifest's file list (detects spec edits
+  that added/renumbered blocks without re-triage).
+
+*Done when:* manifest covers 121/121 fixtures; harness runs in CI (still
+red — the parser doesn't exist yet — but *deterministically* red).
+
+### WP1.4 — Parser (large; the core of Gate 1)
+Recursive descent over `02-Syntax-Grammar.md`, built bottom-up so each layer
+is testable before the next:
+
+1. **Types** — primitives, paths + generic args (incl. associated-type
+   bindings and shape-arg tolerance points left for Gate 4), arrays/slices,
+   tuples, references, `fn` types, `Self` path rules.
+2. **Expressions** — Pratt core with the normative precedence table
+   (16 levels), non-associative comparisons/ranges enforced structurally,
+   cast chains, unary incl. `&mut`, postfix (calls, index, field, tuple
+   field, `?`), turbofish on path expressions, literals incl. tuple/unit/
+   array-repeat, struct literals with the block-position restriction
+   (context flag: "no struct literal at statement-head expression positions
+   `if`/`while`/`match`/`for`").
+3. **Statements & blocks** — `let` forms, `return`/`break`/`continue`, the
+   trailing-expression rule (statement-first, expression-before-`}`).
+4. **Items** — functions (receivers, generics), structs/enums (all variant
+   forms), traits (signature-only, defaults, associated types), impls
+   (inherent, trait-for, generic, blanket), `use` trees, `mod`, `const`,
+   `type`.
+5. **Patterns** — all forms incl. path patterns, struct patterns with
+   shorthand, the identifier-vs-path note carried as an AST distinction for
+   Gate 2 to resolve.
+6. **Error recovery** — panic-mode sync at `;` and item keywords so multiple
+   diagnostics emerge per file (the spec's error-recovery section is the
+   requirement).
+
+*Tests:* per-production unit tests + the WP1.3 harness turning green class by
+class. Snapshot the AST (pretty-printed) for ~15 representative fixtures.
+
+*Done when:* all `parse-pass` fixtures parse, all `parse-fail` fixtures fail
+with the right diagnostic, `notation` skipped — the conformance job is green.
+
+### WP1.5 — Diagnostics polish + Gate 1 exit review (small)
+- Verify diagnostic rendering matches the normative format; wire `E`-codes
+  where the spec defines them.
+- Write the Gate 1 exit report (a short doc in `starkc/docs/`): fixtures
+  status, list of spec defects found and fixed under T10, deviations (should
+  be none), open questions handed to Gate 2.
+
+**Gate 1 exit == roadmap exit criteria + conformance job required-green in CI.**
+
+*Expected side effect, planned for:* WP1.2/1.4 will surface spec bugs (the
+first implementation always does). Budget roughly a third of Gate 1 effort
+for T10 spec-fix loops; finding them is the point, not a delay.
+
+---
+
+## 2. Gate 2 — Core Semantic Checker (milestone detail)
+
+Strict internal order — each milestone is a usable checkpoint:
+
+- **M2.1 Name resolution.** Scope trees per 04 §1 (lexical vs module
+  resolution split), single-file first; `mod`/`use` resolution after.
+  Introduce ID-based node references here if the tree AST fights back (T6).
+- **M2.2 Type checking, no generics.** Local inference by unification within
+  bodies; explicit signatures; control-flow typing rules (if/match/loop
+  unification, `!` coercion); place-expression and mutability checks;
+  definite assignment incl. the immutable-deferred-init rule.
+- **M2.3 Generics + traits.** Bound checking, coherence/orphan rule,
+  associated types, operator→trait desugaring (`Eq`/`Ord`/`Num`), method
+  resolution with auto-borrow/auto-deref per 03. Monomorphization-style
+  instantiation checking (no dictionary passing).
+- **M2.4 Ownership & borrows.** Move tracking with drop flags, partial
+  moves, reinitialization; then the lexical borrow checker (block-scoped
+  `let` borrows, statement-scoped temporaries); Copy/Drop soundness rules.
+  Borrow-carrying taint propagation comes *last* and only to the depth the
+  prototype needs (returning `Option<&T>` from builtins).
+- **M2.5 Conformance.** All `semantic-error` fixtures produce their recorded
+  `E####`; a set of ~20 new valid programs (written for this gate) pass
+  end-to-end analysis.
+
+Deliberately deferred within Gate 2: match *usefulness* warnings, trait
+default-method bodies' full checking, `pub use` re-export graphs beyond what
+fixtures require.
+
+## 3. Gate 3 — Minimal Execution Path (milestone detail)
+
+- **M3.1** Tree-walking interpreter (T11): values, calls, control flow,
+  structs/enums/match, `?`, panic-as-abort semantics, drop order (observable
+  via `Drop` impls).
+- **M3.2** `core-min` builtins backed by Rust: `Vec`, `String`, `Option`/
+  `Result` methods, `print`/`println`, `Range` iteration, `Box`, the handful
+  of `std::io` calls the prototype needs. Behavioral requirements from 06
+  (trap on OOB, `get` returns `None`, …) enforced and tested.
+- **M3.3** `starkc run file.stark` + an examples directory that doubles as
+  integration tests.
+
+Exit: the Core-only parts of the Appendix-A-style pipeline (everything except
+tensors) run correctly.
+
+## 4. Gate 4 — Tensor Front End + ONNX Import (decision detail)
+
+Shape of the work (task breakdown when Gate 2 nears exit):
+- Extend parser/checker behind an explicit `--extension tensor` flag: `Dim`/
+  `DType` kinds, shape args, const index lists, `model` items — a Core-only
+  build must reject them by name (extension conformance rule).
+- Dim engine: polynomial normal form + equality; unification with dims;
+  existential binding at `refine`.
+- Op typing for exactly the §6 set the demo pipeline uses (matmul, permute,
+  cast, elementwise+broadcast rule, reductions, reshape) — table-driven so
+  ops are data, not code.
+- `stark import`: ONNX protobuf read (via `prost`/existing ONNX crate),
+  signature extraction, declaration generation, and the §7.3 verification
+  rules incl. the variable-matches-only-dynamic-dims rule.
+- Diagnostics per §9: constraint + provenance + suggested fix. This is
+  product surface; budget accordingly.
+
+## 5. Gate 5 — Go/No-Go Prototype (decision detail)
+
+- One real CV model (ResNet-class or YOLO-class) through: `import` →
+  generated signature → STARK pre/post-processing → generated Rust host
+  program calling ONNX Runtime (T12) → single native binary.
+- Defect corpus: the four roadmap defect classes, each as a one-line source
+  mutation with its captured compile-time (or load-time) diagnostic —
+  demo-ready.
+- Measurement harness: reference-output tolerance check, artifact size,
+  startup, peak RSS, steady-state latency vs a Python/ORT baseline —
+  reported, not gated (per roadmap).
+- Gate 6 decision memo template prepared at the start of Gate 5, so evidence
+  is collected against it rather than assembled afterward.
+
+---
+
+## 6. Risks and Mitigations
+
+| Risk | Likelihood | Mitigation |
+| --- | --- | --- |
+| Grammar defects stall WP1.4 | High (expected) | T10 loop is budgeted; fixture harness localizes each break; spec fixes are small since the grammar is now internally consistent. |
+| Borrow checker (M2.4) balloons | Medium | Lexical rule chosen for exactly this; borrow-carrying implemented shallowly (builtin returns only); anything deeper needs a roadmap-governed proposal. |
+| Fixture renumbering on spec edits corrupts triage | Medium | WP1.3 manifest-vs-extraction consistency check; re-triage is part of any spec-editing commit (T10). |
+| ONNX signature variety (dynamic dims, multiple outputs) exceeds spec | Medium | Gate 4 imports *one* representative model first; spec §7.3 gaps found there are fixed under T10 before generalizing. |
+| Interpreter too slow for the demo's preprocessing | Low | Preprocessing is small; if needed, hot builtins (resize/normalize) become native builtins — allowed, they're library not language. |
+| Scope creep via exciting extensions (meaning tags, units, audio) | High | Roadmap §4 non-goals + governance; this plan adds nothing beyond Gate 5; new work needs its own proposal. |
+| Single-maintainer bus factor / motivation | Medium | Milestones are individually shippable and demoable (`parse` → `check` → `run` → `import` → binary); each WP ends with something visible. |
+
+## 7. Immediate Next Actions (start of Gate 1)
+
+1. WP1.1: create `starkc/` scaffold + CI (one sitting).
+2. WP1.2: lexer with unit tests (first real code).
+3. WP1.3: triage the 121 fixtures into `manifest.toml` (tedious, do early —
+   it also constitutes a full close-read of the hardened spec).
+4. WP1.4 step 1: type grammar + tests; proceed bottom-up.
+
+## 8. Change Log
+- v0.1 — initial plan; Gate 1 at WP detail, Gates 2–5 at milestone/decision
+  detail, standing decisions T1–T12.

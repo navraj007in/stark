@@ -69,15 +69,22 @@ compiled spec (Markdown/HTML/PDF) is
 
 ## Roadmap
 
-- [x] Core v1 specification (grammar, types, ownership, stdlib, modules)
-- [ ] Lexer + parser for Core v1
-- [ ] Type checker with ownership/borrow analysis
-- [ ] Interpreter or bytecode backend (MVP execution)
-- [ ] Minimal standard library implementation
-- [x] Tensor & model type system spec, v0.1 draft (the long-term differentiator) —
-      [`Tensor-Model-Types.md`](STARKLANG/docs/extensions/Tensor-Model-Types.md)
-- [ ] Go/no-go prototype: ONNX import → typed signatures → static shape/dtype/device
-      checking → native binary via an existing backend (IREE / ONNX Runtime)
+The authoritative, gate-based plan is the
+[implementation roadmap](STARKLANG/docs/ROADMAP.md); the engineering detail
+(technical decisions, work packages, risks) is the
+[implementation plan](STARKLANG/docs/PLAN.md). Current status:
+
+- [x] Core v1 specification
+- [x] Tensor and model type-system extension v0.1 draft
+- [ ] Gate 1: Core lexer and parser against the specification fixtures
+- [ ] Gate 2: Core type, ownership, and borrow checker
+- [ ] Gate 3: minimal Core execution path and `core-min` library
+- [ ] Gate 4: tensor front end and generated ONNX signatures
+- [ ] Gate 5: go/no-go CV deployment prototype using an existing backend
+
+Work outside these gates—including training, a custom tensor runtime, a
+generalized buffer type, robotics integration, and broad ecosystem
+development—is deliberately deferred until the prototype is evaluated.
 
 ## Repository Layout
 

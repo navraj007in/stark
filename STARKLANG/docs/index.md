@@ -1,5 +1,12 @@
 # STARK Documentation Index
 
+## Project Direction
+
+- [Implementation Roadmap](./ROADMAP.md) — delivery gates, prototype success
+  criteria, decision checkpoints, and explicitly deferred scope
+- [Implementation Plan](./PLAN.md) — the engineering layer under the roadmap:
+  standing technical decisions, per-gate work packages, test strategy, risks
+
 ## Normative Specification (Core v1)
 The current, authoritative language specification lives in [`spec/`](./spec/):
 
