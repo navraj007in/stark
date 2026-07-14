@@ -24,7 +24,8 @@ The key words **MUST**, **SHOULD**, and **MAY** are to be interpreted as follows
 8. Modules and packages: `docs/spec/07-Modules-and-Packages.md`
 
 ## Non-Core Extensions
-1. AI/ML extensions: `docs/extensions/AI-Extensions.md` (optional)
+1. Tensor & model type system: `docs/extensions/Tensor-Model-Types.md` (extension `tensor` v0.1, optional)
+2. AI/ML extensions overview: `docs/extensions/AI-Extensions.md` (optional sketches)
 
 ## Spec Status
 | Area | Status | Notes |

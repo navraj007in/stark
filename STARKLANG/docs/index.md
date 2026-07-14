@@ -18,7 +18,11 @@ A single-file compilation is available as [`spec/STARK-Core-v1.md`](./spec/STARK
 individual files above and must not be edited directly.
 
 ## Non-Core Extensions (Optional)
-- [AI/ML Extensions](./extensions/AI-Extensions.md) — tensors, model loading, LLM blocks
+- [Tensor & Model Type System](./extensions/Tensor-Model-Types.md) —
+  extension `tensor` v0.1 (normative draft): symbolic dimensions,
+  shape/dtype/device checking, `model` signatures, ONNX import
+- [AI/ML Extensions Overview](./extensions/AI-Extensions.md) — sketches of the
+  remaining AI surface (datasets, LLM blocks)
 
 ## Archive
 [`archive/`](./archive/README.md) contains the superseded pre-pivot design

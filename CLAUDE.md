@@ -43,9 +43,12 @@ pandoc STARK-Core-v1.md -s --metadata title="STARK-Core-v1" -o STARK-Core-v1.htm
 pandoc STARK-Core-v1.md -s --metadata title="STARK-Core-v1" --pdf-engine=weasyprint -o STARK-Core-v1.pdf
 ```
 
-**Extensions (optional, non-core): `STARKLANG/docs/extensions/AI-Extensions.md`**
-— tensors, model loading, LLM blocks. Canonical tensor syntax:
-`Tensor<Float32, [B, 128]>`.
+**Extensions (optional, non-core): `STARKLANG/docs/extensions/`**
+— `Tensor-Model-Types.md` is the normative draft of the tensor & model type
+system (extension `tensor` v0.1): `Dim`/`DType` kinds, shape arguments
+`Tensor<Float32, [B, 128]>`, polynomial dim equality, `TensorDyn`/`refine`
+boundary, `model` declarations with verified ONNX import, device types.
+`AI-Extensions.md` holds the remaining sketches (datasets, LLM blocks).
 
 **Archived (do not treat as current): `STARKLANG/docs/archive/`, `web-docs/`,
 `STARKLANG/compiler/`, `Practice/`** — pre-pivot design (actors, hybrid GC,

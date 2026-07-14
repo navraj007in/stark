@@ -1,21 +1,28 @@
-# STARK AI/ML Extensions Specification (Non-Core)
+# STARK AI/ML Extensions Overview (Non-Core)
 
 ## Overview
-This document defines non-core, AI/ML-focused language extensions. These extensions are not part of the Core v1 language and may evolve independently. A compliant Core v1 implementation may omit these features.
+This document sketches non-core, AI/ML-focused language extensions. These extensions are not part of the Core v1 language and may evolve independently. A compliant Core v1 implementation may omit these features.
+
+**Tensor and model types are now specified normatively in
+[Tensor-Model-Types.md](./Tensor-Model-Types.md)** (extension `tensor` v0.1).
+The tensor/model material below is an informal preview of that document;
+where they differ, `Tensor-Model-Types.md` wins. The remaining sections
+(datasets, LLM blocks) are early sketches without normative semantics.
 
 ## Syntax Status
 Extension code uses Core v1 syntax plus extension-specific grammar (tensor
-shape arguments, `@llm` blocks) that a Core v1 parser is not required to
-accept. The canonical tensor type syntax for all STARK documents is:
+shape arguments, `model` items, `@llm` blocks) that a Core v1 parser is not
+required to accept. The canonical tensor type syntax for all STARK documents
+is:
 
 ```
 Tensor<ElementType, [Dim1, Dim2, ...]>
 ```
 
 where the shape is a bracketed dimension list appearing as the second generic
-argument. Dimensions are integer constants or shape variables. Older documents
-using `Tensor<T>[dims]` or lowercase element types (`f32`) are superseded by
-this form.
+argument. Dimensions are integer constants or symbolic dim variables (see
+Tensor-Model-Types.md §3). Older documents using `Tensor<T>[dims]` or
+lowercase element types (`f32`) are superseded by this form.
 
 ## Tensor Types (Extension)
 ```stark

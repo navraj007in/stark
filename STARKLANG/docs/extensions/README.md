@@ -10,4 +10,9 @@ Extensions define non-core language features that may evolve independently of Co
 - Implementations claiming extension support MUST document the supported extension versions and any deviations.
 
 ## Current Extensions
-- `AI-Extensions.md`
+- `Tensor-Model-Types.md` — the tensor & model type system (extension id
+  `tensor`, v0.1, normative draft): symbolic dimensions, shape/dtype/device
+  checking, `model` signature declarations, ONNX import contract.
+- `AI-Extensions.md` — overview sketch of the remaining AI/ML surface
+  (LLM blocks, datasets); the tensor and model sections defer to
+  `Tensor-Model-Types.md`.

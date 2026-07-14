@@ -74,7 +74,10 @@ compiled spec (Markdown/HTML/PDF) is
 - [ ] Type checker with ownership/borrow analysis
 - [ ] Interpreter or bytecode backend (MVP execution)
 - [ ] Minimal standard library implementation
-- [ ] Tensor shape-checking extension (the long-term differentiator)
+- [x] Tensor & model type system spec, v0.1 draft (the long-term differentiator) —
+      [`Tensor-Model-Types.md`](STARKLANG/docs/extensions/Tensor-Model-Types.md)
+- [ ] Go/no-go prototype: ONNX import → typed signatures → static shape/dtype/device
+      checking → native binary via an existing backend (IREE / ONNX Runtime)
 
 ## Repository Layout
 

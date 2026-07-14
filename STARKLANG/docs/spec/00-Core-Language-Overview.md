@@ -86,8 +86,11 @@ Defines module structure, visibility, and import resolution:
 - **Imports**: `use` paths, trees, and aliasing
 - **Packages**: Manifest and dependency resolution
 
-### 8. Non-Core Extensions (../extensions/AI-Extensions.md)
-Non-core language extensions live outside Core v1 and are optional. See `docs/extensions/AI-Extensions.md`.
+### 8. Non-Core Extensions (../extensions/)
+Non-core language extensions live outside Core v1 and are optional. The
+tensor & model type system is specified in
+`docs/extensions/Tensor-Model-Types.md`; the remaining AI/ML surface is
+sketched in `docs/extensions/AI-Extensions.md`.
 
 ## Core Language Features
 
