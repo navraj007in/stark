@@ -1,7 +1,7 @@
 # starkc
 
 Compiler for the STARK Core v1 language. Rust, stable toolchain, currently at
-**WP1.1 (scaffold)** of Gate 1.
+**WP1.2 (lexer)** of Gate 1.
 
 - Language definition: [`../STARKLANG/docs/spec/`](../STARKLANG/docs/spec/)
   (normative), single file: `STARK-Core-v1.md`
@@ -13,7 +13,8 @@ Compiler for the STARK Core v1 language. Rust, stable toolchain, currently at
 ## Use
 
 ```bash
-cargo run -- parse file.stark   # currently reports a WP1.1 stub diagnostic
+cargo run -- lex file.stark     # dump the token stream
+cargo run -- parse file.stark   # lexes for real; parsing is a WP1.4 stub
 cargo test
 ```
 
@@ -23,7 +24,7 @@ cargo test
 | --- | --- | --- |
 | `source` | `SourceFile`, `Span`, line/column mapping | done (WP1.1) |
 | `diag` | diagnostics in the spec's normative render format | done (WP1.1) |
-| `lexer` | `01-Lexical-Grammar.md` | WP1.2 |
+| `lexer` | `01-Lexical-Grammar.md` | done (WP1.2) |
 | `ast` | arena + ID node tree (PLAN.md T6) | WP1.4 |
 | `parser` | recursive descent + Pratt (`02-Syntax-Grammar.md`) | WP1.4 |
 
