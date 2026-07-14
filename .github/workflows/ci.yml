@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+
+  fixture-conformance:
+    name: spec fixture conformance (non-blocking until WP1.4)
+    runs-on: ubuntu-latest
+    # The parser does not exist yet; this job documents the gate and is
+    # allowed to fail. Flip continue-on-error to false at WP1.4 exit
+    # (PLAN.md: Gate 1 exit requires this job required-green).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: Fixture extraction is in sync with the spec
+        run: |
+          STARKLANG/tools/extract-spec-examples.sh /tmp/fixtures-check > /dev/null
+          # manifest.toml (WP1.3 triage) is hand-maintained, not extracted
+          diff -r --exclude=manifest.toml STARKLANG/tests/spec-fixtures /tmp/fixtures-check
+      - name: Parse conformance fixtures
+        run: |
+          cd starkc && cargo build --quiet
+          fail=0
+          for f in ../STARKLANG/tests/spec-fixtures/*.stark; do
+            ./target/debug/starkc parse "$f" > /dev/null 2>&1 || fail=$((fail+1))
+          done
+          echo "fixtures failing to parse: $fail"
+          test "$fail" -eq 0

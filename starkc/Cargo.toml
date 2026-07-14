@@ -1,0 +1,17 @@
+[package]
+name = "starkc"
+version = "0.1.0"
+edition = "2021"
+description = "Compiler for the STARK Core v1 language"
+license = "MIT"
+rust-version = "1.85"
+
+[dependencies]
+# Deliberately empty at WP1.1 (PLAN.md T3): dependencies are added when a
+# work package needs them, not speculatively.
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
