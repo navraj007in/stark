@@ -1,4 +1,4 @@
-fn might_fail() -> Result<Int32, String> { ... }
+fn might_fail() -> Result<Int32, String> { Ok(42) }
 
 fn caller1() -> Result<Int32, String> {
     let x = might_fail()?;    // OK: compatible error types

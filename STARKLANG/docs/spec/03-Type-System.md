@@ -415,9 +415,14 @@ trait Iterator {
     fn next(&mut self) -> Option<Self::Item>;
 }
 
+struct Counter { count: Int32 }
+
 impl Iterator for Counter {
     type Item = Int32;
-    fn next(&mut self) -> Option<Int32> { ... }
+    fn next(&mut self) -> Option<Int32> {
+        self.count += 1;
+        Some(self.count)
+    }
 }
 ```
 
@@ -447,8 +452,8 @@ let cmp = x < y;     // x and y must have the same comparable type
 
 ### Logical Operations
 ```stark
-let result = a && b;  // a and b must be Bool
-let result = !x;      // x must be Bool
+let both = a && b;    // a and b must be Bool
+let negated = !x;     // x must be Bool
 ```
 
 ### For Loops

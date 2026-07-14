@@ -1,0 +1,566 @@
+# STARK Core v1 spec-fixture manifest (WP1.3 triage).
+#
+# Every fixture extracted by tools/extract-spec-examples.sh has exactly one
+# entry here. The extraction script fails if this list diverges from the
+# extracted set (spec edits that add/renumber blocks force a re-triage), and
+# starkc/tests/conformance.rs enforces the verdicts.
+#
+# Schema (deliberately a flat TOML subset so a dependency-free test harness
+# can parse it):
+#   ["<fixture file name>"]
+#   verdict = "parse-pass" | "parse-fail" | "semantic-error" | "lex-pass"
+#           | "notation"
+#   mode    = "program" | "snippet"      # required for parse-* / semantic-error
+#   errors  = "E0001,E0005"              # semantic-error only: expected codes
+#   note    = "free text"                # optional
+#
+# Verdicts:
+#   parse-pass     — must lex and parse cleanly under `mode`.
+#   parse-fail     — must be rejected by the lexer or parser (negative test).
+#   semantic-error — must lex and parse cleanly; Gate 2 must report the codes
+#                    in `errors` (recorded now, enforced by the Gate 2
+#                    harness). Codes caused only by standalone extraction
+#                    (undefined helper names) are noted, not listed.
+#   lex-pass       — token-level example; must lex cleanly, is not a program.
+#   notation       — API listings / type catalogs / typing-rule metavariables
+#                    per 06-Standard-Library.md "Notation"; excluded from
+#                    parsing.
+#
+# Modes:
+#   program — parsed as Program ::= Item*  (02-Syntax-Grammar.md).
+#   snippet — parsed as a block body: (Item | Statement)* Expression?. This is
+#             a harness-only convenience for spec examples written at
+#             "statement level"; it is not a source-language entry point.
+#
+# Verdict census (keep in sync when re-triaging):
+#   parse-pass 67, semantic-error 18, notation 30, lex-pass 4, parse-fail 2
+#   = 121 fixtures.
+
+["00-Core-Language-Overview__01.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["00-Core-Language-Overview__02.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["00-Core-Language-Overview__03.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["01-Lexical-Grammar__01.stark"]
+verdict = "lex-pass"
+note = "integer literal examples"
+
+["01-Lexical-Grammar__02.stark"]
+verdict = "lex-pass"
+note = "float literal examples"
+
+["01-Lexical-Grammar__03.stark"]
+verdict = "lex-pass"
+note = "string literal examples"
+
+["01-Lexical-Grammar__04.stark"]
+verdict = "lex-pass"
+note = "char literal examples"
+
+["02-Syntax-Grammar__01.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "parenthesized struct literal in if condition"
+
+["03-Type-System__01.stark"]
+verdict = "notation"
+note = "integer type catalog"
+
+["03-Type-System__02.stark"]
+verdict = "notation"
+note = "float type catalog"
+
+["03-Type-System__03.stark"]
+verdict = "notation"
+note = "Bool/Char/Unit/str catalog"
+
+["03-Type-System__04.stark"]
+verdict = "notation"
+note = "String catalog line"
+
+["03-Type-System__05.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__06.stark"]
+verdict = "notation"
+note = "signature-only: panic"
+
+["03-Type-System__07.stark"]
+verdict = "notation"
+note = "array/slice type catalog"
+
+["03-Type-System__08.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__09.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__10.stark"]
+verdict = "notation"
+note = "tuple type catalog"
+
+["03-Type-System__11.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__12.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__13.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "redeclares prelude Option/Result for illustration (gate2-revisit)"
+
+["03-Type-System__14.stark"]
+verdict = "notation"
+note = "reference type catalog"
+
+["03-Type-System__15.stark"]
+verdict = "notation"
+note = "function type catalog"
+
+["03-Type-System__16.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__17.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__18.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "move-error case is commented out"
+
+["03-Type-System__19.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__20.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__21.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__22.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__23.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__24.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__25.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__26.stark"]
+verdict = "notation"
+note = "coercion table"
+
+["03-Type-System__27.stark"]
+verdict = "notation"
+note = "coercion table"
+
+["03-Type-System__28.stark"]
+verdict = "notation"
+note = "coercion table"
+
+["03-Type-System__29.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__30.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "fmt body elided as a comment; Point undefined standalone (gate2-revisit)"
+
+["03-Type-System__31.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__32.stark"]
+verdict = "notation"
+note = "typing-rule metavariables (T, expr)"
+
+["03-Type-System__33.stark"]
+verdict = "notation"
+note = "typing-rule metavariables (T, arg); elided body"
+
+["03-Type-System__34.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "x, y undefined (extraction artifact)"
+
+["03-Type-System__35.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "a, b, x undefined (extraction artifact)"
+
+["03-Type-System__36.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["03-Type-System__37.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__38.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "redeclares prelude Option (gate2-revisit)"
+
+["03-Type-System__39.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "redeclares prelude Result (gate2-revisit)"
+
+["03-Type-System__40.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "might_fail body elided as a comment; not type-correct standalone (gate2-revisit)"
+
+["03-Type-System__41.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__42.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["03-Type-System__43.stark"]
+verdict = "parse-fail"
+mode = "program"
+note = "lifetime annotations are a future feature; Core v1 rejects (`'a` fails in the lexer)"
+
+["04-Semantic-Analysis__01.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["04-Semantic-Analysis__02.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["04-Semantic-Analysis__03.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0001"
+
+["04-Semantic-Analysis__04.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0001,E0005"
+
+["04-Semantic-Analysis__05.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0001,E0400"
+
+["04-Semantic-Analysis__06.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0100"
+
+["04-Semantic-Analysis__07.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0101"
+
+["04-Semantic-Analysis__08.stark"]
+verdict = "semantic-error"
+mode = "program"
+errors = "E0103"
+
+["04-Semantic-Analysis__09.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "expects warning W0005 (unreachable code), not an error"
+
+["04-Semantic-Analysis__10.stark"]
+verdict = "semantic-error"
+mode = "program"
+errors = "E0301"
+
+["04-Semantic-Analysis__11.stark"]
+verdict = "semantic-error"
+mode = "program"
+errors = "E0302"
+
+["04-Semantic-Analysis__12.stark"]
+verdict = "semantic-error"
+mode = "program"
+errors = "E0303"
+
+["04-Semantic-Analysis__13.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0001"
+note = "pattern type mismatch"
+
+["04-Semantic-Analysis__14.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0400"
+
+["04-Semantic-Analysis__15.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0401"
+note = "`condition` undefined (extraction artifact)"
+
+["04-Semantic-Analysis__16.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0204"
+
+["04-Semantic-Analysis__17.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0007"
+
+["04-Semantic-Analysis__18.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "runtime bounds check; get_index undefined (extraction artifact)"
+
+["04-Semantic-Analysis__19.stark"]
+verdict = "semantic-error"
+mode = "program"
+errors = "E0006"
+
+["04-Semantic-Analysis__20.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0500"
+
+["05-Memory-Model__01.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__02.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__03.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__04.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "error case is commented out"
+
+["05-Memory-Model__05.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__06.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "error case is commented out"
+
+["05-Memory-Model__07.stark"]
+verdict = "notation"
+note = "Copy/Move type catalog"
+
+["05-Memory-Model__08.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__09.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__10.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["05-Memory-Model__11.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "error cases commented out; `make` undefined (extraction artifact)"
+
+["05-Memory-Model__12.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__13.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__14.stark"]
+verdict = "semantic-error"
+mode = "snippet"
+errors = "E0101"
+
+["05-Memory-Model__15.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["05-Memory-Model__16.stark"]
+verdict = "parse-fail"
+mode = "program"
+note = "lifetime annotations are a future feature; Core v1 rejects (`'a` fails in the lexer)"
+
+["05-Memory-Model__17.stark"]
+verdict = "semantic-error"
+mode = "program"
+errors = "E0103"
+
+["05-Memory-Model__18.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "Point, large_object undefined (extraction artifact)"
+
+["05-Memory-Model__19.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "Rc/Arc are future features, not in the Core v1 stdlib (gate2-revisit)"
+
+["05-Memory-Model__20.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "close_file undefined (extraction artifact)"
+
+["05-Memory-Model__21.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__22.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "error case is commented out"
+
+["05-Memory-Model__23.stark"]
+verdict = "notation"
+note = "Copy type catalog mixed with code"
+
+["05-Memory-Model__24.stark"]
+verdict = "notation"
+note = "Move type catalog mixed with code"
+
+["05-Memory-Model__25.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+
+["05-Memory-Model__26.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "Rc is a future feature; some_value undefined (gate2-revisit)"
+
+["05-Memory-Model__27.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "RefCell is a future feature (gate2-revisit)"
+
+["06-Standard-Library__01.stark"]
+verdict = "notation"
+note = "prelude catalog: bodyless traits and fns"
+
+["06-Standard-Library__02.stark"]
+verdict = "notation"
+note = "bodyless marker traits (trait Copy / trait Num)"
+
+["06-Standard-Library__03.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "IndexMut references Self::Output without declaring it (gate2-revisit)"
+
+["06-Standard-Library__04.stark"]
+verdict = "notation"
+note = "signature-only impl (API notation)"
+
+["06-Standard-Library__05.stark"]
+verdict = "notation"
+note = "signature-only impl + bodyless fns (API notation)"
+
+["06-Standard-Library__06.stark"]
+verdict = "notation"
+note = "signature-only impl (API notation)"
+
+["06-Standard-Library__07.stark"]
+verdict = "notation"
+note = "signature-only impl (API notation)"
+
+["06-Standard-Library__08.stark"]
+verdict = "notation"
+note = "signature-only impl (API notation)"
+
+["06-Standard-Library__09.stark"]
+verdict = "notation"
+note = "signature-only impl (API notation)"
+
+["06-Standard-Library__10.stark"]
+verdict = "notation"
+note = "signature-only impl (API notation)"
+
+["06-Standard-Library__11.stark"]
+verdict = "notation"
+note = "signature-only impl (API notation)"
+
+["06-Standard-Library__12.stark"]
+verdict = "notation"
+note = "bodyless fns (API notation)"
+
+["06-Standard-Library__13.stark"]
+verdict = "notation"
+note = "bodyless fns (API notation)"
+
+["06-Standard-Library__14.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["06-Standard-Library__15.stark"]
+verdict = "notation"
+note = "bodyless fns (API notation)"
+
+["06-Standard-Library__16.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["06-Standard-Library__17.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["06-Standard-Library__18.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "illustrates implementation-provided prelude impls (blanket Clone, primitive Copy); stdlib-internal (gate2-revisit)"
+
+["07-Modules-and-Packages__01.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["07-Modules-and-Packages__02.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["07-Modules-and-Packages__03.stark"]
+verdict = "parse-pass"
+mode = "program"
+
+["07-Modules-and-Packages__04.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "TensorLib is an external package; unresolved standalone"
+
+["07-Modules-and-Packages__05.stark"]
+verdict = "parse-pass"
+mode = "program"

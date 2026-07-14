@@ -110,7 +110,7 @@ let s3 = s2.clone();        // Explicit copy (if Clone implemented)
 
 ### Move in Function Calls
 ```stark
-fn process(s: String) { ... }
+fn process(s: String) { println(s.as_str()); }
 
 let my_string = String::from("hello");
 process(my_string);         // my_string moved into function

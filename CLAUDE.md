@@ -116,8 +116,12 @@ conflict table.
   editing surface.
 - Spec changes must keep grammar, prose, and examples in agreement — the
   grammar in `02-Syntax-Grammar.md` must be able to parse every `stark` code
-  block in the spec (semicolons included). Regenerate the parser-fixture
-  corpus with `STARKLANG/tools/extract-spec-examples.sh` after spec edits.
+  block classified `parse-pass`/`semantic-error` in
+  `STARKLANG/tests/spec-fixtures/manifest.toml` (semicolons included); blocks
+  triaged `notation`/`lex-pass`/`parse-fail` are the sanctioned exceptions.
+  Regenerate the corpus with `STARKLANG/tools/extract-spec-examples.sh` after
+  spec edits — it fails if the fixture set diverges from the manifest, and any
+  added/renumbered block must be re-triaged in the same change.
 - New language features land in the spec first, extensions second, README
   last. The archive is never updated for new features.
 

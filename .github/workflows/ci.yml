@@ -48,12 +48,7 @@ jobs:
           STARKLANG/tools/extract-spec-examples.sh /tmp/fixtures-check > /dev/null
           # manifest.toml (WP1.3 triage) is hand-maintained, not extracted
           diff -r --exclude=manifest.toml STARKLANG/tests/spec-fixtures /tmp/fixtures-check
-      - name: Parse conformance fixtures
+      - name: Manifest-driven spec conformance (WP1.3 harness)
         run: |
-          cd starkc && cargo build --quiet
-          fail=0
-          for f in ../STARKLANG/tests/spec-fixtures/*.stark; do
-            ./target/debug/starkc parse "$f" > /dev/null 2>&1 || fail=$((fail+1))
-          done
-          echo "fixtures failing to parse: $fail"
-          test "$fail" -eq 0
+          cd starkc
+          cargo test --test conformance -- --include-ignored

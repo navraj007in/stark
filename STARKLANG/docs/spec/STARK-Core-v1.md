@@ -1256,9 +1256,14 @@ trait Iterator {
     fn next(&mut self) -> Option<Self::Item>;
 }
 
+struct Counter { count: Int32 }
+
 impl Iterator for Counter {
     type Item = Int32;
-    fn next(&mut self) -> Option<Int32> { ... }
+    fn next(&mut self) -> Option<Int32> {
+        self.count += 1;
+        Some(self.count)
+    }
 }
 ```
 
@@ -1288,8 +1293,8 @@ let cmp = x < y;     // x and y must have the same comparable type
 
 ### Logical Operations
 ```stark
-let result = a && b;  // a and b must be Bool
-let result = !x;      // x must be Bool
+let both = a && b;    // a and b must be Bool
+let negated = !x;     // x must be Bool
 ```
 
 ### For Loops
@@ -1817,7 +1822,7 @@ let x = arr[idx];         // Runtime bounds check required
 
 #### Question Mark Operator
 ```stark
-fn might_fail() -> Result<Int32, String> { ... }
+fn might_fail() -> Result<Int32, String> { Ok(42) }
 
 fn caller1() -> Result<Int32, String> {
     let x = might_fail()?;    // OK: compatible error types
@@ -1880,6 +1885,9 @@ line | source code line
 - E0002: Unknown type
 - E0003: Type annotation required
 - E0004: Cannot infer type
+- E0005: Wrong number of arguments
+- E0006: `?` operator in a function that does not return `Result` or `Option`
+- E0007: Index out of bounds (determinable at compile time)
 
 #### Ownership Errors (E0100-E0199)
 - E0100: Use of moved value
@@ -1892,12 +1900,22 @@ line | source code line
 - E0201: Undefined function
 - E0202: Undefined type
 - E0203: Ambiguous name
+- E0204: Duplicate definition in the same scope
 
 #### Control Flow Errors (E0300-E0399)
-- E0300: Unreachable code
 - E0301: Missing return value
 - E0302: Break outside loop
 - E0303: Non-exhaustive match
+
+(E0300 is intentionally unassigned: unreachable code is warning W0005, not an
+error — see "Unreachable Code Detection" above.)
+
+#### Mutability and Initialization Errors (E0400-E0499)
+- E0400: Assignment to immutable binding
+- E0401: Use of possibly-uninitialized variable
+
+#### Trait Errors (E0500-E0599)
+- E0500: Trait not implemented
 
 ### Warning Categories
 
@@ -1906,6 +1924,7 @@ line | source code line
 - W0002: Unused function
 - W0003: Unused import
 - W0004: Dead code
+- W0005: Unreachable code
 
 #### Style Warnings (W0100-W0199)
 - W0100: Non-snake_case variable
@@ -2088,7 +2107,7 @@ let s3 = s2.clone();        // Explicit copy (if Clone implemented)
 
 ### Move in Function Calls
 ```stark
-fn process(s: String) { ... }
+fn process(s: String) { println(s.as_str()); }
 
 let my_string = String::from("hello");
 process(my_string);         // my_string moved into function

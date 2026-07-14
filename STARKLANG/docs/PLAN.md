@@ -45,7 +45,7 @@ diagnostics; every classified fixture has a deterministic expected result.
 **Relative size:** ~4 work packages of a few days each, one of ~1–2 weeks
 (WP1.4). Sequence is strict: each WP builds on the previous.
 
-### WP1.1 — Scaffold and CI (small)
+### WP1.1 — Scaffold and CI (small) ✅
 - `starkc/` workspace: `cargo init`, module skeleton, `Span`/`SourceFile`
   types, CLI stub `starkc parse <file>` (prints "not implemented").
 - GitHub Actions workflow per T9 (fixture job initially allowed to fail).
@@ -54,7 +54,7 @@ diagnostics; every classified fixture has a deterministic expected result.
 *Done when:* CI is green on the skeleton; `starkc parse x.stark` runs and
 reports a stub error with correct file/line plumbing.
 
-### WP1.2 — Lexer (medium)
+### WP1.2 — Lexer (medium) ✅
 Implement `01-Lexical-Grammar.md` in full:
 - All token kinds; keywords vs reserved words vs identifiers (reserved words
   lex as distinct tokens so the parser can say "reserved for future use").
@@ -72,25 +72,40 @@ stability on generated token streams.
 
 *Done when:* every `01-*` fixture and unit case lexes to the expected stream.
 
-### WP1.3 — Fixture triage and conformance harness (small, high leverage)
+### WP1.3 — Fixture triage and conformance harness (small, high leverage) ✅
 - Hand-review all 121 fixtures; record verdicts in
   `STARKLANG/tests/spec-fixtures/manifest.toml`:
   - `parse-pass` — must parse cleanly (most examples);
-  - `parse-fail` — must be rejected *by the parser* (chained comparisons,
-    malformed literals);
+  - `parse-fail` — must be rejected by the lexer or parser (the two
+    lifetime-annotation "future feature" blocks);
   - `semantic-error` — must parse, fails in Gate 2 (the `// Error:` borrow/
     type examples); the manifest records the expected `E####` code now,
     enforced later;
-  - `notation` — API listings excluded from parsing (stdlib signature blocks,
-    type catalogs), per 06's Notation section.
-- Harness: a `cargo test` target that runs the parser over the manifest and
-  fails on any verdict mismatch; emits a conformance summary table.
+  - `lex-pass` — token-level examples from 01: must lex cleanly, are not
+    programs (added during triage; the four `01-*` fixtures);
+  - `notation` — API listings, type catalogs, and typing-rule metavariables
+    excluded from parsing, per 06's Notation section.
+- Parseable entries also record a *mode*: `program` (Item*) or `snippet`
+  (block-body form, `(Item | Statement)* Expression?`) — a harness-only
+  convenience for spec examples written at statement level.
+- Harness: `starkc/tests/conformance.rs` — manifest schema validation and
+  lex-level conformance always on; full verdict enforcement `#[ignore]`d
+  (run with `--include-ignored`) until the parser exists, and emits a
+  per-class summary table.
 - Extend `tools/extract-spec-examples.sh` to fail if extraction produces a
   fixture set that diverges from the manifest's file list (detects spec edits
   that added/renumbered blocks without re-triage).
 
 *Done when:* manifest covers 121/121 fixtures; harness runs in CI (still
 red — the parser doesn't exist yet — but *deterministically* red).
+**Done 2026-07-15.** Verdict census: parse-pass 67, semantic-error 18,
+notation 30, lex-pass 4, parse-fail 2. Already green: lex-pass and parse-fail
+(the lifetime blocks are rejected by the lexer). T10 spec fixes shipped with
+the triage: three `{ ... }` ellipsis bodies made parseable (03 associated
+types, 04 `?` example, 05 move example), a same-scope `let` redeclaration in
+03's logical-operators example renamed, and 04's error-code table extended
+(E0005–E0007, E0204, E0400/E0401, E0500) with unreachable code reclassified
+from error E0300 to warning W0005 to match 04's own example.
 
 ### WP1.4 — Parser (large; the core of Gate 1)
 Recursive descent over `02-Syntax-Grammar.md`, built bottom-up so each layer
@@ -244,6 +259,10 @@ Shape of the work (task breakdown when Gate 2 nears exit):
 4. WP1.4 step 1: type grammar + tests; proceed bottom-up.
 
 ## 8. Change Log
+- v0.3 — WP1.1–WP1.3 done (scaffold+CI, lexer, fixture triage). WP1.3
+  additions over v0.2: fifth verdict `lex-pass` for the token-level `01-*`
+  fixtures, and per-fixture parse modes (`program`/`snippet`) for spec
+  examples written at statement level. T10 fixes recorded under WP1.3.
 - v0.2 — architecture-review amendments: T6 arena/ID AST from day one with
   HIR scheduled at M2.1; T12 `ort`-first with the Cranelift/IREE evidence
   ladder; WP1.4 fuzz target; Gate 4 extension-owned type constructors.

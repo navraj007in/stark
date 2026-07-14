@@ -1304,9 +1304,14 @@ impl Eq for Point {
     fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt;;
 }
 
+struct Counter { count: Int32 }
+
 impl Iterator for Counter {
     type Item = Int32;
-    fn next(&amp;mut self) -&gt; Option&lt;Int32&gt; { ... }
+    fn next(&amp;mut self) -&gt; Option&lt;Int32&gt; {
+        self.count += 1;
+        Some(self.count)
+    }
 }</code></pre>
 <p>Bounds may constrain associated types with bindings:
 <code>I: Iterator&lt;Item = T&gt;</code>.</p>
@@ -1323,8 +1328,8 @@ let result = x + y;  // x and y must have the same numeric type
 // Comparison operators
 let cmp = x &lt; y;     // x and y must have the same comparable type</code></pre>
 <h3 id="logical-operations">Logical Operations</h3>
-<pre class="stark"><code>let result = a &amp;&amp; b;  // a and b must be Bool
-let result = !x;      // x must be Bool</code></pre>
+<pre class="stark"><code>let both = a &amp;&amp; b;    // a and b must be Bool
+let negated = !x;     // x must be Bool</code></pre>
 <h3 id="for-loops">For Loops</h3>
 <p><code>for x in expr</code> requires <code>expr</code> to have a type
 that implements <code>Iterator</code>; the loop variable binds
@@ -1823,7 +1828,7 @@ let idx = get_index();
 let x = arr[idx];         // Runtime bounds check required</code></pre>
 <h3 id="error-propagation-analysis">9. Error Propagation Analysis</h3>
 <h4 id="question-mark-operator">Question Mark Operator</h4>
-<pre class="stark"><code>fn might_fail() -&gt; Result&lt;Int32, String&gt; { ... }
+<pre class="stark"><code>fn might_fail() -&gt; Result&lt;Int32, String&gt; { Ok(42) }
 
 fn caller1() -&gt; Result&lt;Int32, String&gt; {
     let x = might_fail()?;    // OK: compatible error types
@@ -1883,6 +1888,10 @@ line | source code line
 <li>E0002: Unknown type</li>
 <li>E0003: Type annotation required</li>
 <li>E0004: Cannot infer type</li>
+<li>E0005: Wrong number of arguments</li>
+<li>E0006: <code>?</code> operator in a function that does not return
+<code>Result</code> or <code>Option</code></li>
+<li>E0007: Index out of bounds (determinable at compile time)</li>
 </ul>
 <h4 id="ownership-errors-e0100-e0199">Ownership Errors
 (E0100-E0199)</h4>
@@ -1899,14 +1908,26 @@ line | source code line
 <li>E0201: Undefined function</li>
 <li>E0202: Undefined type</li>
 <li>E0203: Ambiguous name</li>
+<li>E0204: Duplicate definition in the same scope</li>
 </ul>
 <h4 id="control-flow-errors-e0300-e0399">Control Flow Errors
 (E0300-E0399)</h4>
 <ul>
-<li>E0300: Unreachable code</li>
 <li>E0301: Missing return value</li>
 <li>E0302: Break outside loop</li>
 <li>E0303: Non-exhaustive match</li>
+</ul>
+<p>(E0300 is intentionally unassigned: unreachable code is warning
+W0005, not an error — see “Unreachable Code Detection” above.)</p>
+<h4 id="mutability-and-initialization-errors-e0400-e0499">Mutability and
+Initialization Errors (E0400-E0499)</h4>
+<ul>
+<li>E0400: Assignment to immutable binding</li>
+<li>E0401: Use of possibly-uninitialized variable</li>
+</ul>
+<h4 id="trait-errors-e0500-e0599">Trait Errors (E0500-E0599)</h4>
+<ul>
+<li>E0500: Trait not implemented</li>
 </ul>
 <h3 id="warning-categories">Warning Categories</h3>
 <h4 id="unused-items-w0001-w0099">Unused Items (W0001-W0099)</h4>
@@ -1915,6 +1936,7 @@ line | source code line
 <li>W0002: Unused function</li>
 <li>W0003: Unused import</li>
 <li>W0004: Dead code</li>
+<li>W0005: Unreachable code</li>
 </ul>
 <h4 id="style-warnings-w0100-w0199">Style Warnings (W0100-W0199)</h4>
 <ul>
@@ -2074,7 +2096,7 @@ Int32, Float64, Bool, Char, &amp;T, [T; N] where T: Copy</code></pre>
 let s2 = s1;                // Move
 let s3 = s2.clone();        // Explicit copy (if Clone implemented)</code></pre>
 <h3 id="move-in-function-calls">Move in Function Calls</h3>
-<pre class="stark"><code>fn process(s: String) { ... }
+<pre class="stark"><code>fn process(s: String) { println(s.as_str()); }
 
 let my_string = String::from(&quot;hello&quot;);
 process(my_string);         // my_string moved into function

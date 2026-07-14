@@ -3,7 +3,12 @@ trait Iterator {
     fn next(&mut self) -> Option<Self::Item>;
 }
 
+struct Counter { count: Int32 }
+
 impl Iterator for Counter {
     type Item = Int32;
-    fn next(&mut self) -> Option<Int32> { ... }
+    fn next(&mut self) -> Option<Int32> {
+        self.count += 1;
+        Some(self.count)
+    }
 }
