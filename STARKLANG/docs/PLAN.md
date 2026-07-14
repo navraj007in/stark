@@ -27,13 +27,13 @@ reversal here with rationale.
 | T3 | Crate layout | Single crate `starkc`, internal modules (`lexer`, `ast`, `parser`, `diag`, later `resolve`, `types`, `borrow`) | Premature crate-splitting creates interface churn; split only when compile times or ownership boundaries demand it. |
 | T4 | Lexer | Hand-written | The spec requires nested block comments and maximal munch with `>>` re-tokenization support — awkward in lexer generators, trivial by hand. |
 | T5 | Parser | Hand-written recursive descent; Pratt (precedence-climbing) for expressions | Core v1's grammar was written for RD (one-token lookahead + the two documented parsing notes). Best diagnostics control. No parser generator dependency. |
-| T6 | AST | Plain owned tree (`Box`/`Vec`), every node carries a `Span` | Simplest thing that supports Gate 2; arena/ID-based HIR is introduced in Gate 2 *if* name resolution needs it, not before. |
+| T6 | AST | Arena-allocated nodes referenced by typed IDs (`ExprId`, `ItemId`, …), every node carries a `Span`; no Rust references or lifetimes in the tree | Gate 2 attaches types/ownership facts in side tables keyed by node ID — adopting IDs on day one costs minor parser boilerplate and avoids a mechanical Gate 2 refactor. The separate lowered HIR still lands at M2.1, not Gate 1. *(Amended from "plain owned tree" per architecture review.)* |
 | T7 | Diagnostics | `codespan-reporting` (or equivalent single-purpose crate) emitting the exact format specified in 04-Semantic-Analysis.md, with `E####`/`W####` codes from the spec | The error format is normative; adopting it from day one makes diagnostics testable against the spec. |
 | T8 | Testing | Fixture manifest + snapshot tests (`insta` or golden files) + unit tests | See §2. Fixtures are the conformance backbone; snapshots make diagnostic regressions visible in review. |
 | T9 | CI | GitHub Actions: `cargo fmt --check`, `clippy -D warnings`, `cargo test`, fixture conformance job | The fixture job is the mechanized version of the spec's own "every example must parse" rule. |
 | T10 | Spec-bug protocol | Implementation never diverges silently: a grammar/semantics defect found while implementing produces, in one commit — the spec fix, regenerated `STARK-Core-v1.{md,html,pdf}`, regenerated fixtures, and the compiler change | Continues the discipline that fixed the earlier drift; per CLAUDE.md conventions. |
 | T11 | Execution strategy (Gate 3) | Tree-walking interpreter over the checked AST | Fastest path to "programs run"; the roadmap explicitly permits it and forbids requiring a VM. Lowering/codegen decisions belong to Gate 5. |
-| T12 | Model backend (Gates 4–5) | ONNX Runtime via generated Rust host glue (`ort` crate); IREE kept as a documented alternative, not built | ORT is the lowest-integration-cost path to a native artifact; the prototype's value is in the frontend checks, not the executor. Revisit at Gate 6. |
+| T12 | Model backend (Gates 4–5) | ONNX Runtime via generated Rust host glue — `ort` crate first, dropping to the ORT C API only if the wrapper blocks something. Backend ladder beyond the prototype: Cranelift for native scalar STARK code *if* Gate 6 shows the interpreter is the bottleneck; IREE (via its stable C embedding API — Rust bindings are unofficial) *if* evidence demands compiled tensor graphs. Neither ladder rung is built before its evidence exists. | ORT is the lowest-integration-cost path to a native artifact; the prototype's value is in the frontend checks, not the executor. Revisit at Gate 6. |
 
 ---
 
@@ -121,6 +121,9 @@ is testable before the next:
 
 *Tests:* per-production unit tests + the WP1.3 harness turning green class by
 class. Snapshot the AST (pretty-printed) for ~15 representative fixtures.
+Add a `cargo-fuzz` target over the lexer+parser once the item grammar lands;
+its gate is "no panics, no hangs" on arbitrary input — grammar *correctness*
+remains owned by the fixtures, not the fuzzer.
 
 *Done when:* all `parse-pass` fixtures parse, all `parse-fail` fixtures fail
 with the right diagnostic, `notation` skipped — the conformance job is green.
@@ -144,9 +147,10 @@ for T10 spec-fix loops; finding them is the point, not a delay.
 
 Strict internal order — each milestone is a usable checkpoint:
 
-- **M2.1 Name resolution.** Scope trees per 04 §1 (lexical vs module
+- **M2.1 Name resolution + HIR.** Lower the ID-based AST (T6) into a
+  desugared HIR here — resolution and everything after it operate on HIR,
+  never on the parser AST. Scope trees per 04 §1 (lexical vs module
   resolution split), single-file first; `mod`/`use` resolution after.
-  Introduce ID-based node references here if the tree AST fights back (T6).
 - **M2.2 Type checking, no generics.** Local inference by unification within
   bodies; explicit signatures; control-flow typing rules (if/match/loop
   unification, `!` coercion); place-expression and mutability checks;
@@ -188,7 +192,10 @@ tensors) run correctly.
 Shape of the work (task breakdown when Gate 2 nears exit):
 - Extend parser/checker behind an explicit `--extension tensor` flag: `Dim`/
   `DType` kinds, shape args, const index lists, `model` items — a Core-only
-  build must reject them by name (extension conformance rule).
+  build must reject them by name (extension conformance rule). In the type
+  representation, tensor constructors are *extension-owned* (registered
+  behind the flag), not variants baked into the Core `TyKind` — the Core
+  checker must remain testable with no knowledge that tensors exist.
 - Dim engine: polynomial normal form + equality; unification with dims;
   existential binding at `refine`.
 - Op typing for exactly the §6 set the demo pipeline uses (matmul, permute,
@@ -237,5 +244,8 @@ Shape of the work (task breakdown when Gate 2 nears exit):
 4. WP1.4 step 1: type grammar + tests; proceed bottom-up.
 
 ## 8. Change Log
+- v0.2 — architecture-review amendments: T6 arena/ID AST from day one with
+  HIR scheduled at M2.1; T12 `ort`-first with the Cranelift/IREE evidence
+  ladder; WP1.4 fuzz target; Gate 4 extension-owned type constructors.
 - v0.1 — initial plan; Gate 1 at WP detail, Gates 2–5 at milestone/decision
   detail, standing decisions T1–T12.
