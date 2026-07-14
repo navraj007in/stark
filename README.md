@@ -1,162 +1,104 @@
 # STARK Language
 
-> **S**calable **T**ensor-Aware **R**eactive **K**ernel — The AI-Native Programming Language for Production ML
+> A safe, compiled, general-purpose language core — with AI/ML deployment as its long-term direction.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0--alpha-orange.svg)](https://github.com/stark-lang/stark)
+[![Status](https://img.shields.io/badge/status-specification-yellow.svg)](STARKLANG/docs/spec/)
 
-## 🚀 What is STARK?
+## Project Status — Read This First
 
-STARK is a high-performance, AI-native programming language designed to bridge the gap between AI research and production deployment. Built from the ground up for machine learning workflows, STARK combines the ease of Python with the performance of systems languages.
+STARK is currently a **language specification, not a working compiler**. There
+is no toolchain to install and nothing to run yet. What exists today:
 
-### Key Features
+- **Core v1 specification** (normative, complete draft): lexical grammar,
+  syntax, type system, ownership/borrowing memory model, semantic analysis,
+  standard library surface, and module system — in
+  [`STARKLANG/docs/spec/`](STARKLANG/docs/spec/).
+- **AI/ML extension sketches** (non-core, optional, early):
+  [`STARKLANG/docs/extensions/`](STARKLANG/docs/extensions/).
+- **Archived pre-pivot design docs** in
+  [`STARKLANG/docs/archive/`](STARKLANG/docs/archive/README.md) and
+  [`web-docs/`](web-docs/README.md) — historical only.
 
-- **🧠 AI-Native**: First-class tensor operations and ML primitives
-- **⚡ Blazing Fast**: Compiled to optimized machine code with JIT compilation
-- **🔒 Memory Safe**: Modern ownership model preventing common bugs
-- **☁️ Cloud-Ready**: Built-in primitives for serverless and distributed computing
-- **🎯 Type-Safe**: Strong static typing with inference for safety and productivity
-- **🔄 Concurrent**: Actor-based concurrency model for parallel ML workloads
+The project originally targeted a much broader "AI-native, cloud-first"
+language. That scope was deliberately cut back to a small, implementable core;
+the reasoning is documented in
+[`STARK_Analysis_and_Discussion.md`](STARK_Analysis_and_Discussion.md).
 
-## 📦 Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/stark-lang/stark.git
-cd stark-lang
-
-# Run the setup script
-chmod +x STARKLANG/stark-setup.sh
-./STARKLANG/stark-setup.sh
-```
-
-## 🎓 Quick Start
-
-### Hello World
+## What Core v1 Looks Like
 
 ```stark
-fn main():
-    print("Hello world")
+struct Point {
+    x: Float64,
+    y: Float64
+}
+
+fn distance(a: &Point, b: &Point) -> Float64 {
+    let dx = a.x - b.x;
+    let dy = a.y - b.y;
+    sqrt(dx * dx + dy * dy)
+}
+
+fn main() {
+    let p1 = Point { x: 0.0, y: 0.0 };
+    let p2 = Point { x: 3.0, y: 4.0 };
+    println(distance(&p1, &p2).fmt());
+}
 ```
 
-### Tensor Operations
+Core v1 design commitments:
 
-```stark
-import tensor
+- **Memory safety without GC** — ownership, moves, and borrow checking
+  (conservative, annotation-free lifetime rules)
+- **Static types with local inference** — explicit function signatures,
+  inferred locals, generics with trait bounds
+- **Explicit, predictable semantics** — no implicit numeric conversions,
+  integer overflow always traps, bounds-checked indexing, exhaustive `match`
+- **Result/Option error handling** with the `?` operator
+- **A minimal standard library**: `Vec`, `HashMap`, `String`, IO, math
 
-fn matrix_multiply():
-    let a = tensor.rand([1000, 1000])
-    let b = tensor.rand([1000, 1000])
-    let c = a @ b  // First-class matrix multiplication
-    return c
+Tensors, model loading, and LLM constructs are **optional extensions** layered
+on top of the core — see
+[`AI-Extensions.md`](STARKLANG/docs/extensions/AI-Extensions.md).
+
+## Documentation
+
+Start at the [documentation index](STARKLANG/docs/index.md). The single-file
+compiled spec (Markdown/HTML/PDF) is
+[`STARK-Core-v1.md`](STARKLANG/docs/spec/STARK-Core-v1.md).
+
+## Roadmap
+
+- [x] Core v1 specification (grammar, types, ownership, stdlib, modules)
+- [ ] Lexer + parser for Core v1
+- [ ] Type checker with ownership/borrow analysis
+- [ ] Interpreter or bytecode backend (MVP execution)
+- [ ] Minimal standard library implementation
+- [ ] Tensor shape-checking extension (the long-term differentiator)
+
+## Repository Layout
+
+```
+STARKLANG/docs/spec/        Normative Core v1 specification
+STARKLANG/docs/extensions/  Optional AI/ML extension sketches
+STARKLANG/docs/archive/     Superseded pre-pivot design docs (historical)
+STARKLANG/compiler/         Pre-pivot Python prototype (not Core v1; see its README)
+web-docs/                   Archived pre-pivot HTML docs (historical)
+Practice/                   Early experiments
 ```
 
-### ML Pipeline Example
+## Contributing
 
-```stark
-import ml.models
-import ml.data
+The most valuable contribution right now is a Core v1 **lexer and parser**
+implementing `docs/spec/01` and `02`, with a test suite derived from the spec
+examples. Spec bug reports (ambiguities, contradictions, unparseable examples)
+are equally welcome.
 
-async fn train_model(dataset_path: str):
-    // Load and preprocess data
-    let dataset = await data.load(dataset_path)
-    let (train, test) = dataset.split(0.8)
-    
-    // Define and train model
-    let model = models.Transformer(
-        layers: 12,
-        hidden_dim: 768,
-        heads: 12
-    )
-    
-    model.train(train, epochs: 10, batch_size: 32)
-    
-    // Evaluate
-    let accuracy = model.evaluate(test)
-    print(f"Test accuracy: {accuracy}")
-```
+## License
 
-## 🏗️ Architecture
+MIT.
 
-STARK features a modern compiler architecture:
+## Acknowledgments
 
-- **Frontend**: Lexer, parser, and type checker
-- **IR**: High-level intermediate representation optimized for ML operations
-- **Backend**: LLVM-based code generation with custom ML optimizations
-- **Runtime**: Lightweight VM with tensor-aware garbage collection
-
-## 📚 Documentation
-
-Comprehensive documentation is available in the `STARKLANG/docs/` directory:
-
-- [Language Overview](STARKLANG/docs/00-Overview/STARK.md)
-- [Architecture Guide](STARKLANG/docs/01-Architecture/)
-- [Type System](STARKLANG/docs/02-Type-System/)
-- [Syntax Reference](STARKLANG/docs/03-Syntax/)
-- [Concurrency Model](STARKLANG/docs/04-Concurrency/)
-- [Standard Library](STARKLANG/docs/06-Standard-Library/)
-
-## 🛠️ Development
-
-### Building from Source
-
-```bash
-# Prerequisites: LLVM 17+, CMake 3.20+
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-make test
-
-# Run specific test suite
-./build/tests/tensor_tests
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
-### Areas of Focus
-
-- Compiler optimizations for ML workloads
-- Standard library expansion
-- Tool ecosystem (IDE support, package manager)
-- Documentation and examples
-
-## 🎯 Roadmap
-
-- [ ] **v0.1**: Core language features and basic ML operations
-- [ ] **v0.2**: Package manager and ecosystem tools
-- [ ] **v0.3**: Distributed training primitives
-- [ ] **v0.4**: Auto-differentiation and gradient tracking
-- [ ] **v1.0**: Production-ready release with stable API
-
-## 📖 Examples
-
-Check out the `Practice/` directory for example programs:
-
-- [Basic Examples](Practice/Basics/)
-- [Interpreter Implementation](Practice/Interpreter/)
-
-## 📄 License
-
-STARK is open-source software licensed under the [MIT License](LICENSE).
-
-## 🙏 Acknowledgments
-
-STARK builds upon decades of programming language research and is inspired by:
-- Rust's ownership model
-- Python's simplicity
-- Julia's numerical computing focus
-- Erlang's actor model
-
----
-
-> *"STARK is AI deployment, perfected."*
-
-Join us in revolutionizing how we build and deploy intelligent systems. Star ⭐ the repo to stay updated!
+STARK's design draws on Rust (ownership model), Swift for TensorFlow and Mojo
+(ML-language direction), and Julia (numerical computing).
