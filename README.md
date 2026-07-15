@@ -76,7 +76,9 @@ The authoritative, gate-based plan is the
 
 - [x] Core v1 specification
 - [x] Tensor and model type-system extension v0.1 draft
-- [ ] Gate 1: Core lexer and parser against the specification fixtures
+- [x] Gate 1: Core lexer and parser against the specification fixtures
+      (121/121 fixtures conformant; exit report:
+      [`starkc/docs/gate1-exit.md`](starkc/docs/gate1-exit.md))
 - [ ] Gate 2: Core type, ownership, and borrow checker
 - [ ] Gate 3: minimal Core execution path and `core-min` library
 - [ ] Gate 4: tensor front end and generated ONNX signatures

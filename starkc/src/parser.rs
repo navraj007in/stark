@@ -1137,6 +1137,11 @@ impl Parser<'_> {
             }
             _ => {
                 self.expected("an expression");
+                if token.kind == TokenKind::Reserved {
+                    // A reserved word can never start anything; consume it
+                    // so it isn't reported a second time by the caller.
+                    self.bump();
+                }
                 self.ast.alloc_expr(ExprKind::Error, token.span)
             }
         }

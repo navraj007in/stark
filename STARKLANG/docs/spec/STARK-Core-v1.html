@@ -985,9 +985,18 @@ block-formed expression statements (see Statements)</li>
 </ul>
 <h2 id="parsing-notes">Parsing Notes</h2>
 <ul>
-<li><code>&gt;&gt;</code> in a generic argument position
-(e.g. <code>Vec&lt;Vec&lt;Int32&gt;&gt;</code>) MUST be re-tokenized as
-two <code>&gt;</code> tokens by the parser.</li>
+<li>When a <code>&gt;</code> is expected in generic-argument position
+and the next token is <code>&gt;&gt;</code>, <code>&gt;&gt;=</code>, or
+<code>&gt;=</code> (maximal munch), the parser MUST split off a single
+<code>&gt;</code> and re-tokenize the remainder (<code>&gt;</code>,
+<code>&gt;=</code>, or <code>=</code> respectively) — so
+<code>Vec&lt;Vec&lt;Int32&gt;&gt;</code>,
+<code>Vec&lt;Vec&lt;Int32&gt;&gt;= v</code>, and
+<code>Vec&lt;Int32&gt;= v</code> all parse.</li>
+<li>Nested tuple-field access <code>pair.0.1</code> lexes the
+<code>0.1</code> as a FLOAT token (maximal munch); after <code>.</code>,
+the parser MUST split an unsuffixed digits-<code>.</code>-digits FLOAT
+into two INTEGER tuple indices.</li>
 <li>In expression position, a bare <code>&lt;</code> after an identifier
 is always the relational operator; explicit generic arguments require
 the <code>::&lt;</code> form (turbofish), so no lookahead disambiguation

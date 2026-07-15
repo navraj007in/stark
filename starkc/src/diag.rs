@@ -83,7 +83,10 @@ impl Diagnostic {
     pub fn render(&self, file: &SourceFile) -> String {
         let (line, col) = file.line_col(self.span.lo);
         let line_str = line.to_string();
-        let gutter = " ".repeat(line_str.len());
+        // Right-align the line number into a min-width-2 column so the `|`
+        // of every row lines up and carets sit exactly under their span.
+        let width = line_str.len().max(2);
+        let gutter = " ".repeat(width - 1);
         let mut out = String::new();
 
         match &self.code {
@@ -104,7 +107,7 @@ impl Diagnostic {
         let _ = writeln!(out, "{gutter}  |");
 
         let text = file.line_text(line);
-        let _ = writeln!(out, "{line_str} | {text}");
+        let _ = writeln!(out, "{line_str:>width$} | {text}");
 
         // Caret width: span portion that falls on the first line, min 1.
         let (end_line, end_col) = file.line_col(self.span.hi);
@@ -151,7 +154,7 @@ mod tests {
 Error: [E0001] Type mismatch
   --> example.stark:1:17
    |
-1 | let x: String = 42;
+ 1 | let x: String = 42;
    |                 ^^ expected String, found Int32
    |
    = help: change the annotation or the initializer
@@ -169,7 +172,7 @@ Error: [E0001] Type mismatch
 Error: something went wrong
   --> f.stark:1:1
    |
-1 | fn main() {}
+ 1 | fn main() {}
    | ^
 ";
         assert_eq!(rendered, expected);

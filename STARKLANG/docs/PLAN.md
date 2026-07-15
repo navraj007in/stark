@@ -159,12 +159,22 @@ position (mirroring the value side), and `PrimitiveType` as a leading
 `PathSegment` (without it, `String::from(s)` was formally unparseable
 because `String` lexes as a keyword).
 
-### WP1.5 — Diagnostics polish + Gate 1 exit review (small)
+### WP1.5 — Diagnostics polish + Gate 1 exit review (small) ✅
 - Verify diagnostic rendering matches the normative format; wire `E`-codes
   where the spec defines them.
 - Write the Gate 1 exit report (a short doc in `starkc/docs/`): fixtures
   status, list of spec defects found and fixed under T10, deviations (should
   be none), open questions handed to Gate 2.
+
+**Done 2026-07-15.** Exit report: `starkc/docs/gate1-exit.md`. End-to-end
+diagnostic-format goldens added (`starkc/tests/diag_format.rs`); they caught
+and fixed a renderer misalignment (line-number `|` and carets off by one
+column vs the gutter). E-codes: the spec assigns none to lexical/syntax
+errors — recorded as Gate 2 open question #1 rather than inventing codes.
+One last T10 fix: 02's Parsing Notes now specify the full `>`-splitting
+family and the `pair.0.1` FLOAT split. **Gate 1 is closed** — see the exit
+report for the ten-defect T10 ledger and six open questions handed to
+Gate 2.
 
 **Gate 1 exit == roadmap exit criteria + conformance job required-green in CI.**
 
@@ -275,6 +285,10 @@ Shape of the work (task breakdown when Gate 2 nears exit):
 4. WP1.4 step 1: type grammar + tests; proceed bottom-up.
 
 ## 8. Change Log
+- v0.5 — WP1.5 done; **Gate 1 closed** (exit report in
+  `starkc/docs/gate1-exit.md`). Renderer alignment fix behind new format
+  goldens; final T10 fix to 02's Parsing Notes; syntax-error E-codes
+  deferred to Gate 2 as an open question.
 - v0.4 — WP1.4 done (parser; conformance 91/91, fixture CI job flipped to
   required). Amendment: the fuzz target is a stable-toolchain deterministic
   pseudo-fuzz in `starkc/tests/robustness.rs` rather than nightly

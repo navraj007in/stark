@@ -1,8 +1,9 @@
 # starkc
 
-Compiler for the STARK Core v1 language. Rust, stable toolchain, currently at
-**WP1.4 done (parser)** — WP1.5 (diagnostics polish + Gate 1 exit review)
-remains.
+Compiler for the STARK Core v1 language. Rust, stable toolchain.
+**Gate 1 (front end) is complete** — see
+[`docs/gate1-exit.md`](docs/gate1-exit.md); next is Gate 2, the semantic
+checker.
 
 - Language definition: [`../STARKLANG/docs/spec/`](../STARKLANG/docs/spec/)
   (normative), single file: `STARK-Core-v1.md`
@@ -34,6 +35,8 @@ UPDATE_SNAPSHOTS=1 cargo test --test snapshots   # regenerate AST snapshots
 | `parser` | recursive descent, 16-level precedence (`02-Syntax-Grammar.md`) | done (WP1.4) |
 | `tests/snapshots` | AST snapshots for 15 representative fixtures | done (WP1.4) |
 | `tests/robustness` | deterministic pseudo-fuzz (no panics/hangs) | done (WP1.4) |
+| `tests/diag_format` | end-to-end diagnostic-format goldens | done (WP1.5) |
+| `docs/gate1-exit.md` | Gate 1 exit report (T10 ledger, open questions) | done (WP1.5) |
 
 Architecture target: `Source → Tokens → AST → HIR → typed HIR → backend`;
 Gate 1 covers through the AST. Spec defects found during implementation

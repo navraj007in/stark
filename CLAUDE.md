@@ -107,8 +107,9 @@ conflict table.
   for Core v1 work.
 - Delivery is governed by `STARKLANG/docs/ROADMAP.md` (Gates 1–6 with
   evidence-based exit criteria) and executed per `STARKLANG/docs/PLAN.md`
-  (standing decisions T1–T12, work packages). Current gate: Gate 1, at
-  WP1.5 (diagnostics polish + exit review).
+  (standing decisions T1–T12, work packages). Gate 1 is closed
+  (`starkc/docs/gate1-exit.md`); next: Gate 2, the semantic checker
+  (M2.1–M2.5).
 - Scope discipline: work outside the current gate needs a roadmap-governed
   proposal; see ROADMAP.md §4 non-goals.
 
@@ -132,5 +133,5 @@ conflict table.
 
 **Last Updated**: July 2026
 **Status**: Core v1 specification complete; compiler front end done (Gate 1
-at WP1.5)
+closed; Gate 2 next)
 **License**: MIT

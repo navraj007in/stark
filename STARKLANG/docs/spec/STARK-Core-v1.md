@@ -846,8 +846,13 @@ Notes:
 - Trailing commas are allowed in lists
 
 ## Parsing Notes
-- `>>` in a generic argument position (e.g. `Vec<Vec<Int32>>`) MUST be re-tokenized
-  as two `>` tokens by the parser.
+- When a `>` is expected in generic-argument position and the next token is
+  `>>`, `>>=`, or `>=` (maximal munch), the parser MUST split off a single
+  `>` and re-tokenize the remainder (`>`, `>=`, or `=` respectively) — so
+  `Vec<Vec<Int32>>`, `Vec<Vec<Int32>>= v`, and `Vec<Int32>= v` all parse.
+- Nested tuple-field access `pair.0.1` lexes the `0.1` as a FLOAT token
+  (maximal munch); after `.`, the parser MUST split an unsuffixed
+  digits-`.`-digits FLOAT into two INTEGER tuple indices.
 - In expression position, a bare `<` after an identifier is always the
   relational operator; explicit generic arguments require the `::<` form
   (turbofish), so no lookahead disambiguation is required.
