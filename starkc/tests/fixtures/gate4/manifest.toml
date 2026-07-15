@@ -1,0 +1,70 @@
+# Gate 4 tensor-extension fixture manifest.
+#
+# Classifies the Gate 4 fixture cases by expected outcome, mirroring the Core
+# spec-fixture manifest convention. The parse-pass and core-reject classes are
+# exercised by unit tests today (M4.1); the semantic classes fill in as M4.2+
+# lands. ONNX fixtures (M4.5) are generated deterministically by test code and
+# recorded here as they are added.
+#
+# Classes:
+#   parse-pass      parses (and AST-dumps) under `--extension tensor`
+#   core-reject     rejected in Core-only mode, diagnostic naming `tensor`
+#   reserved-reject rejected even under the extension (§11 reserved constructs)
+#   semantic-pass   type-checks under `--extension tensor` (M4.2+)
+#   semantic-error  fails extension type checking with a shape/dtype/device
+#                   diagnostic (M4.2+)
+
+[[case]]
+name = "static_shape"
+class = "parse-pass"
+source = "let a: Tensor<Float32, [1024, 768]>;"
+
+[[case]]
+name = "symbolic_and_scalar_shapes"
+class = "parse-pass"
+source = "model M<B: Dim> { input x: Tensor<Float32, [B, 3, 224, 224]>; output y: Tensor<Float32, [B, 1000]>; }"
+
+[[case]]
+name = "dim_expr_arithmetic"
+class = "parse-pass"
+source = "let x: Tensor<Float32, [B * H + 1]>;"
+
+[[case]]
+name = "device_qualified"
+class = "parse-pass"
+source = "let d: Tensor<Float16, [B, 1000], device = D>;"
+
+[[case]]
+name = "core_rejects_shape_arg"
+class = "core-reject"
+source = "let x: Tensor<Float32, [B, 3]>;"
+
+[[case]]
+name = "core_rejects_model"
+class = "core-reject"
+source = "model M { input x: Tensor<Float32, [B]>; output y: Tensor<Float32, [B]>; }"
+
+[[case]]
+name = "core_rejects_dim_kind"
+class = "core-reject"
+source = "fn f<B: Dim>(x: Int32) -> Int32 { x }"
+
+[[case]]
+name = "core_rejects_float16"
+class = "core-reject"
+source = "fn f(x: Float16) -> Unit {}"
+
+[[case]]
+name = "reserved_named_axes"
+class = "reserved-reject"
+source = "let x: Tensor<Float32, [batch: B, 3]>;"
+
+# --- ONNX reference artifact (external, verified by checksum; not committed) ---
+[reference_model]
+name = "resnet50-v1-7.onnx"
+url = "https://github.com/onnx/models/raw/main/validated/vision/classification/resnet/model/resnet50-v1-7.onnx"
+sha256 = "af16a04a6ec48ac494065d4439fe9dea590d337b9ca6dc328160ccf04a217b9c"
+bytes = 102583340
+signature_input = "Float32 [B, 3, 224, 224]"
+signature_output = "Float32 [B, 1000]"
+fetch = "starkc/tests/fixtures/onnx/fetch-reference.sh"

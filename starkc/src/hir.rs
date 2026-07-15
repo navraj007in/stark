@@ -168,7 +168,32 @@ pub struct GenericArgs {
 #[derive(Clone)]
 pub enum GenericArg {
     Type(TypeId),
-    Binding { name: Span, ty: TypeId },
+    Binding {
+        name: Span,
+        ty: TypeId,
+    },
+    /// `[DimExpr, ...]` shape / index-list argument (`tensor` extension,
+    /// D2/D5). Dimension variables are carried as name spans; their kind and
+    /// polynomial semantics are the extension checker's concern (M4.2+).
+    Shape(ShapeArg),
+}
+
+#[derive(Clone)]
+pub struct ShapeArg {
+    pub dims: Vec<DimExpr>,
+    pub span: Span,
+}
+
+#[derive(Clone)]
+pub enum DimExpr {
+    Lit(Span),
+    Var(Span),
+    Binary {
+        op: crate::ast::DimBinOp,
+        lhs: Box<DimExpr>,
+        rhs: Box<DimExpr>,
+    },
+    Error,
 }
 
 // ----------------------------------------------------------- expressions --
@@ -353,6 +378,23 @@ pub enum ItemKind {
         name: Span,
         items: Option<Vec<ItemId>>,
     },
+    /// `model Name<...> { ... }` (`tensor` extension, D4). Full validation is
+    /// deferred to the extension checker (M4.4); the front end only needs a
+    /// span-preserving, name-resolved representation.
+    Model(ModelDef),
+}
+
+pub struct ModelDef {
+    pub name: Span,
+    pub generics: Vec<GenericParam>,
+    pub ports: Vec<ModelPort>,
+}
+
+pub struct ModelPort {
+    pub dir: crate::ast::PortDir,
+    pub name: Span,
+    pub ty: TypeId,
+    pub span: Span,
 }
 
 pub struct FnDef {

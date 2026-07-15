@@ -22,6 +22,7 @@
 use crate::ast::*;
 use crate::diag::Diagnostic;
 use crate::lexer::{tokenize, Kw, Token, TokenKind};
+use crate::options::LanguageOptions;
 use crate::source::{SourceFile, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,8 +31,20 @@ pub enum ParseMode {
     Snippet,
 }
 
-/// Lex and parse `file`. The returned diagnostics include lexer diagnostics.
+/// Lex and parse `file` in Core-only mode. The returned diagnostics include
+/// lexer diagnostics. This is the Core v1 entry point; extension syntax is
+/// rejected. Use [`parse_with_options`] to enable extensions.
 pub fn parse(file: &SourceFile, mode: ParseMode) -> (Ast, Vec<Diagnostic>) {
+    parse_with_options(file, mode, LanguageOptions::CORE)
+}
+
+/// Lex and parse `file` under `options`, which may enable extensions
+/// (Gate 4+). The returned diagnostics include lexer diagnostics.
+pub fn parse_with_options(
+    file: &SourceFile,
+    mode: ParseMode,
+    options: LanguageOptions,
+) -> (Ast, Vec<Diagnostic>) {
     let (tokens, lex_diags) = tokenize(file);
     let mut p = Parser {
         file,
@@ -39,6 +52,7 @@ pub fn parse(file: &SourceFile, mode: ParseMode) -> (Ast, Vec<Diagnostic>) {
         pos: 0,
         diags: lex_diags,
         ast: Ast::default(),
+        options,
         in_impl_or_trait: false,
         depth: 0,
         depth_reported: false,
@@ -71,12 +85,28 @@ const NO_STRUCT: Restrictions = Restrictions {
     no_struct_literal: true,
 };
 
+/// Classification of a `[...]` group in generic-argument position
+/// (`tensor` extension D2/D5 vs Core array/slice types).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ShapeGroupKind {
+    /// `[T; N]` — a Core array type (has a top-level `;`).
+    ArrayType,
+    /// `[]` or `[a, b, ...]` — unambiguously a shape argument.
+    ShapeLike,
+    /// A single element with no `;`/`,`: a Core slice type `[T]` or a rank-1
+    /// shape `[B]`, resolved by whether the extension is enabled.
+    SingleElem,
+}
+
 struct Parser<'a> {
     file: &'a SourceFile,
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diagnostic>,
     ast: Ast,
+    /// Enabled language extensions (Core-only by default). Gates extension
+    /// surface syntax such as tensor shape arguments and `model` items.
+    options: LanguageOptions,
     /// `Self` paths and receivers are only valid inside `trait`/`impl`.
     in_impl_or_trait: bool,
     /// Recursion depth across expr/type/pattern/block/item nesting. Bounded
@@ -259,11 +289,33 @@ impl Parser<'_> {
         )
     }
 
+    /// The contextual `model` item keyword (D4) begins an item when followed by
+    /// a name, in both Core-only and tensor mode (Core-only produces a focused
+    /// "requires extension `tensor`" diagnostic). The `peek2` guard keeps
+    /// `model` usable as an ordinary identifier in expression position
+    /// (`model.predict(x)`), since `model <ident>` is never a Core expression.
+    fn at_model_item(&self) -> bool {
+        self.peek().kind == TokenKind::Ident
+            && self.text(self.peek().span) == "model"
+            && self.peek2() == TokenKind::Ident
+    }
+
+    /// Whether the current token begins an item (Core keywords or the `model`
+    /// contextual keyword).
+    fn at_item_start(&self) -> bool {
+        Self::item_start(self.peek().kind) || self.at_model_item()
+    }
+
     /// Panic-mode recovery inside blocks: skip to just after a `;`, or to a
     /// `}` / item keyword / EOF (not consumed). Balances nested delimiters.
     fn recover_stmt(&mut self) {
         let mut depth = 0usize;
         loop {
+            // Stop before a contextual `model` item so recovery does not skip a
+            // following model declaration (Codex P2).
+            if depth == 0 && self.at_model_item() {
+                return;
+            }
             match self.peek().kind {
                 TokenKind::Eof => return,
                 TokenKind::Semi if depth == 0 => {
@@ -292,6 +344,11 @@ impl Parser<'_> {
     fn recover_item(&mut self) {
         let mut depth = 0usize;
         loop {
+            // Stop before a contextual `model` item (Codex P2) so malformed
+            // input cannot cause every following model to be skipped to EOF.
+            if depth == 0 && self.at_model_item() {
+                return;
+            }
             match self.peek().kind {
                 TokenKind::Eof => return,
                 k if depth == 0 && Self::item_start(k) => return,
@@ -430,7 +487,7 @@ impl Parser<'_> {
 
     // ------------------------------------------------------------- types --
 
-    fn generic_args(&mut self) -> Option<GenericArgs> {
+    fn generic_args(&mut self, single_ident_is_shape: bool) -> Option<GenericArgs> {
         let lo = self.peek().span.lo;
         if !self.expect(TokenKind::Lt, "`<`") {
             return None;
@@ -444,8 +501,40 @@ impl Parser<'_> {
                 self.expected("`>`");
                 break;
             }
-            // `Item = T` associated-type binding vs a type argument.
-            if self.at(TokenKind::Ident) && self.peek2() == TokenKind::Eq {
+            // Shape / index-list argument `[DimExpr, ...]` (extension D2/D5).
+            // In Core-only mode this only intercepts the `[]` and `[a, b]`
+            // forms — which were parse errors before — to emit a focused
+            // diagnostic; Core slice/array generic args (`[T]`, `[T; N]`) fall
+            // through to `ty()` unchanged in every mode.
+            if self.at(TokenKind::LBracket) {
+                match self.shape_group_kind() {
+                    ShapeGroupKind::ArrayType => {
+                        let ty = self.ty();
+                        args.push(GenericArg::Type(ty));
+                    }
+                    ShapeGroupKind::ShapeLike => {
+                        let shape = self.shape_arg();
+                        args.push(GenericArg::Shape(shape));
+                    }
+                    ShapeGroupKind::SingleElem => {
+                        // A single-element `[X]` is a Core slice type unless the
+                        // extension is on AND `X` is dim-capable. Type-only
+                        // elements (`[Int32]`, `[&T]`, `[Foo<U>]`) stay Core
+                        // slices even under the extension, so valid Core
+                        // generic arguments are never stolen (Codex P1).
+                        if self.tensor_enabled()
+                            && !self.single_bracket_elem_is_type(single_ident_is_shape)
+                        {
+                            let shape = self.shape_arg();
+                            args.push(GenericArg::Shape(shape));
+                        } else {
+                            let ty = self.ty();
+                            args.push(GenericArg::Type(ty));
+                        }
+                    }
+                }
+            } else if self.at(TokenKind::Ident) && self.peek2() == TokenKind::Eq {
+                // `Item = T` associated-type binding (also `device = D`, §8).
                 let name = self.bump().span;
                 self.bump(); // =
                 let ty = self.ty();
@@ -465,6 +554,211 @@ impl Parser<'_> {
             args,
             span: self.span_from(lo),
         })
+    }
+
+    // ------------------------------------ tensor extension (D2/D3/D5) --
+
+    fn tensor_enabled(&self) -> bool {
+        self.options.tensor()
+    }
+
+    /// Recognize the extension element-type identifiers `Float16`/`BFloat16`
+    /// (D3) when the `tensor` extension is enabled. They lex as ordinary
+    /// identifiers; in Core-only mode they are left to normal name resolution
+    /// (so a Core program may still use them as ordinary type names).
+    fn at_extension_primitive(&self) -> Option<Primitive> {
+        if !self.tensor_enabled() || self.peek().kind != TokenKind::Ident {
+            return None;
+        }
+        match self.text(self.peek().span) {
+            "Float16" => Some(Primitive::Float16),
+            "BFloat16" => Some(Primitive::BFloat16),
+            _ => None,
+        }
+    }
+
+    /// Classify a `[...]` group in generic-argument position without consuming
+    /// it, by a bounded scan to the matching `]`. Priority: a top-level `;`
+    /// means a Core array type `[T; N]`; an empty group or a top-level `,`
+    /// means a shape argument; a single element is mode-dependent
+    /// (slice type in Core, rank-1 shape under the extension).
+    fn shape_group_kind(&self) -> ShapeGroupKind {
+        debug_assert!(self.at(TokenKind::LBracket));
+        let mut depth = 0i32;
+        let mut i = self.pos;
+        let mut saw_comma = false;
+        let mut saw_content = false;
+        while let Some(tok) = self.tokens.get(i) {
+            match tok.kind {
+                TokenKind::LBracket | TokenKind::LParen | TokenKind::LBrace => {
+                    if depth == 1 {
+                        saw_content = true;
+                    }
+                    depth += 1;
+                }
+                TokenKind::RParen | TokenKind::RBrace => depth -= 1,
+                TokenKind::RBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                TokenKind::Semi if depth == 1 => return ShapeGroupKind::ArrayType,
+                TokenKind::Comma if depth == 1 => saw_comma = true,
+                TokenKind::Eof => break,
+                _ if depth == 1 => saw_content = true,
+                _ => {}
+            }
+            i += 1;
+        }
+        // `[]` (no content) or a top-level comma is unambiguously a shape.
+        if !saw_content || saw_comma {
+            ShapeGroupKind::ShapeLike
+        } else {
+            ShapeGroupKind::SingleElem
+        }
+    }
+
+    /// Decide whether the single element of a `[X]` generic argument (cursor at
+    /// `[`) can only be a Core type, not a dimension expression. Dimension
+    /// atoms are integer literals, bare identifiers, and `(`; anything else —
+    /// a primitive keyword, `Self`, `fn`, `&`, a nested `[`, or an identifier
+    /// that heads a path (`::`) or generic (`<`) — is a type. A lone
+    /// identifier or parenthesized atom is ambiguous, so it becomes a rank-1
+    /// shape only in a known shape position. `[Int32]`, `[T]`, `[Foo]`,
+    /// `[&T]`, and `[Foo<U>]` otherwise remain Core slice types.
+    fn single_bracket_elem_is_type(&self, single_ident_is_shape: bool) -> bool {
+        let t1 = self.tokens.get(self.pos + 1).map(|t| t.kind);
+        let t2 = self
+            .tokens
+            .get(self.pos + 2)
+            .map_or(TokenKind::Eof, |t| t.kind);
+        match t1 {
+            Some(TokenKind::Ident) => {
+                if t2 == TokenKind::RBracket {
+                    !single_ident_is_shape
+                } else {
+                    matches!(t2, TokenKind::ColonColon | TokenKind::Lt)
+                }
+            }
+            Some(TokenKind::Int { .. }) => false,
+            Some(TokenKind::LParen) => !single_ident_is_shape,
+            // Primitive keywords, `Self`, `fn`, `&`, nested `[`, tuples, etc.
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Parse a `[DimExpr, ...]` / `[]` shape argument (D2) or const index list
+    /// (D5). Emits a focused diagnostic naming the `tensor` extension when it
+    /// is disabled, then still consumes the group so recovery is clean.
+    fn shape_arg(&mut self) -> ShapeArg {
+        let lo = self.peek().span.lo;
+        if !self.tensor_enabled() {
+            self.error(
+                "shape arguments require extension `tensor`",
+                self.peek().span,
+            );
+        }
+        self.expect(TokenKind::LBracket, "`[`");
+        let mut dims = Vec::new();
+        loop {
+            if self.at(TokenKind::RBracket) || self.at(TokenKind::Eof) {
+                break;
+            }
+            // Reserved named axes `[batch: B, ...]` (§11) — reject but recover
+            // by parsing the dimension after the name.
+            if self.at(TokenKind::Ident) && self.peek2() == TokenKind::Colon {
+                self.error("named axes are reserved in `tensor` v0.1", self.peek().span);
+                self.bump(); // name
+                self.bump(); // :
+            }
+            dims.push(self.dim_expr());
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBracket, "`]`");
+        ShapeArg {
+            dims,
+            span: self.span_from(lo),
+        }
+    }
+
+    /// A dimension expression (§3.2): `+`/`-` at the lowest precedence, `*`
+    /// above them, atoms are integer literals, dim variables, and
+    /// parenthesized sub-expressions. Left-associative.
+    fn dim_expr(&mut self) -> DimId {
+        if self.depth_exceeded() {
+            let span = self.peek().span;
+            return self.ast.alloc_dim(DimExprKind::Error, span);
+        }
+        self.depth += 1;
+        let d = self.dim_add();
+        self.depth -= 1;
+        d
+    }
+
+    fn dim_add(&mut self) -> DimId {
+        let lo = self.peek().span.lo;
+        let mut lhs = self.dim_mul();
+        loop {
+            let op = if self.at(TokenKind::Plus) {
+                DimBinOp::Add
+            } else if self.at(TokenKind::Minus) {
+                DimBinOp::Sub
+            } else {
+                break;
+            };
+            self.bump();
+            let rhs = self.dim_mul();
+            lhs = self
+                .ast
+                .alloc_dim(DimExprKind::Binary { op, lhs, rhs }, self.span_from(lo));
+        }
+        lhs
+    }
+
+    fn dim_mul(&mut self) -> DimId {
+        let lo = self.peek().span.lo;
+        let mut lhs = self.dim_atom();
+        while self.at(TokenKind::Star) {
+            self.bump();
+            let rhs = self.dim_atom();
+            lhs = self.ast.alloc_dim(
+                DimExprKind::Binary {
+                    op: DimBinOp::Mul,
+                    lhs,
+                    rhs,
+                },
+                self.span_from(lo),
+            );
+        }
+        lhs
+    }
+
+    fn dim_atom(&mut self) -> DimId {
+        let token = self.peek();
+        match token.kind {
+            TokenKind::Int { .. } => {
+                self.bump();
+                self.ast.alloc_dim(DimExprKind::Lit(token.span), token.span)
+            }
+            TokenKind::Ident => {
+                self.bump();
+                self.ast.alloc_dim(DimExprKind::Var(token.span), token.span)
+            }
+            TokenKind::LParen => {
+                self.bump();
+                let inner = self.dim_expr();
+                self.expect(TokenKind::RParen, "`)`");
+                inner
+            }
+            _ => {
+                self.expected("a dimension expression (integer, identifier, or `(`)");
+                self.ast.alloc_dim(DimExprKind::Error, token.span)
+            }
+        }
     }
 
     fn ty(&mut self) -> TypeId {
@@ -489,12 +783,28 @@ impl Parser<'_> {
                 return self.ast.alloc_type(TypeKind::Primitive(p), token.span);
             }
         }
+        // Extension element types `Float16`/`BFloat16` (D3): lexed as
+        // identifiers, recognized as primitives only when `tensor` is enabled.
+        if let Some(p) = self.at_extension_primitive() {
+            if self.peek2() != TokenKind::ColonColon {
+                self.bump();
+                return self.ast.alloc_type(TypeKind::Primitive(p), token.span);
+            }
+        }
         if self.at_path_start() {
             let Some(path) = self.path() else {
                 return self.ast.alloc_type(TypeKind::Error, token.span);
             };
+            // `[T]` is valid Core slice syntax and is otherwise lexically
+            // indistinguishable from a rank-one symbolic shape. Only the
+            // extension-owned `Tensor` constructor establishes a shape
+            // position at parse time; all other bare identifiers remain Core
+            // types until a later semantic extension signature says otherwise.
+            let single_ident_is_shape = self.tensor_enabled()
+                && path.segments.len() == 1
+                && self.text(path.segments[0].span) == "Tensor";
             let args = if self.at(TokenKind::Lt) {
-                self.generic_args()
+                self.generic_args(single_ident_is_shape)
             } else {
                 None
             };
@@ -1100,7 +1410,7 @@ impl Parser<'_> {
                 // Turbofish: `path::<Args>`.
                 let turbofish = if self.at(TokenKind::ColonColon) && self.peek2() == TokenKind::Lt {
                     self.bump();
-                    self.generic_args()
+                    self.generic_args(false)
                 } else {
                     None
                 };
@@ -1387,7 +1697,7 @@ impl Parser<'_> {
         let mut tail = None;
         while !self.at(terminator) && !self.at(TokenKind::Eof) {
             let before = self.pos;
-            if Self::item_start(self.peek().kind) {
+            if self.at_item_start() {
                 let span = self.peek().span;
                 if !allow_items {
                     self.error("items are not allowed inside blocks in Core v1", span);
@@ -1630,7 +1940,7 @@ impl Parser<'_> {
     fn trait_ref(&mut self) -> Option<TraitRef> {
         let path = self.path()?;
         let args = if self.at(TokenKind::Lt) {
-            self.generic_args()
+            self.generic_args(false)
         } else {
             None
         };
@@ -1782,6 +2092,8 @@ impl Parser<'_> {
             TokenKind::Keyword(Kw::Type) => self.parse_type_alias()?,
             TokenKind::Keyword(Kw::Use) => self.parse_use()?,
             TokenKind::Keyword(Kw::Mod) => self.parse_mod()?,
+            // `model` (D4) is a contextual keyword lexed as an identifier.
+            TokenKind::Ident if self.text(self.peek().span) == "model" => self.parse_model()?,
             _ => {
                 self.expected("an item");
                 return None;
@@ -1826,6 +2138,57 @@ impl Parser<'_> {
             name,
             generics,
             fields,
+        })
+    }
+
+    /// `model Name<...> { input p: T; output q: U; }` (extension D4). `model`,
+    /// `input`, and `output` are contextual keywords (identifiers). Emits a
+    /// focused diagnostic naming the `tensor` extension when it is disabled.
+    fn parse_model(&mut self) -> Option<ItemKind> {
+        let kw_span = self.peek().span;
+        self.bump(); // `model`
+        if !self.tensor_enabled() {
+            self.error("`model` declarations require extension `tensor`", kw_span);
+        }
+        let name = self.expect_ident("a model name")?;
+        let generics = self.opt_generic_params();
+        self.expect(TokenKind::LBrace, "`{`");
+        let mut ports = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            match self.parse_model_port() {
+                Some(port) => ports.push(port),
+                None => break,
+            }
+        }
+        self.expect(TokenKind::RBrace, "`}`");
+        Some(ItemKind::Model(ModelDef {
+            name,
+            generics,
+            ports,
+        }))
+    }
+
+    fn parse_model_port(&mut self) -> Option<ModelPort> {
+        let lo = self.peek().span.lo;
+        let dir = if self.at(TokenKind::Ident) && self.text(self.peek().span) == "input" {
+            self.bump();
+            PortDir::Input
+        } else if self.at(TokenKind::Ident) && self.text(self.peek().span) == "output" {
+            self.bump();
+            PortDir::Output
+        } else {
+            self.expected("`input` or `output`");
+            return None;
+        };
+        let name = self.expect_ident("a port name")?;
+        self.expect(TokenKind::Colon, "`:`");
+        let ty = self.ty();
+        self.expect(TokenKind::Semi, "`;`");
+        Some(ModelPort {
+            dir,
+            name,
+            ty,
+            span: self.span_from(lo),
         })
     }
 
@@ -2130,7 +2493,7 @@ impl Parser<'_> {
         let mut items = Vec::new();
         while !self.at(TokenKind::Eof) {
             let before = self.pos;
-            if Self::item_start(self.peek().kind) {
+            if self.at_item_start() {
                 match self.item() {
                     Some(item) => items.push(item),
                     None => self.recover_item(),
@@ -2190,6 +2553,194 @@ mod tests {
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
         ast_dump::dump(&ast, &file)
+    }
+
+    // ----- tensor extension (M4.1) helpers -----
+
+    fn tensor_ok(src: &str, mode: ParseMode) -> Ast {
+        let file = SourceFile::new("test.stark", src.to_string());
+        let (ast, diags) = parse_with_options(&file, mode, LanguageOptions::with_tensor());
+        assert!(
+            diags.is_empty(),
+            "unexpected diagnostics for {src:?}: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        ast
+    }
+
+    fn tensor_err(src: &str, mode: ParseMode) -> Vec<String> {
+        let file = SourceFile::new("test.stark", src.to_string());
+        let (_ast, diags) = parse_with_options(&file, mode, LanguageOptions::with_tensor());
+        assert!(!diags.is_empty(), "expected diagnostics for {src:?}");
+        diags.iter().map(|d| d.message.clone()).collect()
+    }
+
+    fn tensor_dump(src: &str, mode: ParseMode) -> String {
+        let file = SourceFile::new("test.stark", src.to_string());
+        let (ast, diags) = parse_with_options(&file, mode, LanguageOptions::with_tensor());
+        assert!(
+            diags.is_empty(),
+            "unexpected diagnostics for {src:?}: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        ast_dump::dump(&ast, &file)
+    }
+
+    #[test]
+    fn tensor_static_symbolic_scalar_device_shapes() {
+        // static, symbolic, scalar `[]`, device-qualified
+        tensor_ok("let a: Tensor<Float32, [1024, 768]>;", ParseMode::Snippet);
+        tensor_ok(
+            "let b: Tensor<Float32, [B, 3, 224, 224]>;",
+            ParseMode::Snippet,
+        );
+        tensor_ok("let c: Tensor<Float32, []>;", ParseMode::Snippet);
+        tensor_ok(
+            "let d: Tensor<Float16, [B, 1000], device = D>;",
+            ParseMode::Snippet,
+        );
+        tensor_ok("let e: TensorDyn<Float32>;", ParseMode::Snippet);
+    }
+
+    #[test]
+    fn tensor_dim_expr_precedence_and_parens() {
+        // `*` binds tighter than `+`/`-`; parens override.
+        let d = tensor_dump("let x: Tensor<Float32, [B * H + 1]>;", ParseMode::Snippet);
+        assert!(d.contains("dim-binary +"), "{d}");
+        assert!(d.contains("dim-binary *"), "{d}");
+        let p = tensor_dump("let x: Tensor<Float32, [B * (H + 1)]>;", ParseMode::Snippet);
+        // Outer op is `*` when the sum is parenthesized.
+        let mul_line = p.lines().find(|l| l.contains("dim-binary")).unwrap();
+        assert!(mul_line.contains('*'), "{p}");
+    }
+
+    #[test]
+    fn tensor_empty_and_trailing_comma_shapes() {
+        tensor_ok("let a: Tensor<Float32, []>;", ParseMode::Snippet);
+        tensor_ok("let b: Tensor<Float32, [B, 3,]>;", ParseMode::Snippet);
+    }
+
+    #[test]
+    fn model_single_and_multiple_ports() {
+        tensor_ok(
+            "model M<B: Dim> { input x: Tensor<Float32, [B, 3]>; output y: Tensor<Float32, [B]>; }",
+            ParseMode::Program,
+        );
+        tensor_ok(
+            "model M<B: Dim> { input a: Tensor<Float32, [B]>; input b: Tensor<Float32, [B]>; \
+             output p: Tensor<Float32, [B]>; output q: Tensor<Float32, [B]>; }",
+            ParseMode::Program,
+        );
+        let d = tensor_dump(
+            "model ResNet<B: Dim> { input image: Tensor<Float32, [B, 3, 224, 224]>; \
+             output class: Tensor<Float32, [B, 1000]>; }",
+            ParseMode::Program,
+        );
+        assert!(d.contains("model ResNet"), "{d}");
+        assert!(d.contains("port input image"), "{d}");
+        assert!(d.contains("port output class"), "{d}");
+    }
+
+    #[test]
+    fn index_list_turbofish_argument() {
+        // Index lists share the shape surface; usable in path-expr turbofish.
+        let d = tensor_dump("let y = permute::<[0, 2, 1]>(x);", ParseMode::Snippet);
+        assert!(d.contains("dim-lit 0"), "{d}");
+        assert!(d.contains("dim-lit 2"), "{d}");
+    }
+
+    #[test]
+    fn malformed_model_port_and_dim_and_index() {
+        // malformed model port (missing direction)
+        tensor_err("model M { x: Tensor<Float32, [B]>; }", ParseMode::Program);
+        // malformed dim expression (dangling operator)
+        tensor_err("let x: Tensor<Float32, [B * ]>;", ParseMode::Snippet);
+        // invalid index-list syntax (missing element)
+        tensor_err("let y = permute::<[0, , 1]>(x);", ParseMode::Snippet);
+    }
+
+    #[test]
+    fn core_only_rejects_extension_constructs() {
+        // D2: shape argument
+        assert!(
+            parse_err("let x: Tensor<Float32, [B, 3]>;", ParseMode::Snippet)
+                .iter()
+                .any(|m| m.contains("require extension `tensor`"))
+        );
+        // D4: model item
+        assert!(parse_err(
+            "model M { input x: Tensor<Float32, [B]>; output y: Tensor<Float32, [B]>; }",
+            ParseMode::Program
+        )
+        .iter()
+        .any(|m| m.contains("`model` declarations require extension `tensor`")));
+    }
+
+    #[test]
+    fn reserved_named_axes_rejected_even_with_extension() {
+        assert!(
+            tensor_err("let x: Tensor<Float32, [batch: B, 3]>;", ParseMode::Snippet)
+                .iter()
+                .any(|m| m.contains("named axes are reserved"))
+        );
+    }
+
+    #[test]
+    fn core_array_slice_generic_args_unchanged_in_both_modes() {
+        // Core array/slice types as generic args must parse identically with
+        // and without the extension (no regression from shape interception).
+        parse_ok("let a: Vec<[Int32; 4]>;", ParseMode::Snippet);
+        tensor_ok("let a: Vec<[Int32; 4]>;", ParseMode::Snippet);
+        parse_ok("let b: Vec<[Int32]>;", ParseMode::Snippet);
+        // Codex P1: a single-element type slice must survive tensor mode too.
+        tensor_ok("let b: Vec<[Int32]>;", ParseMode::Snippet);
+        tensor_ok("let c: Vec<[&Int32]>;", ParseMode::Snippet);
+        // Bare generic and nominal type names are ambiguous with symbolic
+        // dimensions. Outside `Tensor` they must remain Core slice types.
+        let generic = tensor_dump(
+            "struct Holder<T> { value: T } fn take<T>(x: Holder<[T]>) {}",
+            ParseMode::Program,
+        );
+        assert!(generic.contains("type-slice"), "{generic}");
+        assert!(!generic.contains("dim-var T"), "{generic}");
+        let nominal = tensor_dump(
+            "struct Foo {} struct Holder<T> { value: T } fn take(x: Holder<[Foo]>) {}",
+            ParseMode::Program,
+        );
+        assert!(nominal.contains("type-slice"), "{nominal}");
+        assert!(!nominal.contains("dim-var Foo"), "{nominal}");
+        let grouped = tensor_dump(
+            "struct Holder<T> { value: T } fn take<T>(x: Holder<[(T)]>) {}",
+            ParseMode::Program,
+        );
+        assert!(grouped.contains("type-slice"), "{grouped}");
+        // A single symbolic dim is still a rank-1 shape under the extension.
+        let d = tensor_dump("let t: Tensor<Float32, [N]>;", ParseMode::Snippet);
+        assert!(d.contains("dim-var N"), "{d}");
+    }
+
+    #[test]
+    fn recovery_does_not_skip_following_model() {
+        // Codex P2: malformed top-level input before a valid model must not
+        // swallow the model; the model still parses into an item.
+        let src = "@@@ garbage\nmodel M<B: Dim> { input x: Tensor<Float32, [B]>; \
+                   output y: Tensor<Float32, [B]>; }";
+        let file = SourceFile::new("test.stark", src.to_string());
+        let (ast, diags) =
+            parse_with_options(&file, ParseMode::Program, LanguageOptions::with_tensor());
+        assert!(!diags.is_empty(), "expected a diagnostic for the garbage");
+        let has_model = ast
+            .items
+            .iter()
+            .any(|it| matches!(it.kind, ItemKind::Model(_)));
+        assert!(has_model, "the model after garbage should still be parsed");
+    }
+
+    #[test]
+    fn model_is_ordinary_identifier_in_expression_position() {
+        // `model` followed by non-identifier stays a plain identifier.
+        parse_ok("let model = 5; let z = model + 1;", ParseMode::Snippet);
+        tensor_ok("let model = 5; let z = model + 1;", ParseMode::Snippet);
     }
 
     // ----- types -----

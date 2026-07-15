@@ -3,9 +3,30 @@
 use crate::ast;
 use crate::diag::Diagnostic;
 use crate::hir::{self, Builtin, CoreTrait, CoreType, Hir, LocalId, Res};
+use crate::options::LanguageOptions;
 use crate::source::{SourceFile, Span};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
+
+/// A single-segment name reserved by the `tensor` extension: element types,
+/// tensor/device type constructors, and the `Dim`/`DType` kinds. Used to give
+/// a focused "requires extension `tensor`" diagnostic in Core-only mode and to
+/// suppress "undefined type" for these names under the extension (their full
+/// resolution lands in M4.2).
+fn extension_reserved_name(name: &str) -> Option<&'static str> {
+    match name {
+        "Dim" => Some("`Dim` kind"),
+        "DType" => Some("`DType` kind"),
+        "Float16" => Some("`Float16` element type"),
+        "BFloat16" => Some("`BFloat16` element type"),
+        "Tensor" => Some("`Tensor` type"),
+        "TensorDyn" => Some("`TensorDyn` type"),
+        "TensorAny" => Some("`TensorAny` type"),
+        "Cpu" => Some("`Cpu` device type"),
+        "Cuda" => Some("`Cuda` device type"),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModuleId(pub u32);
@@ -46,9 +67,20 @@ pub struct Resolver<'a> {
     item_modules: HashMap<hir::ItemId, ModuleId>,
     item_details: HashMap<hir::ItemId, ItemDefDetail>,
     submodule_map: HashMap<ast::ItemId, ModuleId>,
+    options: LanguageOptions,
 }
 
+/// Resolve `ast` in Core-only mode (the Core v1 entry point).
 pub fn resolve(ast: &ast::Ast, file: Arc<SourceFile>) -> (Hir, Vec<Diagnostic>) {
+    resolve_with_options(ast, file, LanguageOptions::CORE)
+}
+
+/// Resolve `ast` under `options`, which may enable extensions (Gate 4+).
+pub fn resolve_with_options(
+    ast: &ast::Ast,
+    file: Arc<SourceFile>,
+    options: LanguageOptions,
+) -> (Hir, Vec<Diagnostic>) {
     let mut resolver = Resolver {
         ast,
         hir: Hir::default(),
@@ -61,6 +93,7 @@ pub fn resolve(ast: &ast::Ast, file: Arc<SourceFile>) -> (Hir, Vec<Diagnostic>) 
         item_modules: HashMap::new(),
         item_details: HashMap::new(),
         submodule_map: HashMap::new(),
+        options,
     };
 
     // Root module
@@ -144,6 +177,7 @@ impl<'a> Resolver<'a> {
                 ast::ItemKind::Const { name, .. } => Some(*name),
                 ast::ItemKind::TypeAlias { name, .. } => Some(*name),
                 ast::ItemKind::Mod { name, .. } => Some(*name),
+                ast::ItemKind::Model(def) => Some(def.name),
                 ast::ItemKind::Use(_) => None,
                 ast::ItemKind::Impl { .. } => None,
             };
@@ -664,13 +698,33 @@ impl<'a> Resolver<'a> {
                     self.resolve_path(self.current_module, path)
                 };
                 if matches!(res, Res::Err | Res::Builtin(_) | Res::CoreTrait(_)) {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!("undefined type '{}'", self.path_to_string(path)),
-                            path.span,
-                        )
-                        .with_code("E0202"),
-                    );
+                    // A reserved `tensor` extension type name (`Tensor`,
+                    // `Float16`, ...) is rejected in Core-only mode with a
+                    // focused diagnostic (D1/D3); under the extension it is
+                    // left for the M4.2 tensor type resolver rather than
+                    // reported as an undefined Core type.
+                    let ext_name = (path.segments.len() == 1)
+                        .then(|| extension_reserved_name(self.text(path.segments[0].span)))
+                        .flatten();
+                    match ext_name {
+                        Some(what) if !self.options.tensor() => {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!("the {what} requires extension `tensor`"),
+                                    path.span,
+                                )
+                                .with_code("E0210"),
+                            );
+                        }
+                        Some(_) => { /* tensor mode: deferred to M4.2 */ }
+                        None => self.diags.push(
+                            Diagnostic::error(
+                                format!("undefined type '{}'", self.path_to_string(path)),
+                                path.span,
+                            )
+                            .with_code("E0202"),
+                        ),
+                    }
                 }
                 let args = args.as_ref().map(|a| self.lower_generic_args(a));
                 hir::TypeKind::Path {
@@ -1189,30 +1243,7 @@ impl<'a> Resolver<'a> {
                     ast::RetTy::Never(s) => hir::RetTy::Never(s),
                 };
 
-                let generics = f
-                    .sig
-                    .generics
-                    .iter()
-                    .map(|g| {
-                        let bounds = g
-                            .bounds
-                            .iter()
-                            .map(|b| {
-                                let res = self.resolve_path(self.current_module, &b.path);
-                                let args = b.args.as_ref().map(|a| self.lower_generic_args(a));
-                                hir::TraitRef {
-                                    path: b.path.clone(),
-                                    res,
-                                    args,
-                                }
-                            })
-                            .collect();
-                        hir::GenericParam {
-                            name: g.name,
-                            bounds,
-                        }
-                    })
-                    .collect();
+                let generics = self.lower_generic_params(&f.sig.generics);
 
                 let body = self.lower_block(f.body);
 
@@ -1537,6 +1568,30 @@ impl<'a> Resolver<'a> {
                     items: sub_items,
                 }
             }
+            ast::ItemKind::Model(def) => {
+                // Model generic parameters are in scope for every port type
+                // (spec §7.1); port dimension variables inside shapes are
+                // carried structurally and left to the extension checker.
+                self.push_scope();
+                self.declare_generic_params(&def.generics);
+                let generics = self.lower_generic_params(&def.generics);
+                let ports = def
+                    .ports
+                    .iter()
+                    .map(|p| hir::ModelPort {
+                        dir: p.dir,
+                        name: p.name,
+                        ty: self.lower_type(p.ty),
+                        span: p.span,
+                    })
+                    .collect();
+                self.pop_scope();
+                hir::ItemKind::Model(hir::ModelDef {
+                    name: def.name,
+                    generics,
+                    ports,
+                })
+            }
         };
 
         let hir_id = self.hir.alloc_item(kind, node.vis, node.span);
@@ -1564,6 +1619,26 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .map(|b| {
                         let res = self.resolve_path(self.current_module, &b.path);
+                        // A `Dim`/`DType` kind bound (D1) that does not resolve
+                        // to a user-declared trait is rejected in Core-only
+                        // mode; under the extension it is a kind bound handled
+                        // by the M4.2 checker. Only fires on genuine resolution
+                        // failure, so a user trait spelled `Dim` is unaffected.
+                        if res == Res::Err && b.path.segments.len() == 1 {
+                            if let Some(what) =
+                                extension_reserved_name(self.text(b.path.segments[0].span))
+                            {
+                                if !self.options.tensor() {
+                                    self.diags.push(
+                                        Diagnostic::error(
+                                            format!("the {what} requires extension `tensor`"),
+                                            b.path.span,
+                                        )
+                                        .with_code("E0210"),
+                                    );
+                                }
+                            }
+                        }
                         let args = b.args.as_ref().map(|a| self.lower_generic_args(a));
                         hir::TraitRef {
                             path: b.path.clone(),
@@ -1590,11 +1665,32 @@ impl<'a> Resolver<'a> {
                     name: *name,
                     ty: self.lower_type(*ty),
                 },
+                ast::GenericArg::Shape(shape) => hir::GenericArg::Shape(self.lower_shape(shape)),
             })
             .collect();
         hir::GenericArgs {
             args: args_vec,
             span: args.span,
+        }
+    }
+
+    fn lower_shape(&self, shape: &ast::ShapeArg) -> hir::ShapeArg {
+        hir::ShapeArg {
+            dims: shape.dims.iter().map(|&d| self.lower_dim(d)).collect(),
+            span: shape.span,
+        }
+    }
+
+    fn lower_dim(&self, id: ast::DimId) -> hir::DimExpr {
+        match &self.ast.dim(id).kind {
+            ast::DimExprKind::Lit(s) => hir::DimExpr::Lit(*s),
+            ast::DimExprKind::Var(s) => hir::DimExpr::Var(*s),
+            ast::DimExprKind::Binary { op, lhs, rhs } => hir::DimExpr::Binary {
+                op: *op,
+                lhs: Box::new(self.lower_dim(*lhs)),
+                rhs: Box::new(self.lower_dim(*rhs)),
+            },
+            ast::DimExprKind::Error => hir::DimExpr::Error,
         }
     }
 
@@ -1727,6 +1823,76 @@ mod tests {
         assert!(diags.is_empty(), "parse failed: {:?}", diags);
         let (hir, sem_diags) = resolve(&tree, file);
         (hir, sem_diags)
+    }
+
+    /// Resolve a program (parsing with the same options) under `options`.
+    fn resolve_diags(src: &str, options: LanguageOptions) -> Vec<Diagnostic> {
+        let file = Arc::new(SourceFile::new("test.stark".to_string(), src.to_string()));
+        let (tree, pdiags) = crate::parser::parse_with_options(&file, ParseMode::Program, options);
+        let (_hir, mut sem) = resolve_with_options(&tree, file, options);
+        let mut all = pdiags;
+        all.append(&mut sem);
+        all
+    }
+
+    fn core_rejects_naming_tensor(src: &str) {
+        let diags = resolve_diags(src, LanguageOptions::CORE);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("extension `tensor`")),
+            "expected a `tensor` extension rejection for {src:?}, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn core_only_rejects_all_d1_d5_naming_extension() {
+        // D1 kinds
+        core_rejects_naming_tensor("fn f<B: Dim>(x: Int32) -> Int32 { x }");
+        core_rejects_naming_tensor("fn f<T: DType>(x: Int32) -> Int32 { x }");
+        // D3 element types
+        core_rejects_naming_tensor("fn f(x: Float16) -> Unit {}");
+        core_rejects_naming_tensor("fn f(x: BFloat16) -> Unit {}");
+        // D2 shape argument (rank-1 and multi) via the Tensor type name
+        core_rejects_naming_tensor("fn f(x: Tensor<Float32, [B]>) -> Unit {}");
+        core_rejects_naming_tensor("fn f(x: Tensor<Float32, [B, 3]>) -> Unit {}");
+        // D4 model item
+        core_rejects_naming_tensor(
+            "model M { input x: Tensor<Float32, [B]>; output y: Tensor<Float32, [B]>; }",
+        );
+        // D5 const index list
+        core_rejects_naming_tensor("fn f() -> Unit { let y = permute::<[0, 2, 1]>(x); }");
+    }
+
+    #[test]
+    fn extension_mode_accepts_dim_and_dtype_bounds() {
+        let diags = resolve_diags(
+            "fn f<T: DType, N: Dim>(x: Int32) -> Int32 { x }",
+            LanguageOptions::with_tensor(),
+        );
+        assert!(
+            diags.is_empty(),
+            "tensor mode should accept Dim/DType bounds: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn user_declared_dim_trait_is_not_misclassified() {
+        // A real user trait spelled `Dim` must resolve in Core mode, not be
+        // rejected as the extension kind.
+        let diags = resolve_diags(
+            "trait Dim {}\nfn f<B: Dim>(x: Int32) -> Int32 { x }",
+            LanguageOptions::CORE,
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.message.contains("extension `tensor`")),
+            "user trait `Dim` must not trigger the extension diagnostic: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

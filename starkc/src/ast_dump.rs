@@ -109,7 +109,33 @@ impl<'a> Dumper<'a> {
                     let ty = *ty;
                     self.nested(header, |d| d.ty(ty));
                 }
+                GenericArg::Shape(shape) => {
+                    let header = format!("shape {}", self.at(shape.span));
+                    let dims = shape.dims.clone();
+                    self.nested(header, |d| {
+                        for dim in dims {
+                            d.dim(dim);
+                        }
+                    });
+                }
             }
+        }
+    }
+
+    fn dim(&mut self, id: DimId) {
+        let node = self.ast.dim(id);
+        let at = self.at(node.span);
+        match &node.kind {
+            DimExprKind::Lit(s) => self.line(format!("dim-lit {} {at}", self.text(*s))),
+            DimExprKind::Var(s) => self.line(format!("dim-var {} {at}", self.text(*s))),
+            DimExprKind::Binary { op, lhs, rhs } => {
+                let (op, lhs, rhs) = (*op, *lhs, *rhs);
+                self.nested(format!("dim-binary {} {at}", op.symbol()), |d| {
+                    d.dim(lhs);
+                    d.dim(rhs);
+                });
+            }
+            DimExprKind::Error => self.line(format!("dim-error {at}")),
         }
     }
 
@@ -696,6 +722,22 @@ impl<'a> Dumper<'a> {
                         }
                     }
                     None => d.line("external"),
+                });
+            }
+            ItemKind::Model(def) => {
+                let header = format!("{vis}model {} {at}", self.text(def.name));
+                self.nested(header, |d| {
+                    d.generic_params(&def.generics);
+                    for port in &def.ports {
+                        let ph = format!(
+                            "port {} {} {}",
+                            port.dir.keyword(),
+                            d.text(port.name),
+                            d.at(port.span)
+                        );
+                        let ty = port.ty;
+                        d.nested(ph, |d| d.ty(ty));
+                    }
                 });
             }
         }

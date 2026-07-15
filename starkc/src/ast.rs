@@ -27,6 +27,7 @@ arena_id!(StmtId);
 arena_id!(ItemId);
 arena_id!(PatId);
 arena_id!(BlockId);
+arena_id!(DimId);
 
 #[derive(Default)]
 pub struct Ast {
@@ -36,6 +37,9 @@ pub struct Ast {
     pub items: Vec<ItemNode>,
     pub pats: Vec<PatNode>,
     pub blocks: Vec<BlockNode>,
+    /// Dimension expressions inside tensor shape arguments (`tensor`
+    /// extension, D2/D5). Empty for Core-only programs.
+    pub dims: Vec<DimExprNode>,
     pub root: Root,
 }
 
@@ -104,6 +108,10 @@ pub enum Primitive {
     UInt64,
     Float32,
     Float64,
+    /// `Float16` (IEEE 754 binary16) — `tensor` extension element type (D3).
+    Float16,
+    /// `BFloat16` (bfloat16) — `tensor` extension element type (D3).
+    BFloat16,
     Bool,
     Char,
     String,
@@ -124,6 +132,8 @@ impl Primitive {
             Primitive::UInt64 => "UInt64",
             Primitive::Float32 => "Float32",
             Primitive::Float64 => "Float64",
+            Primitive::Float16 => "Float16",
+            Primitive::BFloat16 => "BFloat16",
             Primitive::Bool => "Bool",
             Primitive::Char => "Char",
             Primitive::String => "String",
@@ -165,11 +175,67 @@ pub struct GenericArgs {
 #[derive(Clone)]
 pub enum GenericArg {
     Type(TypeId),
-    /// `Item = T` associated-type binding.
+    /// `Item = T` associated-type binding. The `tensor` extension also uses
+    /// this form for the `device = D` argument (§8); resolution distinguishes
+    /// `device` from associated-type names.
     Binding {
         name: Span,
         ty: TypeId,
     },
+    /// `[DimExpr, ...]` / `[]` shape argument, or a const index list such as
+    /// `[0, 2, 1]` (`tensor` extension deltas D2/D5). The two share this
+    /// surface form and are disambiguated semantically by the operation's
+    /// signature (spec §6.4).
+    Shape(ShapeArg),
+}
+
+/// A `[DimExpr, ...]` shape argument (D2) or const index list (D5).
+#[derive(Clone)]
+pub struct ShapeArg {
+    pub dims: Vec<DimId>,
+    pub span: Span,
+}
+
+// -------------------------------------------------- dimension expressions --
+
+/// A node in a dimension expression (`tensor` extension, §3.2). Dimension
+/// expressions are polynomials over dim variables; their algebra lives in the
+/// extension's semantic layer (M4.2), not here.
+pub struct DimExprNode {
+    pub kind: DimExprKind,
+    pub span: Span,
+}
+
+pub enum DimExprKind {
+    /// An integer literal dimension (the span covers the digits).
+    Lit(Span),
+    /// A dimension variable (identifier) — resolved in semantic analysis.
+    Var(Span),
+    /// `lhs (+|-|*) rhs`.
+    Binary {
+        op: DimBinOp,
+        lhs: DimId,
+        rhs: DimId,
+    },
+    /// Placeholder for a dimension expression that failed to parse.
+    Error,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DimBinOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+impl DimBinOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            DimBinOp::Add => "+",
+            DimBinOp::Sub => "-",
+            DimBinOp::Mul => "*",
+        }
+    }
 }
 
 // ---------------------------------------------------------- expressions --
@@ -444,6 +510,39 @@ pub enum ItemKind {
         name: Span,
         items: Option<Vec<ItemId>>,
     },
+    /// `model Name<...> { input ...; output ...; }` (`tensor` extension, D4).
+    Model(ModelDef),
+}
+
+/// A nominal `model` declaration (`tensor` extension, §7.1). Every generic
+/// parameter is a `Dim` parameter (checked semantically); every port type is
+/// a `Tensor`/`TensorDyn` type.
+pub struct ModelDef {
+    pub name: Span,
+    pub generics: Vec<GenericParam>,
+    pub ports: Vec<ModelPort>,
+}
+
+pub struct ModelPort {
+    pub dir: PortDir,
+    pub name: Span,
+    pub ty: TypeId,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PortDir {
+    Input,
+    Output,
+}
+
+impl PortDir {
+    pub fn keyword(self) -> &'static str {
+        match self {
+            PortDir::Input => "input",
+            PortDir::Output => "output",
+        }
+    }
 }
 
 pub struct FnDef {
@@ -576,6 +675,10 @@ impl Ast {
         self.blocks.push(block);
         BlockId(self.blocks.len() as u32 - 1)
     }
+    pub fn alloc_dim(&mut self, kind: DimExprKind, span: Span) -> DimId {
+        self.dims.push(DimExprNode { kind, span });
+        DimId(self.dims.len() as u32 - 1)
+    }
 
     pub fn ty(&self, id: TypeId) -> &TypeNode {
         &self.types[id.0 as usize]
@@ -594,6 +697,9 @@ impl Ast {
     }
     pub fn block(&self, id: BlockId) -> &BlockNode {
         &self.blocks[id.0 as usize]
+    }
+    pub fn dim(&self, id: DimId) -> &DimExprNode {
+        &self.dims[id.0 as usize]
     }
 }
 

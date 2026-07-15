@@ -1,6 +1,7 @@
 use starkc::ast_dump;
 use starkc::lexer::tokenize;
-use starkc::parser::{parse, ParseMode};
+use starkc::options::{options_from_extension_flags, LanguageOptions};
+use starkc::parser::{parse_with_options, ParseMode};
 use starkc::source::SourceFile;
 use std::process::ExitCode;
 
@@ -8,13 +9,16 @@ const USAGE: &str = "\
 starkc — compiler for the STARK Core v1 language
 
 Usage:
-  starkc check [--snippet] <file.stark> Check a source file and report semantic diagnostics.
+  starkc check [--snippet] [--extension <name>] <file.stark>
+                              Check a source file and report semantic diagnostics.
   starkc run <file.stark>               Check and execute a Core program.
-  starkc parse [--snippet] [--dump] <file.stark>
+  starkc parse [--snippet] [--dump] [--extension <name>] <file.stark>
                               Parse a source file and report diagnostics.
                               --snippet parses the harness block-body form
                               (items + statements) instead of Program.
                               --dump prints the AST on success.
+                              --extension <name> enables an optional language
+                              extension (Gate 4+): tensor.
   starkc lex <file.stark>     Dump the token stream (debugging aid)
   starkc --help               Show this help
 ";
@@ -26,10 +30,19 @@ fn main() -> ExitCode {
             let mut mode = ParseMode::Program;
             let mut dump = false;
             let mut path = None;
-            for arg in rest {
+            let mut extensions = Vec::new();
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--snippet" => mode = ParseMode::Snippet,
                     "--dump" => dump = true,
+                    "--extension" => match args.next() {
+                        Some(name) => extensions.push(name.clone()),
+                        None => {
+                            eprint!("{USAGE}");
+                            return ExitCode::from(2);
+                        }
+                    },
                     _ if path.is_none() => path = Some(arg.clone()),
                     _ => {
                         eprint!("{USAGE}");
@@ -37,18 +50,27 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let Some(path) = path else {
+            let (Some(path), Some(options)) = (path, extension_options(&extensions)) else {
                 eprint!("{USAGE}");
                 return ExitCode::from(2);
             };
-            cmd_parse(&path, mode, dump)
+            cmd_parse(&path, mode, dump, options)
         }
         Some((cmd, rest)) if cmd == "check" => {
             let mut mode = ParseMode::Program;
             let mut path = None;
-            for arg in rest {
+            let mut extensions = Vec::new();
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--snippet" => mode = ParseMode::Snippet,
+                    "--extension" => match args.next() {
+                        Some(name) => extensions.push(name.clone()),
+                        None => {
+                            eprint!("{USAGE}");
+                            return ExitCode::from(2);
+                        }
+                    },
                     _ if path.is_none() => path = Some(arg.clone()),
                     _ => {
                         eprint!("{USAGE}");
@@ -56,11 +78,11 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let Some(path) = path else {
+            let (Some(path), Some(options)) = (path, extension_options(&extensions)) else {
                 eprint!("{USAGE}");
                 return ExitCode::from(2);
             };
-            cmd_check(&path, mode)
+            cmd_check(&path, mode, options)
         }
         Some((cmd, [path])) if cmd == "run" => cmd_run(path),
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
@@ -71,6 +93,18 @@ fn main() -> ExitCode {
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
+        }
+    }
+}
+
+/// Build [`LanguageOptions`] from collected `--extension` values, printing a
+/// precise usage error and returning `None` if any id is unknown or duplicated.
+fn extension_options(names: &[String]) -> Option<LanguageOptions> {
+    match options_from_extension_flags(names) {
+        Ok(options) => Some(options),
+        Err(err) => {
+            eprintln!("Error: {err}");
+            None
         }
     }
 }
@@ -106,12 +140,12 @@ fn cmd_lex(path: &str) -> ExitCode {
     }
 }
 
-fn cmd_parse(path: &str, mode: ParseMode, dump: bool) -> ExitCode {
+fn cmd_parse(path: &str, mode: ParseMode, dump: bool, options: LanguageOptions) -> ExitCode {
     let file = match load(path) {
         Ok(f) => f,
         Err(code) => return code,
     };
-    let (tree, diags) = parse(&file, mode);
+    let (tree, diags) = parse_with_options(&file, mode, options);
     for diag in &diags {
         eprint!("{}", diag.render(&file));
     }
@@ -127,12 +161,12 @@ fn cmd_parse(path: &str, mode: ParseMode, dump: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_check(path: &str, mode: ParseMode) -> ExitCode {
+fn cmd_check(path: &str, mode: ParseMode, options: LanguageOptions) -> ExitCode {
     let file = match load(path) {
         Ok(f) => f,
         Err(code) => return code,
     };
-    let (tree, mut diags) = parse(&file, mode);
+    let (tree, mut diags) = parse_with_options(&file, mode, options);
     if !diags.is_empty() {
         for diag in &diags {
             eprint!("{}", diag.render(&file));
@@ -142,11 +176,12 @@ fn cmd_check(path: &str, mode: ParseMode) -> ExitCode {
     }
 
     let file_arc = std::sync::Arc::new(file);
-    let (hir, mut sem_diags) = starkc::resolve::resolve(&tree, file_arc.clone());
+    let (hir, mut sem_diags) =
+        starkc::resolve::resolve_with_options(&tree, file_arc.clone(), options);
     diags.append(&mut sem_diags);
 
     if diags.is_empty() {
-        let mut type_diags = starkc::typecheck::check(&hir, file_arc.clone());
+        let mut type_diags = starkc::typecheck::check_with_options(&hir, file_arc.clone(), options);
         diags.append(&mut type_diags);
     }
 
@@ -170,7 +205,8 @@ fn cmd_run(path: &str) -> ExitCode {
         Ok(file) => file,
         Err(code) => return code,
     };
-    let (tree, mut diagnostics) = parse(&file, ParseMode::Program);
+    let (tree, mut diagnostics) =
+        parse_with_options(&file, ParseMode::Program, LanguageOptions::CORE);
     let file = std::sync::Arc::new(file);
     if diagnostics.is_empty() {
         let (hir, mut resolution) = starkc::resolve::resolve(&tree, file.clone());

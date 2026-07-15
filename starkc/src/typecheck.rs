@@ -5,6 +5,7 @@ use crate::diag::Diagnostic;
 use crate::hir::{
     self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId, TypeId,
 };
+use crate::options::LanguageOptions;
 use crate::source::{SourceFile, Span};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -87,6 +88,13 @@ pub struct TypeChecker<'a> {
 
     // Bounds checks to run at the end of checking
     bounds_checks: Vec<(Ty, Vec<hir::TraitRef>, Span)>,
+
+    /// Enabled language extensions, threaded from the CLI through the whole
+    /// front end (parse → resolve → typecheck). Consumed by the tensor
+    /// extension checker starting M4.2; carried now so the pipeline honors the
+    /// options contract documented in `options.rs` and `gate4-design.md`.
+    #[allow(dead_code)]
+    options: LanguageOptions,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -106,10 +114,28 @@ pub fn check(hir: &Hir, file: Arc<SourceFile>) -> Vec<Diagnostic> {
     analyze(hir, file).diagnostics
 }
 
+/// Core-only [`check`], with the option-aware pipeline (Gate 4+).
+pub fn check_with_options(
+    hir: &Hir,
+    file: Arc<SourceFile>,
+    options: LanguageOptions,
+) -> Vec<Diagnostic> {
+    analyze_with_options(hir, file, options).diagnostics
+}
+
 pub fn analyze(hir: &Hir, file: Arc<SourceFile>) -> TypeCheckResult {
+    analyze_with_options(hir, file, LanguageOptions::CORE)
+}
+
+pub fn analyze_with_options(
+    hir: &Hir,
+    file: Arc<SourceFile>,
+    options: LanguageOptions,
+) -> TypeCheckResult {
     let mut checker = TypeChecker {
         hir,
         file: file.clone(),
+        options,
         diags: Vec::new(),
         subst: HashMap::new(),
         var_count: 0,
@@ -508,9 +534,29 @@ impl<'a> TypeChecker<'a> {
                 .filter_map(|arg| match arg {
                     hir::GenericArg::Type(ty) => Some(self.convert_hir_type(*ty)),
                     hir::GenericArg::Binding { .. } => None,
+                    // Shape arguments are not Core type arguments; the tensor
+                    // extension checker (M4.2+) interprets them.
+                    hir::GenericArg::Shape(_) => None,
                 })
                 .collect()
         })
+    }
+
+    /// A deterministic key for a shape argument, used only to keep signature
+    /// keys total. The tensor extension checker owns real shape equality.
+    fn dim_key(&self, dim: &hir::DimExpr) -> String {
+        match dim {
+            hir::DimExpr::Lit(s) | hir::DimExpr::Var(s) => self.text(*s).to_string(),
+            hir::DimExpr::Binary { op, lhs, rhs } => {
+                format!(
+                    "({} {} {})",
+                    self.dim_key(lhs),
+                    op.symbol(),
+                    self.dim_key(rhs)
+                )
+            }
+            hir::DimExpr::Error => "<err>".to_string(),
+        }
     }
 
     fn validate_generic_arity(&mut self, expected: usize, actual: usize, span: Span) {
@@ -1318,6 +1364,11 @@ impl<'a> TypeChecker<'a> {
                             .map(|arg| match arg {
                                 hir::GenericArg::Type(ty) => {
                                     self.signature_type_key(*ty, self_key, associated, generics)
+                                }
+                                hir::GenericArg::Shape(shape) => {
+                                    let dims: Vec<String> =
+                                        shape.dims.iter().map(|d| self.dim_key(d)).collect();
+                                    format!("shape[{}]", dims.join(","))
                                 }
                                 hir::GenericArg::Binding { name, ty } => format!(
                                     "{}={}",
@@ -3465,6 +3516,8 @@ impl<'a> TypeChecker<'a> {
                 let bindings_match = bound.args.as_ref().is_none_or(|args| {
                     args.args.iter().all(|arg| match arg {
                         hir::GenericArg::Type(_) => true,
+                        // Shape args do not appear in Core trait-bound bindings.
+                        hir::GenericArg::Shape(_) => true,
                         hir::GenericArg::Binding { name, ty: expected } => {
                             let Some(actual) = associated.get(self.text(*name)).copied() else {
                                 return false;

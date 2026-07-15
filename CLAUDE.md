@@ -100,16 +100,17 @@ conflict table.
 ## Implementation Status
 
 - Specification: Core v1 complete draft (all 8 documents normative).
-- Compiler: front end done (`starkc/` — lexer WP1.2, parser WP1.4; the
-  121-fixture conformance suite is green and required in CI). Semantic
-  analysis (Gate 2) and execution (Gate 3) not started. The Python code in
-  `STARKLANG/compiler/` is a pre-pivot prototype and must not be extended
-  for Core v1 work.
+- Compiler: front end plus semantic analysis and execution done (`starkc/` —
+  lexer WP1.2, parser WP1.4, semantic checker, and a typed-HIR interpreter;
+  the 121-fixture conformance suite is green and required in CI). The Python
+  code in `STARKLANG/compiler/` is a pre-pivot prototype and must not be
+  extended for Core v1 work.
 - Delivery is governed by `STARKLANG/docs/ROADMAP.md` (Gates 1–6 with
   evidence-based exit criteria) and executed per `STARKLANG/docs/PLAN.md`
-  (standing decisions T1–T12, work packages). Gate 1 is closed
-  (`starkc/docs/gate1-exit.md`); next: Gate 2, the semantic checker
-  (M2.1–M2.5).
+  (standing decisions T1–T12, work packages). Gates 1–3 are closed
+  (`starkc/docs/gate1-exit.md`, `gate2-exit.md`, `gate3-exit.md`); next:
+  Gate 4, the `tensor` extension front end and ONNX import
+  (`starkc/docs/GEMINI_GATE4_IMPLEMENTATION.md`).
 - Scope discipline: work outside the current gate needs a roadmap-governed
   proposal; see ROADMAP.md §4 non-goals.
 
@@ -132,6 +133,6 @@ conflict table.
 ---
 
 **Last Updated**: July 2026
-**Status**: Core v1 specification complete; compiler front end done (Gate 1
-closed; Gate 2 next)
+**Status**: Core v1 specification complete; compiler front end, semantic
+analysis, and execution done (Gates 1–3 closed; Gate 4 next)
 **License**: MIT
