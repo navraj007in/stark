@@ -20,6 +20,10 @@ Usage:
                               --extension <name> enables an optional language
                               extension (Gate 4+): tensor.
   starkc lex <file.stark>     Dump the token stream (debugging aid)
+  starkc import <model.onnx> --out <model.stark> [--force]
+                              Generate a deterministic STARK model declaration.
+  starkc verify <model.onnx> --declaration <model.stark> [--model <Name>]
+                              Verify an artifact against a model declaration.
   starkc --help               Show this help
 ";
 
@@ -84,6 +88,8 @@ fn main() -> ExitCode {
             };
             cmd_check(&path, mode, options)
         }
+        Some((cmd, rest)) if cmd == "import" => cmd_import(rest),
+        Some((cmd, rest)) if cmd == "verify" => cmd_verify(rest),
         Some((cmd, [path])) if cmd == "run" => cmd_run(path),
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
         Some((flag, [])) if flag == "--help" || flag == "-h" => {
@@ -93,6 +99,105 @@ fn main() -> ExitCode {
         _ => {
             eprint!("{USAGE}");
             ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_import(args: &[String]) -> ExitCode {
+    let mut input = None;
+    let mut output = None;
+    let mut force = false;
+    let mut arguments = args.iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--out" if output.is_none() => {
+                let Some(value) = arguments.next().filter(|value| !value.starts_with('-')) else {
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                };
+                output = Some(value.clone());
+            }
+            "--force" if !force => force = true,
+            value if !value.starts_with('-') && input.is_none() => input = Some(value.to_string()),
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let (Some(input), Some(output)) = (input, output) else {
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    match starkc::onnx::import_file(
+        std::path::Path::new(&input),
+        std::path::Path::new(&output),
+        force,
+    ) {
+        Ok(_) => {
+            println!("{}: imported ONNX declaration", output);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn cmd_verify(args: &[String]) -> ExitCode {
+    let mut artifact = None;
+    let mut declaration = None;
+    let mut model = None;
+    let mut arguments = args.iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--declaration" if declaration.is_none() => {
+                let Some(value) = arguments.next().filter(|value| !value.starts_with('-')) else {
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                };
+                declaration = Some(value.clone());
+            }
+            "--model" if model.is_none() => {
+                let Some(value) = arguments.next().filter(|value| !value.starts_with('-')) else {
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                };
+                model = Some(value.clone());
+            }
+            value if !value.starts_with('-') && artifact.is_none() => {
+                artifact = Some(value.to_string());
+            }
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let (Some(artifact), Some(declaration)) = (artifact, declaration) else {
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    match starkc::onnx::verify_declaration_file(
+        std::path::Path::new(&artifact),
+        std::path::Path::new(&declaration),
+        model.as_deref(),
+    ) {
+        Ok(report) if report.is_match() => {
+            println!("{}: ONNX signature matches", declaration);
+            ExitCode::SUCCESS
+        }
+        Ok(report) => {
+            eprintln!("Error: ONNX signature mismatch");
+            for difference in report.differences {
+                eprintln!("  - {difference}");
+            }
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("Error: {error}");
+            ExitCode::FAILURE
         }
     }
 }

@@ -18,6 +18,7 @@ pub mod flow;
 pub mod hir;
 pub mod interp;
 pub mod lexer;
+pub mod onnx;
 pub mod options;
 pub mod parser;
 pub mod resolve;

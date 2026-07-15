@@ -155,28 +155,29 @@ To read and verify ONNX model metadata without bringing in a heavy runtime/engin
    - *Verdict*: **Rejected.** A build-time system-binary dependency violates
      reproducibility and blocks Core work that has nothing to do with tensors.
 
-**Decision (recommended, to be confirmed at M4.5 when the decoder is first
-consumed):** decode the handful of ONNX metadata fields we actually read
+**Decision (confirmed in M4.5):** decode the handful of ONNX metadata fields we actually read
 (`GraphProto.input`/`output` → `ValueInfoProto.name`, `TypeProto.Tensor.elem_type`,
-and `TensorShapeProto.dim`) with **no build-time `protoc`**. Two acceptable
-routes, in order of preference:
+and `TensorShapeProto.dim`) with **no build-time `protoc`**. M4.5 selected:
 
-1. **A minimal hand-written protobuf reader** (varint + length-delimited
+1. **A minimal hand-written protobuf reader** (varint, fixed-width, and
+   length-delimited
    wire format) over only the ~5 message fields Gate 4 needs. Zero external
-   dependencies, no `protoc`, no `unsafe`, fully under our control, trivially
-   fuzzable at the byte boundary (M4.5 robustness requirement).
-2. **`prost` with a checked-in, pre-generated** Rust module for a trimmed ONNX
-   schema (generated once offline, committed as ordinary source). Keeps the
-   ergonomics of generated types without a build-time `protoc`.
+   decoder dependencies, no `protoc`, no `unsafe`, fully under our control,
+   and directly mutation-tested at the byte boundary.
+2. **`sha2 0.11`** with default features disabled for the required artifact
+   provenance hash. It is runtime-independent and does not generate code or
+   invoke a system binary during the build.
 
-Per PLAN.md T3 the decoder dependency is **not** added until M4.5, where it is
-first consumed. `Cargo.toml` stays dependency-free through M4.4.
+The rejected fallback remains `prost` with a checked-in, pre-generated trimmed
+schema: it adds machinery that is unnecessary for the bounded signature-only
+surface. Per PLAN.md T3, the hashing dependency was added only when M4.5 first
+consumed it; `Cargo.toml` remained dependency-free through M4.4.
 
 ---
 
 ## 6. Fixtures and Validation Strategy
 
-- **Automated Fixtures**: A tiny, valid ONNX model generated programmatically will be committed under `starkc/tests/fixtures/onnx/` to run dynamic batch-dimension and multiple-output shape tests.
+- **Automated Fixtures**: Tiny valid ONNX models are generated programmatically by `tests/gate4_onnx.rs`; no opaque binary artifact is committed.
 - **CV Representative Signature**: The chosen target is a ResNet-style CV model:
   - Input: `image` of type `Tensor<Float32, [B, 3, 224, 224]>`
   - Output: `class` of type `Tensor<Float32, [B, 1000]>`

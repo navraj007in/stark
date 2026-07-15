@@ -8,10 +8,7 @@ license = "MIT"
 rust-version = "1.85"
 
 [dependencies]
-# Deliberately empty through M4.4 (PLAN.md T3): dependencies are added when a
-# work package needs them, not speculatively. The ONNX decoder dependency is
-# introduced in M4.5, where it is first consumed. See starkc/docs/gate4-design.md
-# for the decoder evaluation (protoc-at-build-time is rejected).
+sha2 = { version = "0.11.0", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"
