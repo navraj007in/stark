@@ -1,4 +1,4 @@
-use starkc::ast;
+use starkc::ast_dump;
 use starkc::lexer::tokenize;
 use starkc::parser::{parse, ParseMode};
 use starkc::source::SourceFile;
@@ -98,7 +98,7 @@ fn cmd_parse(path: &str, mode: ParseMode, dump: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
     if dump {
-        print!("{}", ast::dump(&tree, &file));
+        print!("{}", ast_dump::dump(&tree, &file));
     } else {
         println!("{}: OK", file.name);
     }

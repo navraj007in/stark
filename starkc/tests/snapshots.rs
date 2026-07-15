@@ -11,7 +11,7 @@
 //!
 //! and review the diff like any other code change.
 
-use starkc::ast;
+use starkc::ast_dump;
 use starkc::parser::{parse, ParseMode};
 use starkc::source::SourceFile;
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ fn ast_snapshots() {
             "{name}: snapshot fixtures must parse cleanly: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        let actual = ast::dump(&tree, &file);
+        let actual = ast_dump::dump(&tree, &file);
         let snap_path = snapshot_dir().join(format!("{name}.ast"));
         if update {
             std::fs::create_dir_all(snapshot_dir()).unwrap();

@@ -1771,267 +1771,270 @@ impl Parser<'_> {
 
     fn item_inner(&mut self) -> Option<ItemId> {
         let lo = self.peek().span.lo;
-        let vis = if self.eat_kw(Kw::Pub) {
-            Some(Vis::Pub)
-        } else if self.eat_kw(Kw::Priv) {
-            Some(Vis::Priv)
-        } else {
-            None
-        };
-        let token = self.peek();
-        let kind = match token.kind {
-            TokenKind::Keyword(Kw::Fn) => {
-                let sig = self.fn_sig()?;
-                let body = self.block();
-                ItemKind::Fn(FnDef { sig, body })
-            }
-            TokenKind::Keyword(Kw::Struct) => {
-                self.bump();
-                let name = self.expect_ident("a struct name")?;
-                let generics = if self.at(TokenKind::Lt) {
-                    self.generic_params()
-                } else {
-                    Vec::new()
-                };
-                self.expect(TokenKind::LBrace, "`{`");
-                let fields = self.field_list();
-                self.expect(TokenKind::RBrace, "`}`");
-                ItemKind::Struct {
-                    name,
-                    generics,
-                    fields,
-                }
-            }
-            TokenKind::Keyword(Kw::Enum) => {
-                self.bump();
-                let name = self.expect_ident("an enum name")?;
-                let generics = if self.at(TokenKind::Lt) {
-                    self.generic_params()
-                } else {
-                    Vec::new()
-                };
-                self.expect(TokenKind::LBrace, "`{`");
-                let mut variants = Vec::new();
-                while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                    let Some(vname) = self.expect_ident("a variant name") else {
-                        break;
-                    };
-                    let kind = if self.eat(TokenKind::LParen) {
-                        let mut tys = Vec::new();
-                        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
-                            tys.push(self.ty());
-                            if !self.eat(TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(TokenKind::RParen, "`)`");
-                        VariantKind::Tuple(tys)
-                    } else if self.eat(TokenKind::LBrace) {
-                        let fields = self.field_list();
-                        self.expect(TokenKind::RBrace, "`}`");
-                        VariantKind::Struct(fields)
-                    } else {
-                        VariantKind::Unit
-                    };
-                    variants.push(Variant { name: vname, kind });
-                    if !self.eat(TokenKind::Comma) {
-                        break;
-                    }
-                }
-                self.expect(TokenKind::RBrace, "`}`");
-                ItemKind::Enum {
-                    name,
-                    generics,
-                    variants,
-                }
-            }
-            TokenKind::Keyword(Kw::Trait) => {
-                self.bump();
-                let name = self.expect_ident("a trait name")?;
-                let generics = if self.at(TokenKind::Lt) {
-                    self.generic_params()
-                } else {
-                    Vec::new()
-                };
-                self.expect(TokenKind::LBrace, "`{`");
-                let was = self.in_impl_or_trait;
-                self.in_impl_or_trait = true;
-                let mut items = Vec::new();
-                while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                    let before = self.pos;
-                    if self.eat_kw(Kw::Type) {
-                        let Some(tname) = self.expect_ident("an associated type name") else {
-                            self.recover_stmt();
-                            continue;
-                        };
-                        self.expect(TokenKind::Semi, "`;`");
-                        items.push(TraitItem::AssocType { name: tname });
-                    } else if self.at_kw(Kw::Fn) {
-                        let Some(sig) = self.fn_sig() else {
-                            self.recover_stmt();
-                            continue;
-                        };
-                        let body = if self.at(TokenKind::LBrace) {
-                            Some(self.block())
-                        } else {
-                            self.expect(TokenKind::Semi, "`;` or a method body");
-                            None
-                        };
-                        items.push(TraitItem::Method { sig, body });
-                    } else {
-                        self.expected("a trait item (`fn` or `type`)");
-                        self.recover_stmt();
-                    }
-                    if self.pos == before {
-                        // recover_stmt stops (without consuming) at item
-                        // keywords; never loop without progress.
-                        self.bump();
-                    }
-                }
-                self.in_impl_or_trait = was;
-                self.expect(TokenKind::RBrace, "`}`");
-                ItemKind::Trait {
-                    name,
-                    generics,
-                    items,
-                }
-            }
-            TokenKind::Keyword(Kw::Impl) => {
-                self.bump();
-                let generics = if self.at(TokenKind::Lt) {
-                    self.generic_params()
-                } else {
-                    Vec::new()
-                };
-                let was = self.in_impl_or_trait;
-                self.in_impl_or_trait = true;
-                let first_ty = self.ty();
-                let (trait_, self_ty) = if self.eat_kw(Kw::For) {
-                    let trait_ref = self.type_as_trait_ref(first_ty);
-                    let self_ty = self.ty();
-                    (trait_ref, self_ty)
-                } else {
-                    (None, first_ty)
-                };
-                self.expect(TokenKind::LBrace, "`{`");
-                let mut items = Vec::new();
-                while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                    let before = self.pos;
-                    if self.eat_kw(Kw::Type) {
-                        let Some(tname) = self.expect_ident("an associated type name") else {
-                            self.recover_stmt();
-                            continue;
-                        };
-                        self.expect(TokenKind::Eq, "`=`");
-                        let ty = self.ty();
-                        self.expect(TokenKind::Semi, "`;`");
-                        items.push(ImplItem::AssocType { name: tname, ty });
-                    } else if self.at_kw(Kw::Fn)
-                        || ((self.at_kw(Kw::Pub) || self.at_kw(Kw::Priv))
-                            && self.peek2() == TokenKind::Keyword(Kw::Fn))
-                    {
-                        let fvis = if self.eat_kw(Kw::Pub) {
-                            Some(Vis::Pub)
-                        } else if self.eat_kw(Kw::Priv) {
-                            Some(Vis::Priv)
-                        } else {
-                            None
-                        };
-                        let Some(sig) = self.fn_sig() else {
-                            self.recover_stmt();
-                            continue;
-                        };
-                        if !self.at(TokenKind::LBrace) {
-                            // API-notation `fn f(...) -> T;` is not valid in
-                            // real code (06 "Notation").
-                            self.expected("a method body");
-                            self.eat(TokenKind::Semi);
-                            continue;
-                        }
-                        let body = self.block();
-                        items.push(ImplItem::Fn {
-                            vis: fvis,
-                            def: FnDef { sig, body },
-                        });
-                    } else {
-                        self.expected("an impl item (`fn` or `type`)");
-                        self.recover_stmt();
-                    }
-                    if self.pos == before {
-                        // recover_stmt stops (without consuming) at item
-                        // keywords; never loop without progress.
-                        self.bump();
-                    }
-                }
-                self.in_impl_or_trait = was;
-                self.expect(TokenKind::RBrace, "`}`");
-                ItemKind::Impl {
-                    generics,
-                    trait_,
-                    self_ty,
-                    items,
-                }
-            }
-            TokenKind::Keyword(Kw::Const) => {
-                self.bump();
-                let name = self.expect_ident("a constant name")?;
-                self.expect(TokenKind::Colon, "`:`");
-                let ty = self.ty();
-                self.expect(TokenKind::Eq, "`=`");
-                let value = self.expr(DEFAULT);
-                self.expect(TokenKind::Semi, "`;`");
-                ItemKind::Const { name, ty, value }
-            }
-            TokenKind::Keyword(Kw::Type) => {
-                self.bump();
-                let name = self.expect_ident("a type alias name")?;
-                let generics = if self.at(TokenKind::Lt) {
-                    self.generic_params()
-                } else {
-                    Vec::new()
-                };
-                self.expect(TokenKind::Eq, "`=`");
-                let ty = self.ty();
-                self.expect(TokenKind::Semi, "`;`");
-                ItemKind::TypeAlias { name, generics, ty }
-            }
-            TokenKind::Keyword(Kw::Use) => {
-                self.bump();
-                let tree = self.use_tree()?;
-                self.expect(TokenKind::Semi, "`;`");
-                ItemKind::Use(tree)
-            }
-            TokenKind::Keyword(Kw::Mod) => {
-                self.bump();
-                let name = self.expect_ident("a module name")?;
-                if self.eat(TokenKind::Semi) {
-                    ItemKind::Mod { name, items: None }
-                } else {
-                    self.expect(TokenKind::LBrace, "`{` or `;`");
-                    let mut items = Vec::new();
-                    while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-                        let before = self.pos;
-                        match self.item() {
-                            Some(item) => items.push(item),
-                            None => self.recover_item(),
-                        }
-                        if self.pos == before {
-                            self.bump();
-                        }
-                    }
-                    self.expect(TokenKind::RBrace, "`}`");
-                    ItemKind::Mod {
-                        name,
-                        items: Some(items),
-                    }
-                }
-            }
+        let vis = self.item_visibility();
+        let kind = match self.peek().kind {
+            TokenKind::Keyword(Kw::Fn) => self.parse_fn()?,
+            TokenKind::Keyword(Kw::Struct) => self.parse_struct()?,
+            TokenKind::Keyword(Kw::Enum) => self.parse_enum()?,
+            TokenKind::Keyword(Kw::Trait) => self.parse_trait()?,
+            TokenKind::Keyword(Kw::Impl) => self.parse_impl(),
+            TokenKind::Keyword(Kw::Const) => self.parse_const()?,
+            TokenKind::Keyword(Kw::Type) => self.parse_type_alias()?,
+            TokenKind::Keyword(Kw::Use) => self.parse_use()?,
+            TokenKind::Keyword(Kw::Mod) => self.parse_mod()?,
             _ => {
                 self.expected("an item");
                 return None;
             }
         };
         Some(self.ast.alloc_item(kind, vis, self.span_from(lo)))
+    }
+
+    fn item_visibility(&mut self) -> Option<Vis> {
+        if self.eat_kw(Kw::Pub) {
+            Some(Vis::Pub)
+        } else if self.eat_kw(Kw::Priv) {
+            Some(Vis::Priv)
+        } else {
+            None
+        }
+    }
+
+    /// Optional `GenericParams`, else empty.
+    fn opt_generic_params(&mut self) -> Vec<GenericParam> {
+        if self.at(TokenKind::Lt) {
+            self.generic_params()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn parse_fn(&mut self) -> Option<ItemKind> {
+        let sig = self.fn_sig()?;
+        let body = self.block();
+        Some(ItemKind::Fn(FnDef { sig, body }))
+    }
+
+    fn parse_struct(&mut self) -> Option<ItemKind> {
+        self.bump();
+        let name = self.expect_ident("a struct name")?;
+        let generics = self.opt_generic_params();
+        self.expect(TokenKind::LBrace, "`{`");
+        let fields = self.field_list();
+        self.expect(TokenKind::RBrace, "`}`");
+        Some(ItemKind::Struct {
+            name,
+            generics,
+            fields,
+        })
+    }
+
+    fn parse_enum(&mut self) -> Option<ItemKind> {
+        self.bump();
+        let name = self.expect_ident("an enum name")?;
+        let generics = self.opt_generic_params();
+        self.expect(TokenKind::LBrace, "`{`");
+        let mut variants = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let Some(vname) = self.expect_ident("a variant name") else {
+                break;
+            };
+            let kind = if self.eat(TokenKind::LParen) {
+                let mut tys = Vec::new();
+                while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
+                    tys.push(self.ty());
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(TokenKind::RParen, "`)`");
+                VariantKind::Tuple(tys)
+            } else if self.eat(TokenKind::LBrace) {
+                let fields = self.field_list();
+                self.expect(TokenKind::RBrace, "`}`");
+                VariantKind::Struct(fields)
+            } else {
+                VariantKind::Unit
+            };
+            variants.push(Variant { name: vname, kind });
+            if !self.eat(TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "`}`");
+        Some(ItemKind::Enum {
+            name,
+            generics,
+            variants,
+        })
+    }
+
+    fn parse_trait(&mut self) -> Option<ItemKind> {
+        self.bump();
+        let name = self.expect_ident("a trait name")?;
+        let generics = self.opt_generic_params();
+        self.expect(TokenKind::LBrace, "`{`");
+        let was = self.in_impl_or_trait;
+        self.in_impl_or_trait = true;
+        let mut items = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let before = self.pos;
+            if self.eat_kw(Kw::Type) {
+                let Some(tname) = self.expect_ident("an associated type name") else {
+                    self.recover_stmt();
+                    continue;
+                };
+                self.expect(TokenKind::Semi, "`;`");
+                items.push(TraitItem::AssocType { name: tname });
+            } else if self.at_kw(Kw::Fn) {
+                let Some(sig) = self.fn_sig() else {
+                    self.recover_stmt();
+                    continue;
+                };
+                let body = if self.at(TokenKind::LBrace) {
+                    Some(self.block())
+                } else {
+                    self.expect(TokenKind::Semi, "`;` or a method body");
+                    None
+                };
+                items.push(TraitItem::Method { sig, body });
+            } else {
+                self.expected("a trait item (`fn` or `type`)");
+                self.recover_stmt();
+            }
+            if self.pos == before {
+                // recover_stmt stops (without consuming) at item
+                // keywords; never loop without progress.
+                self.bump();
+            }
+        }
+        self.in_impl_or_trait = was;
+        self.expect(TokenKind::RBrace, "`}`");
+        Some(ItemKind::Trait {
+            name,
+            generics,
+            items,
+        })
+    }
+
+    fn parse_impl(&mut self) -> ItemKind {
+        self.bump();
+        let generics = self.opt_generic_params();
+        let was = self.in_impl_or_trait;
+        self.in_impl_or_trait = true;
+        let first_ty = self.ty();
+        let (trait_, self_ty) = if self.eat_kw(Kw::For) {
+            let trait_ref = self.type_as_trait_ref(first_ty);
+            let self_ty = self.ty();
+            (trait_ref, self_ty)
+        } else {
+            (None, first_ty)
+        };
+        self.expect(TokenKind::LBrace, "`{`");
+        let mut items = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let before = self.pos;
+            if self.eat_kw(Kw::Type) {
+                let Some(tname) = self.expect_ident("an associated type name") else {
+                    self.recover_stmt();
+                    continue;
+                };
+                self.expect(TokenKind::Eq, "`=`");
+                let ty = self.ty();
+                self.expect(TokenKind::Semi, "`;`");
+                items.push(ImplItem::AssocType { name: tname, ty });
+            } else if self.at_kw(Kw::Fn)
+                || ((self.at_kw(Kw::Pub) || self.at_kw(Kw::Priv))
+                    && self.peek2() == TokenKind::Keyword(Kw::Fn))
+            {
+                let fvis = self.item_visibility();
+                let Some(sig) = self.fn_sig() else {
+                    self.recover_stmt();
+                    continue;
+                };
+                if !self.at(TokenKind::LBrace) {
+                    // API-notation `fn f(...) -> T;` is not valid in
+                    // real code (06 "Notation").
+                    self.expected("a method body");
+                    self.eat(TokenKind::Semi);
+                    continue;
+                }
+                let body = self.block();
+                items.push(ImplItem::Fn {
+                    vis: fvis,
+                    def: FnDef { sig, body },
+                });
+            } else {
+                self.expected("an impl item (`fn` or `type`)");
+                self.recover_stmt();
+            }
+            if self.pos == before {
+                // recover_stmt stops (without consuming) at item
+                // keywords; never loop without progress.
+                self.bump();
+            }
+        }
+        self.in_impl_or_trait = was;
+        self.expect(TokenKind::RBrace, "`}`");
+        ItemKind::Impl {
+            generics,
+            trait_,
+            self_ty,
+            items,
+        }
+    }
+
+    fn parse_const(&mut self) -> Option<ItemKind> {
+        self.bump();
+        let name = self.expect_ident("a constant name")?;
+        self.expect(TokenKind::Colon, "`:`");
+        let ty = self.ty();
+        self.expect(TokenKind::Eq, "`=`");
+        let value = self.expr(DEFAULT);
+        self.expect(TokenKind::Semi, "`;`");
+        Some(ItemKind::Const { name, ty, value })
+    }
+
+    fn parse_type_alias(&mut self) -> Option<ItemKind> {
+        self.bump();
+        let name = self.expect_ident("a type alias name")?;
+        let generics = self.opt_generic_params();
+        self.expect(TokenKind::Eq, "`=`");
+        let ty = self.ty();
+        self.expect(TokenKind::Semi, "`;`");
+        Some(ItemKind::TypeAlias { name, generics, ty })
+    }
+
+    fn parse_use(&mut self) -> Option<ItemKind> {
+        self.bump();
+        let tree = self.use_tree()?;
+        self.expect(TokenKind::Semi, "`;`");
+        Some(ItemKind::Use(tree))
+    }
+
+    fn parse_mod(&mut self) -> Option<ItemKind> {
+        self.bump();
+        let name = self.expect_ident("a module name")?;
+        if self.eat(TokenKind::Semi) {
+            return Some(ItemKind::Mod { name, items: None });
+        }
+        self.expect(TokenKind::LBrace, "`{` or `;`");
+        let mut items = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            let before = self.pos;
+            match self.item() {
+                Some(item) => items.push(item),
+                None => self.recover_item(),
+            }
+            if self.pos == before {
+                self.bump();
+            }
+        }
+        self.expect(TokenKind::RBrace, "`}`");
+        Some(ItemKind::Mod {
+            name,
+            items: Some(items),
+        })
     }
 
     /// Reinterpret the already-parsed type before `for` as the trait
@@ -2158,7 +2161,7 @@ enum Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast;
+    use crate::ast_dump;
 
     fn parse_ok(src: &str, mode: ParseMode) -> Ast {
         let file = SourceFile::new("test.stark", src.to_string());
@@ -2186,7 +2189,7 @@ mod tests {
             "unexpected diagnostics for {src:?}: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        ast::dump(&ast, &file)
+        ast_dump::dump(&ast, &file)
     }
 
     // ----- types -----

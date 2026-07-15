@@ -9,6 +9,7 @@
 //! Gate 1 implements Source -> Tokens -> AST.
 
 pub mod ast;
+pub mod ast_dump;
 pub mod diag;
 pub mod lexer;
 pub mod parser;
