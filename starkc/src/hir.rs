@@ -242,6 +242,7 @@ pub enum ExprKind {
     Field {
         base: ExprId,
         name: Span,
+        turbofish: Option<GenericArgs>,
     },
     TupleField {
         base: ExprId,

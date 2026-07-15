@@ -676,6 +676,17 @@ impl Parser<'_> {
                 self.bump(); // :
             }
             dims.push(self.dim_expr());
+            if matches!(
+                self.peek().kind,
+                TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq
+            ) {
+                self.error(
+                    "dimension inequalities and range constraints are reserved in `tensor` v0.1",
+                    self.peek().span,
+                );
+                self.bump();
+                let _ = self.dim_expr();
+            }
             if !self.eat(TokenKind::Comma) {
                 break;
             }
@@ -797,6 +808,27 @@ impl Parser<'_> {
             let Some(path) = self.path() else {
                 return self.ast.alloc_type(TypeKind::Error, token.span);
             };
+            if self.tensor_enabled() && path.segments.len() == 1 {
+                let name = self.text(path.segments[0].span);
+                let reserved = match name {
+                    "QInt8" | "QUInt8" | "QInt16" | "Quantized" => {
+                        Some("quantized dtypes are reserved in `tensor` v0.1")
+                    }
+                    "NCHW" | "NHWC" | "RowMajor" | "ColumnMajor" | "TensorLayout" => {
+                        Some("memory layout types are reserved in `tensor` v0.1")
+                    }
+                    "PeakMemory" | "MemoryProfile" => {
+                        Some("peak-memory deployment constraints are reserved in `tensor` v0.1")
+                    }
+                    "Gradient" | "Grad" | "Tape" | "Autodiff" => {
+                        Some("training and autodiff types are reserved in `tensor` v0.1")
+                    }
+                    _ => None,
+                };
+                if let Some(message) = reserved {
+                    self.error(message, path.span);
+                }
+            }
             // `[T]` is valid Core slice syntax and is otherwise lexically
             // indistinguishable from a rank-one symbolic shape. Only the
             // extension-owned `Tensor` constructor establishes a shape
@@ -1212,10 +1244,19 @@ impl Parser<'_> {
                     match t.kind {
                         TokenKind::Ident => {
                             self.bump();
+                            let turbofish = if self.at(TokenKind::ColonColon)
+                                && self.peek2() == TokenKind::Lt
+                            {
+                                self.bump();
+                                self.generic_args(true)
+                            } else {
+                                None
+                            };
                             e = self.ast.alloc_expr(
                                 ExprKind::Field {
                                     base: e,
                                     name: t.span,
+                                    turbofish,
                                 },
                                 self.span_from(lo),
                             );
@@ -2689,6 +2730,49 @@ mod tests {
                 .iter()
                 .any(|m| m.contains("named axes are reserved"))
         );
+    }
+
+    #[test]
+    fn all_tensor_future_type_and_constraint_classes_are_reserved() {
+        let cases = [
+            (
+                "fn f(x: Tensor<QInt8<Scale, Zero>, [1]>) { }",
+                "quantized dtypes are reserved",
+            ),
+            (
+                "fn f(x: Tensor<Float32, [1], device = NCHW>) { }",
+                "memory layout types are reserved",
+            ),
+            (
+                "fn f(x: Gradient<Float32>) { }",
+                "training and autodiff types are reserved",
+            ),
+            (
+                "fn f(x: PeakMemory) { }",
+                "peak-memory deployment constraints are reserved",
+            ),
+            (
+                "fn f<B: Dim>(x: Tensor<Float32, [B <= 64]>) { }",
+                "dimension inequalities and range constraints are reserved",
+            ),
+        ];
+        for (source, expected) in cases {
+            let messages = tensor_err(source, ParseMode::Program);
+            assert!(
+                messages.iter().any(|message| message.contains(expected)),
+                "{messages:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn method_turbofish_preserves_refine_shape_arguments() {
+        let dump = tensor_dump(
+            "fn f(x: TensorAny) { let y = x.refine::<UInt8, [B, 3]>(); }",
+            ParseMode::Program,
+        );
+        assert!(dump.contains("field refine turbofish(2)"), "{dump}");
+        assert!(dump.contains("dim-var B"), "{dump}");
     }
 
     #[test]

@@ -309,12 +309,16 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
             hir::ExprKind::Call { callee, args } => {
-                if let hir::ExprKind::Field { base, name } = &self.hir.expr(*callee).kind {
-                    match self.method_receiver(*base, *name) {
-                        Some(hir::Receiver::Value) => self.consume_place(*base),
-                        Some(hir::Receiver::Ref) => self.borrow_method_receiver(*base, false),
-                        Some(hir::Receiver::RefMut) => self.borrow_method_receiver(*base, true),
-                        None => self.check_expr(*base),
+                if let hir::ExprKind::Field { base, name, .. } = &self.hir.expr(*callee).kind {
+                    if self.text(*name) == "refine" {
+                        self.consume_place(*base);
+                    } else {
+                        match self.method_receiver(*base, *name) {
+                            Some(hir::Receiver::Value) => self.consume_place(*base),
+                            Some(hir::Receiver::Ref) => self.borrow_method_receiver(*base, false),
+                            Some(hir::Receiver::RefMut) => self.borrow_method_receiver(*base, true),
+                            None => self.check_expr(*base),
+                        }
                     }
                 } else {
                     self.check_expr(*callee);
@@ -523,7 +527,7 @@ impl<'a> BorrowChecker<'a> {
                 local: *local,
                 projections: Vec::new(),
             }),
-            hir::ExprKind::Field { base, name } => {
+            hir::ExprKind::Field { base, name, .. } => {
                 let mut place = self.place_of(*base)?;
                 place.projections.push(Projection::Field(name.lo, name.hi));
                 Some(place)

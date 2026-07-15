@@ -253,10 +253,22 @@ impl<'a> Dumper<'a> {
                     }
                 });
             }
-            ExprKind::Field { base, name } => {
+            ExprKind::Field {
+                base,
+                name,
+                turbofish,
+            } => {
                 let base = *base;
-                let header = format!("field {} {at}", self.text(*name));
-                self.nested(header, |d| d.expr(base));
+                let suffix = turbofish.as_ref().map_or_else(String::new, |args| {
+                    format!(" turbofish({})", args.args.len())
+                });
+                let header = format!("field {}{suffix} {at}", self.text(*name));
+                self.nested(header, |d| {
+                    d.expr(base);
+                    if let Some(args) = turbofish {
+                        d.nested("method-args".to_string(), |d| d.generic_args(args));
+                    }
+                });
             }
             ExprKind::TupleField { base, index } => {
                 let base = *base;

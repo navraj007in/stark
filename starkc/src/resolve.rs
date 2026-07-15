@@ -819,9 +819,18 @@ impl<'a> Resolver<'a> {
                 let args = args.iter().map(|&a| self.lower_expr(a)).collect();
                 hir::ExprKind::Call { callee, args }
             }
-            ast::ExprKind::Field { base, name } => {
+            ast::ExprKind::Field {
+                base,
+                name,
+                turbofish,
+            } => {
                 let base = self.lower_expr(*base);
-                hir::ExprKind::Field { base, name: *name }
+                let turbofish = turbofish.as_ref().map(|args| self.lower_generic_args(args));
+                hir::ExprKind::Field {
+                    base,
+                    name: *name,
+                    turbofish,
+                }
             }
             ast::ExprKind::TupleField { base, index } => {
                 let base = self.lower_expr(*base);

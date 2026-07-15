@@ -4,7 +4,8 @@ use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::dim::{DimVar, Poly};
 use crate::extensions::tensor::types::{
-    DType, Device, DimProvenance, OriginKind, Shape, TensorKind, TensorTy, UnifyCtx, UnifyError,
+    DType, Device, DeviceVar, DimProvenance, OriginKind, Shape, TensorKind, TensorTy, UnifyCtx,
+    UnifyError,
 };
 use crate::hir::{
     self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId, TypeId,
@@ -1041,10 +1042,36 @@ impl<'a> TypeChecker<'a> {
         Shape::with_spans(dims, spans)
     }
 
+    fn build_refine_shape(&mut self, shape: &hir::ShapeArg) -> Shape {
+        let dims = shape
+            .dims
+            .iter()
+            .map(|dim| self.dim_expr_to_poly_mode(dim, shape.span, true))
+            .collect();
+        let spans = shape
+            .dims
+            .iter()
+            .map(|dim| match dim {
+                hir::DimExpr::Lit(span) | hir::DimExpr::Var(span) => *span,
+                hir::DimExpr::Binary { .. } | hir::DimExpr::Error => shape.span,
+            })
+            .collect();
+        Shape::with_spans(dims, spans)
+    }
+
     /// Convert a HIR dimension expression to a polynomial, resolving variables
     /// against the current dim scope and enforcing non-negativity (§3.3).
     /// `fallback` is used for diagnostics on nodes (binaries) without a span.
     fn dim_expr_to_poly(&mut self, dim: &hir::DimExpr, fallback: Span) -> Poly {
+        self.dim_expr_to_poly_mode(dim, fallback, false)
+    }
+
+    fn dim_expr_to_poly_mode(
+        &mut self,
+        dim: &hir::DimExpr,
+        fallback: Span,
+        bind_unbound: bool,
+    ) -> Poly {
         match dim {
             hir::DimExpr::Lit(s) => {
                 let text = self.text(*s);
@@ -1063,6 +1090,15 @@ impl<'a> TypeChecker<'a> {
                 let name = self.text(*s).to_string();
                 match self.dim_scope.get(&name) {
                     Some(&var) => Poly::var(var),
+                    None if bind_unbound => {
+                        let var = self.tensor_ctx.rigid_dim(DimProvenance {
+                            span: *s,
+                            origin: OriginKind::Refine,
+                            label: name.clone(),
+                        });
+                        self.dim_scope.insert(name, var);
+                        Poly::var(var)
+                    }
                     None => {
                         self.tensor_error(&format!("undeclared dimension variable `{name}`"), *s);
                         Poly::constant(0)
@@ -1070,8 +1106,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             hir::DimExpr::Binary { op, lhs, rhs } => {
-                let l = self.dim_expr_to_poly(lhs, fallback);
-                let r = self.dim_expr_to_poly(rhs, fallback);
+                let l = self.dim_expr_to_poly_mode(lhs, fallback, bind_unbound);
+                let r = self.dim_expr_to_poly_mode(rhs, fallback, bind_unbound);
                 let result = match op {
                     crate::ast::DimBinOp::Add => l.add(&r),
                     crate::ast::DimBinOp::Sub => l.sub(&r),
@@ -2050,6 +2086,9 @@ impl<'a> TypeChecker<'a> {
 
     fn check_block(&mut self, block_id: BlockId, state: &mut HashSet<LocalId>) -> Ty {
         let block = self.hir.block(block_id);
+        // Refinement-introduced existential dimensions live through the rest
+        // of this block and do not escape it.
+        let saved_dim_scope = self.dim_scope.clone();
 
         // Scope state for block variables
         let mut reachable = true;
@@ -2066,11 +2105,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if let Some(tail_expr) = block.tail {
+        let result = if let Some(tail_expr) = block.tail {
             self.check_expr(tail_expr)
         } else {
             Ty::Primitive(Primitive::Unit)
-        }
+        };
+        self.dim_scope = saved_dim_scope;
+        result
     }
 
     fn control_summary_block(&self, block_id: BlockId) -> ControlSummary {
@@ -2517,8 +2558,13 @@ impl<'a> TypeChecker<'a> {
                 target
             }
             hir::ExprKind::Call { callee, args } => {
-                if let hir::ExprKind::Field { base, name } = &self.hir.expr(*callee).kind {
-                    self.resolve_method(*base, *name, args, expr.span)
+                if let hir::ExprKind::Field {
+                    base,
+                    name,
+                    turbofish,
+                } = &self.hir.expr(*callee).kind
+                {
+                    self.resolve_method(*base, *name, turbofish.as_ref(), args, expr.span)
                 } else if let hir::ExprKind::Path {
                     res: Res::TraitMember(trait_id, member),
                     ..
@@ -2567,7 +2613,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            hir::ExprKind::Field { base, name } => {
+            hir::ExprKind::Field { base, name, .. } => {
                 let mut base_ty = self.check_expr(*base);
                 while let Ty::Ref { inner, .. } = self.resolve(&base_ty) {
                     base_ty = *inner;
@@ -3216,6 +3262,62 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn freshen_call_ty(
+        &mut self,
+        ty: Ty,
+        dims: &mut HashMap<DimVar, DimVar>,
+        dtypes: &mut HashMap<u32, DType>,
+        devices: &mut HashMap<DeviceVar, Device>,
+        span: Span,
+    ) -> Ty {
+        match ty {
+            Ty::Extension(kind) => {
+                match self.tensor_ctx.freshen_tensor(&kind, dims, dtypes, devices) {
+                    Ok(kind) => Ty::Extension(Box::new(kind)),
+                    Err(error) => {
+                        self.emit_tensor_unify_error(&error, span);
+                        Ty::Error
+                    }
+                }
+            }
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable,
+                inner: Box::new(self.freshen_call_ty(*inner, dims, dtypes, devices, span)),
+            },
+            Ty::Tuple(items) => Ty::Tuple(
+                items
+                    .into_iter()
+                    .map(|item| self.freshen_call_ty(item, dims, dtypes, devices, span))
+                    .collect(),
+            ),
+            Ty::Core(core, items) => Ty::Core(
+                core,
+                items
+                    .into_iter()
+                    .map(|item| self.freshen_call_ty(item, dims, dtypes, devices, span))
+                    .collect(),
+            ),
+            Ty::Array(item, len) => Ty::Array(
+                Box::new(self.freshen_call_ty(*item, dims, dtypes, devices, span)),
+                len,
+            ),
+            Ty::Slice(item) => Ty::Slice(Box::new(
+                self.freshen_call_ty(*item, dims, dtypes, devices, span),
+            )),
+            Ty::Fn { params, ret } => Ty::Fn {
+                params: params
+                    .into_iter()
+                    .map(|param| self.freshen_call_ty(param, dims, dtypes, devices, span))
+                    .collect(),
+                ret: Box::new(self.freshen_call_ty(*ret, dims, dtypes, devices, span)),
+            },
+            Ty::Range(item) => Ty::Range(Box::new(
+                self.freshen_call_ty(*item, dims, dtypes, devices, span),
+            )),
+            other => other,
+        }
+    }
+
     fn instantiate_sig(
         &mut self,
         item_id: ItemId,
@@ -3236,11 +3338,26 @@ impl<'a> TypeChecker<'a> {
                         .with_code("E0101"),
                 );
             }
-            return sig;
+            return self.freshen_call_sig(sig, span);
         }
 
         let mut map = HashMap::new();
         if let Some(args) = turbofish {
+            let has_tensor_kind = generics.iter().any(|param| {
+                param.bounds.iter().any(|bound| {
+                    bound.res == Res::Err
+                        && matches!(
+                            single_segment_name(&bound.path, self),
+                            Some("Dim" | "DType" | "Device")
+                        )
+                })
+            });
+            if has_tensor_kind {
+                self.tensor_error(
+                    "explicit tensor-kind function arguments are reserved for tensor operation typing; use inference here",
+                    span,
+                );
+            }
             if args.args.len() != generics.len() {
                 self.diags.push(
                     Diagnostic::error(
@@ -3262,16 +3379,27 @@ impl<'a> TypeChecker<'a> {
                     _ => Ty::Error,
                 };
 
+                let trait_bounds = param
+                    .bounds
+                    .iter()
+                    .filter(|bound| bound.res != Res::Err)
+                    .cloned()
+                    .collect();
                 self.bounds_checks
-                    .push((arg_ty.clone(), param.bounds.clone(), span));
+                    .push((arg_ty.clone(), trait_bounds, span));
                 map.insert(param_name, arg_ty);
             }
         } else {
             for param in generics {
                 let param_name = self.text(param.name).to_string();
                 let var = self.new_type_var();
-                self.bounds_checks
-                    .push((var.clone(), param.bounds.clone(), span));
+                let trait_bounds = param
+                    .bounds
+                    .iter()
+                    .filter(|bound| bound.res != Res::Err)
+                    .cloned()
+                    .collect();
+                self.bounds_checks.push((var.clone(), trait_bounds, span));
                 map.insert(param_name, var);
             }
         }
@@ -3294,13 +3422,26 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        let params = sig
+        let params: Vec<Ty> = sig
             .params
             .iter()
             .map(|p| self.instantiate_ty(p, &map))
             .collect();
         let ret = self.instantiate_ty(&sig.ret, &map);
 
+        self.freshen_call_sig(FnSigTy { params, ret }, span)
+    }
+
+    fn freshen_call_sig(&mut self, sig: FnSigTy, span: Span) -> FnSigTy {
+        let mut dims = HashMap::new();
+        let mut dtypes = HashMap::new();
+        let mut devices = HashMap::new();
+        let params = sig
+            .params
+            .into_iter()
+            .map(|param| self.freshen_call_ty(param, &mut dims, &mut dtypes, &mut devices, span))
+            .collect();
+        let ret = self.freshen_call_ty(sig.ret, &mut dims, &mut dtypes, &mut devices, span);
         FnSigTy { params, ret }
     }
 
@@ -3438,16 +3579,91 @@ impl<'a> TypeChecker<'a> {
         result
     }
 
+    fn check_tensor_refine(
+        &mut self,
+        base: Ty,
+        turbofish: Option<&hir::GenericArgs>,
+        args: &[ExprId],
+        name_span: Span,
+        call_span: Span,
+    ) -> Ty {
+        for arg in args {
+            self.check_expr(*arg);
+        }
+        if !args.is_empty() {
+            self.tensor_error("`refine` takes no value arguments", call_span);
+        }
+        let Some(generic_args) = turbofish else {
+            self.tensor_error("`refine` requires an explicit target shape", name_span);
+            return Ty::Error;
+        };
+
+        let (dtype, shape) = match base {
+            Ty::Extension(kind) => match *kind {
+                TensorKind::TensorDyn(dtype) => match generic_args.args.as_slice() {
+                    [hir::GenericArg::Shape(shape)] => (dtype, self.build_refine_shape(shape)),
+                    _ => {
+                        self.tensor_error(
+                            "`TensorDyn<T>::refine` expects exactly one shape argument",
+                            generic_args.span,
+                        );
+                        return Ty::Error;
+                    }
+                },
+                TensorKind::TensorAny => match generic_args.args.as_slice() {
+                    [hir::GenericArg::Type(dtype), hir::GenericArg::Shape(shape)] => (
+                        self.tensor_dtype(*dtype, generic_args.span),
+                        self.build_refine_shape(shape),
+                    ),
+                    _ => {
+                        self.tensor_error(
+                            "`TensorAny::refine` expects a dtype and a shape",
+                            generic_args.span,
+                        );
+                        return Ty::Error;
+                    }
+                },
+                TensorKind::Tensor(_) => {
+                    self.tensor_error(
+                        "`refine` is valid only on `TensorDyn` or `TensorAny`",
+                        name_span,
+                    );
+                    return Ty::Error;
+                }
+            },
+            Ty::Error => return Ty::Error,
+            _ => {
+                self.tensor_error(
+                    "`refine` receiver must be `TensorDyn` or `TensorAny`",
+                    name_span,
+                );
+                return Ty::Error;
+            }
+        };
+
+        let tensor = Ty::Extension(Box::new(TensorKind::Tensor(TensorTy {
+            dtype,
+            shape,
+            device: self.tensor_ctx.fresh_device(),
+        })));
+        Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
+    }
+
     fn resolve_method(
         &mut self,
         base_expr: ExprId,
         name_span: Span,
+        turbofish: Option<&hir::GenericArgs>,
         args: &[ExprId],
         call_span: Span,
     ) -> Ty {
         let base_ty = self.check_expr(base_expr);
         let resolved_base = self.resolve(&base_ty);
         let name_str = self.text(name_span).to_string();
+
+        if self.options.tensor() && name_str == "refine" {
+            return self.check_tensor_refine(resolved_base, turbofish, args, name_span, call_span);
+        }
 
         if let Ty::Param(p_name) = &resolved_base {
             if let Some(generics) = &self.current_fn_generics {
@@ -4262,6 +4478,58 @@ mod tests {
         let diagnostics =
             check_tensor("fn cast(x: Float32) -> Float32 { let y = x as Float16; y as Float32 }");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn refine_binds_existential_dims_for_the_rest_of_the_block() {
+        let source = "fn accept<N: Dim>(x: Tensor<UInt8, [N, 3]>) { }\nfn handle(request: TensorAny) -> Result<Int32, String> { let images = request.refine::<UInt8, [B, 3]>()?; accept(images); Ok(0) }";
+        let diagnostics = check_tensor(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn refine_existential_dims_do_not_escape_their_block() {
+        let source = "fn handle(request: TensorAny) -> Result<Int32, String> { { let images = request.refine::<UInt8, [B]>()?; } let outside: Tensor<UInt8, [B]>; Ok(0) }";
+        let messages = tensor_msgs(source);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("undeclared dimension variable `B`")),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn generic_tensor_calls_are_fresh_and_infer_independently() {
+        let source = "fn identity<T: DType, N: Dim>(x: Tensor<T, [N]>) -> Tensor<T, [N]> { x }\nfn calls(a: Tensor<Float32, [4]>, b: Tensor<UInt8, [7]>) { let x: Tensor<Float32, [4]> = identity(a); let y: Tensor<UInt8, [7]> = identity(b); }";
+        let diagnostics = check_tensor(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn refine_consumes_its_dynamic_tensor_receiver() {
+        let source = "fn handle(request: TensorAny) -> Result<Int32, String> { let first = request.refine::<UInt8, [B]>()?; let second = request.refine::<UInt8, [C]>()?; Ok(0) }";
+        let messages = tensor_msgs(source);
+        assert!(
+            messages.iter().any(|message| message.contains("moved")),
+            "{messages:?}"
+        );
+    }
+
+    #[test]
+    fn refine_reuses_bound_symbols_and_distinguishes_new_ones() {
+        let same = "fn pair<N: Dim>(a: Tensor<UInt8, [N]>, b: Tensor<UInt8, [N]>) { } fn handle(first: TensorAny, second: TensorAny) -> Result<Int32, String> { let a = first.refine::<UInt8, [B]>()?; let b = second.refine::<UInt8, [B]>()?; pair(a, b); Ok(0) }";
+        let diagnostics = check_tensor(same);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        let distinct = "fn pair<N: Dim>(a: Tensor<UInt8, [N]>, b: Tensor<UInt8, [N]>) { } fn handle(first: TensorAny, second: TensorAny) -> Result<Int32, String> { let a = first.refine::<UInt8, [B]>()?; let b = second.refine::<UInt8, [C]>()?; pair(a, b); Ok(0) }";
+        let messages = tensor_msgs(distinct);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("dimension mismatch")),
+            "{messages:?}"
+        );
     }
 
     #[test]

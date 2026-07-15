@@ -564,6 +564,70 @@ impl UnifyCtx {
     pub fn dim_label(&self, var: DimVar) -> Option<&str> {
         self.provenance.get(&var).map(|p| p.label.as_str())
     }
+
+    /// Freshen the generic variables in a stored tensor signature for one
+    /// call. Shared maps preserve equality across every parameter and return
+    /// type in that call while separate calls remain independent.
+    pub fn freshen_tensor(
+        &mut self,
+        kind: &TensorKind,
+        dims: &mut HashMap<DimVar, DimVar>,
+        dtypes: &mut HashMap<u32, DType>,
+        devices: &mut HashMap<DeviceVar, Device>,
+    ) -> Result<TensorKind, UnifyError> {
+        let fresh_dtype = |ctx: &mut Self, dtype: DType, map: &mut HashMap<u32, DType>| {
+            if let DType::Var(id) = dtype {
+                *map.entry(id).or_insert_with(|| ctx.fresh_dtype())
+            } else {
+                dtype
+            }
+        };
+        match kind {
+            TensorKind::Tensor(tensor) => {
+                let mut fresh_dims = Vec::with_capacity(tensor.shape.dims.len());
+                for poly in &tensor.shape.dims {
+                    let mut rebuilt = Poly::zero();
+                    for (_, coefficient, variables) in monomials(poly) {
+                        let mut term = Poly::constant(coefficient);
+                        for variable in variables {
+                            let fresh = if let Some(fresh) = dims.get(&variable) {
+                                *fresh
+                            } else {
+                                let provenance = self.provenance.get(&variable).cloned().unwrap_or(
+                                    DimProvenance {
+                                        span: Span { lo: 0, hi: 0 },
+                                        origin: OriginKind::Param,
+                                        label: format!("?d{}", variable.0),
+                                    },
+                                );
+                                let fresh = self.fresh_dim(provenance);
+                                dims.insert(variable, fresh);
+                                fresh
+                            };
+                            term = term
+                                .mul(&Poly::var(fresh))
+                                .map_err(|_| UnifyError::Arithmetic)?;
+                        }
+                        rebuilt = rebuilt.add(&term).map_err(|_| UnifyError::Arithmetic)?;
+                    }
+                    fresh_dims.push(rebuilt);
+                }
+                let device = match tensor.device {
+                    Device::Var(id) => *devices.entry(id).or_insert_with(|| self.fresh_device()),
+                    concrete => concrete,
+                };
+                Ok(TensorKind::Tensor(TensorTy {
+                    dtype: fresh_dtype(self, tensor.dtype, dtypes),
+                    shape: Shape::with_spans(fresh_dims, tensor.shape.spans.clone()),
+                    device,
+                }))
+            }
+            TensorKind::TensorDyn(dtype) => {
+                Ok(TensorKind::TensorDyn(fresh_dtype(self, *dtype, dtypes)))
+            }
+            TensorKind::TensorAny => Ok(TensorKind::TensorAny),
+        }
+    }
 }
 
 /// Decompose a polynomial into `(term_index, coefficient, variables)` triples,

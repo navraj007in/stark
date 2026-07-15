@@ -819,7 +819,7 @@ impl<'a> Interpreter<'a> {
                 }
                 _ => Err(RuntimeError::new("expression is not callable", span)),
             },
-            hir::ExprKind::Field { base, name } => {
+            hir::ExprKind::Field { base, name, .. } => {
                 self.call_method(*base, self.text(*name).to_string(), args, span)
             }
             _ => {
@@ -1475,7 +1475,7 @@ impl<'a> Interpreter<'a> {
                 local: *local,
                 projections: Vec::new(),
             }),
-            hir::ExprKind::Field { base, name } => {
+            hir::ExprKind::Field { base, name, .. } => {
                 let mut place = self.expr_place(*base)?;
                 place
                     .projections

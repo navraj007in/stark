@@ -59,7 +59,7 @@ fn semantic_cases() -> Vec<Case> {
     }
     cases
         .into_iter()
-        .filter(|case| case.class.starts_with("semantic-"))
+        .filter(|case| case.class.starts_with("semantic-") || case.class == "reserved-reject")
         .collect()
 }
 
@@ -105,6 +105,13 @@ fn gate4_manifest_semantic_cases_match_compiler_verdicts() {
                     );
                 }
             }
+            "reserved-reject" => assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("reserved")),
+                "{} did not produce a focused reserved diagnostic: {diagnostics:?}",
+                case.name
+            ),
             other => panic!("unknown semantic class {other}"),
         }
     }

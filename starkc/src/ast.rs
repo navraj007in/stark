@@ -288,6 +288,8 @@ pub enum ExprKind {
     Field {
         base: ExprId,
         name: Span,
+        /// Optional method turbofish (`value.method::<...>`).
+        turbofish: Option<GenericArgs>,
     },
     /// `base.0` — tuple field access; the index is an INTEGER literal.
     TupleField {
