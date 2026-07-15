@@ -2,9 +2,9 @@
 #
 # Classifies the Gate 4 fixture cases by expected outcome, mirroring the Core
 # spec-fixture manifest convention. The parse-pass and core-reject classes are
-# exercised by unit tests today (M4.1); the semantic classes fill in as M4.2+
-# lands. ONNX fixtures (M4.5) are generated deterministically by test code and
-# recorded here as they are added.
+# exercised by unit tests and the Gate 4 semantic harness. ONNX fixtures (M4.5)
+# are generated deterministically by test code and recorded here as they are
+# added.
 #
 # Classes:
 #   parse-pass      parses (and AST-dumps) under `--extension tensor`
@@ -58,6 +58,57 @@ source = "fn f(x: Float16) -> Unit {}"
 name = "reserved_named_axes"
 class = "reserved-reject"
 source = "let x: Tensor<Float32, [batch: B, 3]>;"
+
+[[case]]
+name = "semantic_generic_tensor"
+class = "semantic-pass"
+source = "fn identity<T: DType, N: Dim, D: Device>(x: Tensor<T, [N], device = D>) -> Tensor<T, [N], device = D> { x }"
+
+[[case]]
+name = "semantic_cuda_device"
+class = "semantic-pass"
+source = "fn gpu(x: Tensor<Float32, [1], device = Cuda<0>>) { }"
+
+[[case]]
+name = "semantic_polynomial_identity"
+class = "semantic-pass"
+source = "fn poly<B: Dim, H: Dim>(x: Tensor<Float32, [B * (H + 1)]>) -> Tensor<Float32, [B * H + B]> { x }"
+
+[[case]]
+name = "semantic_shape_mismatch"
+class = "semantic-error"
+errors = "E0212"
+source = "fn bad(x: Tensor<Float32, [4]>) -> Tensor<Float32, [5]> { x }"
+
+[[case]]
+name = "semantic_invalid_device"
+class = "semantic-error"
+errors = "E0211"
+source = "fn bad(x: Tensor<Float32, [1], device = String>) { }"
+
+[[case]]
+name = "semantic_dim_in_type_position"
+class = "semantic-error"
+errors = "E0211"
+source = "fn bad<B: Dim>(x: B) { }"
+
+[[case]]
+name = "semantic_mixed_dim_bound"
+class = "semantic-error"
+errors = "E0211"
+source = "fn bad<B: Dim + Copy>(x: Int32) { }"
+
+[[case]]
+name = "semantic_tensor_arity"
+class = "semantic-error"
+errors = "E0211"
+source = "fn bad(x: TensorAny<Int32>) { }"
+
+[[case]]
+name = "semantic_move_ownership"
+class = "semantic-error"
+errors = "E0100"
+source = "fn bad(x: Tensor<Float32, [4]>) { let first = x; let second = x; }"
 
 # --- ONNX reference artifact (external, verified by checksum; not committed) ---
 [reference_model]

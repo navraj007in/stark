@@ -168,6 +168,8 @@ pub struct GenericArgs {
 #[derive(Clone)]
 pub enum GenericArg {
     Type(TypeId),
+    /// Integer const generic argument, currently used by `Cuda<N>`.
+    Const(Span),
     Binding {
         name: Span,
         ty: TypeId,

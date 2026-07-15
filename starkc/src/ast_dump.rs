@@ -104,6 +104,7 @@ impl<'a> Dumper<'a> {
         for arg in &args.args {
             match arg {
                 GenericArg::Type(ty) => self.ty(*ty),
+                GenericArg::Const(span) => self.out.push_str(self.text(*span)),
                 GenericArg::Binding { name, ty } => {
                     let header = format!("binding {}", self.text(*name));
                     let ty = *ty;

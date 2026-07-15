@@ -2,6 +2,10 @@
 
 use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::diag::Diagnostic;
+use crate::extensions::tensor::dim::{DimVar, Poly};
+use crate::extensions::tensor::types::{
+    DType, Device, DimProvenance, OriginKind, Shape, TensorKind, TensorTy, UnifyCtx, UnifyError,
+};
 use crate::hir::{
     self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId, TypeId,
 };
@@ -19,15 +23,25 @@ pub enum Ty {
     Struct(ItemId, Vec<Ty>),
     Enum(ItemId, Vec<Ty>),
     Core(CoreType, Vec<Ty>),
-    Ref { mutable: bool, inner: Box<Ty> },
+    Ref {
+        mutable: bool,
+        inner: Box<Ty>,
+    },
     Tuple(Vec<Ty>),
     Array(Box<Ty>, u64),
     Slice(Box<Ty>),
-    Fn { params: Vec<Ty>, ret: Box<Ty> },
+    Fn {
+        params: Vec<Ty>,
+        ret: Box<Ty>,
+    },
     Range(Box<Ty>),
     Never,
     Param(String),
     Infer(TypeVarId),
+    /// A `tensor` extension type, held opaquely so the Core checker delegates
+    /// all tensor equality/unification/display to the extension module and
+    /// never grows tensor-specific logic in its own match arms.
+    Extension(Box<TensorKind>),
     Error,
 }
 
@@ -36,6 +50,21 @@ enum VariantFields {
     Unit,
     Tuple(Vec<Ty>),
     Struct(HashMap<String, Ty>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum GenericKind {
+    Type,
+    Dim,
+    DType,
+    Device,
+}
+
+struct TensorParamScopes {
+    dims: HashMap<String, DimVar>,
+    dtypes: HashMap<String, DType>,
+    devices: HashMap<String, Device>,
+    kinds: HashMap<String, GenericKind>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -90,11 +119,22 @@ pub struct TypeChecker<'a> {
     bounds_checks: Vec<(Ty, Vec<hir::TraitRef>, Span)>,
 
     /// Enabled language extensions, threaded from the CLI through the whole
-    /// front end (parse → resolve → typecheck). Consumed by the tensor
-    /// extension checker starting M4.2; carried now so the pipeline honors the
-    /// options contract documented in `options.rs` and `gate4-design.md`.
-    #[allow(dead_code)]
+    /// front end (parse → resolve → typecheck).
     options: LanguageOptions,
+
+    /// Dimension/device unification state and provenance for the `tensor`
+    /// extension (§5). Empty and unused for Core-only programs.
+    tensor_ctx: UnifyCtx,
+
+    /// Dimension variables in scope for the item being checked, keyed by name
+    /// (the `Dim` generic parameters of the enclosing function or model, §3.1).
+    /// A dimension identifier not found here is an undeclared-dimension error.
+    dim_scope: HashMap<String, DimVar>,
+    dtype_scope: HashMap<String, DType>,
+    device_scope: HashMap<String, Device>,
+    generic_kinds: HashMap<String, GenericKind>,
+    suppress_tensor_diagnostics: bool,
+    allow_half_type: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -153,6 +193,13 @@ pub fn analyze_with_options(
         loop_contexts: Vec::new(),
         current_fn_generics: None,
         bounds_checks: Vec::new(),
+        tensor_ctx: UnifyCtx::new(),
+        dim_scope: HashMap::new(),
+        dtype_scope: HashMap::new(),
+        device_scope: HashMap::new(),
+        generic_kinds: HashMap::new(),
+        suppress_tensor_diagnostics: false,
+        allow_half_type: false,
     };
 
     checker.check_crate();
@@ -479,6 +526,7 @@ impl<'a> TypeChecker<'a> {
             }
             (Ty::Range(e1), Ty::Range(e2)) => self.unify(*e1, *e2, span),
             (Ty::Param(p1), Ty::Param(p2)) if p1 == p2 => Ok(()),
+            (Ty::Extension(a), Ty::Extension(b)) => self.unify_tensor_types(&a, &b, span),
             (Ty::Never, _) | (_, Ty::Never) => Ok(()),
             (Ty::Error, _) | (_, Ty::Error) => Ok(()),
             (t1_resolved, t2_resolved) => {
@@ -533,6 +581,7 @@ impl<'a> TypeChecker<'a> {
                 .iter()
                 .filter_map(|arg| match arg {
                     hir::GenericArg::Type(ty) => Some(self.convert_hir_type(*ty)),
+                    hir::GenericArg::Const(_) => None,
                     hir::GenericArg::Binding { .. } => None,
                     // Shape arguments are not Core type arguments; the tensor
                     // extension checker (M4.2+) interprets them.
@@ -711,6 +760,7 @@ impl<'a> TypeChecker<'a> {
             Ty::Param(name) => name.clone(),
             Ty::Never => "!".to_string(),
             Ty::Infer(id) => format!("_infer_{}", id.0),
+            Ty::Extension(tensor) => self.tensor_ctx.display_tensor(&tensor),
             Ty::Error => "{error}".to_string(),
         }
     }
@@ -718,63 +768,115 @@ impl<'a> TypeChecker<'a> {
     fn convert_hir_type(&mut self, id: TypeId) -> Ty {
         let node = self.hir.ty(id);
         match &node.kind {
-            hir::TypeKind::Primitive(p) => Ty::Primitive(*p),
-            hir::TypeKind::Path { res, args, .. } => match res {
-                Res::Item(item_id) => {
-                    let item = self.hir.item(*item_id);
-                    let type_args = self.convert_generic_type_args(args.as_ref());
-                    match &item.kind {
-                        hir::ItemKind::Struct { generics, .. } => {
-                            self.validate_generic_arity(generics.len(), type_args.len(), node.span);
-                            Ty::Struct(*item_id, type_args)
+            hir::TypeKind::Primitive(p) => {
+                if matches!(p, Primitive::Float16 | Primitive::BFloat16) && !self.allow_half_type {
+                    self.tensor_error(
+                        "`Float16` and `BFloat16` are valid only as tensor element types or explicit cast targets",
+                        node.span,
+                    );
+                    Ty::Error
+                } else {
+                    Ty::Primitive(*p)
+                }
+            }
+            hir::TypeKind::Path { path, res, args } => {
+                // `tensor` extension types resolve to `Res::Err` in the Core
+                // resolver; build them here when the extension is enabled.
+                if self.options.tensor() {
+                    if let Some(name) = single_segment_name(path, self).map(str::to_string) {
+                        if let Some(ty) = self.build_tensor_type(&name, args.as_ref(), node.span) {
+                            return ty;
                         }
-                        hir::ItemKind::Enum { generics, .. } => {
-                            self.validate_generic_arity(generics.len(), type_args.len(), node.span);
-                            Ty::Enum(*item_id, type_args)
-                        }
-                        _ => Ty::Error,
                     }
                 }
-                Res::Primitive(p) => Ty::Primitive(*p),
-                Res::SelfType => {
-                    if let Some(self_ty) = &self.current_self_ty {
-                        self_ty.clone()
-                    } else {
-                        self.diags.push(
-                            Diagnostic::error("use of 'Self' outside impl or trait", node.span)
-                                .with_code("E0202"),
-                        );
-                        Ty::Error
+                match res {
+                    Res::Item(item_id) => {
+                        let item = self.hir.item(*item_id);
+                        let type_args = self.convert_generic_type_args(args.as_ref());
+                        match &item.kind {
+                            hir::ItemKind::Struct { generics, .. } => {
+                                self.validate_generic_arity(
+                                    generics.len(),
+                                    type_args.len(),
+                                    node.span,
+                                );
+                                Ty::Struct(*item_id, type_args)
+                            }
+                            hir::ItemKind::Enum { generics, .. } => {
+                                self.validate_generic_arity(
+                                    generics.len(),
+                                    type_args.len(),
+                                    node.span,
+                                );
+                                Ty::Enum(*item_id, type_args)
+                            }
+                            _ => Ty::Error,
+                        }
                     }
+                    Res::Primitive(p) => Ty::Primitive(*p),
+                    Res::SelfType => {
+                        if let Some(self_ty) = &self.current_self_ty {
+                            self_ty.clone()
+                        } else {
+                            self.diags.push(
+                                Diagnostic::error("use of 'Self' outside impl or trait", node.span)
+                                    .with_code("E0202"),
+                            );
+                            Ty::Error
+                        }
+                    }
+                    Res::SelfAssoc(name) => self
+                        .current_assoc_types
+                        .get(self.text(*name))
+                        .cloned()
+                        .unwrap_or_else(|| Ty::Param(format!("Self::{}", self.text(*name)))),
+                    Res::TypeParam => {
+                        let name_str = self.text(node.span);
+                        match self.generic_kinds.get(name_str).copied() {
+                            Some(GenericKind::Dim) => {
+                                self.tensor_error(
+                                    "a `Dim` parameter cannot be used in type position",
+                                    node.span,
+                                );
+                                Ty::Error
+                            }
+                            Some(GenericKind::DType) => {
+                                self.tensor_error(
+                                    "a `DType` parameter is valid only as a tensor element type",
+                                    node.span,
+                                );
+                                Ty::Error
+                            }
+                            Some(GenericKind::Device) => {
+                                self.tensor_error(
+                                    "a `Device` parameter is valid only in `device = ...`",
+                                    node.span,
+                                );
+                                Ty::Error
+                            }
+                            _ => Ty::Param(name_str.to_string()),
+                        }
+                    }
+                    Res::ParamAssoc(param, assoc) => {
+                        Ty::Param(format!("{}::{}", self.text(*param), self.text(*assoc)))
+                    }
+                    Res::CoreType(core) => {
+                        let args = self.convert_generic_type_args(args.as_ref());
+                        let expected = match core {
+                            CoreType::String => 0,
+                            CoreType::Vec
+                            | CoreType::Box
+                            | CoreType::Option
+                            | CoreType::Range
+                            | CoreType::RangeInclusive => 1,
+                            CoreType::Result => 2,
+                        };
+                        self.validate_generic_arity(expected, args.len(), node.span);
+                        Ty::Core(*core, args)
+                    }
+                    _ => Ty::Error,
                 }
-                Res::SelfAssoc(name) => self
-                    .current_assoc_types
-                    .get(self.text(*name))
-                    .cloned()
-                    .unwrap_or_else(|| Ty::Param(format!("Self::{}", self.text(*name)))),
-                Res::TypeParam => {
-                    let name_str = self.text(node.span);
-                    Ty::Param(name_str.to_string())
-                }
-                Res::ParamAssoc(param, assoc) => {
-                    Ty::Param(format!("{}::{}", self.text(*param), self.text(*assoc)))
-                }
-                Res::CoreType(core) => {
-                    let args = self.convert_generic_type_args(args.as_ref());
-                    let expected = match core {
-                        CoreType::String => 0,
-                        CoreType::Vec
-                        | CoreType::Box
-                        | CoreType::Option
-                        | CoreType::Range
-                        | CoreType::RangeInclusive => 1,
-                        CoreType::Result => 2,
-                    };
-                    self.validate_generic_arity(expected, args.len(), node.span);
-                    Ty::Core(*core, args)
-                }
-                _ => Ty::Error,
-            },
+            }
             hir::TypeKind::Array { elem, len } => {
                 let elem_ty = self.convert_hir_type(*elem);
                 let len_str = self.text(*len);
@@ -809,6 +911,426 @@ impl<'a> TypeChecker<'a> {
             hir::TypeKind::Never => Ty::Never,
             hir::TypeKind::Error => Ty::Error,
         }
+    }
+
+    /// Build a `tensor` extension type from a path name and generic arguments,
+    /// or `None` if the name is not an extension tensor type. Emits diagnostics
+    /// for malformed shapes, undeclared dimensions, and unsupported dtypes.
+    fn build_tensor_type(
+        &mut self,
+        name: &str,
+        args: Option<&hir::GenericArgs>,
+        span: Span,
+    ) -> Option<Ty> {
+        let empty: &[hir::GenericArg] = &[];
+        let arg_list = args.map_or(empty, |a| a.args.as_slice());
+        match name {
+            "TensorAny" => {
+                self.tensor_arity("TensorAny", 0, arg_list.len(), span);
+                Some(Ty::Extension(Box::new(TensorKind::TensorAny)))
+            }
+            "TensorDyn" => {
+                self.tensor_arity("TensorDyn", 1, arg_list.len(), span);
+                let dtype = match arg_list.first() {
+                    Some(hir::GenericArg::Type(t)) => self.tensor_dtype(*t, span),
+                    _ => {
+                        self.tensor_error("`TensorDyn` requires an element type argument", span);
+                        DType::Float32
+                    }
+                };
+                Some(Ty::Extension(Box::new(TensorKind::TensorDyn(dtype))))
+            }
+            "Tensor" => {
+                if !(2..=3).contains(&arg_list.len()) {
+                    self.tensor_error(
+                        &format!(
+                            "`Tensor` expects two or three arguments, found {}",
+                            arg_list.len()
+                        ),
+                        span,
+                    );
+                }
+                let dtype = match arg_list.first() {
+                    Some(hir::GenericArg::Type(t)) => self.tensor_dtype(*t, span),
+                    _ => {
+                        self.tensor_error("`Tensor` requires an element type argument", span);
+                        DType::Float32
+                    }
+                };
+                let shape = match arg_list.get(1) {
+                    Some(hir::GenericArg::Shape(s)) => self.build_shape(s),
+                    _ => {
+                        self.tensor_error("`Tensor` requires a shape argument", span);
+                        Shape::default()
+                    }
+                };
+                let device = self.build_device(arg_list.get(2), span);
+                Some(Ty::Extension(Box::new(TensorKind::Tensor(TensorTy {
+                    dtype,
+                    shape,
+                    device,
+                }))))
+            }
+            _ => None,
+        }
+    }
+
+    fn tensor_arity(&mut self, name: &str, expected: usize, actual: usize, span: Span) {
+        if expected != actual {
+            self.tensor_error(
+                &format!("`{name}` expects {expected} argument(s), found {actual}"),
+                span,
+            );
+        }
+    }
+
+    /// Convert a type argument to a concrete or generic `DType`.
+    fn tensor_dtype(&mut self, ty_id: TypeId, span: Span) -> DType {
+        if let hir::TypeKind::Path {
+            res: Res::TypeParam,
+            ..
+        } = &self.hir.ty(ty_id).kind
+        {
+            let name = self.text(self.hir.ty(ty_id).span);
+            if let Some(dtype) = self.dtype_scope.get(name) {
+                return *dtype;
+            }
+            self.tensor_error(
+                &format!("type parameter `{name}` does not have kind `DType`"),
+                span,
+            );
+            return DType::Float32;
+        }
+        let saved = self.allow_half_type;
+        self.allow_half_type = true;
+        let ty = self.convert_hir_type(ty_id);
+        self.allow_half_type = saved;
+        match ty {
+            Ty::Primitive(p) => match dtype_from_primitive(p) {
+                Some(d) => d,
+                None => {
+                    self.tensor_error(
+                        &format!("`{}` is not a valid tensor element type", p.name()),
+                        span,
+                    );
+                    DType::Float32
+                }
+            },
+            _ => {
+                self.tensor_error("tensor element type must be a dtype", span);
+                DType::Float32
+            }
+        }
+    }
+
+    fn build_shape(&mut self, shape: &hir::ShapeArg) -> Shape {
+        let span = shape.span;
+        let dims = shape
+            .dims
+            .iter()
+            .map(|d| self.dim_expr_to_poly(d, span))
+            .collect();
+        let spans = shape
+            .dims
+            .iter()
+            .map(|dim| match dim {
+                hir::DimExpr::Lit(span) | hir::DimExpr::Var(span) => *span,
+                hir::DimExpr::Binary { .. } | hir::DimExpr::Error => shape.span,
+            })
+            .collect();
+        Shape::with_spans(dims, spans)
+    }
+
+    /// Convert a HIR dimension expression to a polynomial, resolving variables
+    /// against the current dim scope and enforcing non-negativity (§3.3).
+    /// `fallback` is used for diagnostics on nodes (binaries) without a span.
+    fn dim_expr_to_poly(&mut self, dim: &hir::DimExpr, fallback: Span) -> Poly {
+        match dim {
+            hir::DimExpr::Lit(s) => {
+                let text = self.text(*s);
+                match text.parse::<i64>() {
+                    Ok(v) => Poly::constant(v),
+                    Err(_) => {
+                        self.tensor_error(
+                            &format!("dimension literal `{text}` is out of range"),
+                            *s,
+                        );
+                        Poly::constant(0)
+                    }
+                }
+            }
+            hir::DimExpr::Var(s) => {
+                let name = self.text(*s).to_string();
+                match self.dim_scope.get(&name) {
+                    Some(&var) => Poly::var(var),
+                    None => {
+                        self.tensor_error(&format!("undeclared dimension variable `{name}`"), *s);
+                        Poly::constant(0)
+                    }
+                }
+            }
+            hir::DimExpr::Binary { op, lhs, rhs } => {
+                let l = self.dim_expr_to_poly(lhs, fallback);
+                let r = self.dim_expr_to_poly(rhs, fallback);
+                let result = match op {
+                    crate::ast::DimBinOp::Add => l.add(&r),
+                    crate::ast::DimBinOp::Sub => l.sub(&r),
+                    crate::ast::DimBinOp::Mul => l.mul(&r),
+                };
+                match result {
+                    Ok(p) => {
+                        if matches!(op, crate::ast::DimBinOp::Sub) && !p.is_provably_nonnegative() {
+                            self.tensor_error(
+                                "dimension subtraction may be negative; \
+                                 non-negativity must follow from literal constants (§3.3)",
+                                fallback,
+                            );
+                        }
+                        p
+                    }
+                    Err(_) => {
+                        self.tensor_error("dimension arithmetic overflowed", fallback);
+                        Poly::constant(0)
+                    }
+                }
+            }
+            hir::DimExpr::Error => Poly::constant(0),
+        }
+    }
+
+    /// Resolve an optional `device = D` argument. `Cpu` is concrete; a type
+    /// parameter or omission yields a fresh device variable (device-polymorphic
+    /// by default, §8).
+    fn build_device(&mut self, arg: Option<&hir::GenericArg>, span: Span) -> Device {
+        match arg {
+            None => self.tensor_ctx.fresh_device(),
+            Some(hir::GenericArg::Binding { name, ty }) if self.text(*name) == "device" => {
+                if let hir::TypeKind::Path { path, res, args } = &self.hir.ty(*ty).kind {
+                    let spelling = single_segment_name(path, self);
+                    if *res == Res::TypeParam {
+                        if let Some(device) = spelling.and_then(|n| self.device_scope.get(n)) {
+                            return *device;
+                        }
+                        self.tensor_error(
+                            "device parameter must have kind `Device`",
+                            self.hir.ty(*ty).span,
+                        );
+                        return self.tensor_ctx.fresh_device();
+                    }
+                    match spelling {
+                        Some("Cpu") => {
+                            if args.as_ref().is_some_and(|a| !a.args.is_empty()) {
+                                self.tensor_error(
+                                    "`Cpu` does not take arguments",
+                                    self.hir.ty(*ty).span,
+                                );
+                            }
+                            Device::Cpu
+                        }
+                        Some("Cuda") => {
+                            self.build_cuda_device(args.as_ref(), self.hir.ty(*ty).span)
+                        }
+                        _ => {
+                            self.tensor_error("unknown tensor device; expected `Cpu`, `Cuda<N>`, or a `Device` parameter", self.hir.ty(*ty).span);
+                            self.tensor_ctx.fresh_device()
+                        }
+                    }
+                } else {
+                    self.tensor_error("tensor device must be a device type", self.hir.ty(*ty).span);
+                    self.tensor_ctx.fresh_device()
+                }
+            }
+            Some(_) => {
+                self.tensor_error(
+                    "unexpected third `Tensor` argument; expected `device = D`",
+                    span,
+                );
+                self.tensor_ctx.fresh_device()
+            }
+        }
+    }
+
+    fn build_cuda_device(&mut self, args: Option<&hir::GenericArgs>, span: Span) -> Device {
+        let Some(args) = args else {
+            self.tensor_error(
+                "`Cuda` requires one non-negative integer device index",
+                span,
+            );
+            return Device::Cuda(0);
+        };
+        if args.args.len() != 1 {
+            self.tensor_error("`Cuda` requires exactly one device index", span);
+            return Device::Cuda(0);
+        }
+        let hir::GenericArg::Const(index) = args.args[0] else {
+            self.tensor_error("`Cuda` device index must be an integer constant", span);
+            return Device::Cuda(0);
+        };
+        match self.text(index).parse::<u32>() {
+            Ok(index) => Device::Cuda(index),
+            Err(_) => {
+                self.tensor_error("`Cuda` device index is out of range", index);
+                Device::Cuda(0)
+            }
+        }
+    }
+
+    /// Register tensor extension generic kinds for an item scope.
+    fn enter_tensor_param_scope(&mut self, generics: &[hir::GenericParam]) -> TensorParamScopes {
+        let saved = TensorParamScopes {
+            dims: std::mem::take(&mut self.dim_scope),
+            dtypes: std::mem::take(&mut self.dtype_scope),
+            devices: std::mem::take(&mut self.device_scope),
+            kinds: std::mem::take(&mut self.generic_kinds),
+        };
+        for g in generics {
+            let name = self.text(g.name).to_string();
+            let kind = self.generic_kind(g);
+            self.generic_kinds.insert(name.clone(), kind);
+            match kind {
+                GenericKind::Dim => {
+                    let var = self.tensor_ctx.rigid_dim(DimProvenance {
+                        span: g.name,
+                        origin: OriginKind::Param,
+                        label: name.clone(),
+                    });
+                    self.dim_scope.insert(name, var);
+                }
+                GenericKind::DType => {
+                    let dtype = self.tensor_ctx.rigid_dtype();
+                    self.dtype_scope.insert(name, dtype);
+                }
+                GenericKind::Device => {
+                    let device = self.tensor_ctx.rigid_device();
+                    self.device_scope.insert(name, device);
+                }
+                GenericKind::Type => {}
+            }
+        }
+        saved
+    }
+
+    fn generic_kind(&mut self, generic: &hir::GenericParam) -> GenericKind {
+        let extension_bounds = generic
+            .bounds
+            .iter()
+            .filter(|bound| bound.res == Res::Err)
+            .filter_map(|bound| single_segment_name(&bound.path, self))
+            .filter_map(|name| match name {
+                "Dim" => Some(GenericKind::Dim),
+                "DType" => Some(GenericKind::DType),
+                "Device" => Some(GenericKind::Device),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if extension_bounds.is_empty() {
+            return GenericKind::Type;
+        }
+        if generic.bounds.len() != 1 || extension_bounds.len() != 1 {
+            self.tensor_error(
+                "tensor kind parameters must have exactly one of `Dim`, `DType`, or `Device` and no trait bounds",
+                generic.name,
+            );
+        }
+        extension_bounds[0]
+    }
+
+    fn exit_tensor_param_scope(&mut self, saved: TensorParamScopes) {
+        self.dim_scope = saved.dims;
+        self.dtype_scope = saved.dtypes;
+        self.device_scope = saved.devices;
+        self.generic_kinds = saved.kinds;
+    }
+
+    /// Emit a tensor extension diagnostic (error code `E0211`).
+    fn tensor_error(&mut self, message: &str, span: Span) {
+        if !self.suppress_tensor_diagnostics {
+            self.diags
+                .push(Diagnostic::error(message.to_string(), span).with_code("E0211"));
+        }
+    }
+
+    /// Unify two tensor types, delegating shape/device unification to the
+    /// extension and rendering a provenance-rich diagnostic on mismatch (§9).
+    fn unify_tensor_types(&mut self, a: &TensorKind, b: &TensorKind, span: Span) -> Result<(), ()> {
+        match (a, b) {
+            (TensorKind::Tensor(ta), TensorKind::Tensor(tb)) => {
+                match self.tensor_ctx.unify_tensor(ta, tb) {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        self.emit_tensor_unify_error(&err, span);
+                        Err(())
+                    }
+                }
+            }
+            (TensorKind::TensorDyn(da), TensorKind::TensorDyn(db)) if da == db => Ok(()),
+            (TensorKind::TensorAny, TensorKind::TensorAny) => Ok(()),
+            _ => {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "tensor type mismatch: expected `{}`, found `{}`",
+                            self.tensor_ctx.display_tensor(a),
+                            self.tensor_ctx.display_tensor(b)
+                        ),
+                        span,
+                    )
+                    .with_code("E0212"),
+                );
+                Err(())
+            }
+        }
+    }
+
+    fn emit_tensor_unify_error(&mut self, err: &UnifyError, span: Span) {
+        let msg = match err {
+            UnifyError::DTypeMismatch { expected, found } => format!(
+                "tensor element type mismatch: expected `{}`, found `{}`",
+                expected.name(),
+                found.name()
+            ),
+            UnifyError::RankMismatch { expected, found } => {
+                format!("tensor rank mismatch: expected rank {expected}, found rank {found}")
+            }
+            UnifyError::DimMismatch {
+                axis,
+                expected,
+                found,
+                expected_origin,
+                found_origin,
+                ..
+            } => format!(
+                "tensor dimension mismatch at axis {axis}: expected `{}` from {expected_origin}, found `{}` from {found_origin}",
+                self.tensor_ctx.display_dim(expected),
+                self.tensor_ctx.display_dim(found)
+            ),
+            UnifyError::DeviceMismatch { expected, found } => {
+                format!("tensor device mismatch: expected `{expected}`, found `{found}`")
+            }
+            UnifyError::Arithmetic => "tensor dimension arithmetic overflowed".to_string(),
+        };
+        let mut diagnostic = Diagnostic::error(msg, span).with_code("E0212");
+        if let UnifyError::DimMismatch {
+            expected_span,
+            found_span,
+            ..
+        } = err
+        {
+            if let Some(found) = found_span {
+                diagnostic.span = *found;
+            }
+            if let Some(expected) = expected_span {
+                let (line, column) = self.file.line_col(expected.lo);
+                diagnostic = diagnostic
+                    .with_note(format!("expected dimension originates at {line}:{column}"));
+            }
+            if let Some(found) = found_span {
+                let (line, column) = self.file.line_col(found.lo);
+                diagnostic =
+                    diagnostic.with_note(format!("found dimension originates at {line}:{column}"));
+            }
+        }
+        self.diags.push(diagnostic);
     }
 
     fn check_crate(&mut self) {
@@ -888,6 +1410,8 @@ impl<'a> TypeChecker<'a> {
                     self.enum_variants.insert(item_id, variants_ty);
                 }
                 hir::ItemKind::Fn(def) => {
+                    self.suppress_tensor_diagnostics = true;
+                    let saved = self.enter_tensor_param_scope(&def.sig.generics);
                     let params = def
                         .sig
                         .params
@@ -899,6 +1423,8 @@ impl<'a> TypeChecker<'a> {
                         hir::RetTy::Ty(t) => self.convert_hir_type(t),
                         hir::RetTy::Never(_) => Ty::Never,
                     };
+                    self.exit_tensor_param_scope(saved);
+                    self.suppress_tensor_diagnostics = false;
                     self.fn_sigs.insert(item_id, FnSigTy { params, ret });
                 }
                 hir::ItemKind::Const { ty, .. } => {
@@ -910,6 +1436,8 @@ impl<'a> TypeChecker<'a> {
                     // Register methods of the impl
                     for impl_item in items {
                         if let hir::ImplItem::Fn { def, .. } = impl_item {
+                            self.suppress_tensor_diagnostics = true;
+                            let saved = self.enter_tensor_param_scope(&def.sig.generics);
                             let _params: Vec<Ty> = def
                                 .sig
                                 .params
@@ -921,6 +1449,8 @@ impl<'a> TypeChecker<'a> {
                                 hir::RetTy::Ty(t) => self.convert_hir_type(t),
                                 hir::RetTy::Never(_) => Ty::Never,
                             };
+                            self.exit_tensor_param_scope(saved);
+                            self.suppress_tensor_diagnostics = false;
                             // We need to associate this method signature in fn_sigs.
                             // Find the ItemId of the containing ImplItemFn.
                             // Since impl_item is inside the Impl, we don't have its direct ItemId in the top-level items,
@@ -1365,6 +1895,7 @@ impl<'a> TypeChecker<'a> {
                                 hir::GenericArg::Type(ty) => {
                                     self.signature_type_key(*ty, self_key, associated, generics)
                                 }
+                                hir::GenericArg::Const(span) => self.text(*span).to_string(),
                                 hir::GenericArg::Shape(shape) => {
                                     let dims: Vec<String> =
                                         shape.dims.iter().map(|d| self.dim_key(d)).collect();
@@ -1422,6 +1953,10 @@ impl<'a> TypeChecker<'a> {
 
     fn check_fn_def(&mut self, _item_id: ItemId, def: &hir::FnDef) {
         let sig = &def.sig;
+
+        // `Dim` generic parameters are in scope for every signature type and
+        // the body (tensor extension §3.1). No-op for Core-only functions.
+        let saved_dims = self.enter_tensor_param_scope(&sig.generics);
 
         let expected_ret = match sig.ret {
             hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
@@ -1510,6 +2045,7 @@ impl<'a> TypeChecker<'a> {
         }
         self.current_fn_ret = None;
         self.current_fn_generics = None;
+        self.exit_tensor_param_scope(saved_dims);
     }
 
     fn check_block(&mut self, block_id: BlockId, state: &mut HashSet<LocalId>) -> Ty {
@@ -1959,13 +2495,16 @@ impl<'a> TypeChecker<'a> {
                 ty,
             } => {
                 let source = self.check_expr(*cast_expr);
+                let saved = self.allow_half_type;
+                self.allow_half_type = true;
                 let target = self.convert_hir_type(*ty);
+                self.allow_half_type = saved;
                 let source_resolved = self.resolve(&source);
                 let target_resolved = self.resolve(&target);
                 if !matches!(source_resolved, Ty::Error)
                     && !matches!(target_resolved, Ty::Error)
-                    && (!matches!(&source_resolved, Ty::Primitive(p) if is_numeric(*p))
-                        || !matches!(&target_resolved, Ty::Primitive(p) if is_numeric(*p)))
+                    && (!matches!(&source_resolved, Ty::Primitive(p) if is_cast_numeric(*p))
+                        || !matches!(&target_resolved, Ty::Primitive(p) if is_cast_numeric(*p)))
                 {
                     self.diags.push(
                         Diagnostic::error(
@@ -3516,6 +4055,7 @@ impl<'a> TypeChecker<'a> {
                 let bindings_match = bound.args.as_ref().is_none_or(|args| {
                     args.args.iter().all(|arg| match arg {
                         hir::GenericArg::Type(_) => true,
+                        hir::GenericArg::Const(_) => true,
                         // Shape args do not appear in Core trait-bound bindings.
                         hir::GenericArg::Shape(_) => true,
                         hir::GenericArg::Binding { name, ty: expected } => {
@@ -3566,6 +4106,10 @@ fn is_numeric(p: Primitive) -> bool {
     is_integer(p) || matches!(p, Primitive::Float32 | Primitive::Float64)
 }
 
+fn is_cast_numeric(p: Primitive) -> bool {
+    is_numeric(p) || matches!(p, Primitive::Float16 | Primitive::BFloat16)
+}
+
 fn is_integer(p: Primitive) -> bool {
     matches!(
         p,
@@ -3582,6 +4126,34 @@ fn is_integer(p: Primitive) -> bool {
 
 fn is_copy_primitive(primitive: Primitive) -> bool {
     !matches!(primitive, Primitive::String | Primitive::Str)
+}
+
+/// The single-segment name of a path, if it has exactly one segment.
+fn single_segment_name<'t>(path: &crate::ast::Path, checker: &'t TypeChecker) -> Option<&'t str> {
+    match path.segments.as_slice() {
+        [seg] => Some(checker.text(seg.span)),
+        _ => None,
+    }
+}
+
+/// Map a Core primitive to a tensor `DType`, if it is a valid element type.
+fn dtype_from_primitive(p: Primitive) -> Option<DType> {
+    Some(match p {
+        Primitive::Int8 => DType::Int8,
+        Primitive::Int16 => DType::Int16,
+        Primitive::Int32 => DType::Int32,
+        Primitive::Int64 => DType::Int64,
+        Primitive::UInt8 => DType::UInt8,
+        Primitive::UInt16 => DType::UInt16,
+        Primitive::UInt32 => DType::UInt32,
+        Primitive::UInt64 => DType::UInt64,
+        Primitive::Float32 => DType::Float32,
+        Primitive::Float64 => DType::Float64,
+        Primitive::Float16 => DType::Float16,
+        Primitive::BFloat16 => DType::BFloat16,
+        Primitive::Bool => DType::Bool,
+        Primitive::Char | Primitive::String | Primitive::Str | Primitive::Unit => return None,
+    })
 }
 
 fn is_copy_with_impls(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
@@ -3601,6 +4173,8 @@ fn is_copy_with_impls(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
         Ty::Array(element, _) => is_copy_with_impls(element, copy_types),
         Ty::Infer(_) | Ty::Param(_) => false,
         Ty::Ref { mutable: true, .. } | Ty::Slice(_) | Ty::Fn { .. } | Ty::Range(_) => false,
+        // Tensors are owned Move values, never Copy (tensor extension §4.2).
+        Ty::Extension(tensor) => tensor.is_copy(),
     }
 }
 
@@ -3619,6 +4193,149 @@ mod tests {
         let mut type_diags = check(&hir, file);
         all_diags.append(&mut type_diags);
         all_diags
+    }
+
+    /// Parse, resolve, and type-check a program with the `tensor` extension.
+    fn check_tensor(src: &str) -> Vec<Diagnostic> {
+        use crate::options::LanguageOptions;
+        let opts = LanguageOptions::with_tensor();
+        let file = Arc::new(SourceFile::new("test.stark".to_string(), src.to_string()));
+        let (tree, diags) = crate::parser::parse_with_options(&file, ParseMode::Program, opts);
+        assert!(diags.is_empty(), "parse failed: {:?}", diags);
+        let (hir, sem) = crate::resolve::resolve_with_options(&tree, file.clone(), opts);
+        let mut all = sem;
+        all.extend(check_with_options(&hir, file, opts));
+        all
+    }
+
+    fn tensor_msgs(src: &str) -> Vec<String> {
+        check_tensor(src)
+            .iter()
+            .map(|d| d.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn tensor_signature_checks_clean() {
+        // A symbolic-batch signature returning its argument type-checks.
+        let d = check_tensor(
+            "fn scale<N: Dim>(x: Tensor<Float32, [N, 3]>) -> Tensor<Float32, [N, 3]> { x }",
+        );
+        assert!(
+            d.is_empty(),
+            "unexpected: {:?}",
+            tensor_msgs(
+                "fn scale<N: Dim>(x: Tensor<Float32, [N, 3]>) -> Tensor<Float32, [N, 3]> { x }"
+            )
+        );
+    }
+
+    #[test]
+    fn tensor_generic_kinds_and_cuda_check_clean() {
+        let src = "fn identity<T: DType, N: Dim, D: Device>(x: Tensor<T, [N], device = D>) -> Tensor<T, [N], device = D> { x }\nfn gpu(x: Tensor<Float32, [1], device = Cuda<0>>) { }";
+        let diagnostics = check_tensor(src);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn tensor_kind_device_and_arity_errors_are_reported_once() {
+        let cases = [
+            "fn bad<B: Dim>(x: B) { }",
+            "fn bad<B: Dim + Copy>(x: Int32) { }",
+            "fn bad(x: Tensor<Float32, [1], device = String>) { }",
+            "fn bad(x: TensorDyn<Float32, Int32>) { }",
+            "fn bad(x: TensorAny<Int32>) { }",
+        ];
+        for src in cases {
+            let diagnostics = check_tensor(src);
+            let tensor_errors = diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code.as_deref() == Some("E0211"))
+                .count();
+            assert_eq!(tensor_errors, 1, "{src}: {diagnostics:?}");
+        }
+    }
+
+    #[test]
+    fn scalar_half_types_are_restricted_but_casts_are_allowed() {
+        assert!(!check_tensor("fn bad(x: Float16) { }").is_empty());
+        let diagnostics =
+            check_tensor("fn cast(x: Float32) -> Float32 { let y = x as Float16; y as Float32 }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn tensor_dtype_mismatch_is_reported() {
+        let msgs = tensor_msgs(
+            "fn f(a: Tensor<Float32, [4, 4]>) -> Unit { let b: Tensor<Float16, [4, 4]> = a; }",
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("element type mismatch")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn tensor_dimension_mismatch_reports_axis_and_values() {
+        let source =
+            "fn f(a: Tensor<Float32, [4, 8]>) -> Unit { let b: Tensor<Float32, [4, 16]> = a; }";
+        let diagnostics = check_tensor(source);
+        let msgs = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("dimension mismatch at axis 1")
+                    && m.contains("16")
+                    && m.contains('8')
+                    && m.contains("literal dimension")),
+            "{msgs:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.notes.len() == 2),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn tensor_rank_mismatch_is_reported() {
+        let msgs = tensor_msgs(
+            "fn f(a: Tensor<Float32, [4, 4]>) -> Unit { let b: Tensor<Float32, [4]> = a; }",
+        );
+        assert!(msgs.iter().any(|m| m.contains("rank mismatch")), "{msgs:?}");
+    }
+
+    #[test]
+    fn undeclared_dimension_is_reported() {
+        let msgs = tensor_msgs("fn f(x: Tensor<Float32, [B, 3]>) -> Unit {}");
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("undeclared dimension variable `B`")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn negative_dimension_is_rejected() {
+        let msgs = tensor_msgs("fn f<N: Dim>(x: Tensor<Float32, [N - 1]>) -> Unit {}");
+        assert!(
+            msgs.iter().any(|m| m.contains("may be negative")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn tensor_is_not_copy() {
+        // Moving a tensor twice is a use-after-move: tensors are Move (§4.2).
+        let msgs =
+            tensor_msgs("fn use2(a: Tensor<Float32, [4]>) -> Unit { let b = a; let c = a; }");
+        assert!(
+            msgs.iter().any(|m| m.to_lowercase().contains("move")),
+            "expected a move error, got {msgs:?}"
+        );
     }
 
     fn check_snippet(src: &str) -> Vec<Diagnostic> {

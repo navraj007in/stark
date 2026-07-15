@@ -17,6 +17,7 @@ fn extension_reserved_name(name: &str) -> Option<&'static str> {
     match name {
         "Dim" => Some("`Dim` kind"),
         "DType" => Some("`DType` kind"),
+        "Device" => Some("`Device` kind"),
         "Float16" => Some("`Float16` element type"),
         "BFloat16" => Some("`BFloat16` element type"),
         "Tensor" => Some("`Tensor` type"),
@@ -1661,6 +1662,7 @@ impl<'a> Resolver<'a> {
             .iter()
             .map(|a| match a {
                 ast::GenericArg::Type(t) => hir::GenericArg::Type(self.lower_type(*t)),
+                ast::GenericArg::Const(span) => hir::GenericArg::Const(*span),
                 ast::GenericArg::Binding { name, ty } => hir::GenericArg::Binding {
                     name: *name,
                     ty: self.lower_type(*ty),

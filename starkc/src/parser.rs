@@ -539,6 +539,8 @@ impl Parser<'_> {
                 self.bump(); // =
                 let ty = self.ty();
                 args.push(GenericArg::Binding { name, ty });
+            } else if self.tensor_enabled() && matches!(self.peek().kind, TokenKind::Int { .. }) {
+                args.push(GenericArg::Const(self.bump().span));
             } else {
                 let ty = self.ty();
                 args.push(GenericArg::Type(ty));
@@ -2600,6 +2602,10 @@ mod tests {
             ParseMode::Snippet,
         );
         tensor_ok("let e: TensorDyn<Float32>;", ParseMode::Snippet);
+        tensor_ok(
+            "let gpu: Tensor<Float32, [1], device = Cuda<0>>;",
+            ParseMode::Snippet,
+        );
     }
 
     #[test]

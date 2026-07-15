@@ -33,24 +33,27 @@ pub enum DType {
     Float16,
     BFloat16,
     Bool,
+    /// A generic parameter of kind `DType`.
+    Var(u32),
 }
 
 impl DType {
-    pub fn name(self) -> &'static str {
+    pub fn name(self) -> String {
         match self {
-            DType::Int8 => "Int8",
-            DType::Int16 => "Int16",
-            DType::Int32 => "Int32",
-            DType::Int64 => "Int64",
-            DType::UInt8 => "UInt8",
-            DType::UInt16 => "UInt16",
-            DType::UInt32 => "UInt32",
-            DType::UInt64 => "UInt64",
-            DType::Float32 => "Float32",
-            DType::Float64 => "Float64",
-            DType::Float16 => "Float16",
-            DType::BFloat16 => "BFloat16",
-            DType::Bool => "Bool",
+            DType::Int8 => "Int8".to_string(),
+            DType::Int16 => "Int16".to_string(),
+            DType::Int32 => "Int32".to_string(),
+            DType::Int64 => "Int64".to_string(),
+            DType::UInt8 => "UInt8".to_string(),
+            DType::UInt16 => "UInt16".to_string(),
+            DType::UInt32 => "UInt32".to_string(),
+            DType::UInt64 => "UInt64".to_string(),
+            DType::Float32 => "Float32".to_string(),
+            DType::Float64 => "Float64".to_string(),
+            DType::Float16 => "Float16".to_string(),
+            DType::BFloat16 => "BFloat16".to_string(),
+            DType::Bool => "Bool".to_string(),
+            DType::Var(id) => format!("?dtype{id}"),
         }
     }
 }
@@ -84,11 +87,20 @@ impl fmt::Display for Device {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Shape {
     pub dims: Vec<Poly>,
+    /// Source origin for each dimension when the shape came from source.
+    pub spans: Vec<Span>,
 }
 
 impl Shape {
     pub fn new(dims: Vec<Poly>) -> Shape {
-        Shape { dims }
+        Shape {
+            dims,
+            spans: Vec::new(),
+        }
+    }
+    pub fn with_spans(dims: Vec<Poly>, spans: Vec<Span>) -> Shape {
+        debug_assert_eq!(dims.len(), spans.len());
+        Shape { dims, spans }
     }
     pub fn rank(&self) -> usize {
         self.dims.len()
@@ -197,6 +209,10 @@ pub enum UnifyError {
         axis: usize,
         expected: Poly,
         found: Poly,
+        expected_origin: Box<str>,
+        found_origin: Box<str>,
+        expected_span: Option<Span>,
+        found_span: Option<Span>,
     },
     DeviceMismatch {
         expected: Device,
@@ -212,10 +228,14 @@ pub enum UnifyError {
 #[derive(Default)]
 pub struct UnifyCtx {
     dim_subst: HashMap<DimVar, Poly>,
+    dtype_subst: HashMap<u32, DType>,
     device_subst: HashMap<DeviceVar, Device>,
     provenance: HashMap<DimVar, DimProvenance>,
     unifiable_dims: std::collections::HashSet<DimVar>,
+    unifiable_dtypes: std::collections::HashSet<u32>,
+    unifiable_devices: std::collections::HashSet<DeviceVar>,
     next_dim: u32,
+    next_dtype: u32,
     next_device: u32,
 }
 
@@ -247,7 +267,27 @@ impl UnifyCtx {
     pub fn fresh_device(&mut self) -> Device {
         let v = DeviceVar(self.next_device);
         self.next_device += 1;
+        self.unifiable_devices.insert(v);
         Device::Var(v)
+    }
+
+    pub fn rigid_device(&mut self) -> Device {
+        let v = DeviceVar(self.next_device);
+        self.next_device += 1;
+        Device::Var(v)
+    }
+
+    pub fn fresh_dtype(&mut self) -> DType {
+        let id = self.next_dtype;
+        self.next_dtype += 1;
+        self.unifiable_dtypes.insert(id);
+        DType::Var(id)
+    }
+
+    pub fn rigid_dtype(&mut self) -> DType {
+        let id = self.next_dtype;
+        self.next_dtype += 1;
+        DType::Var(id)
     }
 
     pub fn provenance(&self, var: DimVar) -> Option<&DimProvenance> {
@@ -303,24 +343,77 @@ impl UnifyCtx {
     /// Unify two dimensions positionally (§3.3/§5). Binds a single unbound
     /// unifiable variable; otherwise requires normal-form equality.
     pub fn unify_dim(&mut self, a: &Poly, b: &Poly, axis: usize) -> Result<(), UnifyError> {
+        self.unify_dim_with_origins(a, b, axis, None, None)
+    }
+
+    fn unify_dim_with_origins(
+        &mut self,
+        a: &Poly,
+        b: &Poly,
+        axis: usize,
+        expected_span: Option<Span>,
+        found_span: Option<Span>,
+    ) -> Result<(), UnifyError> {
         let a = self.resolve_dim(a)?;
         let b = self.resolve_dim(b)?;
         if a.equal(&b) {
             return Ok(());
         }
         if let Some(var) = self.as_unifiable_var(&a) {
+            if self.poly_contains(&b, var) {
+                return Err(self.dim_mismatch(axis, a, b, expected_span, found_span));
+            }
             self.dim_subst.insert(var, b);
             return Ok(());
         }
         if let Some(var) = self.as_unifiable_var(&b) {
+            if self.poly_contains(&a, var) {
+                return Err(self.dim_mismatch(axis, a, b, expected_span, found_span));
+            }
             self.dim_subst.insert(var, a);
             return Ok(());
         }
-        Err(UnifyError::DimMismatch {
+        Err(self.dim_mismatch(axis, a, b, expected_span, found_span))
+    }
+
+    fn poly_contains(&self, poly: &Poly, needle: DimVar) -> bool {
+        poly.iter_terms()
+            .any(|(vars, _)| vars.into_iter().any(|var| var == needle))
+    }
+
+    fn dim_origin(&self, poly: &Poly) -> Box<str> {
+        let mut origins = poly
+            .iter_terms()
+            .flat_map(|(vars, _)| vars)
+            .filter_map(|var| self.provenance.get(&var))
+            .map(|p| format!("{} ({:?})", p.label, p.origin))
+            .collect::<Vec<_>>();
+        origins.sort();
+        origins.dedup();
+        if origins.is_empty() {
+            "literal dimension".into()
+        } else {
+            origins.join(", ").into_boxed_str()
+        }
+    }
+
+    fn dim_mismatch(
+        &self,
+        axis: usize,
+        expected: Poly,
+        found: Poly,
+        expected_span: Option<Span>,
+        found_span: Option<Span>,
+    ) -> UnifyError {
+        UnifyError::DimMismatch {
+            expected_origin: self.dim_origin(&expected),
+            found_origin: self.dim_origin(&found),
             axis,
-            expected: a,
-            found: b,
-        })
+            expected,
+            found,
+            expected_span,
+            found_span,
+        }
     }
 
     /// If `poly` is exactly a single unbound unifiable variable `1*v`, return
@@ -340,7 +433,12 @@ impl UnifyCtx {
         let a = self.resolve_device(a);
         let b = self.resolve_device(b);
         match (a, b) {
-            (Device::Var(v), other) | (other, Device::Var(v)) => {
+            (Device::Var(a), Device::Var(b)) if a == b => Ok(()),
+            (Device::Var(v), other) if self.unifiable_devices.contains(&v) => {
+                self.device_subst.insert(v, other);
+                Ok(())
+            }
+            (other, Device::Var(v)) if self.unifiable_devices.contains(&v) => {
                 self.device_subst.insert(v, other);
                 Ok(())
             }
@@ -349,15 +447,42 @@ impl UnifyCtx {
         }
     }
 
+    fn resolve_dtype(&self, dtype: DType) -> DType {
+        let mut current = dtype;
+        for _ in 0..64 {
+            match current {
+                DType::Var(v) => match self.dtype_subst.get(&v) {
+                    Some(&bound) => current = bound,
+                    None => break,
+                },
+                _ => break,
+            }
+        }
+        current
+    }
+
+    fn unify_dtype(&mut self, a: DType, b: DType) -> Result<(), UnifyError> {
+        let a = self.resolve_dtype(a);
+        let b = self.resolve_dtype(b);
+        match (a, b) {
+            (DType::Var(a), DType::Var(b)) if a == b => Ok(()),
+            (DType::Var(v), other) if self.unifiable_dtypes.contains(&v) => {
+                self.dtype_subst.insert(v, other);
+                Ok(())
+            }
+            (other, DType::Var(v)) if self.unifiable_dtypes.contains(&v) => {
+                self.dtype_subst.insert(v, other);
+                Ok(())
+            }
+            (x, y) if x == y => Ok(()),
+            (expected, found) => Err(UnifyError::DTypeMismatch { expected, found }),
+        }
+    }
+
     /// Unify two tensor types (§4.2): dtype equal (no coercion), rank equal,
     /// dims equal positionally, devices unify.
     pub fn unify_tensor(&mut self, a: &TensorTy, b: &TensorTy) -> Result<(), UnifyError> {
-        if a.dtype != b.dtype {
-            return Err(UnifyError::DTypeMismatch {
-                expected: a.dtype,
-                found: b.dtype,
-            });
-        }
+        self.unify_dtype(a.dtype, b.dtype)?;
         if a.shape.rank() != b.shape.rank() {
             return Err(UnifyError::RankMismatch {
                 expected: a.shape.rank(),
@@ -365,9 +490,79 @@ impl UnifyCtx {
             });
         }
         for (axis, (da, db)) in a.shape.dims.iter().zip(&b.shape.dims).enumerate() {
-            self.unify_dim(da, db, axis)?;
+            self.unify_dim_with_origins(
+                da,
+                db,
+                axis,
+                a.shape.spans.get(axis).copied(),
+                b.shape.spans.get(axis).copied(),
+            )?;
         }
         self.unify_device(a.device, b.device)
+    }
+
+    /// Render a tensor type for diagnostics, resolving bound variables through
+    /// the substitution and printing dimension variables by their provenance
+    /// label (`B`, `N`, ...) rather than internal ids.
+    pub fn display_tensor(&self, kind: &TensorKind) -> String {
+        match kind {
+            TensorKind::Tensor(t) => {
+                let device = match self.resolve_device(t.device) {
+                    Device::Var(_) => String::new(),
+                    d => format!(", device = {d}"),
+                };
+                format!(
+                    "Tensor<{}, {}{}>",
+                    self.resolve_dtype(t.dtype).name(),
+                    self.display_shape(&t.shape),
+                    device
+                )
+            }
+            TensorKind::TensorDyn(d) => format!("TensorDyn<{}>", d.name()),
+            TensorKind::TensorAny => "TensorAny".to_string(),
+        }
+    }
+
+    /// Render a shape, resolving and labelling its dimensions.
+    pub fn display_shape(&self, shape: &Shape) -> String {
+        let dims: Vec<String> = shape.dims.iter().map(|d| self.display_dim(d)).collect();
+        format!("[{}]", dims.join(", "))
+    }
+
+    /// Render a single dimension polynomial with provenance labels.
+    pub fn display_dim(&self, poly: &Poly) -> String {
+        let resolved = self.resolve_dim(poly).unwrap_or_else(|_| poly.clone());
+        let label = |v: DimVar| {
+            self.provenance
+                .get(&v)
+                .map_or_else(|| format!("?d{}", v.0), |p| p.label.clone())
+        };
+        let mut terms: Vec<String> = resolved
+            .iter_terms()
+            .map(|(vars, coeff)| {
+                if vars.is_empty() {
+                    return coeff.to_string();
+                }
+                let body = vars.iter().map(|&v| label(v)).collect::<Vec<_>>().join("*");
+                if coeff == 1 {
+                    body
+                } else {
+                    format!("{coeff}*{body}")
+                }
+            })
+            .collect();
+        // Variables before the constant reads more naturally.
+        terms.reverse();
+        if terms.is_empty() {
+            "0".to_string()
+        } else {
+            terms.join(" + ")
+        }
+    }
+
+    /// The provenance label for a dimension variable, if known.
+    pub fn dim_label(&self, var: DimVar) -> Option<&str> {
+        self.provenance.get(&var).map(|p| p.label.as_str())
     }
 }
 
@@ -455,6 +650,18 @@ mod tests {
             ctx.unify_dim(&Poly::var(m), &lit(512), 0),
             Err(UnifyError::DimMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn cyclic_dimension_binding_is_rejected() {
+        let mut ctx = UnifyCtx::new();
+        let b = ctx.fresh_dim(prov("B"));
+        let b_plus_one = Poly::var(b).add(&lit(1)).unwrap();
+        assert!(matches!(
+            ctx.unify_dim(&Poly::var(b), &b_plus_one, 0),
+            Err(UnifyError::DimMismatch { .. })
+        ));
+        assert_eq!(ctx.resolve_dim(&Poly::var(b)).unwrap(), Poly::var(b));
     }
 
     #[test]

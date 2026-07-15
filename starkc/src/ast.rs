@@ -175,6 +175,8 @@ pub struct GenericArgs {
 #[derive(Clone)]
 pub enum GenericArg {
     Type(TypeId),
+    /// Integer const generic argument, currently used by `Cuda<N>`.
+    Const(Span),
     /// `Item = T` associated-type binding. The `tensor` extension also uses
     /// this form for the `device = D` argument (§8); resolution distinguishes
     /// `device` from associated-type names.
