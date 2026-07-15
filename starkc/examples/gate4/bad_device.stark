@@ -1,0 +1,11 @@
+model DeviceBoundClassifier<N: Dim> {
+    input data: Tensor<Float32, [N, 3, 224, 224], device = Cpu>;
+    output classes: Tensor<Float32, [N, 1000], device = Cpu>;
+}
+
+fn classify(
+    model: DeviceBoundClassifier,
+    gpu_input: Tensor<Float32, [1, 3, 224, 224], device = Cuda<0>>,
+) {
+    model.predict(&gpu_input);
+}

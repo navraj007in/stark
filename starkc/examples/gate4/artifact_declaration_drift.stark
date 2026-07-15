@@ -1,0 +1,5 @@
+// Deliberately differs from resnet50-v1-7.onnx: batch is static and output is 999.
+model Resnet50V17 {
+    input data: Tensor<Float32, [1, 3, 224, 224]>;
+    output resnetv17_dense0_fwd: Tensor<Float32, [1, 999]>;
+}

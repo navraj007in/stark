@@ -1,0 +1,8 @@
+Error: [E0212] tensor element type mismatch: expected `Float32`, found `UInt8`
+  --> examples/gate4/bad_dtype.stark:10:19
+   |
+10 |     model.predict(&unconverted_pixels);
+   |                   ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: corresponding model port declared at examples/gate4/bad_dtype.stark:2:5
+examples/gate4/bad_dtype.stark: 1 error(s)

@@ -1,9 +1,10 @@
 # starkc
 
 Compiler for the STARK Core v1 language. Rust, stable toolchain.
-**Gate 3 (minimal execution path) is complete** — see
-[`docs/gate3-exit.md`](docs/gate3-exit.md). STARK Core programs can now be
-checked and executed by the tree-walking interpreter.
+**Gate 4 (tensor front end and ONNX signatures) is complete** — see
+[`docs/gate4-exit.md`](docs/gate4-exit.md). STARK Core programs can be checked
+and executed by the tree-walking interpreter, while the optional `tensor`
+extension provides static tensor/model checks and bounded ONNX import.
 
 - Language definition: [`../STARKLANG/docs/spec/`](../STARKLANG/docs/spec/)
   (normative), single file: `STARK-Core-v1.md`
@@ -18,6 +19,9 @@ checked and executed by the tree-walking interpreter.
 cargo run -- parse file.stark             # parse a program, report diagnostics
 cargo run -- check file.stark             # resolve, type-check, and borrow-check
 cargo run -- run file.stark               # check and execute a Core program
+cargo run -- check --extension tensor file.stark  # check tensor/model source
+cargo run -- import model.onnx --out model.stark  # generate a declaration
+cargo run -- verify model.onnx --declaration model.stark  # detect drift
 cargo run -- parse --snippet --dump f.stark  # block-body mode, print the AST
 cargo run -- lex file.stark               # dump the token stream
 cargo test                                # everything, incl. the 121-fixture
@@ -66,6 +70,9 @@ diagnostics appear in the messages pane. See
 | Core runtime | String, Vec, Option/Result, Box, ranges, print and file I/O | done (M3.2) |
 | `examples/gate3`, `tests/gate3_execution` | executable programs and CLI/runtime tests | done (M3.3) |
 | `docs/gate3-exit.md` | Gate 3 exit evidence | done (M3.3) |
+| `extensions/tensor`, tensor checker | shape, dtype, device, and operation typing | done (M4.0–M4.4) |
+| `onnx`, `tests/gate4_onnx` | bounded import and signature verification | done (M4.5) |
+| `examples/gate4`, `docs/gate4-exit.md` | Gate 4 demonstrations and exit evidence | done (M4.6) |
 | `docs/terminal-ide.md` | terminal IDE editing, project, build and run workflow | stable |
 
 Architecture target: `Source → Tokens → AST → HIR → typed HIR → backend`;

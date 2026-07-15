@@ -81,7 +81,8 @@ The authoritative, gate-based plan is the
       [`starkc/docs/gate1-exit.md`](starkc/docs/gate1-exit.md))
 - [ ] Gate 2: Core type, ownership, and borrow checker
 - [ ] Gate 3: minimal Core execution path and `core-min` library
-- [ ] Gate 4: tensor front end and generated ONNX signatures
+- [x] Gate 4: tensor front end and generated ONNX signatures
+      (exit report: [`starkc/docs/gate4-exit.md`](starkc/docs/gate4-exit.md))
 - [ ] Gate 5: go/no-go CV deployment prototype using an existing backend
 
 Work outside these gates—including training, a custom tensor runtime, a

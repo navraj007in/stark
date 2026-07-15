@@ -1,6 +1,6 @@
 use starkc::onnx::{
-    decode_signature, format_declaration, verify_declaration_source, DType, DecodeLimits,
-    Dimension, DEFAULT_LIMITS,
+    decode_signature, format_declaration, import_file, verify_declaration_source, DType,
+    DecodeLimits, Dimension, DEFAULT_LIMITS,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -207,19 +207,19 @@ model Drift<A: Dim, B: Dim, C: Dim> {
 }
 "#;
     let report = verify_declaration_source(&signature, declaration, "drift.stark", None).unwrap();
-    let joined = report.differences.join("\n");
-    assert!(joined.contains("name differs"), "{joined}");
-    assert!(joined.contains("dtype differs"), "{joined}");
-    assert!(joined.contains("dimension 2 differs"), "{joined}");
-    assert!(
-        joined.contains("multiple artifact dynamic identities"),
-        "{joined}"
+    assert_eq!(
+        report.differences,
+        [
+            "input 1 name differs: artifact `image/input`, declaration `wrong_name`",
+            "input `image/input` dtype differs: artifact Float32, declaration Float16",
+            "input `wrong_name` dimension 2 differs: artifact 224, declaration 225",
+            "declaration dimension `A` maps to multiple artifact dynamic identities",
+            "output 1 name differs: artifact `class scores`, declaration `class_scores`",
+            "artifact dynamic identity used by declaration dimensions `A` and `B`",
+            "output `class_scores` dimension 1 differs: artifact 1000, declaration 999",
+            "output `valid` rank differs: artifact 2, declaration 1",
+        ]
     );
-    assert!(
-        joined.contains("artifact dynamic identity used by declaration dimensions"),
-        "{joined}"
-    );
-    assert!(joined.contains("rank differs"), "{joined}");
 }
 
 #[test]
@@ -553,4 +553,78 @@ fn cli_import_verify_overwrite_and_exit_statuses() {
         &declaration,
     ]);
     assert_eq!(duplicate_flag.status.code(), Some(2));
+}
+
+#[test]
+fn cli_model_selection_and_unknown_flags_are_scriptable() {
+    let temp = TempDir::new();
+    let artifact = temp.join("select.onnx");
+    let declaration = temp.join("models.stark");
+    fs::write(
+        &artifact,
+        model(
+            &[value("x", 1, &[Dim::Static(1)])],
+            &[value("y", 1, &[Dim::Static(1)])],
+            &[],
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &declaration,
+        "model A { input x: Tensor<Float32, [1]>; output y: Tensor<Float32, [1]>; }\n\
+         model B { input x: Tensor<Float32, [1]>; output y: Tensor<Float32, [1]>; }\n",
+    )
+    .unwrap();
+
+    let ambiguous = starkc(&[
+        Path::new("verify"),
+        &artifact,
+        Path::new("--declaration"),
+        &declaration,
+    ]);
+    assert_eq!(ambiguous.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("multiple models"));
+
+    let selected = starkc(&[
+        Path::new("verify"),
+        &artifact,
+        Path::new("--declaration"),
+        &declaration,
+        Path::new("--model"),
+        Path::new("B"),
+    ]);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    assert!(String::from_utf8_lossy(&selected.stdout).contains("ONNX signature matches"));
+
+    let unknown = starkc(&[
+        Path::new("verify"),
+        &artifact,
+        Path::new("--declaration"),
+        &declaration,
+        Path::new("--unknown"),
+    ]);
+    assert_eq!(unknown.status.code(), Some(2));
+}
+
+#[test]
+#[ignore = "set STARK_GATE4_REFERENCE_ONNX to the checksum-verified ResNet50 artifact"]
+fn imports_and_verifies_checksum_pinned_reference_model() {
+    let artifact = PathBuf::from(
+        std::env::var("STARK_GATE4_REFERENCE_ONNX")
+            .expect("STARK_GATE4_REFERENCE_ONNX must name resnet50-v1-7.onnx"),
+    );
+    let temp = TempDir::new();
+    let declaration = temp.join("reference.stark");
+    let source = import_file(&artifact, &declaration, false).unwrap();
+    assert!(source.contains(
+        "ONNX SHA-256: af16a04a6ec48ac494065d4439fe9dea590d337b9ca6dc328160ccf04a217b9c"
+    ));
+    assert!(source.contains("input data: Tensor<Float32, [N, 3, 224, 224]>;"));
+    assert!(source.contains("output resnetv17_dense0_fwd: Tensor<Float32, [N, 1000]>;"));
+    let verified = starkc::onnx::verify_declaration_file(&artifact, &declaration, None).unwrap();
+    assert!(verified.is_match());
 }

@@ -1,0 +1,20 @@
+// Gate 4 validates this pipeline statically; numerical execution begins in Gate 5.
+model Resnet50V17<N: Dim> {
+    input data: Tensor<Float32, [N, 3, 224, 224]>;
+    output resnetv17_dense0_fwd: Tensor<Float32, [N, 1000]>;
+}
+
+fn preprocess<N: Dim>(
+    pixels: Tensor<UInt8, [N, 224, 224, 3]>,
+) -> Tensor<Float32, [N, 3, 224, 224]> {
+    let channels_first = pixels.permute::<[0, 3, 1, 2]>();
+    channels_first.cast::<Float32>()
+}
+
+fn classify<N: Dim>(
+    model: Resnet50V17,
+    pixels: Tensor<UInt8, [N, 224, 224, 3]>,
+) -> Tensor<Float32, [N, 1000]> {
+    let input = preprocess(pixels);
+    model.predict(&input)
+}

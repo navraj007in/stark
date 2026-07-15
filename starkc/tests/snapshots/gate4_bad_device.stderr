@@ -1,0 +1,8 @@
+Error: [E0212] tensor device mismatch: expected `Cpu`, found `Cuda<0>`
+  --> examples/gate4/bad_device.stark:10:19
+   |
+10 |     model.predict(&gpu_input);
+   |                   ^^^^^^^^^^
+   |
+   = note: corresponding model port declared at examples/gate4/bad_device.stark:2:5
+examples/gate4/bad_device.stark: 1 error(s)

@@ -107,6 +107,9 @@ Exit criteria:
 
 ### Gate 4 — Tensor front end and ONNX import
 
+**Status: complete (2026-07-15).** Reproducible evidence is recorded in
+`starkc/docs/gate4-exit.md`.
+
 Implement the narrowest slice of the `tensor` v0.1 extension required to type
 an imported computer-vision model.
 
@@ -127,6 +130,8 @@ Exit criteria:
   diagnostics.
 
 ### Gate 5 — Go/no-go deployment prototype
+
+**Status: next.**
 
 Build one realistic inference program covering input refinement,
 preprocessing, model invocation, and postprocessing.
@@ -204,4 +209,3 @@ backed by a concrete use case after the go/no-go prototype.
   experiment, and measurable exit criteria.
 - Status changes should update this document and the compact summary in the
   repository README in the same change.
-
