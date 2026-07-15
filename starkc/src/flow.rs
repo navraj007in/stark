@@ -392,6 +392,8 @@ impl FlowChecker<'_> {
                 for field in fields {
                     if let Some(pat) = field.pat {
                         self.collect_pattern_bindings(pat, locals);
+                    } else if let Some(local) = field.local {
+                        locals.push(local);
                     }
                 }
             }

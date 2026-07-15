@@ -59,6 +59,7 @@ enum Value {
         end: i128,
         inclusive: bool,
     },
+    Ref(Place),
     Function(ItemId),
 }
 
@@ -102,6 +103,7 @@ impl fmt::Display for Value {
                 end,
                 inclusive,
             } => write!(f, "{start}..{}{end}", if *inclusive { "=" } else { "" }),
+            Value::Ref(_) => write!(f, "<reference>"),
             Value::Function(item) => write!(f, "fn#{}", item.0),
         }
     }
@@ -130,14 +132,15 @@ fn write_sequence(
     write!(f, "{close}")
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Projection {
     Field(String),
     Index(usize),
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Place {
+    frame: usize,
     local: LocalId,
     projections: Vec<Projection>,
 }
@@ -373,8 +376,17 @@ impl<'a> Interpreter<'a> {
             hir::ExprKind::Path { res, .. } => Ok(Flow::Value(self.eval_path(*res, expr_id)?)),
             hir::ExprKind::Unary { op, operand } => {
                 let value = match op {
-                    UnOp::Ref { .. } => self.clone_expr_place(*operand)?,
-                    UnOp::Deref => self.expect_value(*operand)?,
+                    UnOp::Ref { .. } => Value::Ref(self.expr_place(*operand)?),
+                    UnOp::Deref => {
+                        let reference = self.expect_value(*operand)?;
+                        let Value::Ref(place) = reference else {
+                            return Err(RuntimeError::new(
+                                "cannot dereference non-reference",
+                                expr.span,
+                            ));
+                        };
+                        self.clone_place_value(&place, expr.span)?
+                    }
                     _ => self.expect_value(*operand)?,
                 };
                 Ok(Flow::Value(self.eval_unary(*op, value, expr.span)?))
@@ -604,6 +616,7 @@ impl<'a> Interpreter<'a> {
         match res {
             Res::Local(local) | Res::SelfValue(local) => {
                 let place = Place {
+                    frame: self.frames.len() - 1,
                     local,
                     projections: Vec::new(),
                 };
@@ -653,8 +666,16 @@ impl<'a> Interpreter<'a> {
         expr: ExprId,
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        let left = self.deref_value(left, span)?;
+        let right = self.deref_value(right, span)?;
         if matches!(op, BinOp::Eq | BinOp::Ne) {
-            let equal = left == right;
+            let equal = match (&left, &right) {
+                (
+                    Value::String(left) | Value::Str(left),
+                    Value::String(right) | Value::Str(right),
+                ) => left == right,
+                _ => left == right,
+            };
             return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
         }
         match (left, right) {
@@ -712,13 +733,15 @@ impl<'a> Interpreter<'a> {
                 left.push_str(&right);
                 Ok(Value::String(left))
             }
-            (Value::Str(left), Value::Str(right)) => match op {
-                BinOp::Lt => Ok(Value::Bool(left < right)),
-                BinOp::Le => Ok(Value::Bool(left <= right)),
-                BinOp::Gt => Ok(Value::Bool(left > right)),
-                BinOp::Ge => Ok(Value::Bool(left >= right)),
-                _ => Err(RuntimeError::new("invalid string operation", span)),
-            },
+            (Value::String(left) | Value::Str(left), Value::String(right) | Value::Str(right)) => {
+                match op {
+                    BinOp::Lt => Ok(Value::Bool(left < right)),
+                    BinOp::Le => Ok(Value::Bool(left <= right)),
+                    BinOp::Gt => Ok(Value::Bool(left > right)),
+                    BinOp::Ge => Ok(Value::Bool(left >= right)),
+                    _ => Err(RuntimeError::new("invalid string operation", span)),
+                }
+            }
             _ => Err(RuntimeError::new("invalid binary operation", span)),
         }
     }
@@ -816,6 +839,17 @@ impl<'a> Interpreter<'a> {
                 }
                 Res::TraitMember(trait_id, member) => {
                     self.call_qualified_trait(*trait_id, *member, args, span)
+                }
+                Res::AssociatedFn(item, name) => {
+                    let values = args
+                        .iter()
+                        .map(|arg| self.expect_value(*arg))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let callable = self
+                        .find_associated_fn(*item, self.text(*name))
+                        .ok_or_else(|| RuntimeError::new("associated function not found", span))?;
+                    self.call_callable(callable, None, values, span)
+                        .map(Flow::Value)
                 }
                 _ => Err(RuntimeError::new("expression is not callable", span)),
             },
@@ -969,6 +1003,7 @@ impl<'a> Interpreter<'a> {
                 .map(Flow::Value);
         }
         let receiver_value = self.clone_expr_place(base)?;
+        let receiver_value = self.deref_value(receiver_value, span)?;
         let nominal = nominal_item(&receiver_value);
         let method = self.find_method(nominal, &name, None).ok_or_else(|| {
             RuntimeError::new(format!("method '{name}' not found at runtime"), span)
@@ -999,6 +1034,7 @@ impl<'a> Interpreter<'a> {
             return Err(RuntimeError::new("trait call requires receiver", span));
         };
         let receiver = self.clone_expr_place(*first)?;
+        let receiver = self.deref_value(receiver, span)?;
         let method = self
             .find_method(nominal_item(&receiver), &method_name, Some(trait_id))
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
@@ -1051,6 +1087,38 @@ impl<'a> Interpreter<'a> {
         })
     }
 
+    fn find_associated_fn(&self, nominal: ItemId, name: &str) -> Option<Callable> {
+        self.hir.items.iter().find_map(|item| {
+            let hir::ItemKind::Impl {
+                trait_: None,
+                self_ty,
+                items,
+                ..
+            } = &item.kind
+            else {
+                return None;
+            };
+            if !matches!(
+                &self.hir.ty(*self_ty).kind,
+                hir::TypeKind::Path { res: Res::Item(item), .. } if *item == nominal
+            ) {
+                return None;
+            }
+            items.iter().find_map(|item| match item {
+                hir::ImplItem::Fn { def, .. }
+                    if def.sig.receiver.is_none() && self.text(def.sig.name) == name =>
+                {
+                    Some(Callable {
+                        receiver: None,
+                        params: def.sig.params.iter().map(|param| param.local).collect(),
+                        body: def.body,
+                    })
+                }
+                _ => None,
+            })
+        })
+    }
+
     fn call_user_method(
         &mut self,
         callable: Callable,
@@ -1062,14 +1130,18 @@ impl<'a> Interpreter<'a> {
         let Some((receiver_kind, receiver_local)) = callable.receiver else {
             return Err(RuntimeError::new("method has no receiver", span));
         };
+        let mut receiver_place = None;
         let receiver = match receiver_kind {
             hir::Receiver::Value => self.expect_value(base)?,
             hir::Receiver::Ref => borrowed_receiver,
             hir::Receiver::RefMut => {
-                let place = self.expr_place(base)?;
-                self.place_slot_mut(&place, span)?
+                let place = self.core_receiver_place(base, span)?;
+                let receiver = self
+                    .place_slot_mut(&place, span)?
                     .take()
-                    .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?
+                    .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?;
+                receiver_place = Some(place);
+                receiver
             }
         };
         let mut frame = Frame::default();
@@ -1079,9 +1151,17 @@ impl<'a> Interpreter<'a> {
         }
         self.frames.push(frame);
         let result = self.eval_block(callable.body);
-        if result.is_err() {
+        if let Err(error) = result {
+            let restored = self
+                .frame_mut()
+                .values
+                .get_mut(&receiver_local)
+                .and_then(Option::take);
             self.frames.pop();
-            return result.map(|_| Value::Unit);
+            if let (Some(place), Some(restored)) = (receiver_place, restored) {
+                self.place_slot_mut(&place, span)?.replace(restored);
+            }
+            return Err(error);
         }
         let flow = result?;
         let restored = if receiver_kind == hir::Receiver::Value {
@@ -1098,7 +1178,7 @@ impl<'a> Interpreter<'a> {
             let restored = restored.ok_or_else(|| {
                 RuntimeError::new("mutable receiver was moved by its method", span)
             })?;
-            let place = self.expr_place(base)?;
+            let place = receiver_place.expect("mutable receiver place recorded");
             self.write_place(&place, restored, span)?;
         }
         match flow {
@@ -1111,8 +1191,12 @@ impl<'a> Interpreter<'a> {
     }
 
     fn is_core_value(&self, expr: ExprId) -> bool {
+        let mut ty = self.tables.expr_types.get(&expr);
+        while let Some(Ty::Ref { inner, .. }) = ty {
+            ty = Some(inner.as_ref());
+        }
         matches!(
-            self.tables.expr_types.get(&expr),
+            ty,
             Some(
                 Ty::Primitive(Primitive::String | Primitive::Str)
                     | Ty::Core(..)
@@ -1138,12 +1222,23 @@ impl<'a> Interpreter<'a> {
             name,
             "push" | "push_str" | "pop" | "clear" | "insert" | "remove" | "append"
         );
+        if name == "get" {
+            let index = usize_arg(values.next(), span)?;
+            let mut place = self.core_receiver_place(base, span)?;
+            place.projections.push(Projection::Index(index));
+            return Ok(Value::Option(
+                self.place_value(&place, span)
+                    .ok()
+                    .map(|_| Box::new(Value::Ref(place))),
+            ));
+        }
         let mut owned;
         let target = if mutating {
-            let place = self.expr_place(base)?;
+            let place = self.core_receiver_place(base, span)?;
             self.place_value_mut(&place, span)?
         } else {
-            owned = self.clone_expr_place(base)?;
+            let value = self.clone_expr_place(base)?;
+            owned = self.deref_value(value, span)?;
             &mut owned
         };
         match target {
@@ -1221,12 +1316,6 @@ impl<'a> Interpreter<'a> {
                     Ok(Value::Unit)
                 }
                 "pop" => Ok(Value::Option(vector.pop().flatten().map(Box::new))),
-                "get" => {
-                    let index = usize_arg(values.next(), span)?;
-                    Ok(Value::Option(
-                        vector.get(index).and_then(Clone::clone).map(Box::new),
-                    ))
-                }
                 "insert" => {
                     let index = usize_arg(values.next(), span)?;
                     if index > vector.len() {
@@ -1311,6 +1400,7 @@ impl<'a> Interpreter<'a> {
                 })?;
                 self.take_place(
                     &Place {
+                        frame: self.frames.len() - 1,
                         local,
                         projections: Vec::new(),
                     },
@@ -1413,6 +1503,8 @@ impl<'a> Interpreter<'a> {
                         if !self.match_pattern(pat, value, bindings)? {
                             return Ok(false);
                         }
+                    } else if let Some(local) = field.local {
+                        bindings.push((local, value.clone()));
                     }
                 }
                 Ok(true)
@@ -1506,6 +1598,7 @@ impl<'a> Interpreter<'a> {
                 res: Res::Local(local) | Res::SelfValue(local),
                 ..
             } => Ok(Place {
+                frame: self.frames.len() - 1,
                 local: *local,
                 projections: Vec::new(),
             }),
@@ -1535,21 +1628,50 @@ impl<'a> Interpreter<'a> {
             hir::ExprKind::Unary {
                 op: UnOp::Deref,
                 operand,
-            } => self.expr_place(*operand),
+            } => match self.expect_value(*operand)? {
+                Value::Ref(place) => Ok(place),
+                _ => Err(RuntimeError::new(
+                    "cannot dereference non-reference",
+                    node.span,
+                )),
+            },
             _ => Err(RuntimeError::new("expression is not a place", node.span)),
         }
     }
 
     fn clone_expr_place(&mut self, expr: ExprId) -> Result<Value, RuntimeError> {
         if let Ok(place) = self.expr_place(expr) {
-            return self.place_value(&place, self.hir.expr(expr).span).cloned();
+            return self.clone_place_value(&place, self.hir.expr(expr).span);
         }
         self.expect_value(expr)
     }
 
+    fn core_receiver_place(&mut self, expr: ExprId, span: Span) -> Result<Place, RuntimeError> {
+        let mut place = self.expr_place(expr)?;
+        loop {
+            match self.place_value(&place, span)? {
+                Value::Ref(referent) => place = referent.clone(),
+                _ => return Ok(place),
+            }
+        }
+    }
+
+    fn clone_place_value(&self, place: &Place, span: Span) -> Result<Value, RuntimeError> {
+        self.place_value(place, span).cloned()
+    }
+
+    fn deref_value(&self, mut value: Value, span: Span) -> Result<Value, RuntimeError> {
+        while let Value::Ref(place) = value {
+            value = self.clone_place_value(&place, span)?;
+        }
+        Ok(value)
+    }
+
     fn place_value(&self, place: &Place, span: Span) -> Result<&Value, RuntimeError> {
         let mut value = self
-            .frame()
+            .frames
+            .get(place.frame)
+            .ok_or_else(|| RuntimeError::new("dangling reference", span))?
             .values
             .get(&place.local)
             .and_then(Option::as_ref)
@@ -1564,7 +1686,9 @@ impl<'a> Interpreter<'a> {
 
     fn place_value_mut(&mut self, place: &Place, span: Span) -> Result<&mut Value, RuntimeError> {
         let mut value = self
-            .frame_mut()
+            .frames
+            .get_mut(place.frame)
+            .ok_or_else(|| RuntimeError::new("dangling reference", span))?
             .values
             .get_mut(&place.local)
             .and_then(Option::as_mut)
@@ -1601,7 +1725,9 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> Result<&mut Option<Value>, RuntimeError> {
         let mut slot = self
-            .frame_mut()
+            .frames
+            .get_mut(place.frame)
+            .ok_or_else(|| RuntimeError::new("dangling reference", span))?
             .values
             .get_mut(&place.local)
             .ok_or_else(|| RuntimeError::new("unknown local", span))?;
@@ -1623,6 +1749,7 @@ impl<'a> Interpreter<'a> {
             | Value::Float(_)
             | Value::Char(_)
             | Value::Str(_)
+            | Value::Ref(_)
             | Value::Function(_) => true,
             Value::Tuple(values) | Value::Array(values) => values
                 .iter()
@@ -1926,5 +2053,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "second\nfirst\n");
+    }
+
+    #[test]
+    fn pattern_bindings_keep_payload_and_destructured_types() {
+        let execution = execute(
+            "enum Message { Number(Int32), Named { amount: Int32 }, Empty } struct Point { x: Int32 } fn main() { let pair = (2, 3); match pair { (a, b) => println(a + b), } let value: Option<Int32> = Some(7); match value { Some(number) => println(number * 2), None => println(0), } let message = Message::Number(9); match message { Message::Number(number) => println(number + 1), Message::Named { amount } => println(amount), Message::Empty => println(0), } let named = Message::Named { amount: 13 }; match named { Message::Named { amount } => println(amount + 1), Message::Number(number) => println(number), Message::Empty => println(0), } let point = Point { x: 11 }; match point { Point { x } => println(x + 1), } }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "5\n14\n10\n14\n12\n");
+    }
+
+    #[test]
+    fn references_write_through_and_core_methods_auto_deref() {
+        let execution = execute(
+            "struct Counter { value: Int32 } impl Counter { fn bump(&mut self) { self.value += 1; } } fn add_value(values: &mut Vec<Int32>) { values.push(8); println(values.len()); } fn bump_counter(counter: &mut Counter) { counter.bump(); } fn main() { let mut values: Vec<Int32> = Vec::new(); values.push(3); add_value(&mut values); println(values.len()); println(*values.get(1u64).unwrap()); let mut counter = Counter { value: 4 }; bump_counter(&mut counter); println(counter.value); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "2\n2\n8\n5\n");
+    }
+
+    #[test]
+    fn compares_borrowed_and_owned_strings() {
+        let execution = execute(
+            "fn is_alice(name: &str) -> Bool { name == \"alice\" } fn main() { let owned = String::from(\"alice\"); println(is_alice(owned.as_str())); println(owned == \"alice\"); println(\"alice\" < \"bob\"); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\ntrue\ntrue\n");
+    }
+
+    #[test]
+    fn executes_custom_associated_functions() {
+        let execution = execute(
+            "struct Stack { size: Int32 } struct Holder<T> { value: T } impl Stack { fn new() -> Stack { Stack { size: 0 } } fn with_size(size: Int32) -> Stack { Stack { size: size } } fn identity<T>(value: T) -> T { value } } impl<T> Holder<T> { fn new(value: T) -> Self { Holder { value: value } } } fn main() { let empty = Stack::new(); let filled = Stack::with_size(4); println(empty.size + filled.size); println(Stack::identity(6)); let held: Holder<Int32> = Holder::new(7); println(held.value); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "4\n6\n7\n");
     }
 }

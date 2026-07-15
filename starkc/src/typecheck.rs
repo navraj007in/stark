@@ -1661,7 +1661,8 @@ impl<'a> TypeChecker<'a> {
                     self.const_types.insert(item_id, const_ty);
                 }
                 hir::ItemKind::Impl { self_ty, items, .. } => {
-                    let _self_ty = self.convert_hir_type(*self_ty);
+                    let impl_self_ty = self.convert_hir_type(*self_ty);
+                    let previous_self = self.current_self_ty.replace(impl_self_ty);
                     // Register methods of the impl
                     for impl_item in items {
                         if let hir::ImplItem::Fn { def, .. } = impl_item {
@@ -1687,6 +1688,7 @@ impl<'a> TypeChecker<'a> {
                             // In resolve.rs, we allocated the method def as part of ImplItem.
                         }
                     }
+                    self.current_self_ty = previous_self;
                 }
                 _ => {}
             }
@@ -2603,6 +2605,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 Res::Primitive(p) => Ty::Primitive(*p),
+                Res::AssociatedFn(item_id, name) => {
+                    self.associated_fn_type(*item_id, *name, turbofish.as_ref(), expr.span)
+                }
                 Res::ModelLoad(item_id) => {
                     self.validate_generic_arity(
                         0,
@@ -2702,12 +2707,16 @@ impl<'a> TypeChecker<'a> {
                         lhs_ty
                     }
                     BinOp::Eq | BinOp::Ne => {
-                        let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
+                        if !self.string_types_comparable(&lhs_ty, &rhs_ty) {
+                            let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
+                        }
                         self.require_operator_bound(&lhs_ty, "Eq", expr.span);
                         Ty::Primitive(Primitive::Bool)
                     }
                     BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                        let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
+                        if !self.string_types_comparable(&lhs_ty, &rhs_ty) {
+                            let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
+                        }
                         self.require_operator_bound(&lhs_ty, "Ord", expr.span);
                         Ty::Primitive(Primitive::Bool)
                     }
@@ -3241,7 +3250,7 @@ impl<'a> TypeChecker<'a> {
                 let mut has_wildcard = false;
 
                 for arm in arms {
-                    let pat_ty = self.check_pat(arm.pat);
+                    let pat_ty = self.check_pat(arm.pat, scr_ty.clone());
                     let _ = self.unify(scr_ty.clone(), pat_ty, arm.pat.span(self.hir));
 
                     let pat = self.hir.pat(arm.pat);
@@ -3380,7 +3389,7 @@ impl<'a> TypeChecker<'a> {
         ty
     }
 
-    fn check_pat(&mut self, pat_id: PatId) -> Ty {
+    fn check_pat(&mut self, pat_id: PatId, expected: Ty) -> Ty {
         let pat = self.hir.pat(pat_id);
         match &pat.kind {
             hir::PatKind::Lit(lit) => match lit {
@@ -3405,9 +3414,10 @@ impl<'a> TypeChecker<'a> {
                 Lit::Char => Ty::Primitive(Primitive::Char),
                 Lit::Bool(_) => Ty::Primitive(Primitive::Bool),
             },
-            hir::PatKind::Wild => self.new_type_var(),
+            hir::PatKind::Wild => expected,
             hir::PatKind::Binding { local, .. } => {
-                self.local_types.get(local).cloned().unwrap_or(Ty::Error)
+                self.local_types.insert(*local, expected.clone());
+                expected
             }
             hir::PatKind::Path { res, .. } => match res {
                 Res::Item(item_id) => {
@@ -3425,7 +3435,10 @@ impl<'a> TypeChecker<'a> {
             },
             hir::PatKind::TupleVariant { res, pats, .. } => {
                 if let Res::Variant(enum_id, variant_idx) = res {
-                    let args = self.nominal_use_args(*enum_id, None, pat.span);
+                    let args = match self.resolve(&expected) {
+                        Ty::Enum(expected_id, args) if expected_id == *enum_id => args,
+                        _ => self.nominal_use_args(*enum_id, None, pat.span),
+                    };
                     let map = self.nominal_param_map(*enum_id, &args);
                     let tys_opt = self.enum_variants.get(enum_id).and_then(|variants| {
                         let variant = &variants[*variant_idx as usize];
@@ -3437,12 +3450,25 @@ impl<'a> TypeChecker<'a> {
                     });
                     if let Some(tys) = tys_opt {
                         for (p, expected_t) in pats.iter().zip(tys) {
-                            let p_ty = self.check_pat(*p);
                             let expected_t = self.instantiate_ty(&expected_t, &map);
+                            let p_ty = self.check_pat(*p, expected_t.clone());
                             let _ = self.unify(expected_t, p_ty, p.span(self.hir));
                         }
                     }
                     Ty::Enum(*enum_id, args)
+                } else if let Res::Builtin(builtin) = res {
+                    let resolved = self.resolve(&expected);
+                    let payload = match (builtin, &resolved) {
+                        (Builtin::Some, Ty::Core(CoreType::Option, args)) => args.first().cloned(),
+                        (Builtin::Ok, Ty::Core(CoreType::Result, args)) => args.first().cloned(),
+                        (Builtin::Err, Ty::Core(CoreType::Result, args)) => args.get(1).cloned(),
+                        _ => None,
+                    };
+                    if let (Some(subpat), Some(payload)) = (pats.first(), payload) {
+                        let p_ty = self.check_pat(*subpat, payload.clone());
+                        let _ = self.unify(payload, p_ty, subpat.span(self.hir));
+                    }
+                    resolved
                 } else {
                     Ty::Error
                 }
@@ -3460,25 +3486,67 @@ impl<'a> TypeChecker<'a> {
                         let f_name = self.text(field.name);
                         if let Some(expected_f_ty) = expected_fields.get(f_name) {
                             if let Some(sub_pat) = field.pat {
-                                let p_ty = self.check_pat(sub_pat);
                                 let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
+                                let p_ty = self.check_pat(sub_pat, expected_f_ty.clone());
                                 let _ = self.unify(expected_f_ty, p_ty, field.name);
+                            } else if let Some(local) = field.local {
+                                let expected_f_ty = self.instantiate_ty(expected_f_ty, &map);
+                                self.local_types.insert(local, expected_f_ty);
                             }
                         }
                     }
                     Ty::Struct(*struct_id, args)
+                } else if let Res::Variant(enum_id, variant_idx) = res {
+                    let args = match self.resolve(&expected) {
+                        Ty::Enum(expected_id, args) if expected_id == *enum_id => args,
+                        _ => self.nominal_use_args(*enum_id, None, pat.span),
+                    };
+                    let map = self.nominal_param_map(*enum_id, &args);
+                    let expected_fields = self
+                        .enum_variants
+                        .get(enum_id)
+                        .and_then(|variants| variants.get(*variant_idx as usize))
+                        .and_then(|variant| match &variant.fields {
+                            VariantFields::Struct(fields) => Some(fields.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    for field in fields {
+                        let name = self.text(field.name);
+                        if let Some(field_ty) = expected_fields.get(name) {
+                            let field_ty = self.instantiate_ty(field_ty, &map);
+                            if let Some(subpat) = field.pat {
+                                let pat_ty = self.check_pat(subpat, field_ty.clone());
+                                let _ = self.unify(field_ty, pat_ty, field.name);
+                            } else if let Some(local) = field.local {
+                                self.local_types.insert(local, field_ty);
+                            }
+                        }
+                    }
+                    Ty::Enum(*enum_id, args)
                 } else {
                     Ty::Error
                 }
             }
             hir::PatKind::Tuple(elems) => {
-                let tys = elems.iter().map(|&p| self.check_pat(p)).collect();
+                let expected_elems = match self.resolve(&expected) {
+                    Ty::Tuple(tys) if tys.len() == elems.len() => tys,
+                    _ => (0..elems.len()).map(|_| self.new_type_var()).collect(),
+                };
+                let tys = elems
+                    .iter()
+                    .zip(expected_elems)
+                    .map(|(&p, ty)| self.check_pat(p, ty))
+                    .collect();
                 Ty::Tuple(tys)
             }
             hir::PatKind::Array(elems) => {
-                let elem_ty = self.new_type_var();
+                let elem_ty = match self.resolve(&expected) {
+                    Ty::Array(elem, _) | Ty::Slice(elem) => *elem,
+                    _ => self.new_type_var(),
+                };
                 for &e in elems {
-                    let ety = self.check_pat(e);
+                    let ety = self.check_pat(e, elem_ty.clone());
                     let _ = self.unify(elem_ty.clone(), ety, pat.span);
                 }
                 Ty::Array(Box::new(elem_ty), elems.len() as u64)
@@ -3939,6 +4007,92 @@ impl<'a> TypeChecker<'a> {
             },
         ))));
         Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
+    }
+
+    fn associated_fn_type(
+        &mut self,
+        nominal: ItemId,
+        name_span: Span,
+        turbofish: Option<&hir::GenericArgs>,
+        call_span: Span,
+    ) -> Ty {
+        let name = self.text(name_span).to_string();
+        let selected = self.hir.items.iter().find_map(|item| {
+            let hir::ItemKind::Impl {
+                trait_: None,
+                self_ty,
+                items,
+                generics,
+            } = &item.kind
+            else {
+                return None;
+            };
+            if !matches!(
+                &self.hir.ty(*self_ty).kind,
+                hir::TypeKind::Path { res: Res::Item(item), .. } if *item == nominal
+            ) {
+                return None;
+            }
+            items.iter().find_map(|item| match item {
+                hir::ImplItem::Fn { def, .. }
+                    if def.sig.receiver.is_none() && self.text(def.sig.name) == name =>
+                {
+                    Some((def.sig.clone(), *self_ty, generics.clone()))
+                }
+                _ => None,
+            })
+        });
+        let Some((sig, self_ty_id, impl_generics)) = selected else {
+            self.diags.push(
+                Diagnostic::error(format!("associated function '{name}' not found"), name_span)
+                    .with_code("E0200"),
+            );
+            return Ty::Error;
+        };
+
+        let self_ty = self.convert_hir_type(self_ty_id);
+        let previous_self = self.current_self_ty.replace(self_ty);
+        let mut params: Vec<Ty> = sig
+            .params
+            .iter()
+            .map(|param| self.convert_hir_type(param.ty))
+            .collect();
+        let mut ret = match sig.ret {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(ty) => self.convert_hir_type(ty),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        self.current_self_ty = previous_self;
+
+        let mut map = HashMap::new();
+        for param in &impl_generics {
+            let infer = self.new_type_var();
+            map.insert(self.text(param.name).to_string(), infer);
+        }
+        if let Some(args) = turbofish {
+            self.validate_generic_arity(sig.generics.len(), args.args.len(), call_span);
+            for (param, arg) in sig.generics.iter().zip(&args.args) {
+                let ty = match arg {
+                    hir::GenericArg::Type(ty) => self.convert_hir_type(*ty),
+                    _ => Ty::Error,
+                };
+                map.insert(self.text(param.name).to_string(), ty);
+            }
+        } else {
+            for param in &sig.generics {
+                let infer = self.new_type_var();
+                map.insert(self.text(param.name).to_string(), infer);
+            }
+        }
+        params = params
+            .iter()
+            .map(|ty| self.instantiate_ty(ty, &map))
+            .collect();
+        ret = self.instantiate_ty(&ret, &map);
+        Ty::Fn {
+            params,
+            ret: Box::new(ret),
+        }
     }
 
     fn resolve_method(
@@ -4472,6 +4626,12 @@ impl<'a> TypeChecker<'a> {
                 "Eq" | "Ord" => !matches!(primitive, Primitive::Unit),
                 _ => false,
             },
+            Ty::Ref {
+                mutable: false,
+                inner,
+            } if required == "Eq" || required == "Ord" => {
+                matches!(self.resolve(inner), Ty::Primitive(p) if !matches!(p, Primitive::Unit))
+            }
             Ty::Param(name) => self.current_fn_generics.as_ref().is_some_and(|params| {
                 params.iter().any(|param| {
                     self.text(param.name) == name
@@ -4534,6 +4694,10 @@ impl<'a> TypeChecker<'a> {
         let bound_name = self.text(bound.path.span).to_string();
 
         match &ty {
+            Ty::Ref {
+                mutable: false,
+                inner,
+            } if bound_name == "Eq" || bound_name == "Ord" => self.satisfies_bound(inner, bound),
             Ty::Primitive(p) => {
                 if bound_name == "Num" {
                     is_numeric(*p)
@@ -4600,6 +4764,18 @@ impl<'a> TypeChecker<'a> {
             Ty::Error => true,
             _ => false,
         }
+    }
+
+    fn string_types_comparable(&self, left: &Ty, right: &Ty) -> bool {
+        fn is_string_like(ty: &Ty) -> bool {
+            match ty {
+                Ty::Primitive(Primitive::String | Primitive::Str)
+                | Ty::Core(CoreType::String, _) => true,
+                Ty::Ref { inner, .. } => is_string_like(inner),
+                _ => false,
+            }
+        }
+        is_string_like(&self.resolve(left)) && is_string_like(&self.resolve(right))
     }
 }
 

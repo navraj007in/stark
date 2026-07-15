@@ -111,6 +111,8 @@ pub enum Res {
     Variant(ItemId, u32),
     /// Method or associated type selected from a trait path.
     TraitMember(ItemId, u32),
+    /// Receiverless function selected from an inherent impl.
+    AssociatedFn(ItemId, Span),
     /// Primitive type.
     Primitive(Primitive),
     /// The `Self` type inside an impl/trait.
@@ -604,4 +606,6 @@ pub enum PatKind {
 pub struct FieldPat {
     pub name: Span,
     pub pat: Option<PatId>,
+    /// Binding allocated for shorthand fields such as `Point { x }`.
+    pub local: Option<LocalId>,
 }

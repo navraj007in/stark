@@ -635,8 +635,11 @@ impl<'a> Resolver<'a> {
                         if let Some(variant_idx) = variants.iter().position(|v| v == name_str) {
                             current_res = Some(Res::Variant(item_id, variant_idx as u32));
                         } else {
-                            return Res::Err;
+                            current_res = Some(Res::AssociatedFn(item_id, segment.span));
                         }
+                    }
+                    Some(ItemDefDetail::Struct { .. }) => {
+                        current_res = Some(Res::AssociatedFn(item_id, segment.span));
                     }
                     Some(ItemDefDetail::Trait { items }) => {
                         if let Some(member) = items.iter().position(|item| item == name_str) {
@@ -1103,7 +1106,7 @@ impl<'a> Resolver<'a> {
                 }
                 let fields = fields.iter().map(|f| {
                     let pat = f.pat.map(|p| self.lower_pattern(p));
-                    if f.pat.is_none() {
+                    let local = if f.pat.is_none() {
                         let name_str = self.text(f.name);
                         let var_name = name_str.to_string();
                         if self.scopes.last().unwrap().contains_key(&var_name) {
@@ -1114,8 +1117,11 @@ impl<'a> Resolver<'a> {
                         }
                         let local = self.alloc_local();
                         self.scopes.last_mut().unwrap().insert(var_name, Res::Local(local));
-                    }
-                    hir::FieldPat { name: f.name, pat }
+                        Some(local)
+                    } else {
+                        None
+                    };
+                    hir::FieldPat { name: f.name, pat, local }
                 }).collect();
                 hir::PatKind::Struct {
                     path: path.clone(),
