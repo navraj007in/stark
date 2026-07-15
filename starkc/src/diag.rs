@@ -32,6 +32,7 @@ impl Severity {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Diagnostic {
     pub severity: Severity,
     /// Spec error code (`E0001`, `W0100`, ...). Internal/staging diagnostics

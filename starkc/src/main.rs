@@ -8,6 +8,7 @@ const USAGE: &str = "\
 starkc — compiler for the STARK Core v1 language
 
 Usage:
+  starkc check [--snippet] <file.stark> Check a source file and report semantic diagnostics.
   starkc parse [--snippet] [--dump] <file.stark>
                               Parse a source file and report diagnostics.
                               --snippet parses the harness block-body form
@@ -40,6 +41,25 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             };
             cmd_parse(&path, mode, dump)
+        }
+        Some((cmd, rest)) if cmd == "check" => {
+            let mut mode = ParseMode::Program;
+            let mut path = None;
+            for arg in rest {
+                match arg.as_str() {
+                    "--snippet" => mode = ParseMode::Snippet,
+                    _ if path.is_none() => path = Some(arg.clone()),
+                    _ => {
+                        eprint!("{USAGE}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let Some(path) = path else {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            cmd_check(&path, mode)
         }
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
         Some((flag, [])) if flag == "--help" || flag == "-h" => {
@@ -102,5 +122,39 @@ fn cmd_parse(path: &str, mode: ParseMode, dump: bool) -> ExitCode {
     } else {
         println!("{}: OK", file.name);
     }
+    ExitCode::SUCCESS
+}
+
+fn cmd_check(path: &str, mode: ParseMode) -> ExitCode {
+    let file = match load(path) {
+        Ok(f) => f,
+        Err(code) => return code,
+    };
+    let (tree, mut diags) = parse(&file, mode);
+    if !diags.is_empty() {
+        for diag in &diags {
+            eprint!("{}", diag.render(&file));
+        }
+        eprintln!("{}: {} error(s)", file.name, diags.len());
+        return ExitCode::FAILURE;
+    }
+
+    let file_arc = std::sync::Arc::new(file);
+    let (hir, mut sem_diags) = starkc::resolve::resolve(&tree, file_arc.clone());
+    diags.append(&mut sem_diags);
+
+    if diags.is_empty() {
+        let mut type_diags = starkc::typecheck::check(&hir, file_arc.clone());
+        diags.append(&mut type_diags);
+    }
+
+    for diag in &diags {
+        eprint!("{}", diag.render(&file_arc));
+    }
+    if !diags.is_empty() {
+        eprintln!("{}: {} error(s)", file_arc.name, diags.len());
+        return ExitCode::FAILURE;
+    }
+    println!("{}: OK", file_arc.name);
     ExitCode::SUCCESS
 }

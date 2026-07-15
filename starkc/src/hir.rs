@@ -1,35 +1,76 @@
-//! AST for `02-Syntax-Grammar.md`.
+//! High-Level Intermediate Representation (HIR) for STARK.
 //!
-//! Per PLAN.md T6: arena-allocated nodes referenced by typed IDs
-//! (`ExprId`, `ItemId`, ...); every node carries a `Span`; no Rust
-//! references or lifetimes in the tree. Types/ownership facts attach in
-//! side tables keyed by these IDs from Gate 2 onward.
-//!
-//! Names are stored as `Span`s into the source, not owned strings.
-//!
-//! Grouping parentheses are not represented: `(expr)` parses to the inner
-//! expression (a 1-tuple is distinguished by its trailing comma at parse
-//! time), and `(T)` in type position parses to the inner type.
+//! Per PLAN.md M2.1: AST is lowered into this desugared HIR. Name resolution,
+//! type checking, and all subsequent passes operate on HIR, never on the parser AST.
 
-use crate::lexer::{Base, FloatSuffix, IntSuffix};
+use crate::ast::{AssignOp, BinOp, Lit, Path, Primitive, UnOp, Vis};
 use crate::source::Span;
 
-macro_rules! arena_id {
+macro_rules! hir_id {
     ($Id:ident) => {
-        #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
         pub struct $Id(pub u32);
     };
 }
 
-arena_id!(TypeId);
-arena_id!(ExprId);
-arena_id!(StmtId);
-arena_id!(ItemId);
-arena_id!(PatId);
-arena_id!(BlockId);
+hir_id!(TypeId);
+hir_id!(ExprId);
+hir_id!(StmtId);
+hir_id!(ItemId);
+hir_id!(PatId);
+hir_id!(BlockId);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalId(pub u32);
+
+/// Compiler-provided functions available before the Core standard library is
+/// loaded. These are not HIR items and must never be represented by a fake
+/// `ItemId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Builtin {
+    Print,
+    Println,
+    Panic,
+    Assert,
+    Sqrt,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoreTrait {
+    Copy,
+    Drop,
+    Eq,
+    Ord,
+    Num,
+}
+
+/// Target of a resolved name or path segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Res {
+    /// Function-local variable or parameter.
+    Local(LocalId),
+    /// Top-level item in a module/package.
+    Item(ItemId),
+    /// Enum variant.
+    Variant(ItemId, u32),
+    /// Primitive type.
+    Primitive(Primitive),
+    /// The `Self` type inside an impl/trait.
+    SelfType,
+    /// A generic type parameter (like `T`).
+    TypeParam,
+    /// The `self` value parameter in a method.
+    SelfValue(LocalId),
+    /// A compiler-provided function, distinct from an arena-backed item.
+    Builtin(Builtin),
+    /// A compiler-known Core marker trait supplied by the prelude.
+    CoreTrait(CoreTrait),
+    /// Unresolved or error name (prevents cascading diagnostics).
+    Err,
+}
 
 #[derive(Default)]
-pub struct Ast {
+pub struct Hir {
     pub types: Vec<TypeNode>,
     pub exprs: Vec<ExprNode>,
     pub stmts: Vec<StmtNode>,
@@ -39,10 +80,6 @@ pub struct Ast {
     pub root: Root,
 }
 
-/// What was parsed. `Program` is the source-language entry point
-/// (`Program ::= Item*`); `Snippet` is the harness-only block-body form
-/// `(Item | Statement)* Expression?` for spec examples written at statement
-/// level (manifest `mode = "snippet"`).
 pub enum Root {
     Program(Vec<ItemId>),
     Snippet {
@@ -57,7 +94,7 @@ impl Default for Root {
     }
 }
 
-// ---------------------------------------------------------------- types --
+// ----------------------------------------------------------------- types --
 
 pub struct TypeNode {
     pub kind: TypeKind,
@@ -65,95 +102,28 @@ pub struct TypeNode {
 }
 
 pub enum TypeKind {
-    /// `Int32`, `Bool`, `String`, `str`, ...
     Primitive(Primitive),
-    /// `Vec<Int32>`, `Option<T>`, `Self::Item`, `T`.
     Path {
         path: Path,
+        res: Res,
         args: Option<GenericArgs>,
     },
-    /// `[T; N]` — the length is an INTEGER literal, uninterpreted in Gate 1.
-    Array { elem: TypeId, len: Span },
-    /// `[T]`
+    Array {
+        elem: TypeId,
+        len: Span,
+    },
     Slice(TypeId),
-    /// `()`, `(T,)`, `(T1, T2)`. Never one element without a comma —
-    /// `(T)` is grouping and constructs no node.
     Tuple(Vec<TypeId>),
-    /// `&T` / `&mut T`
-    Ref { mutable: bool, inner: TypeId },
-    /// `fn(T1, T2) -> R`
+    Ref {
+        mutable: bool,
+        inner: TypeId,
+    },
     Fn {
         params: Vec<TypeId>,
         ret: Option<TypeId>,
     },
-    /// `!` — produced only in function return position (`ReturnType`).
     Never,
-    /// Placeholder for a type that failed to parse (a diagnostic exists).
     Error,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub enum Primitive {
-    Int8,
-    Int16,
-    Int32,
-    Int64,
-    UInt8,
-    UInt16,
-    UInt32,
-    UInt64,
-    Float32,
-    Float64,
-    Bool,
-    Char,
-    String,
-    Str,
-    Unit,
-}
-
-impl Primitive {
-    pub fn name(self) -> &'static str {
-        match self {
-            Primitive::Int8 => "Int8",
-            Primitive::Int16 => "Int16",
-            Primitive::Int32 => "Int32",
-            Primitive::Int64 => "Int64",
-            Primitive::UInt8 => "UInt8",
-            Primitive::UInt16 => "UInt16",
-            Primitive::UInt32 => "UInt32",
-            Primitive::UInt64 => "UInt64",
-            Primitive::Float32 => "Float32",
-            Primitive::Float64 => "Float64",
-            Primitive::Bool => "Bool",
-            Primitive::Char => "Char",
-            Primitive::String => "String",
-            Primitive::Str => "str",
-            Primitive::Unit => "Unit",
-        }
-    }
-}
-
-// ---------------------------------------------------------------- paths --
-
-#[derive(Clone)]
-pub struct Path {
-    pub segments: Vec<PathSegment>,
-    pub span: Span,
-}
-
-#[derive(Clone, Copy)]
-pub struct PathSegment {
-    pub kind: SegmentKind,
-    pub span: Span,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SegmentKind {
-    Ident,
-    SelfValue, // `self`
-    SelfType,  // `Self`
-    Super,
-    Crate,
 }
 
 #[derive(Clone)]
@@ -165,14 +135,10 @@ pub struct GenericArgs {
 #[derive(Clone)]
 pub enum GenericArg {
     Type(TypeId),
-    /// `Item = T` associated-type binding.
-    Binding {
-        name: Span,
-        ty: TypeId,
-    },
+    Binding { name: Span, ty: TypeId },
 }
 
-// ---------------------------------------------------------- expressions --
+// ----------------------------------------------------------- expressions --
 
 pub struct ExprNode {
     pub kind: ExprKind,
@@ -181,9 +147,9 @@ pub struct ExprNode {
 
 pub enum ExprKind {
     Lit(Lit),
-    /// `x`, `String::from`, `Color::Red`, `size_of::<Int32>` (turbofish).
     Path {
         path: Path,
+        res: Res,
         turbofish: Option<GenericArgs>,
     },
     Unary {
@@ -195,14 +161,11 @@ pub enum ExprKind {
         lhs: ExprId,
         rhs: ExprId,
     },
-    /// `lhs = rhs`, `lhs += rhs`, ... Place-ness of `lhs` is a semantic
-    /// check (04-Semantic-Analysis.md), not a parse error.
     Assign {
         op: AssignOp,
         lhs: ExprId,
         rhs: ExprId,
     },
-    /// `lo..hi` / `lo..=hi` — both operands required in Core v1.
     Range {
         lo: ExprId,
         hi: ExprId,
@@ -216,12 +179,10 @@ pub enum ExprKind {
         callee: ExprId,
         args: Vec<ExprId>,
     },
-    /// `base.name` — field access or method reference (resolved in Gate 2).
     Field {
         base: ExprId,
         name: Span,
     },
-    /// `base.0` — tuple field access; the index is an INTEGER literal.
     TupleField {
         base: ExprId,
         index: Span,
@@ -230,21 +191,18 @@ pub enum ExprKind {
         base: ExprId,
         index: ExprId,
     },
-    /// `expr?`
     Try(ExprId),
-    /// `()`, `(a,)`, `(a, b)`. Never one element without a comma.
     Tuple(Vec<ExprId>),
     Array(Vec<ExprId>),
-    /// `[value; count]`
     Repeat {
         value: ExprId,
         count: ExprId,
     },
     StructLit {
         path: Path,
+        res: Res,
         fields: Vec<FieldInit>,
     },
-    /// `else_` is `None`, a `Block` expression, or another `If` expression.
     If {
         cond: ExprId,
         then_block: BlockId,
@@ -263,84 +221,16 @@ pub enum ExprKind {
     },
     For {
         var: Span,
+        local: LocalId,
         iter: ExprId,
         body: BlockId,
     },
     Block(BlockId),
-    /// Placeholder for an expression that failed to parse.
     Error,
-}
-
-#[derive(Clone, Copy)]
-pub enum Lit {
-    Int {
-        base: Base,
-        suffix: Option<IntSuffix>,
-    },
-    Float {
-        suffix: Option<FloatSuffix>,
-    },
-    Str {
-        raw: bool,
-    },
-    Char,
-    Bool(bool),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum UnOp {
-    Neg,
-    Not,
-    BitNot,
-    /// `&expr` / `&mut expr`
-    Ref {
-        mutable: bool,
-    },
-    Deref,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
-    Pow,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    And,
-    Or,
-    BitAnd,
-    BitOr,
-    BitXor,
-    Shl,
-    Shr,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AssignOp {
-    Assign,
-    AddAssign,
-    SubAssign,
-    MulAssign,
-    DivAssign,
-    RemAssign,
-    PowAssign,
-    BitAndAssign,
-    BitOrAssign,
-    BitXorAssign,
-    ShlAssign,
-    ShrAssign,
 }
 
 pub struct FieldInit {
     pub name: Span,
-    /// `None` is the shorthand `Point { x, y }`.
     pub expr: Option<ExprId>,
 }
 
@@ -349,7 +239,7 @@ pub struct MatchArm {
     pub body: ExprId,
 }
 
-// ------------------------------------------------------------ statements --
+// ------------------------------------------------------------- statements --
 
 pub struct StmtNode {
     pub kind: StmtKind,
@@ -357,10 +247,7 @@ pub struct StmtNode {
 }
 
 pub enum StmtKind {
-    /// `;`
     Empty,
-    /// Expression statement. `semi` is false only for block-formed
-    /// expression statements (`if c { }` without `;`).
     Expr {
         expr: ExprId,
         semi: bool,
@@ -368,40 +255,31 @@ pub enum StmtKind {
     Let {
         mutable: bool,
         name: Span,
+        local: LocalId,
         ty: Option<TypeId>,
         init: Option<ExprId>,
     },
     Return(Option<ExprId>),
     Break(Option<ExprId>),
     Continue,
-    /// Item in snippet mode only (`Root::Snippet`); Core v1 blocks do not
-    /// nest items.
     Item(ItemId),
-    /// Placeholder for a statement that failed to parse.
     Error,
 }
 
-// ---------------------------------------------------------------- blocks --
+// ----------------------------------------------------------------- blocks --
 
 pub struct BlockNode {
     pub stmts: Vec<StmtId>,
-    /// Trailing expression (the block's value).
     pub tail: Option<ExprId>,
     pub span: Span,
 }
 
-// ----------------------------------------------------------------- items --
+// ------------------------------------------------------------------ items --
 
 pub struct ItemNode {
     pub kind: ItemKind,
     pub vis: Option<Vis>,
     pub span: Span,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Vis {
-    Pub,
-    Priv,
 }
 
 pub enum ItemKind {
@@ -423,7 +301,6 @@ pub enum ItemKind {
     },
     Impl {
         generics: Vec<GenericParam>,
-        /// `Some` for `impl Trait for Type`, `None` for inherent impls.
         trait_: Option<TraitRef>,
         self_ty: TypeId,
         items: Vec<ImplItem>,
@@ -439,7 +316,6 @@ pub enum ItemKind {
         ty: TypeId,
     },
     Use(UseTree),
-    /// `items: None` is an external module declaration (`mod name;`).
     Mod {
         name: Span,
         items: Option<Vec<ItemId>>,
@@ -456,6 +332,7 @@ pub struct FnSig {
     pub name: Span,
     pub generics: Vec<GenericParam>,
     pub receiver: Option<Receiver>,
+    pub receiver_local: Option<LocalId>,
     pub params: Vec<Param>,
     pub ret: RetTy,
     pub span: Span,
@@ -463,20 +340,15 @@ pub struct FnSig {
 
 #[derive(Clone, Copy)]
 pub enum RetTy {
-    /// No `->`: returns `Unit`.
     Unit,
     Ty(TypeId),
-    /// `-> !`
     Never(Span),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Receiver {
-    /// `self`
     Value,
-    /// `&self`
     Ref,
-    /// `&mut self`
     RefMut,
 }
 
@@ -485,6 +357,7 @@ pub struct Param {
     pub mutable: bool,
     pub name: Span,
     pub ty: TypeId,
+    pub local: LocalId,
 }
 
 #[derive(Clone)]
@@ -493,10 +366,10 @@ pub struct GenericParam {
     pub bounds: Vec<TraitRef>,
 }
 
-/// A trait named by path, e.g. `Ord`, `Iterator<Item = T>`.
 #[derive(Clone)]
 pub struct TraitRef {
     pub path: Path,
+    pub res: Res,
     pub args: Option<GenericArgs>,
 }
 
@@ -519,39 +392,26 @@ pub enum VariantKind {
 }
 
 pub enum TraitItem {
-    /// Required method (`body: None`) or method with default body.
     Method { sig: FnSig, body: Option<BlockId> },
-    /// `type Item;`
     AssocType { name: Span },
 }
 
 pub enum ImplItem {
-    Fn {
-        vis: Option<Vis>,
-        def: FnDef,
-    },
-    /// `type Item = Int32;`
-    AssocType {
-        name: Span,
-        ty: TypeId,
-    },
+    Fn { vis: Option<Vis>, def: FnDef },
+    AssocType { name: Span, ty: TypeId },
 }
 
 #[derive(Clone)]
 pub enum UseTree {
-    /// `use a::b::c;` / `use a::b as x;`
     Path { path: Path, alias: Option<Span> },
-    /// `use a::b::*;`
     Glob { prefix: Path },
-    /// `use a::b::self;`
     SelfImport { prefix: Path },
-    /// `use a::{b, c as d, e::f};`
     Group { prefix: Path, items: Vec<UseTree> },
 }
 
-// ---------------------------------------------------------------- arena --
+// --------------------------------------------------------------- arena --
 
-impl Ast {
+impl Hir {
     pub fn alloc_type(&mut self, kind: TypeKind, span: Span) -> TypeId {
         self.types.push(TypeNode { kind, span });
         TypeId(self.types.len() as u32 - 1)
@@ -597,7 +457,7 @@ impl Ast {
     }
 }
 
-// -------------------------------------------------------------- patterns --
+// ------------------------------------------------------------- patterns --
 
 pub struct PatNode {
     pub kind: PatKind,
@@ -606,29 +466,31 @@ pub struct PatNode {
 
 pub enum PatKind {
     Lit(Lit),
-    /// `_`
     Wild,
-    /// Single identifier: new binding, or unit variant/const after name
-    /// resolution (02's pattern note).
-    Binding(Span),
-    /// Multi-segment path: `Color::Red`.
-    Path(Path),
-    /// `Option::Some(x)`
+    Binding {
+        name: Span,
+        local: LocalId,
+    },
+    Path {
+        path: Path,
+        res: Res,
+    },
     TupleVariant {
         path: Path,
+        res: Res,
         pats: Vec<PatId>,
     },
-    /// `Point { x, y: 0 }`
     Struct {
         path: Path,
+        res: Res,
         fields: Vec<FieldPat>,
     },
     Tuple(Vec<PatId>),
     Array(Vec<PatId>),
+    Error,
 }
 
 pub struct FieldPat {
     pub name: Span,
-    /// `None` is the shorthand (binds the field to a same-named variable).
     pub pat: Option<PatId>,
 }

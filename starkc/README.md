@@ -23,6 +23,22 @@ cargo test                                # everything, incl. the 121-fixture
 UPDATE_SNAPSHOTS=1 cargo test --test snapshots   # regenerate AST snapshots
 ```
 
+## Terminal IDE
+
+`starkide` is a dependency-free, Turbo C++ inspired terminal workbench. It
+provides the classic blue/white interface, keyboard-driven drop-down menus, a
+source editor, file open/save dialogs, and a compiler messages pane wired
+directly to the STARK parser.
+
+```bash
+cargo run --bin starkide                         # new buffer
+cargo run --bin starkide -- ../Practice/Basics/hello.st
+```
+
+Use **F10** for menus, **F2** to save, **F9** to compile, and **Ctrl+Q** to
+quit. The Run command currently performs compilation and explains that
+execution is unavailable until the STARK VM/backend lands.
+
 ## Layout
 
 | Module | Contents | Status |

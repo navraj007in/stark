@@ -222,6 +222,24 @@ fn parse_fixture(name: &str, mode: Mode) -> usize {
     diags.len()
 }
 
+fn check_fixture(name: &str, mode: Mode) -> Vec<String> {
+    let src = std::fs::read_to_string(fixture_dir().join(name)).unwrap();
+    let file = SourceFile::new(name.to_string(), src);
+    let parse_mode = match mode {
+        Mode::Program => ParseMode::Program,
+        Mode::Snippet => ParseMode::Snippet,
+    };
+    let (tree, mut diags) = parse(&file, parse_mode);
+    if diags.is_empty() {
+        let file_arc = std::sync::Arc::new(file);
+        let (hir, mut sem_diags) = starkc::resolve::resolve(&tree, file_arc.clone());
+        diags.append(&mut sem_diags);
+        let mut type_diags = starkc::typecheck::check(&hir, file_arc);
+        diags.append(&mut type_diags);
+    }
+    diags.into_iter().filter_map(|d| d.code).collect()
+}
+
 #[test]
 fn spec_conformance() {
     let entries = load_manifest();
@@ -260,15 +278,50 @@ fn spec_conformance() {
                     Err("expected rejection, but it parsed cleanly".to_string())
                 }
             }
-            Verdict::ParsePass | Verdict::SemanticError => {
-                // Both classes must parse cleanly in Gate 1; for
-                // semantic-error, Gate 2 will additionally require the codes
-                // in entry.errors from the checker.
+            Verdict::ParsePass => {
                 let n = parse_fixture(name, entry.mode.unwrap());
                 if n == 0 {
                     Ok(())
                 } else {
                     Err(format!("{n} diagnostics"))
+                }
+            }
+            Verdict::SemanticError => {
+                // Check if the parser succeeds first
+                let n = parse_fixture(name, entry.mode.unwrap());
+                if n > 0 {
+                    Err(format!(
+                        "parse failed with {n} diagnostics, but expected semantic error"
+                    ))
+                } else {
+                    // For Gate 2/M2.1, check E02xx errors. If no E02xx error is expected, we default to parse success for now.
+                    let expected_codes: Vec<&str> =
+                        entry.errors.as_ref().unwrap().split(',').collect();
+                    let actual_codes = check_fixture(name, entry.mode.unwrap());
+
+                    let mut checked_any = false;
+                    let mut error = None;
+                    for &expected in &expected_codes {
+                        if expected.starts_with('E') {
+                            checked_any = true;
+                            if !actual_codes.contains(&expected.to_string()) {
+                                error = Some(Err(format!(
+                                    "expected semantic error {}, but got codes {:?}",
+                                    expected, actual_codes
+                                )));
+                                break;
+                            }
+                        }
+                    }
+
+                    if let Some(err) = error {
+                        err
+                    } else if checked_any {
+                        Ok(())
+                    } else {
+                        // Keep Gate 1 compatibility for non-E02xx semantic errors
+                        Ok(())
+                    }
                 }
             }
             Verdict::Notation => unreachable!(),
