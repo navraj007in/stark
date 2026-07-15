@@ -1,0 +1,20 @@
+fn main() {
+    let path = "test_file.txt";
+    let content = "Hello from STARK file IO!";
+    
+    let write_res = write_file(path, content);
+    if write_res.is_ok() {
+        println("File written successfully!");
+        
+        let read_res = read_file(path);
+        if read_res.is_ok() {
+            let data = read_res.unwrap();
+            println("File contents:");
+            println(data.as_str());
+        } else {
+            println("Failed to read file.");
+        }
+    } else {
+        println("Failed to write file.");
+    }
+}

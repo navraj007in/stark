@@ -1,0 +1,60 @@
+fn dfs_iterative(graph: &Vec<Vec<Int32>>, visited: &mut Vec<Bool>, start_node: UInt64) {
+    let mut stack = Vec::with_capacity(10u64);
+    stack.push(start_node as Int32);
+    
+    let mut running = true;
+    while running {
+        let empty = stack.is_empty();
+        if empty {
+            running = false;
+        } else {
+            let curr_val = stack.pop().unwrap();
+            let curr = curr_val as UInt64;
+            
+            let is_visited_opt = (*visited).get(curr);
+            if is_visited_opt.is_some() {
+                let is_visited = *(is_visited_opt.unwrap());
+                if !is_visited {
+                    visited[curr] = true;
+                    println(curr);
+                    
+                    let neighbors_opt = (*graph).get(curr);
+                    if neighbors_opt.is_some() {
+                        let neighbors = neighbors_opt.unwrap();
+                        let mut i = 0u64;
+                        let len = (*neighbors).len();
+                        while i < len {
+                            let neighbor = (*neighbors)[i];
+                            stack.push(neighbor);
+                            i += 1u64;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    let mut graph: Vec<Vec<Int32>> = Vec::with_capacity(3u64);
+    
+    let mut n0 = Vec::with_capacity(2u64);
+    n0.push(1);
+    n0.push(2);
+    graph.push(n0);
+    
+    let mut n1 = Vec::with_capacity(1u64);
+    n1.push(0);
+    graph.push(n1);
+    
+    let mut n2 = Vec::with_capacity(1u64);
+    n2.push(0);
+    graph.push(n2);
+    
+    let mut visited = Vec::with_capacity(3u64);
+    visited.push(false);
+    visited.push(false);
+    visited.push(false);
+    
+    dfs_iterative(&graph, &mut visited, 0u64);
+}

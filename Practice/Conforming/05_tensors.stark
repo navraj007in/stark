@@ -1,0 +1,20 @@
+model ResNet50<B: Dim> {
+    input images: Tensor<Float32, [B, 3, 224, 224]>;
+    output logits: Tensor<Float32, [B, 1000]>;
+}
+
+fn run_inference<B: Dim>(model: ResNet50, batch: Tensor<Float32, [B, 3, 224, 224]>) -> Result<Tensor<Float32, [B, 1000]>, ModelError> {
+    let outputs = model.predict(&batch);
+    Ok(outputs)
+}
+
+fn main() {
+    let load_res = ResNet50::load("resnet50.onnx");
+    match load_res {
+        Ok(model) => {
+            let images: Tensor<Float32, [128, 3, 224, 224]> = ones::<Float32, [128, 3, 224, 224]>();
+            let logits = run_inference(model, images).unwrap();
+        }
+        Err(err) => {}
+    }
+}

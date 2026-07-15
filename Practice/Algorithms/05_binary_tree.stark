@@ -1,0 +1,44 @@
+struct TreeNode {
+    key: Int32,
+    left: Option<Box<TreeNode>>,
+    right: Option<Box<TreeNode>>,
+}
+
+fn insert(node_opt: Option<Box<TreeNode>>, key: Int32) -> Box<TreeNode> {
+    match node_opt {
+        None => {
+            Box::new(TreeNode {
+                key: key,
+                left: None,
+                right: None,
+            })
+        }
+        Some(node) => {
+            let inner: TreeNode = Box::into_inner(node);
+            match inner {
+                TreeNode { key: node_key, left: node_left, right: node_right } => {
+                    let mut new_left = node_left;
+                    let mut new_right = node_right;
+                    
+                    if key < node_key {
+                        new_left = Some(insert(new_left, key));
+                    } else if key > node_key {
+                        new_right = Some(insert(new_right, key));
+                    }
+                    
+                    Box::new(TreeNode {
+                        key: node_key,
+                        left: new_left,
+                        right: new_right,
+                    })
+                }
+            }
+        }
+    }
+}
+
+fn main() {
+    let root = insert(None, 50);
+    let inner_root: TreeNode = Box::into_inner(root);
+    println(inner_root.key);
+}

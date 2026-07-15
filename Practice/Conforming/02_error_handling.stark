@@ -1,0 +1,34 @@
+fn get_user_age(user_id: Int32) -> Option<Int32> {
+    if user_id == 1 {
+        Some(30)
+    } else if user_id == 2 {
+        Some(25)
+    } else {
+        None
+    }
+}
+
+fn check_permissions(user_id: Int32) -> Result<Bool, String> {
+    let age = get_user_age(user_id)?; // Propagates None as error
+    
+    if age >= 18 {
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn main() {
+    match check_permissions(1) {
+        Ok(allowed) => {
+            if allowed {
+                println("Access granted.");
+            } else {
+                println("Access denied.");
+            }
+        }
+        Err(msg) => {
+            println("Error occurred.");
+        }
+    }
+}

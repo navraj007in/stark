@@ -1,0 +1,30 @@
+trait Summary {
+    type Output;
+    fn summarize(&self) -> Self::Output;
+}
+
+struct Article {
+    title: String,
+    author: String,
+}
+
+impl Summary for Article {
+    type Output = String;
+    
+    fn summarize(&self) -> String {
+        self.title
+    }
+}
+
+fn print_summary<T: Summary<Output = String>>(item: T) {
+    let text = item.summarize();
+    println(text);
+}
+
+fn main() {
+    let post = Article {
+        title: String::from("STARK Complete"),
+        author: String::from("Gemini"),
+    };
+    print_summary::<Article>(post);
+}

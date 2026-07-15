@@ -1,0 +1,28 @@
+struct Node {
+    value: Int32,
+    next: Option<Box<Node>>,
+}
+
+fn count_list(node_opt: Option<Box<Node>>) -> Int32 {
+    if node_opt.is_none() {
+        0
+    } else {
+        let node = Box::into_inner(node_opt.unwrap());
+        1 + count_list(node.next)
+    }
+}
+
+fn main() {
+    let tail = Node {
+        value: 20,
+        next: None,
+    };
+    
+    let head = Node {
+        value: 10,
+        next: Some(Box::new(tail)),
+    };
+    
+    let count = count_list(Some(Box::new(head)));
+    println(count);
+}

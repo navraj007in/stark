@@ -1,0 +1,41 @@
+struct Stack<T> {
+    elements: Vec<T>,
+}
+
+impl<T> Stack<T> {
+    fn push(&mut self, item: T) {
+        self.elements.push(item);
+    }
+    
+    fn pop(&mut self) -> Option<T> {
+        self.elements.pop()
+    }
+    
+    fn peek(&self) -> Option<&T> {
+        let len = self.elements.len();
+        if len == 0u64 {
+            None
+        } else {
+            self.elements.get(len - 1u64)
+        }
+    }
+    
+    fn is_empty(&self) -> Bool {
+        self.elements.is_empty()
+    }
+    
+    fn len(&self) -> UInt64 {
+        self.elements.len()
+    }
+}
+
+fn main() {
+    let mut stack = Stack {
+        elements: Vec::with_capacity(5u64),
+    };
+    stack.push(100);
+    stack.push(200);
+    
+    println(stack.len());
+    let top = stack.pop();
+}

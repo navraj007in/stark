@@ -1,0 +1,33 @@
+fn bubble_sort(arr: &mut Vec<Int32>) {
+    let len = (*arr).len();
+    if len <= 1u64 {
+        return;
+    }
+    
+    let mut i = 0u64;
+    while i < len - 1u64 {
+        let mut j = 0u64;
+        while j < len - i - 1u64 {
+            let val_j = *(*arr).get(j).unwrap();
+            let val_next = *(*arr).get(j + 1u64).unwrap();
+            if val_j > val_next {
+                arr[j] = val_next;
+                arr[j + 1u64] = val_j;
+            }
+            j += 1u64;
+        }
+        i += 1u64;
+    }
+}
+
+fn main() {
+    let mut values = Vec::with_capacity(5u64);
+    values.push(50);
+    values.push(10);
+    values.push(40);
+    values.push(20);
+    values.push(30);
+    
+    bubble_sort(&mut values);
+    println("Sorted vector:");
+}

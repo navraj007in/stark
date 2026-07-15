@@ -1,0 +1,28 @@
+struct Buffer {
+    data: String,
+}
+
+fn process_buffer(buf: Buffer) -> Buffer {
+    let processed = Buffer {
+        data: buf.data,
+    };
+    processed
+}
+
+fn read_buffer(buf: &Buffer) -> UInt64 {
+    buf.data.len()
+}
+
+fn append_to_buffer(buf: &mut Buffer, suffix: &str) {
+    buf.data.push_str(suffix);
+}
+
+fn main() {
+    let mut original = Buffer { data: String::from("raw") };
+    
+    let len = read_buffer(&original);
+    append_to_buffer(&mut original, "_data");
+    
+    let finalized = process_buffer(original);
+    println(finalized.data);
+}

@@ -1,0 +1,31 @@
+fn binary_search(arr: &[Int32], len: UInt64, target: Int32) -> Option<UInt64> {
+    let mut low = 0u64;
+    let mut high = len;
+    
+    while low < high {
+        let mid = low + (high - low) / 2u64;
+        let val = arr[mid];
+        if val == target {
+            return Some(mid);
+        } else if val < target {
+            low = mid + 1u64;
+        } else {
+            high = mid;
+        }
+    }
+    None
+}
+
+fn main() {
+    let array: [Int32; 6] = [10, 20, 30, 40, 50, 60];
+    let slice = &array[0..6];
+    
+    match binary_search(slice, 6u64, 40) {
+        Some(index) => {
+            println("Found target!");
+        }
+        None => {
+            println("Target not found.");
+        }
+    }
+}
