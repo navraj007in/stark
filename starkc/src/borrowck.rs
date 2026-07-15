@@ -465,6 +465,48 @@ impl<'a> BorrowChecker<'a> {
                 },
             );
         }
+        if let Ty::Extension(ext) = &base_ty {
+            if matches!(ext.as_ref(), crate::typecheck::ExtensionTy::Model(_))
+                && method_name == "predict"
+            {
+                return Some(hir::Receiver::Ref);
+            }
+            if matches!(ext.as_ref(), crate::typecheck::ExtensionTy::Tensor(_))
+                && matches!(
+                    method_name,
+                    "add"
+                        | "sub"
+                        | "mul"
+                        | "div"
+                        | "min"
+                        | "max"
+                        | "eq"
+                        | "ne"
+                        | "lt"
+                        | "le"
+                        | "gt"
+                        | "ge"
+                        | "broadcast_to"
+                        | "matmul"
+                        | "batch_matmul"
+                        | "concat"
+                        | "permute"
+                        | "reshape"
+                        | "slice_axis"
+                        | "transpose"
+                        | "sum_axis"
+                        | "mean_axis"
+                        | "argmax"
+                        | "sum"
+                        | "softmax"
+                        | "cast"
+                        | "to_device"
+                )
+            {
+                return Some(hir::Receiver::Ref);
+            }
+        }
+
         let item_id = match base_ty {
             Ty::Struct(item, _) | Ty::Enum(item, _) => item,
             _ => return None,

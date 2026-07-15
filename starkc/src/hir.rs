@@ -47,6 +47,37 @@ pub enum Builtin {
     None,
     Ok,
     Err,
+    TensorZeros,
+    TensorOnes,
+    TensorFull,
+    TensorFromVec,
+    TensorAdd,
+    TensorSub,
+    TensorMul,
+    TensorDiv,
+    TensorMin,
+    TensorMax,
+    TensorEq,
+    TensorNe,
+    TensorLt,
+    TensorLe,
+    TensorGt,
+    TensorGe,
+    TensorBroadcastTo,
+    TensorMatMul,
+    TensorBatchMatMul,
+    TensorConcat,
+    TensorPermute,
+    TensorReshape,
+    TensorSliceAxis,
+    TensorTranspose,
+    TensorSumAxis,
+    TensorMeanAxis,
+    TensorArgMax,
+    TensorSum,
+    TensorSoftmax,
+    TensorCast,
+    TensorToDevice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,6 +129,8 @@ pub enum Res {
     CoreTrait(CoreTrait),
     /// A nominal type supplied by the Core prelude.
     CoreType(CoreType),
+    /// The load associated function for a nominal model type.
+    ModelLoad(ItemId),
     /// Unresolved or error name (prevents cascading diagnostics).
     Err,
 }

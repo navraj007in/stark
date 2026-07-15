@@ -145,6 +145,59 @@ name = "semantic_generic_calls"
 class = "semantic-pass"
 source = "fn identity<T: DType, N: Dim>(x: Tensor<T, [N]>) -> Tensor<T, [N]> { x } fn calls(a: Tensor<Float32, [4]>, b: Tensor<UInt8, [7]>) { let x: Tensor<Float32, [4]> = identity(a); let y: Tensor<UInt8, [7]> = identity(b); }"
 
+[[case]]
+name = "semantic_model_prediction_pass"
+class = "semantic-pass"
+source = "model ResNet50<B: Dim> { input x: Tensor<Float32, [B, 3, 224, 224]>; output y: Tensor<Float32, [B, 1000]>; } fn run(m: ResNet50, t1: Tensor<Float32, [1, 3, 224, 224]>, t2: Tensor<Float32, [8, 3, 224, 224]>) { let y1: Tensor<Float32, [1, 1000]> = m.predict(&t1); let y2: Tensor<Float32, [8, 1000]> = m.predict(&t2); }"
+
+[[case]]
+name = "semantic_model_prediction_non_borrowed_arg"
+class = "semantic-error"
+errors = "E0005"
+source = "model ResNet50 { input x: Tensor<Float32, [1, 3, 224, 224]>; output y: Tensor<Float32, [1, 1000]>; } fn run(m: ResNet50, t: Tensor<Float32, [1, 3, 224, 224]>) { m.predict(t); }"
+
+[[case]]
+name = "semantic_model_prediction_shape_mismatch"
+class = "semantic-error"
+errors = "E0212"
+source = "model ResNet50 { input x: Tensor<Float32, [1, 3, 224, 224]>; output y: Tensor<Float32, [1, 1000]>; } fn run(m: ResNet50, t: Tensor<Float32, [1, 3, 100, 100]>) { m.predict(&t); }"
+
+[[case]]
+name = "semantic_model_predict_arity_mismatch"
+class = "semantic-error"
+errors = "E0005"
+source = "model ResNet50 { input x: Tensor<Float32, [1, 3, 224, 224]>; output y: Tensor<Float32, [1, 1000]>; } fn run(m: ResNet50) { m.predict(); }"
+
+[[case]]
+name = "semantic_model_invalid_port_type"
+class = "semantic-error"
+errors = "E0211"
+source = "model ResNet50 { input x: Int32; output y: Tensor<Float32, [1, 1000]>; }"
+
+[[case]]
+name = "semantic_model_no_inputs"
+class = "semantic-error"
+errors = "E0211"
+source = "model ResNet50 { output y: Tensor<Float32, [1, 1000]>; }"
+
+[[case]]
+name = "semantic_model_no_outputs"
+class = "semantic-error"
+errors = "E0211"
+source = "model ResNet50 { input x: Tensor<Float32, [1, 3, 224, 224]>; }"
+
+[[case]]
+name = "semantic_model_duplicate_ports"
+class = "semantic-error"
+errors = "E0211"
+source = "model ResNet50 { input x: Tensor<Float32, [1, 3, 224, 224]>; input x: Tensor<Float32, [1, 3, 224, 224]>; output y: Tensor<Float32, [1, 1000]>; }"
+
+[[case]]
+name = "semantic_model_load_type_mismatch"
+class = "semantic-error"
+errors = "E0001"
+source = "model ResNet50 { input x: Tensor<Float32, [1, 3, 224, 224]>; output y: Tensor<Float32, [1, 1000]>; } fn run() { let m: Result<ResNet50, ModelError> = ResNet50::load(123); }"
+
 # --- ONNX reference artifact (external, verified by checksum; not committed) ---
 [reference_model]
 name = "resnet50-v1-7.onnx"

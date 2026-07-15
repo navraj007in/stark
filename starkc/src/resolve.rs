@@ -25,6 +25,7 @@ fn extension_reserved_name(name: &str) -> Option<&'static str> {
         "TensorAny" => Some("`TensorAny` type"),
         "Cpu" => Some("`Cpu` device type"),
         "Cuda" => Some("`Cuda` device type"),
+        "ModelError" => Some("`ModelError` type"),
         _ => None,
     }
 }
@@ -53,6 +54,7 @@ enum ItemDefDetail {
     Trait {
         items: Vec<String>,
     },
+    Model,
     Other,
 }
 
@@ -243,6 +245,9 @@ impl<'a> Resolver<'a> {
                         .collect();
                     self.item_details
                         .insert(hir_id, ItemDefDetail::Trait { items: item_names });
+                }
+                ast::ItemKind::Model(_) => {
+                    self.item_details.insert(hir_id, ItemDefDetail::Model);
                 }
                 _ => {
                     self.item_details.insert(hir_id, ItemDefDetail::Other);
@@ -581,7 +586,9 @@ impl<'a> Resolver<'a> {
                             } else if let Some(primitive) = resolve_primitive(name_str) {
                                 resolved = Some(Res::Primitive(primitive));
                             } else if let Some(builtin) = resolve_builtin(name_str) {
-                                resolved = Some(Res::Builtin(builtin));
+                                if !is_tensor_builtin(builtin) || self.options.tensor() {
+                                    resolved = Some(Res::Builtin(builtin));
+                                }
                             } else if let Some(core_trait) = resolve_core_trait(name_str) {
                                 resolved = Some(Res::CoreTrait(core_trait));
                             } else if let Some(core_type) = resolve_core_type(name_str) {
@@ -634,6 +641,13 @@ impl<'a> Resolver<'a> {
                     Some(ItemDefDetail::Trait { items }) => {
                         if let Some(member) = items.iter().position(|item| item == name_str) {
                             current_res = Some(Res::TraitMember(item_id, member as u32));
+                        } else {
+                            return Res::Err;
+                        }
+                    }
+                    Some(ItemDefDetail::Model) => {
+                        if name_str == "load" {
+                            current_res = Some(Res::ModelLoad(item_id));
                         } else {
                             return Res::Err;
                         }
@@ -1766,8 +1780,76 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "None" => Some(Builtin::None),
         "Ok" => Some(Builtin::Ok),
         "Err" => Some(Builtin::Err),
+        "zeros" => Some(Builtin::TensorZeros),
+        "ones" => Some(Builtin::TensorOnes),
+        "full" => Some(Builtin::TensorFull),
+        "from_vec" => Some(Builtin::TensorFromVec),
+        "add" => Some(Builtin::TensorAdd),
+        "sub" => Some(Builtin::TensorSub),
+        "mul" => Some(Builtin::TensorMul),
+        "div" => Some(Builtin::TensorDiv),
+        "min" => Some(Builtin::TensorMin),
+        "max" => Some(Builtin::TensorMax),
+        "eq" => Some(Builtin::TensorEq),
+        "ne" => Some(Builtin::TensorNe),
+        "lt" => Some(Builtin::TensorLt),
+        "le" => Some(Builtin::TensorLe),
+        "gt" => Some(Builtin::TensorGt),
+        "ge" => Some(Builtin::TensorGe),
+        "broadcast_to" => Some(Builtin::TensorBroadcastTo),
+        "matmul" => Some(Builtin::TensorMatMul),
+        "batch_matmul" => Some(Builtin::TensorBatchMatMul),
+        "concat" => Some(Builtin::TensorConcat),
+        "permute" => Some(Builtin::TensorPermute),
+        "reshape" => Some(Builtin::TensorReshape),
+        "slice_axis" => Some(Builtin::TensorSliceAxis),
+        "transpose" => Some(Builtin::TensorTranspose),
+        "sum_axis" => Some(Builtin::TensorSumAxis),
+        "mean_axis" => Some(Builtin::TensorMeanAxis),
+        "argmax" => Some(Builtin::TensorArgMax),
+        "sum" => Some(Builtin::TensorSum),
+        "softmax" => Some(Builtin::TensorSoftmax),
+        "cast" => Some(Builtin::TensorCast),
+        "to_device" => Some(Builtin::TensorToDevice),
         _ => None,
     }
+}
+
+pub fn is_tensor_builtin(b: Builtin) -> bool {
+    matches!(
+        b,
+        Builtin::TensorZeros
+            | Builtin::TensorOnes
+            | Builtin::TensorFull
+            | Builtin::TensorFromVec
+            | Builtin::TensorAdd
+            | Builtin::TensorSub
+            | Builtin::TensorMul
+            | Builtin::TensorDiv
+            | Builtin::TensorMin
+            | Builtin::TensorMax
+            | Builtin::TensorEq
+            | Builtin::TensorNe
+            | Builtin::TensorLt
+            | Builtin::TensorLe
+            | Builtin::TensorGt
+            | Builtin::TensorGe
+            | Builtin::TensorBroadcastTo
+            | Builtin::TensorMatMul
+            | Builtin::TensorBatchMatMul
+            | Builtin::TensorConcat
+            | Builtin::TensorPermute
+            | Builtin::TensorReshape
+            | Builtin::TensorSliceAxis
+            | Builtin::TensorTranspose
+            | Builtin::TensorSumAxis
+            | Builtin::TensorMeanAxis
+            | Builtin::TensorArgMax
+            | Builtin::TensorSum
+            | Builtin::TensorSoftmax
+            | Builtin::TensorCast
+            | Builtin::TensorToDevice
+    )
 }
 
 fn resolve_core_type(name: &str) -> Option<CoreType> {

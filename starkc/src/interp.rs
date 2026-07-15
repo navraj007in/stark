@@ -919,6 +919,40 @@ impl<'a> Interpreter<'a> {
                     Err(error) => Value::Result(Err(Box::new(Value::String(error.to_string())))),
                 })
             }
+            Builtin::TensorZeros
+            | Builtin::TensorOnes
+            | Builtin::TensorFull
+            | Builtin::TensorFromVec
+            | Builtin::TensorAdd
+            | Builtin::TensorSub
+            | Builtin::TensorMul
+            | Builtin::TensorDiv
+            | Builtin::TensorMin
+            | Builtin::TensorMax
+            | Builtin::TensorEq
+            | Builtin::TensorNe
+            | Builtin::TensorLt
+            | Builtin::TensorLe
+            | Builtin::TensorGt
+            | Builtin::TensorGe
+            | Builtin::TensorBroadcastTo
+            | Builtin::TensorMatMul
+            | Builtin::TensorBatchMatMul
+            | Builtin::TensorConcat
+            | Builtin::TensorPermute
+            | Builtin::TensorReshape
+            | Builtin::TensorSliceAxis
+            | Builtin::TensorTranspose
+            | Builtin::TensorSumAxis
+            | Builtin::TensorMeanAxis
+            | Builtin::TensorArgMax
+            | Builtin::TensorSum
+            | Builtin::TensorSoftmax
+            | Builtin::TensorCast
+            | Builtin::TensorToDevice => Err(RuntimeError::new(
+                "tensor operations are not supported in the Core interpreter",
+                span,
+            )),
         }
     }
 

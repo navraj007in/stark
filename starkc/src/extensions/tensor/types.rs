@@ -461,7 +461,7 @@ impl UnifyCtx {
         current
     }
 
-    fn unify_dtype(&mut self, a: DType, b: DType) -> Result<(), UnifyError> {
+    pub fn unify_dtype(&mut self, a: DType, b: DType) -> Result<(), UnifyError> {
         let a = self.resolve_dtype(a);
         let b = self.resolve_dtype(b);
         match (a, b) {
