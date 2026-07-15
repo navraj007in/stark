@@ -6,8 +6,8 @@
 //!
 //! Pipeline (target architecture per PLAN.md):
 //! `Source -> Tokens -> AST -> HIR -> typed HIR -> backend`
-//! Gates 1 and 2 implement Source -> Tokens -> AST -> HIR -> typed HIR,
-//! including name resolution, type checking, and ownership/borrow analysis.
+//! Gates 1–3 implement Source -> Tokens -> AST -> HIR -> typed HIR ->
+//! interpreter, including the `core-min` runtime.
 
 pub mod ast;
 pub mod ast_dump;
@@ -15,6 +15,7 @@ pub mod borrowck;
 pub mod diag;
 pub mod flow;
 pub mod hir;
+pub mod interp;
 pub mod lexer;
 pub mod parser;
 pub mod resolve;

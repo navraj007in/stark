@@ -9,6 +9,7 @@ starkc — compiler for the STARK Core v1 language
 
 Usage:
   starkc check [--snippet] <file.stark> Check a source file and report semantic diagnostics.
+  starkc run <file.stark>               Check and execute a Core program.
   starkc parse [--snippet] [--dump] <file.stark>
                               Parse a source file and report diagnostics.
                               --snippet parses the harness block-body form
@@ -61,6 +62,7 @@ fn main() -> ExitCode {
             };
             cmd_check(&path, mode)
         }
+        Some((cmd, [path])) if cmd == "run" => cmd_run(path),
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
         Some((flag, [])) if flag == "--help" || flag == "-h" => {
             print!("{USAGE}");
@@ -161,4 +163,48 @@ fn cmd_check(path: &str, mode: ParseMode) -> ExitCode {
     }
     println!("{}: OK", file_arc.name);
     ExitCode::SUCCESS
+}
+
+fn cmd_run(path: &str) -> ExitCode {
+    let file = match load(path) {
+        Ok(file) => file,
+        Err(code) => return code,
+    };
+    let (tree, mut diagnostics) = parse(&file, ParseMode::Program);
+    let file = std::sync::Arc::new(file);
+    if diagnostics.is_empty() {
+        let (hir, mut resolution) = starkc::resolve::resolve(&tree, file.clone());
+        diagnostics.append(&mut resolution);
+        if diagnostics.is_empty() {
+            let checked = starkc::typecheck::analyze(&hir, file.clone());
+            diagnostics.extend(checked.diagnostics);
+            for diagnostic in &diagnostics {
+                eprint!("{}", diagnostic.render(&file));
+            }
+            if diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == starkc::diag::Severity::Error)
+            {
+                return ExitCode::FAILURE;
+            }
+            return match starkc::interp::run(&hir, file.clone(), &checked.tables) {
+                Ok(execution) => {
+                    print!("{}", execution.output);
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    let diagnostic = starkc::diag::Diagnostic::error(
+                        format!("runtime error: {}", error.message),
+                        error.span,
+                    );
+                    eprint!("{}", diagnostic.render(&file));
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
+    for diagnostic in &diagnostics {
+        eprint!("{}", diagnostic.render(&file));
+    }
+    ExitCode::FAILURE
 }

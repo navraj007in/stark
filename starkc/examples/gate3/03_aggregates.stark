@@ -1,0 +1,5 @@
+enum Shape { Point, Rect(Int32, Int32) }
+fn area(shape: Shape) -> Int32 {
+    match shape { Shape::Point => 0, Shape::Rect(width, height) => width * height }
+}
+fn main() { println(area(Shape::Rect(6, 7))); }

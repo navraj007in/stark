@@ -1,0 +1,8 @@
+fn parse_ready(ready: Bool) -> Result<Int32, String> {
+    if ready { Ok(21) } else { Err(String::from("not ready")) }
+}
+fn compute() -> Result<Int32, String> {
+    let value = parse_ready(true)?;
+    Ok(value * 2)
+}
+fn main() { println(compute().unwrap()); }

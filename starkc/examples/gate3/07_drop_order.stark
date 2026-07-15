@@ -1,0 +1,8 @@
+struct Marker { name: String }
+impl Drop for Marker {
+    fn drop(&mut self) { println(self.name.as_str()); }
+}
+fn main() {
+    let first = Marker { name: String::from("first") };
+    let second = Marker { name: String::from("second") };
+}

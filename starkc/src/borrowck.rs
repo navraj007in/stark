@@ -334,7 +334,7 @@ impl<'a> BorrowChecker<'a> {
                 }
                 self.check_expr(*index);
                 let ty = self.expr_types.get(&expr_id).cloned().unwrap_or(Ty::Error);
-                if !self.is_copy_type(&ty) {
+                if !matches!(ty, Ty::Slice(_)) && !self.is_copy_type(&ty) {
                     self.diags.push(
                         Diagnostic::error(
                             "cannot move a non-Copy value out of an indexed place",
@@ -442,11 +442,29 @@ impl<'a> BorrowChecker<'a> {
         while let Ty::Ref { inner, .. } = base_ty {
             base_ty = *inner;
         }
+        let method_name = self.text(name);
+        if matches!(
+            base_ty,
+            Ty::Primitive(crate::ast::Primitive::String | crate::ast::Primitive::Str)
+                | Ty::Core(..)
+        ) {
+            return Some(
+                if matches!(
+                    method_name,
+                    "push" | "push_str" | "pop" | "clear" | "insert" | "remove" | "append"
+                ) {
+                    hir::Receiver::RefMut
+                } else if matches!(method_name, "unwrap" | "unwrap_or" | "into_inner") {
+                    hir::Receiver::Value
+                } else {
+                    hir::Receiver::Ref
+                },
+            );
+        }
         let item_id = match base_ty {
             Ty::Struct(item, _) | Ty::Enum(item, _) => item,
             _ => return None,
         };
-        let method_name = self.text(name);
         self.hir.items.iter().find_map(|item| {
             let hir::ItemKind::Impl { self_ty, items, .. } = &item.kind else {
                 return None;

@@ -232,6 +232,11 @@ coverage inventory, and intentional deferrals are recorded in
 Exit: the Core-only parts of the Appendix-A-style pipeline (everything except
 tensors) run correctly.
 
+**Done 2026-07-15.** M3.1–M3.3 are implemented in `starkc`: typed-HIR
+execution, the Rust-backed `core-min` runtime, `starkc run`, terminal IDE Run,
+and executable integration examples. Exit evidence is recorded in
+`starkc/docs/gate3-exit.md`. Gate 3 is closed.
+
 ## 4. Gate 4 — Tensor Front End + ONNX Import (decision detail)
 
 Shape of the work (task breakdown when Gate 2 nears exit):

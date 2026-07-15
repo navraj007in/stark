@@ -1,0 +1,14 @@
+fn main() {
+    let mut message = String::from("Gate");
+    message.push(' ');
+    message.push_str("3");
+    let boxed = Box::new(40);
+    let mut values: Vec<Int32> = Vec::with_capacity(2u64);
+    values.push(Box::into_inner(boxed));
+    values.push(2);
+    println(message.as_str());
+    println(values[0] + values[1]);
+    println(values.get(20u64).is_none());
+    println(values[0..2]);
+    println(message.substring(0u64, 4u64));
+}

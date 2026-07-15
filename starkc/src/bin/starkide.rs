@@ -4,6 +4,7 @@
 //! TUI crate so the compiler keeps its zero-dependency bootstrap footprint.
 
 use starkc::diag::Severity;
+use starkc::interp;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
@@ -269,7 +270,31 @@ impl App {
             let (hir, mut resolution_diagnostics) = resolve(&tree, file.clone());
             diagnostics.append(&mut resolution_diagnostics);
             if diagnostics.is_empty() {
-                diagnostics.append(&mut typecheck::check(&hir, file.clone()));
+                let checked = typecheck::analyze(&hir, file.clone());
+                diagnostics.extend(checked.diagnostics.clone());
+                if run
+                    && checked
+                        .diagnostics
+                        .iter()
+                        .all(|diagnostic| diagnostic.severity != Severity::Error)
+                {
+                    match interp::run(&hir, file.clone(), &checked.tables) {
+                        Ok(execution) => {
+                            self.output.clear();
+                            self.output.push(format!("Running {name}"));
+                            self.output
+                                .extend(execution.output.lines().map(str::to_owned));
+                            self.output.push("Program exited successfully.".into());
+                            self.status = "Run successful".into();
+                            self.show_output = true;
+                            return;
+                        }
+                        Err(error) => diagnostics.push(starkc::diag::Diagnostic::error(
+                            format!("runtime error: {}", error.message),
+                            error.span,
+                        )),
+                    }
+                }
             }
         }
         self.output.clear();
@@ -287,10 +312,6 @@ impl App {
                 "Success: syntax and semantic checks passed (0 errors, {} warning(s)).",
                 diagnostics.len()
             ));
-            if run {
-                self.output
-                    .push("Run unavailable: the STARK VM/backend is not implemented yet.".into());
-            }
             self.status = "Compile successful".into();
         } else {
             self.output.push(format!("Compiling {name}"));
@@ -1007,5 +1028,19 @@ mod tests {
         app.compile(false);
         assert!(app.status.contains("compile error"));
         assert!(app.output.iter().any(|line| line.contains("E0001")));
+    }
+
+    #[test]
+    fn run_executes_current_buffer() {
+        let mut editor = Editor::empty();
+        editor.lines = vec!["fn main() { println(42); }".into()];
+        let mut app = App::new(editor);
+        app.compile(true);
+        assert_eq!(app.status, "Run successful");
+        assert!(app.output.iter().any(|line| line == "42"));
+        assert!(app
+            .output
+            .iter()
+            .any(|line| line == "Program exited successfully."));
     }
 }

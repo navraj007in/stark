@@ -482,8 +482,17 @@ impl<'a> Resolver<'a> {
         if path.segments.is_empty() {
             return Res::Err;
         }
-        if self.path_to_string(path) == "String::from" {
-            return Res::Builtin(Builtin::StringFrom);
+        match self.path_to_string(path).as_str() {
+            "String::from" => return Res::Builtin(Builtin::StringFrom),
+            "String::new" => return Res::Builtin(Builtin::StringNew),
+            "String::with_capacity" => return Res::Builtin(Builtin::StringWithCapacity),
+            "Vec::new" => return Res::Builtin(Builtin::VecNew),
+            "Vec::with_capacity" => return Res::Builtin(Builtin::VecWithCapacity),
+            "Box::new" => return Res::Builtin(Builtin::BoxNew),
+            "Box::into_inner" => return Res::Builtin(Builtin::BoxIntoInner),
+            "std::fs::read_file" => return Res::Builtin(Builtin::ReadFile),
+            "std::fs::write_file" => return Res::Builtin(Builtin::WriteFile),
+            _ => {}
         }
 
         let mut current_res = None;
@@ -1644,6 +1653,8 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "assert" => Some(Builtin::Assert),
         "sqrt" => Some(Builtin::Sqrt),
         "drop" => Some(Builtin::Drop),
+        "read_file" => Some(Builtin::ReadFile),
+        "write_file" => Some(Builtin::WriteFile),
         "Some" => Some(Builtin::Some),
         "None" => Some(Builtin::None),
         "Ok" => Some(Builtin::Ok),

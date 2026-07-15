@@ -197,6 +197,68 @@ impl<'a> TypeChecker<'a> {
                 }],
                 ret: Box::new(Ty::Primitive(Primitive::String)),
             },
+            Builtin::StringNew => Ty::Fn {
+                params: Vec::new(),
+                ret: Box::new(Ty::Primitive(Primitive::String)),
+            },
+            Builtin::StringWithCapacity => Ty::Fn {
+                params: vec![Ty::Primitive(Primitive::UInt64)],
+                ret: Box::new(Ty::Primitive(Primitive::String)),
+            },
+            Builtin::VecNew => Ty::Fn {
+                params: Vec::new(),
+                ret: Box::new(Ty::Core(CoreType::Vec, vec![self.new_type_var()])),
+            },
+            Builtin::VecWithCapacity => Ty::Fn {
+                params: vec![Ty::Primitive(Primitive::UInt64)],
+                ret: Box::new(Ty::Core(CoreType::Vec, vec![self.new_type_var()])),
+            },
+            Builtin::BoxNew => {
+                let value = self.new_type_var();
+                Ty::Fn {
+                    params: vec![value.clone()],
+                    ret: Box::new(Ty::Core(CoreType::Box, vec![value])),
+                }
+            }
+            Builtin::BoxIntoInner => {
+                let value = self.new_type_var();
+                Ty::Fn {
+                    params: vec![Ty::Core(CoreType::Box, vec![value.clone()])],
+                    ret: Box::new(value),
+                }
+            }
+            Builtin::ReadFile => Ty::Fn {
+                params: vec![Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(Ty::Primitive(Primitive::Str)),
+                }],
+                ret: Box::new(Ty::Core(
+                    CoreType::Result,
+                    vec![
+                        Ty::Primitive(Primitive::String),
+                        Ty::Primitive(Primitive::String),
+                    ],
+                )),
+            },
+            Builtin::WriteFile => Ty::Fn {
+                params: vec![
+                    Ty::Ref {
+                        mutable: false,
+                        inner: Box::new(Ty::Primitive(Primitive::Str)),
+                    },
+                    Ty::Ref {
+                        mutable: false,
+                        inner: Box::new(Ty::Primitive(Primitive::Str)),
+                    },
+                ],
+                ret: Box::new(Ty::Core(
+                    CoreType::Result,
+                    vec![
+                        Ty::Primitive(Primitive::Unit),
+                        Ty::Primitive(Primitive::String),
+                    ],
+                )),
+            },
             Builtin::Some => {
                 let value = self.new_type_var();
                 Ty::Fn {
@@ -2011,6 +2073,7 @@ impl<'a> TypeChecker<'a> {
 
                 let index_ty = self.check_expr(*index);
                 let resolved_index_ty = self.resolve(&index_ty);
+                let is_range = matches!(resolved_index_ty, Ty::Range(_));
                 let is_integer = matches!(
                     resolved_index_ty,
                     Ty::Primitive(Primitive::Int8)
@@ -2023,7 +2086,7 @@ impl<'a> TypeChecker<'a> {
                         | Ty::Primitive(Primitive::UInt64)
                         | Ty::Error
                 );
-                if !is_integer {
+                if !is_integer && !is_range {
                     if let Ty::Infer(_) = resolved_index_ty {
                         let _ = self.unify(
                             Ty::Primitive(Primitive::Int32),
@@ -2053,20 +2116,38 @@ impl<'a> TypeChecker<'a> {
 
                 match self.resolve(&base_ty) {
                     Ty::Array(elem, len) => {
-                        if let Some(idx) = idx_val {
-                            if idx >= len {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        format!("index out of bounds: the length is {} but the index is {}", len, idx),
-                                        expr.span,
-                                    )
-                                    .with_code("E0007")
-                                );
+                        if is_range {
+                            Ty::Slice(elem)
+                        } else {
+                            if let Some(idx) = idx_val {
+                                if idx >= len {
+                                    self.diags.push(
+                                        Diagnostic::error(
+                                            format!("index out of bounds: the length is {} but the index is {}", len, idx),
+                                            expr.span,
+                                        )
+                                        .with_code("E0007")
+                                    );
+                                }
                             }
+                            *elem
                         }
-                        *elem
                     }
-                    Ty::Slice(elem) => *elem,
+                    Ty::Slice(elem) => {
+                        if is_range {
+                            Ty::Slice(elem)
+                        } else {
+                            *elem
+                        }
+                    }
+                    Ty::Core(CoreType::Vec, mut args) => {
+                        let elem = args.pop().unwrap_or(Ty::Error);
+                        if is_range {
+                            Ty::Slice(Box::new(elem))
+                        } else {
+                            elem
+                        }
+                    }
                     Ty::Error => Ty::Error,
                     other => {
                         self.diags.push(
@@ -2347,12 +2428,24 @@ impl<'a> TypeChecker<'a> {
                 local, iter, body, ..
             } => {
                 let iter_ty = self.check_expr(*iter);
-                let elem_ty = self.new_type_var();
-                let _ = self.unify(
-                    Ty::Range(Box::new(elem_ty.clone())),
-                    iter_ty,
-                    self.hir.expr(*iter).span,
-                );
+                let elem_ty = match self.resolve(&iter_ty) {
+                    Ty::Range(elem) | Ty::Array(elem, _) | Ty::Slice(elem) => *elem,
+                    Ty::Core(CoreType::Vec, args) => args.first().cloned().unwrap_or(Ty::Error),
+                    Ty::Error => Ty::Error,
+                    other => {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!(
+                                    "for-loop requires an iterable value, found '{}'",
+                                    self.ty_to_string(&other)
+                                ),
+                                self.hir.expr(*iter).span,
+                            )
+                            .with_code("E0001"),
+                        );
+                        Ty::Error
+                    }
+                };
 
                 self.local_types.insert(*local, elem_ty);
                 self.local_mutability.insert(*local, false);
@@ -2938,6 +3031,36 @@ impl<'a> TypeChecker<'a> {
             }
 
             ret_ty
+        } else if let Some((params_ty, ret_ty, needs_mut)) =
+            self.core_method_signature(&receiver_ty, &name_str)
+        {
+            if needs_mut && !self.is_mutable_place(base_expr) {
+                self.diags.push(
+                    Diagnostic::error(
+                        "mutable method receiver requires a mutable place",
+                        name_span,
+                    )
+                    .with_code("E0400"),
+                );
+            }
+            if args.len() != params_ty.len() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "wrong number of arguments: expected {}, found {}",
+                            params_ty.len(),
+                            args.len()
+                        ),
+                        call_span,
+                    )
+                    .with_code("E0005"),
+                );
+            }
+            for (arg, param_ty) in args.iter().zip(params_ty) {
+                let arg_ty = self.check_expr(*arg);
+                let _ = self.unify(param_ty, arg_ty, self.hir.expr(*arg).span);
+            }
+            ret_ty
         } else {
             let is_ok_type = matches!(
                 resolved_base,
@@ -2968,6 +3091,118 @@ impl<'a> TypeChecker<'a> {
                 );
             }
             Ty::Error
+        }
+    }
+
+    fn core_method_signature(&self, receiver: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
+        let unit = Ty::Primitive(Primitive::Unit);
+        let bool_ty = Ty::Primitive(Primitive::Bool);
+        let u64_ty = Ty::Primitive(Primitive::UInt64);
+        let str_ref = Ty::Ref {
+            mutable: false,
+            inner: Box::new(Ty::Primitive(Primitive::Str)),
+        };
+        match receiver {
+            Ty::Primitive(Primitive::String | Primitive::Str) => match name {
+                "len" => Some((Vec::new(), u64_ty, false)),
+                "is_empty" => Some((Vec::new(), bool_ty, false)),
+                "push" => Some((vec![Ty::Primitive(Primitive::Char)], unit, true)),
+                "push_str" => Some((vec![str_ref.clone()], unit, true)),
+                "pop" => Some((
+                    Vec::new(),
+                    Ty::Core(CoreType::Option, vec![Ty::Primitive(Primitive::Char)]),
+                    true,
+                )),
+                "clear" => Some((Vec::new(), unit, true)),
+                "as_str" | "trim" => Some((Vec::new(), str_ref, false)),
+                "contains" | "starts_with" | "ends_with" => Some((vec![str_ref], bool_ty, false)),
+                "find" => Some((
+                    vec![str_ref],
+                    Ty::Core(CoreType::Option, vec![u64_ty]),
+                    false,
+                )),
+                "replace" => Some((
+                    vec![str_ref.clone(), str_ref],
+                    Ty::Primitive(Primitive::String),
+                    false,
+                )),
+                "substring" => Some((
+                    vec![u64_ty.clone(), u64_ty],
+                    Ty::Ref {
+                        mutable: false,
+                        inner: Box::new(Ty::Primitive(Primitive::Str)),
+                    },
+                    false,
+                )),
+                "to_string" | "to_lowercase" | "to_uppercase" => {
+                    Some((Vec::new(), Ty::Primitive(Primitive::String), false))
+                }
+                _ => None,
+            },
+            Ty::Core(CoreType::Vec, args) => {
+                let elem = args.first().cloned().unwrap_or(Ty::Error);
+                match name {
+                    "push" => Some((vec![elem], unit, true)),
+                    "pop" => Some((Vec::new(), Ty::Core(CoreType::Option, vec![elem]), true)),
+                    "len" | "capacity" => Some((Vec::new(), u64_ty, false)),
+                    "is_empty" => Some((Vec::new(), bool_ty, false)),
+                    "get" => Some((
+                        vec![u64_ty],
+                        Ty::Core(
+                            CoreType::Option,
+                            vec![Ty::Ref {
+                                mutable: false,
+                                inner: Box::new(elem),
+                            }],
+                        ),
+                        false,
+                    )),
+                    "insert" => Some((vec![u64_ty, elem], unit, true)),
+                    "remove" => Some((vec![u64_ty], elem, true)),
+                    "clear" => Some((Vec::new(), unit, true)),
+                    "append" => Some((
+                        vec![Ty::Ref {
+                            mutable: true,
+                            inner: Box::new(receiver.clone()),
+                        }],
+                        unit,
+                        true,
+                    )),
+                    "as_slice" => Some((
+                        Vec::new(),
+                        Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(Ty::Slice(Box::new(elem))),
+                        },
+                        false,
+                    )),
+                    _ => None,
+                }
+            }
+            Ty::Core(CoreType::Option, args) => {
+                let value = args.first().cloned().unwrap_or(Ty::Error);
+                match name {
+                    "is_some" | "is_none" => Some((Vec::new(), bool_ty, false)),
+                    "unwrap" => Some((Vec::new(), value.clone(), false)),
+                    "unwrap_or" => Some((vec![value.clone()], value, false)),
+                    _ => None,
+                }
+            }
+            Ty::Core(CoreType::Result, args) => {
+                let value = args.first().cloned().unwrap_or(Ty::Error);
+                match name {
+                    "is_ok" | "is_err" => Some((Vec::new(), bool_ty, false)),
+                    "unwrap" => Some((Vec::new(), value.clone(), false)),
+                    "unwrap_or" => Some((vec![value.clone()], value, false)),
+                    _ => None,
+                }
+            }
+            Ty::Core(CoreType::Box, args) if name == "into_inner" => Some((
+                Vec::new(),
+                args.first().cloned().unwrap_or(Ty::Error),
+                false,
+            )),
+            _ => None,
         }
     }
 
