@@ -1,0 +1,5 @@
+trait Source { type Item; }
+struct Number { inner: Int32 }
+impl Source for Number { type Item = Int32; }
+fn choose<I: Source<Item = Int32>>(value: I::Item) -> I::Item { value }
+fn main() { let value: Int32 = choose::<Number>(7); }

@@ -1,0 +1,3 @@
+trait Source { type Item; fn get(&self) -> Self::Item; }
+struct Number { inner: Int32 }
+impl Source for Number { type Item = Int32; fn get(&self) -> Int32 { self.inner } }

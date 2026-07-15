@@ -1,0 +1,3 @@
+struct Boxed<T> { value: T }
+impl<T> Boxed<T> { fn get(&self) -> &T { &self.value } }
+fn main() { let boxed = Boxed { value: 9 }; let value = boxed.get(); let copy = *value; }

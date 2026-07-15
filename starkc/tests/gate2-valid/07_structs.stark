@@ -1,0 +1,3 @@
+struct Point { x: Int32, y: Int32 }
+fn sum(point: Point) -> Int32 { point.x + point.y }
+fn main() { let value = sum(Point { x: 2, y: 3 }); }

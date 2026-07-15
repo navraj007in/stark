@@ -1,0 +1,1 @@
+fn choose(value: Bool) -> Int32 { if value { 1 } else { panic("no value") } }

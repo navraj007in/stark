@@ -1,0 +1,4 @@
+trait Value { fn value(&self) -> Int32; }
+struct Number { inner: Int32 }
+impl Value for Number { fn value(&self) -> Int32 { self.inner } }
+fn main() { let number = Number { inner: 5 }; let value = Value::value(&number); }

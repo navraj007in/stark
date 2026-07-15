@@ -1,0 +1,2 @@
+fn identity_ref(value: &Int32) -> &Int32 { value }
+fn main() { let value = 1; let borrowed = identity_ref(&value); let copy = *borrowed; }

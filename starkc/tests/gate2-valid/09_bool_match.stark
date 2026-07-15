@@ -1,0 +1,1 @@
+fn code(value: Bool) -> Int32 { match value { true => 1, false => 0 } }

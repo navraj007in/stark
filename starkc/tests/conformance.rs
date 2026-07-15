@@ -9,9 +9,8 @@
 //! - `lex_level_conformance` (always on): `lex-pass`, `parse-pass`, and
 //!   `semantic-error` fixtures lex without diagnostics; every fixture lexes
 //!   without panicking and ends in Eof.
-//! - `spec_conformance` (#[ignore] until the WP1.4 parser lands): full
-//!   verdict enforcement. Run with `cargo test --test conformance --
-//!   --include-ignored`. Red today by design: parse verdicts need a parser.
+//! - `spec_conformance`: full parse and Gate 2 semantic-error verdict
+//!   enforcement, including each recorded E-code.
 //!
 //! The manifest is a deliberately flat TOML subset (see its header) so this
 //! harness stays dependency-free.

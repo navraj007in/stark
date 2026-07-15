@@ -1,0 +1,3 @@
+enum Option<T> { Some(T), None }
+fn unwrap_or(value: Option<Int32>, fallback: Int32) -> Int32 { match value { Option::Some(inner) => inner, Option::None => fallback } }
+fn main() { let value = unwrap_or(Option::Some(2), 0); }

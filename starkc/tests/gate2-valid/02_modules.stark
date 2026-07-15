@@ -1,0 +1,3 @@
+mod math { pub fn add(a: Int32, b: Int32) -> Int32 { a + b } }
+use crate::math::add;
+fn main() { let value = add(2, 3); }

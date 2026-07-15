@@ -1,0 +1,4 @@
+struct Text { value: String }
+struct Pair { left: Text, right: Text }
+fn consume(value: Text) { }
+fn main() { let pair = Pair { left: Text { value: String::from("a") }, right: Text { value: String::from("b") } }; consume(pair.left); consume(pair.right); }

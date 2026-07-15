@@ -1,0 +1,1 @@
+fn main() { let values: [Int32; 3] = [7; 3]; let value = values[2]; }

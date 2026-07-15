@@ -2,7 +2,7 @@
 
 use crate::ast;
 use crate::diag::Diagnostic;
-use crate::hir::{self, Builtin, CoreTrait, Hir, LocalId, Res};
+use crate::hir::{self, Builtin, CoreTrait, CoreType, Hir, LocalId, Res};
 use crate::source::{SourceFile, Span};
 use std::collections::{hash_map::Entry, HashMap};
 use std::sync::Arc;
@@ -43,6 +43,7 @@ pub struct Resolver<'a> {
     scopes: Vec<HashMap<String, Res>>,
     local_count: u32,
     item_map: HashMap<ast::ItemId, hir::ItemId>,
+    item_modules: HashMap<hir::ItemId, ModuleId>,
     item_details: HashMap<hir::ItemId, ItemDefDetail>,
     submodule_map: HashMap<ast::ItemId, ModuleId>,
 }
@@ -57,6 +58,7 @@ pub fn resolve(ast: &ast::Ast, file: Arc<SourceFile>) -> (Hir, Vec<Diagnostic>) 
         scopes: Vec::new(),
         local_count: 0,
         item_map: HashMap::new(),
+        item_modules: HashMap::new(),
         item_details: HashMap::new(),
         submodule_map: HashMap::new(),
     };
@@ -168,6 +170,7 @@ impl<'a> Resolver<'a> {
 
             // Populate item details for variants/members
             let hir_id = hir::ItemId(ast_id.0);
+            self.item_modules.insert(hir_id, current_mod_id);
             match &item.kind {
                 ast::ItemKind::Enum { variants, .. } => {
                     let variant_names = variants
@@ -479,6 +482,9 @@ impl<'a> Resolver<'a> {
         if path.segments.is_empty() {
             return Res::Err;
         }
+        if self.path_to_string(path) == "String::from" {
+            return Res::Builtin(Builtin::StringFrom);
+        }
 
         let mut current_res = None;
         let mut current_mod = start_mod;
@@ -534,6 +540,8 @@ impl<'a> Resolver<'a> {
                                 resolved = Some(Res::Builtin(builtin));
                             } else if let Some(core_trait) = resolve_core_trait(name_str) {
                                 resolved = Some(Res::CoreTrait(core_trait));
+                            } else if let Some(core_type) = resolve_core_type(name_str) {
+                                resolved = Some(Res::CoreType(core_type));
                             }
                         }
 
@@ -552,6 +560,18 @@ impl<'a> Resolver<'a> {
                     }
                 }
             } else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
+                if let Res::Item(item_id) = res {
+                    if !self.item_is_visible_from(item_id, start_mod) {
+                        self.diags.push(
+                            Diagnostic::error(
+                                format!("item '{name_str}' is private"),
+                                segment.span,
+                            )
+                            .with_code("E0203"),
+                        );
+                        return Res::Err;
+                    }
+                }
                 current_res = Some(res);
                 if let Res::Item(item_id) = res {
                     if let Some(&sub_mod_id) = self.submodule_map.get(&ast::ItemId(item_id.0)) {
@@ -559,14 +579,22 @@ impl<'a> Resolver<'a> {
                     }
                 }
             } else if let Some(Res::Item(item_id)) = current_res {
-                if let Some(ItemDefDetail::Enum { variants }) = self.item_details.get(&item_id) {
-                    if let Some(variant_idx) = variants.iter().position(|v| v == name_str) {
-                        current_res = Some(Res::Variant(item_id, variant_idx as u32));
-                    } else {
-                        return Res::Err;
+                match self.item_details.get(&item_id) {
+                    Some(ItemDefDetail::Enum { variants }) => {
+                        if let Some(variant_idx) = variants.iter().position(|v| v == name_str) {
+                            current_res = Some(Res::Variant(item_id, variant_idx as u32));
+                        } else {
+                            return Res::Err;
+                        }
                     }
-                } else {
-                    return Res::Err;
+                    Some(ItemDefDetail::Trait { items }) => {
+                        if let Some(member) = items.iter().position(|item| item == name_str) {
+                            current_res = Some(Res::TraitMember(item_id, member as u32));
+                        } else {
+                            return Res::Err;
+                        }
+                    }
+                    _ => return Res::Err,
                 }
             } else {
                 return Res::Err;
@@ -594,12 +622,38 @@ impl<'a> Resolver<'a> {
         self.hir.root = root;
     }
 
+    fn item_is_visible_from(&self, item_id: hir::ItemId, from: ModuleId) -> bool {
+        let defining = self.item_modules.get(&item_id).copied().unwrap_or(from);
+        if defining == from {
+            return true;
+        }
+        matches!(
+            self.ast.item(ast::ItemId(item_id.0)).vis,
+            Some(ast::Vis::Pub)
+        )
+    }
+
     fn lower_type(&mut self, ast_id: ast::TypeId) -> hir::TypeId {
         let node = self.ast.ty(ast_id);
         let kind = match &node.kind {
             ast::TypeKind::Primitive(p) => hir::TypeKind::Primitive(*p),
             ast::TypeKind::Path { path, args } => {
-                let res = self.resolve_path(self.current_module, path);
+                let res = if path.segments.len() == 2
+                    && path.segments[0].kind == ast::SegmentKind::SelfType
+                {
+                    Res::SelfAssoc(path.segments[1].span)
+                } else if path.segments.len() == 2
+                    && self.scopes.iter().rev().any(|scope| {
+                        matches!(
+                            scope.get(self.text(path.segments[0].span)),
+                            Some(Res::TypeParam)
+                        )
+                    })
+                {
+                    Res::ParamAssoc(path.segments[0].span, path.segments[1].span)
+                } else {
+                    self.resolve_path(self.current_module, path)
+                };
                 if matches!(res, Res::Err | Res::Builtin(_) | Res::CoreTrait(_)) {
                     self.diags.push(
                         Diagnostic::error(
@@ -1575,6 +1629,9 @@ impl<'a> Resolver<'a> {
         if let Some(core_trait) = resolve_core_trait(name) {
             return Res::CoreTrait(core_trait);
         }
+        if let Some(core_type) = resolve_core_type(name) {
+            return Res::CoreType(core_type);
+        }
         Res::Err
     }
 }
@@ -1586,6 +1643,24 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "panic" => Some(Builtin::Panic),
         "assert" => Some(Builtin::Assert),
         "sqrt" => Some(Builtin::Sqrt),
+        "drop" => Some(Builtin::Drop),
+        "Some" => Some(Builtin::Some),
+        "None" => Some(Builtin::None),
+        "Ok" => Some(Builtin::Ok),
+        "Err" => Some(Builtin::Err),
+        _ => None,
+    }
+}
+
+fn resolve_core_type(name: &str) -> Option<CoreType> {
+    match name {
+        "String" => Some(CoreType::String),
+        "Vec" => Some(CoreType::Vec),
+        "Box" => Some(CoreType::Box),
+        "Option" => Some(CoreType::Option),
+        "Result" => Some(CoreType::Result),
+        "Range" => Some(CoreType::Range),
+        "RangeInclusive" => Some(CoreType::RangeInclusive),
         _ => None,
     }
 }
@@ -1676,5 +1751,20 @@ mod tests {
             "struct Point { x: Int32, y: Int32 } fn main() { let p = Point { x: 1, y: 2 }; }",
         );
         assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+    }
+
+    #[test]
+    fn module_paths_imports_and_visibility_are_enforced() {
+        let (_, valid) = check_src(
+            "mod math { pub fn answer() -> Int32 { 42 } } use math::answer; fn main() { let x = answer(); }",
+        );
+        assert!(valid.is_empty(), "unexpected diagnostics: {valid:?}");
+
+        let (_, private) = check_src(
+            "mod math { fn secret() -> Int32 { 42 } } fn main() { let x = math::secret(); }",
+        );
+        assert!(private
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("E0203")));
     }
 }

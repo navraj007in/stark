@@ -33,6 +33,23 @@ pub enum Builtin {
     Panic,
     Assert,
     Sqrt,
+    Drop,
+    StringFrom,
+    Some,
+    None,
+    Ok,
+    Err,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CoreType {
+    String,
+    Vec,
+    Box,
+    Option,
+    Result,
+    Range,
+    RangeInclusive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,18 +70,26 @@ pub enum Res {
     Item(ItemId),
     /// Enum variant.
     Variant(ItemId, u32),
+    /// Method or associated type selected from a trait path.
+    TraitMember(ItemId, u32),
     /// Primitive type.
     Primitive(Primitive),
     /// The `Self` type inside an impl/trait.
     SelfType,
+    /// An associated type projection written as `Self::Name`.
+    SelfAssoc(Span),
     /// A generic type parameter (like `T`).
     TypeParam,
+    /// An associated type projected from a generic parameter (`T::Item`).
+    ParamAssoc(Span, Span),
     /// The `self` value parameter in a method.
     SelfValue(LocalId),
     /// A compiler-provided function, distinct from an arena-backed item.
     Builtin(Builtin),
     /// A compiler-known Core marker trait supplied by the prelude.
     CoreTrait(CoreTrait),
+    /// A nominal type supplied by the Core prelude.
+    CoreType(CoreType),
     /// Unresolved or error name (prevents cascading diagnostics).
     Err,
 }

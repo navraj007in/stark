@@ -1,0 +1,1 @@
+fn main() { let value: Int32 = loop { break 3; }; }

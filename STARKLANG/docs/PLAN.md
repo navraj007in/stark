@@ -213,6 +213,10 @@ Deliberately deferred within Gate 2: match *usefulness* warnings, trait
 default-method bodies' full checking, `pub use` re-export graphs beyond what
 fixtures require.
 
+**Done 2026-07-15.** M2.1–M2.5 are implemented in `starkc`; the exit evidence,
+coverage inventory, and intentional deferrals are recorded in
+`starkc/docs/gate2-exit.md`. Gate 2 is closed.
+
 ## 3. Gate 3 — Minimal Execution Path (milestone detail)
 
 - **M3.1** Tree-walking interpreter (T11): values, calls, control flow,

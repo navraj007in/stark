@@ -1,0 +1,1 @@
+fn main() { let integer = 42; let float = 3.5; let truth = integer < 50; assert(truth); }

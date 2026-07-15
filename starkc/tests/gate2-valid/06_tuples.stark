@@ -1,0 +1,2 @@
+fn swap(pair: (Int32, Bool)) -> (Bool, Int32) { (pair.1, pair.0) }
+fn main() { let pair = swap((1, true)); }

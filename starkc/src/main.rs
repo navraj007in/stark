@@ -151,8 +151,12 @@ fn cmd_check(path: &str, mode: ParseMode) -> ExitCode {
     for diag in &diags {
         eprint!("{}", diag.render(&file_arc));
     }
-    if !diags.is_empty() {
-        eprintln!("{}: {} error(s)", file_arc.name, diags.len());
+    let error_count = diags
+        .iter()
+        .filter(|diag| diag.severity == starkc::diag::Severity::Error)
+        .count();
+    if error_count > 0 {
+        eprintln!("{}: {} error(s)", file_arc.name, error_count);
         return ExitCode::FAILURE;
     }
     println!("{}: OK", file_arc.name);

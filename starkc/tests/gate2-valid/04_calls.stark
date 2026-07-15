@@ -1,0 +1,2 @@
+fn add(a: Int32, b: Int32) -> Int32 { a + b }
+fn main() { let value: Int32 = add(1, 2); }

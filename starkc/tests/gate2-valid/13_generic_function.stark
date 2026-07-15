@@ -1,0 +1,2 @@
+fn identity<T>(value: T) -> T { value }
+fn main() { let number: Int32 = identity(3); let flag: Bool = identity(true); }

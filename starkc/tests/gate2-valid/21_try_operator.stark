@@ -1,0 +1,2 @@
+enum Option<T> { Some(T), None }
+fn propagate(value: Option<Int32>) -> Option<Int32> { let inner = value?; Option::Some(inner) }

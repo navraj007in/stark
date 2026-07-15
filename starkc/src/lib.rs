@@ -6,7 +6,8 @@
 //!
 //! Pipeline (target architecture per PLAN.md):
 //! `Source -> Tokens -> AST -> HIR -> typed HIR -> backend`
-//! Gate 1 implements Source -> Tokens -> AST.
+//! Gates 1 and 2 implement Source -> Tokens -> AST -> HIR -> typed HIR,
+//! including name resolution, type checking, and ownership/borrow analysis.
 
 pub mod ast;
 pub mod ast_dump;

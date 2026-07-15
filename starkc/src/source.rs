@@ -6,7 +6,7 @@
 //! sufficient until the diagnostics renderer grows Unicode-width awareness.
 
 /// A half-open byte range `[lo, hi)` within one source file.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct Span {
     pub lo: u32,
     pub hi: u32,

@@ -2,7 +2,9 @@
 
 use crate::ast::UnOp;
 use crate::diag::Diagnostic;
-use crate::hir::{self, BlockId, CoreTrait, ExprId, Hir, ItemId, LocalId, Res, StmtId};
+use crate::hir::{
+    self, BlockId, Builtin, CoreTrait, CoreType, ExprId, Hir, ItemId, LocalId, Res, StmtId,
+};
 use crate::source::{SourceFile, Span};
 use crate::typecheck::Ty;
 use std::collections::{HashMap, HashSet};
@@ -119,8 +121,15 @@ impl<'a> BorrowChecker<'a> {
 
     fn is_copy_type(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Primitive(_) | Ty::Error | Ty::Ref { mutable: false, .. } => true,
-            Ty::Struct(item) | Ty::Enum(item) => self.copy_types.contains(item),
+            Ty::Primitive(primitive) => !matches!(
+                primitive,
+                crate::ast::Primitive::String | crate::ast::Primitive::Str
+            ),
+            Ty::Error | Ty::Ref { mutable: false, .. } => true,
+            Ty::Struct(item, _) | Ty::Enum(item, _) => self.copy_types.contains(item),
+            Ty::Core(CoreType::Option | CoreType::Result, args) => {
+                args.iter().all(|arg| self.is_copy_type(arg))
+            }
             Ty::Tuple(elements) => elements.iter().all(|element| self.is_copy_type(element)),
             Ty::Array(element, _) => self.is_copy_type(element),
             _ => false,
@@ -300,7 +309,16 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
             hir::ExprKind::Call { callee, args } => {
-                self.check_expr(*callee);
+                if let hir::ExprKind::Field { base, name } = &self.hir.expr(*callee).kind {
+                    match self.method_receiver(*base, *name) {
+                        Some(hir::Receiver::Value) => self.consume_place(*base),
+                        Some(hir::Receiver::Ref) => self.borrow_method_receiver(*base, false),
+                        Some(hir::Receiver::RefMut) => self.borrow_method_receiver(*base, true),
+                        None => self.check_expr(*base),
+                    }
+                } else {
+                    self.check_expr(*callee);
+                }
                 for &arg in args {
                     self.check_expr(arg);
                 }
@@ -416,6 +434,64 @@ impl<'a> BorrowChecker<'a> {
             | hir::ExprKind::TupleField { base, .. }
             | hir::ExprKind::Index { base, .. } => self.get_root_local(*base),
             _ => None,
+        }
+    }
+
+    fn method_receiver(&self, base: ExprId, name: Span) -> Option<hir::Receiver> {
+        let mut base_ty = self.expr_types.get(&base)?.clone();
+        while let Ty::Ref { inner, .. } = base_ty {
+            base_ty = *inner;
+        }
+        let item_id = match base_ty {
+            Ty::Struct(item, _) | Ty::Enum(item, _) => item,
+            _ => return None,
+        };
+        let method_name = self.text(name);
+        self.hir.items.iter().find_map(|item| {
+            let hir::ItemKind::Impl { self_ty, items, .. } = &item.kind else {
+                return None;
+            };
+            let matches_type = matches!(
+                self.hir.ty(*self_ty).kind,
+                hir::TypeKind::Path {
+                    res: Res::Item(impl_item),
+                    ..
+                } if impl_item == item_id
+            );
+            if !matches_type {
+                return None;
+            }
+            items.iter().find_map(|item| match item {
+                hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == method_name => {
+                    def.sig.receiver
+                }
+                _ => None,
+            })
+        })
+    }
+
+    fn borrow_method_receiver(&mut self, base: ExprId, mutable: bool) {
+        let Some(place) = self.place_of(base) else {
+            self.check_expr(base);
+            return;
+        };
+        let span = self.hir.expr(base).span;
+        self.check_place_available(&place, span);
+        if self
+            .active_borrows
+            .iter()
+            .any(|borrow| borrow.local == place.local && (mutable || borrow.mutable))
+        {
+            self.diags.push(
+                Diagnostic::error("method receiver conflicts with an active borrow", span)
+                    .with_code("E0101"),
+            );
+        } else {
+            self.active_borrows.push(Borrow {
+                local: place.local,
+                mutable,
+                _span: span,
+            });
         }
     }
 
@@ -561,7 +637,7 @@ impl<'a> BorrowChecker<'a> {
             return false;
         };
         let item_id = match ty {
-            Ty::Struct(id) | Ty::Enum(id) => *id,
+            Ty::Struct(id, _) | Ty::Enum(id, _) => *id,
             _ => return false,
         };
         self.hir.items.iter().any(|item| {
@@ -606,7 +682,11 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn expr_carries_borrow(&self, expr_id: ExprId) -> bool {
-        if matches!(self.expr_types.get(&expr_id), Some(Ty::Ref { .. })) {
+        if self
+            .expr_types
+            .get(&expr_id)
+            .is_some_and(Self::type_carries_borrow)
+        {
             return true;
         }
         let expr = self.hir.expr(expr_id);
@@ -625,7 +705,8 @@ impl<'a> BorrowChecker<'a> {
                 if matches!(
                     self.hir.expr(*callee).kind,
                     hir::ExprKind::Path {
-                        res: Res::Variant(..),
+                        res: Res::Variant(..)
+                            | Res::Builtin(Builtin::Some | Builtin::Ok | Builtin::Err),
                         ..
                     }
                 ) =>
@@ -653,6 +734,23 @@ impl<'a> BorrowChecker<'a> {
             .is_some_and(|expr| self.expr_carries_borrow(expr))
     }
 
+    fn type_carries_borrow(ty: &Ty) -> bool {
+        match ty {
+            Ty::Ref { .. } => true,
+            Ty::Tuple(elements) => elements.iter().any(Self::type_carries_borrow),
+            Ty::Array(element, _) | Ty::Slice(element) | Ty::Range(element) => {
+                Self::type_carries_borrow(element)
+            }
+            Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
+                args.iter().any(Self::type_carries_borrow)
+            }
+            Ty::Fn { params, ret } => {
+                params.iter().any(Self::type_carries_borrow) || Self::type_carries_borrow(ret)
+            }
+            _ => false,
+        }
+    }
+
     fn borrowed_local(&self, expr_id: ExprId) -> Option<LocalId> {
         let expr = self.hir.expr(expr_id);
         match &expr.kind {
@@ -670,15 +768,16 @@ impl<'a> BorrowChecker<'a> {
                 .iter()
                 .filter_map(|field| field.expr)
                 .find_map(|expr| self.borrowed_local(expr)),
-            hir::ExprKind::Call { callee, args }
-                if matches!(
-                    self.hir.expr(*callee).kind,
-                    hir::ExprKind::Path {
-                        res: Res::Variant(..),
-                        ..
-                    }
-                ) =>
+            hir::ExprKind::Call { args, .. }
+                if self
+                    .expr_types
+                    .get(&expr_id)
+                    .is_some_and(Self::type_carries_borrow) =>
             {
+                // A call returning a borrow-carrying aggregate is conservatively
+                // tied to its borrowed arguments.  This closes the escape hole in
+                // wrappers such as `Some(identity(&local))` and user functions
+                // returning `Option<&T>`.
                 args.iter().find_map(|expr| self.borrowed_local(*expr))
             }
             hir::ExprKind::If {

@@ -3,6 +3,7 @@
 //! The UI intentionally uses ANSI escape sequences and `stty` rather than a
 //! TUI crate so the compiler keeps its zero-dependency bootstrap footprint.
 
+use starkc::diag::Severity;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
@@ -272,10 +273,20 @@ impl App {
             }
         }
         self.output.clear();
-        if diagnostics.is_empty() {
+        let error_count = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .count();
+        if error_count == 0 {
             self.output.push(format!("Compiling {name}"));
-            self.output
-                .push("Success: syntax and semantic checks passed (0 errors).".into());
+            for diagnostic in &diagnostics {
+                self.output
+                    .extend(diagnostic.render(&file).lines().map(str::to_owned));
+            }
+            self.output.push(format!(
+                "Success: syntax and semantic checks passed (0 errors, {} warning(s)).",
+                diagnostics.len()
+            ));
             if run {
                 self.output
                     .push("Run unavailable: the STARK VM/backend is not implemented yet.".into());
@@ -288,8 +299,8 @@ impl App {
                     .extend(diagnostic.render(&file).lines().map(str::to_owned));
             }
             self.output
-                .push(format!("Build failed: {} error(s).", diagnostics.len()));
-            self.status = format!("{} compile error(s)", diagnostics.len());
+                .push(format!("Build failed: {error_count} error(s)."));
+            self.status = format!("{error_count} compile error(s)");
         }
         self.show_output = true;
     }
