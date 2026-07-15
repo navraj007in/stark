@@ -5461,11 +5461,8 @@ impl TypeChecker<'_> {
                 let shape = self.build_shape(s);
                 let mut list = Vec::new();
                 for dim in &shape.dims {
-                    if let Some(c) = dim.as_constant() {
-                        list.push(c);
-                    } else {
-                        return None;
-                    }
+                    let c = dim.as_constant()?;
+                    list.push(c);
                 }
                 Some(list)
             }

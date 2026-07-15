@@ -648,12 +648,8 @@ impl<'a> Resolver<'a> {
                             return Res::Err;
                         }
                     }
-                    Some(ItemDefDetail::Model) => {
-                        if name_str == "load" {
-                            current_res = Some(Res::ModelLoad(item_id));
-                        } else {
-                            return Res::Err;
-                        }
+                    Some(ItemDefDetail::Model) if name_str == "load" => {
+                        current_res = Some(Res::ModelLoad(item_id));
                     }
                     _ => return Res::Err,
                 }
