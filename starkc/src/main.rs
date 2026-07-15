@@ -24,6 +24,9 @@ Usage:
                               Generate a deterministic STARK model declaration.
   starkc verify <model.onnx> --declaration <model.stark> [--model <Name>]
                               Verify an artifact against a model declaration.
+  starkc deploy <pipeline.stark> --model <model.onnx> --entry <fn> --out <dir> [--force]
+                              Generate a native ONNX Runtime host crate for a
+                              checked tensor inference pipeline (Gate 5).
   starkc --help               Show this help
 ";
 
@@ -90,6 +93,7 @@ fn main() -> ExitCode {
         }
         Some((cmd, rest)) if cmd == "import" => cmd_import(rest),
         Some((cmd, rest)) if cmd == "verify" => cmd_verify(rest),
+        Some((cmd, rest)) if cmd == "deploy" => cmd_deploy(rest),
         Some((cmd, [path])) if cmd == "run" => cmd_run(path),
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
         Some((flag, [])) if flag == "--help" || flag == "-h" => {
@@ -200,6 +204,68 @@ fn cmd_verify(args: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn cmd_deploy(args: &[String]) -> ExitCode {
+    let mut pipeline = None;
+    let mut model = None;
+    let mut entry = None;
+    let mut out = None;
+    let mut force = false;
+    let mut arguments = args.iter();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--model" if model.is_none() => match arguments.next() {
+                Some(value) if !value.starts_with('-') => model = Some(value.clone()),
+                _ => return usage_exit(),
+            },
+            "--entry" if entry.is_none() => match arguments.next() {
+                Some(value) if !value.starts_with('-') => entry = Some(value.clone()),
+                _ => return usage_exit(),
+            },
+            "--out" if out.is_none() => match arguments.next() {
+                Some(value) if !value.starts_with('-') => out = Some(value.clone()),
+                _ => return usage_exit(),
+            },
+            "--force" if !force => force = true,
+            value if !value.starts_with('-') && pipeline.is_none() => {
+                pipeline = Some(value.to_string())
+            }
+            _ => return usage_exit(),
+        }
+    }
+    let (Some(pipeline), Some(model), Some(entry), Some(out)) = (pipeline, model, entry, out)
+    else {
+        return usage_exit();
+    };
+
+    match starkc::deploy::deploy(
+        std::path::Path::new(&pipeline),
+        std::path::Path::new(&model),
+        &entry,
+        std::path::Path::new(&out),
+        force,
+    ) {
+        Ok(summary) => {
+            println!("Generated deployment host: {}", summary.out_dir.display());
+            println!("  model SHA-256: {}", summary.model_sha256);
+            println!("  entry:         {}", summary.entry);
+            println!(
+                "  next:          cargo build --release --locked --manifest-path {}/Cargo.toml",
+                summary.out_dir.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprint!("{}", error.render());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn usage_exit() -> ExitCode {
+    eprint!("{USAGE}");
+    ExitCode::from(2)
 }
 
 /// Build [`LanguageOptions`] from collected `--extension` values, printing a

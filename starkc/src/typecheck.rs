@@ -210,12 +210,12 @@ pub fn analyze_with_options(
     let expr_types = checker
         .expr_types
         .iter()
-        .map(|(&id, ty)| (id, checker.resolve(ty)))
+        .map(|(&id, ty)| (id, checker.ground(ty)))
         .collect();
     let local_types = checker
         .local_types
         .iter()
-        .map(|(&id, ty)| (id, checker.resolve(ty)))
+        .map(|(&id, ty)| (id, checker.ground(ty)))
         .collect();
     let mut diagnostics = checker.diags;
     diagnostics.extend(crate::flow::check(hir, file.clone(), &expr_types));
@@ -428,6 +428,72 @@ impl<'a> TypeChecker<'a> {
             },
             Ty::Range(elem) => Ty::Range(Box::new(self.resolve(elem))),
             Ty::Extension(ext) => Ty::Extension(ext.clone()),
+            _ => ty.clone(),
+        }
+    }
+
+    /// Deep-resolve a type for publication in [`TypeTables`], additionally
+    /// grounding tensor shape dimensions through the tensor unification context
+    /// (e.g. a model's fresh output dim `N` bound to `1` by a `predict` call).
+    /// Unlike [`Self::resolve`] this is *not* used on the unification hot path,
+    /// so backend consumers see concrete shapes wherever they are determined.
+    fn ground(&self, ty: &Ty) -> Ty {
+        let ty = self.resolve(ty);
+        self.ground_tensor_dims(&ty)
+    }
+
+    fn ground_tensor_dims(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Extension(ext) => match &**ext {
+                ExtensionTy::Tensor(TensorKind::Tensor(t)) => {
+                    let dims: Vec<_> = t
+                        .shape
+                        .dims
+                        .iter()
+                        .map(|d| self.tensor_ctx.resolve_dim(d).unwrap_or_else(|_| d.clone()))
+                        .collect();
+                    // Grounding preserves rank; keep spans only if they still align.
+                    let spans = if t.shape.spans.len() == dims.len() {
+                        t.shape.spans.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
+                        TensorTy {
+                            dtype: t.dtype,
+                            shape: Shape { dims, spans },
+                            device: t.device,
+                        },
+                    ))))
+                }
+                _ => ty.clone(),
+            },
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.ground_tensor_dims(inner)),
+            },
+            Ty::Struct(item, args) => Ty::Struct(
+                *item,
+                args.iter().map(|a| self.ground_tensor_dims(a)).collect(),
+            ),
+            Ty::Enum(item, args) => Ty::Enum(
+                *item,
+                args.iter().map(|a| self.ground_tensor_dims(a)).collect(),
+            ),
+            Ty::Core(core, args) => Ty::Core(
+                *core,
+                args.iter().map(|a| self.ground_tensor_dims(a)).collect(),
+            ),
+            Ty::Tuple(elems) => {
+                Ty::Tuple(elems.iter().map(|e| self.ground_tensor_dims(e)).collect())
+            }
+            Ty::Array(elem, len) => Ty::Array(Box::new(self.ground_tensor_dims(elem)), *len),
+            Ty::Slice(elem) => Ty::Slice(Box::new(self.ground_tensor_dims(elem))),
+            Ty::Range(elem) => Ty::Range(Box::new(self.ground_tensor_dims(elem))),
+            Ty::Fn { params, ret } => Ty::Fn {
+                params: params.iter().map(|p| self.ground_tensor_dims(p)).collect(),
+                ret: Box::new(self.ground_tensor_dims(ret)),
+            },
             _ => ty.clone(),
         }
     }

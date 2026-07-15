@@ -1,0 +1,49 @@
+// Gate 5 representative inference pipeline (CLAUDE_GATE5_IMPLEMENTATION_PLAN.md
+// §7). Type-checks under `--extension tensor`; lowers to the deployment IR and
+// generates a native ONNX Runtime host. The model signature matches the
+// pinned resnet50-v1-7.onnx artifact (input `data`, output
+// `resnetv17_dense0_fwd`).
+//
+// The host hands the entry an owned NHWC UInt8 [1, 224, 224, 3] image as
+// `TensorAny`; `refine` is the explicit trust boundary. Preprocessing performs
+// NHWC->NCHW, a float cast, documented ImageNet normalization (channel
+// constants over the [0, 1] range), prediction, softmax, and argmax.
+
+model Resnet50V17<N: Dim> {
+    input data: Tensor<Float32, [N, 3, 224, 224]>;
+    output resnetv17_dense0_fwd: Tensor<Float32, [N, 1000]>;
+}
+
+// Small reachable helper: NHWC uint8 image -> NCHW float tensor.
+fn preprocess(
+    nhwc: Tensor<UInt8, [1, 224, 224, 3]>,
+) -> Tensor<Float32, [1, 3, 224, 224]> {
+    nhwc.permute::<[0, 3, 1, 2]>().cast::<Float32>()
+}
+
+fn infer(
+    model: Resnet50V17,
+    raw: TensorAny,
+) -> Result<Tensor<Int64, [1]>, String> {
+    let nhwc = raw.refine::<UInt8, [1, 224, 224, 3]>()?;
+    let nchw = preprocess(nhwc);
+
+    // ImageNet mean/std over the [0, 1] range (torchvision defaults), built as
+    // broadcastable [1, 3, 1, 1] constants from per-channel `full` + `concat`.
+    let mr = full::<Float32, [1, 1, 1, 1]>(0.485f32);
+    let mg = full::<Float32, [1, 1, 1, 1]>(0.456f32);
+    let mb = full::<Float32, [1, 1, 1, 1]>(0.406f32);
+    let mrg = concat::<1>(&mr, &mg);
+    let mean = concat::<1>(&mrg, &mb);
+
+    let sr = full::<Float32, [1, 1, 1, 1]>(0.229f32);
+    let sg = full::<Float32, [1, 1, 1, 1]>(0.224f32);
+    let sb = full::<Float32, [1, 1, 1, 1]>(0.225f32);
+    let srg = concat::<1>(&sr, &sg);
+    let std = concat::<1>(&srg, &sb);
+
+    let normalized = nchw.sub(&mean).div(&std);
+    let logits = model.predict(&normalized);
+    let probabilities = logits.softmax::<1>();
+    Ok(probabilities.argmax::<1>())
+}

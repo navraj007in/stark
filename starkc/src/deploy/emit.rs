@@ -1,0 +1,460 @@
+//! Deterministic host-project emission (Gate 5 M5.2).
+//!
+//! Turns a [`DeploymentProgram`] into a complete, compilable Rust host crate:
+//! a generated pipeline translated from the deployment IR, a checked-in safe
+//! runtime, a pinned `Cargo.toml`/`Cargo.lock`, a deployment manifest, and a
+//! README. Emission is a pure function of the program (plan §8.1): no
+//! timestamps, absolute paths, random identifiers, or host-specific newlines;
+//! every text file ends in exactly one `\n`; generating twice is byte-identical.
+
+use super::ir::{DeployOp, DeployTy, DeploymentFunction, DeploymentProgram, ValueId};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::Path;
+
+/// Marker (a `deployment.json` substring) identifying a directory as a
+/// starkc-generated host project. `--force` only overwrites a directory whose
+/// manifest carries this marker.
+const OWNERSHIP_MARKER: &str = "\"generated_by\": \"starkc deploy\"";
+
+/// The static safe runtime template (compiled into the emitted project as-is).
+const RUNTIME_RS: &str = include_str!("template/runtime.rs.in");
+/// The static host entry point.
+const MAIN_RS: &str = include_str!("template/main.rs.in");
+/// The pinned dependency lockfile captured from a real resolve (M5.0/M5.2).
+const CARGO_LOCK: &str = include_str!("template/Cargo.lock.in");
+
+/// One emitted text file, path relative to the output directory.
+pub struct EmittedFile {
+    pub path: &'static str,
+    pub contents: String,
+}
+
+/// Emit the full set of project files for `program`, in a deterministic order.
+pub fn emit(program: &DeploymentProgram) -> Vec<EmittedFile> {
+    vec![
+        EmittedFile {
+            path: "Cargo.toml",
+            contents: cargo_toml(program),
+        },
+        EmittedFile {
+            path: "Cargo.lock",
+            contents: ensure_trailing_newline(CARGO_LOCK),
+        },
+        EmittedFile {
+            path: "src/main.rs",
+            contents: ensure_trailing_newline(MAIN_RS),
+        },
+        EmittedFile {
+            path: "src/runtime.rs",
+            contents: ensure_trailing_newline(RUNTIME_RS),
+        },
+        EmittedFile {
+            path: "src/generated_pipeline.rs",
+            contents: generated_pipeline(program),
+        },
+        EmittedFile {
+            path: "deployment.json",
+            contents: deployment_manifest(program),
+        },
+        EmittedFile {
+            path: "README.md",
+            contents: readme(program),
+        },
+    ]
+}
+
+/// Write the emitted files under `out`. Refuses to overwrite a directory that
+/// is not a previously generated project unless `force`; only replaces files a
+/// generated project owns (plan §5.1). Leaves the previous output intact on a
+/// pre-write failure by staging into a sibling temp dir and renaming.
+pub fn write_project(out: &Path, files: &[EmittedFile], force: bool) -> Result<(), String> {
+    if out.exists() {
+        let marker = out.join("deployment.json");
+        let owned = std::fs::read_to_string(&marker)
+            .map(|s| s.contains(OWNERSHIP_MARKER))
+            .unwrap_or(false);
+        if !owned {
+            return Err(format!(
+                "refusing to write to `{}`: not a starkc-generated project \
+                 (missing ownership marker). Choose an empty/new directory.",
+                out.display()
+            ));
+        }
+        if !force {
+            return Err(format!(
+                "`{}` already contains a generated project; pass `--force` to replace it",
+                out.display()
+            ));
+        }
+    }
+
+    // Stage into a sibling temp directory, then swap, so a failure leaves the
+    // previous output untouched.
+    let parent = out.parent().unwrap_or_else(|| Path::new("."));
+    let staging = parent.join(format!(
+        ".{}.staging",
+        out.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("gate5-host")
+    ));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|e| format!("cannot clear staging dir: {e}"))?;
+    }
+    for file in files {
+        let dest = staging.join(file.path);
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("cannot create `{}`: {e}", dir.display()))?;
+        }
+        std::fs::write(&dest, &file.contents)
+            .map_err(|e| format!("cannot write `{}`: {e}", dest.display()))?;
+    }
+    if out.exists() {
+        std::fs::remove_dir_all(out).map_err(|e| format!("cannot replace output: {e}"))?;
+    }
+    std::fs::rename(&staging, out).map_err(|e| format!("cannot finalize output: {e}"))?;
+    Ok(())
+}
+
+// --------------------------------------------------------- generated files --
+
+fn cargo_toml(program: &DeploymentProgram) -> String {
+    // Dependency block frozen in docs/gate5-backend-decision.md §6.
+    format!(
+        "# Generated by starkc {version} — do not edit.\n\
+         [package]\n\
+         name = \"stark-resnet50\"\n\
+         version = \"0.1.0\"\n\
+         edition = \"2021\"\n\
+         rust-version = \"1.88\"  # backend MSRV; not the compiler's\n\
+         \n\
+         [[bin]]\n\
+         name = \"stark-resnet50\"\n\
+         path = \"src/main.rs\"\n\
+         \n\
+         [dependencies]\n\
+         ort = \"=2.0.0-rc.12\"\n\
+         ndarray = \"=0.17.2\"\n\
+         image = {{ version = \"=0.25.10\", default-features = false, features = [\"jpeg\", \"png\"] }}\n\
+         sha2 = \"=0.10.9\"\n\
+         \n\
+         [profile.release]\n\
+         opt-level = 3\n",
+        version = program.compiler_version,
+    )
+}
+
+fn generated_pipeline(program: &DeploymentProgram) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "// Generated by starkc — do not edit.\n\
+         //\n\
+         // This is a deterministic translation of the checked STARK inference\n\
+         // pipeline into calls on the safe host runtime. Only the bounded\n\
+         // deployment op set appears here; model inference is an ORT call.\n\n\
+         #![allow(clippy::needless_borrow, clippy::clone_on_copy)]\n\n\
+         use crate::runtime::{DType, Model, Tensor};\n\n",
+    );
+
+    // Manifest constants the host entry point binds against.
+    let _ = writeln!(
+        out,
+        "pub const MODEL_SHA256: &str = \"{}\";",
+        program.model.artifact_sha256
+    );
+    let _ = writeln!(
+        out,
+        "pub const MODEL_INPUT_NAME: &str = \"{}\";",
+        escape_str(&program.model.input.name)
+    );
+    let _ = writeln!(
+        out,
+        "pub const MODEL_OUTPUT_NAME: &str = \"{}\";\n",
+        escape_str(&program.model.output.name)
+    );
+
+    for func in &program.functions {
+        emit_function(&mut out, program, func);
+        out.push('\n');
+    }
+    ensure_trailing_newline(&out)
+}
+
+fn emit_function(out: &mut String, program: &DeploymentProgram, func: &DeploymentFunction) {
+    let name = sanitize_ident(&func.name);
+    let inner_ret = match &func.ret {
+        DeployTy::Result(inner) => rust_ty(inner),
+        other => rust_ty(other),
+    };
+
+    // Parameter list.
+    let params: Vec<String> = func
+        .params
+        .iter()
+        .map(|p| {
+            let ident = sanitize_ident(&p.name);
+            match p.ty {
+                DeployTy::Model => format!("{ident}: &mut Model"),
+                _ => format!("{ident}: Tensor"),
+            }
+        })
+        .collect();
+
+    let _ = writeln!(
+        out,
+        "pub fn {name}({}) -> Result<{inner_ret}, String> {{",
+        params.join(", ")
+    );
+
+    // Map each value to the Rust expression that names it.
+    let mut names: BTreeMap<ValueId, String> = BTreeMap::new();
+    for p in &func.params {
+        names.insert(p.value, sanitize_ident(&p.name));
+    }
+
+    for stmt in &func.body {
+        // `WrapOk` is realized as the function's `Ok(..)` tail, not a binding.
+        if let DeployOp::WrapOk { src } = &stmt.op {
+            names.insert(stmt.result, format!("Ok({})", val(&names, *src)));
+            continue;
+        }
+        let expr = emit_op(program, &names, &stmt.op);
+        let slot = format!("v{}", stmt.result.0);
+        let _ = writeln!(out, "    let {slot} = {expr};");
+        names.insert(stmt.result, slot);
+    }
+
+    // Tail: the result value. `WrapOk` already produced `Ok(..)`; otherwise wrap.
+    let result_is_ok = func
+        .body
+        .iter()
+        .any(|s| s.result == func.result && matches!(s.op, DeployOp::WrapOk { .. }));
+    let tail = val(&names, func.result);
+    if result_is_ok {
+        let _ = writeln!(out, "    {tail}");
+    } else {
+        let _ = writeln!(out, "    Ok({tail})");
+    }
+    out.push_str("}\n");
+}
+
+fn emit_op(
+    program: &DeploymentProgram,
+    names: &BTreeMap<ValueId, String>,
+    op: &DeployOp,
+) -> String {
+    match op {
+        DeployOp::Refine { src, dtype, dims } => format!(
+            "{}.clone().refine(DType::{}, &{})",
+            val(names, *src),
+            dtype_ident(*dtype),
+            usize_slice(dims),
+        ),
+        DeployOp::Try { src } => format!("{}?", val(names, *src)),
+        DeployOp::Permute { src, perm } => {
+            format!("{}.permute(&{})?", val(names, *src), usize_slice_u32(perm))
+        }
+        DeployOp::Cast { src, dtype } => {
+            format!("{}.cast(DType::{})?", val(names, *src), dtype_ident(*dtype))
+        }
+        DeployOp::Full { dims, scalar, .. } => format!(
+            "Tensor::full_f32(&{}, {}f32)",
+            usize_slice(dims),
+            scalar.text
+        ),
+        DeployOp::Concat { axis, lhs, rhs } => format!(
+            "Tensor::concat_f32({axis}, &{}, &{})?",
+            val(names, *lhs),
+            val(names, *rhs)
+        ),
+        DeployOp::Sub { lhs, rhs } => {
+            format!("{}.sub(&{})?", val(names, *lhs), val(names, *rhs))
+        }
+        DeployOp::Div { lhs, rhs } => {
+            format!("{}.div(&{})?", val(names, *lhs), val(names, *rhs))
+        }
+        DeployOp::Predict { model, input } => {
+            format!("{}.predict(&{})?", val(names, *model), val(names, *input))
+        }
+        DeployOp::Softmax { src, axis } => {
+            format!("{}.softmax({axis})?", val(names, *src))
+        }
+        DeployOp::ArgMax { src, axis } => {
+            format!("{}.argmax({axis})?", val(names, *src))
+        }
+        DeployOp::Call { callee, args } => {
+            let fname = sanitize_ident(&program.functions[*callee].name);
+            let a: Vec<String> = args
+                .iter()
+                .map(|v| format!("{}.clone()", val(names, *v)))
+                .collect();
+            format!("{fname}({})?", a.join(", "))
+        }
+        DeployOp::WrapOk { src } => format!("Ok({})", val(names, *src)),
+    }
+}
+
+fn val(names: &BTreeMap<ValueId, String>, v: ValueId) -> String {
+    names
+        .get(&v)
+        .cloned()
+        .unwrap_or_else(|| format!("v{}", v.0))
+}
+
+fn deployment_manifest(program: &DeploymentProgram) -> String {
+    // Hand-written JSON (no serde); all strings escaped.
+    let mut out = String::new();
+    out.push_str("{\n");
+    let _ = writeln!(out, "  {OWNERSHIP_MARKER},");
+    let _ = writeln!(out, "  \"schema\": 1,");
+    let _ = writeln!(
+        out,
+        "  \"compiler_version\": \"{}\",",
+        escape_str(&program.compiler_version)
+    );
+    let _ = writeln!(out, "  \"entry\": \"{}\",", escape_str(&program.entry));
+    let _ = writeln!(out, "  \"model\": {{");
+    let _ = writeln!(
+        out,
+        "    \"type_name\": \"{}\",",
+        escape_str(&program.model.type_name)
+    );
+    let _ = writeln!(
+        out,
+        "    \"sha256\": \"{}\",",
+        program.model.artifact_sha256
+    );
+    let _ = writeln!(out, "    \"input\": {},", port_json(&program.model.input));
+    let _ = writeln!(out, "    \"output\": {}", port_json(&program.model.output));
+    out.push_str("  }\n}\n");
+    out
+}
+
+fn port_json(port: &super::ir::DeployPort) -> String {
+    let dims: Vec<String> = port
+        .dims
+        .iter()
+        .map(|d| match d {
+            Some(n) => n.to_string(),
+            None => "null".to_string(),
+        })
+        .collect();
+    format!(
+        "{{ \"name\": \"{}\", \"dtype\": \"{}\", \"dims\": [{}] }}",
+        escape_str(&port.name),
+        port.dtype.stark_name(),
+        dims.join(", ")
+    )
+}
+
+fn readme(program: &DeploymentProgram) -> String {
+    format!(
+        "# stark-resnet50 — generated deployment host\n\
+         \n\
+         Generated by `starkc deploy` (starkc {version}) from the checked STARK\n\
+         inference pipeline. Entry: `{entry}`. Model: `{model}` (ONNX SHA-256\n\
+         `{sha}`).\n\
+         \n\
+         This crate is self-contained. STARK owns every shape/dtype/device\n\
+         guarantee; ONNX Runtime (via the pinned `ort` crate) owns kernel\n\
+         execution. No tensor kernels are implemented here.\n\
+         \n\
+         ## Build\n\
+         \n\
+         ```bash\n\
+         cargo build --release --locked\n\
+         ```\n\
+         \n\
+         ## Run\n\
+         \n\
+         ```bash\n\
+         ./target/release/stark-resnet50 \\\n\
+         \x20 --model <model.onnx> --image <image.jpg> --warmup 5 --iterations 30 --json\n\
+         ```\n\
+         \n\
+         The model file's SHA-256 is verified against the manifest before the\n\
+         ONNX Runtime session is created; a mismatch aborts before inference.\n",
+        version = program.compiler_version,
+        entry = program.entry,
+        model = program.model.type_name,
+        sha = program.model.artifact_sha256,
+    )
+}
+
+// ---------------------------------------------------------------- helpers --
+
+fn rust_ty(ty: &DeployTy) -> String {
+    match ty {
+        DeployTy::Tensor(_) | DeployTy::TensorAny => "Tensor".to_string(),
+        DeployTy::Model => "&mut Model".to_string(),
+        DeployTy::Result(inner) => format!("Result<{}, String>", rust_ty(inner)),
+    }
+}
+
+fn dtype_ident(dtype: super::ir::DType) -> &'static str {
+    use super::ir::DType;
+    match dtype {
+        DType::UInt8 => "UInt8",
+        DType::Float32 => "Float32",
+        DType::Int64 => "Int64",
+        // The runtime only needs the three transport dtypes; anything else was
+        // rejected during lowering, so this is unreachable in practice.
+        _ => "Float32",
+    }
+}
+
+fn usize_slice(dims: &[u64]) -> String {
+    let items: Vec<String> = dims.iter().map(|d| format!("{d}usize")).collect();
+    format!("[{}]", items.join(", "))
+}
+
+fn usize_slice_u32(dims: &[u32]) -> String {
+    let items: Vec<String> = dims.iter().map(|d| format!("{d}usize")).collect();
+    format!("[{}]", items.join(", "))
+}
+
+fn sanitize_ident(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for (i, ch) in name.chars().enumerate() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            if i == 0 && ch.is_ascii_digit() {
+                out.push('_');
+            }
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push('_');
+    }
+    out
+}
+
+fn escape_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn ensure_trailing_newline(s: &str) -> String {
+    let mut s = s.replace("\r\n", "\n");
+    while s.ends_with('\n') {
+        s.pop();
+    }
+    s.push('\n');
+    s
+}
