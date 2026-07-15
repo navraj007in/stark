@@ -29,8 +29,9 @@ UPDATE_SNAPSHOTS=1 cargo test --test snapshots   # regenerate AST snapshots
 
 `starkide` is a dependency-free, Turbo C++ inspired terminal workbench. It
 provides the classic blue/white interface, keyboard-driven drop-down menus, a
-source editor, file open/save dialogs, and a compiler messages pane wired to
-the complete Gate 2 semantic pipeline.
+Unicode-aware source editor, multiple buffers, project/recent-file pickers,
+search, undo/redo, diagnostic navigation, and separate build/program output
+wired to the complete Gate 3 pipeline.
 
 ```bash
 cargo run --bin starkide                         # new buffer
@@ -38,8 +39,9 @@ cargo run --bin starkide -- ../Practice/Basics/hello.st
 ```
 
 Use **F10** for menus, **F2** to save, **F9** to compile, **Ctrl+F9** to run,
-and **Ctrl+Q** to quit. Program output and runtime diagnostics appear in the
-messages pane.
+**F4** to visit diagnostics, and **Ctrl+Q** to quit. Program output and runtime
+diagnostics appear in the messages pane. See
+[`docs/terminal-ide.md`](docs/terminal-ide.md) for the complete workflow.
 
 ## Layout
 
@@ -64,6 +66,7 @@ messages pane.
 | Core runtime | String, Vec, Option/Result, Box, ranges, print and file I/O | done (M3.2) |
 | `examples/gate3`, `tests/gate3_execution` | executable programs and CLI/runtime tests | done (M3.3) |
 | `docs/gate3-exit.md` | Gate 3 exit evidence | done (M3.3) |
+| `docs/terminal-ide.md` | terminal IDE editing, project, build and run workflow | stable |
 
 Architecture target: `Source → Tokens → AST → HIR → typed HIR → backend`;
 Gate 3 adds execution of typed HIR plus the `core-min` runtime. Spec defects found during implementation
