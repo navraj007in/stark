@@ -1,23 +1,48 @@
-use starkc::diag::Diagnostic;
-use starkc::lexer::{tokenize, TokenKind};
-use starkc::source::{SourceFile, Span};
+use starkc::ast;
+use starkc::lexer::tokenize;
+use starkc::parser::{parse, ParseMode};
+use starkc::source::SourceFile;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
 starkc — compiler for the STARK Core v1 language
 
 Usage:
-  starkc parse <file.stark>   Parse a source file and report diagnostics
+  starkc parse [--snippet] [--dump] <file.stark>
+                              Parse a source file and report diagnostics.
+                              --snippet parses the harness block-body form
+                              (items + statements) instead of Program.
+                              --dump prints the AST on success.
   starkc lex <file.stark>     Dump the token stream (debugging aid)
   starkc --help               Show this help
 ";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.as_slice() {
-        [cmd, path] if cmd == "parse" => cmd_parse(path),
-        [cmd, path] if cmd == "lex" => cmd_lex(path),
-        [flag] if flag == "--help" || flag == "-h" => {
+    match args.split_first() {
+        Some((cmd, rest)) if cmd == "parse" => {
+            let mut mode = ParseMode::Program;
+            let mut dump = false;
+            let mut path = None;
+            for arg in rest {
+                match arg.as_str() {
+                    "--snippet" => mode = ParseMode::Snippet,
+                    "--dump" => dump = true,
+                    _ if path.is_none() => path = Some(arg.clone()),
+                    _ => {
+                        eprint!("{USAGE}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let Some(path) = path else {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            cmd_parse(&path, mode, dump)
+        }
+        Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
+        Some((flag, [])) if flag == "--help" || flag == "-h" => {
             print!("{USAGE}");
             ExitCode::SUCCESS
         }
@@ -59,27 +84,23 @@ fn cmd_lex(path: &str) -> ExitCode {
     }
 }
 
-fn cmd_parse(path: &str) -> ExitCode {
+fn cmd_parse(path: &str, mode: ParseMode, dump: bool) -> ExitCode {
     let file = match load(path) {
         Ok(f) => f,
         Err(code) => return code,
     };
-    let (tokens, diags) = tokenize(&file);
+    let (tree, diags) = parse(&file, mode);
     for diag in &diags {
         eprint!("{}", diag.render(&file));
     }
     if !diags.is_empty() {
+        eprintln!("{}: {} error(s)", file.name, diags.len());
         return ExitCode::FAILURE;
     }
-
-    // WP1.2 state: lexing is real, parsing is not. WP1.4 replaces this stub.
-    let first_real = tokens
-        .iter()
-        .find(|t| t.kind != TokenKind::Eof)
-        .map_or(Span::point(0), |t| t.span);
-    let diag = Diagnostic::error("parsing is not yet implemented", first_real)
-        .with_label("lexed successfully; the parser lands in WP1.4")
-        .with_note("see STARKLANG/docs/PLAN.md for the delivery sequence");
-    eprint!("{}", diag.render(&file));
-    ExitCode::FAILURE
+    if dump {
+        print!("{}", ast::dump(&tree, &file));
+    } else {
+        println!("{}: OK", file.name);
+    }
+    ExitCode::SUCCESS
 }

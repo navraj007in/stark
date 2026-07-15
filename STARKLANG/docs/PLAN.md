@@ -107,7 +107,7 @@ types, 04 `?` example, 05 move example), a same-scope `let` redeclaration in
 (E0005–E0007, E0204, E0400/E0401, E0500) with unreachable code reclassified
 from error E0300 to warning W0005 to match 04's own example.
 
-### WP1.4 — Parser (large; the core of Gate 1)
+### WP1.4 — Parser (large; the core of Gate 1) ✅
 Recursive descent over `02-Syntax-Grammar.md`, built bottom-up so each layer
 is testable before the next:
 
@@ -142,6 +142,22 @@ remains owned by the fixtures, not the fuzzer.
 
 *Done when:* all `parse-pass` fixtures parse, all `parse-fail` fixtures fail
 with the right diagnostic, `notation` skipped — the conformance job is green.
+**Done 2026-07-15.** Conformance: 91/91 (67 parse-pass, 18 semantic-error, 2
+parse-fail, 4 lex-pass), 30 notation skipped; the CI fixture job is now
+required-green. Extras beyond the letter of the plan: recursion-depth guard
+(deep nesting is a diagnostic, not a stack overflow), tuple-field float
+splitting (`pair.0.1`), `>=`/`>>=` splitting alongside `>>` in generic
+argument position. The fuzz gate runs as a deterministic fixed-seed
+pseudo-fuzz on the stable toolchain (`tests/robustness.rs`) instead of
+nightly `cargo-fuzz` — same gate ("no panics, no hangs"), CI-runnable; it
+immediately caught a parser hang (recovery at item keywords inside
+`trait`/`impl` bodies looped without progress), which is fixed. T10 spec
+fixes shipped with the parser: block-formed expression statements
+(`Statement ::= BlockExpression ';'?` — the old grammar could not parse 04's
+own `if` statement example), `(T)` grouping vs `(T,)` 1-tuple in type
+position (mirroring the value side), and `PrimitiveType` as a leading
+`PathSegment` (without it, `String::from(s)` was formally unparseable
+because `String` lexes as a keyword).
 
 ### WP1.5 — Diagnostics polish + Gate 1 exit review (small)
 - Verify diagnostic rendering matches the normative format; wire `E`-codes
@@ -259,6 +275,11 @@ Shape of the work (task breakdown when Gate 2 nears exit):
 4. WP1.4 step 1: type grammar + tests; proceed bottom-up.
 
 ## 8. Change Log
+- v0.4 — WP1.4 done (parser; conformance 91/91, fixture CI job flipped to
+  required). Amendment: the fuzz target is a stable-toolchain deterministic
+  pseudo-fuzz in `starkc/tests/robustness.rs` rather than nightly
+  `cargo-fuzz`; same no-panics/no-hangs gate, runs in ordinary CI. T10 fixes
+  recorded under WP1.4.
 - v0.3 — WP1.1–WP1.3 done (scaffold+CI, lexer, fixture triage). WP1.3
   additions over v0.2: fifth verdict `lex-pass` for the token-level `01-*`
   fixtures, and per-fixture parse modes (`program`/`snippet`) for spec

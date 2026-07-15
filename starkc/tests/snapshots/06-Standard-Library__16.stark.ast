@@ -1,0 +1,109 @@
+program
+  trait Iterator @1:1
+    assoc-type Item
+    sig next @4:5
+      receiver RefMut
+      ret
+        type-path Option @4:27
+          type-path Self::Item @4:34
+    sig count @7:5
+      receiver Value
+      ret
+        type-primitive UInt64 @7:23
+    sig collect @8:5
+      generics
+        param C: FromIterator
+          type-path Self::Item @8:32
+      receiver Value
+      ret
+        type-path C @8:54
+    sig map @9:5
+      generics
+        param U
+      receiver Value
+      param f
+        type-fn @9:24
+          type-path Self::Item @9:27
+          ret
+            type-path U @9:42
+      ret
+        type-path MapIter @9:48
+          type-path Self @9:56
+          type-path U @9:62
+    sig filter @10:5
+      receiver Value
+      param predicate
+        type-fn @10:32
+          type-ref @10:35
+            type-path Self::Item @10:36
+          ret
+            type-primitive Bool @10:51
+      ret
+        type-path FilterIter @10:60
+          type-path Self @10:71
+    sig fold @11:5
+      generics
+        param B
+      receiver Value
+      param init
+        type-path B @11:28
+      param f
+        type-fn @11:34
+          type-path B @11:37
+          type-path Self::Item @11:40
+          ret
+            type-path B @11:55
+      ret
+        type-path B @11:61
+    sig reduce @12:5
+      receiver Value
+      param f
+        type-fn @12:24
+          type-path Self::Item @12:27
+          type-path Self::Item @12:39
+          ret
+            type-path Self::Item @12:54
+      ret
+        type-path Option @12:69
+          type-path Self::Item @12:76
+    sig any @13:5
+      receiver Value
+      param predicate
+        type-fn @13:29
+          type-path Self::Item @13:32
+          ret
+            type-primitive Bool @13:47
+      ret
+        type-primitive Bool @13:56
+    sig all @14:5
+      receiver Value
+      param predicate
+        type-fn @14:29
+          type-path Self::Item @14:32
+          ret
+            type-primitive Bool @14:47
+      ret
+        type-primitive Bool @14:56
+    sig find @15:5
+      receiver Value
+      param predicate
+        type-fn @15:30
+          type-ref @15:33
+            type-path Self::Item @15:34
+          ret
+            type-primitive Bool @15:49
+      ret
+        type-path Option @15:58
+          type-path Self::Item @15:65
+  trait FromIterator @18:1
+    generics
+      param T
+    sig from_iter @19:5
+      generics
+        param I: Iterator
+          binding Item
+            type-path T @19:37
+      param iter
+        type-path I @19:47
+      ret
+        type-path Self @19:53

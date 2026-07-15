@@ -1,0 +1,25 @@
+program
+  fn @1:1
+    sig max @1:1
+      generics
+        param T: Ord
+      param a
+        type-path T @1:19
+      param b
+        type-path T @1:25
+      ret
+        type-path T @1:31
+    block @1:33
+      tail
+        if @2:5
+          binary Gt @2:8
+            path a @2:8
+            path b @2:12
+          block @2:14
+            tail
+              path a @2:16
+          else
+            block-expr @2:25
+              block @2:25
+                tail
+                  path b @2:27

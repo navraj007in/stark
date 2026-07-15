@@ -31,12 +31,9 @@ jobs:
         run: cargo test
 
   fixture-conformance:
-    name: spec fixture conformance (non-blocking until WP1.4)
+    name: spec fixture conformance
     runs-on: ubuntu-latest
-    # The parser does not exist yet; this job documents the gate and is
-    # allowed to fail. Flip continue-on-error to false at WP1.4 exit
-    # (PLAN.md: Gate 1 exit requires this job required-green).
-    continue-on-error: true
+    # Required-green since WP1.4 (PLAN.md: Gate 1 exit criterion).
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -48,7 +45,7 @@ jobs:
           STARKLANG/tools/extract-spec-examples.sh /tmp/fixtures-check > /dev/null
           # manifest.toml (WP1.3 triage) is hand-maintained, not extracted
           diff -r --exclude=manifest.toml STARKLANG/tests/spec-fixtures /tmp/fixtures-check
-      - name: Manifest-driven spec conformance (WP1.3 harness)
+      - name: Manifest-driven spec conformance
         run: |
           cd starkc
-          cargo test --test conformance -- --include-ignored
+          cargo test --test conformance

@@ -1,0 +1,19 @@
+program
+  enum Color @1:1
+    variant Red
+    variant Green
+    variant Blue
+  enum Option @7:1
+    generics
+      param T
+    variant Some
+      type-path T @8:10
+    variant None
+  enum Result @12:1
+    generics
+      param T
+      param E
+    variant Ok
+      type-path T @13:8
+    variant Err
+      type-path E @14:9

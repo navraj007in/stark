@@ -1,0 +1,29 @@
+program
+  fn @1:1
+    sig consume @1:1
+      param s
+        type-primitive String @1:15
+    block @1:23
+  fn @5:1
+    sig borrow @5:1
+      param s
+        type-ref @5:14
+          type-primitive String @5:15
+      ret
+        type-primitive UInt64 @5:26
+    block @5:33
+      tail
+        call @6:5
+          field len @6:5
+            path s @6:5
+  fn @9:1
+    sig mutate @9:1
+      param s
+        type-ref mut @9:14
+          type-primitive String @9:19
+    block @9:27
+      expr-stmt @10:5
+        call @10:5
+          field push @10:5
+            path s @10:5
+          lit-char '!' @10:12

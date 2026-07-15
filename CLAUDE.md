@@ -4,7 +4,8 @@
 
 STARK is a **specification-stage programming language**: a safe, compiled,
 general-purpose core (Rust-inspired ownership, no GC) with optional AI/ML
-extensions planned on top. There is **no working compiler yet**.
+extensions planned on top. The compiler front end (lexer + parser in
+`starkc/`) exists; semantic analysis and execution do not yet.
 
 In early 2026 the project pivoted from an ambitious "AI-native, cloud-first"
 design to a minimal, implementable **Core v1**. The rationale is in
@@ -99,13 +100,15 @@ conflict table.
 ## Implementation Status
 
 - Specification: Core v1 complete draft (all 8 documents normative).
-- Compiler/runtime: **not started**. The Python code in `STARKLANG/compiler/`
-  is a pre-pivot prototype and must not be extended for Core v1 work.
+- Compiler: front end done (`starkc/` — lexer WP1.2, parser WP1.4; the
+  121-fixture conformance suite is green and required in CI). Semantic
+  analysis (Gate 2) and execution (Gate 3) not started. The Python code in
+  `STARKLANG/compiler/` is a pre-pivot prototype and must not be extended
+  for Core v1 work.
 - Delivery is governed by `STARKLANG/docs/ROADMAP.md` (Gates 1–6 with
   evidence-based exit criteria) and executed per `STARKLANG/docs/PLAN.md`
-  (standing decisions T1–T12, work packages). Current gate: Gate 1 — Rust
-  lexer + parser in a new top-level `starkc/` workspace, validated against
-  the fixture manifest in `STARKLANG/tests/spec-fixtures/`.
+  (standing decisions T1–T12, work packages). Current gate: Gate 1, at
+  WP1.5 (diagnostics polish + exit review).
 - Scope discipline: work outside the current gate needs a roadmap-governed
   proposal; see ROADMAP.md §4 non-goals.
 
@@ -128,5 +131,6 @@ conflict table.
 ---
 
 **Last Updated**: July 2026
-**Status**: Core v1 specification complete; implementation not started
+**Status**: Core v1 specification complete; compiler front end done (Gate 1
+at WP1.5)
 **License**: MIT

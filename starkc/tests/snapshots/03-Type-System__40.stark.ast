@@ -1,0 +1,25 @@
+program
+  fn @1:1
+    sig might_fail @1:1
+      ret
+        type-path Result @1:20
+          type-primitive Int32 @1:27
+          type-primitive String @1:34
+    block @1:42
+  fn @5:1
+    sig caller @5:1
+      ret
+        type-path Result @5:16
+          type-primitive Int32 @5:23
+          type-primitive String @5:30
+    block @5:38
+      let value @6:5
+        try @6:17
+          call @6:17
+            path might_fail @6:17
+      tail
+        call @7:5
+          path Ok @7:5
+          binary Mul @7:8
+            path value @7:8
+            lit-int 2 @7:16

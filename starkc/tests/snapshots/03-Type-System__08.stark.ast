@@ -1,0 +1,26 @@
+snippet
+  let fixed @1:1
+    type-array len=5 @1:12
+      type-primitive Int32 @1:13
+    array @1:25
+      lit-int 1 @1:26
+      lit-int 2 @1:29
+      lit-int 3 @1:32
+      lit-int 4 @1:35
+      lit-int 5 @1:38
+  let view @2:1
+    type-ref @2:11
+      type-slice @2:12
+        type-primitive Int32 @2:13
+    unary Ref { mutable: false } @2:22
+      path fixed @2:23
+  let part @3:1
+    type-ref @3:11
+      type-slice @3:12
+        type-primitive Int32 @3:13
+    unary Ref { mutable: false } @3:22
+      index @3:23
+        path fixed @3:23
+        range @3:29
+          lit-int 1 @3:29
+          lit-int 4 @3:32

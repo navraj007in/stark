@@ -1,0 +1,43 @@
+snippet
+  let x @1:1
+    type-primitive Int32 @1:8
+  expr-stmt @2:1
+    call @2:1
+      path print @2:1
+      call @2:7
+        field fmt @2:7
+          path x @2:7
+  let y @4:1
+    type-primitive Int32 @4:8
+    if @4:16
+      lit-bool true @4:19
+      block @4:24
+        tail
+          lit-int 42 @4:26
+      else
+        block-expr @4:36
+          block @4:36
+            tail
+              lit-int 24 @4:38
+  expr-stmt @5:1
+    call @5:1
+      path print @5:1
+      call @5:7
+        field fmt @5:7
+          path y @5:7
+  let z @7:1
+    type-primitive Int32 @7:8
+  expr-stmt nosemi @8:1
+    if @8:1
+      path condition @8:4
+      block @8:14
+        expr-stmt @9:5
+          assign Assign @9:5
+            path z @9:5
+            lit-int 42 @9:9
+  expr-stmt @11:1
+    call @11:1
+      path print @11:1
+      call @11:7
+        field fmt @11:7
+          path z @11:7

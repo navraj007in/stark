@@ -1,0 +1,11 @@
+snippet
+  tail
+    if @1:1
+      field verbose @1:4
+        struct-lit Config @1:5
+          field-init verbose
+            lit-bool true @1:23
+      block @1:39
+        expr-stmt @1:41
+          call @1:41
+            path do_thing @1:41

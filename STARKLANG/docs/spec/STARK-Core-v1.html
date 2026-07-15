@@ -702,11 +702,16 @@ ModuleBlock ::= &#39;{&#39; Item* &#39;}&#39;</code></pre>
 <h3 id="statements">Statements</h3>
 <pre class="ebnf"><code>Statement ::= &#39;;&#39;                    // Empty statement
             | Expression &#39;;&#39;         // Expression statement
+            | BlockExpression &#39;;&#39;?   // Block-formed expression statement
             | &#39;let&#39; LetStatement
             | &#39;return&#39; Expression? &#39;;&#39;
             | &#39;break&#39; Expression? &#39;;&#39;
             | &#39;continue&#39; &#39;;&#39;
-            | Block
+
+BlockExpression ::= Block
+                  | IfExpression
+                  | MatchExpression
+                  | LoopExpression
 
 LetStatement ::= IDENTIFIER &#39;:&#39; Type &#39;;&#39;
                | &#39;mut&#39; IDENTIFIER &#39;:&#39; Type &#39;;&#39;
@@ -714,6 +719,22 @@ LetStatement ::= IDENTIFIER &#39;:&#39; Type &#39;;&#39;
                | IDENTIFIER &#39;=&#39; Expression &#39;;&#39;
                | &#39;mut&#39; IDENTIFIER &#39;:&#39; Type &#39;=&#39; Expression &#39;;&#39;
                | &#39;mut&#39; IDENTIFIER &#39;=&#39; Expression &#39;;&#39;</code></pre>
+<p>Block-formed expression statements: - An expression whose outermost
+form is a block, <code>if</code>, <code>match</code>, <code>loop</code>,
+<code>while</code>, or <code>for</code> may stand as a statement without
+a terminating semicolon (<code>if ready { start(); }</code> mid-block is
+a statement). - Statement parsing is greedy: when a block-formed
+expression begins at statement position and is not followed by
+<code>;</code>, it is complete as a statement — a following token does
+NOT extend it into a larger expression (<code>{ if c { } - 1; }</code>
+is an <code>if</code> statement followed by an error, not a
+subtraction). Parenthesize to use the value:
+<code>(if c { 1 } else { 2 }) - 1</code>. - Exception (trailing
+expression): a block-formed expression immediately before the closing
+<code>}</code> of its block and not followed by <code>;</code> is the
+block’s trailing <code>Expression</code> (its value), not a statement —
+so <code>fn max(...) -&gt; T { if a &gt; b { a } else { b } }</code>
+returns the <code>if</code>’s value.</p>
 <h3 id="expressions">Expressions</h3>
 <pre class="ebnf"><code>Expression ::= AssignmentExpression
 
@@ -868,10 +889,15 @@ NOT appear as the outermost expression in: - the condition of an
        | Path GenericArgs?                 // Named type, possibly generic: Vec&lt;Int32&gt;, Option&lt;T&gt;
        | &#39;[&#39; Type &#39;;&#39; INTEGER &#39;]&#39;          // Array type
        | &#39;[&#39; Type &#39;]&#39;                      // Slice type (unsized; used behind references)
-       | &#39;(&#39; TypeList? &#39;)&#39;                 // Tuple type
+       | TupleType
+       | &#39;(&#39; Type &#39;)&#39;                      // Grouping (the type T, not a tuple)
        | &#39;&amp;&#39; Type                          // Reference type
        | &#39;&amp;&#39; &#39;mut&#39; Type                    // Mutable reference type
        | &#39;fn&#39; &#39;(&#39; TypeList? &#39;)&#39; (&#39;-&gt;&#39; Type)?  // Function type (non-capturing)
+
+TupleType ::= &#39;(&#39; &#39;)&#39;                      // Unit type
+            | &#39;(&#39; Type &#39;,&#39; &#39;)&#39;             // Single-element tuple type
+            | &#39;(&#39; Type (&#39;,&#39; Type)+ &#39;,&#39;? &#39;)&#39; // N-element tuple type
 
 PrimitiveType ::= &#39;Int8&#39; | &#39;Int16&#39; | &#39;Int32&#39; | &#39;Int64&#39;
                 | &#39;UInt8&#39; | &#39;UInt16&#39; | &#39;UInt32&#39; | &#39;UInt64&#39;
@@ -881,7 +907,10 @@ PrimitiveType ::= &#39;Int8&#39; | &#39;Int16&#39; | &#39;Int32&#39; | &#39;Int6
 TypeList ::= Type (&#39;,&#39; Type)* &#39;,&#39;?</code></pre>
 <p>Notes: - A function type without <code>-&gt;</code> returns
 <code>Unit</code>. - The never type <code>!</code> may appear only as a
-function return type (see <code>ReturnType</code>).</p>
+function return type (see <code>ReturnType</code>). - <code>(T)</code>
+is the type <code>T</code> (grouping); the single-element tuple type is
+<code>(T,)</code>, mirroring <code>TupleLiteral</code> on the value
+side.</p>
 <h3 id="other-constructs">Other Constructs</h3>
 <pre class="ebnf"><code>Const ::= &#39;const&#39; IDENTIFIER &#39;:&#39; Type &#39;=&#39; Expression &#39;;&#39;
 
@@ -895,7 +924,7 @@ UseTree ::= Path (&#39;as&#39; IDENTIFIER)?
 UseTreeList ::= UseTree (&#39;,&#39; UseTree)* &#39;,&#39;?
 
 Path ::= PathSegment (&#39;::&#39; PathSegment)*
-PathSegment ::= IDENTIFIER | &#39;self&#39; | &#39;Self&#39; | &#39;super&#39; | &#39;crate&#39;</code></pre>
+PathSegment ::= IDENTIFIER | PrimitiveType | &#39;self&#39; | &#39;Self&#39; | &#39;super&#39; | &#39;crate&#39;</code></pre>
 <p>Notes: - <code>Self</code> is valid only inside a <code>trait</code>
 or <code>impl</code> block, and only as the <em>first</em> segment of a
 path. As a complete one-segment path in type position it denotes the
@@ -903,7 +932,11 @@ implementing type; with further segments it projects an associated item,
 e.g. <code>Self::Item</code>. - <code>self</code>, <code>super</code>,
 and <code>crate</code> are likewise valid only as leading segments
 (<code>self</code>/<code>super</code> may repeat at the front:
-<code>super::super::x</code>).</p>
+<code>super::super::x</code>). - A <code>PrimitiveType</code> keyword is
+valid only as the <em>first</em> segment, where it names the primitive’s
+associated items: <code>String::from(s)</code>. (Primitive type names
+are keywords in the lexical grammar, so without this rule such calls
+would be unparseable.)</p>
 <h2 id="operator-precedence-highest-to-lowest">Operator Precedence
 (Highest to Lowest)</h2>
 <ol type="1">
@@ -933,7 +966,9 @@ operator (<code>?</code>)</li>
 </ul>
 <h2 id="statement-vs-expression">Statement vs Expression</h2>
 <ul>
-<li>Statements do not return values and end with semicolons</li>
+<li>Statements do not return values and end with semicolons
+(block-formed expression statements may omit the semicolon — see
+Statements)</li>
 <li>Expressions return values and can be used as statements with
 semicolons</li>
 <li>Blocks are expressions (return value of last expression, or Unit if
@@ -942,7 +977,8 @@ none)</li>
 </ul>
 <h2 id="whitespace-and-semicolons">Whitespace and Semicolons</h2>
 <ul>
-<li>Semicolons are required to terminate statements</li>
+<li>Semicolons are required to terminate statements, except after
+block-formed expression statements (see Statements)</li>
 <li>Semicolons are optional after the last expression in a block</li>
 <li>Newlines are not significant except for line comments</li>
 <li>Trailing commas are allowed in lists</li>

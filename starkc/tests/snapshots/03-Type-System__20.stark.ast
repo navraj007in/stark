@@ -1,0 +1,22 @@
+snippet
+  let mut s @1:1
+    call @1:13
+      path String::from @1:13
+      lit-str "hello" @1:26
+  expr-stmt nosemi @2:1
+    block-expr @2:1
+      block @2:1
+        let r @3:5
+          unary Ref { mutable: false } @3:13
+            path s @3:14
+        expr-stmt @4:5
+          call @4:5
+            path println @4:5
+            call @4:13
+              field as_str @4:13
+                path r @4:13
+  expr-stmt @6:1
+    call @6:1
+      field push @6:1
+        path s @6:1
+      lit-char '!' @6:8

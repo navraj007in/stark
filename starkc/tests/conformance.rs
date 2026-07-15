@@ -17,6 +17,7 @@
 //! harness stays dependency-free.
 
 use starkc::lexer::{tokenize, TokenKind};
+use starkc::parser::{parse, ParseMode};
 use starkc::source::SourceFile;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -210,8 +211,18 @@ fn lex_level_conformance() {
     );
 }
 
+fn parse_fixture(name: &str, mode: Mode) -> usize {
+    let src = std::fs::read_to_string(fixture_dir().join(name)).unwrap();
+    let file = SourceFile::new(name.to_string(), src);
+    let parse_mode = match mode {
+        Mode::Program => ParseMode::Program,
+        Mode::Snippet => ParseMode::Snippet,
+    };
+    let (_ast, diags) = parse(&file, parse_mode);
+    diags.len()
+}
+
 #[test]
-#[ignore = "red until the WP1.4 parser lands; run via --include-ignored"]
 fn spec_conformance() {
     let entries = load_manifest();
     let mut pass = 0usize;
@@ -241,21 +252,23 @@ fn spec_conformance() {
                 }
             }
             Verdict::ParseFail => {
-                if diag_count > 0 {
-                    Ok(()) // rejected by the lexer — rejection is rejection
+                // Rejection by the lexer or the parser both count.
+                let n = parse_fixture(name, entry.mode.unwrap());
+                if n > 0 {
+                    Ok(())
                 } else {
-                    // WP1.4: parse under entry.mode and require a parse error.
-                    Err("parser not implemented (WP1.4)".to_string())
+                    Err("expected rejection, but it parsed cleanly".to_string())
                 }
             }
             Verdict::ParsePass | Verdict::SemanticError => {
-                if diag_count > 0 {
-                    Err(format!("{diag_count} lex diagnostics"))
+                // Both classes must parse cleanly in Gate 1; for
+                // semantic-error, Gate 2 will additionally require the codes
+                // in entry.errors from the checker.
+                let n = parse_fixture(name, entry.mode.unwrap());
+                if n == 0 {
+                    Ok(())
                 } else {
-                    // WP1.4: parse under entry.mode and require success.
-                    // Gate 2: for semantic-error, require the codes in
-                    // entry.errors from the checker.
-                    Err("parser not implemented (WP1.4)".to_string())
+                    Err(format!("{n} diagnostics"))
                 }
             }
             Verdict::Notation => unreachable!(),

@@ -1,0 +1,42 @@
+snippet
+  struct Person @1:1
+    field name
+      type-primitive String @1:23
+    field age
+      type-primitive Int32 @1:36
+  let p @3:1
+    struct-lit Person @3:9
+      field-init name
+        call @3:24
+          path String::from @3:24
+          lit-str "Alice" @3:37
+      field-init age
+        lit-int 30 @3:52
+  let n @4:1
+    field name @4:9
+      path p @4:9
+  let a @5:1
+    field age @5:9
+      path p @5:9
+  let mut s @8:1
+    call @8:13
+      path String::from @8:13
+      lit-str "one" @8:26
+  let t @9:1
+    path s @9:9
+  expr-stmt @10:1
+    assign Assign @10:1
+      path s @10:1
+      call @10:5
+        path String::from @10:5
+        lit-str "two" @10:18
+  let v @12:1
+    type-path Vec @12:8
+      type-primitive String @12:12
+    call @12:22
+      path make @12:22
+  let x @14:1
+    unary Ref { mutable: false } @14:9
+      index @14:10
+        path v @14:10
+        lit-int 0 @14:12

@@ -1,0 +1,40 @@
+program
+  enum Color @1:1
+    variant Red
+    variant Green
+    variant Blue
+  fn @3:1
+    sig check_color @3:1
+      param c
+        type-path Color @3:19
+      ret
+        type-primitive String @3:29
+    block @3:36
+      tail
+        match @4:5
+          path c @4:11
+          arm
+            pat-path Color::Red @5:9
+            lit-str "red" @5:23
+          arm
+            pat-path Color::Green @6:9
+            lit-str "green" @6:25
+  fn @11:1
+    sig valid_match @11:1
+      param c
+        type-path Color @11:19
+      ret
+        type-primitive String @11:29
+    block @11:36
+      tail
+        match @12:5
+          path c @12:11
+          arm
+            pat-path Color::Red @13:9
+            lit-str "red" @13:23
+          arm
+            pat-path Color::Green @14:9
+            lit-str "green" @14:25
+          arm
+            pat-path Color::Blue @15:9
+            lit-str "blue" @15:24

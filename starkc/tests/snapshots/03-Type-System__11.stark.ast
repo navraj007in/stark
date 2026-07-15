@@ -1,0 +1,16 @@
+snippet
+  let empty @1:1
+    type-tuple @1:12
+    tuple @1:17
+  let single @2:1
+    type-tuple @2:13
+      type-primitive Int32 @2:14
+    tuple @2:24
+      lit-int 42 @2:25
+  let pair @3:1
+    type-tuple @3:11
+      type-primitive Int32 @3:12
+      type-primitive String @3:19
+    tuple @3:29
+      lit-int 42 @3:30
+      lit-str "hello" @3:34

@@ -1,0 +1,33 @@
+program
+  trait Iterator @1:1
+    assoc-type Item
+    sig next @3:5
+      receiver RefMut
+      ret
+        type-path Option @3:27
+          type-path Self::Item @3:34
+  struct Counter @6:1
+    field count
+      type-primitive Int32 @6:25
+  impl Iterator for @8:1
+    self-ty
+      type-path Counter @8:19
+    assoc-type Item =
+      type-primitive Int32 @9:17
+    method
+      sig next @10:5
+        receiver RefMut
+        ret
+          type-path Option @10:27
+            type-primitive Int32 @10:34
+      block @10:41
+        expr-stmt @11:9
+          assign AddAssign @11:9
+            field count @11:9
+              path self @11:9
+            lit-int 1 @11:23
+        tail
+          call @12:9
+            path Some @12:9
+            field count @12:14
+              path self @12:14

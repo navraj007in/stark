@@ -138,11 +138,16 @@ TypeAlias ::= 'type' IDENTIFIER GenericParams? '=' Type ';'
 ```ebnf
 Statement ::= ';'                    // Empty statement
             | Expression ';'         // Expression statement
+            | BlockExpression ';'?   // Block-formed expression statement
             | 'let' LetStatement
             | 'return' Expression? ';'
             | 'break' Expression? ';'
             | 'continue' ';'
-            | Block
+
+BlockExpression ::= Block
+                  | IfExpression
+                  | MatchExpression
+                  | LoopExpression
 
 LetStatement ::= IDENTIFIER ':' Type ';'
                | 'mut' IDENTIFIER ':' Type ';'
@@ -151,6 +156,22 @@ LetStatement ::= IDENTIFIER ':' Type ';'
                | 'mut' IDENTIFIER ':' Type '=' Expression ';'
                | 'mut' IDENTIFIER '=' Expression ';'
 ```
+
+Block-formed expression statements:
+- An expression whose outermost form is a block, `if`, `match`, `loop`,
+  `while`, or `for` may stand as a statement without a terminating
+  semicolon (`if ready { start(); }` mid-block is a statement).
+- Statement parsing is greedy: when a block-formed expression begins at
+  statement position and is not followed by `;`, it is complete as a
+  statement — a following token does NOT extend it into a larger
+  expression (`{ if c { } - 1; }` is an `if` statement followed by an
+  error, not a subtraction). Parenthesize to use the value:
+  `(if c { 1 } else { 2 }) - 1`.
+- Exception (trailing expression): a block-formed expression immediately
+  before the closing `}` of its block and not followed by `;` is the
+  block's trailing `Expression` (its value), not a statement — so
+  `fn max(...) -> T { if a > b { a } else { b } }` returns the `if`'s
+  value.
 
 ### Expressions
 ```ebnf
@@ -328,10 +349,15 @@ Type ::= PrimitiveType
        | Path GenericArgs?                 // Named type, possibly generic: Vec<Int32>, Option<T>
        | '[' Type ';' INTEGER ']'          // Array type
        | '[' Type ']'                      // Slice type (unsized; used behind references)
-       | '(' TypeList? ')'                 // Tuple type
+       | TupleType
+       | '(' Type ')'                      // Grouping (the type T, not a tuple)
        | '&' Type                          // Reference type
        | '&' 'mut' Type                    // Mutable reference type
        | 'fn' '(' TypeList? ')' ('->' Type)?  // Function type (non-capturing)
+
+TupleType ::= '(' ')'                      // Unit type
+            | '(' Type ',' ')'             // Single-element tuple type
+            | '(' Type (',' Type)+ ','? ')' // N-element tuple type
 
 PrimitiveType ::= 'Int8' | 'Int16' | 'Int32' | 'Int64'
                 | 'UInt8' | 'UInt16' | 'UInt32' | 'UInt64'
@@ -344,6 +370,8 @@ TypeList ::= Type (',' Type)* ','?
 Notes:
 - A function type without `->` returns `Unit`.
 - The never type `!` may appear only as a function return type (see `ReturnType`).
+- `(T)` is the type `T` (grouping); the single-element tuple type is `(T,)`,
+  mirroring `TupleLiteral` on the value side.
 
 ### Other Constructs
 ```ebnf
@@ -359,7 +387,7 @@ UseTree ::= Path ('as' IDENTIFIER)?
 UseTreeList ::= UseTree (',' UseTree)* ','?
 
 Path ::= PathSegment ('::' PathSegment)*
-PathSegment ::= IDENTIFIER | 'self' | 'Self' | 'super' | 'crate'
+PathSegment ::= IDENTIFIER | PrimitiveType | 'self' | 'Self' | 'super' | 'crate'
 ```
 
 Notes:
@@ -369,6 +397,10 @@ Notes:
   associated item, e.g. `Self::Item`.
 - `self`, `super`, and `crate` are likewise valid only as leading segments
   (`self`/`super` may repeat at the front: `super::super::x`).
+- A `PrimitiveType` keyword is valid only as the *first* segment, where it
+  names the primitive's associated items: `String::from(s)`. (Primitive type
+  names are keywords in the lexical grammar, so without this rule such calls
+  would be unparseable.)
 
 ## Operator Precedence (Highest to Lowest)
 1. Primary expressions, field access, array access, function calls, try operator (`?`)
@@ -394,13 +426,15 @@ Notes:
 - Non-associative: Comparison operators, range operators
 
 ## Statement vs Expression
-- Statements do not return values and end with semicolons
+- Statements do not return values and end with semicolons (block-formed
+  expression statements may omit the semicolon — see Statements)
 - Expressions return values and can be used as statements with semicolons
 - Blocks are expressions (return value of last expression, or Unit if none)
 - Control flow constructs are expressions
 
 ## Whitespace and Semicolons
-- Semicolons are required to terminate statements
+- Semicolons are required to terminate statements, except after block-formed
+  expression statements (see Statements)
 - Semicolons are optional after the last expression in a block
 - Newlines are not significant except for line comments
 - Trailing commas are allowed in lists
