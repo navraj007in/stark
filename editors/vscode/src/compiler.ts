@@ -1,6 +1,8 @@
-import { spawn } from 'child_process';
+import { spawn, ChildProcess } from 'child_process';
 import { CompilerOutput } from './protocol';
 import { getConfiguration } from './configuration';
+
+const activeProcesses = new Map<string, ChildProcess>();
 
 export interface CompilerRunResult {
   success: boolean;
@@ -27,10 +29,18 @@ export function runCompiler(
 
     args.push('--stdin', '--filename', filename);
 
+    // Cancel any active compiler run for the same file
+    const oldProcess = activeProcesses.get(filename);
+    if (oldProcess) {
+      oldProcess.kill();
+      activeProcesses.delete(filename);
+    }
+
     let resolved = false;
     const process = spawn(config.compilerPath, args, {
       shell: false,
     });
+    activeProcesses.set(filename, process);
 
     let stdout = '';
     let stderr = '';
@@ -38,6 +48,9 @@ export function runCompiler(
     const timer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
+        if (activeProcesses.get(filename) === process) {
+          activeProcesses.delete(filename);
+        }
         process.kill();
         resolve({
           success: false,
@@ -58,10 +71,18 @@ export function runCompiler(
       if (!resolved) {
         resolved = true;
         clearTimeout(timer);
-        resolve({
-          success: false,
-          error: `Failed to spawn compiler: ${err.message}`,
-        });
+        if (activeProcesses.get(filename) === process) {
+          activeProcesses.delete(filename);
+          resolve({
+            success: false,
+            error: `Failed to spawn compiler: ${err.message}`,
+          });
+        } else {
+          resolve({
+            success: false,
+            error: 'superseded',
+          });
+        }
       }
     });
 
@@ -69,6 +90,16 @@ export function runCompiler(
       if (!resolved) {
         resolved = true;
         clearTimeout(timer);
+
+        if (activeProcesses.get(filename) === process) {
+          activeProcesses.delete(filename);
+        } else {
+          resolve({
+            success: false,
+            error: 'superseded',
+          });
+          return;
+        }
 
         if (code === null) {
           resolve({
@@ -82,6 +113,41 @@ export function runCompiler(
         if (code === 0 || code === 1) {
           try {
             const output: CompilerOutput = JSON.parse(stdout);
+            if (!output || typeof output !== 'object') {
+              throw new Error('Output is not an object');
+            }
+            if (output.schemaVersion !== 1) {
+              throw new Error(`Unsupported schema version: ${output.schemaVersion}`);
+            }
+            if (output.tool !== 'starkc') {
+              throw new Error(`Invalid tool name: ${output.tool}`);
+            }
+            if (!Array.isArray(output.diagnostics)) {
+              throw new Error('Diagnostics field is not an array');
+            }
+            for (const diag of output.diagnostics) {
+              if (
+                typeof diag.severity !== 'string' ||
+                (diag.severity !== 'error' && diag.severity !== 'warning')
+              ) {
+                throw new Error(`Invalid diagnostic severity: ${diag.severity}`);
+              }
+              if (typeof diag.message !== 'string') {
+                throw new Error('Diagnostic message is missing or invalid');
+              }
+              if (typeof diag.file !== 'string') {
+                throw new Error('Diagnostic file is missing or invalid');
+              }
+              if (
+                !diag.range ||
+                typeof diag.range.startByte !== 'number' ||
+                typeof diag.range.endByte !== 'number' ||
+                diag.range.startByte < 0 ||
+                diag.range.endByte < diag.range.startByte
+              ) {
+                throw new Error(`Invalid diagnostic range: ${JSON.stringify(diag.range)}`);
+              }
+            }
             resolve({
               success: true,
               output,
@@ -89,7 +155,7 @@ export function runCompiler(
           } catch (err) {
             resolve({
               success: false,
-              error: `Failed to parse compiler output as JSON: ${(err as Error).message}\nStdout: ${stdout}\nStderr: ${stderr}`,
+              error: `Failed to parse or validate compiler output: ${(err as Error).message}\nStdout: ${stdout}\nStderr: ${stderr}`,
             });
           }
         } else {
@@ -108,6 +174,9 @@ export function runCompiler(
       if (!resolved) {
         resolved = true;
         clearTimeout(timer);
+        if (activeProcesses.get(filename) === process) {
+          activeProcesses.delete(filename);
+        }
         process.kill();
         resolve({
           success: false,

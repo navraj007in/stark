@@ -156,7 +156,37 @@ fn main() -> ExitCode {
         Some((cmd, rest)) if cmd == "import" => cmd_import(rest),
         Some((cmd, rest)) if cmd == "verify" => cmd_verify(rest),
         Some((cmd, rest)) if cmd == "deploy" => cmd_deploy(rest),
-        Some((cmd, [path])) if cmd == "run" => cmd_run(path),
+        Some((cmd, rest)) if cmd == "run" => {
+            let mut path = None;
+            let mut extensions = Vec::new();
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--extension" => match args.next() {
+                        Some(name) => extensions.push(name.clone()),
+                        None => {
+                            eprint!("{USAGE}");
+                            return ExitCode::from(2);
+                        }
+                    },
+                    _ if path.is_none() => path = Some(arg.clone()),
+                    _ => {
+                        eprint!("{USAGE}");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            let Some(p) = path else {
+                eprintln!("Error: missing input file path");
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some(options) = extension_options(&extensions) else {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            };
+            cmd_run(&p, options)
+        }
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
         Some((flag, [])) if flag == "--help" || flag == "-h" => {
             print!("{USAGE}");
@@ -612,9 +642,10 @@ fn print_json_diagnostics(file_name: &str, diagnostics: &[starkc::diag::Diagnost
         "{{\
           \"schemaVersion\":1,\
           \"tool\":\"starkc\",\
-          \"toolVersion\":\"0.1.0\",\
+          \"toolVersion\":\"{}\",\
           \"diagnostics\":[{}]\
         }}",
+        env!("CARGO_PKG_VERSION"),
         diags_json.join(",")
     );
 }
@@ -634,19 +665,19 @@ fn find_first_model_name(source: &str) -> Option<String> {
     None
 }
 
-fn cmd_run(path: &str) -> ExitCode {
+fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
     let file = match load(path) {
         Ok(file) => file,
         Err(code) => return code,
     };
     let (tree, mut diagnostics) =
-        parse_with_options(&file, ParseMode::Program, LanguageOptions::CORE);
+        parse_with_options(&file, ParseMode::Program, options);
     let file = std::sync::Arc::new(file);
     if diagnostics.is_empty() {
-        let (hir, mut resolution) = starkc::resolve::resolve(&tree, file.clone());
+        let (hir, mut resolution) = starkc::resolve::resolve_with_options(&tree, file.clone(), options);
         diagnostics.append(&mut resolution);
         if diagnostics.is_empty() {
-            let checked = starkc::typecheck::analyze(&hir, file.clone());
+            let checked = starkc::typecheck::analyze_with_options(&hir, file.clone(), options);
             diagnostics.extend(checked.diagnostics);
             for diagnostic in &diagnostics {
                 eprint!("{}", diagnostic.render(&file));

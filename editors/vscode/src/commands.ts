@@ -4,7 +4,16 @@ import { runCompiler } from './compiler';
 import { updateDiagnostics, clearAllDiagnostics } from './diagnostics';
 import { getConfiguration } from './configuration';
 
+function escapeShellArg(arg: string): string {
+  return arg.replace(/([\\"$`])/g, '\\$1');
+}
+
 export async function checkCurrentFile() {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showErrorMessage('STARK command execution is disabled in untrusted workspaces.');
+    return;
+  }
+
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'stark') {
     vscode.window.showInformationMessage('No active STARK file to check.');
@@ -32,7 +41,12 @@ export async function checkCurrentFile() {
   );
 }
 
-export function runCurrentFile() {
+export async function runCurrentFile() {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showErrorMessage('STARK command execution is disabled in untrusted workspaces.');
+    return;
+  }
+
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'stark') {
     vscode.window.showInformationMessage('No active STARK file to run.');
@@ -41,7 +55,11 @@ export function runCurrentFile() {
 
   // Save the document first if it's dirty
   if (editor.document.isDirty) {
-    editor.document.save();
+    const saved = await editor.document.save();
+    if (!saved) {
+      vscode.window.showWarningMessage('Run cancelled: File could not be saved.');
+      return;
+    }
   }
 
   const document = editor.document;
@@ -52,15 +70,35 @@ export function runCurrentFile() {
     terminal = vscode.window.createTerminal('STARK Run');
   }
   
+  const extArgsList: string[] = [];
+  for (const ext of config.extensions) {
+    extArgsList.push('--extension', escapeShellArg(ext));
+  }
+  const extArgs = extArgsList.length > 0 ? ' ' + extArgsList.join(' ') : '';
+  
   terminal.show();
-  terminal.sendText(`"${config.compilerPath}" run "${document.fileName}"`);
+  terminal.sendText(`"${escapeShellArg(config.compilerPath)}" run${extArgs} "${escapeShellArg(document.fileName)}"`);
 }
 
-export function openInStarkIde() {
+export async function openInStarkIde() {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showErrorMessage('STARK command execution is disabled in untrusted workspaces.');
+    return;
+  }
+
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'stark') {
     vscode.window.showInformationMessage('No active STARK file to open.');
     return;
+  }
+
+  // Save the document first if it's dirty
+  if (editor.document.isDirty) {
+    const saved = await editor.document.save();
+    if (!saved) {
+      vscode.window.showWarningMessage('Open cancelled: File could not be saved.');
+      return;
+    }
   }
 
   const document = editor.document;
@@ -78,10 +116,15 @@ export function openInStarkIde() {
   }
 
   terminal.show();
-  terminal.sendText(`"${idePath}" "${document.fileName}"`);
+  terminal.sendText(`"${escapeShellArg(idePath)}" "${escapeShellArg(document.fileName)}"`);
 }
 
 export function restartCompiler(triggerDocumentCheck: (doc: vscode.TextDocument) => void) {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showErrorMessage('STARK command execution is disabled in untrusted workspaces.');
+    return;
+  }
+
   clearAllDiagnostics();
   vscode.window.showInformationMessage('Restarted STARK compiler integration.');
   const editor = vscode.window.activeTextEditor;

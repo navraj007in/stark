@@ -1,0 +1,3 @@
+let t: Tensor<Float32, [1, 3, 224, 224], range = Normalized>;
+let u: Tensor<UInt8, [100], range = ByteRange>;
+let v: Tensor<Float32, [256], range = UnitRange>;

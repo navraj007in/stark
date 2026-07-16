@@ -164,6 +164,14 @@
           }
         },
         {
+          "comment": "`range = R` named argument, matched only inside tensor generic-argument position (preceded by `,`).",
+          "match": "(,)(\\s*)(range)(?=\\s*=)",
+          "captures": {
+            "1": { "name": "punctuation.separator.stark" },
+            "3": { "name": "keyword.other.tensor.stark" }
+          }
+        },
+        {
           "comment": "Reserved words (01-Lexical-Grammar.md §9): recognized but not usable in Core v1.",
           "name": "invalid.deprecated.reserved.stark",
           "match": "\\b(async|await|yield|where|macro|unsafe|extern|import|export|null|and|or|not|is|dyn)\\b"
@@ -177,9 +185,9 @@
           "match": "\\b(Int8|Int16|Int32|Int64|UInt8|UInt16|UInt32|UInt64|Float32|Float64|Bool|String|Char|Unit|str)\\b"
         },
         {
-          "comment": "tensor extension element/tensor/device/kind types",
+          "comment": "tensor extension element/tensor/device/kind/range types",
           "name": "support.type.tensor.stark",
-          "match": "\\b(Float16|BFloat16|Tensor|TensorDyn|TensorAny|Dim|DType|Cpu|Cuda)\\b"
+          "match": "\\b(Float16|BFloat16|Tensor|TensorDyn|TensorAny|Dim|DType|Cpu|Cuda|ByteRange|UnitRange|Normalized)\\b"
         },
         {
           "name": "storage.type.self.stark",
