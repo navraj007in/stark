@@ -301,7 +301,7 @@ Also implement:
 
 ---
 
-### Phase 4B — Complete `String`, `str`, and `Vec`
+### Phase 4B — Complete `String`, `str`, and `Vec` (Status: Complete — 2026-07-16)
 
 Add missing APIs such as:
 

@@ -1851,6 +1851,9 @@ fn resolve_core_type(name: &str) -> Option<CoreType> {
         "Result" => Some(CoreType::Result),
         "Range" => Some(CoreType::Range),
         "RangeInclusive" => Some(CoreType::RangeInclusive),
+        "CharsIter" => Some(CoreType::CharsIter),
+        "SplitIter" => Some(CoreType::SplitIter),
+        "VecIter" => Some(CoreType::VecIter),
         _ => None,
     }
 }

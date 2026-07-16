@@ -61,6 +61,9 @@ enum Value {
     },
     Ref(Place),
     Function(ItemId),
+    CharsIter(String, usize),
+    SplitIter(Vec<String>, usize),
+    VecIter(Place, usize),
 }
 
 impl fmt::Display for Value {
@@ -105,6 +108,9 @@ impl fmt::Display for Value {
             } => write!(f, "{start}..{}{end}", if *inclusive { "=" } else { "" }),
             Value::Ref(_) => write!(f, "<reference>"),
             Value::Function(item) => write!(f, "fn#{}", item.0),
+            Value::CharsIter(..) => write!(f, "<CharsIter>"),
+            Value::SplitIter(..) => write!(f, "<SplitIter>"),
+            Value::VecIter(..) => write!(f, "<VecIter>"),
         }
     }
 }
@@ -267,6 +273,9 @@ impl<'a> Interpreter<'a> {
             },
             Value::Ref(place) => Value::Ref(place.clone()),
             Value::Function(item) => Value::Function(*item),
+            Value::CharsIter(..) => Value::CharsIter(String::new(), 0),
+            Value::SplitIter(..) => Value::SplitIter(Vec::new(), 0),
+            Value::VecIter(place, _) => Value::VecIter(place.clone(), 0),
         }
     }
 
@@ -1341,7 +1350,7 @@ impl<'a> Interpreter<'a> {
         let mut values = values.into_iter();
         let mutating = matches!(
             name,
-            "push" | "push_str" | "pop" | "clear" | "insert" | "remove" | "append"
+            "push" | "push_str" | "pop" | "clear" | "insert" | "remove" | "append" | "get_mut" | "extend" | "next"
         );
         if name == "get" {
             let index = usize_arg(values.next(), span)?;
@@ -1352,6 +1361,129 @@ impl<'a> Interpreter<'a> {
                     .ok()
                     .map(|_| Box::new(Value::Ref(place))),
             ));
+        }
+        if name == "get_mut" {
+            let index = usize_arg(values.next(), span)?;
+            let mut place = self.core_receiver_place(base, span)?;
+            place.projections.push(Projection::Index(index));
+            return Ok(Value::Option(
+                self.place_value(&place, span)
+                    .ok()
+                    .map(|_| Box::new(Value::Ref(place))),
+            ));
+        }
+        if name == "iter" {
+            let place = self.core_receiver_place(base, span)?;
+            return Ok(Value::VecIter(place, 0));
+        }
+        if name == "next" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let res = match &mut iter_val {
+                Value::CharsIter(s, ref mut idx) => {
+                    let opt = if let Some(ch) = s.chars().nth(*idx) {
+                        *idx += 1;
+                        Value::Option(Some(Box::new(Value::Char(ch))))
+                    } else {
+                        Value::Option(None)
+                    };
+                    Some((opt, iter_val))
+                }
+                Value::SplitIter(parts, ref mut idx) => {
+                    let opt = if *idx < parts.len() {
+                        let part = parts[*idx].clone();
+                        *idx += 1;
+                        Value::Option(Some(Box::new(Value::Str(part))))
+                    } else {
+                        Value::Option(None)
+                    };
+                    Some((opt, iter_val))
+                }
+                Value::VecIter(vec_place, ref mut idx) => {
+                    let vec_val = self.place_value(vec_place, span)?;
+                    let opt = if let Value::Vec(items) = vec_val {
+                        if *idx < items.len() {
+                            let mut item_place = vec_place.clone();
+                            item_place.projections.push(Projection::Index(*idx));
+                            *idx += 1;
+                            Value::Option(Some(Box::new(Value::Ref(item_place))))
+                        } else {
+                            Value::Option(None)
+                        }
+                    } else {
+                        return Err(RuntimeError::new("expected vector in VecIter", span));
+                    };
+                    Some((opt, iter_val))
+                }
+                _ => None,
+            };
+            if let Some((opt, new_iter)) = res {
+                let iter_mut = self.place_value_mut(&place, span)?;
+                *iter_mut = new_iter;
+                return Ok(opt);
+            }
+        }
+        if name == "extend" {
+            let iter_arg = values.next().ok_or_else(|| RuntimeError::new("extend expects an iterator", span))?;
+            if let Value::Ref(iter_place) = iter_arg {
+                let place = self.core_receiver_place(base, span)?;
+                loop {
+                    let mut iter_val = self.place_value(&iter_place, span)?.clone();
+                    let (next_val, next_iter) = match &mut iter_val {
+                        Value::VecIter(vec_place, ref mut idx) => {
+                            let vec_val = self.place_value(vec_place, span)?;
+                            if let Value::Vec(items) = vec_val {
+                                if *idx < items.len() {
+                                    let mut item_place = vec_place.clone();
+                                    item_place.projections.push(Projection::Index(*idx));
+                                    *idx += 1;
+                                    (Some(Value::Ref(item_place)), Some(iter_val.clone()))
+                                } else {
+                                    (None, None)
+                                }
+                            } else {
+                                (None, None)
+                            }
+                        }
+                        Value::CharsIter(s, ref mut idx) => {
+                            if let Some(ch) = s.chars().nth(*idx) {
+                                *idx += 1;
+                                (Some(Value::Char(ch)), Some(Value::CharsIter(s.clone(), *idx)))
+                            } else {
+                                (None, None)
+                            }
+                        }
+                        Value::SplitIter(parts, ref mut idx) => {
+                            if *idx < parts.len() {
+                                let part = parts[*idx].clone();
+                                *idx += 1;
+                                (Some(Value::Str(part)), Some(Value::SplitIter(parts.clone(), *idx)))
+                            } else {
+                                (None, None)
+                            }
+                        }
+                        _ => return Err(RuntimeError::new("extend expects a valid iterator", span)),
+                    };
+                    
+                    if let Some(new_iter) = next_iter {
+                        let iter_mut = self.place_value_mut(&iter_place, span)?;
+                        *iter_mut = new_iter;
+                    }
+                    
+                    if let Some(val) = next_val {
+                        let deref_val = self.deref_value(val, span)?;
+                        let vec_mut = self.place_value_mut(&place, span)?;
+                        if let Value::Vec(ref mut items) = vec_mut {
+                            items.push(Some(deref_val));
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                return Ok(Value::Unit);
+            } else {
+                return Err(RuntimeError::new("extend expects reference to iterator", span));
+            }
         }
         let mut owned;
         let target = if mutating {
@@ -1420,6 +1552,16 @@ impl<'a> Interpreter<'a> {
                     }
                     Ok(Value::Str(string[start..end].to_string()))
                 }
+                "chars" => Ok(Value::CharsIter(string.clone(), 0)),
+                "bytes" | "into_bytes" => {
+                    let bytes_val = string.bytes().map(|b| Some(Value::Int(b as i128))).collect();
+                    Ok(Value::Vec(bytes_val))
+                }
+                "split" => {
+                    let delimiter = string_arg(values.next(), span)?;
+                    let parts = string.split(&delimiter).map(|s| s.to_string()).collect();
+                    Ok(Value::SplitIter(parts, 0))
+                }
                 "to_string" => Ok(Value::String(string.clone())),
                 "to_lowercase" => Ok(Value::String(string.to_lowercase())),
                 "to_uppercase" => Ok(Value::String(string.to_uppercase())),
@@ -1459,6 +1601,14 @@ impl<'a> Interpreter<'a> {
                 "as_slice" => Ok(Value::Array(vector.clone())),
                 _ => Err(RuntimeError::new(
                     format!("unsupported Vec method '{name}'"),
+                    span,
+                )),
+            },
+            Value::Array(array) => match name {
+                "len" => Ok(Value::Int(array.len() as i128)),
+                "is_empty" => Ok(Value::Bool(array.is_empty())),
+                _ => Err(RuntimeError::new(
+                    format!("unsupported Array method '{name}'"),
                     span,
                 )),
             },
@@ -1883,7 +2033,13 @@ impl<'a> Interpreter<'a> {
             Value::Result(value) => match value {
                 Ok(value) | Err(value) => self.value_is_copy(value),
             },
-            Value::String(_) | Value::Vec(_) | Value::Boxed(_) | Value::Range { .. } => false,
+            Value::String(_)
+            | Value::Vec(_)
+            | Value::Boxed(_)
+            | Value::Range { .. }
+            | Value::CharsIter(..)
+            | Value::SplitIter(..)
+            | Value::VecIter(..) => false,
         }
     }
 

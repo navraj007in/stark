@@ -98,6 +98,9 @@ pub enum CoreType {
     Result,
     Range,
     RangeInclusive,
+    CharsIter,
+    SplitIter,
+    VecIter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -917,6 +917,9 @@ impl<'a> TypeChecker<'a> {
                     CoreType::Result => "Result",
                     CoreType::Range => "Range",
                     CoreType::RangeInclusive => "RangeInclusive",
+                    CoreType::CharsIter => "CharsIter",
+                    CoreType::SplitIter => "SplitIter",
+                    CoreType::VecIter => "VecIter",
                 };
                 if args.is_empty() {
                     name.to_string()
@@ -1087,12 +1090,15 @@ impl<'a> TypeChecker<'a> {
                     Res::CoreType(core) => {
                         let args = self.convert_generic_type_args(args.as_ref());
                         let expected = match core {
-                            CoreType::String => 0,
+                            CoreType::String
+                            | CoreType::CharsIter
+                            | CoreType::SplitIter => 0,
                             CoreType::Vec
                             | CoreType::Box
                             | CoreType::Option
                             | CoreType::Range
-                            | CoreType::RangeInclusive => 1,
+                            | CoreType::RangeInclusive
+                            | CoreType::VecIter => 1,
                             CoreType::Result => 2,
                         };
                         self.validate_generic_arity(expected, args.len(), node.span);
@@ -4578,7 +4584,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn core_method_signature(&self, receiver: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
+    fn core_method_signature(&mut self, receiver: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
         let unit = Ty::Primitive(Primitive::Unit);
         let bool_ty = Ty::Primitive(Primitive::Bool);
         let u64_ty = Ty::Primitive(Primitive::UInt64);
@@ -4618,6 +4624,25 @@ impl<'a> TypeChecker<'a> {
                     },
                     false,
                 )),
+                "chars" => Some((Vec::new(), Ty::Core(CoreType::CharsIter, Vec::new()), false)),
+                "bytes" => Some((
+                    Vec::new(),
+                    Ty::Ref {
+                        mutable: false,
+                        inner: Box::new(Ty::Slice(Box::new(Ty::Primitive(Primitive::UInt8)))),
+                    },
+                    false,
+                )),
+                "into_bytes" => Some((
+                    Vec::new(),
+                    Ty::Core(CoreType::Vec, vec![Ty::Primitive(Primitive::UInt8)]),
+                    false,
+                )),
+                "split" => Some((
+                    vec![str_ref.clone()],
+                    Ty::Core(CoreType::SplitIter, Vec::new()),
+                    false,
+                )),
                 "to_string" | "to_lowercase" | "to_uppercase" => {
                     Some((Vec::new(), Ty::Primitive(Primitive::String), false))
                 }
@@ -4651,6 +4676,26 @@ impl<'a> TypeChecker<'a> {
                         }],
                         unit,
                         true,
+                    )),
+                    "get_mut" => Some((
+                        vec![u64_ty],
+                        Ty::Core(
+                            CoreType::Option,
+                            vec![Ty::Ref {
+                                mutable: true,
+                                inner: Box::new(elem.clone()),
+                            }],
+                        ),
+                        true,
+                    )),
+                    "extend" => {
+                        let iter_ty = self.new_type_var();
+                        Some((vec![iter_ty], unit, true))
+                    }
+                    "iter" => Some((
+                        Vec::new(),
+                        Ty::Core(CoreType::VecIter, vec![elem.clone()]),
+                        false,
                     )),
                     "as_slice" => Some((
                         Vec::new(),
@@ -4686,6 +4731,43 @@ impl<'a> TypeChecker<'a> {
                 args.first().cloned().unwrap_or(Ty::Error),
                 false,
             )),
+            Ty::Core(CoreType::CharsIter, _) if name == "next" => Some((
+                Vec::new(),
+                Ty::Core(CoreType::Option, vec![Ty::Primitive(Primitive::Char)]),
+                true,
+            )),
+            Ty::Core(CoreType::SplitIter, _) if name == "next" => Some((
+                Vec::new(),
+                Ty::Core(CoreType::Option, vec![str_ref.clone()]),
+                true,
+            )),
+            Ty::Core(CoreType::VecIter, args) if name == "next" => {
+                let elem = args.first().cloned().unwrap_or(Ty::Error);
+                Some((
+                    Vec::new(),
+                    Ty::Core(
+                        CoreType::Option,
+                        vec![Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(elem),
+                        }],
+                    ),
+                    true,
+                ))
+            }
+            Ty::Slice(_) => match name {
+                "len" => Some((Vec::new(), u64_ty, false)),
+                "is_empty" => Some((Vec::new(), bool_ty, false)),
+                _ => None,
+            },
+            Ty::Ref { inner, .. } => match &**inner {
+                Ty::Slice(_) => match name {
+                    "len" => Some((Vec::new(), u64_ty, false)),
+                    "is_empty" => Some((Vec::new(), bool_ty, false)),
+                    _ => None,
+                },
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -4937,6 +5019,8 @@ impl<'a> TypeChecker<'a> {
                     args.iter().all(|arg| self.satisfies_bound(arg, bound))
                 } else if bound_name == "Default" {
                     *core_type == CoreType::Vec || *core_type == CoreType::Option
+                } else if bound_name == "Iterator" {
+                    *core_type == CoreType::CharsIter || *core_type == CoreType::SplitIter || *core_type == CoreType::VecIter
                 } else {
                     false
                 }
