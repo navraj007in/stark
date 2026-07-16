@@ -42,6 +42,10 @@ fn source_defects_are_compile_time_rejected() {
         "d5_range_double.stark",
         "d6_dtype.stark",
         "d7_device.stark",
+        "d10_range_normalize_bytes.stark",
+        "d11_range_wrong_model.stark",
+        "d12_range_merge.stark",
+        "d13_range_erase.stark",
     ] {
         let out = check(&defect(name));
         assert_eq!(out.status.code(), Some(1), "{name} should be rejected");

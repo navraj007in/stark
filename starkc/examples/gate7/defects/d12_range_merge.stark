@@ -1,0 +1,4 @@
+// Gate 7 defect 12 — merge incompatible semantic states. Compile-time.
+fn f(a: Tensor<Float32, [4], range = ByteRange>, b: Tensor<Float32, [4], range = UnitRange>) -> Tensor<Float32, [4], range = ByteRange> {
+    add(&a, &b)
+}

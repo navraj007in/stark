@@ -161,7 +161,28 @@ def nms(dets):
     return kept
 
 
+def dump_permuted(out_path):
+    """Run the model on the ONNX-bundled input and dump the reshape+permute
+    result [1, A, H, W, 5+C] as raw little-endian Float32 — exactly the tensor
+    the STARK `decode` pipeline produces — so the generated host's output can be
+    compared numerically on the identical input. Also dumps the same input as a
+    raw Float32 tensor for the host to consume."""
+    sess = ort.InferenceSession(MODEL, providers=["CPUExecutionProvider"])
+    in_name = sess.get_inputs()[0].name
+    out_name = sess.get_outputs()[0].name
+    x = load_pb(INPUT_PB).astype(np.float32)
+    raw = sess.run([out_name], {in_name: x})[0]
+    permuted = raw.reshape(1, N_ANCHORS, BOX, GRID, GRID).transpose(0, 1, 3, 4, 2)
+    np.ascontiguousarray(x, dtype=np.float32).tofile(out_path + ".input")
+    np.ascontiguousarray(permuted, dtype=np.float32).tofile(out_path)
+    print(f"dumped input {list(x.shape)} and permuted {list(permuted.shape)}")
+
+
 def main():
+    if "--dump-permuted" in sys.argv:
+        dump_permuted(sys.argv[sys.argv.index("--dump-permuted") + 1])
+        return
+
     for p in (MODEL, INPUT_PB, OUTPUT_PB, IMAGE):
         if not os.path.exists(p):
             sys.exit(f"missing artifact {p}; run examples/gate7/fetch-artifacts.py first")

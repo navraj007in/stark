@@ -206,6 +206,20 @@ fn emit_build_input(out: &mut String, program: &DeploymentProgram) {
             "    Err(\"host input shape overflowed during generation\".to_string())".to_string()
         }
     };
+    // The concrete host-input shape (batch 1), also usable to load a raw
+    // preprocessed tensor for reproducible numerical comparison.
+    let dims_const = match host_input_spec(program).1 {
+        Some(dims) => dims
+            .iter()
+            .map(|d| format!("{d}usize"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        None => String::new(),
+    };
+    let _ = writeln!(
+        out,
+        "pub const HOST_INPUT_DIMS: &[usize] = &[{dims_const}];"
+    );
     let _ = writeln!(
         out,
         "pub fn build_input(image: &Path) -> Result<Tensor, String> {{\n{body}\n}}"
