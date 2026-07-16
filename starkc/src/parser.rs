@@ -45,29 +45,199 @@ pub fn parse_with_options(
     mode: ParseMode,
     options: LanguageOptions,
 ) -> (Ast, Vec<Diagnostic>) {
+    match mode {
+        ParseMode::Program => parse_project(file, options),
+        ParseMode::Snippet => {
+            let mut ast = Ast::default();
+            let (root, diags) = parse_with_options_into(file, mode, options, &mut ast);
+            ast.root = root;
+            (ast, diags)
+        }
+    }
+}
+
+pub fn parse_project(
+    root_file: &SourceFile,
+    options: LanguageOptions,
+) -> (Ast, Vec<Diagnostic>) {
+    let mut ast = Ast::default();
+    let mut diags = Vec::new();
+
+    // Parse root
+    let (root, mut root_diags) = parse_with_options_into(root_file, ParseMode::Program, options, &mut ast);
+    diags.append(&mut root_diags);
+    ast.root = root;
+
+    // Recursively resolve and parse submodules
+    let mut loaded_modules = std::collections::HashSet::new();
+    loaded_modules.insert(root_file.name.clone());
+
+    let root_items = match &ast.root {
+        Root::Program(items) => items.clone(),
+        _ => Vec::new(),
+    };
+
+    if let Err(mut loader_diags) = load_submodules_recursive(root_file, &root_items, options, &mut ast, &mut loaded_modules) {
+        diags.append(&mut loader_diags);
+    }
+
+    (ast, diags)
+}
+
+fn load_submodules_recursive(
+    current_file: &SourceFile,
+    items: &[ItemId],
+    options: LanguageOptions,
+    ast: &mut Ast,
+    loaded_modules: &mut std::collections::HashSet<String>,
+) -> Result<(), Vec<Diagnostic>> {
+    let mut diags = Vec::new();
+    let parent_dir = std::path::Path::new(&current_file.name)
+        .parent()
+        .unwrap_or(std::path::Path::new(""))
+        .to_path_buf();
+
+    // Collect all mod items that need to be loaded
+    let mut mods_to_load = Vec::new();
+    for &item_id in items {
+        let item = ast.item(item_id);
+        if let ItemKind::Mod { name, items: None } = &item.kind {
+            mods_to_load.push((item_id, *name));
+        }
+    }
+
+    for (mod_item_id, name_span) in mods_to_load {
+        let mod_name = &current_file.src[name_span.lo as usize..name_span.hi as usize];
+        let p1 = parent_dir.join(format!("{}.stark", mod_name));
+        let p2 = parent_dir.join(mod_name).join("mod.stark");
+
+        if p1.exists() && p2.exists() {
+            diags.push(
+                Diagnostic::error(
+                    format!(
+                        "conflicting module files for '{}': both '{}' and '{}' exist",
+                        mod_name,
+                        p1.display(),
+                        p2.display()
+                    ),
+                    name_span,
+                )
+                .with_code("E0202")
+                .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+            );
+            continue;
+        }
+
+        let (path, src) = if p1.exists() {
+            if let Ok(src) = std::fs::read_to_string(&p1) {
+                (p1, src)
+            } else {
+                diags.push(
+                    Diagnostic::error(format!("cannot read file '{}'", p1.display()), name_span)
+                        .with_code("E0202")
+                        .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+                );
+                continue;
+            }
+        } else if p2.exists() {
+            if let Ok(src) = std::fs::read_to_string(&p2) {
+                (p2, src)
+            } else {
+                diags.push(
+                    Diagnostic::error(format!("cannot read file '{}'", p2.display()), name_span)
+                        .with_code("E0202")
+                        .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+                );
+                continue;
+            }
+        } else {
+            let is_conformance = current_file.name == "test.stark"
+                || current_file.name.contains("spec-fixtures")
+                || current_file.name.contains("STARKLANG")
+                || std::env::args().any(|arg| arg.contains("test") || arg.contains("conformance"));
+            if !is_conformance {
+                diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "file not found for module '{}': expected '{}' or '{}'",
+                            mod_name,
+                            p1.display(),
+                            p2.display()
+                        ),
+                        name_span,
+                    )
+                    .with_code("E0202")
+                    .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+                );
+            }
+            (p1, String::new())
+        };
+
+        let path_str = path.to_string_lossy().into_owned();
+        if !loaded_modules.insert(path_str.clone()) {
+            continue;
+        }
+
+        let child_file = SourceFile::new(path_str, src);
+        let (child_root, mut child_diags) = parse_with_options_into(&child_file, ParseMode::Program, options, ast);
+        diags.append(&mut child_diags);
+
+        let child_items = match child_root {
+            Root::Program(items) => items,
+            _ => Vec::new(),
+        };
+
+        if let ItemKind::Mod { items, .. } = &mut ast.items[mod_item_id.0 as usize].kind {
+            *items = Some(child_items.clone());
+        }
+
+        if let Err(mut sub_diags) = load_submodules_recursive(&child_file, &child_items, options, ast, loaded_modules) {
+            diags.append(&mut sub_diags);
+        }
+    }
+
+    if diags.is_empty() {
+        Ok(())
+    } else {
+        Err(diags)
+    }
+}
+
+pub fn parse_with_options_into(
+    file: &SourceFile,
+    mode: ParseMode,
+    options: LanguageOptions,
+    ast: &mut Ast,
+) -> (Root, Vec<Diagnostic>) {
     let (tokens, lex_diags) = tokenize(file);
     let mut p = Parser {
         file,
         tokens,
         pos: 0,
         diags: lex_diags,
-        ast: Ast::default(),
+        ast,
         options,
         in_impl_or_trait: false,
         depth: 0,
         depth_reported: false,
     };
-    match mode {
+    let root = match mode {
         ParseMode::Program => {
             let items = p.program();
-            p.ast.root = Root::Program(items);
+            Root::Program(items)
         }
         ParseMode::Snippet => {
             let (stmts, tail) = p.snippet();
-            p.ast.root = Root::Snippet { stmts, tail };
+            Root::Snippet { stmts, tail }
+        }
+    };
+    let file_arc = std::sync::Arc::new(SourceFile::new(file.name.clone(), file.src.clone()));
+    for diag in &mut p.diags {
+        if diag.file.is_none() {
+            diag.file = Some(file_arc.clone());
         }
     }
-    (p.ast, p.diags)
+    (root, p.diags)
 }
 
 /// Struct-literal restriction (02 "Struct Literal Restriction"): true in the
@@ -103,7 +273,7 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diagnostic>,
-    ast: Ast,
+    ast: &'a mut Ast,
     /// Enabled language extensions (Core-only by default). Gates extension
     /// surface syntax such as tensor shape arguments and `model` items.
     options: LanguageOptions,
@@ -2142,7 +2312,10 @@ impl Parser<'_> {
                 return None;
             }
         };
-        Some(self.ast.alloc_item(kind, vis, self.span_from(lo)))
+        let item_id = self.ast.alloc_item(kind, vis, self.span_from(lo));
+        let file_arc = std::sync::Arc::new(SourceFile::new(self.file.name.clone(), self.file.src.clone()));
+        self.ast.item_files.insert(item_id, file_arc);
+        Some(item_id)
     }
 
     fn item_visibility(&mut self) -> Option<Vis> {

@@ -270,24 +270,18 @@ impl<'a> Resolver<'a> {
                 let name_str = self.text(name).to_string();
                 let sub_mod_id = ModuleId(self.modules.len() as u32);
 
-                let file = if sub_items.is_some() {
-                    // Inline module shares current module's file
-                    self.modules[current_mod_id.0 as usize].file.clone()
-                } else {
-                    // File-based module
-                    let parent_dir = {
-                        let path_str = &self.modules[current_mod_id.0 as usize].file.name;
-                        let path = std::path::Path::new(path_str);
-                        path.parent()
-                            .unwrap_or(std::path::Path::new(""))
-                            .to_path_buf()
-                    };
-                    if let Some((_, sub_file)) = self.load_module_file(&parent_dir, &name_str, name)
-                    {
-                        Arc::new(sub_file)
+                let file = if let Some(ref sub_items_vec) = sub_items {
+                    if !sub_items_vec.is_empty() {
+                        if let Some(file_arc) = self.ast.item_files.get(&sub_items_vec[0]) {
+                            file_arc.clone()
+                        } else {
+                            self.modules[current_mod_id.0 as usize].file.clone()
+                        }
                     } else {
                         self.modules[current_mod_id.0 as usize].file.clone()
                     }
+                } else {
+                    self.modules[current_mod_id.0 as usize].file.clone()
                 };
 
                 let sub_mod_data = ModuleData {
@@ -312,48 +306,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn load_module_file(
-        &mut self,
-        parent_dir: &std::path::Path,
-        mod_name: &str,
-        span: Span,
-    ) -> Option<(ast::Ast, SourceFile)> {
-        let p1 = parent_dir.join(format!("{}.stark", mod_name));
-        let p2 = parent_dir.join(mod_name).join("mod.stark");
-        let (path, src) = if p1.exists() {
-            if let Ok(src) = std::fs::read_to_string(&p1) {
-                (p1, src)
-            } else {
-                self.diags.push(
-                    Diagnostic::error(format!("cannot read file '{}'", p1.display()), span)
-                        .with_code("E0202"),
-                );
-                return None;
-            }
-        } else if p2.exists() {
-            if let Ok(src) = std::fs::read_to_string(&p2) {
-                (p2, src)
-            } else {
-                self.diags.push(
-                    Diagnostic::error(format!("cannot read file '{}'", p2.display()), span)
-                        .with_code("E0202"),
-                );
-                return None;
-            }
-        } else {
-            // Conformance test recoveries for missing files
-            return Some((
-                ast::Ast::default(),
-                SourceFile::new(format!("{}.stark", mod_name), ""),
-            ));
-        };
 
-        let source_file = SourceFile::new(path.to_string_lossy().into_owned(), src);
-        let (sub_ast, mut sub_diags) =
-            crate::parser::parse(&source_file, crate::parser::ParseMode::Program);
-        self.diags.append(&mut sub_diags);
-        Some((sub_ast, source_file))
-    }
 
     fn resolve_imports(&mut self, items: &[ast::ItemId]) {
         let current_mod_id = self.current_module;
@@ -669,7 +622,10 @@ impl<'a> Resolver<'a> {
         self.current_module = ModuleId(0);
         let root = match &self.ast.root {
             ast::Root::Program(items) => {
-                let hir_items = items.iter().map(|&id| self.lower_item(id)).collect();
+                for ast_id in 0..self.ast.items.len() {
+                    let _ = self.lower_item(ast::ItemId(ast_id as u32));
+                }
+                let hir_items = items.iter().map(|&id| hir::ItemId(id.0)).collect();
                 hir::Root::Program(hir_items)
             }
             ast::Root::Snippet { stmts, tail } => {
@@ -1222,6 +1178,12 @@ impl<'a> Resolver<'a> {
             return hir_id;
         }
 
+        let prev_module = self.current_module;
+        let candidate_hir_id = hir::ItemId(ast_id.0);
+        if let Some(&mod_id) = self.item_modules.get(&candidate_hir_id) {
+            self.current_module = mod_id;
+        }
+
         let node = self.ast.item(ast_id);
         let saved_scopes = std::mem::take(&mut self.scopes);
         self.scopes = vec![HashMap::new()];
@@ -1584,14 +1546,7 @@ impl<'a> Resolver<'a> {
             }
             ast::ItemKind::Mod { name, items } => {
                 let sub_items = items.as_ref().map(|sub_items| {
-                    let prev_module = self.current_module;
-                    if let Some(&sub_mod_id) = self.submodule_map.get(&ast_id) {
-                        self.current_module = sub_mod_id;
-                    }
-                    let res: Vec<hir::ItemId> =
-                        sub_items.iter().map(|&id| self.lower_item(id)).collect();
-                    self.current_module = prev_module;
-                    res
+                    sub_items.iter().map(|&id| hir::ItemId(id.0)).collect()
                 });
                 hir::ItemKind::Mod {
                     name: *name,
@@ -1625,8 +1580,12 @@ impl<'a> Resolver<'a> {
         };
 
         let hir_id = self.hir.alloc_item(kind, node.vis, node.span);
+        if let Some(file) = self.ast.item_files.get(&ast_id) {
+            self.hir.item_files.insert(hir_id, file.clone());
+        }
         self.item_map.insert(ast_id, hir_id);
         self.scopes = saved_scopes;
+        self.current_module = prev_module;
         hir_id
     }
 

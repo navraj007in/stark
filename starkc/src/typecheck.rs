@@ -1650,6 +1650,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_crate(&mut self) {
+        let root_file = self.file.clone();
         // Pass 1: Populate item signatures (structs, enums, functions)
         for item in &self.hir.items {
             let item_id = hir::ItemId(
@@ -1659,6 +1660,13 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
+            if let Some(item_file) = self.hir.item_files.get(&item_id) {
+                self.file = item_file.clone();
+            } else {
+                self.file = root_file.clone();
+            }
+            let start_len = self.diags.len();
+
             match &item.kind {
                 hir::ItemKind::Struct { fields, .. } => {
                     let mut fields_ty = HashMap::new();
@@ -1768,20 +1776,29 @@ impl<'a> TypeChecker<'a> {
                             };
                             self.exit_tensor_param_scope(saved);
                             self.suppress_tensor_diagnostics = false;
-                            // We need to associate this method signature in fn_sigs.
-                            // Find the ItemId of the containing ImplItemFn.
-                            // Since impl_item is inside the Impl, we don't have its direct ItemId in the top-level items,
-                            // but when we check the impl, we will check each method. Let's register it.
-                            // In resolve.rs, we allocated the method def as part of ImplItem.
                         }
                     }
                     self.current_self_ty = previous_self;
                 }
                 _ => {}
             }
+
+            let end_len = self.diags.len();
+            for i in start_len..end_len {
+                if self.diags[i].file.is_none() {
+                    self.diags[i].file = Some(self.file.clone());
+                }
+            }
         }
 
+        let start_len = self.diags.len();
         self.validate_impl_rules();
+        let end_len = self.diags.len();
+        for i in start_len..end_len {
+            if self.diags[i].file.is_none() {
+                self.diags[i].file = Some(root_file.clone());
+            }
+        }
 
         // Pass 2: Typecheck bodies & run semantic checks
         for item in &self.hir.items {
@@ -1792,6 +1809,13 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
+            if let Some(item_file) = self.hir.item_files.get(&item_id) {
+                self.file = item_file.clone();
+            } else {
+                self.file = root_file.clone();
+            }
+            let start_len = self.diags.len();
+
             match &item.kind {
                 hir::ItemKind::Fn(def) => {
                     self.check_fn_def(item_id, def);
@@ -1825,10 +1849,18 @@ impl<'a> TypeChecker<'a> {
                 }
                 _ => {}
             }
+
+            let end_len = self.diags.len();
+            for i in start_len..end_len {
+                if self.diags[i].file.is_none() {
+                    self.diags[i].file = Some(self.file.clone());
+                }
+            }
         }
 
         // Snippet mode check
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
+            self.file = root_file.clone();
             let mut state = HashSet::new();
             for &stmt_id in stmts {
                 self.check_stmt(stmt_id, &mut state);
@@ -1837,6 +1869,8 @@ impl<'a> TypeChecker<'a> {
                 let _tail_ty = self.check_expr(*tail_id);
             }
         }
+
+        self.file = root_file;
 
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
@@ -1863,8 +1897,23 @@ impl<'a> TypeChecker<'a> {
         let mut impls: Vec<(Option<Res>, Ty, HashSet<String>)> = Vec::new();
         let mut copy_types = HashSet::new();
         let mut drop_types = HashSet::new();
+        let root_file = self.file.clone();
 
         for item in &self.hir.items {
+            let item_id = hir::ItemId(
+                self.hir
+                    .items
+                    .iter()
+                    .position(|i| std::ptr::eq(i, item))
+                    .unwrap() as u32,
+            );
+            if let Some(item_file) = self.hir.item_files.get(&item_id) {
+                self.file = item_file.clone();
+            } else {
+                self.file = root_file.clone();
+            }
+            let start_len = self.diags.len();
+
             let hir::ItemKind::Impl {
                 trait_,
                 self_ty,
@@ -2078,19 +2127,29 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+
+            let end_len = self.diags.len();
+            for i in start_len..end_len {
+                if self.diags[i].file.is_none() {
+                    self.diags[i].file = Some(self.file.clone());
+                }
+            }
         }
 
         for item_id in copy_types.intersection(&drop_types) {
+            let file = self.hir.item_files.get(item_id).cloned().unwrap_or(root_file.clone());
             self.diags.push(
                 Diagnostic::error(
                     "a type cannot implement both Copy and Drop",
                     self.hir.item(*item_id).span,
                 )
+                .with_file(file)
                 .with_code("E0500"),
             );
         }
 
         for item_id in copy_types.iter().copied() {
+            let file = self.hir.item_files.get(&item_id).cloned().unwrap_or(root_file.clone());
             let fields: Vec<Ty> = match &self.hir.item(item_id).kind {
                 hir::ItemKind::Struct { .. } => self
                     .struct_fields
@@ -2122,10 +2181,12 @@ impl<'a> TypeChecker<'a> {
                         "Copy may only be implemented when every field is Copy",
                         self.hir.item(item_id).span,
                     )
+                    .with_file(file)
                     .with_code("E0500"),
                 );
             }
         }
+        self.file = root_file;
     }
 
     fn trait_method_signature_matches(

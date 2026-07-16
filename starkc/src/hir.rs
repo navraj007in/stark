@@ -150,6 +150,7 @@ pub struct Hir {
     pub pats: Vec<PatNode>,
     pub blocks: Vec<BlockNode>,
     pub root: Root,
+    pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
 }
 
 pub enum Root {

@@ -30,6 +30,7 @@ impl Span {
 }
 
 /// A loaded source file with precomputed line starts for position mapping.
+#[derive(Debug)]
 pub struct SourceFile {
     pub name: String,
     pub src: String,

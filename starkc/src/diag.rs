@@ -44,6 +44,7 @@ pub struct Diagnostic {
     pub label: String,
     pub helps: Vec<String>,
     pub notes: Vec<String>,
+    pub file: Option<std::sync::Arc<SourceFile>>,
 }
 
 impl Diagnostic {
@@ -56,6 +57,7 @@ impl Diagnostic {
             label: String::new(),
             helps: Vec::new(),
             notes: Vec::new(),
+            file: None,
         }
     }
 
@@ -68,7 +70,13 @@ impl Diagnostic {
             label: String::new(),
             helps: Vec::new(),
             notes: Vec::new(),
+            file: None,
         }
+    }
+
+    pub fn with_file(mut self, file: std::sync::Arc<SourceFile>) -> Self {
+        self.file = Some(file);
+        self
     }
 
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
@@ -93,7 +101,8 @@ impl Diagnostic {
 
     /// Render this diagnostic against its source file, in the normative
     /// format. The result always ends with a newline.
-    pub fn render(&self, file: &SourceFile) -> String {
+    pub fn render(&self, default_file: &SourceFile) -> String {
+        let file = self.file.as_deref().unwrap_or(default_file);
         let (line, col) = file.line_col(self.span.lo);
         let line_str = line.to_string();
         // Right-align the line number into a min-width-2 column so the `|`

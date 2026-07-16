@@ -41,6 +41,7 @@ pub struct Ast {
     /// extension, D2/D5). Empty for Core-only programs.
     pub dims: Vec<DimExprNode>,
     pub root: Root,
+    pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
 }
 
 /// What was parsed. `Program` is the source-language entry point
