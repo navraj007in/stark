@@ -254,29 +254,44 @@ impl<'a> TypeChecker<'a> {
             (hir::PatKind::Path { res: ra, .. }, hir::PatKind::Path { res: rb, .. }) => ra == rb,
             (hir::PatKind::Tuple(pa), hir::PatKind::Tuple(pb)) => {
                 pa.len() == pb.len()
-                    && pa.iter().zip(pb).all(|(&ia, &ib)| {
-                        self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib))
-                    })
+                    && pa
+                        .iter()
+                        .zip(pb)
+                        .all(|(&ia, &ib)| self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib)))
             }
             (hir::PatKind::Array(pa), hir::PatKind::Array(pb)) => {
                 pa.len() == pb.len()
-                    && pa.iter().zip(pb).all(|(&ia, &ib)| {
-                        self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib))
-                    })
+                    && pa
+                        .iter()
+                        .zip(pb)
+                        .all(|(&ia, &ib)| self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib)))
             }
             (
-                hir::PatKind::TupleVariant { res: ra, pats: pa, .. },
-                hir::PatKind::TupleVariant { res: rb, pats: pb, .. },
+                hir::PatKind::TupleVariant {
+                    res: ra, pats: pa, ..
+                },
+                hir::PatKind::TupleVariant {
+                    res: rb, pats: pb, ..
+                },
             ) => {
                 ra == rb
                     && pa.len() == pb.len()
-                    && pa.iter().zip(pb).all(|(&ia, &ib)| {
-                        self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib))
-                    })
+                    && pa
+                        .iter()
+                        .zip(pb)
+                        .all(|(&ia, &ib)| self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib)))
             }
             (
-                hir::PatKind::Struct { res: ra, fields: fa, .. },
-                hir::PatKind::Struct { res: rb, fields: fb, .. },
+                hir::PatKind::Struct {
+                    res: ra,
+                    fields: fa,
+                    ..
+                },
+                hir::PatKind::Struct {
+                    res: rb,
+                    fields: fb,
+                    ..
+                },
             ) => {
                 if ra != rb {
                     return false;
@@ -1157,9 +1172,7 @@ impl<'a> TypeChecker<'a> {
                     Res::CoreType(core) => {
                         let args = self.convert_generic_type_args(args.as_ref());
                         let expected = match core {
-                            CoreType::String
-                            | CoreType::CharsIter
-                            | CoreType::SplitIter => 0,
+                            CoreType::String | CoreType::CharsIter | CoreType::SplitIter => 0,
                             CoreType::Vec
                             | CoreType::Box
                             | CoreType::Option
@@ -1956,7 +1969,11 @@ impl<'a> TypeChecker<'a> {
                     let prev_self = self.current_self_ty.take();
                     self.current_self_ty = Some(Ty::Param("Self".to_string()));
                     for trait_item in items {
-                        if let hir::TraitItem::Method { sig, body: Some(body_id) } = trait_item {
+                        if let hir::TraitItem::Method {
+                            sig,
+                            body: Some(body_id),
+                        } = trait_item
+                        {
                             let def = hir::FnDef {
                                 sig: sig.clone(),
                                 body: *body_id,
@@ -2018,7 +2035,8 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn validate_impl_rules(&mut self) {
-        let mut impls: Vec<(Option<Res>, Ty, HashSet<String>, Span, Arc<SourceFile>)> = Vec::new();
+        type ImplRecord = (Option<Res>, Ty, HashSet<String>, Span, Arc<SourceFile>);
+        let mut impls: Vec<ImplRecord> = Vec::new();
         let mut copy_types = HashSet::new();
         let mut drop_types = HashSet::new();
         let root_file = self.file.clone();
@@ -2097,11 +2115,12 @@ impl<'a> TypeChecker<'a> {
 
             let mut conflicting = None;
             for (previous_trait, previous_ty, previous_methods, prev_span, prev_file) in &impls {
-                if *previous_trait == trait_res && self.types_may_overlap(previous_ty, &self_ty) {
-                    if trait_res.is_some() || !previous_methods.is_disjoint(&method_names) {
-                        conflicting = Some((prev_span, prev_file));
-                        break;
-                    }
+                if *previous_trait == trait_res
+                    && self.types_may_overlap(previous_ty, &self_ty)
+                    && (trait_res.is_some() || !previous_methods.is_disjoint(&method_names))
+                {
+                    conflicting = Some((prev_span, prev_file));
+                    break;
                 }
             }
 
@@ -2110,10 +2129,19 @@ impl<'a> TypeChecker<'a> {
                     Diagnostic::error("overlapping implementation for the same type", item.span)
                         .with_code("E0500")
                         .with_label("another applicable impl already exists")
-                        .with_note(format!("conflicting implementation found in {} at {:?}", prev_file.name, prev_span)),
+                        .with_note(format!(
+                            "conflicting implementation found in {} at {:?}",
+                            prev_file.name, prev_span
+                        )),
                 );
             }
-            impls.push((trait_res, self_ty.clone(), method_names, item.span, self.file.clone()));
+            impls.push((
+                trait_res,
+                self_ty.clone(),
+                method_names,
+                item.span,
+                self.file.clone(),
+            ));
 
             let trait_name = trait_
                 .as_ref()
@@ -2283,7 +2311,12 @@ impl<'a> TypeChecker<'a> {
         }
 
         for item_id in copy_types.intersection(&drop_types) {
-            let file = self.hir.item_files.get(item_id).cloned().unwrap_or(root_file.clone());
+            let file = self
+                .hir
+                .item_files
+                .get(item_id)
+                .cloned()
+                .unwrap_or(root_file.clone());
             self.diags.push(
                 Diagnostic::error(
                     "a type cannot implement both Copy and Drop",
@@ -2295,7 +2328,12 @@ impl<'a> TypeChecker<'a> {
         }
 
         for item_id in copy_types.iter().copied() {
-            let file = self.hir.item_files.get(&item_id).cloned().unwrap_or(root_file.clone());
+            let file = self
+                .hir
+                .item_files
+                .get(&item_id)
+                .cloned()
+                .unwrap_or(root_file.clone());
             let fields: Vec<Ty> = match &self.hir.item(item_id).kind {
                 hir::ItemKind::Struct { .. } => self
                     .struct_fields
@@ -3569,6 +3607,7 @@ impl<'a> TypeChecker<'a> {
 
                     let mut is_unreachable = false;
                     for prev_pat in &preceding_patterns {
+                        #[allow(clippy::explicit_auto_deref)]
                         if self.pat_subsumes(*prev_pat, pat) {
                             is_unreachable = true;
                             break;
@@ -3578,7 +3617,9 @@ impl<'a> TypeChecker<'a> {
                         self.diags.push(
                             Diagnostic::warning("unreachable match arm", arm.pat.span(self.hir))
                                 .with_code("E0500")
-                                .with_label("this pattern is redundant and covered by a preceding arm"),
+                                .with_label(
+                                    "this pattern is redundant and covered by a preceding arm",
+                                ),
                         );
                     } else {
                         preceding_patterns.push(pat);
@@ -5112,11 +5153,13 @@ impl<'a> TypeChecker<'a> {
         let bound_name = self.text(bound.path.span).to_string();
 
         match &ty {
-            Ty::Ref {
-                mutable: _,
-                inner,
-            } => {
-                if bound_name == "Eq" || bound_name == "Ord" || bound_name == "Clone" || bound_name == "Hash" || bound_name == "Display" {
+            Ty::Ref { mutable: _, inner } => {
+                if bound_name == "Eq"
+                    || bound_name == "Ord"
+                    || bound_name == "Clone"
+                    || bound_name == "Hash"
+                    || bound_name == "Display"
+                {
                     self.satisfies_bound(inner, bound)
                 } else {
                     false
@@ -5127,7 +5170,10 @@ impl<'a> TypeChecker<'a> {
                     is_numeric(*p)
                 } else if bound_name == "Eq" || bound_name == "Ord" {
                     !matches!(p, Primitive::Unit)
-                } else if bound_name == "Clone" || bound_name == "Display" || bound_name == "Default" {
+                } else if bound_name == "Clone"
+                    || bound_name == "Display"
+                    || bound_name == "Default"
+                {
                     true
                 } else if bound_name == "Hash" {
                     !matches!(p, Primitive::Float32 | Primitive::Float64)
@@ -5138,12 +5184,18 @@ impl<'a> TypeChecker<'a> {
             Ty::Core(core_type, args) => {
                 if bound_name == "Clone" {
                     args.iter().all(|arg| self.satisfies_bound(arg, bound))
-                } else if bound_name == "Eq" || bound_name == "Ord" || bound_name == "Hash" || bound_name == "Display" {
+                } else if bound_name == "Eq"
+                    || bound_name == "Ord"
+                    || bound_name == "Hash"
+                    || bound_name == "Display"
+                {
                     args.iter().all(|arg| self.satisfies_bound(arg, bound))
                 } else if bound_name == "Default" {
                     *core_type == CoreType::Vec || *core_type == CoreType::Option
                 } else if bound_name == "Iterator" {
-                    *core_type == CoreType::CharsIter || *core_type == CoreType::SplitIter || *core_type == CoreType::VecIter
+                    *core_type == CoreType::CharsIter
+                        || *core_type == CoreType::SplitIter
+                        || *core_type == CoreType::VecIter
                 } else {
                     false
                 }

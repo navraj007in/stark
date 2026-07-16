@@ -77,7 +77,8 @@ fn test_multi_file_module_loading() {
     let extra_dir = base_dir.join("extra");
     std::fs::create_dir_all(&extra_dir).unwrap();
 
-    let main_src = "mod math;\nmod extra;\nfn main() { let _x = math::add(1, 2); let _y = extra::sub(3, 1); }";
+    let main_src =
+        "mod math;\nmod extra;\nfn main() { let _x = math::add(1, 2); let _y = extra::sub(3, 1); }";
     let math_src = "pub fn add(a: Int32, b: Int32) -> Int32 { a + b }";
     let extra_src = "pub fn sub(a: Int32, b: Int32) -> Int32 { a - b }";
 
@@ -89,7 +90,10 @@ fn test_multi_file_module_loading() {
     std::fs::write(&math_path, math_src).unwrap();
     std::fs::write(&extra_mod_path, extra_src).unwrap();
 
-    let file = Arc::new(SourceFile::new(main_path.to_string_lossy().into_owned(), main_src.to_string()));
+    let file = Arc::new(SourceFile::new(
+        main_path.to_string_lossy().into_owned(),
+        main_src.to_string(),
+    ));
     let (ast, mut diags) = parse(&file, ParseMode::Program);
     assert!(diags.is_empty(), "parse failed: {:?}", diags);
 
@@ -108,8 +112,11 @@ fn test_multi_file_module_loading() {
     let (_ast_conflict, diags_conflict) = parse(&file, ParseMode::Program);
     // E0202 conflict error should be reported
     assert!(
-        diags_conflict.iter().any(|d| d.code.as_deref() == Some("E0202")),
-        "expected E0202 conflict error, got {:?}", diags_conflict
+        diags_conflict
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0202")),
+        "expected E0202 conflict error, got {:?}",
+        diags_conflict
     );
 
     // Clean up

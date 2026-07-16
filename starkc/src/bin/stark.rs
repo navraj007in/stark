@@ -1,5 +1,3 @@
-use std::process::ExitCode;
-use std::sync::Arc;
 use starkc::diag::Severity;
 use starkc::options::LanguageOptions;
 use starkc::package::{find_package_root, PackageGraph};
@@ -7,6 +5,8 @@ use starkc::parser::parse_package_graph;
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
+use std::process::ExitCode;
+use std::sync::Arc;
 
 const USAGE: &str = "\
 stark — package manager and builder for the STARK Core v1 language
@@ -83,11 +83,18 @@ fn main() -> ExitCode {
     let entry_src = match std::fs::read_to_string(&root_pkg.entry) {
         Ok(src) => src,
         Err(e) => {
-            eprintln!("Error: failed to read entry file '{}': {}", root_pkg.entry.display(), e);
+            eprintln!(
+                "Error: failed to read entry file '{}': {}",
+                root_pkg.entry.display(),
+                e
+            );
             return ExitCode::FAILURE;
         }
     };
-    let root_file = Arc::new(SourceFile::new(root_pkg.entry.to_string_lossy().into_owned(), entry_src));
+    let root_file = Arc::new(SourceFile::new(
+        root_pkg.entry.to_string_lossy().into_owned(),
+        entry_src,
+    ));
 
     if diags.iter().all(|d| d.severity != Severity::Error) {
         let (hir, mut resolution) = resolve(&ast, root_file.clone());

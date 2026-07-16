@@ -1,23 +1,35 @@
-use std::sync::Arc;
 use starkc::diag::Severity;
 use starkc::interp;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
+use std::sync::Arc;
 
 fn execute_snippet(source: &str) -> String {
     let file = Arc::new(SourceFile::new("snippet-test.stark", source.to_string()));
     let (ast, parse_diagnostics) = parse(&file, ParseMode::Program);
-    assert!(parse_diagnostics.is_empty(), "parse failed: {:?}", parse_diagnostics);
-    
+    assert!(
+        parse_diagnostics.is_empty(),
+        "parse failed: {:?}",
+        parse_diagnostics
+    );
+
     let (hir, resolve_diagnostics) = resolve(&ast, file.clone());
-    assert!(resolve_diagnostics.is_empty(), "resolve failed: {:?}", resolve_diagnostics);
-    
+    assert!(
+        resolve_diagnostics.is_empty(),
+        "resolve failed: {:?}",
+        resolve_diagnostics
+    );
+
     let checked = typecheck::analyze(&hir, file.clone());
-    let errors: Vec<_> = checked.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(errors.is_empty(), "typecheck failed: {:?}", errors);
-    
+
     interp::run(&hir, file, &checked.tables).unwrap().output
 }
 
@@ -106,13 +118,23 @@ fn test_float_hash_bound_rejected() {
             require_hash::<Float32>(3.14f32);
         }
     ";
-    let file = Arc::new(SourceFile::new("snippet-test-fail.stark", source.to_string()));
+    let file = Arc::new(SourceFile::new(
+        "snippet-test-fail.stark",
+        source.to_string(),
+    ));
     let (ast, _) = parse(&file, ParseMode::Program);
     let (hir, _) = resolve(&ast, file.clone());
     let checked = typecheck::analyze(&hir, file.clone());
-    let errors: Vec<_> = checked.diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    
-    assert!(!errors.is_empty(), "expected typecheck to fail for Float32 with Hash bound");
+    let errors: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+
+    assert!(
+        !errors.is_empty(),
+        "expected typecheck to fail for Float32 with Hash bound"
+    );
     let err_msg = format!("{:?}", errors[0]);
     assert!(err_msg.contains("does not satisfy trait bound") || err_msg.contains("E0500"));
 }

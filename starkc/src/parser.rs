@@ -56,15 +56,13 @@ pub fn parse_with_options(
     }
 }
 
-pub fn parse_project(
-    root_file: &SourceFile,
-    options: LanguageOptions,
-) -> (Ast, Vec<Diagnostic>) {
+pub fn parse_project(root_file: &SourceFile, options: LanguageOptions) -> (Ast, Vec<Diagnostic>) {
     let mut ast = Ast::default();
     let mut diags = Vec::new();
 
     // Parse root
-    let (root, mut root_diags) = parse_with_options_into(root_file, ParseMode::Program, options, &mut ast);
+    let (root, mut root_diags) =
+        parse_with_options_into(root_file, ParseMode::Program, options, &mut ast);
     diags.append(&mut root_diags);
     ast.root = root;
 
@@ -77,7 +75,13 @@ pub fn parse_project(
         _ => Vec::new(),
     };
 
-    if let Err(mut loader_diags) = load_submodules_recursive(root_file, &root_items, options, &mut ast, &mut loaded_modules) {
+    if let Err(mut loader_diags) = load_submodules_recursive(
+        root_file,
+        &root_items,
+        options,
+        &mut ast,
+        &mut loaded_modules,
+    ) {
         diags.append(&mut loader_diags);
     }
 
@@ -126,14 +130,26 @@ fn parse_package_rec(
         return Ok(items.clone());
     }
 
-    let pkg = graph.packages.get(pkg_name)
+    let pkg = graph
+        .packages
+        .get(pkg_name)
         .ok_or_else(|| format!("Package '{}' not found in graph", pkg_name))?;
 
-    let entry_src = std::fs::read_to_string(&pkg.entry)
-        .map_err(|e| format!("failed to read entry file '{}' for package '{}': {}", pkg.entry.display(), pkg_name, e))?;
-    let entry_file = std::sync::Arc::new(SourceFile::new(pkg.entry.to_string_lossy().into_owned(), entry_src));
-    
-    let (root, mut entry_diags) = parse_with_options_into(&entry_file, ParseMode::Program, options, ast);
+    let entry_src = std::fs::read_to_string(&pkg.entry).map_err(|e| {
+        format!(
+            "failed to read entry file '{}' for package '{}': {}",
+            pkg.entry.display(),
+            pkg_name,
+            e
+        )
+    })?;
+    let entry_file = std::sync::Arc::new(SourceFile::new(
+        pkg.entry.to_string_lossy().into_owned(),
+        entry_src,
+    ));
+
+    let (root, mut entry_diags) =
+        parse_with_options_into(&entry_file, ParseMode::Program, options, ast);
     diags.append(&mut entry_diags);
 
     let mut root_items = match root {
@@ -143,16 +159,21 @@ fn parse_package_rec(
 
     let mut loaded_modules = std::collections::HashSet::new();
     loaded_modules.insert(entry_file.name.clone());
-    if let Err(mut sub_diags) = load_submodules_recursive(&entry_file, &root_items, options, ast, &mut loaded_modules) {
+    if let Err(mut sub_diags) =
+        load_submodules_recursive(&entry_file, &root_items, options, ast, &mut loaded_modules)
+    {
         diags.append(&mut sub_diags);
     }
 
     for dep_name in pkg.dependencies.keys() {
         let dep_items = parse_package_rec(dep_name, graph, options, ast, diags, parsed_packages)?;
-        
+
         let synthetic_lo = 0x8000_0000 + ast.synthetic_spans.len() as u32;
         let synthetic_hi = synthetic_lo + dep_name.len() as u32;
-        let name_span = Span { lo: synthetic_lo, hi: synthetic_hi };
+        let name_span = Span {
+            lo: synthetic_lo,
+            hi: synthetic_hi,
+        };
         ast.synthetic_spans.insert(name_span, dep_name.clone());
 
         let mod_item_id = ast.alloc_item(
@@ -211,7 +232,10 @@ fn load_submodules_recursive(
                     name_span,
                 )
                 .with_code("E0202")
-                .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+                .with_file(std::sync::Arc::new(SourceFile::new(
+                    current_file.name.clone(),
+                    current_file.src.clone(),
+                ))),
             );
             continue;
         }
@@ -223,7 +247,10 @@ fn load_submodules_recursive(
                 diags.push(
                     Diagnostic::error(format!("cannot read file '{}'", p1.display()), name_span)
                         .with_code("E0202")
-                        .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+                        .with_file(std::sync::Arc::new(SourceFile::new(
+                            current_file.name.clone(),
+                            current_file.src.clone(),
+                        ))),
                 );
                 continue;
             }
@@ -234,7 +261,10 @@ fn load_submodules_recursive(
                 diags.push(
                     Diagnostic::error(format!("cannot read file '{}'", p2.display()), name_span)
                         .with_code("E0202")
-                        .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+                        .with_file(std::sync::Arc::new(SourceFile::new(
+                            current_file.name.clone(),
+                            current_file.src.clone(),
+                        ))),
                 );
                 continue;
             }
@@ -255,7 +285,10 @@ fn load_submodules_recursive(
                         name_span,
                     )
                     .with_code("E0202")
-                    .with_file(std::sync::Arc::new(SourceFile::new(current_file.name.clone(), current_file.src.clone()))),
+                    .with_file(std::sync::Arc::new(SourceFile::new(
+                        current_file.name.clone(),
+                        current_file.src.clone(),
+                    ))),
                 );
             }
             (p1, String::new())
@@ -267,7 +300,8 @@ fn load_submodules_recursive(
         }
 
         let child_file = SourceFile::new(path_str, src);
-        let (child_root, mut child_diags) = parse_with_options_into(&child_file, ParseMode::Program, options, ast);
+        let (child_root, mut child_diags) =
+            parse_with_options_into(&child_file, ParseMode::Program, options, ast);
         diags.append(&mut child_diags);
 
         let child_items = match child_root {
@@ -279,7 +313,9 @@ fn load_submodules_recursive(
             *items = Some(child_items.clone());
         }
 
-        if let Err(mut sub_diags) = load_submodules_recursive(&child_file, &child_items, options, ast, loaded_modules) {
+        if let Err(mut sub_diags) =
+            load_submodules_recursive(&child_file, &child_items, options, ast, loaded_modules)
+        {
             diags.append(&mut sub_diags);
         }
     }
@@ -2401,7 +2437,10 @@ impl Parser<'_> {
             }
         };
         let item_id = self.ast.alloc_item(kind, vis, self.span_from(lo));
-        let file_arc = std::sync::Arc::new(SourceFile::new(self.file.name.clone(), self.file.src.clone()));
+        let file_arc = std::sync::Arc::new(SourceFile::new(
+            self.file.name.clone(),
+            self.file.src.clone(),
+        ));
         self.ast.item_files.insert(item_id, file_arc);
         Some(item_id)
     }

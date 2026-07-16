@@ -242,7 +242,12 @@ model Drift<A: Dim> {
 }
 "#;
     let report = verify_declaration_source(&signature, declaration, "drift.stark", None).unwrap();
-    let joined = report.differences.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
+    let joined = report
+        .differences
+        .iter()
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(joined.contains("output port count differs"), "{joined}");
     assert!(joined.contains("over-promises dynamic"), "{joined}");
     assert!(
@@ -639,8 +644,21 @@ fn cli_verify_message_format_json() {
     fs::write(
         &artifact,
         model(
-            &[value("image/input", 1, &[Dim::Static(1), Dim::Static(3), Dim::Static(224), Dim::Static(224)])],
-            &[value("class scores", 1, &[Dim::Static(1), Dim::Static(1000)])],
+            &[value(
+                "image/input",
+                1,
+                &[
+                    Dim::Static(1),
+                    Dim::Static(3),
+                    Dim::Static(224),
+                    Dim::Static(224),
+                ],
+            )],
+            &[value(
+                "class scores",
+                1,
+                &[Dim::Static(1), Dim::Static(1000)],
+            )],
             &[],
         ),
     )

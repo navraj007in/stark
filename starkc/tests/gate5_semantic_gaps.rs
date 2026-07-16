@@ -1,9 +1,9 @@
-use std::sync::Arc;
 use starkc::diag::Severity;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
+use std::sync::Arc;
 
 fn compile_program(source: &str) -> Vec<starkc::diag::Diagnostic> {
     let file = Arc::new(SourceFile::new("test.stark", source.to_string()));
@@ -30,8 +30,14 @@ fn test_trait_default_method_body_checking() {
         }
     ";
     let diags = compile_program(valid_source);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected valid trait default method body to typecheck cleanly");
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected valid trait default method body to typecheck cleanly"
+    );
 
     // 2. Invalid body gets typecheck error
     let invalid_source = "
@@ -42,8 +48,14 @@ fn test_trait_default_method_body_checking() {
         }
     ";
     let diags = compile_program(invalid_source);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(!errors.is_empty(), "expected invalid trait default method body to fail typechecking");
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected invalid trait default method body to fail typechecking"
+    );
 }
 
 #[test]
@@ -53,7 +65,10 @@ fn test_re_export_visibility_and_unresolved() {
         use non_existent::Something;
     ";
     let diags = compile_program(unresolved_source);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(!errors.is_empty(), "expected unresolved import to fail");
     assert!(errors[0].code.as_deref() == Some("E0401"));
 
@@ -72,7 +87,10 @@ fn test_re_export_visibility_and_unresolved() {
         }
     ";
     let diags = compile_program(private_source);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(!errors.is_empty(), "expected private import to fail");
     assert!(errors.iter().any(|d| d.code.as_deref() == Some("E0203")));
 }
@@ -86,8 +104,14 @@ fn test_orphan_rules_and_overlapping_coherence() {
         }
     ";
     let diags = compile_program(non_local_inherent);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(!errors.is_empty(), "expected inherent impl of non-local type to fail");
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected inherent impl of non-local type to fail"
+    );
     assert!(errors[0].code.as_deref() == Some("E0500"));
 
     // 2. Overlapping implementations conflict
@@ -104,11 +128,20 @@ fn test_orphan_rules_and_overlapping_coherence() {
         }
     ";
     let diags = compile_program(overlap_source);
-    let errors: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(!errors.is_empty(), "expected overlapping implementations to fail");
+    let errors: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        !errors.is_empty(),
+        "expected overlapping implementations to fail"
+    );
     assert!(errors[0].code.as_deref() == Some("E0500"));
     let formatted = format!("{:?}", errors[0]);
-    assert!(formatted.contains("conflicting implementation found in test.stark"), "diagnostic should identify both conflicting implementations");
+    assert!(
+        formatted.contains("conflicting implementation found in test.stark"),
+        "diagnostic should identify both conflicting implementations"
+    );
 }
 
 #[test]
@@ -123,8 +156,14 @@ fn test_unreachable_match_arms() {
         }
     ";
     let diags = compile_program(unreachable_source);
-    let warnings: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Warning).collect();
-    assert!(!warnings.is_empty(), "expected unreachable match arm warning");
+    let warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected unreachable match arm warning"
+    );
     assert!(warnings[0].message.contains("unreachable match arm"));
 
     // Nested pattern usefulness unreachability
@@ -142,7 +181,13 @@ fn test_unreachable_match_arms() {
         }
     ";
     let diags = compile_program(nested_unreachable);
-    let warnings: Vec<_> = diags.iter().filter(|d| d.severity == Severity::Warning).collect();
-    assert!(!warnings.is_empty(), "expected nested redundant arm warning");
+    let warnings: Vec<_> = diags
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected nested redundant arm warning"
+    );
     assert!(warnings[0].message.contains("unreachable match arm"));
 }

@@ -139,7 +139,11 @@ pub fn resolve_with_options(
     let mut last_total_items = 0;
     loop {
         resolver.resolve_imports(&root_items);
-        let total_items = resolver.modules.iter().map(|m| m.items.len()).sum::<usize>();
+        let total_items = resolver
+            .modules
+            .iter()
+            .map(|m| m.items.len())
+            .sum::<usize>();
         if total_items == last_total_items {
             break;
         }
@@ -336,8 +340,6 @@ impl<'a> Resolver<'a> {
         }
     }
 
-
-
     fn check_imports_resolved(&mut self, items: &[ast::ItemId]) {
         let current_mod_id = self.current_module;
         for &ast_id in items {
@@ -348,7 +350,11 @@ impl<'a> Resolver<'a> {
         }
         for &ast_id in items {
             let item = self.ast.item(ast_id);
-            if let ast::ItemKind::Mod { items: Some(ref sub_items), .. } = item.kind {
+            if let ast::ItemKind::Mod {
+                items: Some(ref sub_items),
+                ..
+            } = item.kind
+            {
                 if let Some(&sub_mod_id) = self.submodule_map.get(&ast_id) {
                     self.current_module = sub_mod_id;
                     self.check_imports_resolved(sub_items);
@@ -564,7 +570,8 @@ impl<'a> Resolver<'a> {
 
     fn insert_module_item(&mut self, module_id: ModuleId, name: String, res: Res, span: Span) {
         if let Some(vis) = self.current_use_item_vis {
-            self.reexport_vis.insert((module_id, name.clone()), Some(vis));
+            self.reexport_vis
+                .insert((module_id, name.clone()), Some(vis));
         }
         match self.modules[module_id.0 as usize].items.entry(name.clone()) {
             Entry::Occupied(occ) => {
@@ -687,11 +694,8 @@ impl<'a> Resolver<'a> {
             } else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
                 if !self.name_is_visible_from(current_mod, name_str, start_mod) {
                     self.diags.push(
-                        Diagnostic::error(
-                            format!("item '{name_str}' is private"),
-                            segment.span,
-                        )
-                        .with_code("E0203"),
+                        Diagnostic::error(format!("item '{name_str}' is private"), segment.span)
+                            .with_code("E0203"),
                     );
                     return Res::Err;
                 }
@@ -772,10 +776,8 @@ impl<'a> Resolver<'a> {
         if let Some(vis) = self.reexport_vis.get(&(module_id, name.to_string())) {
             return matches!(vis, Some(ast::Vis::Pub));
         }
-        if let Some(&res) = self.modules[module_id.0 as usize].items.get(name) {
-            if let Res::Item(item_id) = res {
-                return self.item_is_visible_from(item_id, from);
-            }
+        if let Some(&Res::Item(item_id)) = self.modules[module_id.0 as usize].items.get(name) {
+            return self.item_is_visible_from(item_id, from);
         }
         true
     }
@@ -1675,9 +1677,9 @@ impl<'a> Resolver<'a> {
                 hir::ItemKind::Use(tree)
             }
             ast::ItemKind::Mod { name, items } => {
-                let sub_items = items.as_ref().map(|sub_items| {
-                    sub_items.iter().map(|&id| hir::ItemId(id.0)).collect()
-                });
+                let sub_items = items
+                    .as_ref()
+                    .map(|sub_items| sub_items.iter().map(|&id| hir::ItemId(id.0)).collect());
                 hir::ItemKind::Mod {
                     name: *name,
                     items: sub_items,

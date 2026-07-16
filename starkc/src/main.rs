@@ -117,7 +117,7 @@ fn main() -> ExitCode {
                 eprint!("{USAGE}");
                 return ExitCode::from(2);
             };
-            
+
             let file = if stdin {
                 if path.is_some() {
                     eprintln!("Error: cannot specify input path when `--stdin` is passed");
@@ -127,7 +127,7 @@ fn main() -> ExitCode {
                     eprintln!("Error: `--filename <path>` is required when `--stdin` is passed");
                     return ExitCode::from(2);
                 };
-                
+
                 use std::io::Read;
                 let mut buffer = String::new();
                 if let Err(err) = std::io::stdin().read_to_string(&mut buffer) {
@@ -150,7 +150,7 @@ fn main() -> ExitCode {
                     Err(code) => return code,
                 }
             };
-            
+
             cmd_check(file, mode, options, message_format)
         }
         Some((cmd, rest)) if cmd == "import" => cmd_import(rest),
@@ -356,11 +356,17 @@ fn cmd_verify(args: &[String]) -> ExitCode {
     ) {
         Ok(report) => {
             if message_format == "json" {
-                let status_str = if report.is_match() { "match" } else { "mismatch" };
+                let status_str = if report.is_match() {
+                    "match"
+                } else {
+                    "mismatch"
+                };
                 let model_str = model.clone().unwrap_or_else(|| {
                     find_first_model_name(&source).unwrap_or_else(|| "Unknown".to_string())
                 });
-                let diffs_json = report.differences.iter()
+                let diffs_json = report
+                    .differences
+                    .iter()
                     .map(|d| d.to_json())
                     .collect::<Vec<_>>()
                     .join(",");
@@ -378,14 +384,12 @@ fn cmd_verify(args: &[String]) -> ExitCode {
                     model_name = starkc::onnx::escape_json(&model_str),
                     diffs_json = diffs_json
                 );
+            } else if report.is_match() {
+                println!("{}: ONNX signature matches", declaration);
             } else {
-                if report.is_match() {
-                    println!("{}: ONNX signature matches", declaration);
-                } else {
-                    eprintln!("Error: ONNX signature mismatch");
-                    for difference in &report.differences {
-                        eprintln!("  - {difference}");
-                    }
+                eprintln!("Error: ONNX signature mismatch");
+                for difference in &report.differences {
+                    eprintln!("  - {difference}");
                 }
             }
             if report.is_match() {
@@ -541,17 +545,29 @@ fn cmd_parse(path: &str, mode: ParseMode, dump: bool, options: LanguageOptions) 
     ExitCode::SUCCESS
 }
 
-fn cmd_check(file: SourceFile, mode: ParseMode, options: LanguageOptions, message_format: &str) -> ExitCode {
+fn cmd_check(
+    file: SourceFile,
+    mode: ParseMode,
+    options: LanguageOptions,
+    message_format: &str,
+) -> ExitCode {
     let mut diags = Vec::new();
     let (tree, parse_diags) = parse_with_options(&file, mode, options);
     diags.extend(parse_diags);
 
     let file_arc = std::sync::Arc::new(file);
-    if diags.iter().all(|d| d.severity != starkc::diag::Severity::Error) {
-        let (hir, sem_diags) = starkc::resolve::resolve_with_options(&tree, file_arc.clone(), options);
+    if diags
+        .iter()
+        .all(|d| d.severity != starkc::diag::Severity::Error)
+    {
+        let (hir, sem_diags) =
+            starkc::resolve::resolve_with_options(&tree, file_arc.clone(), options);
         diags.extend(sem_diags);
 
-        if diags.iter().all(|d| d.severity != starkc::diag::Severity::Error) {
+        if diags
+            .iter()
+            .all(|d| d.severity != starkc::diag::Severity::Error)
+        {
             let type_diags = starkc::typecheck::check_with_options(&hir, file_arc.clone(), options);
             diags.extend(type_diags);
         }
@@ -593,7 +609,7 @@ fn print_json_diagnostics(file_name: &str, diagnostics: &[starkc::diag::Diagnost
             Some(c) => format!("\"code\":\"{}\"", starkc::onnx::escape_json(c)),
             None => "\"code\":null".to_string(),
         };
-        
+
         let label_json = if !diag.label.is_empty() {
             format!(
                 "[{{\"message\":\"{}\",\"file\":\"{}\",\"range\":{{\"startByte\":{},\"endByte\":{}}}}}]",
@@ -606,7 +622,9 @@ fn print_json_diagnostics(file_name: &str, diagnostics: &[starkc::diag::Diagnost
             "[]".to_string()
         };
 
-        let notes_json = diag.notes.iter()
+        let notes_json = diag
+            .notes
+            .iter()
             .map(|n| format!("\"{}\"", starkc::onnx::escape_json(n)))
             .collect::<Vec<_>>()
             .join(",");
@@ -614,7 +632,10 @@ fn print_json_diagnostics(file_name: &str, diagnostics: &[starkc::diag::Diagnost
         let help_str = if diag.helps.is_empty() {
             "\"help\":null".to_string()
         } else {
-            format!("\"help\":\"{}\"", starkc::onnx::escape_json(&diag.helps.join("\n")))
+            format!(
+                "\"help\":\"{}\"",
+                starkc::onnx::escape_json(&diag.helps.join("\n"))
+            )
         };
 
         diags_json.push(format!(
@@ -670,11 +691,11 @@ fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
         Ok(file) => file,
         Err(code) => return code,
     };
-    let (tree, mut diagnostics) =
-        parse_with_options(&file, ParseMode::Program, options);
+    let (tree, mut diagnostics) = parse_with_options(&file, ParseMode::Program, options);
     let file = std::sync::Arc::new(file);
     if diagnostics.is_empty() {
-        let (hir, mut resolution) = starkc::resolve::resolve_with_options(&tree, file.clone(), options);
+        let (hir, mut resolution) =
+            starkc::resolve::resolve_with_options(&tree, file.clone(), options);
         diagnostics.append(&mut resolution);
         if diagnostics.is_empty() {
             let checked = starkc::typecheck::analyze_with_options(&hir, file.clone(), options);

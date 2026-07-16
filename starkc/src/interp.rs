@@ -237,7 +237,12 @@ impl<'a> Interpreter<'a> {
                     fields: default_fields,
                 }
             }
-            Value::Enum { item, variant, fields, named } => {
+            Value::Enum {
+                item,
+                variant,
+                fields,
+                named,
+            } => {
                 let default_fields = fields
                     .iter()
                     .map(|opt| opt.as_ref().map(|v| self.default_value_for(v)))
@@ -260,13 +265,15 @@ impl<'a> Interpreter<'a> {
                 Value::Boxed(Box::new(default_inner))
             }
             Value::Option(_) => Value::Option(None),
-            Value::Result(res) => {
-                match res {
-                    Ok(val) => Value::Result(Ok(Box::new(self.default_value_for(val)))),
-                    Err(err) => Value::Result(Err(Box::new(self.default_value_for(err)))),
-                }
-            }
-            Value::Range { start: _, end: _, inclusive } => Value::Range {
+            Value::Result(res) => match res {
+                Ok(val) => Value::Result(Ok(Box::new(self.default_value_for(val)))),
+                Err(err) => Value::Result(Err(Box::new(self.default_value_for(err)))),
+            },
+            Value::Range {
+                start: _,
+                end: _,
+                inclusive,
+            } => Value::Range {
                 start: 0,
                 end: 0,
                 inclusive: *inclusive,
@@ -992,48 +999,64 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(Value::Unit)
             }
-            Builtin::SizeOf | Builtin::AlignOf => {
-                Ok(Value::Int(8))
-            }
+            Builtin::SizeOf | Builtin::AlignOf => Ok(Value::Int(8)),
             Builtin::Swap => {
-                let b = args.pop().ok_or_else(|| RuntimeError::new("swap expects two arguments", span))?;
-                let a = args.pop().ok_or_else(|| RuntimeError::new("swap expects two arguments", span))?;
+                let b = args
+                    .pop()
+                    .ok_or_else(|| RuntimeError::new("swap expects two arguments", span))?;
+                let a = args
+                    .pop()
+                    .ok_or_else(|| RuntimeError::new("swap expects two arguments", span))?;
                 if let (Value::Ref(place_a), Value::Ref(place_b)) = (a, b) {
                     let slot_a = self.place_slot_mut(&place_a, span)?;
-                    let val_a = slot_a.take().ok_or_else(|| RuntimeError::new("use of moved value", span))?;
-                    
+                    let val_a = slot_a
+                        .take()
+                        .ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+
                     let slot_b = self.place_slot_mut(&place_b, span)?;
-                    let val_b = slot_b.take().ok_or_else(|| RuntimeError::new("use of moved value", span))?;
-                    
+                    let val_b = slot_b
+                        .take()
+                        .ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+
                     let slot_a = self.place_slot_mut(&place_a, span)?;
                     *slot_a = Some(val_b);
-                    
+
                     let slot_b = self.place_slot_mut(&place_b, span)?;
                     *slot_b = Some(val_a);
-                    
+
                     Ok(Value::Unit)
                 } else {
                     Err(RuntimeError::new("swap expects mutable references", span))
                 }
             }
             Builtin::Replace => {
-                let src = args.pop().ok_or_else(|| RuntimeError::new("replace expects two arguments", span))?;
-                let dest = args.pop().ok_or_else(|| RuntimeError::new("replace expects two arguments", span))?;
+                let src = args
+                    .pop()
+                    .ok_or_else(|| RuntimeError::new("replace expects two arguments", span))?;
+                let dest = args
+                    .pop()
+                    .ok_or_else(|| RuntimeError::new("replace expects two arguments", span))?;
                 if let Value::Ref(place_dest) = dest {
                     let slot = self.place_slot_mut(&place_dest, span)?;
-                    let old_val = slot.replace(src).ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+                    let old_val = slot
+                        .replace(src)
+                        .ok_or_else(|| RuntimeError::new("use of moved value", span))?;
                     Ok(old_val)
                 } else {
                     Err(RuntimeError::new("replace expects mutable reference", span))
                 }
             }
             Builtin::Take => {
-                let dest = args.pop().ok_or_else(|| RuntimeError::new("take expects one argument", span))?;
+                let dest = args
+                    .pop()
+                    .ok_or_else(|| RuntimeError::new("take expects one argument", span))?;
                 if let Value::Ref(place_dest) = dest {
                     let old_val = self.place_value(&place_dest, span)?.clone();
                     let def_val = self.default_value_for(&old_val);
                     let slot = self.place_slot_mut(&place_dest, span)?;
-                    let _ = slot.replace(def_val).ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+                    let _ = slot
+                        .replace(def_val)
+                        .ok_or_else(|| RuntimeError::new("use of moved value", span))?;
                     Ok(old_val)
                 } else {
                     Err(RuntimeError::new("take expects mutable reference", span))
@@ -1350,7 +1373,16 @@ impl<'a> Interpreter<'a> {
         let mut values = values.into_iter();
         let mutating = matches!(
             name,
-            "push" | "push_str" | "pop" | "clear" | "insert" | "remove" | "append" | "get_mut" | "extend" | "next"
+            "push"
+                | "push_str"
+                | "pop"
+                | "clear"
+                | "insert"
+                | "remove"
+                | "append"
+                | "get_mut"
+                | "extend"
+                | "next"
         );
         if name == "get" {
             let index = usize_arg(values.next(), span)?;
@@ -1424,7 +1456,9 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "extend" {
-            let iter_arg = values.next().ok_or_else(|| RuntimeError::new("extend expects an iterator", span))?;
+            let iter_arg = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("extend expects an iterator", span))?;
             if let Value::Ref(iter_place) = iter_arg {
                 let place = self.core_receiver_place(base, span)?;
                 loop {
@@ -1448,7 +1482,10 @@ impl<'a> Interpreter<'a> {
                         Value::CharsIter(s, ref mut idx) => {
                             if let Some(ch) = s.chars().nth(*idx) {
                                 *idx += 1;
-                                (Some(Value::Char(ch)), Some(Value::CharsIter(s.clone(), *idx)))
+                                (
+                                    Some(Value::Char(ch)),
+                                    Some(Value::CharsIter(s.clone(), *idx)),
+                                )
                             } else {
                                 (None, None)
                             }
@@ -1457,19 +1494,24 @@ impl<'a> Interpreter<'a> {
                             if *idx < parts.len() {
                                 let part = parts[*idx].clone();
                                 *idx += 1;
-                                (Some(Value::Str(part)), Some(Value::SplitIter(parts.clone(), *idx)))
+                                (
+                                    Some(Value::Str(part)),
+                                    Some(Value::SplitIter(parts.clone(), *idx)),
+                                )
                             } else {
                                 (None, None)
                             }
                         }
-                        _ => return Err(RuntimeError::new("extend expects a valid iterator", span)),
+                        _ => {
+                            return Err(RuntimeError::new("extend expects a valid iterator", span))
+                        }
                     };
-                    
+
                     if let Some(new_iter) = next_iter {
                         let iter_mut = self.place_value_mut(&iter_place, span)?;
                         *iter_mut = new_iter;
                     }
-                    
+
                     if let Some(val) = next_val {
                         let deref_val = self.deref_value(val, span)?;
                         let vec_mut = self.place_value_mut(&place, span)?;
@@ -1482,7 +1524,10 @@ impl<'a> Interpreter<'a> {
                 }
                 return Ok(Value::Unit);
             } else {
-                return Err(RuntimeError::new("extend expects reference to iterator", span));
+                return Err(RuntimeError::new(
+                    "extend expects reference to iterator",
+                    span,
+                ));
             }
         }
         let mut owned;
@@ -1554,7 +1599,10 @@ impl<'a> Interpreter<'a> {
                 }
                 "chars" => Ok(Value::CharsIter(string.clone(), 0)),
                 "bytes" | "into_bytes" => {
-                    let bytes_val = string.bytes().map(|b| Some(Value::Int(b as i128))).collect();
+                    let bytes_val = string
+                        .bytes()
+                        .map(|b| Some(Value::Int(b as i128)))
+                        .collect();
                     Ok(Value::Vec(bytes_val))
                 }
                 "split" => {
