@@ -637,7 +637,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stark-resnet50"
+name = "stark-inference-host"
 version = "0.1.0"
 dependencies = [
  "image",

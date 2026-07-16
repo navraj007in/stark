@@ -10,7 +10,87 @@ use ndarray::{concatenate, Array, ArrayD, Axis, IxDyn};
 use ort::session::Session;
 use ort::value::Tensor as OrtTensor;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::Path;
+
+/// One position in a boundary shape pattern (`refine` / parameter binding): a
+/// symbolic dimension to bind, or a concrete value the actual dimension must
+/// equal. Symbol values originate from checked STARK types.
+pub enum DimBind<'a> {
+    Sym(&'a str),
+    Expect(usize),
+}
+
+/// Runtime bindings of the pipeline's symbolic dimensions (e.g. a dynamic batch
+/// `B`), populated at the model/refine boundary. Computed dimensions are then
+/// evaluated against these bindings with overflow checking; the host never
+/// invents a shape relationship of its own.
+#[derive(Default)]
+pub struct DimEnv {
+    map: HashMap<String, usize>,
+}
+
+impl DimEnv {
+    pub fn new() -> DimEnv {
+        DimEnv::default()
+    }
+
+    /// The bound value of a symbol, or an error if it was never bound.
+    pub fn get(&self, name: &str) -> Result<usize, String> {
+        self.map
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("unbound dimension symbol `{name}`"))
+    }
+
+    /// Checked dimension addition.
+    pub fn add(&self, a: usize, b: usize) -> Result<usize, String> {
+        a.checked_add(b)
+            .ok_or_else(|| "dimension overflow in addition".to_string())
+    }
+
+    /// Checked dimension multiplication.
+    pub fn mul(&self, a: usize, b: usize) -> Result<usize, String> {
+        a.checked_mul(b)
+            .ok_or_else(|| "dimension overflow in multiplication".to_string())
+    }
+
+    fn bind_one(&mut self, name: &str, actual: usize) -> Result<(), String> {
+        match self.map.get(name) {
+            Some(&bound) if bound != actual => Err(format!(
+                "dimension `{name}` was bound to {bound} but found {actual}"
+            )),
+            _ => {
+                self.map.insert(name.to_string(), actual);
+                Ok(())
+            }
+        }
+    }
+
+    /// Bind/check a tensor's actual shape against a boundary pattern.
+    pub fn bind_shape(&mut self, actual: &[usize], pattern: &[DimBind]) -> Result<(), String> {
+        if actual.len() != pattern.len() {
+            return Err(format!(
+                "rank mismatch: tensor has {} axes, expected {}",
+                actual.len(),
+                pattern.len()
+            ));
+        }
+        for (axis, spec) in pattern.iter().enumerate() {
+            match spec {
+                DimBind::Sym(name) => self.bind_one(name, actual[axis])?,
+                DimBind::Expect(n) if actual[axis] != *n => {
+                    return Err(format!(
+                        "dimension mismatch at axis {axis}: expected {n}, found {}",
+                        actual[axis]
+                    ));
+                }
+                DimBind::Expect(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
 
 /// Element type of a runtime tensor. Only the dtypes the prototype pipeline
 /// uses are representable.
@@ -64,8 +144,15 @@ impl Tensor {
     }
 
     /// The `TensorAny.refine::<dtype, shape>()` trust boundary: check the erased
-    /// runtime tensor has exactly the claimed dtype and static shape.
-    pub fn refine(self, dtype: DType, shape: &[usize]) -> Result<Tensor, String> {
+    /// runtime tensor has exactly the claimed dtype, then bind/check its shape
+    /// against the (possibly symbolic) boundary pattern, binding symbols such as
+    /// a dynamic batch into `env`.
+    pub fn refine(
+        self,
+        dtype: DType,
+        pattern: &[DimBind],
+        env: &mut DimEnv,
+    ) -> Result<Tensor, String> {
         if self.dtype() != dtype {
             return Err(format!(
                 "refine dtype mismatch: runtime tensor is {}, expected {}",
@@ -73,14 +160,28 @@ impl Tensor {
                 dtype.name()
             ));
         }
-        if self.shape() != shape {
+        env.bind_shape(&self.shape(), pattern)?;
+        Ok(self)
+    }
+
+    /// `reshape::<shape>()` — re-view the elements under `shape`. Element-count
+    /// equality is proved at compile time; this re-checks it defensively and
+    /// never guesses a dimension.
+    pub fn reshape(&self, shape: &[usize]) -> Result<Tensor, String> {
+        let have: usize = self.shape().iter().product();
+        let want: usize = shape.iter().product();
+        if have != want {
             return Err(format!(
-                "refine shape mismatch: runtime tensor is {:?}, expected {:?}",
+                "reshape element-count mismatch: {:?} ({have}) into {:?} ({want})",
                 self.shape(),
                 shape
             ));
         }
-        Ok(self)
+        Ok(match self {
+            Tensor::U8(a) => Tensor::U8(a.to_shape(IxDyn(shape)).map_err(|e| e.to_string())?.to_owned()),
+            Tensor::F32(a) => Tensor::F32(a.to_shape(IxDyn(shape)).map_err(|e| e.to_string())?.to_owned()),
+            Tensor::I64(a) => Tensor::I64(a.to_shape(IxDyn(shape)).map_err(|e| e.to_string())?.to_owned()),
+        })
     }
 
     /// `permute::<perm>()` — reorder axes.
@@ -215,6 +316,50 @@ impl Tensor {
         }
     }
 
+    /// A deterministic FNV-1a checksum over the tensor's element bit patterns,
+    /// plus the element count. Used for reproducible host-side result reporting
+    /// without any model-specific interpretation.
+    pub fn checksum(&self) -> (usize, u32) {
+        let mut h: u32 = 2_166_136_261;
+        let mut feed = |bits: u32| {
+            h ^= bits;
+            h = h.wrapping_mul(16_777_619);
+        };
+        let mut n = 0usize;
+        match self {
+            Tensor::U8(a) => {
+                for &v in a.iter() {
+                    feed(v as u32);
+                    n += 1;
+                }
+            }
+            Tensor::F32(a) => {
+                for &v in a.iter() {
+                    feed(v.to_bits());
+                    n += 1;
+                }
+            }
+            Tensor::I64(a) => {
+                for &v in a.iter() {
+                    feed((v as u64 & 0xffff_ffff) as u32);
+                    feed(((v as u64) >> 32) as u32);
+                    n += 1;
+                }
+            }
+        }
+        (n, h)
+    }
+
+    /// A deterministic one-line description of a result tensor for reporting.
+    pub fn describe(&self) -> String {
+        let (n, checksum) = self.checksum();
+        format!(
+            "{} {:?} ({n} elems, checksum {checksum:08x})",
+            self.dtype().name(),
+            self.shape()
+        )
+    }
+
     #[cfg(test)]
     pub fn as_f32(&self) -> Option<&ArrayD<f32>> {
         match self {
@@ -313,6 +458,61 @@ impl Tensor {
     }
 }
 
+/// Build the host input tensor the pipeline's first `refine` boundary expects,
+/// selecting layout-appropriate preprocessing from the requested dtype/shape.
+/// This is where host-side image handling lives; the STARK pipeline owns every
+/// tensor guarantee from the refine boundary onward.
+pub fn build_host_input(path: &Path, dtype: DType, dims: &[usize]) -> Result<Tensor, String> {
+    let nchw = dims.len() == 4 && dims[1] == 3;
+    let nhwc = dims.len() == 4 && dims[3] == 3;
+    match (dtype, nchw, nhwc) {
+        // Classifier-style UInt8 NHWC: shorter-side resize + center crop.
+        (DType::UInt8, false, true) => load_image_nhwc(path),
+        // Detector-style Float32 NCHW: stretch to the model's spatial size.
+        (DType::Float32, true, false) => load_image_nchw_f32(path, dims[2], dims[3]),
+        _ => Err(format!(
+            "unsupported host input spec: {} {:?}",
+            dtype.name(),
+            dims
+        )),
+    }
+}
+
+/// Decode an image, resize (stretch) to `height`x`width`, and return owned NCHW
+/// Float32 `[1, 3, height, width]` with raw pixel values in `[0, 255]`.
+pub fn load_image_nchw_f32(path: &Path, height: usize, width: usize) -> Result<Tensor, String> {
+    const MAX_SIDE: usize = 10_000;
+    if height == 0 || width == 0 || height > MAX_SIDE || width > MAX_SIDE {
+        return Err(format!("target dimensions {height}x{width} are out of bounds"));
+    }
+    let decoded = image::ImageReader::open(path)
+        .map_err(|e| format!("cannot open image `{}`: {e}", path.display()))?
+        .with_guessed_format()
+        .map_err(|e| format!("cannot read image `{}`: {e}", path.display()))?
+        .decode()
+        .map_err(|e| format!("cannot decode image: {e}"))?
+        .to_rgb8();
+    let resized = image::imageops::resize(
+        &decoded,
+        width as u32,
+        height as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    // HWC u8 -> NCHW f32 [0,255].
+    let mut data = vec![0f32; 3 * height * width];
+    for y in 0..height {
+        for x in 0..width {
+            let px = resized.get_pixel(x as u32, y as u32);
+            for c in 0..3 {
+                data[c * height * width + y * width + x] = px[c] as f32;
+            }
+        }
+    }
+    let array = Array::from_shape_vec(IxDyn(&[1, 3, height, width]), data)
+        .map_err(|e| format!("tensor shape/data mismatch: {e}"))?;
+    Ok(Tensor::F32(array))
+}
+
 /// Decode a JPEG/PNG image with bounded dimensions, resize the shorter side to
 /// 256 preserving aspect ratio, center-crop 224x224, and return owned NHWC
 /// UInt8 `[1, 224, 224, 3]` data as a `TensorAny`-shaped runtime tensor.
@@ -383,11 +583,50 @@ mod tests {
     }
 
     #[test]
-    fn refine_checks_dtype_and_shape() {
+    fn refine_checks_dtype_and_binds_symbols() {
         let t = Tensor::from_u8(&[2, 2], vec![1, 2, 3, 4]).unwrap();
-        assert!(t.clone().refine(DType::UInt8, &[2, 2]).is_ok());
-        assert!(t.clone().refine(DType::Float32, &[2, 2]).is_err());
-        assert!(t.refine(DType::UInt8, &[2, 3]).is_err());
+        let mut env = DimEnv::new();
+        assert!(t
+            .clone()
+            .refine(DType::UInt8, &[DimBind::Expect(2), DimBind::Expect(2)], &mut env)
+            .is_ok());
+        // wrong dtype and wrong literal both fail
+        assert!(t
+            .clone()
+            .refine(DType::Float32, &[DimBind::Expect(2), DimBind::Expect(2)], &mut DimEnv::new())
+            .is_err());
+        assert!(t
+            .clone()
+            .refine(DType::UInt8, &[DimBind::Expect(2), DimBind::Expect(3)], &mut DimEnv::new())
+            .is_err());
+        // a symbol binds to the actual dimension
+        let mut env2 = DimEnv::new();
+        t.refine(DType::UInt8, &[DimBind::Sym("B"), DimBind::Expect(2)], &mut env2)
+            .unwrap();
+        assert_eq!(env2.get("B").unwrap(), 2);
+    }
+
+    #[test]
+    fn reshape_preserves_elements_and_rejects_mismatch() {
+        let t = Tensor::from_u8(&[2, 3], (0..6).collect()).unwrap();
+        let r = t.reshape(&[3, 2]).unwrap();
+        assert_eq!(r.shape(), vec![3, 2]);
+        // element count must be preserved
+        assert!(t.reshape(&[2, 2]).is_err());
+    }
+
+    #[test]
+    fn dim_env_binds_checks_and_overflows() {
+        let mut env = DimEnv::new();
+        env.bind_shape(&[1, 125, 13, 13], &[DimBind::Sym("B"), DimBind::Expect(125), DimBind::Expect(13), DimBind::Expect(13)])
+            .unwrap();
+        assert_eq!(env.get("B").unwrap(), 1);
+        assert_eq!(env.mul(5, 25).unwrap(), 125);
+        assert!(env.mul(usize::MAX, 2).is_err()); // overflow detected
+        // a rebound symbol with a different value is rejected
+        assert!(env
+            .bind_shape(&[2, 125, 13, 13], &[DimBind::Sym("B"), DimBind::Expect(125), DimBind::Expect(13), DimBind::Expect(13)])
+            .is_err());
     }
 
     #[test]

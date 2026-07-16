@@ -97,6 +97,38 @@ pub fn resnet_signature_bytes() -> Vec<u8> {
     )
 }
 
+/// A Tiny-YOLOv2-shaped artifact: input `image` F32 [B,3,416,416],
+/// output `grid` F32 [B,125,13,13]. The batch dimension is dynamic (symbolic).
+pub fn tiny_yolov2_signature_bytes() -> Vec<u8> {
+    model_bytes(
+        &[value(
+            "image",
+            1,
+            &[
+                Dim::Named("B"),
+                Dim::Static(3),
+                Dim::Static(416),
+                Dim::Static(416),
+            ],
+        )],
+        &[value(
+            "grid",
+            1,
+            &[
+                Dim::Named("B"),
+                Dim::Static(125),
+                Dim::Static(13),
+                Dim::Static(13),
+            ],
+        )],
+    )
+}
+
+/// Write arbitrary model bytes into `dir` and return the path.
+pub fn write_model_bytes(dir: &TempDir, bytes: &[u8]) -> std::path::PathBuf {
+    dir.write("model.onnx", bytes)
+}
+
 // ---- temp-file scaffolding ----
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);

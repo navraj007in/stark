@@ -24,14 +24,57 @@ impl fmt::Display for ValueId {
     }
 }
 
-/// A fully-static tensor type as it appears inside the deployment pipeline.
-/// The prototype requires every intermediate tensor to have a constant shape
-/// (the batch dimension is fixed to 1 by `refine`); non-static shapes are a
-/// lowering error, never a runtime guess.
+/// A deployment dimension: a literal, a named symbolic dimension (e.g. a batch
+/// `B`), or a checked sum/product of dimensions. Symbol names come from the
+/// checked STARK source (the dimension's provenance label); the generated host
+/// binds symbols at the model/refine boundary and evaluates computed dimensions
+/// with overflow checking — it never independently infers a shape relationship.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum DeployDim {
+    Literal(u64),
+    Symbol(String),
+    Add(Box<DeployDim>, Box<DeployDim>),
+    Mul(Box<DeployDim>, Box<DeployDim>),
+}
+
+impl DeployDim {
+    /// The constant value of a purely-literal dimension, if it is one.
+    pub fn as_literal(&self) -> Option<u64> {
+        match self {
+            DeployDim::Literal(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Whether this dimension mentions any symbol (i.e. is not a pure literal
+    /// expression). A pure-literal expression is evaluated at lowering time.
+    pub fn is_symbolic(&self) -> bool {
+        match self {
+            DeployDim::Literal(_) => false,
+            DeployDim::Symbol(_) => true,
+            DeployDim::Add(a, b) | DeployDim::Mul(a, b) => a.is_symbolic() || b.is_symbolic(),
+        }
+    }
+}
+
+impl fmt::Display for DeployDim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeployDim::Literal(n) => write!(f, "{n}"),
+            DeployDim::Symbol(s) => f.write_str(s),
+            DeployDim::Add(a, b) => write!(f, "{a} + {b}"),
+            DeployDim::Mul(a, b) => write!(f, "{a} * {b}"),
+        }
+    }
+}
+
+/// A tensor type as it appears inside the deployment pipeline. Dimensions may be
+/// symbolic (e.g. a dynamic batch bound at the model boundary); every dimension
+/// still originates from a checked STARK type, never a runtime guess.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TensorShape {
     pub dtype: DType,
-    pub dims: Vec<u64>,
+    pub dims: Vec<DeployDim>,
 }
 
 impl fmt::Display for TensorShape {
@@ -92,18 +135,22 @@ pub enum DeployOp {
     Refine {
         src: ValueId,
         dtype: DType,
-        dims: Vec<u64>,
+        dims: Vec<DeployDim>,
     },
     /// `?` applied to a `Result` value — unwraps or early-returns the error.
     Try { src: ValueId },
     /// `permute::<perm>()`.
     Permute { src: ValueId, perm: Vec<u32> },
+    /// `reshape::<dims>()` — re-view the elements under a new (possibly
+    /// symbolic) shape. Element-count equality is proved at compile time; the
+    /// generated host evaluates `dims` against its bound symbols and reshapes.
+    Reshape { src: ValueId, dims: Vec<DeployDim> },
     /// `cast::<dtype>()` — saturating element cast.
     Cast { src: ValueId, dtype: DType },
     /// `full::<dtype, dims>(scalar)` — a broadcastable constant tensor.
     Full {
         dtype: DType,
-        dims: Vec<u64>,
+        dims: Vec<DeployDim>,
         scalar: ScalarLit,
     },
     /// `concat::<axis>(&lhs, &rhs)`.

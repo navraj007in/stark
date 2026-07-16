@@ -7,17 +7,19 @@
 //! `E06xx` diagnostic carrying the offending span. Nothing is silently skipped
 //! and nothing falls back to the interpreter (plan §6).
 
-use crate::ast::UnOp;
+use crate::ast::{DimBinOp, UnOp};
 use crate::diag::Diagnostic;
 use crate::extensions::tensor::types::{DType, TensorKind};
-use crate::hir::{self, Builtin, ExprId, ExprKind, Hir, ItemId, ItemKind, LocalId, Res};
+use crate::hir::{
+    self, Builtin, DimExpr, ExprId, ExprKind, Hir, ItemId, ItemKind, LocalId, Res, TypeId,
+};
 use crate::source::{SourceFile, Span};
 use crate::typecheck::{ExtensionTy, Ty, TypeTables};
 use std::collections::HashMap;
 
 use super::ir::{
-    DeployOp, DeployParam, DeployStmt, DeployTy, DeploymentFunction, ScalarLit, TensorShape,
-    ValueId,
+    DeployDim, DeployOp, DeployParam, DeployStmt, DeployTy, DeploymentFunction, ScalarLit,
+    TensorShape, ValueId,
 };
 
 /// Error codes for deployment lowering. `E06xx` is unused by the normative
@@ -28,6 +30,9 @@ mod code {
     pub const MODEL_SELECTION: &str = "E0603";
     pub const RECURSION: &str = "E0604";
     pub const UNSUPPORTED: &str = "E0605";
+    /// A dimension expression the deployment backend cannot represent (only
+    /// literals, symbols, and their sums/products are supported).
+    pub const UNSUPPORTED_DIM: &str = "E0606";
 }
 
 /// Result of the pure HIR→IR lowering step (before the model/manifest is
@@ -68,11 +73,20 @@ pub(crate) fn lower_reachable(
     let fn_index: HashMap<ItemId, usize> =
         order.iter().enumerate().map(|(i, id)| (*id, i)).collect();
 
+    let model_names: std::collections::HashSet<String> = hir
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Model(def) => Some(text(file, def.name).to_string()),
+            _ => None,
+        })
+        .collect();
     let mut lowerer = Lowerer {
         hir,
         tables,
         file,
         fn_index: &fn_index,
+        model_names,
         diags: Vec::new(),
     };
 
@@ -250,6 +264,11 @@ struct Lowerer<'a> {
     tables: &'a TypeTables,
     file: &'a SourceFile,
     fn_index: &'a HashMap<ItemId, usize>,
+    /// Every `model` declaration's type name, used to recognise a model
+    /// parameter type from its source annotation. Using the full set (not just
+    /// the unique model) keeps the single-model selection error (`E0603`) as the
+    /// diagnostic when a pipeline declares more than one model.
+    model_names: std::collections::HashSet<String>,
     diags: Vec<Diagnostic>,
 }
 
@@ -300,7 +319,10 @@ impl<'a> Lowerer<'a> {
         for p in &sig.params {
             let v = ctx.fresh();
             ctx.env.insert(p.local, v);
-            let ty = self.local_ty(p.local, p.name);
+            // Parameter types come from the source annotation so symbolic
+            // dimensions keep their source names (needed to bind them from the
+            // argument shapes in the generated host).
+            let ty = self.deploy_ty_from_ast(p.ty, p.name)?;
             params.push(DeployParam {
                 name: text(self.file, p.name).to_string(),
                 ty,
@@ -309,7 +331,16 @@ impl<'a> Lowerer<'a> {
         }
 
         let result = self.lower_block(def.body, &mut ctx)?;
-        let ret = self.stmt_ty(&ctx, result);
+        let ret = match sig.ret {
+            hir::RetTy::Ty(tid) => self.deploy_ty_from_ast(tid, sig.name)?,
+            hir::RetTy::Unit | hir::RetTy::Never(_) => {
+                self.error(
+                    "a deployment function must return a tensor or `Result` value",
+                    sig.name,
+                );
+                return None;
+            }
+        };
 
         Some(DeploymentFunction {
             name: text(self.file, sig.name).to_string(),
@@ -508,6 +539,16 @@ impl<'a> Lowerer<'a> {
                 let perm = self.index_list_arg(turbofish, name_span)?;
                 self.emit(ctx, DeployOp::Permute { src, perm }, call_eid, name_span)
             }
+            "reshape" => {
+                let src = self.lower_expr(base, ctx)?;
+                let g = self.require_turbofish(turbofish, name_span)?;
+                if g.args.len() != 1 {
+                    self.error("reshape expects a single shape generic argument", g.span);
+                    return None;
+                }
+                let dims = self.shape_from_arg(&g.args[0], g.span)?;
+                self.emit(ctx, DeployOp::Reshape { src, dims }, call_eid, name_span)
+            }
             "cast" => {
                 let src = self.lower_expr(base, ctx)?;
                 let dtype = self.single_type_arg(turbofish, name_span)?;
@@ -634,7 +675,7 @@ impl<'a> Lowerer<'a> {
         &mut self,
         turbofish: Option<&hir::GenericArgs>,
         span: Span,
-    ) -> Option<(DType, Vec<u64>)> {
+    ) -> Option<(DType, Vec<DeployDim>)> {
         let g = self.require_turbofish(turbofish, span)?;
         if g.args.len() != 2 {
             self.error("expected a dtype and a shape generic argument", g.span);
@@ -668,7 +709,11 @@ impl<'a> Lowerer<'a> {
             self.error("expected a single index-list generic argument", g.span);
             return None;
         }
-        let dims = self.shape_from_arg(&g.args[0], g.span)?;
+        let hir::GenericArg::Shape(shape) = &g.args[0] else {
+            self.error("expected an index list `[..]`", g.span);
+            return None;
+        };
+        let dims = self.literal_index_list(shape, g.span)?;
         Some(dims.into_iter().map(|d| d as u32).collect())
     }
 
@@ -732,25 +777,63 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn shape_from_arg(&mut self, arg: &hir::GenericArg, span: Span) -> Option<Vec<u64>> {
+    /// Lower a turbofish shape argument (`[..]`) to deployment dimensions, each
+    /// of which may be a literal, a symbol, or a checked sum/product.
+    fn shape_from_arg(&mut self, arg: &hir::GenericArg, span: Span) -> Option<Vec<DeployDim>> {
         let hir::GenericArg::Shape(shape) = arg else {
             self.error("expected a shape `[..]`", span);
             return None;
         };
         let mut dims = Vec::with_capacity(shape.dims.len());
         for d in &shape.dims {
+            dims.push(self.deploy_dim_from_expr(d, span)?);
+        }
+        Some(dims)
+    }
+
+    /// Lower one source dimension expression to a [`DeployDim`]. Only literals,
+    /// dimension variables, and their sums/products are representable in the
+    /// deployment backend; subtraction and any other form fail here (`E0606`)
+    /// rather than being silently erased.
+    fn deploy_dim_from_expr(&mut self, expr: &DimExpr, span: Span) -> Option<DeployDim> {
+        match expr {
+            DimExpr::Lit(s) => Some(DeployDim::Literal(self.parse_u64(*s)?)),
+            DimExpr::Var(s) => Some(DeployDim::Symbol(text(self.file, *s).to_string())),
+            DimExpr::Binary { op, lhs, rhs } => {
+                let l = self.deploy_dim_from_expr(lhs, span)?;
+                let r = self.deploy_dim_from_expr(rhs, span)?;
+                match op {
+                    DimBinOp::Add => Some(DeployDim::Add(Box::new(l), Box::new(r))),
+                    DimBinOp::Mul => Some(DeployDim::Mul(Box::new(l), Box::new(r))),
+                    DimBinOp::Sub => {
+                        self.diags.push(
+                            Diagnostic::error(
+                                "dimension subtraction is not supported in a deployment shape",
+                                span,
+                            )
+                            .with_code(code::UNSUPPORTED_DIM),
+                        );
+                        None
+                    }
+                }
+            }
+            DimExpr::Error => None,
+        }
+    }
+
+    /// A perm/index list must be literal integers.
+    fn literal_index_list(&mut self, shape: &hir::ShapeArg, span: Span) -> Option<Vec<u64>> {
+        let mut out = Vec::with_capacity(shape.dims.len());
+        for d in &shape.dims {
             match d {
-                hir::DimExpr::Lit(s) => dims.push(self.parse_u64(*s)?),
+                DimExpr::Lit(s) => out.push(self.parse_u64(*s)?),
                 _ => {
-                    self.error(
-                        "deployment shapes must be constant (no dimension variables)",
-                        span,
-                    );
+                    self.error("index lists must be constant integers", span);
                     return None;
                 }
             }
         }
-        Some(dims)
+        Some(out)
     }
 
     fn parse_u64(&mut self, span: Span) -> Option<u64> {
@@ -793,38 +876,65 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn local_ty(&mut self, local: LocalId, span: Span) -> DeployTy {
-        match self.tables.local_types.get(&local) {
-            Some(ty) => self.convert_ty(ty, span).unwrap_or(DeployTy::TensorAny),
-            None => DeployTy::TensorAny,
+    /// Build a deployment type from a source type annotation, preserving
+    /// symbolic dimension names. References are transparent at this IR level.
+    fn deploy_ty_from_ast(&mut self, ty: TypeId, span: Span) -> Option<DeployTy> {
+        match &self.hir.ty(ty).kind {
+            hir::TypeKind::Ref { inner, .. } => self.deploy_ty_from_ast(*inner, span),
+            hir::TypeKind::Path { path, args, .. } => {
+                let name = text(self.file, path.span).trim().to_string();
+                match name.as_str() {
+                    "TensorAny" => Some(DeployTy::TensorAny),
+                    "Tensor" => {
+                        let args = args.as_ref()?;
+                        let dtype_arg = args.args.first()?;
+                        let dtype = self.dtype_from_arg(dtype_arg, span)?;
+                        let shape = args.args.iter().find_map(|a| match a {
+                            hir::GenericArg::Shape(s) => Some(s),
+                            _ => None,
+                        })?;
+                        let mut dims = Vec::with_capacity(shape.dims.len());
+                        for d in &shape.dims {
+                            dims.push(self.deploy_dim_from_expr(d, span)?);
+                        }
+                        Some(DeployTy::Tensor(TensorShape { dtype, dims }))
+                    }
+                    "Result" => {
+                        let args = args.as_ref()?;
+                        let hir::GenericArg::Type(ok) = args.args.first()? else {
+                            self.error("unsupported `Result` argument in a deployment type", span);
+                            return None;
+                        };
+                        Some(DeployTy::Result(Box::new(
+                            self.deploy_ty_from_ast(*ok, span)?,
+                        )))
+                    }
+                    other if self.model_names.contains(other) => Some(DeployTy::Model),
+                    _ => {
+                        self.error(
+                            format!("unsupported type `{name}` in a deployment pipeline"),
+                            span,
+                        );
+                        None
+                    }
+                }
+            }
+            _ => {
+                self.error("unsupported type in a deployment pipeline", span);
+                None
+            }
         }
-    }
-
-    fn stmt_ty(&self, ctx: &FnCtx, v: ValueId) -> DeployTy {
-        ctx.body
-            .iter()
-            .find(|s| s.result == v)
-            .map(|s| s.ty.clone())
-            .unwrap_or(DeployTy::TensorAny)
     }
 
     fn convert_ty(&mut self, ty: &Ty, span: Span) -> Option<DeployTy> {
         match ty {
             Ty::Extension(ext) => match &**ext {
                 ExtensionTy::Tensor(TensorKind::Tensor(t)) => {
-                    let mut dims = Vec::with_capacity(t.shape.dims.len());
-                    for d in &t.shape.dims {
-                        match d.as_constant() {
-                            Some(n) if n >= 0 => dims.push(n as u64),
-                            _ => {
-                                self.error(
-                                    "deployment tensors must have a fully static shape",
-                                    span,
-                                );
-                                return None;
-                            }
-                        }
-                    }
+                    // This shape (an intermediate value's checked type) is not
+                    // emitted; the emitted shapes come from source turbofish and
+                    // parameter annotations. Build a symbolic form tolerant of
+                    // non-constant dims so lowering does not reject the pipeline.
+                    let dims = t.shape.dims.iter().map(deploy_dim_from_poly).collect();
                     Some(DeployTy::Tensor(TensorShape {
                         dtype: t.dtype,
                         dims,
@@ -858,6 +968,36 @@ impl<'a> Lowerer<'a> {
 
 /// Validate the entry signature against the deployment ABI (plan §6.1):
 /// `fn(entry_model: Model, input: TensorAny) -> Result<Tensor<Int64, [1]>, String>`.
+/// Build a symbolic [`DeployDim`] from a checked dimension polynomial. Used only
+/// for intermediate value types, which are never emitted, so variable names are
+/// synthesized from ids rather than provenance labels.
+fn deploy_dim_from_poly(poly: &crate::extensions::tensor::dim::Poly) -> DeployDim {
+    if let Some(n) = poly.as_constant() {
+        return DeployDim::Literal(n.max(0) as u64);
+    }
+    let mut sum: Option<DeployDim> = None;
+    for (vars, coeff) in poly.iter_terms() {
+        let mut term: Option<DeployDim> = if coeff == 1 && !vars.is_empty() {
+            None
+        } else {
+            Some(DeployDim::Literal(coeff.max(0) as u64))
+        };
+        for v in vars {
+            let sym = DeployDim::Symbol(format!("d{}", v.0));
+            term = Some(match term.take() {
+                Some(t) => DeployDim::Mul(Box::new(t), Box::new(sym)),
+                None => sym,
+            });
+        }
+        let term = term.unwrap_or(DeployDim::Literal(0));
+        sum = Some(match sum.take() {
+            Some(s) => DeployDim::Add(Box::new(s), Box::new(term)),
+            None => term,
+        });
+    }
+    sum.unwrap_or(DeployDim::Literal(0))
+}
+
 /// Returns the selected model's declared type name on success.
 fn validate_entry_abi(
     hir: &Hir,
@@ -893,15 +1033,13 @@ fn validate_entry_abi(
         );
         return None;
     }
-    let expected_ret = DeployTy::Result(Box::new(DeployTy::Tensor(TensorShape {
-        dtype: DType::Int64,
-        dims: vec![1],
-    })));
-    if entry.ret != expected_ret {
+    // The entry must return `Result<Tensor<..>, String>`; the tensor's dtype and
+    // (possibly symbolic) shape are the pipeline's, not fixed by the ABI.
+    if !matches!(&entry.ret, DeployTy::Result(inner) if matches!(**inner, DeployTy::Tensor(_))) {
         abi_err(
             diags,
             format!(
-                "deployment entry must return `Result<Tensor<Int64, [1]>, String>`, found `{}`",
+                "deployment entry must return `Result<Tensor<..>, String>`, found `{}`",
                 entry.ret
             ),
         );
