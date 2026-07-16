@@ -5300,6 +5300,13 @@ static TENSOR_OPS: &[TensorOpDescriptor] = &[
     ),
 ];
 
+/// Why an explicit `broadcast_to` failed: a rank mismatch, or a specific
+/// target-aligned axis that cannot be expanded to the target dimension.
+enum BroadcastError {
+    Rank { source: usize, target: usize },
+    Axis { result_axis: usize },
+}
+
 impl TypeChecker<'_> {
     fn check_tensor_builtin_call(
         &mut self,
@@ -5381,9 +5388,9 @@ impl TypeChecker<'_> {
                 expected.device
             )),
             (false, false, true) if self.can_broadcast_to(&found.shape, &expected.shape) => {
+                let target = self.tensor_ctx.display_shape(&expected.shape);
                 Some(format!(
-                    "broadcast the second tensor with `.broadcast_to::<{}>()`",
-                    expected.shape
+                    "broadcast the second tensor with `.broadcast_to::<{target}>()`"
                 ))
             }
             _ => None,
@@ -5470,7 +5477,10 @@ impl TypeChecker<'_> {
         }
     }
 
-    fn broadcast_shapes(&mut self, sa: &Shape, sb: &Shape, span: Span) -> Option<Shape> {
+    /// Right-aligned NumPy-style broadcast of two shapes. On success returns the
+    /// result shape; on failure returns the result-aligned axis at which the two
+    /// dimensions are neither provably equal nor a literal `1`.
+    fn broadcast_shapes(&mut self, sa: &Shape, sb: &Shape, span: Span) -> Result<Shape, usize> {
         let rank_a = sa.rank();
         let rank_b = sb.rank();
         let rank_out = std::cmp::max(rank_a, rank_b);
@@ -5513,8 +5523,9 @@ impl TypeChecker<'_> {
                         // Broadcasting is proof-based: unrelated variables do
                         // not become equal merely because an operation wants
                         // them to. Only equality already established by the
-                        // surrounding type constraints is accepted here.
-                        return None;
+                        // surrounding type constraints is accepted here. Report
+                        // the axis aligned to the result shape.
+                        return Err(rank_out - 1 - trailing);
                     }
                 }
                 (Some(da), None) => {
@@ -5531,12 +5542,18 @@ impl TypeChecker<'_> {
 
         dims_out.reverse();
         spans_out.reverse();
-        Some(Shape::with_spans(dims_out, spans_out))
+        Ok(Shape::with_spans(dims_out, spans_out))
     }
 
-    fn can_broadcast_to(&mut self, source: &Shape, target: &Shape) -> bool {
+    /// Whether `source` can be explicitly broadcast to `target`. On failure
+    /// distinguishes a rank mismatch from a specific target-aligned axis that
+    /// cannot be expanded.
+    fn broadcast_to_check(&mut self, source: &Shape, target: &Shape) -> Result<(), BroadcastError> {
         if source.rank() > target.rank() {
-            return false;
+            return Err(BroadcastError::Rank {
+                source: source.rank(),
+                target: target.rank(),
+            });
         }
         for trailing in 0..source.rank() {
             let source_index = source.rank() - 1 - trailing;
@@ -5550,10 +5567,18 @@ impl TypeChecker<'_> {
                 .resolve_dim(&target.dims[target_index])
                 .unwrap_or_else(|_| target.dims[target_index].clone());
             if source_dim != target_dim && source_dim.as_constant() != Some(1) {
-                return false;
+                return Err(BroadcastError::Axis {
+                    result_axis: target_index,
+                });
             }
         }
-        true
+        Ok(())
+    }
+
+    /// Boolean form for callers that only need the yes/no answer (e.g. fix
+    /// suggestions).
+    fn can_broadcast_to(&mut self, source: &Shape, target: &Shape) -> bool {
+        self.broadcast_to_check(source, target).is_ok()
     }
 
     fn shape_volume(&mut self, shape: &Shape) -> Result<Poly, ()> {
@@ -5874,16 +5899,25 @@ impl TypeChecker<'_> {
                             return Ty::Error;
                         }
                         let out_shape = match self.broadcast_shapes(&ta.shape, &tb.shape, span) {
-                            Some(s) => s,
-                            None => {
+                            Ok(s) => s,
+                            Err(result_axis) => {
+                                let lhs = self.tensor_ctx.display_shape(&ta.shape);
+                                let rhs = self.tensor_ctx.display_shape(&tb.shape);
                                 let mut diag = Diagnostic::error(
-                                    format!(
-                                        "tensor shape mismatch for broadcasting: `{}` and `{}`",
-                                        ta.shape, tb.shape
-                                    ),
+                                    "tensor shapes cannot be broadcast together",
                                     span,
                                 )
-                                .with_code("E0212");
+                                .with_code("E0212")
+                                .with_note(format!("left shape: {lhs}"))
+                                .with_note(format!("right shape: {rhs}"))
+                                .with_note(format!(
+                                    "axis {result_axis} (aligned to the result) is neither equal nor `1`"
+                                ));
+                                for origin in
+                                    self.tensor_ctx.dim_origin_notes(&[&ta.shape, &tb.shape])
+                                {
+                                    diag = diag.with_note(origin);
+                                }
                                 if let Some(fix) = self.get_fix_suggestion(&ka, &kb) {
                                     diag = diag.with_note(fix);
                                 }
@@ -5948,17 +5982,31 @@ impl TypeChecker<'_> {
 
                 match &ka {
                     TensorKind::Tensor(t) => {
-                        if !self.can_broadcast_to(&t.shape, &target_shape) {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "cannot broadcast tensor of shape `{}` to `{}`",
-                                        t.shape, target_shape
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
+                        if let Err(err) = self.broadcast_to_check(&t.shape, &target_shape) {
+                            let source = self.tensor_ctx.display_shape(&t.shape);
+                            let target = self.tensor_ctx.display_shape(&target_shape);
+                            let mut diag =
+                                Diagnostic::error("cannot `broadcast_to` the target shape", span)
+                                    .with_code("E0212")
+                                    .with_note(format!("source shape: {source}"))
+                                    .with_note(format!("target shape: {target}"));
+                            diag = match err {
+                                BroadcastError::Rank {
+                                    source: s,
+                                    target: t,
+                                } => diag.with_note(format!(
+                                    "rank mismatch: source rank {s} exceeds target rank {t}"
+                                )),
+                                BroadcastError::Axis { result_axis } => diag.with_note(format!(
+                                    "axis {result_axis} (aligned to the result) is neither equal nor `1`"
+                                )),
+                            };
+                            for origin in
+                                self.tensor_ctx.dim_origin_notes(&[&t.shape, &target_shape])
+                            {
+                                diag = diag.with_note(origin);
+                            }
+                            self.diags.push(diag);
                             return Ty::Error;
                         }
                         Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
@@ -6021,13 +6069,17 @@ impl TypeChecker<'_> {
                             .unify_dim(&ta.shape.dims[1], &tb.shape.dims[0], 0)
                             .is_err()
                         {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "matmul inner dimensions mismatch: {} and {}",
-                                    ta.shape.dims[1], tb.shape.dims[0]
-                                ),
-                                span,
-                            ));
+                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[1]);
+                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[0]);
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "matmul inner dimensions mismatch: `{lhs}` and `{rhs}`"
+                                    ),
+                                    span,
+                                )
+                                .with_code("E0212"),
+                            );
                             return Ty::Error;
                         }
 
@@ -6094,13 +6146,17 @@ impl TypeChecker<'_> {
                             .unify_dim(&ta.shape.dims[0], &tb.shape.dims[0], 0)
                             .is_err()
                         {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "batch_matmul batch dimension mismatch: {} and {}",
-                                    ta.shape.dims[0], tb.shape.dims[0]
-                                ),
-                                span,
-                            ));
+                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[0]);
+                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[0]);
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "batch_matmul batch dimension mismatch: `{lhs}` and `{rhs}`"
+                                    ),
+                                    span,
+                                )
+                                .with_code("E0212"),
+                            );
                             return Ty::Error;
                         }
                         if self
@@ -6108,13 +6164,17 @@ impl TypeChecker<'_> {
                             .unify_dim(&ta.shape.dims[2], &tb.shape.dims[1], 1)
                             .is_err()
                         {
-                            self.diags.push(Diagnostic::error(
-                                format!(
-                                    "batch_matmul inner dimensions mismatch: {} and {}",
-                                    ta.shape.dims[2], tb.shape.dims[1]
-                                ),
-                                span,
-                            ));
+                            let lhs = self.tensor_ctx.display_dim(&ta.shape.dims[2]);
+                            let rhs = self.tensor_ctx.display_dim(&tb.shape.dims[1]);
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "batch_matmul inner dimensions mismatch: `{lhs}` and `{rhs}`"
+                                    ),
+                                    span,
+                                )
+                                .with_code("E0212"),
+                            );
                             return Ty::Error;
                         }
 
@@ -6382,15 +6442,25 @@ impl TypeChecker<'_> {
                             }
                         };
                         if source_volume != target_volume {
-                            self.diags.push(
-                                Diagnostic::error(
-                                    format!(
-                                        "cannot prove reshape element counts equal: source `{source_volume}`, target `{target_volume}`"
-                                    ),
-                                    span,
-                                )
-                                .with_code("E0212"),
-                            );
+                            let source_shape = self.tensor_ctx.display_shape(&t.shape);
+                            let target_display = self.tensor_ctx.display_shape(&target_shape);
+                            let source_product = self.tensor_ctx.shape_product_display(&t.shape);
+                            let target_product =
+                                self.tensor_ctx.shape_product_display(&target_shape);
+                            let mut diag =
+                                Diagnostic::error("reshape cannot preserve element count", span)
+                                    .with_code("E0212")
+                                    .with_note(format!("source shape: {source_shape}"))
+                                    .with_note(format!("target shape: {target_display}"))
+                                    .with_note(format!(
+                                        "required: {source_product} == {target_product}"
+                                    ));
+                            for origin in
+                                self.tensor_ctx.dim_origin_notes(&[&t.shape, &target_shape])
+                            {
+                                diag = diag.with_note(origin);
+                            }
+                            self.diags.push(diag);
                             return Ty::Error;
                         }
                         Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
@@ -7201,7 +7271,7 @@ mod tests {
         assert!(
             invalid
                 .iter()
-                .any(|message| message.contains("cannot broadcast")),
+                .any(|message| message.contains("cannot `broadcast_to` the target shape")),
             "{invalid:?}"
         );
     }
@@ -7214,7 +7284,7 @@ mod tests {
         assert!(
             messages
                 .iter()
-                .any(|message| message.contains("shape mismatch for broadcasting")),
+                .any(|message| message.contains("tensor shapes cannot be broadcast together")),
             "{messages:?}"
         );
     }
@@ -7232,7 +7302,7 @@ mod tests {
         assert!(
             invalid
                 .iter()
-                .any(|message| message.contains("cannot prove reshape element counts equal")),
+                .any(|message| message.contains("reshape cannot preserve element count")),
             "{invalid:?}"
         );
     }

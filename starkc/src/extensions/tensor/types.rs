@@ -565,6 +565,57 @@ impl UnifyCtx {
         self.provenance.get(&var).map(|p| p.label.as_str())
     }
 
+    /// Render a shape's element count as a per-axis product using source-level
+    /// dimension names, e.g. `B * 125 * 13 * 13`. Unlike the normalized volume
+    /// polynomial, this keeps the reshape's own factors visible and never shows
+    /// internal ids. An empty (rank-0) shape has a product of `1`.
+    pub fn shape_product_display(&self, shape: &Shape) -> String {
+        if shape.dims.is_empty() {
+            return "1".to_string();
+        }
+        shape
+            .dims
+            .iter()
+            .map(|d| self.display_dim(d))
+            .collect::<Vec<_>>()
+            .join(" * ")
+    }
+
+    /// Describe the source origin of every distinct symbolic dimension appearing
+    /// in `shapes`, in first-appearance order, for diagnostic notes such as
+    /// ``dimension `B` originates from a function generic parameter``. Literal
+    /// dimensions contribute nothing; internal ids are never exposed.
+    pub fn dim_origin_notes(&self, shapes: &[&Shape]) -> Vec<String> {
+        let mut seen: Vec<DimVar> = Vec::new();
+        let mut notes = Vec::new();
+        for shape in shapes {
+            for dim in &shape.dims {
+                let resolved = self.resolve_dim(dim).unwrap_or_else(|_| dim.clone());
+                for (vars, _) in resolved.iter_terms() {
+                    for var in vars {
+                        if seen.contains(&var) {
+                            continue;
+                        }
+                        seen.push(var);
+                        if let Some(prov) = self.provenance.get(&var) {
+                            let origin = match prov.origin {
+                                OriginKind::Param => "a function generic parameter",
+                                OriginKind::Refine => "a `refine` boundary",
+                                OriginKind::ImportedPort => "an imported model port",
+                                OriginKind::OpResult => "a tensor operation result",
+                            };
+                            notes.push(format!(
+                                "dimension `{}` originates from {origin}",
+                                prov.label
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        notes
+    }
+
     /// Freshen the generic variables in a stored tensor signature for one
     /// call. Shared maps preserve equality across every parameter and return
     /// type in that call while separate calls remain independent.
