@@ -39,6 +39,19 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let mut locked = false;
+    let mut offline = false;
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            "--locked" => locked = true,
+            "--offline" => offline = true,
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
     let current_dir = match std::env::current_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -55,7 +68,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let graph = match PackageGraph::load_from_root(&manifest_path) {
+    let graph = match PackageGraph::load_from_root_with_modes(&manifest_path, locked, offline) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("Error: {}", e);
