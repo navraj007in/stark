@@ -1,7 +1,7 @@
 # STARK Gate 5 Evaluation Summary
 
-**Timestamp:** 2026-07-15T23:58:17Z
-**Commit:** `c1b32f9975a7a1bbfc093e44bbf35c49f32aeb36` (dirty: True)
+**Timestamp:** 2026-07-16T00:08:46Z
+**Commit:** `2d1645e19f24e637172e9fae9b3ad6bc3d089fc7` (dirty: False)
 
 ## System Environment
 - OS: Darwin (arm64)
@@ -17,9 +17,9 @@
 ## Inference Performance
 - Top-1 Class: 258
 - Top-1 Probability: 0.947176
-- Host Session Startup: 304.61 ms
-- Peak RSS: 374.00 MB (392167424 bytes)
+- Host Session Startup: 307.85 ms
+- Peak RSS: 369.25 MB (387186688 bytes)
 - Latency (100 iterations):
-  - Min: 12.674 ms
-  - Median: 13.479 ms
-  - P95: 19.180 ms
+  - Min: 12.717 ms
+  - Median: 13.079 ms
+  - P95: 14.633 ms

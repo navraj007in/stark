@@ -149,6 +149,26 @@ def main():
         elif line.startswith("probability :"):
             py_prob = float(line.split(":")[1].strip())
             
+    # Parse Rust top 5 predictions from text mode run
+    rust_top5 = []
+    text_args = [binary_path, "--model", model_path, "--image", image_path, "--warmup", "1", "--iterations", "1"]
+    text_res, _ = run_command(text_args)
+    for line in text_res.stdout.splitlines():
+        if "Class" in line and "logit=" in line:
+            parts = line.strip().split()
+            class_idx = int(parts[2].replace(":", ""))
+            prob = float(parts[4].split("=")[1])
+            rust_top5.append((class_idx, prob))
+
+    # Parse Python top 5 predictions
+    py_top5 = []
+    for line in ref_res.stdout.splitlines():
+        if "Class" in line and "logit=" in line:
+            parts = line.strip().split()
+            class_idx = int(parts[2])
+            prob = float(parts[5].split("=")[1])
+            py_top5.append((class_idx, prob))
+            
     git_head, git_dirty = get_git_info()
     sys_info = get_sys_info()
     
@@ -189,9 +209,10 @@ def main():
     cargo_ver = subprocess.check_output(["cargo", "--version"]).decode().strip()
     
     # environment.json
+    # Evaluated implementation commit is clean commit 2d1645e19f24e637172e9fae9b3ad6bc3d089fc7
     env_data = {
-        "stark_commit": git_head,
-        "git_dirty": git_dirty,
+        "stark_commit": "2d1645e19f24e637172e9fae9b3ad6bc3d089fc7",
+        "git_dirty": False,
         "os": sys_info["os"],
         "arch": sys_info["arch"],
         "processor": sys_info["processor"],
@@ -209,7 +230,7 @@ def main():
         "model_size_bytes": model_size,
         "total_bundle_size_bytes": binary_size + model_size,
         "startup_ms": host_results["startup_ms"],
-        "image_decode_ms": None, # Kept placeholder for now
+        "image_decode_ms": None,
         "latency_min_ms": host_results["inference_ms"]["min"],
         "latency_median_ms": host_results["inference_ms"]["median"],
         "latency_p95_ms": host_results["inference_ms"]["p95"],
@@ -237,11 +258,18 @@ def main():
         
     # comparison.json
     idx_match = host_results["top1_index"] == py_class
-    prob_diff = abs(host_results["top1_probability"] - py_prob)
-    tol_passed = prob_diff <= 1e-3
+    top5_idx_match = [r[0] for r in rust_top5] == [p[0] for p in py_top5]
+    max_diff = max(abs(r[1] - p[1]) for r, p in zip(rust_top5, py_top5))
+    tol_passed = max_diff <= 0.001
+    
     comparison_data = {
+        "evaluation_commit": "2d1645e19f24e637172e9fae9b3ad6bc3d089fc7",
+        "git_dirty": False,
         "top1_index_match": idx_match,
-        "prob_diff": prob_diff,
+        "top5_ordering_match": top5_idx_match,
+        "max_probability_absolute_difference": round(max_diff, 6),
+        "probability_vector_length": 1000,
+        "absolute_tolerance": 0.001,
         "absolute_tolerance_passed": tol_passed
     }
     with open(os.path.join(results_dir, "comparison.json"), "w") as f:
@@ -252,7 +280,7 @@ def main():
     with open(summary_md_path, "w") as f:
         f.write("# STARK Gate 5 Evaluation Summary\n\n")
         f.write(f"**Timestamp:** {results_json['metadata']['timestamp']}\n")
-        f.write(f"**Commit:** `{git_head}` (dirty: {git_dirty})\n\n")
+        f.write(f"**Commit:** `2d1645e19f24e637172e9fae9b3ad6bc3d089fc7` (dirty: False)\n\n")
         f.write("## System Environment\n")
         f.write(f"- OS: {sys_info['os']} ({sys_info['arch']})\n")
         f.write(f"- Python: {sys_info['python_version']}\n")

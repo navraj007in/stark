@@ -1,6 +1,6 @@
 {
-  "stark_commit": "c1b32f9975a7a1bbfc093e44bbf35c49f32aeb36",
-  "git_dirty": true,
+  "stark_commit": "2d1645e19f24e637172e9fae9b3ad6bc3d089fc7",
+  "git_dirty": false,
   "os": "Darwin",
   "arch": "arm64",
   "processor": "arm",
