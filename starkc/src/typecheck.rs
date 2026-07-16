@@ -396,6 +396,43 @@ impl<'a> TypeChecker<'a> {
                 params: vec![],
                 ret: Box::new(self.new_type_var()),
             },
+            Builtin::SizeOf | Builtin::AlignOf => Ty::Fn {
+                params: vec![],
+                ret: Box::new(Ty::Primitive(Primitive::UInt64)),
+            },
+            Builtin::Swap => {
+                let value = self.new_type_var();
+                let ref_ty = Ty::Ref {
+                    mutable: true,
+                    inner: Box::new(value),
+                };
+                Ty::Fn {
+                    params: vec![ref_ty.clone(), ref_ty],
+                    ret: Box::new(unit),
+                }
+            }
+            Builtin::Replace => {
+                let value = self.new_type_var();
+                let ref_ty = Ty::Ref {
+                    mutable: true,
+                    inner: Box::new(value.clone()),
+                };
+                Ty::Fn {
+                    params: vec![ref_ty, value.clone()],
+                    ret: Box::new(value),
+                }
+            }
+            Builtin::Take => {
+                let value = self.new_type_var();
+                let ref_ty = Ty::Ref {
+                    mutable: true,
+                    inner: Box::new(value.clone()),
+                };
+                Ty::Fn {
+                    params: vec![ref_ty],
+                    ret: Box::new(value),
+                }
+            }
         }
     }
 
@@ -2778,7 +2815,23 @@ impl<'a> TypeChecker<'a> {
                 }
                 Res::SelfType => self.current_self_ty.clone().unwrap_or(Ty::Error),
                 Res::SelfValue(local) => self.local_types.get(local).cloned().unwrap_or(Ty::Error),
-                Res::Builtin(builtin) => self.builtin_type(*builtin),
+                Res::Builtin(builtin) => {
+                    if *builtin == Builtin::SizeOf || *builtin == Builtin::AlignOf {
+                        self.validate_generic_arity(
+                            1,
+                            turbofish.as_ref().map_or(0, |args| args.args.len()),
+                            expr.span,
+                        );
+                        if let Some(ref args) = turbofish {
+                            for arg in &args.args {
+                                if let hir::GenericArg::Type(type_id) = arg {
+                                    self.type_from_hir_without_diagnostics(*type_id);
+                                }
+                            }
+                        }
+                    }
+                    self.builtin_type(*builtin)
+                }
                 Res::TraitMember(_, _) => Ty::Error,
                 Res::Err
                 | Res::TypeParam
@@ -4855,14 +4908,35 @@ impl<'a> TypeChecker<'a> {
 
         match &ty {
             Ty::Ref {
-                mutable: false,
+                mutable: _,
                 inner,
-            } if bound_name == "Eq" || bound_name == "Ord" => self.satisfies_bound(inner, bound),
+            } => {
+                if bound_name == "Eq" || bound_name == "Ord" || bound_name == "Clone" || bound_name == "Hash" || bound_name == "Display" {
+                    self.satisfies_bound(inner, bound)
+                } else {
+                    false
+                }
+            }
             Ty::Primitive(p) => {
                 if bound_name == "Num" {
                     is_numeric(*p)
                 } else if bound_name == "Eq" || bound_name == "Ord" {
                     !matches!(p, Primitive::Unit)
+                } else if bound_name == "Clone" || bound_name == "Display" || bound_name == "Default" {
+                    true
+                } else if bound_name == "Hash" {
+                    !matches!(p, Primitive::Float32 | Primitive::Float64)
+                } else {
+                    false
+                }
+            }
+            Ty::Core(core_type, args) => {
+                if bound_name == "Clone" {
+                    args.iter().all(|arg| self.satisfies_bound(arg, bound))
+                } else if bound_name == "Eq" || bound_name == "Ord" || bound_name == "Hash" || bound_name == "Display" {
+                    args.iter().all(|arg| self.satisfies_bound(arg, bound))
+                } else if bound_name == "Default" {
+                    *core_type == CoreType::Vec || *core_type == CoreType::Option
                 } else {
                     false
                 }

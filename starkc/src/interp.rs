@@ -198,6 +198,78 @@ struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
+    fn default_value_for(&self, value: &Value) -> Value {
+        match value {
+            Value::Unit => Value::Unit,
+            Value::Bool(_) => Value::Bool(false),
+            Value::Int(_) => Value::Int(0),
+            Value::Float(_) => Value::Float(0.0),
+            Value::Char(_) => Value::Char('\0'),
+            Value::Str(_) | Value::String(_) => Value::String(String::new()),
+            Value::Tuple(elems) => {
+                let default_elems = elems
+                    .iter()
+                    .map(|opt| opt.as_ref().map(|v| self.default_value_for(v)))
+                    .collect();
+                Value::Tuple(default_elems)
+            }
+            Value::Array(elems) => {
+                let default_elems = elems
+                    .iter()
+                    .map(|opt| opt.as_ref().map(|v| self.default_value_for(v)))
+                    .collect();
+                Value::Array(default_elems)
+            }
+            Value::Struct { item, fields } => {
+                let mut default_fields = std::collections::BTreeMap::new();
+                for (name, val_opt) in fields {
+                    let def_val = val_opt.as_ref().map(|v| self.default_value_for(v));
+                    default_fields.insert(name.clone(), def_val);
+                }
+                Value::Struct {
+                    item: *item,
+                    fields: default_fields,
+                }
+            }
+            Value::Enum { item, variant, fields, named } => {
+                let default_fields = fields
+                    .iter()
+                    .map(|opt| opt.as_ref().map(|v| self.default_value_for(v)))
+                    .collect();
+                let mut default_named = std::collections::BTreeMap::new();
+                for (name, val_opt) in named {
+                    let def_val = val_opt.as_ref().map(|v| self.default_value_for(v));
+                    default_named.insert(name.clone(), def_val);
+                }
+                Value::Enum {
+                    item: *item,
+                    variant: *variant,
+                    fields: default_fields,
+                    named: default_named,
+                }
+            }
+            Value::Vec(_) => Value::Vec(Vec::new()),
+            Value::Boxed(inner) => {
+                let default_inner = inner.as_ref().as_ref().map(|v| self.default_value_for(v));
+                Value::Boxed(Box::new(default_inner))
+            }
+            Value::Option(_) => Value::Option(None),
+            Value::Result(res) => {
+                match res {
+                    Ok(val) => Value::Result(Ok(Box::new(self.default_value_for(val)))),
+                    Err(err) => Value::Result(Err(Box::new(self.default_value_for(err)))),
+                }
+            }
+            Value::Range { start: _, end: _, inclusive } => Value::Range {
+                start: 0,
+                end: 0,
+                inclusive: *inclusive,
+            },
+            Value::Ref(place) => Value::Ref(place.clone()),
+            Value::Function(item) => Value::Function(*item),
+        }
+    }
+
     fn new(hir: &'a Hir, file: Arc<SourceFile>, tables: &'a TypeTables) -> Self {
         let copy_items = hir
             .items
@@ -910,6 +982,53 @@ impl<'a> Interpreter<'a> {
                     self.drop_value(value)?;
                 }
                 Ok(Value::Unit)
+            }
+            Builtin::SizeOf | Builtin::AlignOf => {
+                Ok(Value::Int(8))
+            }
+            Builtin::Swap => {
+                let b = args.pop().ok_or_else(|| RuntimeError::new("swap expects two arguments", span))?;
+                let a = args.pop().ok_or_else(|| RuntimeError::new("swap expects two arguments", span))?;
+                if let (Value::Ref(place_a), Value::Ref(place_b)) = (a, b) {
+                    let slot_a = self.place_slot_mut(&place_a, span)?;
+                    let val_a = slot_a.take().ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+                    
+                    let slot_b = self.place_slot_mut(&place_b, span)?;
+                    let val_b = slot_b.take().ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+                    
+                    let slot_a = self.place_slot_mut(&place_a, span)?;
+                    *slot_a = Some(val_b);
+                    
+                    let slot_b = self.place_slot_mut(&place_b, span)?;
+                    *slot_b = Some(val_a);
+                    
+                    Ok(Value::Unit)
+                } else {
+                    Err(RuntimeError::new("swap expects mutable references", span))
+                }
+            }
+            Builtin::Replace => {
+                let src = args.pop().ok_or_else(|| RuntimeError::new("replace expects two arguments", span))?;
+                let dest = args.pop().ok_or_else(|| RuntimeError::new("replace expects two arguments", span))?;
+                if let Value::Ref(place_dest) = dest {
+                    let slot = self.place_slot_mut(&place_dest, span)?;
+                    let old_val = slot.replace(src).ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+                    Ok(old_val)
+                } else {
+                    Err(RuntimeError::new("replace expects mutable reference", span))
+                }
+            }
+            Builtin::Take => {
+                let dest = args.pop().ok_or_else(|| RuntimeError::new("take expects one argument", span))?;
+                if let Value::Ref(place_dest) = dest {
+                    let old_val = self.place_value(&place_dest, span)?.clone();
+                    let def_val = self.default_value_for(&old_val);
+                    let slot = self.place_slot_mut(&place_dest, span)?;
+                    let _ = slot.replace(def_val).ok_or_else(|| RuntimeError::new("use of moved value", span))?;
+                    Ok(old_val)
+                } else {
+                    Err(RuntimeError::new("take expects mutable reference", span))
+                }
             }
             Builtin::StringFrom => Ok(Value::String(string_arg(args.pop(), span)?)),
             Builtin::StringNew => Ok(Value::String(String::new())),

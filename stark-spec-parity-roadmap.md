@@ -274,7 +274,7 @@ The current `core-min` profile is sufficient for the prototype but not for full 
 
 ---
 
-### Phase 4A — Prelude and Core Traits
+### Phase 4A — Prelude and Core Traits (Status: Complete — 2026-07-16)
 
 Implement and validate:
 

@@ -82,6 +82,11 @@ pub enum Builtin {
     TensorScale255,
     /// `normalize()` — value-range transition UnitRange -> Normalized (Gate 7).
     TensorNormalize,
+    SizeOf,
+    AlignOf,
+    Swap,
+    Replace,
+    Take,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -102,6 +107,18 @@ pub enum CoreTrait {
     Eq,
     Ord,
     Num,
+    Clone,
+    Hash,
+    Default,
+    Display,
+    Error,
+    From,
+    Into,
+    TryFrom,
+    Index,
+    IndexMut,
+    Iterator,
+    FromIterator,
 }
 
 /// Target of a resolved name or path segment.
