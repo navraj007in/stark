@@ -8,7 +8,7 @@ STARK is an experimental programming language designed to catch errors in AI dep
 
 Its general-purpose Core provides static typing, ownership, borrowing, structured error handling and predictable execution semantics. The optional tensor extension adds compile-time checks for tensor shapes, element types, devices and imported model signatures.
 
-STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer and an early native deployment pipeline.
+STARK currently includes a working Rust compiler, semantic checker, borrow checker, interpreter, ONNX signature importer, multi-file module system, package management with semantic versioning, and an early native deployment pipeline.
 
 ## Why STARK?
 
@@ -192,6 +192,8 @@ Run the test suite:
 cargo test
 ```
 
+### Single-file workflow
+
 Parse a program:
 
 ```bash
@@ -218,7 +220,36 @@ cargo run -- check \
   examples/gate4/valid_pipeline.stark
 ```
 
+### Project workflow (multi-file)
+
+Create a project with `starkpkg.json`:
+
+```bash
+mkdir myapp && cd myapp
+mkdir -p src
+cat > starkpkg.json << 'EOF'
+{
+  "name": "myapp",
+  "version": "0.1.0",
+  "entry": "src/main.stark"
+}
+EOF
+```
+
+Build and run:
+
+```bash
+stark check                    # Check the project and dependencies
+stark run                      # Execute the entry point
+stark build                    # Compile (alias for check)
+stark test                     # Run tests
+stark check --locked           # Use existing lock file (CI/CD)
+stark check --offline          # Use cache only (offline mode)
+```
+
 ## Command overview
+
+### Single-file CLI (starkc binary)
 
 ```bash
 # Core language
@@ -243,6 +274,23 @@ cargo run -- deploy \
   pipeline.stark \
   --model model.onnx \
   --out generated-host
+```
+
+### Project CLI (stark binary)
+
+Run from any directory in a STARK project (looks up to `starkpkg.json`):
+
+```bash
+# Project-oriented commands
+stark check                     # Check package and dependencies
+stark build                     # Build (alias for check)
+stark run                       # Run entry point
+stark test                      # Run tests
+
+# Build modes
+stark check --locked            # Use existing stark.lock (reproducible, CI/CD)
+stark check --offline           # Use cache only (no network)
+stark check --locked --offline  # Both (maximum strictness)
 ```
 
 ## Terminal IDE
@@ -287,32 +335,40 @@ STARK is an advanced prototype, not a production-ready language.
 
 The following areas are working:
 
-* normative Core v1 specification;
-* lexer and parser;
-* structured diagnostics;
-* name and module resolution;
+* normative Core v1 specification (Phases 0–5);
+* lexer and parser with full conformance (Gate 1);
+* multi-file module system with cross-file resolution (Phase 1);
+* package manifests (`starkpkg.json`) with local path dependencies (Phase 2);
+* semantic versioning and reproducible dependency resolution (Phase 3);
+* structured diagnostics with source spans;
+* name and module resolution across files;
 * type checking and local inference;
-* generics and traits;
+* generics, traits and associated types;
 * ownership and borrow checking;
+* trait default-method body checking (Phase 5);
+* cross-package trait coherence (Phase 5);
 * typed-HIR execution;
-* minimal Core runtime;
-* tensor shape, dtype and device analysis;
-* ONNX signature import and verification;
-* initial deployment lowering and host generation.
+* Core runtime with standard traits, collections and iterators (Phases 4A–4B);
+* tensor shape, dtype and device analysis (Gate 4–7);
+* ONNX signature import and verification (Gate 4);
+* symbolic shape arithmetic and value-range semantics (Gate 7);
+* native inference deployment with ONNX Runtime (Gate 5);
+* lock files (`stark.lock`) with SHA-256 content hashing;
+* offline and locked build modes.
 
 The following areas remain incomplete or intentionally deferred:
 
-* production native code generation for ordinary Core programs;
-* a broad standard library;
-* networking;
-* package management and a package registry;
-* a language server and mainstream editor integrations;
+* production native code generation for ordinary Core programs (Phase 6);
+* a complete standard library (Phase 4 started; Phase 4+ ongoing);
+* networking libraries;
+* public package registry (Phase 3+ defined; not yet implemented);
+* full LSP and mainstream editor integrations;
 * stable debugging and profiling tools;
 * mature FFI;
-* capturing closures;
-* training and automatic differentiation;
-* GPU kernel generation;
-* a custom tensor runtime;
+* capturing closures (deferred, not in Core v1);
+* training and automatic differentiation (deferred, extension);
+* GPU kernel generation (deferred, extension);
+* a custom tensor runtime (using ONNX Runtime instead);
 * broad platform and architecture validation;
 * API and language stability guarantees.
 
