@@ -1,0 +1,22 @@
+// Gate 7 frozen workload — Tiny YOLOv2 (Pascal VOC) model signature.
+//
+// Source: ONNX Model Zoo, MIT licence. Artifact fetched + SHA-pinned by
+// examples/gate7/fetch-artifacts.py (not committed). ONNX opset 8.
+//
+// ONNX signature (verified in tests/fixtures/gate7/reference.py):
+//   input  image : Float32 [None, 3, 416, 416]   (None = dynamic batch)
+//   output grid  : Float32 [None, 125, 13, 13]
+//
+// The batch dimension is genuinely dynamic in the artifact, so it binds to the
+// symbolic STARK dim `B` (extension rule: a shape variable matches only a
+// dynamic ONNX dim). The channel dimension 125 is the *computed* quantity this
+// gate exercises: 125 == A * (5 + C) with A = 5 anchors, C = 20 classes.
+//
+// STATUS: this is the frozen G7-01 target. Symbolic-shape checking of this
+// signature and the decode pipeline is implemented in G7-02; native deployment
+// lowering in G7-03; the image value-range annotation in G7-04.
+
+model TinyYoloV2<B: Dim> {
+    input image: Tensor<Float32, [B, 3, 416, 416]>;
+    output grid: Tensor<Float32, [B, 125, 13, 13]>;
+}
