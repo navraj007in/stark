@@ -1046,6 +1046,21 @@ fn validate_entry_abi(
         return None;
     }
 
+    // The entry must refine its `TensorAny` input before use, so the host knows
+    // the concrete input contract (dtype/shape) to build. Without it there is no
+    // well-defined boundary — a generation error, not a host that fails later.
+    if !entry
+        .body
+        .iter()
+        .any(|s| matches!(s.op, DeployOp::Refine { .. }))
+    {
+        abi_err(
+            diags,
+            "deployment entry must refine its `TensorAny` input before use".to_string(),
+        );
+        return None;
+    }
+
     // Recover the selected model's declaration name from the front end.
     let model_name = model_decl_name(hir, file);
     if model_name.is_none() {

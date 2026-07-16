@@ -168,8 +168,14 @@ impl Tensor {
     /// equality is proved at compile time; this re-checks it defensively and
     /// never guesses a dimension.
     pub fn reshape(&self, shape: &[usize]) -> Result<Tensor, String> {
-        let have: usize = self.shape().iter().product();
-        let want: usize = shape.iter().product();
+        let checked_product = |dims: &[usize]| -> Result<usize, String> {
+            dims.iter().try_fold(1usize, |acc, &d| {
+                acc.checked_mul(d)
+                    .ok_or_else(|| "element-count overflow".to_string())
+            })
+        };
+        let have = checked_product(&self.shape())?;
+        let want = checked_product(shape)?;
         if have != want {
             return Err(format!(
                 "reshape element-count mismatch: {:?} ({have}) into {:?} ({want})",
@@ -422,10 +428,25 @@ impl Model {
 
     /// `model.predict(&input)` — run one inference. Input must be a Float32
     /// tensor of the model's input shape; output is a Float32 tensor.
-    pub fn predict(&mut self, input: &Tensor) -> Result<Tensor, String> {
+    ///
+    /// `in_pattern`/`out_pattern` are the declared input/output shape patterns.
+    /// They are bound and checked in a fresh environment so that dynamic
+    /// dimensions shared between the input and output (a named batch, say) are
+    /// enforced equal at runtime: a model that returns a batch different from
+    /// its input is rejected rather than silently propagated downstream.
+    pub fn predict(
+        &mut self,
+        input: &Tensor,
+        in_pattern: &[DimBind],
+        out_pattern: &[DimBind],
+    ) -> Result<Tensor, String> {
         let Tensor::F32(array) = input else {
             return Err("model input must be a Float32 tensor".to_string());
         };
+        let mut menv = DimEnv::new();
+        menv.bind_shape(&input.shape(), in_pattern)
+            .map_err(|e| format!("model input {e}"))?;
+
         let shape: Vec<i64> = array.shape().iter().map(|&d| d as i64).collect();
         let data: Vec<f32> = array.iter().copied().collect();
         let value = OrtTensor::from_array((shape, data))
@@ -439,6 +460,9 @@ impl Model {
             .try_extract_tensor::<f32>()
             .map_err(|e| format!("could not extract ORT output: {e}"))?;
         let dims: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
+        // Enforce the declared output contract (dynamic dims relate to the input).
+        menv.bind_shape(&dims, out_pattern)
+            .map_err(|e| format!("model output {e}"))?;
         self.last_output = Some((dims.clone(), out_data.to_vec()));
         Tensor::from_f32(&dims, out_data.to_vec())
     }
