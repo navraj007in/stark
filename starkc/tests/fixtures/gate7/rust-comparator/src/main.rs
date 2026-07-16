@@ -10,7 +10,6 @@
 
 #![allow(dead_code, unused_variables)]
 
-use ndarray::{ArrayD, IxDyn};
 use ort::session::Session;
 use ort::value::Tensor as OrtTensor;
 use sha2::{Digest, Sha256};
@@ -60,12 +59,21 @@ fn run() -> Result<(), String> {
     let mut input = None;
     let mut expected_sha = None;
     let mut dump = None;
+    // The declared output channel count. Defaults to the real 125; passing a
+    // different value simulates a drifted declaration (d8), rejected at runtime.
+    let mut expect_channels = CH;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--model" => model = args.next(),
             "--input-raw" => input = args.next(),
             "--expected-sha256" => expected_sha = args.next(),
             "--dump-output" => dump = args.next(),
+            "--expect-channels" => {
+                expect_channels = args
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("--expect-channels needs a number")?
+            }
             other => return Err(format!("unexpected arg `{other}`")),
         }
     }
@@ -112,33 +120,27 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("extract output: {e}"))?;
     let out_shape: Vec<usize> = out_shape.iter().map(|&d| d as usize).collect();
 
-    // The typed predict contract expects [N,125,13,13]; a runtime output that
-    // disagrees (declaration/artifact drift, d8) is rejected here by the typed
-    // `from_vec` element-count check.
-    if out_shape != [N, CH, GRID, GRID] {
+    // The generated contract declares `expect_channels` (125 for the real
+    // artifact). A runtime output that disagrees (declaration/artifact drift,
+    // d8) is rejected here — a *runtime* check, unlike STARK's deploy-time one.
+    if out_shape != [N, expect_channels, GRID, GRID] {
         return Err(format!(
-            "model output shape {out_shape:?} != declared [{N},{CH},{GRID},{GRID}]"
+            "declaration/artifact drift: model output {out_shape:?} != declared \
+             [{N},{expect_channels},{GRID},{GRID}]"
         ));
     }
+
+    // The typed pipeline performs the actual reshape+permute; the dumped output
+    // is produced BY the typed tensors (no parallel ndarray path).
     let grid_ty = typed::TinyYoloV2::predict_ty::<N>(&image, out_data.to_vec())?;
-    // Type-level reshape + permute (compile-time guarantees):
     let split_ty = typed::split_channels(grid_ty);
-    let _perm_ty = typed::permute_grid(split_ty);
+    let perm_ty = typed::permute_grid(split_ty);
+    let result = perm_ty.into_data();
 
-    // Real value-level reshape + permute with ndarray: [N,125,H,W] ->
-    // [N,5,25,H,W] -> [N,5,H,W,25].
-    let grid = ArrayD::from_shape_vec(IxDyn(&[N, CH, GRID, GRID]), out_data.to_vec())
-        .map_err(|e| format!("grid: {e}"))?;
-    let split = grid
-        .into_shape_with_order(IxDyn(&[N, A, K, GRID, GRID]))
-        .map_err(|e| format!("reshape: {e}"))?;
-    let permuted = split.permuted_axes(IxDyn(&[0, 1, 3, 4, 2]));
-    let permuted = permuted.as_standard_layout().to_owned();
-
-    println!("result: f32 {:?} ({} elems)", permuted.shape(), permuted.len());
+    println!("result: f32 [{N}, {A}, {GRID}, {GRID}, {K}] ({} elems)", result.len());
     if let Some(path) = dump {
-        let mut buf = Vec::with_capacity(permuted.len() * 4);
-        for &v in permuted.iter() {
+        let mut buf = Vec::with_capacity(result.len() * 4);
+        for v in &result {
             buf.extend_from_slice(&v.to_le_bytes());
         }
         std::fs::write(&path, buf).map_err(|e| format!("write {path}: {e}"))?;
