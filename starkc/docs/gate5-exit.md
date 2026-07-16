@@ -7,7 +7,7 @@ This report documents the completion of the Gate 5 Go/No-Go prototype deployment
 * **Categorical Agreement**: The generated Rust host and the independent Python reference oracle produced the same top-one class index: **`258`** (Samoyed).
 * **Numerical Agreement**: The small difference is consistent with the known interpolation differences between Pillow and the Rust `image` crate. The outputs agreed within an absolute tolerance of `1e-3`:
   * **Top-1 absolute probability difference**: `0.000288`
-  * **Maximum absolute difference across 1,000 probabilities**: `0.000288`
+  * **Maximum absolute difference across top-5 probabilities**: `0.000288`
   * **Top-5 ordering agreement**: Exact match
 
 ---

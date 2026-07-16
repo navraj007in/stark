@@ -10,7 +10,7 @@ import shutil
 def get_git_info():
     try:
         head = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-        status = subprocess.check_output(["git", "status", "--porcelain"]).decode().strip()
+        status = subprocess.check_output(["git", "status", "--porcelain", "-uno"]).decode().strip()
         is_dirty = len(status) > 0
         return head, is_dirty
     except Exception:
@@ -57,6 +57,11 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     starkc_dir = os.path.dirname(script_dir)
     
+    git_head, git_dirty = get_git_info()
+    if git_dirty:
+        print("error: Gate 5 evaluation requires a clean working tree")
+        sys.exit(1)
+        
     model_path = os.path.join(starkc_dir, "tmp", "resnet50-v1-7.onnx")
     image_path = os.path.join(starkc_dir, "tmp", "dog.jpg")
     venv_python = os.path.join(starkc_dir, "tmp", "venv", "bin", "python3")
@@ -169,7 +174,6 @@ def main():
             prob = float(parts[5].split("=")[1])
             py_top5.append((class_idx, prob))
             
-    git_head, git_dirty = get_git_info()
     sys_info = get_sys_info()
     
     # Save standard results files under docs/
@@ -209,10 +213,9 @@ def main():
     cargo_ver = subprocess.check_output(["cargo", "--version"]).decode().strip()
     
     # environment.json
-    # Evaluated implementation commit is clean commit 2d1645e19f24e637172e9fae9b3ad6bc3d089fc7
     env_data = {
-        "stark_commit": "2d1645e19f24e637172e9fae9b3ad6bc3d089fc7",
-        "git_dirty": False,
+        "stark_commit": git_head,
+        "git_dirty": git_dirty,
         "os": sys_info["os"],
         "arch": sys_info["arch"],
         "processor": sys_info["processor"],
@@ -263,12 +266,12 @@ def main():
     tol_passed = max_diff <= 0.001
     
     comparison_data = {
-        "evaluation_commit": "2d1645e19f24e637172e9fae9b3ad6bc3d089fc7",
-        "git_dirty": False,
+        "evaluation_commit": git_head,
+        "git_dirty": git_dirty,
         "top1_index_match": idx_match,
         "top5_ordering_match": top5_idx_match,
-        "max_probability_absolute_difference": round(max_diff, 6),
-        "probability_vector_length": 1000,
+        "max_top5_probability_absolute_difference": round(max_diff, 6),
+        "compared_probability_count": len(rust_top5),
         "absolute_tolerance": 0.001,
         "absolute_tolerance_passed": tol_passed
     }
@@ -280,7 +283,7 @@ def main():
     with open(summary_md_path, "w") as f:
         f.write("# STARK Gate 5 Evaluation Summary\n\n")
         f.write(f"**Timestamp:** {results_json['metadata']['timestamp']}\n")
-        f.write(f"**Commit:** `2d1645e19f24e637172e9fae9b3ad6bc3d089fc7` (dirty: False)\n\n")
+        f.write(f"**Commit:** `{git_head}` (dirty: {git_dirty})\n\n")
         f.write("## System Environment\n")
         f.write(f"- OS: {sys_info['os']} ({sys_info['arch']})\n")
         f.write(f"- Python: {sys_info['python_version']}\n")
