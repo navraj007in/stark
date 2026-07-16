@@ -8,6 +8,19 @@ deployment-DSL direction) and the **verifier-validation track** (real external
 developers, §13 of the proposal) as the gating next step before any
 productisation. Rationale in *Product / Language / VM implication* below.
 
+**Verdict at a glance (scoped to what Gate 7 actually tested):**
+
+- **Tensor-track technical verdict: POSITIVE** — STARK demonstrably carries
+  runtime-symbolic dimensions and *proves* compile-time shape-relationship facts,
+  detects artifact drift earlier (deploy-time), and needs far less application
+  code (18 source → 25 generated vs 260 handwritten Rust) than the strongest
+  typed-Rust host; both run identical, bit-exact inference.
+- **Tensor productisation verdict: DEFER** — no external adoption evidence yet.
+- **Current project policy: RETAIN AS RESEARCH LANGUAGE.**
+- **Broader language verdict: UNRESOLVED** — concurrency, reactive, cloud,
+  backend, and AI-native tracks were outside Gate 7 and need independent
+  proposals and evidence. This experiment neither proved nor disproved them.
+
 ---
 
 ## Hypothesis
@@ -48,17 +61,25 @@ and permute performed **by the typed `Tensor4`/`Tensor5` values themselves**
 (not a parallel `ndarray` path). Strongest stable-Rust typing: per-rank const-
 generic tensors, phantom device tag, phantom value-range markers.
 
-## Defect comparison (both executed, same 13-defect corpus)
+## Defect comparison (both execute 13 corresponding defect intents)
+
+Both reject all 13 test programs. But "same corpus" is a qualified claim: three
+of the Rust symbolic-shape cases are **approximations**, not equivalent proofs —
+`d1`/`d3` check disagreement with a *fixed generated signature* (they do not
+prove the element relationship; the comparator records `proves_relationship:
+false`), and `d2` compares *compile-time const* batches, not runtime-symbolic
+dimensions. And the *stage* differs on drift:
 
 | | STARK | typed-Rust comparator |
 | --- | --- | --- |
-| Caught before inference | **13 / 13** | **13 / 13** (11 compile-time, 2 runtime) |
+| Rejected eventually | **13 / 13** | **13 / 13** |
+| Rejected **before inference** | **13 / 13** | **12 / 13** (drift caught after the model runs) |
 | Reshape product (`5·26≠125`) | compile-time, **proved** (`125==5·25`) | compile-time, **fixed signature only — not proved** |
 | Symbolic/dynamic batch | carried symbolically, compile-time | **not expressible** — batch is a compile-time const |
 | dtype / device | compile-time | compile-time (phantom) |
 | Value-range (6 defects) | compile-time | compile-time (4 markers) — **cheap parity** |
-| Declaration/artifact drift | **deploy-time** | **runtime** output-shape check |
-| Runtime artifact swap | runtime (SHA-256) | runtime (real SHA-256) |
+| Declaration/artifact drift | **deploy-time** (before the host is built) | **runtime, after `session.run`** — the model has already executed |
+| Runtime artifact swap | runtime, before inference (SHA-256) | runtime, before inference (real SHA-256) |
 
 ## Correctness
 
@@ -70,12 +91,19 @@ model correctness is additionally anchored by the ONNX-bundled oracle
 
 ## Integration complexity
 
-- STARK: **18** pipeline source lines → **25** generated-host lines; one ONNX
-  Runtime backend, no new kernels or runtime.
-- Rust comparator: **~360 handwritten** lines (typed layer 150 + host 110 +
-  defect cases 66 + harness), *and it is handwritten* — a reusable generated
-  solution would add generator code on top. Two per-rank tensor types, one
-  bespoke per-reshape function, two runtime shape checks.
+Comparing like with like — *application implementation*, separate from
+evaluation/test infrastructure (present on both sides):
+
+- **Application:** STARK **18** pipeline source lines → **25** generated-host
+  lines, vs the Rust comparator's **260** handwritten lines (typed layer 150 +
+  host 110). A ~14× expressiveness gap at the application level. Two per-rank
+  tensor types, one bespoke per-reshape function, two runtime shape checks on
+  the Rust side; one ONNX Runtime backend on both, no new kernels or runtime.
+- **Evaluation infrastructure (counted separately):** the Rust side adds ~283
+  lines (defect cases 66 + measurement harness ~217); STARK's evaluation harness
+  is counted separately too. This is *not* part of the expressiveness comparison.
+- The Rust comparator is **handwritten**, not generated; a reusable generated
+  solution would add generator code on top of the 260.
 
 ## Diagnostics
 
@@ -110,12 +138,27 @@ evidence of user demand**. Productising now — as either a full language or a D
 
 ## Language implication
 
-The Core language (ownership, generics, execution) was **not** the
-differentiator; every measured advantage lives in the tensor extension and the
-deployment backend. If STARK is productised, the honest shape is a **narrow
-deployment DSL** that generates typed ORT hosts — not a general-purpose language.
-That is the *direction*, contingent on adoption evidence, not a decision to build
-it now.
+**Scope discipline (important).** Gate 7 tested *only* the tensor/model-
+deployment proposition. It deliberately excluded — per ROADMAP §4 and the
+proposal's non-goals — networking, actors, distributed execution, cloud
+deployment, and broad Core language work. So the finding is bounded: *in this
+ONNX CV experiment* the Core language (ownership, generics, execution) was not
+the differentiator; every measured advantage lived in the tensor extension and
+the deployment backend.
+
+That does **not** establish that Core, concurrency, reactive systems, cloud
+integration, or AI-native development cannot be differentiators in *their own*
+experiments — those propositions were never tested here. The honest conclusions:
+
+- **Tensor/deployment product wedge:** the best-supported product forms are a
+  *narrow deployment DSL* (generating typed ORT hosts) or the *verifier* —
+  contingent on adoption evidence, not a decision to build now.
+- **Broader language thesis:** **unresolved.** It requires its own bounded
+  validation tracks (ROADMAP §5 proposals), each with its own evidence.
+
+`RETAIN AS RESEARCH LANGUAGE` is therefore an owner-selected *current project
+policy* — not a scientific verdict against the language forced by this one
+tensor experiment.
 
 ## VM implication
 

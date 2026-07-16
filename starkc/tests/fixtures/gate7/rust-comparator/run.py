@@ -133,10 +133,13 @@ def main():
         capture_output=True, text=True)
     defects.append({
         "case": "d8_declaration_drift", "description": "declaration/artifact drift",
-        "enforcement_stage": "runtime (output-shape check)",
+        # The output-shape check runs *after* session.run, so the model has
+        # already executed by the time drift is detected.
+        "enforcement_stage": "runtime AFTER inference (output-shape check)",
         "caught": drift.returncode != 0 and "drift" in drift.stderr,
         "rustc_code": None,
-        "note": "STARK catches this at DEPLOY time; the Rust host only at runtime.",
+        "note": "STARK catches this at DEPLOY time (before the host is built); the "
+                "Rust host catches it only after the model has already run.",
     })
     # d9 runtime artifact swap: real SHA-256.
     mut = "/tmp/g7cmp_mut.onnx"
@@ -156,6 +159,10 @@ def main():
 
     caught_compile = sum(1 for d in defects if d["enforcement_stage"] == "rustc compile time" and d["caught"])
     caught_runtime = sum(1 for d in defects if d["caught"] and "runtime" in d["enforcement_stage"])
+    caught_before_inference = sum(
+        1 for d in defects if d["caught"] and "AFTER inference" not in d["enforcement_stage"]
+    )
+    caught_eventually = sum(1 for d in defects if d["caught"])
 
     stark_src, stark_gen = stark_side_loc(model)
     cases_loc = sum(code_lines(os.path.join(HERE, "cases", f)) for f in os.listdir(os.path.join(HERE, "cases")))
@@ -184,6 +191,13 @@ def main():
         "corpus_size": len(defects),
         "caught_compile_time": caught_compile,
         "caught_runtime": caught_runtime,
+        "caught_before_inference": caught_before_inference,
+        "caught_eventually": caught_eventually,
+        "before_inference_note": (
+            "The Rust host rejects 12/13 before inference (11 compile-time + the SHA "
+            "swap); declaration drift is caught only after session.run has executed "
+            "the model. STARK catches all 13 before inference (drift at deploy time)."
+        ),
         "measurements": {
             "comparator_handwritten_lines": {
                 "typed_layer": code_lines(os.path.join(HERE, "src", "typed.rs")),
