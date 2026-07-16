@@ -1,9 +1,19 @@
 {
   "comparator": "real typed-Rust ONNX Runtime host (const generics + phantom device/range markers)",
-  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
-  "channel": "stable",
+  "provenance": {
+    "evaluation_commit": "6a4bb7815af9c2934c79f97be956ea86f81ceb58",
+    "git_dirty": false,
+    "model_sha256": "583fb7fdc948435ceac9fa82efc7708701efe8382a859a3dd46526b155f5f2ae",
+    "input_sha256": "3d39f6b6e8a4271860da1f961b17c60759de9191701f65a282d45695bcf54eb9",
+    "comparator_binary_sha256": "fa31b8c5bc8b49258975c3b0201c6bbd4f58e81ad9ff346177c90c24b96f9981",
+    "build_command": "cargo build --release --locked",
+    "build_ms": 166.5,
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "channel": "stable"
+  },
   "real_inference": {
     "performed": true,
+    "produced_by": "the typed Tensor4/Tensor5 pipeline (split_channels + permute_grid), not a parallel ndarray path",
     "output_shape": [
       1,
       5,
@@ -12,8 +22,7 @@
       25
     ],
     "max_abs_diff_vs_reference": 0.0,
-    "matches_reference": true,
-    "note": "same ORT + identical input as the STARK host, so bit-exact."
+    "matches_reference": true
   },
   "defects": [
     {
@@ -21,14 +30,25 @@
       "description": "incorrect reshape product",
       "enforcement_stage": "rustc compile time",
       "rustc_code": "E0308",
-      "caught": true
+      "caught": true,
+      "proves_relationship": false,
+      "note": "rustc rejects a caller requesting a different signature; it does not prove the element relationship (that needs generic_const_exprs). STARK proves it."
     },
     {
       "case": "d2_symbol_relationship",
-      "description": "broken batch relationship (const only; see gaps)",
+      "description": "broken batch relationship (const only)",
       "enforcement_stage": "rustc compile time",
       "rustc_code": "E0308",
       "caught": true
+    },
+    {
+      "case": "d3_broadcast",
+      "description": "invalid broadcast",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true,
+      "proves_relationship": false,
+      "note": "rustc rejects a caller requesting a different signature; it does not prove the element relationship (that needs generic_const_exprs). STARK proves it."
     },
     {
       "case": "d4_range_missing",
@@ -87,36 +107,47 @@
       "caught": true
     },
     {
+      "case": "d8_declaration_drift",
+      "description": "declaration/artifact drift",
+      "enforcement_stage": "runtime (output-shape check)",
+      "caught": true,
+      "rustc_code": null,
+      "note": "STARK catches this at DEPLOY time; the Rust host only at runtime."
+    },
+    {
       "case": "d9_runtime_artifact_swap",
       "description": "runtime artifact swap (real SHA-256)",
       "enforcement_stage": "runtime before inference",
       "caught": true,
       "rustc_code": null
-    },
-    {
-      "case": "d8_declaration_drift",
-      "description": "declaration/artifact drift",
-      "enforcement_stage": "runtime (output-shape check present; not independently executed)",
-      "caught": null,
-      "rustc_code": null
     }
   ],
-  "caught_compile_time": 10,
-  "caught_runtime": 1,
+  "corpus_size": 13,
+  "caught_compile_time": 11,
+  "caught_runtime": 2,
   "measurements": {
-    "typed_layer_lines": 107,
-    "host_lines": 109,
+    "comparator_handwritten_lines": {
+      "typed_layer": 150,
+      "host": 110,
+      "defect_cases": 66,
+      "measurement_harness": 217
+    },
+    "stark_side_lines": {
+      "pipeline_source": 18,
+      "generated_host_pipeline": 25
+    },
     "const_generic_rank_types": 2,
     "value_range_marker_types": 4,
     "device_marker_types": 2,
     "bespoke_reshape_functions": 1,
-    "runtime_shape_checks": 2
+    "runtime_shape_checks": 2,
+    "note": "The comparator is HANDWRITTEN, not generated; a reusable generated solution would add generator code on top of these figures."
   },
   "gaps_vs_stark": [
-    "Symbolic/dynamic batch is NOT expressible: batch is a compile-time const (`N`); d2 is caught only because N is const. A batch that varies at runtime forces fully-runtime-shaped tensors (guarantee lost).",
-    "The computed reshape needs a BESPOKE per-reshape function that bakes in `125 == 5*25`; a general split whose factors are checked from the input requires `generic_const_exprs` (unstable). Each distinct reshape is new generated code.",
-    "Ranks need separate generated types (Tensor4, Tensor5); there is no rank-generic tensor type.",
-    "Declaration/artifact drift is a RUNTIME output-shape check, not a deploy-time check as in STARK (before the host is even built)."
+    "Reshape arithmetic is NOT proved: split_channels has a fixed generated signature (rustc only stops callers requesting a different one); it does not verify 125==5*25 (needs unstable generic_const_exprs). STARK proves the polynomial equality.",
+    "Symbolic/dynamic batch is NOT expressible: batch is a compile-time const; a runtime-varying batch forces fully-runtime shapes (guarantee lost).",
+    "Ranks need separate generated types (Tensor4, Tensor5); no rank-generic type.",
+    "Declaration/artifact drift is a runtime check, not deploy-time as in STARK."
   ],
-  "parity": "On this batch-1 pipeline the typed-Rust host catches the same shape/dtype/device/range defects at compile time as STARK, and runs the identical inference to a bit-exact result \u2014 but only by fixing the batch to a constant, emitting bespoke per-reshape/per-rank code, and deferring declaration drift to runtime. STARK's edge is symbolic dynamic batch and general computed shapes at compile time, deploy-time drift, in one language without the const-generic machinery."
+  "conclusion": "For a fixed batch-1 Tiny YOLOv2 pipeline, careful (handwritten here) Rust reproduces MOST STARK guarantees with const generics + phantom markers and runs identical inference to a bit-exact result. But stable Rust does NOT prove the general reshape arithmetic (it trusts the generated signature), cannot carry a runtime-symbolic batch in its types, and needs bespoke per-rank / per-reshape code (~260 handwritten lines vs 18 STARK source lines / 25 generated). Value-range parity is cheap on BOTH sides (4 markers + a few methods), so semantic range is a convenience, not the decisive edge; the decisive edge is symbolic-shape arithmetic proved at compile time. Neither side executes semantic value-range preprocessing (both are frontend-only)."
 }
