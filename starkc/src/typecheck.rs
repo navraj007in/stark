@@ -6248,7 +6248,10 @@ impl TypeChecker<'_> {
                                     tb.shape.dims[1].clone(),
                                 ]),
                                 device: ta.device,
-                                range: ta.range,
+                                // matmul mixes values across the contracted
+                                // axis, so any input value range is no longer
+                                // meaningful: the result is Unspecified.
+                                range: crate::extensions::tensor::types::ValueRange::Unspecified,
                             },
                         ))))
                     }
@@ -6345,7 +6348,9 @@ impl TypeChecker<'_> {
                                     tb.shape.dims[2].clone(),
                                 ]),
                                 device: ta.device,
-                                range: ta.range,
+                                // See matmul: the contracted product is not a
+                                // value-range-preserving operation.
+                                range: crate::extensions::tensor::types::ValueRange::Unspecified,
                             },
                         ))))
                     }
@@ -6455,12 +6460,30 @@ impl TypeChecker<'_> {
                             }
                         }
 
+                        // Concat joins two tensors, so their value ranges must
+                        // combine like an elementwise op (Unspecified neutral).
+                        let out_range = match self.combine_value_range(ta.range, tb.range) {
+                            Some(r) => r,
+                            None => {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        format!(
+                                            "`concat` cannot merge tensors with value ranges `{}` and `{}`",
+                                            ta.range, tb.range
+                                        ),
+                                        span,
+                                    )
+                                    .with_code("E0212"),
+                                );
+                                return Ty::Error;
+                            }
+                        };
                         Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
                             TensorTy {
                                 dtype: ta.dtype,
                                 shape: Shape::new(out_dims),
                                 device: ta.device,
-                                range: ta.range,
+                                range: out_range,
                             },
                         ))))
                     }
@@ -6803,8 +6826,17 @@ impl TypeChecker<'_> {
                         }
 
                         if descriptor.shape == TensorShapeRule::Softmax {
+                            // Softmax preserves shape/dtype/device but produces
+                            // probabilities, not the input's image values, so the
+                            // value range does not carry through.
                             Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
-                                t.clone(),
+                                TensorTy {
+                                    dtype: t.dtype,
+                                    shape: t.shape.clone(),
+                                    device: t.device,
+                                    range:
+                                        crate::extensions::tensor::types::ValueRange::Unspecified,
+                                },
                             ))))
                         } else {
                             let mut out_dims = t.shape.dims.clone();
@@ -6821,7 +6853,11 @@ impl TypeChecker<'_> {
                                     dtype: out_dtype,
                                     shape: Shape::new(out_dims),
                                     device: t.device,
-                                    range: t.range,
+                                    // Reductions (incl. softmax/argmax) change
+                                    // the meaning of the values, so the input
+                                    // value range does not carry through.
+                                    range:
+                                        crate::extensions::tensor::types::ValueRange::Unspecified,
                                 },
                             ))))
                         }
@@ -6841,7 +6877,8 @@ impl TypeChecker<'_> {
                             dtype: t.dtype,
                             shape: Shape::new(Vec::new()),
                             device: t.device,
-                            range: t.range,
+                            // A full reduction to a scalar drops the value range.
+                            range: crate::extensions::tensor::types::ValueRange::Unspecified,
                         }),
                     ))),
                     _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),

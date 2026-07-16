@@ -425,10 +425,22 @@ Tensor<Float32, [B, 3, H, W], range = Normalized>
       -> Tensor<Float32, S, range = Normalized>
   ```
 
-- **Elementwise ops** require operand ranges to combine: an `Unspecified`
-  operand is neutral (a bare constant), but two *different* specified ranges
-  cannot be merged (a compile-time error). Shape-only ops (permute, reshape,
-  broadcast_to, …) preserve the range.
+- **Range propagation is per operation:**
+  - *preserve* — shape/layout/dtype-only ops (`permute`, `reshape`,
+    `broadcast_to`, `slice`, `transpose`, `cast`, `to_device`) carry the range
+    through unchanged;
+  - *combine* — `concat` and elementwise ops combine operand ranges
+    (`Unspecified` neutral; two different specified ranges are an error);
+  - *transition* — only the named ops (`scale_255`, `normalize`) change the
+    range;
+  - *clear* — operations that change the meaning of the values
+    (`matmul`/`batch_matmul`, reductions, `softmax`, `argmax`) produce
+    `Unspecified`: an image value-range never survives an operation that
+    invalidates it (e.g. `argmax` yields indices, never ranged pixels).
+
+  `R` in the operation signatures above is metavariable notation. This version
+  permits only the **concrete** range states listed; there is no `R: Range`
+  generic kind (no range-polymorphic user functions) — that is reserved (§11).
 
 The canonical checked progression for a model whose input contract is
 `Normalized`:
@@ -474,6 +486,8 @@ and buffer sizes for fully static graphs are computable at compile time
 - Open-ended symbolic constraints (`B <= 64`) and dimension range reasoning
 - Other semantic tensor properties beyond the Gate 7 value-range (§8a): colour
   space, coordinate frame, and physical units
+- A `Range` generic kind (`R: Range`) for range-polymorphic functions; v0.1
+  permits concrete value-range states only (§8a)
 
 ## 12. Conformance
 An implementation claiming support for extension `tensor` v0.1 MUST implement
