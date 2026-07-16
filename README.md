@@ -330,6 +330,7 @@ STARK development is organised around evidence-based gates.
 | Gate 4 | Tensor frontend and ONNX signature integration     | Complete    |
 | Gate 5 | Native inference deployment prototype              | Complete    |
 | Gate 6 | Go, revise or stop decision based on evidence      | Decision recorded — REVISE |
+| Gate 7 | Symbolic-shape + semantic tensor deployment experiment | Decision recorded — RETAIN AS RESEARCH |
 
 Gate 5 is intended to produce one reproducible computer-vision deployment and measure:
 
