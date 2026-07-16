@@ -343,7 +343,7 @@ pub enum ExprKind {
     Error,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lit {
     Int {
         base: Base,

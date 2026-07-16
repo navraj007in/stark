@@ -235,6 +235,73 @@ impl<'a> TypeChecker<'a> {
         &self.file.src[span.lo as usize..span.hi as usize]
     }
 
+    fn find_package_root(&self, file_path: &str) -> Option<std::path::PathBuf> {
+        let mut path = std::path::Path::new(file_path);
+        while let Some(parent) = path.parent() {
+            if parent.join("starkpkg.json").exists() {
+                return Some(parent.to_path_buf());
+            }
+            path = parent;
+        }
+        None
+    }
+
+    fn pat_subsumes(&self, a: &hir::PatNode, b: &hir::PatNode) -> bool {
+        match (&a.kind, &b.kind) {
+            (hir::PatKind::Wild | hir::PatKind::Binding { .. }, _) => true,
+            (_, hir::PatKind::Wild | hir::PatKind::Binding { .. }) => false,
+            (hir::PatKind::Lit(la), hir::PatKind::Lit(lb)) => la == lb,
+            (hir::PatKind::Path { res: ra, .. }, hir::PatKind::Path { res: rb, .. }) => ra == rb,
+            (hir::PatKind::Tuple(pa), hir::PatKind::Tuple(pb)) => {
+                pa.len() == pb.len()
+                    && pa.iter().zip(pb).all(|(&ia, &ib)| {
+                        self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib))
+                    })
+            }
+            (hir::PatKind::Array(pa), hir::PatKind::Array(pb)) => {
+                pa.len() == pb.len()
+                    && pa.iter().zip(pb).all(|(&ia, &ib)| {
+                        self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib))
+                    })
+            }
+            (
+                hir::PatKind::TupleVariant { res: ra, pats: pa, .. },
+                hir::PatKind::TupleVariant { res: rb, pats: pb, .. },
+            ) => {
+                ra == rb
+                    && pa.len() == pb.len()
+                    && pa.iter().zip(pb).all(|(&ia, &ib)| {
+                        self.pat_subsumes(self.hir.pat(ia), self.hir.pat(ib))
+                    })
+            }
+            (
+                hir::PatKind::Struct { res: ra, fields: fa, .. },
+                hir::PatKind::Struct { res: rb, fields: fb, .. },
+            ) => {
+                if ra != rb {
+                    return false;
+                }
+                for field_a in fa {
+                    let name_a = self.text(field_a.name);
+                    let Some(field_b) = fb.iter().find(|f| self.text(f.name) == name_a) else {
+                        return false;
+                    };
+                    match (field_a.pat, field_b.pat) {
+                        (Some(pa), Some(pb)) => {
+                            if !self.pat_subsumes(self.hir.pat(pa), self.hir.pat(pb)) {
+                                return false;
+                            }
+                        }
+                        (Some(_), None) => return false,
+                        _ => {}
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn new_type_var(&mut self) -> Ty {
         let id = TypeVarId(self.var_count);
         self.var_count += 1;
@@ -1885,6 +1952,20 @@ impl<'a> TypeChecker<'a> {
                     self.current_self_ty = prev_self;
                     self.current_assoc_types = prev_assoc;
                 }
+                hir::ItemKind::Trait { items, .. } => {
+                    let prev_self = self.current_self_ty.take();
+                    self.current_self_ty = Some(Ty::Param("Self".to_string()));
+                    for trait_item in items {
+                        if let hir::TraitItem::Method { sig, body: Some(body_id) } = trait_item {
+                            let def = hir::FnDef {
+                                sig: sig.clone(),
+                                body: *body_id,
+                            };
+                            self.check_fn_def(item_id, &def);
+                        }
+                    }
+                    self.current_self_ty = prev_self;
+                }
                 hir::ItemKind::Const { value, ty, .. } => {
                     let expected_ty = self.convert_hir_type(*ty);
                     let val_ty = self.check_expr(*value);
@@ -1937,7 +2018,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn validate_impl_rules(&mut self) {
-        let mut impls: Vec<(Option<Res>, Ty, HashSet<String>)> = Vec::new();
+        let mut impls: Vec<(Option<Res>, Ty, HashSet<String>, Span, Arc<SourceFile>)> = Vec::new();
         let mut copy_types = HashSet::new();
         let mut drop_types = HashSet::new();
         let root_file = self.file.clone();
@@ -1976,8 +2057,29 @@ impl<'a> TypeChecker<'a> {
                 })
                 .collect();
 
-            let self_type_is_local = matches!(&self_ty, Ty::Struct(..) | Ty::Enum(..));
-            let trait_is_local = matches!(trait_res, Some(Res::Item(_)));
+            let impl_pkg = self.find_package_root(&self.file.name);
+
+            let trait_is_local = if let Some(Res::Item(trait_item_id)) = trait_res {
+                if let Some(trait_file) = self.hir.item_files.get(&trait_item_id) {
+                    self.find_package_root(&trait_file.name) == impl_pkg
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            let self_type_is_local = match &self_ty {
+                Ty::Struct(struct_item_id, _) | Ty::Enum(struct_item_id, _) => {
+                    if let Some(type_file) = self.hir.item_files.get(struct_item_id) {
+                        self.find_package_root(&type_file.name) == impl_pkg
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+
             if trait_.is_some() && !self_type_is_local && !trait_is_local {
                 self.diags.push(
                     Diagnostic::error(
@@ -1993,24 +2095,25 @@ impl<'a> TypeChecker<'a> {
                 );
             }
 
-            if impls
-                .iter()
-                .any(|(previous_trait, previous_ty, previous_methods)| {
-                    if *previous_trait != trait_res
-                        || !self.types_may_overlap(previous_ty, &self_ty)
-                    {
-                        return false;
+            let mut conflicting = None;
+            for (previous_trait, previous_ty, previous_methods, prev_span, prev_file) in &impls {
+                if *previous_trait == trait_res && self.types_may_overlap(previous_ty, &self_ty) {
+                    if trait_res.is_some() || !previous_methods.is_disjoint(&method_names) {
+                        conflicting = Some((prev_span, prev_file));
+                        break;
                     }
-                    trait_res.is_some() || !previous_methods.is_disjoint(&method_names)
-                })
-            {
+                }
+            }
+
+            if let Some((prev_span, prev_file)) = conflicting {
                 self.diags.push(
                     Diagnostic::error("overlapping implementation for the same type", item.span)
                         .with_code("E0500")
-                        .with_label("another applicable impl already exists"),
+                        .with_label("another applicable impl already exists")
+                        .with_note(format!("conflicting implementation found in {} at {:?}", prev_file.name, prev_span)),
                 );
             }
-            impls.push((trait_res, self_ty.clone(), method_names));
+            impls.push((trait_res, self_ty.clone(), method_names, item.span, self.file.clone()));
 
             let trait_name = trait_
                 .as_ref()
@@ -3456,11 +3559,31 @@ impl<'a> TypeChecker<'a> {
                 let mut matched_bools = HashSet::new();
                 let mut has_wildcard = false;
 
+                let mut preceding_patterns = Vec::new();
+
                 for arm in arms {
                     let pat_ty = self.check_pat(arm.pat, scr_ty.clone());
                     let _ = self.unify(scr_ty.clone(), pat_ty, arm.pat.span(self.hir));
 
                     let pat = self.hir.pat(arm.pat);
+
+                    let mut is_unreachable = false;
+                    for prev_pat in &preceding_patterns {
+                        if self.pat_subsumes(*prev_pat, pat) {
+                            is_unreachable = true;
+                            break;
+                        }
+                    }
+                    if is_unreachable {
+                        self.diags.push(
+                            Diagnostic::warning("unreachable match arm", arm.pat.span(self.hir))
+                                .with_code("E0500")
+                                .with_label("this pattern is redundant and covered by a preceding arm"),
+                        );
+                    } else {
+                        preceding_patterns.push(pat);
+                    }
+
                     match &pat.kind {
                         hir::PatKind::Wild | hir::PatKind::Binding { .. } => {
                             has_wildcard = true;

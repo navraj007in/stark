@@ -214,8 +214,18 @@ technical verdict is positive; but the finding is **scoped to the CV-deployment
 wedge** Gate 7 tested (§4 non-goals excluded concurrency, cloud, actors, broad
 Core work), so the broader language thesis is **unresolved**, not disproven. With
 no product-adoption evidence, the decision is RETAIN AS RESEARCH (owner policy).
-Next: the separate `stark verify` validation track (real external developers),
-which needs its own §5 proposal. VM/DSL/language-expansion work remains deferred.
+VM/DSL/language-expansion work remains deferred.
+
+**Next track — `stark verify` validation (proposed).** The Gate 7 decision
+authorised one follow-up: validating whether the existing `stark verify` command
+is adopted as a low-friction CI guard by **real external developers**, kept
+independent of the language question. Bounded scope, the three signature forms
+(fixed/symbolic/multi-port), the deterministic-JSON contract, the binding
+no-fabrication clause, and exit/stop criteria are in
+`STARKLANG/docs/proposals/VERIFIER_VALIDATION_TRACK.md`. It is a product-demand
+experiment, not compiler development; implementation of each WP (V-01…V-04)
+begins only after the proposal is reviewed for scope, and the decision (V-04)
+cannot be recorded until real developer feedback exists.
 
 Original proposal (bounded scope, non-goals, defect corpus, comparator
 requirements, exit/stop criteria) is in

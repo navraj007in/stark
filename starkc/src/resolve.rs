@@ -76,6 +76,8 @@ pub struct Resolver<'a> {
     item_details: HashMap<hir::ItemId, ItemDefDetail>,
     submodule_map: HashMap<ast::ItemId, ModuleId>,
     options: LanguageOptions,
+    current_use_item_vis: Option<ast::Vis>,
+    reexport_vis: HashMap<(ModuleId, String), Option<ast::Vis>>,
 }
 
 /// Resolve `ast` in Core-only mode (the Core v1 entry point).
@@ -102,6 +104,8 @@ pub fn resolve_with_options(
         item_details: HashMap::new(),
         submodule_map: HashMap::new(),
         options,
+        current_use_item_vis: None,
+        reexport_vis: HashMap::new(),
     };
 
     // Root module
@@ -131,8 +135,19 @@ pub fn resolve_with_options(
 
     resolver.declare_items(&root_items);
 
-    // Pass 2: Resolve use Tree imports
-    resolver.resolve_imports(&root_items);
+    // Pass 2: Resolve use Tree imports (with fixed-point iteration for re-exports)
+    let mut last_total_items = 0;
+    loop {
+        resolver.resolve_imports(&root_items);
+        let total_items = resolver.modules.iter().map(|m| m.items.len()).sum::<usize>();
+        if total_items == last_total_items {
+            break;
+        }
+        last_total_items = total_items;
+    }
+
+    // Run final unresolved imports check
+    resolver.check_imports_resolved(&root_items);
 
     // Pass 3: Lower AST to HIR & perform lexical/local name resolution
     resolver.lower_crate();
@@ -323,6 +338,83 @@ impl<'a> Resolver<'a> {
 
 
 
+    fn check_imports_resolved(&mut self, items: &[ast::ItemId]) {
+        let current_mod_id = self.current_module;
+        for &ast_id in items {
+            let item = self.ast.item(ast_id);
+            if let ast::ItemKind::Use(use_tree) = &item.kind {
+                self.check_use_tree_resolved(current_mod_id, use_tree);
+            }
+        }
+        for &ast_id in items {
+            let item = self.ast.item(ast_id);
+            if let ast::ItemKind::Mod { items: Some(ref sub_items), .. } = item.kind {
+                if let Some(&sub_mod_id) = self.submodule_map.get(&ast_id) {
+                    self.current_module = sub_mod_id;
+                    self.check_imports_resolved(sub_items);
+                    self.current_module = current_mod_id;
+                }
+            }
+        }
+    }
+
+    fn check_use_tree_resolved(&mut self, current_mod: ModuleId, tree: &ast::UseTree) {
+        match tree {
+            ast::UseTree::Path { path, .. } => {
+                let res = self.resolve_path(current_mod, path);
+                if res == Res::Err {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("unresolved import '{}'", self.path_to_string(path)),
+                            path.span,
+                        )
+                        .with_code("E0401"),
+                    );
+                }
+            }
+            ast::UseTree::Glob { prefix } => {
+                let res = self.resolve_path(current_mod, prefix);
+                if res == Res::Err {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("unresolved import '{}'", self.path_to_string(prefix)),
+                            prefix.span,
+                        )
+                        .with_code("E0401"),
+                    );
+                }
+            }
+            ast::UseTree::SelfImport { prefix } => {
+                let res = self.resolve_path(current_mod, prefix);
+                if res == Res::Err {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("unresolved import '{}'", self.path_to_string(prefix)),
+                            prefix.span,
+                        )
+                        .with_code("E0401"),
+                    );
+                }
+            }
+            ast::UseTree::Group { prefix, items } => {
+                let base_res = self.resolve_path(current_mod, prefix);
+                if base_res == Res::Err {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("unresolved import '{}'", self.path_to_string(prefix)),
+                            prefix.span,
+                        )
+                        .with_code("E0401"),
+                    );
+                } else {
+                    for item in items {
+                        self.check_use_tree_resolved(current_mod, item);
+                    }
+                }
+            }
+        }
+    }
+
     fn resolve_imports(&mut self, items: &[ast::ItemId]) {
         let current_mod_id = self.current_module;
 
@@ -330,7 +422,9 @@ impl<'a> Resolver<'a> {
         for &ast_id in items {
             let item = self.ast.item(ast_id);
             if let ast::ItemKind::Use(use_tree) = &item.kind {
+                self.current_use_item_vis = item.vis;
                 self.resolve_use_tree(current_mod_id, use_tree);
+                self.current_use_item_vis = None;
             }
         }
 
@@ -469,17 +563,24 @@ impl<'a> Resolver<'a> {
     }
 
     fn insert_module_item(&mut self, module_id: ModuleId, name: String, res: Res, span: Span) {
+        if let Some(vis) = self.current_use_item_vis {
+            self.reexport_vis.insert((module_id, name.clone()), Some(vis));
+        }
         match self.modules[module_id.0 as usize].items.entry(name.clone()) {
-            Entry::Occupied(_) => self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "duplicate definition of '{}' in the same module scope",
-                        name
-                    ),
-                    span,
-                )
-                .with_code("E0204"),
-            ),
+            Entry::Occupied(occ) => {
+                if occ.get() != &res {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!(
+                                "duplicate definition of '{}' in the same module scope",
+                                name
+                            ),
+                            span,
+                        )
+                        .with_code("E0204"),
+                    );
+                }
+            }
             Entry::Vacant(entry) => {
                 entry.insert(res);
             }
@@ -584,17 +685,15 @@ impl<'a> Resolver<'a> {
                     }
                 }
             } else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
-                if let Res::Item(item_id) = res {
-                    if !self.item_is_visible_from(item_id, start_mod) {
-                        self.diags.push(
-                            Diagnostic::error(
-                                format!("item '{name_str}' is private"),
-                                segment.span,
-                            )
-                            .with_code("E0203"),
-                        );
-                        return Res::Err;
-                    }
+                if !self.name_is_visible_from(current_mod, name_str, start_mod) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            format!("item '{name_str}' is private"),
+                            segment.span,
+                        )
+                        .with_code("E0203"),
+                    );
+                    return Res::Err;
                 }
                 current_res = Some(res);
                 if let Res::Item(item_id) = res {
@@ -664,6 +763,21 @@ impl<'a> Resolver<'a> {
             self.ast.item(ast::ItemId(item_id.0)).vis,
             Some(ast::Vis::Pub)
         )
+    }
+
+    fn name_is_visible_from(&self, module_id: ModuleId, name: &str, from: ModuleId) -> bool {
+        if module_id == from {
+            return true;
+        }
+        if let Some(vis) = self.reexport_vis.get(&(module_id, name.to_string())) {
+            return matches!(vis, Some(ast::Vis::Pub));
+        }
+        if let Some(&res) = self.modules[module_id.0 as usize].items.get(name) {
+            if let Res::Item(item_id) = res {
+                return self.item_is_visible_from(item_id, from);
+            }
+        }
+        true
     }
 
     fn lower_type(&mut self, ast_id: ast::TypeId) -> hir::TypeId {
