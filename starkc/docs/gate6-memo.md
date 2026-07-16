@@ -1,8 +1,8 @@
 # Gate 6 decision memo — evidence collected during Gate 5
 
-**Status:** Evidence complete (G6-04 + G6-05 measured). Recommendation below; the go/revise/stop call is the project owner's to confirm.
+**Status:** Complete. Evidence measured (G6-04 + G6-05); decision recorded.
 
-**Recommended decision:** **REVISE** — re-scope the demonstrator to isolate the differentiator, rather than GO or STOP. Rationale in §6.
+**Decision:** **REVISE** (owner-confirmed 2026-07-16). Re-scope the demonstrator to isolate the differentiator, rather than GO or STOP. Rationale and next experiment in §6.
 
 ---
 
@@ -169,6 +169,8 @@ is forced to drop dims to runtime — and (b) carries one semantic CV annotation
 end to end with propagation + conversion rules. That is the experiment that turns
 "parity" into a demonstrated, non-replicable advantage.
 
-No strategy decision is locked in by this memo, and no LSP work or language
-expansion is authorized. The go/revise/stop call is the project owner's; this
-memo records the evidence and recommends REVISE.
+**Decision recorded: REVISE (owner-confirmed 2026-07-16).** The next narrow
+experiment (the re-scoped demonstrator above) requires its own roadmap-governed
+proposal — owner, bounded scope, measurable exit criteria (ROADMAP.md §5) —
+before any implementation. No LSP work or language expansion is authorized by
+this decision.

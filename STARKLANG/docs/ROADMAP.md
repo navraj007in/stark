@@ -164,6 +164,21 @@ Exit criteria:
 
 ### Gate 6 — Decision checkpoint
 
+**Status: decision recorded — REVISE (2026-07-16).** Evidence and rationale are
+in `starkc/docs/gate6-memo.md` (measured comparators: `baseline_defects.py`,
+`rust-comparator/`; consolidated in `starkc/tests/results/gate6/results_summary.md`).
+Measured outcome — defects caught before inference: STARK 5/5, Python/ORT 2/5,
+strongest generated typed-Rust host 5/5 *on the Gate 5 CV-preprocessing
+pipeline*. Against the operational (Python) baseline STARK's advantage is
+decisive; against the strongest typed-Rust comparator it reaches only parity on
+this pipeline — parity that cost the Rust host a hand-rolled re-implementation of
+STARK's tensor/device typing and holds only because this pipeline uses no shape
+arithmetic (stable Rust hits the `generic_const_exprs` wall on reshape/matmul/
+conv/broadcast). The differentiator — general shape arithmetic and semantic CV
+annotations — is not exercised by the current demonstrator, so REVISE (not GO,
+not STOP): re-scope the next experiment to isolate it. That experiment requires
+its own §5 proposal before any work.
+
 After Gate 5, record a go, revise, or stop decision based on evidence.
 
 Proceed when the prototype shows a material safety or deployment advantage
