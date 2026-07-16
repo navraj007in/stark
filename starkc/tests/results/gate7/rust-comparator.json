@@ -1,13 +1,13 @@
 {
   "comparator": "real typed-Rust ONNX Runtime host (const generics + phantom device/range markers)",
   "provenance": {
-    "evaluation_commit": "6a4bb7815af9c2934c79f97be956ea86f81ceb58",
+    "evaluation_commit": "c5589d490aff8f36a2afbc8007f1cc706b234fc0",
     "git_dirty": false,
     "model_sha256": "583fb7fdc948435ceac9fa82efc7708701efe8382a859a3dd46526b155f5f2ae",
     "input_sha256": "3d39f6b6e8a4271860da1f961b17c60759de9191701f65a282d45695bcf54eb9",
     "comparator_binary_sha256": "fa31b8c5bc8b49258975c3b0201c6bbd4f58e81ad9ff346177c90c24b96f9981",
     "build_command": "cargo build --release --locked",
-    "build_ms": 166.5,
+    "build_ms": 164.3,
     "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
     "channel": "stable"
   },
@@ -109,10 +109,10 @@
     {
       "case": "d8_declaration_drift",
       "description": "declaration/artifact drift",
-      "enforcement_stage": "runtime (output-shape check)",
+      "enforcement_stage": "runtime AFTER inference (output-shape check)",
       "caught": true,
       "rustc_code": null,
-      "note": "STARK catches this at DEPLOY time; the Rust host only at runtime."
+      "note": "STARK catches this at DEPLOY time (before the host is built); the Rust host catches it only after the model has already run."
     },
     {
       "case": "d9_runtime_artifact_swap",
@@ -125,12 +125,15 @@
   "corpus_size": 13,
   "caught_compile_time": 11,
   "caught_runtime": 2,
+  "caught_before_inference": 12,
+  "caught_eventually": 13,
+  "before_inference_note": "The Rust host rejects 12/13 before inference (11 compile-time + the SHA swap); declaration drift is caught only after session.run has executed the model. STARK catches all 13 before inference (drift at deploy time).",
   "measurements": {
     "comparator_handwritten_lines": {
       "typed_layer": 150,
       "host": 110,
       "defect_cases": 66,
-      "measurement_harness": 217
+      "measurement_harness": 231
     },
     "stark_side_lines": {
       "pipeline_source": 18,

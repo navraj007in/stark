@@ -206,11 +206,16 @@ measured edge over the strongest typed-Rust host: it *proves* the reshape
 arithmetic (Rust trusts a fixed generated signature), carries a *symbolic dynamic
 batch* in the type system (Rust const-fixes it), catches drift at *deploy time*
 (Rust at runtime), in 18 source → 25 generated lines vs ~360 handwritten.
-Value-range parity is cheap on both sides. The advantage is real but narrow and
-lives entirely in the tensor/deployment layer, not Core, with no product-adoption
-evidence — hence RETAIN AS RESEARCH. Next: the separate `stark verify`
-validation track (real external developers), which needs its own §5 proposal.
-VM/DSL/language-expansion work remains deferred.
+Value-range parity is cheap on both sides. Both reject all 13 defect intents,
+but STARK rejects 13/13 *before inference* (deploy-time drift) vs the Rust host's
+12/13 (drift caught only after the model runs), and three Rust symbolic-shape
+cases are fixed-signature approximations, not equivalent proofs. The tensor-track
+technical verdict is positive; but the finding is **scoped to the CV-deployment
+wedge** Gate 7 tested (§4 non-goals excluded concurrency, cloud, actors, broad
+Core work), so the broader language thesis is **unresolved**, not disproven. With
+no product-adoption evidence, the decision is RETAIN AS RESEARCH (owner policy).
+Next: the separate `stark verify` validation track (real external developers),
+which needs its own §5 proposal. VM/DSL/language-expansion work remains deferred.
 
 Original proposal (bounded scope, non-goals, defect corpus, comparator
 requirements, exit/stop criteria) is in
