@@ -195,6 +195,22 @@ Performance is recorded at this checkpoint, but no fixed speedup is a gate
 until a controlled baseline and workload exist. STARK must not claim a
 performance multiple solely from eliminating Python orchestration.
 
+### Gate 7 — Symbolic Shape and Semantic Tensor Deployment
+
+**Status: proposed (authorised by the Gate 6 `REVISE` decision).** Bounded scope,
+non-goals, defect corpus, comparator requirements, measurements, and exit/stop
+criteria are defined in
+`STARKLANG/docs/proposals/GATE7_SYMBOLIC_SEMANTIC_DEPLOYMENT.md`. This is the
+narrow experiment the Gate 6 decision called for: one realistic detector-head
+pipeline that requires *computed* tensor dimensions (which the Gate 5 pipeline
+lacked) plus exactly one semantic tensor property (image value range), deployed
+natively through the existing ONNX Runtime host and compared against a **real,
+end-to-end** typed-Rust host (correcting the Gate 6 stubbed comparator). It tests
+whether STARK provides a practical language-level advantage when a pipeline
+carries computed shape relationships and semantic state; it does not presume the
+answer. Implementation of each work package (G7-01…G7-07) begins only after the
+proposal is reviewed for scope. No VM, LSP, or broad language work is authorised.
+
 ## 4. Explicit Non-Goals Before the Decision Checkpoint
 
 The following work is outside the critical path:
