@@ -8,8 +8,8 @@
 mod generated_pipeline;
 mod runtime;
 
-use generated_pipeline::{infer, MODEL_INPUT_NAME, MODEL_OUTPUT_NAME, MODEL_SHA256};
-use runtime::{load_image_nhwc, Model};
+use generated_pipeline::{build_input, infer, MODEL_INPUT_NAME, MODEL_OUTPUT_NAME, MODEL_SHA256};
+use runtime::Model;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -26,7 +26,7 @@ struct Args {
 }
 
 fn usage() -> &'static str {
-    "stark-resnet50 --model <model.onnx> --image <image.(jpg|png)> \
+    "stark-inference-host --model <model.onnx> --image <image.(jpg|png)> \
      [--warmup N] [--iterations N] [--json]\n"
 }
 
@@ -97,7 +97,8 @@ fn run(args: &Args) -> Result<(), String> {
     let mut model = Model::load(&args.model, MODEL_SHA256, MODEL_INPUT_NAME, MODEL_OUTPUT_NAME)?;
     let startup_ms = startup.elapsed().as_secs_f64() * 1000.0;
 
-    let raw = load_image_nhwc(&args.image)?;
+    // The host input is built to match the pipeline's own `refine` contract.
+    let raw = build_input(&args.image)?;
 
     for _ in 0..args.warmup {
         let _ = infer(&mut model, raw.clone())?;
@@ -112,14 +113,12 @@ fn run(args: &Args) -> Result<(), String> {
         last = Some(result);
     }
 
-    let class_tensor = last.ok_or("no inference was run")?;
-    let top1_index = class_tensor
-        .as_i64()
-        .and_then(|a| a.iter().next().copied())
-        .ok_or("pipeline did not produce a class index")?;
-
-    // Host-side probability report: softmax over the last raw logits.
-    let top1_probability = probability_at(&model, top1_index)?;
+    // The pipeline result is reported generically: its shape and a deterministic
+    // checksum. The host makes no model-specific interpretation of the values.
+    let result = last.ok_or("no inference was run")?;
+    let result_shape = result.shape();
+    let (result_elems, result_checksum) = result.checksum();
+    let result_i64: Option<Vec<i64>> = result.as_i64().map(|a| a.iter().copied().collect());
 
     latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let min = latencies.first().copied().unwrap_or(0.0);
@@ -127,17 +126,24 @@ fn run(args: &Args) -> Result<(), String> {
     let p95 = percentile(&latencies, 95.0);
 
     if args.json {
+        let values = match &result_i64 {
+            Some(v) => format!(",\"result_values\":{v:?}"),
+            None => String::new(),
+        };
         println!(
-            "{{\"schema\":1,\"model_sha256\":\"{sha}\",\
-             \"input\":{{\"width\":224,\"height\":224,\"channels\":3}},\
-             \"top1_index\":{idx},\"top1_probability\":{prob:.6},\
+            "{{\"schema\":2,\"model_sha256\":\"{sha}\",\
+             \"result\":{{\"dtype\":\"{dtype}\",\"shape\":{shape:?},\
+             \"elements\":{elems},\"checksum\":\"{chk:08x}\"{values}}},\
              \"startup_ms\":{start:.3},\
              \"inference_ms\":{{\"iterations\":{iters},\"min\":{min:.3},\
              \"median\":{median:.3},\"p95\":{p95:.3}}},\
              \"latencies_ms\":{latencies:?}}}",
             sha = MODEL_SHA256,
-            idx = top1_index,
-            prob = top1_probability,
+            dtype = result.dtype().name(),
+            shape = result_shape,
+            elems = result_elems,
+            chk = result_checksum,
+            values = values,
             start = startup_ms,
             iters = args.iterations,
             min = min,
@@ -146,52 +152,19 @@ fn run(args: &Args) -> Result<(), String> {
             latencies = latencies,
         );
     } else {
-        println!("top-1 class : {top1_index}");
-        println!("probability : {top1_probability:.6}");
+        println!("result      : {}", result.describe());
+        if let Some(v) = &result_i64 {
+            if v.len() <= 16 {
+                println!("values      : {v:?}");
+            }
+        }
         println!("startup     : {startup_ms:.3} ms");
         println!(
             "latency     : min {min:.3} / median {median:.3} / p95 {p95:.3} ms over {} runs",
             args.iterations
         );
-
-        if let Some((_, logits)) = model.last_output() {
-            let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            let mut sum = 0.0f32;
-            for &v in logits {
-                sum += (v - max).exp();
-            }
-            let mut indices: Vec<usize> = (0..logits.len()).collect();
-            indices.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
-
-            println!("\nTop 5 predictions:");
-            for rank in 0..5 {
-                if rank < indices.len() {
-                    let idx = indices[rank];
-                    let val = logits[idx];
-                    let prob = (val - max).exp() / sum;
-                    println!("  {}. Class {idx}: logit={val:.4}, prob={prob:.6}", rank + 1);
-                }
-            }
-        }
     }
     Ok(())
-}
-
-fn probability_at(model: &Model, index: i64) -> Result<f32, String> {
-    let (_, logits) = model.last_output().ok_or("no model output to score")?;
-    if logits.is_empty() {
-        return Err("empty model output".to_string());
-    }
-    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut sum = 0.0f32;
-    for &v in logits {
-        sum += (v - max).exp();
-    }
-    let i = index as usize;
-    if i >= logits.len() || sum <= 0.0 {
-        return Err("class index out of range for model output".to_string());
-    }
-    Ok((logits[i] - max).exp() / sum)
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
