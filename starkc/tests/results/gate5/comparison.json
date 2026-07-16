@@ -1,10 +1,10 @@
 {
-  "evaluation_commit": "2d1645e19f24e637172e9fae9b3ad6bc3d089fc7",
+  "evaluation_commit": "d77e5b9ca5815efc57942e283aa49c6302dd3578",
   "git_dirty": false,
   "top1_index_match": true,
   "top5_ordering_match": true,
-  "max_probability_absolute_difference": 0.000288,
-  "probability_vector_length": 1000,
+  "max_top5_probability_absolute_difference": 0.000288,
+  "compared_probability_count": 5,
   "absolute_tolerance": 0.001,
   "absolute_tolerance_passed": true
 }

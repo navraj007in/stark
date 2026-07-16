@@ -2,10 +2,10 @@
   "binary_size_bytes": 24816064,
   "model_size_bytes": 102583340,
   "total_bundle_size_bytes": 127399404,
-  "startup_ms": 307.85,
+  "startup_ms": 317.904,
   "image_decode_ms": null,
-  "latency_min_ms": 12.717,
-  "latency_median_ms": 13.079,
-  "latency_p95_ms": 14.633,
-  "peak_rss_bytes": 387186688
+  "latency_min_ms": 12.66,
+  "latency_median_ms": 13.137,
+  "latency_p95_ms": 15.817,
+  "peak_rss_bytes": 391593984
 }
