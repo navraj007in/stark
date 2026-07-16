@@ -31,7 +31,31 @@ A second independent question is: Is `stark verify` useful as a low-friction CI 
 | Incompatible device placement | compile time | `E0212` | `bad_device.stark:25:32`: device mismatch at `model.predict` (expected Cpu, found Cuda<0>) |
 | Artifact/declaration drift | build/deploy time | `deploy error` | `artifact_drift.stark`: output dimension 1 mismatch (artifact 1000, declaration 999) |
 
-* **Baseline Comparison**: The candidate defects are successfully caught before execution by STARK. Python and Rust baselines will be measured under controlled experiments in Gate 6 to isolate when they catch these defects. Gate 5 alone does not establish a language-level advantage over a generated Rust typed comparator.
+* **Baseline Comparison**: The candidate defects are successfully caught before execution by STARK. The Python/ORT operational baseline has now been measured (G6-04, below); the typed-Rust comparator (G6-05) remains outstanding, so a language-level advantage over a *generated Rust typed comparator* is still not established.
+
+### 3.1 Measured — Python/ONNX Runtime operational baseline (G6-04)
+
+Harness: `starkc/tests/fixtures/gate6/baseline_defects.py`; raw results:
+`starkc/tests/results/gate6/python-baseline.json`. Each row was produced by
+running the defect against ResNet50 v1.7 (SHA pinned) + ONNX Runtime `1.27.0`
+on macOS/arm64 (providers: CoreML, Azure, CPU — **no CUDA**). Nothing below is
+asserted; every outcome is observed.
+
+| Defect class | STARK | Python/ORT — when | Python/ORT — observed behaviour |
+| --- | --- | --- | --- |
+| Incompatible tensor dimensions | compile time (`E0212`) | runtime, at `session.run` | **runtime error** `InvalidArgument: Got invalid dimensions for input` |
+| Incorrect element type | compile time (`E0212`) | runtime, at `session.run` | **runtime error** `InvalidArgument: Unexpected input data type. Actual: tensor(uint8), expected: tensor(float)` |
+| Incompatible device placement | compile time (`E0212`) | **never** | **silent fallback**: requested `CUDAExecutionProvider`, ORT emitted a warning, fell back to `['CPUExecutionProvider']`, and ran to completion with no error |
+| Artifact/declaration signature drift | build/deploy time (deploy error) | **never (structural)** | **uncatchable**: Python generates no typed declaration, so there is nothing to diff the artifact against |
+| Runtime artifact swap (Gate 5 defect #5) | load time (`ArtifactMismatch`, SHA gate) | **never** | **silent wrong output**: a different-SHA model loaded and ran with no integrity check; top-1 went 258 → 739 |
+
+Reading: the two shape/dtype defects Python *does* catch, but only at
+`session.run` — after the program is built, deployed, started, the model
+loaded, and the input preprocessed; STARK rejects them at compile time. The
+device and both drift defects Python does **not** catch at all (silent fallback
+/ silent wrong output / structurally uncatchable). This fixes the weakest
+comparator; whether the *strongest* comparator (typed Rust) closes the gap is
+the open G6-05 question.
 
 ---
 
@@ -71,4 +95,8 @@ Python remains an operational baseline, not the strongest safety comparator.
 
 ## 6. Current Status & Next Steps
 
-Evidence collection is in progress. Gate 6 decisions are not yet made. No strategy decisions, LSP work, or language expansions are authorized. The next phase will run controlled evaluations against the Python baseline and the typed Rust comparator to establish whether STARK provides a material safety advantage.
+Evidence collection is in progress. Gate 6 decisions are not yet made. No strategy decisions, LSP work, or language expansions are authorized.
+
+* **G6-04 — Python/ORT baseline defect matrix: DONE.** Measured and recorded in §3.1 (`baseline_defects.py` + `python-baseline.json`). Result: Python catches 2/5 defects and only at `session.run` runtime; it misses device placement and both drift classes entirely.
+* **G6-05 — Typed Rust comparator: OUTSTANDING (next WP).** Build a generated typed-Rust host (ONNX signature import → generated model types → typed tensor/layout API → artifact checksum verify → ORT) and run the same defect matrix to establish how many of the five a strong statically-typed comparator catches at compile time. This is the number that decides go vs. revise.
+* **Decision write-up — after G6-05.** Only once both comparators are measured can §1's material-advantage question be answered.

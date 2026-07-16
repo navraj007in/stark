@@ -1,0 +1,74 @@
+{
+  "harness": "gate6 baseline_defects.py",
+  "comparator": "python + onnxruntime (operational baseline)",
+  "environment": {
+    "python": "3.14.4",
+    "numpy": "2.5.1",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0",
+    "available_providers": [
+      "CoreMLExecutionProvider",
+      "AzureExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "platform": "darwin"
+  },
+  "model_path": "tmp/resnet50-v1-7.onnx",
+  "model_sha256": "af16a04a6ec48ac494065d4439fe9dea590d337b9ca6dc328160ccf04a217b9c",
+  "model_sha_matches_pin": true,
+  "reference_top1": 258,
+  "defects": [
+    {
+      "defect": "d1_dim",
+      "roadmap_class": "incompatible tensor dimensions",
+      "caught": true,
+      "stage": "runtime (session.run / session init)",
+      "outcome": "runtime_error",
+      "exception_type": "InvalidArgument",
+      "detail": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Got invalid dimensions for input: data for the following indices"
+    },
+    {
+      "defect": "d2_dtype",
+      "roadmap_class": "incorrect element type",
+      "caught": true,
+      "stage": "runtime (session.run / session init)",
+      "outcome": "runtime_error",
+      "exception_type": "InvalidArgument",
+      "detail": "[ONNXRuntimeError] : 2 : INVALID_ARGUMENT : Unexpected input data type. Actual: (tensor(uint8)) , expected: (tensor(float))"
+    },
+    {
+      "caught": false,
+      "stage": "no error raised",
+      "outcome": "silent_device_fallback",
+      "requested_provider": "CUDAExecutionProvider",
+      "active_providers": [
+        "CPUExecutionProvider"
+      ],
+      "top1_after": 258,
+      "detail": "Requested CUDA; ORT silently fell back to ['CPUExecutionProvider'] and ran anyway (no exception).",
+      "defect": "d3_device",
+      "roadmap_class": "incompatible device placement"
+    },
+    {
+      "defect": "d4a_decl_drift",
+      "roadmap_class": "artifact/declaration signature drift",
+      "caught": false,
+      "stage": "n/a (no declaration exists)",
+      "outcome": "not_applicable_uncatchable",
+      "detail": "No typed declaration is generated in the Python pipeline; the artifact is the sole source of truth, so a declaration-vs-artifact signature mismatch has nothing to be checked against."
+    },
+    {
+      "caught": false,
+      "stage": "no integrity gate",
+      "outcome": "silent_wrong_output",
+      "original_sha": "af16a04a6ec48ac494065d4439fe9dea590d337b9ca6dc328160ccf04a217b9c",
+      "mutated_sha": "387b92c401c61ecb188b54047e3d43b07efda3b69763d858c26fbfc22f462a9f",
+      "mutated_tensor": "resnetv17_dense0_weight",
+      "ref_top1": 258,
+      "mutated_top1": 739,
+      "detail": "Swapped artifact (different SHA) loaded and ran with no integrity check; top-1 went 258 -> 739.",
+      "defect": "d4b_artifact_drift",
+      "roadmap_class": "artifact/declaration signature drift (runtime swap)"
+    }
+  ]
+}
