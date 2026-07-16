@@ -1,0 +1,74 @@
+{
+  "harness": "gate6 rust-comparator/run.py",
+  "comparator": "strongest generated typed-Rust host (const-generic dims + phantom device + typed elements + load-time digest)",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "channel": "stable",
+  "cases": [
+    {
+      "case": "valid",
+      "roadmap_class": "baseline correct pipeline",
+      "expectation": "compiles",
+      "compiled": true,
+      "run_exit": null,
+      "stage": "n/a",
+      "outcome": "compiles",
+      "as_expected": true,
+      "diagnostic": ""
+    },
+    {
+      "case": "d1_dim",
+      "roadmap_class": "incompatible tensor dimensions",
+      "expectation": "compile_error",
+      "compiled": false,
+      "run_exit": null,
+      "stage": "compile",
+      "outcome": "caught_compile_time",
+      "as_expected": true,
+      "diagnostic": "error[E0308]: mismatched types"
+    },
+    {
+      "case": "d2_dtype",
+      "roadmap_class": "incorrect element type",
+      "expectation": "compile_error",
+      "compiled": false,
+      "run_exit": null,
+      "stage": "compile",
+      "outcome": "caught_compile_time",
+      "as_expected": true,
+      "diagnostic": "error[E0308]: mismatched types"
+    },
+    {
+      "case": "d3_device",
+      "roadmap_class": "incompatible device placement",
+      "expectation": "compile_error",
+      "compiled": false,
+      "run_exit": null,
+      "stage": "compile",
+      "outcome": "caught_compile_time",
+      "as_expected": true,
+      "diagnostic": "error[E0308]: mismatched types"
+    },
+    {
+      "case": "d4b_artifact",
+      "roadmap_class": "runtime artifact swap",
+      "expectation": "compiles_runtime_error",
+      "compiled": true,
+      "run_exit": 1,
+      "stage": "runtime/load",
+      "outcome": "caught_runtime",
+      "as_expected": true,
+      "diagnostic": "error: ArtifactMismatch: digest 0xda9c0f1719257dc7 does not match expected 0xddc7582ac185b533; refusing to run inference"
+    },
+    {
+      "case": "limit_reshape",
+      "roadmap_class": "shape arithmetic wall (not a defect)",
+      "expectation": "compile_error_cannot_express",
+      "compiled": false,
+      "run_exit": null,
+      "stage": "n/a",
+      "outcome": "cannot_express_on_stable",
+      "as_expected": true,
+      "diagnostic": "error: generic parameters may not be used in const operations"
+    }
+  ]
+}

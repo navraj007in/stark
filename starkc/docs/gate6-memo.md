@@ -1,8 +1,8 @@
 # Gate 6 decision memo — evidence collected during Gate 5
 
-**Status:** Evidence collection in progress
+**Status:** Evidence complete (G6-04 + G6-05 measured). Recommendation below; the go/revise/stop call is the project owner's to confirm.
 
-**Decision:** Not yet made
+**Recommended decision:** **REVISE** — re-scope the demonstrator to isolate the differentiator, rather than GO or STOP. Rationale in §6.
 
 ---
 
@@ -31,7 +31,7 @@ A second independent question is: Is `stark verify` useful as a low-friction CI 
 | Incompatible device placement | compile time | `E0212` | `bad_device.stark:25:32`: device mismatch at `model.predict` (expected Cpu, found Cuda<0>) |
 | Artifact/declaration drift | build/deploy time | `deploy error` | `artifact_drift.stark`: output dimension 1 mismatch (artifact 1000, declaration 999) |
 
-* **Baseline Comparison**: The candidate defects are successfully caught before execution by STARK. The Python/ORT operational baseline has now been measured (G6-04, below); the typed-Rust comparator (G6-05) remains outstanding, so a language-level advantage over a *generated Rust typed comparator* is still not established.
+* **Baseline Comparison**: The candidate defects are all caught before execution by STARK (5/5). Both comparators have now been measured: the Python/ORT operational baseline (G6-04, §3.1) and the strongest generated typed-Rust host (G6-05, §3.2).
 
 ### 3.1 Measured — Python/ONNX Runtime operational baseline (G6-04)
 
@@ -53,9 +53,45 @@ Reading: the two shape/dtype defects Python *does* catch, but only at
 `session.run` — after the program is built, deployed, started, the model
 loaded, and the input preprocessed; STARK rejects them at compile time. The
 device and both drift defects Python does **not** catch at all (silent fallback
-/ silent wrong output / structurally uncatchable). This fixes the weakest
-comparator; whether the *strongest* comparator (typed Rust) closes the gap is
-the open G6-05 question.
+/ silent wrong output / structurally uncatchable).
+
+### 3.2 Measured — strongest generated typed-Rust host (G6-05)
+
+Harness: `starkc/tests/fixtures/gate6/rust-comparator/` (`run.py` + `lib.rs` +
+`cases/`); raw results: `starkc/tests/results/gate6/rust-comparator.json`;
+`rustc 1.93.0` stable. `lib.rs` is the strongest plausible *generated* host: it
+pushes the STARK tensor contract into Rust's type system — element type as `T`,
+shape as per-rank const generics (`Tensor4<T,N,C,H,W,Dev>`), device as a phantom
+tag. Every row is rustc's actual verdict.
+
+| Defect class | STARK | typed-Rust — when | typed-Rust — observed |
+| --- | --- | --- | --- |
+| Incompatible tensor dimensions | compile (`E0212`) | **compile** | `E0308`: `expected 224, found 100` (`cases/d1_dim.rs`) |
+| Incorrect element type | compile (`E0212`) | **compile** | `E0308`: `Tensor4<f32,..>` vs `Tensor4<u8,..>` (`cases/d2_dtype.rs`) |
+| Incompatible device placement | compile (`E0212`) | **compile\*** | `E0308`: `expected ..Cpu, found ..Cuda<0>` (`cases/d3_device.rs`) |
+| Declaration/signature drift | build/deploy | load | types generated from signature; stale decl caught by the same digest gate |
+| Runtime artifact swap | load (SHA gate) | load | `ArtifactMismatch … refusing to run inference`, exit 1 (`cases/d4b_artifact.rs`) |
+
+**Result: the strongest typed-Rust host reaches parity with STARK — 5/5 caught
+before inference — on this pipeline.** Two measured/structural caveats keep
+STARK's advantage real but narrow it sharply from a can/can't to a cost/generality
+argument:
+
+* `*` **Device typing is non-idiomatic.** Compile-time device catching required a
+  phantom-device tensor API that re-implements STARK's device typing. An ordinary
+  `ort` host configures device via execution providers at session build — a
+  runtime concern — so it would catch this at runtime or silently, like Python.
+  "Strongest comparator" here means "a host that paid to re-implement STARK's
+  type system in generated Rust."
+* **The shape-arithmetic wall (measured).** `cases/limit_reshape.rs` is a *valid*
+  program (flatten `[1,3,224,224] → [1, C*H*W]`) that stable Rust cannot even
+  express: `error: generic parameters may not be used in const operations`.
+  Computed output dims (reshape/flatten/matmul/conv-stride/broadcast) need the
+  unstable `generic_const_exprs`. This CV *preprocessing* needs only permutation
+  + cast + elementwise ops (no arithmetic), which is exactly why Rust reaches
+  parity here. Any pipeline that reshapes before a head, does conv-stride math,
+  broadcasts, or carries more than one symbolic dim forces the stable-Rust host
+  to drop those dims to runtime. STARK types all of them.
 
 ---
 
@@ -74,7 +110,7 @@ Measured results for the STARK-generated native host on Apple Silicon (arm64):
 * **Cold E2E latency**: `304.61 ms` (dominated by ORT model load time).
 * **Build steps**: Fully automated cargo build (statically linked via `ort-sys`).
 
-*Note: Controlled comparisons against a Python baseline and a typed Rust comparator will be performed in G6-04 and G6-05 to gather concrete comparative metrics. Unmeasured estimates for these baselines are not cited.*
+*Note: the safety comparison against the Python baseline (G6-04, §3.1) and the typed-Rust comparator (G6-05, §3.2) is now measured. Comparative deployment-cost metrics (binary size / latency / RSS of a hand-written Rust host vs. the STARK-generated host) were not separately measured; both compile to a single ORT-backed native binary, so no material deployment-cost delta is claimed in either direction.*
 
 ---
 
@@ -93,10 +129,46 @@ Python remains an operational baseline, not the strongest safety comparator.
 
 ---
 
-## 6. Current Status & Next Steps
+## 6. Decision synthesis and recommendation
 
-Evidence collection is in progress. Gate 6 decisions are not yet made. No strategy decisions, LSP work, or language expansions are authorized.
+Both comparators are measured (§3.1 Python, §3.2 typed-Rust; consolidated in
+`starkc/tests/results/gate6/results_summary.md`). Defects caught before
+inference: **STARK 5/5, Python 2/5, strongest typed-Rust 5/5.**
 
-* **G6-04 — Python/ORT baseline defect matrix: DONE.** Measured and recorded in §3.1 (`baseline_defects.py` + `python-baseline.json`). Result: Python catches 2/5 defects and only at `session.run` runtime; it misses device placement and both drift classes entirely.
-* **G6-05 — Typed Rust comparator: OUTSTANDING (next WP).** Build a generated typed-Rust host (ONNX signature import → generated model types → typed tensor/layout API → artifact checksum verify → ORT) and run the same defect matrix to establish how many of the five a strong statically-typed comparator catches at compile time. This is the number that decides go vs. revise.
-* **Decision write-up — after G6-05.** Only once both comparators are measured can §1's material-advantage question be answered.
+**Against the operational baseline (Python), STARK's advantage is decisive:** 5/5
+vs 2/5, and Python's two are caught only at `session.run`, after full deploy,
+load, and preprocessing. **Against the strongest comparator (a generated typed-
+Rust host), STARK reaches only parity on this pipeline** — and that parity cost
+the Rust host a bespoke, re-implemented STARK-in-Rust type system, and holds only
+because this CV preprocessing avoids shape arithmetic (the measured
+`generic_const_exprs` wall).
+
+Mapping to ROADMAP.md Gate 6:
+
+* **GO** wants "a material safety or deployment advantage not erased by
+  integration complexity." The as-built wedge does not clear this bar against the
+  *strongest* comparator: the same four/five defect guarantees are obtainable via
+  a schema generator + typed Rust for this pipeline. Deployment cost is a wash
+  (both are one ORT-backed binary).
+* **STOP** wants the guarantees to be "more simply obtained" elsewhere, or the
+  type guarantees to be misleading at the backend boundary. Not met: the Rust
+  parity path is *not* simpler (it re-implements the type system by hand and hits
+  a hard wall on any shape-arithmetic pipeline), and STARK's checks are sound at
+  the ORT boundary (verified in Gate 5).
+* **REVISE (recommended).** STARK's real, un-replicated edge is **generality**
+  (arbitrary shape arithmetic that stable Rust cannot type), **ergonomics** and
+  **diagnostics**, and headroom for **semantic CV annotations** (color space,
+  value range, coordinate frame — ROADMAP.md's proposed next experiment) that
+  have no Rust-type equivalent at all. The current demonstrator does not exercise
+  any of these, so it under-sells the differentiator and reads as parity.
+
+**Recommended next narrow experiment (owner to approve before any work):**
+re-scope the demonstrator to a pipeline that (a) requires shape arithmetic —
+e.g. a detector/decoder with reshape/flatten/broadcast where the Rust comparator
+is forced to drop dims to runtime — and (b) carries one semantic CV annotation
+end to end with propagation + conversion rules. That is the experiment that turns
+"parity" into a demonstrated, non-replicable advantage.
+
+No strategy decision is locked in by this memo, and no LSP work or language
+expansion is authorized. The go/revise/stop call is the project owner's; this
+memo records the evidence and recommends REVISE.
