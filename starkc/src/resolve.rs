@@ -44,6 +44,7 @@ struct ModuleData {
     file: Arc<SourceFile>,
     items: HashMap<String, Res>,
     submodules: HashMap<String, ModuleId>,
+    package_root: ModuleId,
 }
 
 enum ItemDefDetail {
@@ -110,6 +111,7 @@ pub fn resolve_with_options(
         file: file.clone(),
         items: HashMap::new(),
         submodules: HashMap::new(),
+        package_root: ModuleId(0),
     });
 
     // Pass 1: Declare items (collect all module-level item signatures)
@@ -144,6 +146,11 @@ impl<'a> Resolver<'a> {
     }
 
     fn text(&self, span: Span) -> &str {
+        if span.lo >= 0x8000_0000 {
+            if let Some(s) = self.ast.synthetic_spans.get(&span) {
+                return s;
+            }
+        }
         let file = self.current_file();
         &file.src[span.lo as usize..span.hi as usize]
     }
@@ -284,12 +291,20 @@ impl<'a> Resolver<'a> {
                     self.modules[current_mod_id.0 as usize].file.clone()
                 };
 
+                let is_dep_package = name.lo >= 0x8000_0000;
+                let package_root = if is_dep_package {
+                    sub_mod_id
+                } else {
+                    self.modules[current_mod_id.0 as usize].package_root
+                };
+
                 let sub_mod_data = ModuleData {
                     name: name_str.clone(),
                     parent: Some(current_mod_id),
                     file,
                     items: HashMap::new(),
                     submodules: HashMap::new(),
+                    package_root,
                 };
                 self.modules.push(sub_mod_data);
                 self.modules[current_mod_id.0 as usize]
@@ -501,8 +516,9 @@ impl<'a> Resolver<'a> {
             if i == 0 {
                 match segment.kind {
                     ast::SegmentKind::Crate => {
-                        current_res = Some(Res::Item(hir::ItemId(0)));
-                        current_mod = ModuleId(0);
+                        let pkg_root = self.modules[start_mod.0 as usize].package_root;
+                        current_res = Some(Res::Item(hir::ItemId(pkg_root.0)));
+                        current_mod = pkg_root;
                         continue;
                     }
                     ast::SegmentKind::Super => {

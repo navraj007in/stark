@@ -84,6 +84,94 @@ pub fn parse_project(
     (ast, diags)
 }
 
+pub fn parse_package_graph(
+    graph: &crate::package::PackageGraph,
+    options: LanguageOptions,
+) -> (Ast, Vec<Diagnostic>) {
+    let mut ast = Ast::default();
+    let mut diags = Vec::new();
+    let mut parsed_packages = std::collections::HashMap::new();
+
+    let root_items_res = parse_package_rec(
+        &graph.root_package_name,
+        graph,
+        options,
+        &mut ast,
+        &mut diags,
+        &mut parsed_packages,
+    );
+
+    match root_items_res {
+        Ok(items) => {
+            ast.root = Root::Program(items);
+        }
+        Err(err_msg) => {
+            diags.push(Diagnostic::error(err_msg, Span { lo: 0, hi: 0 }).with_code("E0202"));
+            ast.root = Root::Program(Vec::new());
+        }
+    }
+
+    (ast, diags)
+}
+
+fn parse_package_rec(
+    pkg_name: &str,
+    graph: &crate::package::PackageGraph,
+    options: LanguageOptions,
+    ast: &mut Ast,
+    diags: &mut Vec<Diagnostic>,
+    parsed_packages: &mut std::collections::HashMap<String, Vec<ItemId>>,
+) -> Result<Vec<ItemId>, String> {
+    if let Some(items) = parsed_packages.get(pkg_name) {
+        return Ok(items.clone());
+    }
+
+    let pkg = graph.packages.get(pkg_name)
+        .ok_or_else(|| format!("Package '{}' not found in graph", pkg_name))?;
+
+    let entry_src = std::fs::read_to_string(&pkg.entry)
+        .map_err(|e| format!("failed to read entry file '{}' for package '{}': {}", pkg.entry.display(), pkg_name, e))?;
+    let entry_file = std::sync::Arc::new(SourceFile::new(pkg.entry.to_string_lossy().into_owned(), entry_src));
+    
+    let (root, mut entry_diags) = parse_with_options_into(&entry_file, ParseMode::Program, options, ast);
+    diags.append(&mut entry_diags);
+
+    let mut root_items = match root {
+        Root::Program(items) => items,
+        _ => Vec::new(),
+    };
+
+    let mut loaded_modules = std::collections::HashSet::new();
+    loaded_modules.insert(entry_file.name.clone());
+    if let Err(mut sub_diags) = load_submodules_recursive(&entry_file, &root_items, options, ast, &mut loaded_modules) {
+        diags.append(&mut sub_diags);
+    }
+
+    for dep_name in pkg.dependencies.keys() {
+        let dep_items = parse_package_rec(dep_name, graph, options, ast, diags, parsed_packages)?;
+        
+        let synthetic_lo = 0x8000_0000 + ast.synthetic_spans.len() as u32;
+        let synthetic_hi = synthetic_lo + dep_name.len() as u32;
+        let name_span = Span { lo: synthetic_lo, hi: synthetic_hi };
+        ast.synthetic_spans.insert(name_span, dep_name.clone());
+
+        let mod_item_id = ast.alloc_item(
+            ItemKind::Mod {
+                name: name_span,
+                items: Some(dep_items),
+            },
+            Some(Vis::Pub),
+            name_span,
+        );
+
+        ast.item_files.insert(mod_item_id, entry_file.clone());
+        root_items.push(mod_item_id);
+    }
+
+    parsed_packages.insert(pkg_name.to_string(), root_items.clone());
+    Ok(root_items)
+}
+
 fn load_submodules_recursive(
     current_file: &SourceFile,
     items: &[ItemId],

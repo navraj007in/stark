@@ -42,6 +42,7 @@ pub struct Ast {
     pub dims: Vec<DimExprNode>,
     pub root: Root,
     pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
+    pub synthetic_spans: std::collections::HashMap<Span, String>,
 }
 
 /// What was parsed. `Program` is the source-language entry point
