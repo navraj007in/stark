@@ -130,6 +130,42 @@ fn generated_host_evaluates_symbolic_reshape() {
 }
 
 #[test]
+fn predict_enforces_shared_boundary_dimension() {
+    let dir = TempDir::new();
+    let src = dir.write("pipeline.stark", frozen_pipeline_source().as_bytes());
+    let program =
+        lower_pipeline(&src, &model(&dir), "infer").unwrap_or_else(|e| panic!("{}", e.render()));
+    let files = emit(&program);
+    let pipeline = files
+        .iter()
+        .find(|f| f.path == "src/generated_pipeline.rs")
+        .map(|f| f.contents.as_str())
+        .unwrap();
+
+    // predict carries the declared input and output patterns; the batch dim is
+    // the same ONNX-keyed symbol on both sides, so the runtime binds it from the
+    // input and checks the output against it (input.B == output.B enforced).
+    let predict_line = pipeline
+        .lines()
+        .find(|l| l.contains(".predict("))
+        .expect("a predict call");
+    let batch_key = &program.model.input_pattern[0];
+    assert!(batch_key.is_symbolic());
+    let sym = format!("DimBind::Sym(\"{batch_key}\")");
+    // The symbol appears twice on the predict line: once per pattern.
+    assert_eq!(
+        predict_line.matches(&sym).count(),
+        2,
+        "batch symbol must key both input and output patterns:\n{predict_line}"
+    );
+    // Both declared patterns share the batch symbol.
+    assert_eq!(
+        program.model.output_pattern[0],
+        program.model.input_pattern[0]
+    );
+}
+
+#[test]
 fn codegen_is_deterministic() {
     let dir = TempDir::new();
     let src = dir.write("pipeline.stark", frozen_pipeline_source().as_bytes());

@@ -2,13 +2,15 @@
 //! checked inference pipeline (Gate 5, `CLAUDE_GATE5_IMPLEMENTATION_PLAN.md`
 //! §6).
 //!
-//! This is deliberately *not* a general STARK-to-Rust IR. It models exactly the
-//! straight-line tensor/model operations the representative ResNet50 pipeline
-//! needs; every other reachable construct is rejected during lowering with an
-//! `E06xx` diagnostic (see the `lower` module). Each node keeps its originating
-//! [`Span`] so the emitter and any later diagnostic can point back at source.
+//! This is deliberately *not* a general STARK-to-Rust IR. It models the
+//! straight-line tensor/model operations a bounded computer-vision inference
+//! pipeline needs (classifier or detector head), including symbolic dimensions
+//! bound at the model/refine boundary; every other reachable construct is
+//! rejected during lowering with an `E06xx` diagnostic (see the `lower`
+//! module). Each node keeps its originating [`Span`] so the emitter and any
+//! later diagnostic can point back at source.
 
-use crate::onnx::{DType as OnnxDType, ModelSignature};
+use crate::onnx::{DType as OnnxDType, Dimension, ModelSignature};
 use crate::source::Span;
 use std::fmt;
 
@@ -214,6 +216,16 @@ pub struct DeployModel {
     pub type_name: String,
     pub input: DeployPort,
     pub output: DeployPort,
+    /// The declared input/output shape patterns, with each dynamic ONNX
+    /// dimension carried as a [`DeployDim::Symbol`] keyed by its ONNX dim
+    /// identity (named dims share a key). The generated host binds the input
+    /// pattern and then *checks* the output pattern in a fresh environment at
+    /// each `predict`, so a runtime output whose dynamic dims disagree with the
+    /// input (e.g. a batch that changed across the model) is caught rather than
+    /// silently propagated — the frontend-proved cross-boundary relationship is
+    /// enforced natively.
+    pub input_pattern: Vec<DeployDim>,
+    pub output_pattern: Vec<DeployDim>,
     /// Lowercase hex SHA-256 of the exact artifact bytes.
     pub artifact_sha256: String,
 }
@@ -269,6 +281,22 @@ pub(crate) fn model_from_signature(
         type_name,
         input: DeployPort::from_onnx(&signature.inputs[0]),
         output: DeployPort::from_onnx(&signature.outputs[0]),
+        input_pattern: port_pattern(&signature.inputs[0]),
+        output_pattern: port_pattern(&signature.outputs[0]),
         artifact_sha256,
     }
+}
+
+/// The declared shape pattern of an ONNX port: static dims become literals;
+/// dynamic dims become symbols keyed by ONNX dim identity, so a dimension shared
+/// between the input and output ports (e.g. a named batch) uses the same symbol
+/// and is enforced equal at runtime.
+fn port_pattern(port: &crate::onnx::Port) -> Vec<DeployDim> {
+    port.dimensions
+        .iter()
+        .map(|d| match d {
+            Dimension::Static(n) => DeployDim::Literal(*n),
+            Dimension::Dynamic { key, .. } => DeployDim::Symbol(key.clone()),
+        })
+        .collect()
 }

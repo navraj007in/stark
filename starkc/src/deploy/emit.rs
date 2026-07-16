@@ -191,40 +191,51 @@ fn generated_pipeline(program: &DeploymentProgram) -> String {
 /// preprocessing; nothing here is model-specific.
 fn emit_build_input(out: &mut String, program: &DeploymentProgram) {
     let (dtype, dims) = host_input_spec(program);
-    let dim_items: Vec<String> = dims.iter().map(|d| format!("{d}usize")).collect();
+    let body = match dims {
+        Some(dims) => {
+            let dim_items: Vec<String> = dims.iter().map(|d| format!("{d}usize")).collect();
+            format!(
+                "    build_host_input(image, DType::{}, &[{}])",
+                dtype_ident(dtype),
+                dim_items.join(", ")
+            )
+        }
+        // A host-input dimension overflowed at generation; fail loudly rather
+        // than emit a silently-wrong shape.
+        None => {
+            "    Err(\"host input shape overflowed during generation\".to_string())".to_string()
+        }
+    };
     let _ = writeln!(
         out,
-        "pub fn build_input(image: &Path) -> Result<Tensor, String> {{\n\
-         \x20   build_host_input(image, DType::{}, &[{}])\n\
-         }}",
-        dtype_ident(dtype),
-        dim_items.join(", "),
+        "pub fn build_input(image: &Path) -> Result<Tensor, String> {{\n{body}\n}}"
     );
 }
 
 /// The entry's host input contract: the dtype and concrete dims of the first
 /// `refine`, with symbolic dimensions resolved to a batch of 1.
-fn host_input_spec(program: &DeploymentProgram) -> (super::ir::DType, Vec<u64>) {
+fn host_input_spec(program: &DeploymentProgram) -> (super::ir::DType, Option<Vec<u64>>) {
     use super::ir::{DType, DeployOp};
     for stmt in &program.entry_fn().body {
         if let DeployOp::Refine { dtype, dims, .. } = &stmt.op {
             return (*dtype, dims.iter().map(dim_batch1).collect());
         }
     }
-    // No refine (unusual): default to a Float32 scalar so emission still yields
-    // a valid function; the ABI check already requires a sensible pipeline.
-    (DType::Float32, vec![1])
+    // No refine: the ABI check requires a pipeline that refines its input, so
+    // this is unreachable in a valid program; emit a scalar so emission stays
+    // total.
+    (DType::Float32, Some(vec![1]))
 }
 
 /// Evaluate a deployment dimension with every symbol taken as 1 (the host input
-/// batch), for the host-input shape only.
-fn dim_batch1(dim: &super::ir::DeployDim) -> u64 {
+/// batch), with checked arithmetic; `None` on overflow.
+fn dim_batch1(dim: &super::ir::DeployDim) -> Option<u64> {
     use super::ir::DeployDim;
     match dim {
-        DeployDim::Literal(n) => *n,
-        DeployDim::Symbol(_) => 1,
-        DeployDim::Add(a, b) => dim_batch1(a).saturating_add(dim_batch1(b)),
-        DeployDim::Mul(a, b) => dim_batch1(a).saturating_mul(dim_batch1(b)),
+        DeployDim::Literal(n) => Some(*n),
+        DeployDim::Symbol(_) => Some(1),
+        DeployDim::Add(a, b) => dim_batch1(a)?.checked_add(dim_batch1(b)?),
+        DeployDim::Mul(a, b) => dim_batch1(a)?.checked_mul(dim_batch1(b)?),
     }
 }
 
@@ -352,7 +363,28 @@ fn emit_op(
             format!("{}.div(&{})?", val(names, *lhs), val(names, *rhs))
         }
         DeployOp::Predict { model, input } => {
-            format!("{}.predict(&{})?", val(names, *model), val(names, *input))
+            // Enforce the declared input/output shape contract at the model
+            // boundary: dynamic dims shared between input and output (e.g. the
+            // batch) must agree at runtime.
+            let in_pat = program
+                .model
+                .input_pattern
+                .iter()
+                .map(dim_bind)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let out_pat = program
+                .model
+                .output_pattern
+                .iter()
+                .map(dim_bind)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{}.predict(&{}, &[{in_pat}], &[{out_pat}])?",
+                val(names, *model),
+                val(names, *input)
+            )
         }
         DeployOp::Softmax { src, axis } => {
             format!("{}.softmax({axis})?", val(names, *src))
