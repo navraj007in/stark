@@ -207,8 +207,9 @@ model Drift<A: Dim, B: Dim, C: Dim> {
 }
 "#;
     let report = verify_declaration_source(&signature, declaration, "drift.stark", None).unwrap();
+    let diff_strings: Vec<String> = report.differences.iter().map(|d| d.to_string()).collect();
     assert_eq!(
-        report.differences,
+        diff_strings,
         [
             "input 1 name differs: artifact `image/input`, declaration `wrong_name`",
             "input `image/input` dtype differs: artifact Float32, declaration Float16",
@@ -241,7 +242,7 @@ model Drift<A: Dim> {
 }
 "#;
     let report = verify_declaration_source(&signature, declaration, "drift.stark", None).unwrap();
-    let joined = report.differences.join("\n");
+    let joined = report.differences.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
     assert!(joined.contains("output port count differs"), "{joined}");
     assert!(joined.contains("over-promises dynamic"), "{joined}");
     assert!(
@@ -627,4 +628,40 @@ fn imports_and_verifies_checksum_pinned_reference_model() {
     assert!(source.contains("output resnetv17_dense0_fwd: Tensor<Float32, [N, 1000]>;"));
     let verified = starkc::onnx::verify_declaration_file(&artifact, &declaration, None).unwrap();
     assert!(verified.is_match());
+}
+
+#[test]
+fn cli_verify_message_format_json() {
+    let temp = TempDir::new();
+    let artifact = temp.join("model.onnx");
+    let declaration = temp.join("model.stark");
+
+    fs::write(
+        &artifact,
+        model(
+            &[value("image/input", 1, &[Dim::Static(1), Dim::Static(3), Dim::Static(224), Dim::Static(224)])],
+            &[value("class scores", 1, &[Dim::Static(1), Dim::Static(1000)])],
+            &[],
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &declaration,
+        "model MyModel { input wrong_name: Tensor<Float32, [1, 3, 224, 224]>; output class_scores: Tensor<Float32, [1, 1000]>; }\n",
+    )
+    .unwrap();
+
+    let res = starkc(&[
+        Path::new("verify"),
+        &artifact,
+        Path::new("--declaration"),
+        &declaration,
+        Path::new("--message-format"),
+        Path::new("json"),
+    ]);
+    assert_eq!(res.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&res.stdout);
+    assert!(stdout.contains("\"schema_version\":1"));
+    assert!(stdout.contains("\"status\":\"mismatch\""));
+    assert!(stdout.contains("\"differences\":["));
 }

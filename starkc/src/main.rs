@@ -9,7 +9,7 @@ const USAGE: &str = "\
 starkc — compiler for the STARK Core v1 language
 
 Usage:
-  starkc check [--snippet] [--extension <name>] <file.stark>
+  starkc check [--snippet] [--extension <name>] [--message-format <text|json>] [--stdin --filename <path>] [<file.stark>]
                               Check a source file and report semantic diagnostics.
   starkc run <file.stark>               Check and execute a Core program.
   starkc parse [--snippet] [--dump] [--extension <name>] <file.stark>
@@ -22,7 +22,7 @@ Usage:
   starkc lex <file.stark>     Dump the token stream (debugging aid)
   starkc import <model.onnx> --out <model.stark> [--force]
                               Generate a deterministic STARK model declaration.
-  starkc verify <model.onnx> --declaration <model.stark> [--model <Name>]
+  starkc verify <model.onnx> --declaration <model.stark> [--model <Name>] [--message-format <text|json>]
                               Verify an artifact against a model declaration.
   starkc deploy <pipeline.stark> --model <model.onnx> --entry <fn> --out <dir> [--force]
                               Generate a native ONNX Runtime host crate for a
@@ -67,12 +67,40 @@ fn main() -> ExitCode {
             let mut mode = ParseMode::Program;
             let mut path = None;
             let mut extensions = Vec::new();
+            let mut message_format = "text";
+            let mut stdin = false;
+            let mut filename = None;
             let mut args = rest.iter();
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--snippet" => mode = ParseMode::Snippet,
                     "--extension" => match args.next() {
                         Some(name) => extensions.push(name.clone()),
+                        None => {
+                            eprint!("{USAGE}");
+                            return ExitCode::from(2);
+                        }
+                    },
+                    "--message-format" => match args.next() {
+                        Some(value) => {
+                            if value != "text" && value != "json" {
+                                eprintln!("Error: invalid message format `{value}`; expected `text` or `json`");
+                                return ExitCode::from(2);
+                            }
+                            if value == "json" {
+                                message_format = "json";
+                            } else {
+                                message_format = "text";
+                            }
+                        }
+                        None => {
+                            eprint!("{USAGE}");
+                            return ExitCode::from(2);
+                        }
+                    },
+                    "--stdin" => stdin = true,
+                    "--filename" => match args.next() {
+                        Some(value) => filename = Some(value.clone()),
                         None => {
                             eprint!("{USAGE}");
                             return ExitCode::from(2);
@@ -85,11 +113,45 @@ fn main() -> ExitCode {
                     }
                 }
             }
-            let (Some(path), Some(options)) = (path, extension_options(&extensions)) else {
+            let Some(options) = extension_options(&extensions) else {
                 eprint!("{USAGE}");
                 return ExitCode::from(2);
             };
-            cmd_check(&path, mode, options)
+            
+            let file = if stdin {
+                if path.is_some() {
+                    eprintln!("Error: cannot specify input path when `--stdin` is passed");
+                    return ExitCode::from(2);
+                }
+                let Some(fname) = filename else {
+                    eprintln!("Error: `--filename <path>` is required when `--stdin` is passed");
+                    return ExitCode::from(2);
+                };
+                
+                use std::io::Read;
+                let mut buffer = String::new();
+                if let Err(err) = std::io::stdin().read_to_string(&mut buffer) {
+                    eprintln!("Error: cannot read from stdin: {err}");
+                    return ExitCode::from(3);
+                }
+                SourceFile::new(fname, buffer)
+            } else {
+                if filename.is_some() {
+                    eprintln!("Error: `--filename` is only valid when `--stdin` is passed");
+                    return ExitCode::from(2);
+                }
+                let Some(p) = path else {
+                    eprintln!("Error: missing input file path");
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                };
+                match load(&p) {
+                    Ok(f) => f,
+                    Err(code) => return code,
+                }
+            };
+            
+            cmd_check(file, mode, options, message_format)
         }
         Some((cmd, rest)) if cmd == "import" => cmd_import(rest),
         Some((cmd, rest)) if cmd == "verify" => cmd_verify(rest),
@@ -153,6 +215,7 @@ fn cmd_verify(args: &[String]) -> ExitCode {
     let mut artifact = None;
     let mut declaration = None;
     let mut model = None;
+    let mut message_format = "text";
     let mut arguments = args.iter();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -170,6 +233,21 @@ fn cmd_verify(args: &[String]) -> ExitCode {
                 };
                 model = Some(value.clone());
             }
+            "--message-format" => {
+                let Some(value) = arguments.next().filter(|value| !value.starts_with('-')) else {
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                };
+                if value != "text" && value != "json" {
+                    eprintln!("Error: invalid message format `{value}`; expected `text` or `json`");
+                    return ExitCode::from(2);
+                }
+                if value == "json" {
+                    message_format = "json";
+                } else {
+                    message_format = "text";
+                }
+            }
             value if !value.starts_with('-') && artifact.is_none() => {
                 artifact = Some(value.to_string());
             }
@@ -183,23 +261,124 @@ fn cmd_verify(args: &[String]) -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::from(2);
     };
-    match starkc::onnx::verify_declaration_file(
-        std::path::Path::new(&artifact),
-        std::path::Path::new(&declaration),
-        model.as_deref(),
-    ) {
-        Ok(report) if report.is_match() => {
-            println!("{}: ONNX signature matches", declaration);
-            ExitCode::SUCCESS
-        }
-        Ok(report) => {
-            eprintln!("Error: ONNX signature mismatch");
-            for difference in report.differences {
-                eprintln!("  - {difference}");
+
+    let sig_and_hash = match starkc::onnx::read_signature(std::path::Path::new(&artifact)) {
+        Ok((sig, bytes)) => {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let digest = hasher.finalize();
+            let mut hash = String::new();
+            for &byte in digest.iter() {
+                use std::fmt::Write;
+                write!(&mut hash, "{:02x}", byte).unwrap();
             }
-            ExitCode::FAILURE
+            Some((sig, hash))
         }
         Err(error) => {
+            if message_format == "json" {
+                println!(
+                    "{{\
+                      \"schema_version\":1,\
+                      \"status\":\"error\",\
+                      \"artifact\":{{\"path\":\"{}\",\"sha256\":null}},\
+                      \"declaration\":{{\"path\":\"{}\",\"model\":null}},\
+                      \"differences\":[]\
+                    }}",
+                    starkc::onnx::escape_json(&artifact),
+                    starkc::onnx::escape_json(&declaration)
+                );
+            }
+            eprintln!("Error: {error}");
+            return ExitCode::from(3);
+        }
+    };
+
+    let (signature, sha256) = sig_and_hash.unwrap();
+
+    let source = match std::fs::read_to_string(&declaration) {
+        Ok(src) => src,
+        Err(error) => {
+            if message_format == "json" {
+                println!(
+                    "{{\
+                      \"schema_version\":1,\
+                      \"status\":\"error\",\
+                      \"artifact\":{{\"path\":\"{}\",\"sha256\":\"{}\"}},\
+                      \"declaration\":{{\"path\":\"{}\",\"model\":null}},\
+                      \"differences\":[]\
+                    }}",
+                    starkc::onnx::escape_json(&artifact),
+                    starkc::onnx::escape_json(&sha256),
+                    starkc::onnx::escape_json(&declaration)
+                );
+            }
+            eprintln!("Error: cannot read declaration file `{declaration}`: {error}");
+            return ExitCode::from(3);
+        }
+    };
+
+    match starkc::onnx::verify_declaration_source(
+        &signature,
+        &source,
+        &declaration,
+        model.as_deref(),
+    ) {
+        Ok(report) => {
+            if message_format == "json" {
+                let status_str = if report.is_match() { "match" } else { "mismatch" };
+                let model_str = model.clone().unwrap_or_else(|| {
+                    find_first_model_name(&source).unwrap_or_else(|| "Unknown".to_string())
+                });
+                let diffs_json = report.differences.iter()
+                    .map(|d| d.to_json())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                println!(
+                    "{{\
+                      \"schema_version\":1,\
+                      \"status\":\"{status_str}\",\
+                      \"artifact\":{{\"path\":\"{artifact_path}\",\"sha256\":\"{sha256}\"}},\
+                      \"declaration\":{{\"path\":\"{dec_path}\",\"model\":\"{model_name}\"}},\
+                      \"differences\":[{diffs_json}]\
+                    }}",
+                    artifact_path = starkc::onnx::escape_json(&artifact),
+                    sha256 = starkc::onnx::escape_json(&sha256),
+                    dec_path = starkc::onnx::escape_json(&declaration),
+                    model_name = starkc::onnx::escape_json(&model_str),
+                    diffs_json = diffs_json
+                );
+            } else {
+                if report.is_match() {
+                    println!("{}: ONNX signature matches", declaration);
+                } else {
+                    eprintln!("Error: ONNX signature mismatch");
+                    for difference in &report.differences {
+                        eprintln!("  - {difference}");
+                    }
+                }
+            }
+            if report.is_match() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+        Err(error) => {
+            if message_format == "json" {
+                println!(
+                    "{{\
+                      \"schema_version\":1,\
+                      \"status\":\"error\",\
+                      \"artifact\":{{\"path\":\"{}\",\"sha256\":\"{}\"}},\
+                      \"declaration\":{{\"path\":\"{}\",\"model\":null}},\
+                      \"differences\":[]\
+                    }}",
+                    starkc::onnx::escape_json(&artifact),
+                    starkc::onnx::escape_json(&sha256),
+                    starkc::onnx::escape_json(&declaration)
+                );
+            }
             eprintln!("Error: {error}");
             ExitCode::FAILURE
         }
@@ -332,43 +511,127 @@ fn cmd_parse(path: &str, mode: ParseMode, dump: bool, options: LanguageOptions) 
     ExitCode::SUCCESS
 }
 
-fn cmd_check(path: &str, mode: ParseMode, options: LanguageOptions) -> ExitCode {
-    let file = match load(path) {
-        Ok(f) => f,
-        Err(code) => return code,
-    };
-    let (tree, mut diags) = parse_with_options(&file, mode, options);
-    if !diags.is_empty() {
-        for diag in &diags {
-            eprint!("{}", diag.render(&file));
-        }
-        eprintln!("{}: {} error(s)", file.name, diags.len());
-        return ExitCode::FAILURE;
-    }
+fn cmd_check(file: SourceFile, mode: ParseMode, options: LanguageOptions, message_format: &str) -> ExitCode {
+    let mut diags = Vec::new();
+    let (tree, parse_diags) = parse_with_options(&file, mode, options);
+    diags.extend(parse_diags);
 
     let file_arc = std::sync::Arc::new(file);
-    let (hir, mut sem_diags) =
-        starkc::resolve::resolve_with_options(&tree, file_arc.clone(), options);
-    diags.append(&mut sem_diags);
+    if diags.iter().all(|d| d.severity != starkc::diag::Severity::Error) {
+        let (hir, sem_diags) = starkc::resolve::resolve_with_options(&tree, file_arc.clone(), options);
+        diags.extend(sem_diags);
 
-    if diags.is_empty() {
-        let mut type_diags = starkc::typecheck::check_with_options(&hir, file_arc.clone(), options);
-        diags.append(&mut type_diags);
+        if diags.iter().all(|d| d.severity != starkc::diag::Severity::Error) {
+            let type_diags = starkc::typecheck::check_with_options(&hir, file_arc.clone(), options);
+            diags.extend(type_diags);
+        }
     }
 
-    for diag in &diags {
-        eprint!("{}", diag.render(&file_arc));
+    if message_format == "json" {
+        print_json_diagnostics(&file_arc.name, &diags);
+    } else {
+        for diag in &diags {
+            eprint!("{}", diag.render(&file_arc));
+        }
     }
+
     let error_count = diags
         .iter()
         .filter(|diag| diag.severity == starkc::diag::Severity::Error)
         .count();
     if error_count > 0 {
-        eprintln!("{}: {} error(s)", file_arc.name, error_count);
-        return ExitCode::FAILURE;
+        if message_format != "json" {
+            eprintln!("{}: {} error(s)", file_arc.name, error_count);
+        }
+        ExitCode::FAILURE
+    } else {
+        if message_format != "json" {
+            println!("{}: OK", file_arc.name);
+        }
+        ExitCode::SUCCESS
     }
-    println!("{}: OK", file_arc.name);
-    ExitCode::SUCCESS
+}
+
+fn print_json_diagnostics(file_name: &str, diagnostics: &[starkc::diag::Diagnostic]) {
+    let mut diags_json = Vec::new();
+    for diag in diagnostics {
+        let severity_str = match diag.severity {
+            starkc::diag::Severity::Error => "error",
+            starkc::diag::Severity::Warning => "warning",
+        };
+        let code_str = match &diag.code {
+            Some(c) => format!("\"code\":\"{}\"", starkc::onnx::escape_json(c)),
+            None => "\"code\":null".to_string(),
+        };
+        
+        let label_json = if !diag.label.is_empty() {
+            format!(
+                "[{{\"message\":\"{}\",\"file\":\"{}\",\"range\":{{\"startByte\":{},\"endByte\":{}}}}}]",
+                starkc::onnx::escape_json(&diag.label),
+                starkc::onnx::escape_json(file_name),
+                diag.span.lo,
+                diag.span.hi
+            )
+        } else {
+            "[]".to_string()
+        };
+
+        let notes_json = diag.notes.iter()
+            .map(|n| format!("\"{}\"", starkc::onnx::escape_json(n)))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let help_str = if diag.helps.is_empty() {
+            "\"help\":null".to_string()
+        } else {
+            format!("\"help\":\"{}\"", starkc::onnx::escape_json(&diag.helps.join("\n")))
+        };
+
+        diags_json.push(format!(
+            "{{\
+              \"severity\":\"{severity_str}\",\
+              {code_str},\
+              \"message\":\"{message}\",\
+              \"file\":\"{file}\",\
+              \"range\":{{\"startByte\":{start},\"endByte\":{end}}},\
+              \"labels\":{labels},\
+              \"notes\":[{notes}],\
+              {help}\
+            }}",
+            message = starkc::onnx::escape_json(&diag.message),
+            file = starkc::onnx::escape_json(file_name),
+            start = diag.span.lo,
+            end = diag.span.hi,
+            labels = label_json,
+            notes = notes_json,
+            help = help_str
+        ));
+    }
+
+    println!(
+        "{{\
+          \"schemaVersion\":1,\
+          \"tool\":\"starkc\",\
+          \"toolVersion\":\"0.1.0\",\
+          \"diagnostics\":[{}]\
+        }}",
+        diags_json.join(",")
+    );
+}
+
+fn find_first_model_name(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("model ") {
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let name = parts[1];
+                let clean_name = name.split('<').next().unwrap_or(name);
+                return Some(clean_name.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn cmd_run(path: &str) -> ExitCode {

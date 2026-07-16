@@ -1,0 +1,51 @@
+// A representative STARK program for a visual highlighting pass.
+/** Doc comment: supports /* nested */ block comments. */
+
+use std::io;
+
+struct Point {
+    x: Int32,
+    y: Int32,
+}
+
+enum Shape {
+    Circle(Float64),
+    Rect { w: Int32, h: Int32 },
+}
+
+const LIMIT: UInt64 = 1_000_000u64;
+
+fn distance(a: &Point, b: &Point) -> Float64 {
+    let dx = (a.x - b.x) as Float64;
+    let dy = (a.y - b.y) as Float64;
+    let hex = 0xFF_FF;
+    let pi = 3.14159f64;
+    let name = "world\n\x21";
+    let raw = r"C:\path\no\escapes";
+    let ch = '\u{1F600}';
+    let ok = true;
+    return dx * dx + dy * dy;
+}
+
+fn main() {
+    let p = Point { x: 1, y: 2 };
+    match p.x {
+        0 => println("zero"),
+        _ => println("other"),
+    }
+    // `input` and `model` here are ordinary identifiers, not keywords:
+    let input = 42;
+    let model = input + 1;
+}
+
+// --- tensor extension ---
+model ResNet50<B: Dim> {
+    input image: Tensor<Float32, [B, 3, 224, 224]>;
+    output class: Tensor<Float32, [B, 1000]>;
+}
+
+fn preprocess<N: Dim>(
+    x: Tensor<UInt8, [N, 224, 224, 3]>,
+) -> Tensor<Float16, [N, 3, 224, 224], device = Cpu> {
+    x.permute::<[0, 3, 1, 2]>().cast::<Float16>()
+}

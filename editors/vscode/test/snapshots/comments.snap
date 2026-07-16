@@ -1,0 +1,25 @@
+"//" : source.stark comment.line.double-slash.stark
+" a line comment" : source.stark comment.line.double-slash.stark
+"/*" : source.stark comment.block.stark
+" a block comment " : source.stark comment.block.stark
+"*/" : source.stark comment.block.stark
+"/**" : source.stark comment.block.documentation.stark
+" a doc comment with a " : source.stark comment.block.documentation.stark
+"/*" : source.stark comment.block.documentation.stark comment.block.stark
+" nested " : source.stark comment.block.documentation.stark comment.block.stark
+"*/" : source.stark comment.block.documentation.stark comment.block.stark
+" block inside " : source.stark comment.block.documentation.stark
+"*/" : source.stark comment.block.documentation.stark
+"fn" : source.stark storage.type.function.stark
+"c" : source.stark entity.name.function.stark
+"(" : source.stark punctuation.brackets.round.stark
+")" : source.stark punctuation.brackets.round.stark
+"{" : source.stark punctuation.brackets.curly.stark
+"let" : source.stark storage.modifier.stark
+"x" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"1" : source.stark constant.numeric.integer.decimal.stark
+";" : source.stark punctuation.separator.stark
+"//" : source.stark comment.line.double-slash.stark
+" trailing line comment" : source.stark comment.line.double-slash.stark
+"}" : source.stark punctuation.brackets.curly.stark

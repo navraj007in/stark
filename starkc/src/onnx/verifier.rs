@@ -10,9 +10,57 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Difference {
+    pub category: String,
+    pub port_kind: Option<String>,
+    pub port: Option<String>,
+    pub axis: Option<usize>,
+    pub expected: Option<String>,
+    pub actual: Option<String>,
+    pub description: String,
+}
+
+impl std::fmt::Display for Difference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.description)
+    }
+}
+
+impl Difference {
+    pub fn to_json(&self) -> String {
+        let mut fields = Vec::new();
+        fields.push(format!("\"category\":\"{}\"", escape_json(&self.category)));
+        if let Some(kind) = &self.port_kind {
+            fields.push(format!("\"port_kind\":\"{}\"", escape_json(kind)));
+        }
+        if let Some(port) = &self.port {
+            fields.push(format!("\"port\":\"{}\"", escape_json(port)));
+        }
+        if let Some(axis) = self.axis {
+            fields.push(format!("\"axis\":{}", axis));
+        }
+        if let Some(expected) = &self.expected {
+            fields.push(format!("\"expected\":\"{}\"", escape_json(expected)));
+        }
+        if let Some(actual) = &self.actual {
+            fields.push(format!("\"actual\":\"{}\"", escape_json(actual)));
+        }
+        format!("{{{}}}", fields.join(","))
+    }
+}
+
+pub fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\")
+     .replace('"', "\\\"")
+     .replace('\n', "\\n")
+     .replace('\r', "\\r")
+     .replace('\t', "\\t")
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VerificationReport {
-    pub differences: Vec<String>,
+    pub differences: Vec<Difference>,
 }
 
 impl VerificationReport {
@@ -302,46 +350,91 @@ fn compare_ports(
     declaration: &[DeclarationPort],
     declaration_to_artifact: &mut HashMap<String, String>,
     artifact_to_declaration: &mut HashMap<String, String>,
-    differences: &mut Vec<String>,
+    differences: &mut Vec<Difference>,
 ) {
     if artifact.len() != declaration.len() {
-        differences.push(format!(
+        let desc = format!(
             "{direction} port count differs: artifact has {}, declaration has {}",
             artifact.len(),
             declaration.len()
-        ));
+        );
+        differences.push(Difference {
+            category: "port_count".to_string(),
+            port_kind: Some(direction.to_string()),
+            port: None,
+            axis: None,
+            expected: Some(artifact.len().to_string()),
+            actual: Some(declaration.len().to_string()),
+            description: desc,
+        });
     }
     for (index, (artifact, declaration)) in artifact.iter().zip(declaration).enumerate() {
         let position = index + 1;
         if artifact.name != declaration.name {
-            differences.push(format!(
+            let desc = format!(
                 "{direction} {position} name differs: artifact `{}`, declaration `{}`",
                 artifact.name, declaration.name
-            ));
+            );
+            differences.push(Difference {
+                category: "name".to_string(),
+                port_kind: Some(direction.to_string()),
+                port: Some(declaration.name.clone()),
+                axis: None,
+                expected: Some(artifact.name.clone()),
+                actual: Some(declaration.name.clone()),
+                description: desc,
+            });
         }
         if artifact.dtype != declaration.dtype {
-            differences.push(format!(
+            let desc = format!(
                 "{direction} `{}` dtype differs: artifact {}, declaration {}",
                 artifact.name,
                 artifact.dtype.stark_name(),
                 declaration.dtype.stark_name()
-            ));
+            );
+            differences.push(Difference {
+                category: "dtype".to_string(),
+                port_kind: Some(direction.to_string()),
+                port: Some(declaration.name.clone()),
+                axis: None,
+                expected: Some(artifact.dtype.stark_name().to_string()),
+                actual: Some(declaration.dtype.stark_name().to_string()),
+                description: desc,
+            });
         }
         let Some(declaration_dimensions) = &declaration.dimensions else {
-            differences.push(format!(
+            let desc = format!(
                 "{direction} `{}` is TensorDyn in the declaration but rank {} in the artifact",
                 artifact.name,
                 artifact.dimensions.len()
-            ));
+            );
+            differences.push(Difference {
+                category: "rank".to_string(),
+                port_kind: Some(direction.to_string()),
+                port: Some(declaration.name.clone()),
+                axis: None,
+                expected: Some(artifact.dimensions.len().to_string()),
+                actual: Some("dynamic".to_string()),
+                description: desc,
+            });
             continue;
         };
         if artifact.dimensions.len() != declaration_dimensions.len() {
-            differences.push(format!(
+            let desc = format!(
                 "{direction} `{}` rank differs: artifact {}, declaration {}",
                 artifact.name,
                 artifact.dimensions.len(),
                 declaration_dimensions.len()
-            ));
+            );
+            differences.push(Difference {
+                category: "rank".to_string(),
+                port_kind: Some(direction.to_string()),
+                port: Some(declaration.name.clone()),
+                axis: None,
+                expected: Some(artifact.dimensions.len().to_string()),
+                actual: Some(declaration_dimensions.len().to_string()),
+                description: desc,
+            });
             continue;
         }
         for (axis, (artifact_dimension, declaration_dimension)) in artifact
@@ -359,38 +452,83 @@ fn compare_ports(
                     Dimension::Static(artifact_value),
                     DeclarationDimension::Static(declaration_value),
                 ) => {
-                    differences.push(format!(
+                    let desc = format!(
                         "{direction} `{}` dimension {axis} differs: artifact {artifact_value}, declaration {declaration_value}",
                         declaration.name
-                    ));
+                    );
+                    differences.push(Difference {
+                        category: "dimension".to_string(),
+                        port_kind: Some(direction.to_string()),
+                        port: Some(declaration.name.clone()),
+                        axis: Some(axis),
+                        expected: Some(artifact_value.to_string()),
+                        actual: Some(declaration_value.to_string()),
+                        description: desc,
+                    });
                 }
-                (Dimension::Static(artifact), DeclarationDimension::Dynamic(variable)) => {
-                    differences.push(format!(
-                        "{direction} `{}` dimension {axis} over-promises dynamic `{variable}`; artifact is static {artifact}",
+                (Dimension::Static(artifact_value), DeclarationDimension::Dynamic(variable)) => {
+                    let desc = format!(
+                        "{direction} `{}` dimension {axis} over-promises dynamic `{variable}`; artifact is static {artifact_value}",
                         declaration.name
-                    ));
+                    );
+                    differences.push(Difference {
+                        category: "dimension".to_string(),
+                        port_kind: Some(direction.to_string()),
+                        port: Some(declaration.name.clone()),
+                        axis: Some(axis),
+                        expected: Some(artifact_value.to_string()),
+                        actual: Some(variable.clone()),
+                        description: desc,
+                    });
                 }
                 (Dimension::Dynamic { .. }, DeclarationDimension::Static(value)) => {
-                    differences.push(format!(
+                    let desc = format!(
                         "{direction} `{}` dimension {axis} is dynamic in the artifact but static {value} in the declaration",
                         declaration.name
-                    ));
+                    );
+                    differences.push(Difference {
+                        category: "dimension".to_string(),
+                        port_kind: Some(direction.to_string()),
+                        port: Some(declaration.name.clone()),
+                        axis: Some(axis),
+                        expected: Some("dynamic".to_string()),
+                        actual: Some(value.to_string()),
+                        description: desc,
+                    });
                 }
                 (Dimension::Dynamic { key, .. }, DeclarationDimension::Dynamic(variable)) => {
                     if let Some(previous) = declaration_to_artifact.get(variable) {
                         if previous != key {
-                            differences.push(format!(
+                            let desc = format!(
                                 "declaration dimension `{variable}` maps to multiple artifact dynamic identities"
-                            ));
+                            );
+                            differences.push(Difference {
+                                category: "conflict".to_string(),
+                                port_kind: Some(direction.to_string()),
+                                port: Some(declaration.name.clone()),
+                                axis: Some(axis),
+                                expected: Some(previous.clone()),
+                                actual: Some(key.clone()),
+                                description: desc,
+                            });
                         }
                     } else {
                         declaration_to_artifact.insert(variable.clone(), key.clone());
                     }
                     if let Some(previous) = artifact_to_declaration.get(key) {
                         if previous != variable {
-                            differences.push(format!(
+                            let desc = format!(
                                 "artifact dynamic identity used by declaration dimensions `{previous}` and `{variable}`"
-                            ));
+                            );
+                            differences.push(Difference {
+                                category: "conflict".to_string(),
+                                port_kind: Some(direction.to_string()),
+                                port: Some(declaration.name.clone()),
+                                axis: Some(axis),
+                                expected: Some(previous.clone()),
+                                actual: Some(variable.clone()),
+                                description: desc,
+                            });
                         }
                     } else {
                         artifact_to_declaration.insert(key.clone(), variable.clone());

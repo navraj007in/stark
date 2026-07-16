@@ -1,0 +1,12 @@
+fn lits() {
+    let dec = 1_000_000;
+    let hex = 0xFF_FF;
+    let oct = 0o755;
+    let bin = 0b1010_1010;
+    let suf = 255u8;
+    let f = 3.14e-2f32;
+    let s = "escapes: \n \t \x41 \u{1F600}";
+    let raw = r"raw \n stays literal";
+    let c = '\u{41}';
+    let bad = "\q";
+}

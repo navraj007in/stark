@@ -1,0 +1,11 @@
+fn f() {
+    let input = 1;
+    let output = input + 1;
+    let model = output;
+    let device = model;
+    call(input, output);
+}
+model M<B: Dim> {
+    input x: Tensor<Float32, [B]>;
+    output y: Tensor<Float32, [B]>;
+}

@@ -1,0 +1,247 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "STARK",
+  "scopeName": "source.stark",
+  "fileTypes": ["stark"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#characters" },
+    { "include": "#numbers" },
+    { "include": "#function-definition" },
+    { "include": "#model-definition" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#function-call" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "include": "#doc-comment" },
+        { "include": "#block-comment" },
+        {
+          "name": "comment.line.double-slash.stark",
+          "begin": "//",
+          "end": "$"
+        }
+      ]
+    },
+    "doc-comment": {
+      "name": "comment.block.documentation.stark",
+      "begin": "/\\*\\*(?!/)",
+      "end": "\\*/",
+      "patterns": [{ "include": "#block-comment" }]
+    },
+    "block-comment": {
+      "name": "comment.block.stark",
+      "begin": "/\\*",
+      "end": "\\*/",
+      "patterns": [{ "include": "#block-comment" }]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.raw.stark",
+          "begin": "r\"",
+          "end": "\""
+        },
+        {
+          "name": "string.quoted.double.stark",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [{ "include": "#string-escape" }]
+        }
+      ]
+    },
+    "string-escape": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.stark",
+          "match": "\\\\(?:[ntr0\\\\'\"]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]{1,6}\\})"
+        },
+        {
+          "name": "invalid.illegal.escape.stark",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "characters": {
+      "name": "string.quoted.single.stark",
+      "match": "'(?:[^'\\\\]|\\\\(?:[ntr0\\\\'\"]|x[0-9A-Fa-f]{2}|u\\{[0-9A-Fa-f]{1,6}\\}))'"
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "comment": "Floating point (fraction or exponent required)",
+          "name": "constant.numeric.float.stark",
+          "match": "\\b[0-9](?:_?[0-9])*(?:\\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?(?:f32|f64)?\\b"
+        },
+        {
+          "name": "constant.numeric.float.stark",
+          "match": "\\b[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*(?:f32|f64)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.hexadecimal.stark",
+          "match": "\\b0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*(?:i64|i32|i16|i8|u64|u32|u16|u8)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.octal.stark",
+          "match": "\\b0[oO][0-7](?:_?[0-7])*(?:i64|i32|i16|i8|u64|u32|u16|u8)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.binary.stark",
+          "match": "\\b0[bB][01](?:_?[01])*(?:i64|i32|i16|i8|u64|u32|u16|u8)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.decimal.stark",
+          "match": "\\b[0-9](?:_?[0-9])*(?:i64|i32|i16|i8|u64|u32|u16|u8)?\\b"
+        }
+      ]
+    },
+    "function-definition": {
+      "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.function.stark" },
+        "2": { "name": "entity.name.function.stark" }
+      }
+    },
+    "model-definition": {
+      "comment": "tensor extension D4: `model Name { ... }`",
+      "match": "\\b(model)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "storage.type.model.stark keyword.declaration.stark" },
+        "2": { "name": "entity.name.type.model.stark" }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.stark",
+          "match": "\\b(if|else|match|for|while|loop|break|continue|return)\\b"
+        },
+        {
+          "name": "keyword.control.import.stark",
+          "match": "\\b(use|mod)\\b"
+        },
+        {
+          "name": "storage.type.stark",
+          "match": "\\b(fn|struct|enum|trait|impl|type)\\b"
+        },
+        {
+          "name": "storage.modifier.stark",
+          "match": "\\b(let|mut|const|pub|priv)\\b"
+        },
+        {
+          "name": "keyword.operator.word.stark",
+          "match": "\\b(in|as)\\b"
+        },
+        {
+          "name": "constant.language.boolean.stark",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "variable.language.self.stark",
+          "match": "\\bself\\b"
+        },
+        {
+          "name": "keyword.other.path.stark",
+          "match": "\\b(super|crate)\\b"
+        },
+        {
+          "comment": "tensor extension contextual keywords (D4). Matched only in port-declaration position (`input name:` / `output name:`) so an ordinary identifier named `input`/`output` is never miscolored (VSCODE_EXTENSION_PLAN.md §4.2).",
+          "name": "keyword.other.tensor.stark",
+          "match": "\\b(input|output)\\b(?=\\s+[A-Za-z_][A-Za-z0-9_]*\\s*:)"
+        },
+        {
+          "comment": "`device = D` named argument, matched only inside tensor generic-argument position (preceded by `,`).",
+          "match": "(,)(\\s*)(device)(?=\\s*=)",
+          "captures": {
+            "1": { "name": "punctuation.separator.stark" },
+            "3": { "name": "keyword.other.tensor.stark" }
+          }
+        },
+        {
+          "comment": "Reserved words (01-Lexical-Grammar.md §9): recognized but not usable in Core v1.",
+          "name": "invalid.deprecated.reserved.stark",
+          "match": "\\b(async|await|yield|where|macro|unsafe|extern|import|export|null|and|or|not|is|dyn)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.stark",
+          "match": "\\b(Int8|Int16|Int32|Int64|UInt8|UInt16|UInt32|UInt64|Float32|Float64|Bool|String|Char|Unit|str)\\b"
+        },
+        {
+          "comment": "tensor extension element/tensor/device/kind types",
+          "name": "support.type.tensor.stark",
+          "match": "\\b(Float16|BFloat16|Tensor|TensorDyn|TensorAny|Dim|DType|Cpu|Cuda)\\b"
+        },
+        {
+          "name": "storage.type.self.stark",
+          "match": "\\bSelf\\b"
+        },
+        {
+          "comment": "Other PascalCase names read as types (structs, enums, traits).",
+          "name": "entity.name.type.stark",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\(|::<)",
+      "captures": {
+        "1": { "name": "entity.name.function.stark" }
+      }
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.stark",
+          "match": "(\\*\\*=|<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|=)"
+        },
+        {
+          "name": "keyword.operator.comparison.stark",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.logical.stark",
+          "match": "(&&|\\|\\||!)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.stark",
+          "match": "(\\*\\*|<<|>>|[+\\-*/%&|\\^~])"
+        },
+        {
+          "name": "keyword.operator.range.stark",
+          "match": "(\\.\\.=|\\.\\.)"
+        },
+        {
+          "name": "keyword.operator.question.stark",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.arrow.stark",
+          "match": "(->|=>)"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.accessor.stark", "match": "::|\\." },
+        { "name": "punctuation.separator.stark", "match": "[,;:]" },
+        { "name": "punctuation.brackets.round.stark", "match": "[()]" },
+        { "name": "punctuation.brackets.square.stark", "match": "[\\[\\]]" },
+        { "name": "punctuation.brackets.curly.stark", "match": "[{}]" }
+      ]
+    },
+    "identifiers": {
+      "match": "\\b[a-z_][A-Za-z0-9_]*\\b",
+      "name": "variable.other.stark"
+    }
+  }
+}

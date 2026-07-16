@@ -1,0 +1,145 @@
+{
+  "name": "stark-language",
+  "displayName": "STARK Language",
+  "description": "Syntax highlighting, language configuration, and snippets for the STARK programming language (Core v1 + tensor extension).",
+  "version": "0.1.0",
+  "publisher": "starklang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "main": "./dist/extension.js",
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "stark",
+    "starklang",
+    "tensor"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/navrajsingh/stark"
+  },
+  "activationEvents": [
+    "onLanguage:stark"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "node esbuild.mjs --minify",
+    "lint": "eslint src --ext ts",
+    "test": "node test/tokenize.mjs",
+    "test:update": "node test/tokenize.mjs --update"
+  },
+  "devDependencies": {
+    "@types/node": "^18.16.0",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^5.59.1",
+    "@typescript-eslint/parser": "^5.59.1",
+    "esbuild": "^0.17.19",
+    "eslint": "^8.39.0",
+    "typescript": "^5.0.4",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.1.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "stark",
+        "aliases": [
+          "STARK",
+          "stark"
+        ],
+        "extensions": [
+          ".stark"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "stark",
+        "scopeName": "source.stark",
+        "path": "./syntaxes/stark.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "stark",
+        "path": "./snippets/stark.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "stark.checkCurrentFile",
+        "title": "STARK: Check Current File",
+        "category": "STARK"
+      },
+      {
+        "command": "stark.runCurrentFile",
+        "title": "STARK: Run Current File",
+        "category": "STARK"
+      },
+      {
+        "command": "stark.openInStarkIde",
+        "title": "STARK: Open Current File in STARK IDE",
+        "category": "STARK"
+      },
+      {
+        "command": "stark.restartCompiler",
+        "title": "STARK: Restart Compiler Integration",
+        "category": "STARK"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "stark.checkCurrentFile",
+          "when": "editorLangId == stark",
+          "group": "navigation"
+        },
+        {
+          "command": "stark.runCurrentFile",
+          "when": "editorLangId == stark",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "title": "STARK Language Options",
+      "properties": {
+        "stark.compiler.path": {
+          "type": "string",
+          "default": "starkc",
+          "description": "Path to the starkc compiler executable. Defaults to 'starkc' from system PATH."
+        },
+        "stark.compiler.extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of active STARK compiler extensions (e.g. ['tensor'])."
+        },
+        "stark.check.onSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Trigger starkc check verification on file save."
+        },
+        "stark.check.onType": {
+          "type": "boolean",
+          "default": false,
+          "description": "Trigger starkc check verification dynamically while typing."
+        },
+        "stark.check.onTypeDebounceMs": {
+          "type": "integer",
+          "default": 500,
+          "description": "Debounce time in milliseconds before triggering check-on-type."
+        }
+      }
+    }
+  }
+}

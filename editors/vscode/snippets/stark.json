@@ -1,0 +1,67 @@
+{
+  "Main function": {
+    "prefix": "main",
+    "body": ["fn main() {", "\t$0", "}"],
+    "description": "Entry-point function"
+  },
+  "Function": {
+    "prefix": "fn",
+    "body": ["fn ${1:name}(${2}) -> ${3:Unit} {", "\t$0", "}"],
+    "description": "Function definition (Core v1 requires an explicit return type)"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": ["struct ${1:Name} {", "\t${2:field}: ${3:Int32},", "}"],
+    "description": "Struct definition"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": ["enum ${1:Name} {", "\t${2:Variant},", "}"],
+    "description": "Enum definition"
+  },
+  "Trait": {
+    "prefix": "trait",
+    "body": ["trait ${1:Name} {", "\t$0", "}"],
+    "description": "Trait definition"
+  },
+  "Impl block": {
+    "prefix": "impl",
+    "body": ["impl ${1:Type} {", "\t$0", "}"],
+    "description": "Inherent impl block"
+  },
+  "Impl trait for type": {
+    "prefix": "implfor",
+    "body": ["impl ${1:Trait} for ${2:Type} {", "\t$0", "}"],
+    "description": "Trait impl block"
+  },
+  "Match expression": {
+    "prefix": "match",
+    "body": ["match ${1:expr} {", "\t${2:pattern} => ${3:value},", "\t_ => ${4:default},", "}"],
+    "description": "Match expression"
+  },
+  "let binding": {
+    "prefix": "let",
+    "body": ["let ${1:name} = ${2:value};"],
+    "description": "Immutable let binding"
+  },
+  "let mut binding": {
+    "prefix": "letmut",
+    "body": ["let mut ${1:name} = ${2:value};"],
+    "description": "Mutable let binding"
+  },
+  "if let / match on Option": {
+    "prefix": "matchopt",
+    "body": ["match ${1:opt} {", "\tOption::Some(${2:x}) => ${3},", "\tOption::None => ${4},", "}"],
+    "description": "Match on an Option"
+  },
+  "Tensor model declaration": {
+    "prefix": "model",
+    "body": [
+      "model ${1:Name}<${2:B}: Dim> {",
+      "\tinput ${3:image}: Tensor<Float32, [${2:B}, 3, 224, 224]>;",
+      "\toutput ${4:class}: Tensor<Float32, [${2:B}, 1000]>;",
+      "}"
+    ],
+    "description": "tensor extension: nominal model declaration"
+  }
+}

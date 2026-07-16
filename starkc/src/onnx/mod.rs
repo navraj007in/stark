@@ -10,7 +10,7 @@ pub use importer::{
     decode_signature, format_declaration, import_file, read_signature, DType, DecodeLimits,
     Dimension, ModelSignature, Port, DEFAULT_LIMITS,
 };
-pub use verifier::{verify_declaration_file, verify_declaration_source, VerificationReport};
+pub use verifier::{verify_declaration_file, verify_declaration_source, VerificationReport, Difference, escape_json};
 
 use std::fmt;
 

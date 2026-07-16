@@ -1,0 +1,6 @@
+// a line comment
+/* a block comment */
+/** a doc comment with a /* nested */ block inside */
+fn c() {
+    let x = 1; // trailing line comment
+}

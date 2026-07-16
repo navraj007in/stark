@@ -1,0 +1,66 @@
+"fn" : source.stark storage.type.function.stark
+"lits" : source.stark entity.name.function.stark
+"(" : source.stark punctuation.brackets.round.stark
+")" : source.stark punctuation.brackets.round.stark
+"{" : source.stark punctuation.brackets.curly.stark
+"let" : source.stark storage.modifier.stark
+"dec" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"1_000_000" : source.stark constant.numeric.integer.decimal.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"hex" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"0xFF_FF" : source.stark constant.numeric.integer.hexadecimal.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"oct" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"0o755" : source.stark constant.numeric.integer.octal.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"bin" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"0b1010_1010" : source.stark constant.numeric.integer.binary.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"suf" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"255u8" : source.stark constant.numeric.integer.decimal.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"f" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"3.14e-2f32" : source.stark constant.numeric.float.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"s" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"\"" : source.stark string.quoted.double.stark
+"escapes: " : source.stark string.quoted.double.stark
+"\\n" : source.stark string.quoted.double.stark constant.character.escape.stark
+"\\t" : source.stark string.quoted.double.stark constant.character.escape.stark
+"\\x41" : source.stark string.quoted.double.stark constant.character.escape.stark
+"\\u{1F600}" : source.stark string.quoted.double.stark constant.character.escape.stark
+"\"" : source.stark string.quoted.double.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"raw" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"r\"" : source.stark string.quoted.double.raw.stark
+"raw \\n stays literal" : source.stark string.quoted.double.raw.stark
+"\"" : source.stark string.quoted.double.raw.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"c" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"'\\u{41}'" : source.stark string.quoted.single.stark
+";" : source.stark punctuation.separator.stark
+"let" : source.stark storage.modifier.stark
+"bad" : source.stark variable.other.stark
+"=" : source.stark keyword.operator.assignment.stark
+"\"" : source.stark string.quoted.double.stark
+"\\q" : source.stark string.quoted.double.stark invalid.illegal.escape.stark
+"\"" : source.stark string.quoted.double.stark
+";" : source.stark punctuation.separator.stark
+"}" : source.stark punctuation.brackets.curly.stark
