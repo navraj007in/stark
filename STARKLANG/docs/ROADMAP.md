@@ -197,7 +197,24 @@ performance multiple solely from eliminating Python orchestration.
 
 ### Gate 7 — Symbolic Shape and Semantic Tensor Deployment
 
-**Status: proposed (authorised by the Gate 6 `REVISE` decision).** Bounded scope,
+**Status: complete — decision recorded: RETAIN AS RESEARCH LANGUAGE
+(2026-07-16).** Full rationale and evidence in `starkc/docs/gate7-decision.md`
+(+ `tests/results/gate7/`). The experiment ran the frozen Tiny YOLOv2 pipeline
+natively (STARK and a real typed-Rust ORT comparator both bit-exact vs the Python
+reference) and executed the same 13-defect corpus (both catch 13/13). STARK's
+measured edge over the strongest typed-Rust host: it *proves* the reshape
+arithmetic (Rust trusts a fixed generated signature), carries a *symbolic dynamic
+batch* in the type system (Rust const-fixes it), catches drift at *deploy time*
+(Rust at runtime), in 18 source → 25 generated lines vs ~360 handwritten.
+Value-range parity is cheap on both sides. The advantage is real but narrow and
+lives entirely in the tensor/deployment layer, not Core, with no product-adoption
+evidence — hence RETAIN AS RESEARCH. Next: the separate `stark verify`
+validation track (real external developers), which needs its own §5 proposal.
+VM/DSL/language-expansion work remains deferred.
+
+Original proposal (bounded scope, non-goals, defect corpus, comparator
+requirements, exit/stop criteria) is in
+`STARKLANG/docs/proposals/GATE7_SYMBOLIC_SEMANTIC_DEPLOYMENT.md`. Bounded scope,
 non-goals, defect corpus, comparator requirements, measurements, and exit/stop
 criteria are defined in
 `STARKLANG/docs/proposals/GATE7_SYMBOLIC_SEMANTIC_DEPLOYMENT.md`. This is the
