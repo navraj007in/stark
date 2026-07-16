@@ -387,6 +387,63 @@ fn to_device<D>(self: &Tensor<T, S>) -> Tensor<T, S, device = D>
 Memory layout types (`NCHW`, row/column-major) are **reserved** for a future
 version (§11); v0.1 layout is implementation-defined behind the types.
 
+## 8a. Value Range (semantic property, Gate 7)
+
+The optional `range = R` argument statically tracks the *image value range* a
+tensor conceptually holds. It is a **compile-time-only** semantic property: the
+marker is checked by the front end and does **not** survive into generated code
+(§10). It is orthogonal to shape, dtype, and device.
+
+```stark
+// Value-range states (kind: Range)
+Unspecified    // default — no claim
+ByteRange      // integer image values conceptually in [0, 255]
+UnitRange      // floating-point values conceptually in [0, 1]
+Normalized     // channel-wise mean/std normalised values
+
+Tensor<UInt8,   [B, H, W, 3], range = ByteRange>
+Tensor<Float32, [B, 3, H, W], range = UnitRange>
+Tensor<Float32, [B, 3, H, W], range = Normalized>
+```
+
+- An omitted `range` is `Unspecified`. `range = R` may appear in a tensor type
+  in either order relative to `device = D`, and on a `refine` boundary
+  (`raw.refine::<UInt8, [..], range = ByteRange>()`), which is how a pipeline
+  assigns the initial range to decoded input.
+- **Exact match, no widening.** Two tensor types unify only if their ranges are
+  equal. `Unspecified` is *not* a supertype: a ranged value cannot be silently
+  laundered into `Unspecified` (that erase is a compile-time error). This makes
+  a `model` port's declared input range a checked contract.
+- **Transitions are explicit, named operations** — ordinary arithmetic never
+  claims a transition:
+
+  ```stark
+  fn cast<U>(self: Tensor<T, S, range = R>) -> Tensor<U, S, range = R>  // preserves
+  fn scale_255(self: Tensor<Float32, S, range = ByteRange>)
+      -> Tensor<Float32, S, range = UnitRange>
+  fn normalize(self: Tensor<Float32, S, range = UnitRange>)
+      -> Tensor<Float32, S, range = Normalized>
+  ```
+
+- **Elementwise ops** require operand ranges to combine: an `Unspecified`
+  operand is neutral (a bare constant), but two *different* specified ranges
+  cannot be merged (a compile-time error). Shape-only ops (permute, reshape,
+  broadcast_to, …) preserve the range.
+
+The canonical checked progression for a model whose input contract is
+`Normalized`:
+
+```text
+decoded bytes (ByteRange, UInt8)
+  → cast     → ByteRange Float32
+  → scale_255 → UnitRange Float32
+  → normalize → Normalized Float32
+  → model input (range = Normalized)
+```
+
+Only one semantic property is defined in this version; colour space, coordinate
+frame, and physical units remain **reserved** (§11).
+
 ## 9. Diagnostics Requirements
 Shape errors are this extension's product surface; minimum quality bar:
 - Name the operation and the unsatisfied constraint in dim-expression form
@@ -414,7 +471,9 @@ and buffer sizes for fully static graphs are computable at compile time
 - Memory layout types and layout-change tracking
 - Peak-memory profiles as compile-time deployment constraints
 - Training, autodiff, and gradient types
-- Open-ended symbolic constraints (`B <= 64`) and range reasoning
+- Open-ended symbolic constraints (`B <= 64`) and dimension range reasoning
+- Other semantic tensor properties beyond the Gate 7 value-range (§8a): colour
+  space, coordinate frame, and physical units
 
 ## 12. Conformance
 An implementation claiming support for extension `tensor` v0.1 MUST implement

@@ -25,6 +25,10 @@ fn extension_reserved_name(name: &str) -> Option<&'static str> {
         "TensorAny" => Some("`TensorAny` type"),
         "Cpu" => Some("`Cpu` device type"),
         "Cuda" => Some("`Cuda` device type"),
+        "ByteRange" => Some("`ByteRange` value range"),
+        "UnitRange" => Some("`UnitRange` value range"),
+        "Normalized" => Some("`Normalized` value range"),
+        "Unspecified" => Some("`Unspecified` value range"),
         "ModelError" => Some("`ModelError` type"),
         _ => None,
     }
@@ -1813,6 +1817,8 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "softmax" => Some(Builtin::TensorSoftmax),
         "cast" => Some(Builtin::TensorCast),
         "to_device" => Some(Builtin::TensorToDevice),
+        "scale_255" => Some(Builtin::TensorScale255),
+        "normalize" => Some(Builtin::TensorNormalize),
         _ => None,
     }
 }
@@ -1851,6 +1857,8 @@ pub fn is_tensor_builtin(b: Builtin) -> bool {
             | Builtin::TensorSoftmax
             | Builtin::TensorCast
             | Builtin::TensorToDevice
+            | Builtin::TensorScale255
+            | Builtin::TensorNormalize
     )
 }
 

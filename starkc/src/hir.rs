@@ -78,6 +78,10 @@ pub enum Builtin {
     TensorSoftmax,
     TensorCast,
     TensorToDevice,
+    /// `scale_255()` — value-range transition ByteRange -> UnitRange (Gate 7).
+    TensorScale255,
+    /// `normalize()` — value-range transition UnitRange -> Normalized (Gate 7).
+    TensorNormalize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,0 +1,44 @@
+// Gate 7 (G7-04) — image value-range semantics, the valid progression.
+//
+// The `range = R` annotation statically tracks the image value range a tensor
+// conceptually holds (a compile-time-only property; it erases before
+// deployment). This pipeline shows the full checked progression to a model
+// whose input contract is `Normalized`:
+//
+//   decoded bytes (ByteRange, UInt8)
+//     -> cast      -> ByteRange Float32
+//     -> scale_255 -> UnitRange Float32
+//     -> normalize -> Normalized Float32
+//     -> model input (range = Normalized)
+//
+// Every invalid progression is rejected before deployment — see the defect
+// cases exercised by tests/gate7_semantic.rs.
+//
+// (The frozen Tiny YOLOv2 workload's input contract is actually `ByteRange` —
+// raw pixels, no normalization — so its correct pipeline would stop at the
+// ByteRange-Float32 step. This example uses an illustrative Normalized-input
+// model to demonstrate the full state progression.)
+
+model NormNet<B: Dim> {
+    input data: Tensor<Float32, [B, 3, 224, 224], range = Normalized>;
+    output logits: Tensor<Float32, [B, 1000]>;
+}
+
+fn preprocess<B: Dim>(
+    raw: TensorAny,
+) -> Result<Tensor<Float32, [B, 3, 224, 224], range = Normalized>, String> {
+    // The refine boundary assigns the initial value range to the decoded bytes.
+    let bytes = raw.refine::<UInt8, [B, 3, 224, 224], range = ByteRange>()?;
+    let as_float = bytes.cast::<Float32>(); // ByteRange Float32 (cast preserves range)
+    let unit = as_float.scale_255(); // UnitRange Float32
+    let normalized = unit.normalize(); // Normalized Float32
+    Ok(normalized)
+}
+
+fn infer<B: Dim>(
+    model: NormNet,
+    raw: TensorAny,
+) -> Result<Tensor<Float32, [B, 1000]>, String> {
+    let input = preprocess(raw)?;
+    Ok(model.predict(&input))
+}
