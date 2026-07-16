@@ -1,0 +1,97 @@
+{
+  "evaluation_commit": "94b37fb0e29c6b74e2b224a54d7435c4a8362e57",
+  "defects_caught_before_inference": 9,
+  "defect_count": 9,
+  "defects": [
+    {
+      "case": "d1_reshape_product",
+      "command": "starkc check --extension tensor examples/gate7/defects/d1_reshape_product.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d2_symbol_relationship",
+      "command": "starkc check --extension tensor examples/gate7/defects/d2_symbol_relationship.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d3_broadcast",
+      "command": "starkc check --extension tensor examples/gate7/defects/d3_broadcast.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d4_range_missing",
+      "command": "starkc check --extension tensor examples/gate7/defects/d4_range_missing.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d5_range_double",
+      "command": "starkc check --extension tensor examples/gate7/defects/d5_range_double.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d6_dtype",
+      "command": "starkc check --extension tensor examples/gate7/defects/d6_dtype.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d7_device",
+      "command": "starkc check --extension tensor examples/gate7/defects/d7_device.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d8_declaration_drift",
+      "command": "starkc deploy examples/gate7/defects/d8_declaration_drift.stark --model /Users/nexper/Documents/GitHub/stark/starkc/tmp/gate7/tinyyolov2-8.onnx --entry infer --out /Users/nexper/Documents/GitHub/stark/starkc/tmp/gate7-drift --force",
+      "exit_code": 1,
+      "diagnostic_code": "does not match the model declaration",
+      "detection_stage": "deploy-time (artifact verification)",
+      "inference_attempted": false,
+      "expected_result": "deploy-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d9_runtime_artifact_swap",
+      "command": "stark-inference-host --model <mutated>",
+      "exit_code": 1,
+      "diagnostic_code": "ArtifactMismatch",
+      "detection_stage": "runtime (generated-host load, before inference)",
+      "inference_attempted": false,
+      "expected_result": "runtime refusal",
+      "actual_result": "rejected"
+    }
+  ]
+}

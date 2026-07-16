@@ -1,0 +1,12 @@
+{
+  "stark_commit": "94b37fb0e29c6b74e2b224a54d7435c4a8362e57",
+  "git_dirty": false,
+  "os": "Darwin",
+  "arch": "arm64",
+  "rustc_version": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "cargo_version": "cargo 1.93.0 (083ac5135 2025-12-15)",
+  "python_version": "3.14.4",
+  "onnxruntime_version": "1.27.0",
+  "model_sha256": "583fb7fdc948435ceac9fa82efc7708701efe8382a859a3dd46526b155f5f2ae",
+  "image_sha256": "f3f87bb8ab3c26c7ecfd3ac60421d7f32b0503d1d6c5baf8bac42ed93d86351a"
+}

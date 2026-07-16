@@ -1,0 +1,10 @@
+// Gate 7 defect 7 — incompatible device (model on Cpu, input moved to Cuda). Compile-time.
+model TinyYoloV2<B: Dim> {
+    input image: Tensor<Float32, [B, 3, 416, 416], device = Cpu>;
+    output grid: Tensor<Float32, [B, 125, 13, 13]>;
+}
+fn infer<B: Dim>(model: TinyYoloV2, raw: TensorAny) -> Result<Tensor<Float32, [B, 125, 13, 13]>, String> {
+    let image = raw.refine::<Float32, [B, 3, 416, 416]>()?;
+    let on_gpu = image.to_device::<device = Cuda<0>>();
+    Ok(model.predict(&on_gpu))
+}

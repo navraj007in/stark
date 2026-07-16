@@ -1,0 +1,4 @@
+// Gate 7 defect 3 — invalid broadcast (unrelated symbolic dims). Compile-time.
+fn f<B: Dim, C: Dim>(a: Tensor<Float32, [B, 5]>, b: Tensor<Float32, [C, 5]>) -> Tensor<Float32, [B, 5]> {
+    add(&a, &b)
+}

@@ -1,0 +1,9 @@
+// Gate 7 defect 8 — declaration/artifact drift (declared 124 channels, artifact 125). Deploy-time.
+model TinyYoloV2<B: Dim> {
+    input image: Tensor<Float32, [B, 3, 416, 416]>;
+    output grid: Tensor<Float32, [B, 124, 13, 13]>;
+}
+fn infer<B: Dim>(model: TinyYoloV2, raw: TensorAny) -> Result<Tensor<Float32, [B, 124, 13, 13]>, String> {
+    let image = raw.refine::<Float32, [B, 3, 416, 416]>()?;
+    Ok(model.predict(&image))
+}
