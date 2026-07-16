@@ -1,0 +1,20 @@
+model Resnet50V17<N: Dim> {
+    input data: Tensor<Float32, [N, 3, 224, 224]>;
+    output resnetv17_dense0_fwd: Tensor<Float32, [N, 1000]>;
+}
+
+fn preprocess(
+    nhwc: Tensor<UInt8, [1, 224, 100, 3]>, // Bad shape: 100 instead of 224
+) -> Tensor<Float32, [1, 3, 224, 224]> {
+    nhwc.permute::<[0, 3, 1, 2]>().cast::<Float32>()
+}
+
+fn infer(
+    model: Resnet50V17,
+    raw: TensorAny,
+) -> Result<Tensor<Int64, [1]>, String> {
+    let nhwc = raw.refine::<UInt8, [1, 224, 100, 3]>()?;
+    let nchw = preprocess(nhwc);
+    let logits = model.predict(&nchw);
+    Ok(logits.softmax::<1>().argmax::<1>())
+}

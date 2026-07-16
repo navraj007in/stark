@@ -47,6 +47,37 @@ Use **F10** for menus, **F2** to save, **F9** to compile, **Ctrl+F9** to run,
 diagnostics appear in the messages pane. See
 [`docs/terminal-ide.md`](docs/terminal-ide.md) for the complete workflow.
 
+## Release binaries
+
+The dependency-free release builder packages both `starkc` and `starkide`
+with the license, README, build metadata, and a SHA-256 checksum:
+
+```bash
+# macOS (build the current Intel or Apple Silicon host)
+python3 scripts/build-release.py
+
+# Windows PowerShell or Command Prompt
+py -3 scripts/build-release.py
+```
+
+Packages are written to `target/packages/`. macOS produces a `.tar.gz` and
+Windows produces a `.zip`. Each operating system and CPU architecture needs
+its own binary; one executable cannot run on both macOS and Windows.
+
+An explicit target is useful in CI or with a configured cross-linker:
+
+```bash
+python3 scripts/build-release.py --target aarch64-apple-darwin
+python3 scripts/build-release.py --target x86_64-apple-darwin
+py -3 scripts/build-release.py --target x86_64-pc-windows-msvc
+```
+
+Install the requested standard library first with `rustup target add <target>`.
+Cross-compiling also requires a linker for the destination platform. Release
+archives produced by this script are currently unsigned; public macOS builds
+will still need Apple code signing/notarization, and public Windows builds
+should be Authenticode-signed.
+
 ## Layout
 
 | Module | Contents | Status |

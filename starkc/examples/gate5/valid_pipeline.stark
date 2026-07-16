@@ -28,6 +28,10 @@ fn infer(
     let nhwc = raw.refine::<UInt8, [1, 224, 224, 3]>()?;
     let nchw = preprocess(nhwc);
 
+    // Scale from [0, 255] to [0, 1] range
+    let scale = full::<Float32, [1, 1, 1, 1]>(255.0f32);
+    let scaled = nchw.div(&scale);
+
     // ImageNet mean/std over the [0, 1] range (torchvision defaults), built as
     // broadcastable [1, 3, 1, 1] constants from per-channel `full` + `concat`.
     let mr = full::<Float32, [1, 1, 1, 1]>(0.485f32);
@@ -42,7 +46,7 @@ fn infer(
     let srg = concat::<1>(&sr, &sg);
     let std = concat::<1>(&srg, &sb);
 
-    let normalized = nchw.sub(&mean).div(&std);
+    let normalized = scaled.sub(&mean).div(&std);
     let logits = model.predict(&normalized);
     let probabilities = logits.softmax::<1>();
     Ok(probabilities.argmax::<1>())

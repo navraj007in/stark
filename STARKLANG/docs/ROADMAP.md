@@ -131,7 +131,8 @@ Exit criteria:
 
 ### Gate 5 — Go/no-go deployment prototype
 
-**Status: next.**
+**Status: complete (2026-07-16).** Reproducible evidence is recorded in
+`starkc/docs/gate5-exit.md`.
 
 Build one realistic inference program covering input refinement,
 preprocessing, model invocation, and postprocessing.

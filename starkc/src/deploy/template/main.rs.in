@@ -133,7 +133,8 @@ fn run(args: &Args) -> Result<(), String> {
              \"top1_index\":{idx},\"top1_probability\":{prob:.6},\
              \"startup_ms\":{start:.3},\
              \"inference_ms\":{{\"iterations\":{iters},\"min\":{min:.3},\
-             \"median\":{median:.3},\"p95\":{p95:.3}}}}}",
+             \"median\":{median:.3},\"p95\":{p95:.3}}},\
+             \"latencies_ms\":{latencies:?}}}",
             sha = MODEL_SHA256,
             idx = top1_index,
             prob = top1_probability,
@@ -142,6 +143,7 @@ fn run(args: &Args) -> Result<(), String> {
             min = min,
             median = median,
             p95 = p95,
+            latencies = latencies,
         );
     } else {
         println!("top-1 class : {top1_index}");
@@ -151,6 +153,26 @@ fn run(args: &Args) -> Result<(), String> {
             "latency     : min {min:.3} / median {median:.3} / p95 {p95:.3} ms over {} runs",
             args.iterations
         );
+
+        if let Some((_, logits)) = model.last_output() {
+            let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f32;
+            for &v in logits {
+                sum += (v - max).exp();
+            }
+            let mut indices: Vec<usize> = (0..logits.len()).collect();
+            indices.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
+
+            println!("\nTop 5 predictions:");
+            for rank in 0..5 {
+                if rank < indices.len() {
+                    let idx = indices[rank];
+                    let val = logits[idx];
+                    let prob = (val - max).exp() / sum;
+                    println!("  {}. Class {idx}: logit={val:.4}, prob={prob:.6}", rank + 1);
+                }
+            }
+        }
     }
     Ok(())
 }

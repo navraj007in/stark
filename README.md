@@ -328,8 +328,8 @@ STARK development is organised around evidence-based gates.
 | Gate 2 | Resolution, type checking, ownership and borrowing | Complete    |
 | Gate 3 | Executable Core path and `core-min` runtime        | Complete    |
 | Gate 4 | Tensor frontend and ONNX signature integration     | Complete    |
-| Gate 5 | Native inference deployment prototype              | In progress |
-| Gate 6 | Go, revise or stop decision based on evidence      | Pending     |
+| Gate 5 | Native inference deployment prototype              | Complete    |
+| Gate 6 | Go, revise or stop decision based on evidence      | In progress |
 
 Gate 5 is intended to produce one reproducible computer-vision deployment and measure:
 

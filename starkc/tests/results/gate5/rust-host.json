@@ -1,0 +1,11 @@
+{
+  "binary_size_bytes": 24816064,
+  "model_size_bytes": 102583340,
+  "total_bundle_size_bytes": 127399404,
+  "startup_ms": 304.61,
+  "image_decode_ms": null,
+  "latency_min_ms": 12.674,
+  "latency_median_ms": 13.479,
+  "latency_p95_ms": 19.18,
+  "peak_rss_bytes": 392167424
+}
