@@ -1,0 +1,471 @@
+# STARKLANG Core v1 Specification Rules Coverage Database
+
+[[rule]]
+id = "LEX-001"
+chapter = "01-Lexical-Grammar"
+description = "Keywords (control flow, declarations, visibility, types, operators, literals)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-002"
+chapter = "01-Lexical-Grammar"
+description = "Identifiers (valid characters, naming constraints, maximum length limit 255)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-003"
+chapter = "01-Lexical-Grammar"
+description = "Integer Literals (decimal, hex, octal, binary, underscores as digit separators, suffixes)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-004"
+chapter = "01-Lexical-Grammar"
+description = "Floating Point Literals (decimal dot/exponent notation, suffixes, underscore separator rules)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-005"
+chapter = "01-Lexical-Grammar"
+description = "String Literals (double-quoted with escape sequences, raw string literals)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-006"
+chapter = "01-Lexical-Grammar"
+description = "Character Literals (single-quoted character content or escape sequence)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-007"
+chapter = "01-Lexical-Grammar"
+description = "Boolean Literals (true/false)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-008"
+chapter = "01-Lexical-Grammar"
+description = "Operators (arithmetic, comparison, logical, bitwise, assignment, range, try)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-009"
+chapter = "01-Lexical-Grammar"
+description = "Delimiters (brackets, braces, parenthesis, comma, semicolon, colon)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-010"
+chapter = "01-Lexical-Grammar"
+description = "Comments (single-line comments, nested multi-line comments, doc comments)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-011"
+chapter = "01-Lexical-Grammar"
+description = "Whitespace rules (space, tab, newline, carriage return separators)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-012"
+chapter = "01-Lexical-Grammar"
+description = "Token Precedence (maximal munch, keywords precedence, operator length precedence)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-013"
+chapter = "01-Lexical-Grammar"
+description = "Reserved Tokens (async, await, yield, where, macro, unsafe, etc.)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "LEX-014"
+chapter = "01-Lexical-Grammar"
+description = "Lexical Error Handling (unexpected character, unterminated string, invalid number)"
+status = "implemented"
+source = "starkc/src/lexer.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+
+[[rule]]
+id = "SYN-001"
+chapter = "02-Syntax-Grammar"
+description = "Program structure (sequence of global item declarations)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-002"
+chapter = "02-Syntax-Grammar"
+description = "Visibility Modifiers (pub and default private items)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-003"
+chapter = "02-Syntax-Grammar"
+description = "Function Declarations (arguments, return type, block body)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-004"
+chapter = "02-Syntax-Grammar"
+description = "Struct Declarations (field declarations, tuple structs, unit structs)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-005"
+chapter = "02-Syntax-Grammar"
+description = "Enum Declarations (variants, tuple variants, struct variants)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-006"
+chapter = "02-Syntax-Grammar"
+description = "Trait Declarations (methods and default method bodies)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-007"
+chapter = "02-Syntax-Grammar"
+description = "Implementation Blocks (struct/enum impl blocks, trait impl blocks)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-008"
+chapter = "02-Syntax-Grammar"
+description = "Type Aliases (aliasing custom or primitive types)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-009"
+chapter = "02-Syntax-Grammar"
+description = "Constant Declarations (compile-time constant value bindings)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-010"
+chapter = "02-Syntax-Grammar"
+description = "Variable Bindings (let statements with optional mut and type annotations)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-011"
+chapter = "02-Syntax-Grammar"
+description = "Statements (expression statements, assignment, block nesting)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-012"
+chapter = "02-Syntax-Grammar"
+description = "Control Flow Expressions (if-else branch, match arms, while, loop, for loops)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SYN-013"
+chapter = "02-Syntax-Grammar"
+description = "Basic Expressions (paths, literals, blocks, calls, method calls, field access, index, unary/binary, try)"
+status = "implemented"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+
+[[rule]]
+id = "TYP-001"
+chapter = "03-Type-System"
+description = "Primitive Scalar Types (signed/unsigned integers, floats, Bool, Char, Unit, str)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "TYP-002"
+chapter = "03-Type-System"
+description = "Compound Types (array type [T; N] and tuple types)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "TYP-003"
+chapter = "03-Type-System"
+description = "User-Defined Types (nominal structs and enums)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "TYP-004"
+chapter = "03-Type-System"
+description = "Reference Types (borrowed references &T and mutable references &mut T)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "TYP-005"
+chapter = "03-Type-System"
+description = "Generic Parameters (polymorphism on structs, enums, impls, traits, and functions)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "TYP-006"
+chapter = "03-Type-System"
+description = "Trait Bounds (checking trait bound constraints on generic parameters)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "TYP-007"
+chapter = "03-Type-System"
+description = "Type Inference (local variable type propagation and resolution)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "TYP-008"
+chapter = "03-Type-System"
+description = "Coercions and Casts (explicit castings using as operator)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+
+[[rule]]
+id = "SEM-001"
+chapter = "04-Semantic-Analysis"
+description = "Identifier Resolution (local scoping, visibility boundaries)"
+status = "implemented"
+source = "starkc/src/resolve.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SEM-002"
+chapter = "04-Semantic-Analysis"
+description = "Trait Resolution (method dispatch, bound conformance)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SEM-003"
+chapter = "04-Semantic-Analysis"
+description = "Constant Evaluation (array volumes, constant value folding)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SEM-004"
+chapter = "04-Semantic-Analysis"
+description = "Return Type Verification (definite function return check E0301)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SEM-005"
+chapter = "04-Semantic-Analysis"
+description = "Loop Control Checks (break/continue loop nesting check E0302)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SEM-006"
+chapter = "04-Semantic-Analysis"
+description = "Match arm exhaustiveness check (E0303)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "SEM-007"
+chapter = "04-Semantic-Analysis"
+description = "Coherence rules (orphan rules, overlapping implementation check)"
+status = "implemented"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+
+[[rule]]
+id = "MEM-001"
+chapter = "05-Memory-Model"
+description = "Ownership Rules (moves on variable assignment/parameter passing)"
+status = "implemented"
+source = "starkc/src/borrowck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "MEM-002"
+chapter = "05-Memory-Model"
+description = "Copy Trait Semantics (implicit copy behavior on Copy types)"
+status = "implemented"
+source = "starkc/src/borrowck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "MEM-003"
+chapter = "05-Memory-Model"
+description = "Borrowing Rules (multiple shared borrows OR single mutable borrow)"
+status = "implemented"
+source = "starkc/src/borrowck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "MEM-004"
+chapter = "05-Memory-Model"
+description = "Lifetime constraints (guarantee references do not outlive referent)"
+status = "implemented"
+source = "starkc/src/borrowck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "MEM-005"
+chapter = "05-Memory-Model"
+description = "Dangling reference prevention (stack escape checks E0103)"
+status = "implemented"
+source = "starkc/src/borrowck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "MEM-006"
+chapter = "05-Memory-Model"
+description = "Safe deallocation (drop semantics on scope exit)"
+status = "implemented"
+source = "starkc/src/borrowck.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+
+[[rule]]
+id = "STD-001"
+chapter = "06-Standard-Library"
+description = "Prelude imports (built-in types automatically visible)"
+status = "implemented"
+source = "starkc/src/resolve.rs"
+tests = ["starkc/tests/gate2_valid.rs"]
+
+[[rule]]
+id = "STD-002"
+chapter = "06-Standard-Library"
+description = "Core formatting (println macro support)"
+status = "implemented"
+source = "starkc/src/interp.rs"
+tests = ["starkc/tests/gate3_execution.rs"]
+
+[[rule]]
+id = "STD-003"
+chapter = "06-Standard-Library"
+description = "Standard collections (Vec, String, HashMap, HashSet)"
+status = "partial"
+source = "starkc/src/resolve.rs"
+tests = ["starkc/tests/gate3_execution.rs"]
+
+[[rule]]
+id = "STD-004"
+chapter = "06-Standard-Library"
+description = "Standard traits (Clone, Hash, Default, Display, Error, Iterator)"
+status = "missing"
+
+[[rule]]
+id = "STD-005"
+chapter = "06-Standard-Library"
+description = "Math operations, random, and I/O APIs"
+status = "partial"
+source = "starkc/src/interp.rs"
+tests = ["starkc/tests/gate3_execution.rs"]
+
+
+[[rule]]
+id = "PKG-001"
+chapter = "07-Modules-and-Packages"
+description = "Module structure (inline submodules and relative path imports)"
+status = "implemented"
+source = "starkc/src/resolve.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "PKG-002"
+chapter = "07-Modules-and-Packages"
+description = "Path navigation (self, super, and crate navigation rules)"
+status = "implemented"
+source = "starkc/src/resolve.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "PKG-003"
+chapter = "07-Modules-and-Packages"
+description = "Visibility boundaries (restricting access to private items)"
+status = "implemented"
+source = "starkc/src/resolve.rs"
+tests = ["starkc/tests/conformance.rs"]
+
+[[rule]]
+id = "PKG-004"
+chapter = "07-Modules-and-Packages"
+description = "Multi-file module layout compilation (mod foo; file lookup)"
+status = "missing"
+
+[[rule]]
+id = "PKG-005"
+chapter = "07-Modules-and-Packages"
+description = "Package manifests (starkpkg.json loading and verification)"
+status = "missing"
+
+[[rule]]
+id = "PKG-006"
+chapter = "07-Modules-and-Packages"
+description = "Transitive dependency resolution and lock-file pinning"
+status = "missing"
