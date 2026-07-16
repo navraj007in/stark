@@ -1,0 +1,45 @@
+// Gate 7 frozen workload — the valid Tiny YOLOv2 decode pipeline.
+//
+// This pipeline exercises the *computed shape relationships* that the Gate 5
+// ResNet pipeline lacked, and which stable Rust cannot type without the
+// unstable `generic_const_exprs` feature (measured in Gate 6):
+//
+//   refine :  TensorAny            -> [B, 3, 416, 416]     (symbolic batch B)
+//   predict:  [B, 3, 416, 416]     -> [B, 125, 13, 13]     (model boundary)
+//   reshape:  [B, 125, 13, 13]     -> [B, 5, 25, 13, 13]   (125 == 5 * 25,
+//             i.e. A*(5+C) split into [A, 5+C]; product equality must hold and
+//             the symbolic B must be preserved through the reshape)
+//   permute:  [B, 5, 25, 13, 13]   -> [B, 5, 13, 13, 25]   (per-cell vectors)
+//
+// The result carries per-cell box+score vectors ([B, A, H, W, 5+C]); box
+// decode (sigmoid/exp/anchor broadcast) and the image value-range annotation
+// are layered on in later work packages (G7-03 lowering, G7-04 semantics).
+//
+// STATUS: frozen G7-01 target. Checked in G7-02, lowered in G7-03. The
+// independent numeric reference is tests/fixtures/gate7/reference.py.
+//
+// `starkc check` is single-file, so the model signature (canonical copy in
+// examples/gate7/model.stark) is inlined here to keep this a checkable unit.
+
+model TinyYoloV2<B: Dim> {
+    input image: Tensor<Float32, [B, 3, 416, 416]>;
+    output grid: Tensor<Float32, [B, 125, 13, 13]>;
+}
+
+// Split the computed channel dim 125 == A*(5+C) into [A, 5+C], then move the
+// box-vector axis last. `B` is symbolic and must survive both operations.
+fn decode<B: Dim>(
+    grid: Tensor<Float32, [B, 125, 13, 13]>,
+) -> Tensor<Float32, [B, 5, 13, 13, 25]> {
+    let split = grid.reshape::<[B, 5, 25, 13, 13]>();
+    split.permute::<[0, 1, 3, 4, 2]>()
+}
+
+fn infer<B: Dim>(
+    model: TinyYoloV2,
+    raw: TensorAny,
+) -> Result<Tensor<Float32, [B, 5, 13, 13, 25]>, String> {
+    let image = raw.refine::<Float32, [B, 3, 416, 416]>()?;
+    let grid = model.predict(&image);
+    Ok(decode(grid))
+}
