@@ -1,0 +1,122 @@
+{
+  "comparator": "real typed-Rust ONNX Runtime host (const generics + phantom device/range markers)",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "channel": "stable",
+  "real_inference": {
+    "performed": true,
+    "output_shape": [
+      1,
+      5,
+      13,
+      13,
+      25
+    ],
+    "max_abs_diff_vs_reference": 0.0,
+    "matches_reference": true,
+    "note": "same ORT + identical input as the STARK host, so bit-exact."
+  },
+  "defects": [
+    {
+      "case": "d1_reshape_product",
+      "description": "incorrect reshape product",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d2_symbol_relationship",
+      "description": "broken batch relationship (const only; see gaps)",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d4_range_missing",
+      "description": "missing range conversion",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d5_range_double",
+      "description": "duplicate range conversion",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0599",
+      "caught": true
+    },
+    {
+      "case": "d6_dtype",
+      "description": "wrong dtype",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d7_device",
+      "description": "wrong device",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d10_range_normalize_bytes",
+      "description": "normalize a ByteRange",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0599",
+      "caught": true
+    },
+    {
+      "case": "d11_range_wrong_model",
+      "description": "wrong model input range",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d12_range_merge",
+      "description": "merge incompatible ranges",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d13_range_erase",
+      "description": "erase range without a boundary",
+      "enforcement_stage": "rustc compile time",
+      "rustc_code": "E0308",
+      "caught": true
+    },
+    {
+      "case": "d9_runtime_artifact_swap",
+      "description": "runtime artifact swap (real SHA-256)",
+      "enforcement_stage": "runtime before inference",
+      "caught": true,
+      "rustc_code": null
+    },
+    {
+      "case": "d8_declaration_drift",
+      "description": "declaration/artifact drift",
+      "enforcement_stage": "runtime (output-shape check present; not independently executed)",
+      "caught": null,
+      "rustc_code": null
+    }
+  ],
+  "caught_compile_time": 10,
+  "caught_runtime": 1,
+  "measurements": {
+    "typed_layer_lines": 107,
+    "host_lines": 109,
+    "const_generic_rank_types": 2,
+    "value_range_marker_types": 4,
+    "device_marker_types": 2,
+    "bespoke_reshape_functions": 1,
+    "runtime_shape_checks": 2
+  },
+  "gaps_vs_stark": [
+    "Symbolic/dynamic batch is NOT expressible: batch is a compile-time const (`N`); d2 is caught only because N is const. A batch that varies at runtime forces fully-runtime-shaped tensors (guarantee lost).",
+    "The computed reshape needs a BESPOKE per-reshape function that bakes in `125 == 5*25`; a general split whose factors are checked from the input requires `generic_const_exprs` (unstable). Each distinct reshape is new generated code.",
+    "Ranks need separate generated types (Tensor4, Tensor5); there is no rank-generic tensor type.",
+    "Declaration/artifact drift is a RUNTIME output-shape check, not a deploy-time check as in STARK (before the host is even built)."
+  ],
+  "parity": "On this batch-1 pipeline the typed-Rust host catches the same shape/dtype/device/range defects at compile time as STARK, and runs the identical inference to a bit-exact result \u2014 but only by fixing the batch to a constant, emitting bespoke per-reshape/per-rank code, and deferring declaration drift to runtime. STARK's edge is symbolic dynamic batch and general computed shapes at compile time, deploy-time drift, in one language without the const-generic machinery."
+}
