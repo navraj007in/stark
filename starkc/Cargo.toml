@@ -10,6 +10,11 @@ rust-version = "1.85"
 [dependencies]
 sha2 = { version = "0.11.0", default-features = false }
 
+[dev-dependencies]
+# Already a normal dependency; declared here so integration tests can hash
+# opt-in Gate 5 fixtures. Does not expand the compiler's dependency surface.
+sha2 = { version = "0.11.0", default-features = false }
+
 [lints.rust]
 unsafe_code = "forbid"
 

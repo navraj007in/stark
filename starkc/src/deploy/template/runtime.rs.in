@@ -214,6 +214,14 @@ impl Tensor {
             _ => None,
         }
     }
+
+    #[cfg(test)]
+    pub fn as_f32(&self) -> Option<&ArrayD<f32>> {
+        match self {
+            Tensor::F32(a) => Some(a),
+            _ => None,
+        }
+    }
 }
 
 /// Lowercase hex SHA-256 of a byte slice (matches the compiler's manifest).
@@ -353,4 +361,138 @@ pub fn load_image_nhwc(path: &Path) -> Result<Tensor, String> {
         }
     }
     Tensor::from_u8(&[1, CROP as usize, CROP as usize, 3], data)
+}
+
+#[cfg(test)]
+mod tests {
+    // Hermetic unit tests for the safe runtime tensor operations and the
+    // fail-fast artifact-hash check. These run via `cargo test` in the
+    // generated host crate (they use `ndarray`/`image`, so they cannot live in
+    // the dependency-light compiler). No ONNX Runtime session is created.
+    use super::*;
+
+    fn unique_temp(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "stark-rt-{}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed),
+            name
+        ))
+    }
+
+    #[test]
+    fn refine_checks_dtype_and_shape() {
+        let t = Tensor::from_u8(&[2, 2], vec![1, 2, 3, 4]).unwrap();
+        assert!(t.clone().refine(DType::UInt8, &[2, 2]).is_ok());
+        assert!(t.clone().refine(DType::Float32, &[2, 2]).is_err());
+        assert!(t.refine(DType::UInt8, &[2, 3]).is_err());
+    }
+
+    #[test]
+    fn permute_reorders_axes() {
+        let t = Tensor::from_u8(&[1, 2, 3], (0..6).collect()).unwrap();
+        let p = t.permute(&[0, 2, 1]).unwrap();
+        assert_eq!(p.shape(), vec![1, 3, 2]);
+        assert!(t.permute(&[0, 1]).is_err()); // rank mismatch
+    }
+
+    #[test]
+    fn cast_u8_to_f32_is_exact() {
+        let t = Tensor::from_u8(&[3], vec![0, 128, 255]).unwrap();
+        let f = t.cast(DType::Float32).unwrap();
+        assert_eq!(f.dtype(), DType::Float32);
+        assert_eq!(f.as_f32().unwrap().iter().copied().collect::<Vec<_>>(), vec![0.0, 128.0, 255.0]);
+    }
+
+    #[test]
+    fn full_and_concat_build_channel_constants() {
+        let a = Tensor::full_f32(&[1, 1, 1, 1], 1.0);
+        let b = Tensor::full_f32(&[1, 1, 1, 1], 2.0);
+        let c = Tensor::concat_f32(1, &a, &b).unwrap();
+        assert_eq!(c.shape(), vec![1, 2, 1, 1]);
+        assert_eq!(c.as_f32().unwrap().iter().copied().collect::<Vec<_>>(), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn sub_and_div_broadcast() {
+        let a = Tensor::F32(ndarray::ArrayD::from_shape_vec(
+            ndarray::IxDyn(&[1, 3]),
+            vec![10.0, 20.0, 30.0],
+        )
+        .unwrap());
+        let ten = Tensor::full_f32(&[1, 1], 10.0);
+        let subbed = a.sub(&ten).unwrap();
+        assert_eq!(subbed.as_f32().unwrap().iter().copied().collect::<Vec<_>>(), vec![0.0, 10.0, 20.0]);
+        let divided = a.div(&ten).unwrap();
+        assert_eq!(divided.as_f32().unwrap().iter().copied().collect::<Vec<_>>(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn softmax_is_stable_and_normalized() {
+        let t = Tensor::F32(ndarray::ArrayD::from_shape_vec(
+            ndarray::IxDyn(&[1, 3]),
+            vec![1000.0, 1000.0, 1000.0], // large equal logits -> no overflow
+        )
+        .unwrap());
+        let s = t.softmax(1).unwrap();
+        let vals: Vec<f32> = s.as_f32().unwrap().iter().copied().collect();
+        assert!(vals.iter().all(|v| v.is_finite()));
+        let sum: f32 = vals.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-6, "softmax sum {sum}");
+        for v in vals {
+            assert!((v - 1.0 / 3.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn argmax_returns_index_along_axis() {
+        let t = Tensor::F32(ndarray::ArrayD::from_shape_vec(
+            ndarray::IxDyn(&[1, 4]),
+            vec![0.1, 0.7, 0.2, 0.05],
+        )
+        .unwrap());
+        let a = t.argmax(1).unwrap();
+        assert_eq!(a.shape(), vec![1, 1]);
+        assert_eq!(a.as_i64().unwrap().iter().next().copied(), Some(1));
+    }
+
+    #[test]
+    fn sha256_matches_known_vector() {
+        // SHA-256 of the empty string.
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn model_load_rejects_a_hash_mismatch_before_any_session() {
+        // Write bytes whose hash will not match, and confirm `load` fails with
+        // ArtifactMismatch. Inference never starts (no session is created).
+        let path = unique_temp("model.bin");
+        std::fs::write(&path, b"not the expected model bytes").unwrap();
+        let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
+        let result = Model::load(&path, wrong, "data", "out");
+        assert!(result.is_err(), "expected an ArtifactMismatch error");
+        let err = result.err().unwrap();
+        assert!(err.contains("ArtifactMismatch"), "{err}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_image_produces_nhwc_uint8_224() {
+        // A solid 300x260 image resizes/crops to [1, 224, 224, 3] UInt8.
+        let mut img = image::RgbImage::new(300, 260);
+        for (x, _y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgb([(x % 256) as u8, 10, 200]);
+        }
+        let path = unique_temp("img.png");
+        img.save(&path).unwrap();
+        let t = load_image_nhwc(&path).unwrap();
+        assert_eq!(t.dtype(), DType::UInt8);
+        assert_eq!(t.shape(), vec![1, 224, 224, 3]);
+        let _ = std::fs::remove_file(&path);
+    }
 }

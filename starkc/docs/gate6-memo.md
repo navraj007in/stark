@@ -28,7 +28,7 @@ A second independent question is: Is `stark verify` useful as a low-friction CI 
 | --- | --- | --- | --- |
 | Incompatible tensor dimensions | compile time | `E0212` | `bad_shape.stark:6:1`: literal dimension mismatch at axis 3 (found 100, expected 224) |
 | Incorrect element type | compile time | `E0212` | `bad_dtype.stark:18:32`: type mismatch (expected Float32, found UInt8) |
-| Incompatible device placement | compile time | `E0212` | `bad_device.stark:18:32`: device mismatch (expected Cpu, found Cuda<0>) |
+| Incompatible device placement | compile time | `E0212` | `bad_device.stark:25:32`: device mismatch at `model.predict` (expected Cpu, found Cuda<0>) |
 | Artifact/declaration drift | build/deploy time | `deploy error` | `artifact_drift.stark`: output dimension 1 mismatch (artifact 1000, declaration 999) |
 
 * **Baseline Comparison**: The candidate defects are successfully caught before execution by STARK. Python and Rust baselines will be measured under controlled experiments in Gate 6 to isolate when they catch these defects. Gate 5 alone does not establish a language-level advantage over a generated Rust typed comparator.

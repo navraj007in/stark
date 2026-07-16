@@ -135,7 +135,7 @@ The STARK compiler successfully rejects all four defect classes before model exe
 * **Command**: `starkc check --extension tensor examples/gate5/bad_device.stark`
 * **Exit status**: `1`
 * **Diagnostic Code**: `E0212`
-* **Primary Error**: `Error: [E0212] tensor device mismatch: expected Cpu, found Cuda<0>`
+* **Primary Error**: ``Error: [E0212] tensor device mismatch: expected `Cpu`, found `Cuda<0>` `` at the `model.predict(&on_gpu)` call (`bad_device.stark:25:32`), with a note pointing to the model port declaration.
 * **Stage**: Type checking (Front-end)
 * **Inference attempted**: No
 
@@ -156,6 +156,20 @@ The STARK compiler successfully rejects all four defect classes before model exe
 * **Primary Error**: `error: ArtifactMismatch: model SHA-256 f3f87bb8ab3c26c7ecfd3ac60421d7f32b0503d1d6c5baf8bac42ed93d86351a does not match the expected af16a04a6ec48ac494065d4439fe9dea590d337b9ca6dc328160ccf04a217b9c; refusing to run inference`
 * **Stage**: generated-host startup
 * **Inference attempted**: No
+
+### Automated verification
+
+The defect corpus is CI-guarded so the evidence above cannot silently drift:
+
+* `starkc/tests/gate5_defects.rs` (hermetic) runs `starkc check`/`starkc deploy`
+  on all four source/drift examples and asserts the exact stage and diagnostic
+  code (E0212 for the three source defects; deploy-time verification for
+  declaration drift).
+* The generated runtime carries `#[cfg(test)]` unit tests
+  (`src/deploy/template/runtime.rs.in`) for every tensor operation and for the
+  `ArtifactMismatch` hash check (proving inference never starts on a mismatch);
+  they run via `cargo test` in the generated host and in the opt-in
+  `gate5_codegen` backend test.
 
 ---
 

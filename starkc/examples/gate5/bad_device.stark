@@ -1,20 +1,27 @@
+// Gate 5 defect corpus — incompatible device placement.
+//
+// The model's input port is declared on the CPU. The pipeline moves the
+// preprocessed tensor to a CUDA device with `to_device` and then feeds it to
+// `model.predict`, so the placements disagree. STARK rejects this at compile
+// time (E0212) before any host is generated or inference is attempted.
+//
+// Expected: `starkc check --extension tensor examples/gate5/bad_device.stark`
+//   Error: [E0212] tensor device mismatch: expected `Cpu`, found `Cuda<0>`
+//   at the `model.predict(&on_gpu)` call.
+
 model Resnet50V17<N: Dim> {
     input data: Tensor<Float32, [N, 3, 224, 224], device = Cpu>;
     output resnetv17_dense0_fwd: Tensor<Float32, [N, 1000]>;
-}
-
-fn preprocess(
-    nhwc: Tensor<UInt8, [1, 224, 224, 3], device = Cuda<0>>,
-) -> Tensor<Float32, [1, 3, 224, 224], device = Cuda<0>> {
-    nhwc.permute::<[0, 3, 1, 2]>().cast::<Float32>()
 }
 
 fn infer(
     model: Resnet50V17,
     raw: TensorAny,
 ) -> Result<Tensor<Int64, [1]>, String> {
-    let nhwc = raw.refine::<UInt8, [1, 224, 224, 3], device = Cuda<0>>()?;
-    let nchw = preprocess(nhwc);
-    let logits = model.predict(&nchw); // Mismatch: model expects Cpu but input is Cuda<0>
+    let nhwc = raw.refine::<UInt8, [1, 224, 224, 3]>()?;
+    let nchw = nhwc.permute::<[0, 3, 1, 2]>().cast::<Float32>();
+    // Move the input to CUDA; the model's input port lives on the CPU.
+    let on_gpu = nchw.to_device::<device = Cuda<0>>();
+    let logits = model.predict(&on_gpu);
     Ok(logits.softmax::<1>().argmax::<1>())
 }
