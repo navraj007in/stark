@@ -1,0 +1,9 @@
+// Gate 7 defect 11 — pass UnitRange where the model contract requires Normalized. Compile-time.
+model NormNet<B: Dim> {
+    input data: Tensor<Float32, [B, 3, 4, 4], range = Normalized>;
+    output logits: Tensor<Float32, [B, 10]>;
+}
+fn infer<B: Dim>(model: NormNet, raw: TensorAny) -> Result<Tensor<Float32, [B, 10]>, String> {
+    let unit = raw.refine::<Float32, [B, 3, 4, 4], range = UnitRange>()?;
+    Ok(model.predict(&unit))
+}

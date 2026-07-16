@@ -57,6 +57,19 @@ model's actual output channel count, and the reshape must preserve element count
 (`A * (5 + C) * H * W`). These are the relationships a fixed-shape backend cannot
 represent and stable Rust cannot type without `generic_const_exprs`.
 
+> **Scope amendment (post-G7-05, 2026-07-16).** The **natively deployed** pipeline
+> is `refine → predict → reshape → permute` — up to and including the per-cell
+> tensor `[B, A, H, W, 5+C]`. That is what carries the computed symbolic shape
+> into running native code, which is the differentiator this gate exists to
+> demonstrate. The final `grid + offset` box **decode** to detections
+> (`broadcast_to`/`add`/`mul`, anchor math) and the value-range transition ops
+> (`scale_255`/`normalize`) are **frontend-checked only** in this gate and are
+> *not* lowered to the native host: the box decode is out of the deployed scope,
+> and value-range markers erase before deployment by design (§4). The Python
+> reference still computes full detections for context, but native correctness is
+> evaluated on the reshape/permute output. Completing native box decode is a
+> separate, later experiment if the Gate 7 decision (G7-07) is `GO`.
+
 ### Candidate models (final choice + SHA pinned in G7-01)
 
 Selection is deferred to G7-01, which must record a **clear licence**, pinned

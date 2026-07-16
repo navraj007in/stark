@@ -8,8 +8,10 @@
 mod generated_pipeline;
 mod runtime;
 
-use generated_pipeline::{build_input, infer, MODEL_INPUT_NAME, MODEL_OUTPUT_NAME, MODEL_SHA256};
-use runtime::Model;
+use generated_pipeline::{
+    build_input, infer, HOST_INPUT_DIMS, MODEL_INPUT_NAME, MODEL_OUTPUT_NAME, MODEL_SHA256,
+};
+use runtime::{load_raw_f32, Model};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -19,20 +21,28 @@ const MAX_WARMUP: u32 = 10_000;
 
 struct Args {
     model: PathBuf,
-    image: PathBuf,
+    image: Option<PathBuf>,
+    /// A raw little-endian Float32 tensor of the model's input shape, fed
+    /// verbatim (bypassing image decode) so the output can be compared
+    /// numerically against a reference on the identical input.
+    input_raw: Option<PathBuf>,
+    /// Write the pipeline's Float32 result as raw little-endian bytes.
+    dump_output: Option<PathBuf>,
     warmup: u32,
     iterations: u32,
     json: bool,
 }
 
 fn usage() -> &'static str {
-    "stark-inference-host --model <model.onnx> --image <image.(jpg|png)> \
-     [--warmup N] [--iterations N] [--json]\n"
+    "stark-inference-host --model <model.onnx> (--image <image.(jpg|png)> | --input-raw <f32.bin>) \
+     [--dump-output <f32.bin>] [--warmup N] [--iterations N] [--json]\n"
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut model = None;
     let mut image = None;
+    let mut input_raw = None;
+    let mut dump_output = None;
     let mut warmup = 5u32;
     let mut iterations = 30u32;
     let mut json = false;
@@ -41,6 +51,8 @@ fn parse_args() -> Result<Args, String> {
         match arg.as_str() {
             "--model" => model = Some(PathBuf::from(next(&mut it, "--model")?)),
             "--image" => image = Some(PathBuf::from(next(&mut it, "--image")?)),
+            "--input-raw" => input_raw = Some(PathBuf::from(next(&mut it, "--input-raw")?)),
+            "--dump-output" => dump_output = Some(PathBuf::from(next(&mut it, "--dump-output")?)),
             "--warmup" => warmup = parse_u32(&next(&mut it, "--warmup")?, "--warmup")?,
             "--iterations" => {
                 iterations = parse_u32(&next(&mut it, "--iterations")?, "--iterations")?
@@ -50,7 +62,9 @@ fn parse_args() -> Result<Args, String> {
         }
     }
     let model = model.ok_or("missing --model")?;
-    let image = image.ok_or("missing --image")?;
+    if image.is_some() == input_raw.is_some() {
+        return Err("provide exactly one of --image or --input-raw".to_string());
+    }
     if iterations == 0 || iterations > MAX_ITERATIONS {
         return Err(format!("--iterations must be in 1..={MAX_ITERATIONS}"));
     }
@@ -60,6 +74,8 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args {
         model,
         image,
+        input_raw,
+        dump_output,
         warmup,
         iterations,
         json,
@@ -97,8 +113,13 @@ fn run(args: &Args) -> Result<(), String> {
     let mut model = Model::load(&args.model, MODEL_SHA256, MODEL_INPUT_NAME, MODEL_OUTPUT_NAME)?;
     let startup_ms = startup.elapsed().as_secs_f64() * 1000.0;
 
-    // The host input is built to match the pipeline's own `refine` contract.
-    let raw = build_input(&args.image)?;
+    // The host input is either built from an image (matching the pipeline's own
+    // `refine` contract) or a raw preprocessed Float32 tensor fed verbatim.
+    let raw = match (&args.input_raw, &args.image) {
+        (Some(path), _) => load_raw_f32(path, HOST_INPUT_DIMS)?,
+        (None, Some(image)) => build_input(image)?,
+        (None, None) => return Err("no input provided".to_string()),
+    };
 
     for _ in 0..args.warmup {
         let _ = infer(&mut model, raw.clone())?;
@@ -119,6 +140,15 @@ fn run(args: &Args) -> Result<(), String> {
     let result_shape = result.shape();
     let (result_elems, result_checksum) = result.checksum();
     let result_i64: Option<Vec<i64>> = result.as_i64().map(|a| a.iter().copied().collect());
+
+    // Dump the raw Float32 result for numerical comparison against a reference.
+    if let Some(path) = &args.dump_output {
+        let bytes = result
+            .to_f32_le_bytes()
+            .ok_or("result is not a Float32 tensor; cannot dump")?;
+        std::fs::write(path, bytes)
+            .map_err(|e| format!("cannot write `{}`: {e}", path.display()))?;
+    }
 
     latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let min = latencies.first().copied().unwrap_or(0.0);

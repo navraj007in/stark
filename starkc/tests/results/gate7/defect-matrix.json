@@ -1,7 +1,7 @@
 {
-  "evaluation_commit": "94b37fb0e29c6b74e2b224a54d7435c4a8362e57",
-  "defects_caught_before_inference": 9,
-  "defect_count": 9,
+  "evaluation_commit": "b263c9332099f4faed57aef07d9402aae1fb43e9",
+  "defects_caught_before_inference": 13,
+  "defect_count": 13,
   "defects": [
     {
       "case": "d1_reshape_product",
@@ -74,8 +74,48 @@
       "actual_result": "rejected"
     },
     {
+      "case": "d10_range_normalize_bytes",
+      "command": "starkc check --extension tensor examples/gate7/defects/d10_range_normalize_bytes.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d11_range_wrong_model",
+      "command": "starkc check --extension tensor examples/gate7/defects/d11_range_wrong_model.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d12_range_merge",
+      "command": "starkc check --extension tensor examples/gate7/defects/d12_range_merge.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
+      "case": "d13_range_erase",
+      "command": "starkc check --extension tensor examples/gate7/defects/d13_range_erase.stark",
+      "exit_code": 1,
+      "diagnostic_code": "[E0212]",
+      "detection_stage": "compile-time (type checking)",
+      "inference_attempted": false,
+      "expected_result": "compile-time rejection",
+      "actual_result": "rejected"
+    },
+    {
       "case": "d8_declaration_drift",
-      "command": "starkc deploy examples/gate7/defects/d8_declaration_drift.stark --model /Users/nexper/Documents/GitHub/stark/starkc/tmp/gate7/tinyyolov2-8.onnx --entry infer --out /Users/nexper/Documents/GitHub/stark/starkc/tmp/gate7-drift --force",
+      "command": "starkc deploy examples/gate7/defects/d8_declaration_drift.stark --model <model.onnx> --entry infer --out <out> --force",
       "exit_code": 1,
       "diagnostic_code": "does not match the model declaration",
       "detection_stage": "deploy-time (artifact verification)",
@@ -85,7 +125,7 @@
     },
     {
       "case": "d9_runtime_artifact_swap",
-      "command": "stark-inference-host --model <mutated>",
+      "command": "stark-inference-host --model <mutated.onnx> --image <image>",
       "exit_code": 1,
       "diagnostic_code": "ArtifactMismatch",
       "detection_stage": "runtime (generated-host load, before inference)",

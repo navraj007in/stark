@@ -1,0 +1,3 @@
+// Gate 7 defect 13 — erase semantic state without an explicit boundary. Compile-time.
+fn helper(x: Tensor<Float32, [4]>) -> Tensor<Float32, [4]> { x }
+fn f(x: Tensor<Float32, [4], range = ByteRange>) -> Tensor<Float32, [4]> { helper(x) }
