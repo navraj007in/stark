@@ -1,16 +1,26 @@
 # Gate 6 decision memo — evidence collected during Gate 5
 
-Prepared at the start of Gate 5 (PLAN.md §5) so evidence is gathered against it. Here is the final memo documenting the go / revise / stop decision at Gate 6.
+**Status:** Evidence collection in progress
 
-## 1. Question
+**Decision:** Not yet made
 
-Does STARK's compile-time tensor/model checking deliver a **material safety or deployment advantage** over the status quo (hand-written ORT host + Python), one that is **not erased** by backend-integration complexity? (ROADMAP.md Gate 6.)
+---
 
-## 2. What was built
+## 1. Questions Evaluated
+
+Does STARK's compile-time tensor/model checking deliver a **material safety or deployment advantage** over the strongest technical comparator (a generated Rust typed host) and is that advantage sufficient to justify the adoption and maintenance cost of a new language? (ROADMAP.md Gate 6.)
+
+A second independent question is: Is `stark verify` useful as a low-friction CI tool even when users do not adopt the STARK language?
+
+---
+
+## 2. What was built (Gate 5 Evidence Inherited)
 
 * **Representative model**: `resnet50-v1-7.onnx` (SHA-256 pinned: `af16a04a6ec48ac494065d4439fe9dea590d337b9ca6dc328160ccf04a217b9c`).
 * **Pipeline**: `import` → checked signature → STARK preprocess/classify → generated Rust host calling ONNX Runtime → single native binary.
 * **Defect corpus**: the four roadmap classes as one-line source mutations.
+
+---
 
 ## 3. Evidence — safety (the STARK thesis)
 
@@ -21,27 +31,44 @@ Does STARK's compile-time tensor/model checking deliver a **material safety or d
 | Incompatible device placement | compile time | `E0212` | `bad_device.stark:18:32`: device mismatch (expected Cpu, found Cuda<0>) |
 | Artifact/declaration drift | build/deploy time | `deploy error` | `artifact_drift.stark`: output dimension 1 mismatch (artifact 1000, declaration 999) |
 
-**Baseline comparison**: The same four mutations in a hand-written Python/ORT script would only fail at **runtime** (or silently propagate incorrect shapes / produce garbage outputs without failing if axes match incorrectly). STARK catches them ahead-of-time before compiling the deployment target, proving a **real and substantial safety advantage**.
+* **Baseline Comparison**: The candidate defects are successfully caught before execution by STARK. Python and Rust baselines will be measured under controlled experiments in Gate 6 to isolate when they catch these defects. Gate 5 alone does not establish a language-level advantage over a generated Rust typed comparator.
+
+---
 
 ## 4. Evidence — deployment cost (measured)
 
-| Metric | STARK-generated native | Python + ORT baseline |
-| --- | --- | --- |
-| **Reference-output agreement** | Class 258 (prob 0.947); matches within 1e-3 | Class 258 (prob 0.947) |
-| **Artifact size** | 23.67 MB | ~300+ MB (Python interpreter + dependencies) |
-| **Cold startup** | 304.61 ms | ~900+ ms |
-| **Peak RSS** | 374.00 MB (includes static ORT + model map) | ~150+ MB |
-| **Steady-state latency** | 13.479 ms (median) | ~15.2 ms |
-| **Build steps / reproducibility** | Fully automated cargo build (statically linked) | Manual pip environment pinning |
+Measured results for the STARK-generated native host on Apple Silicon (arm64):
 
-## 5. Integration complexity
+* **Reference-output agreement**: Class 258 (Samoyed, prob 0.947176); matches Python reference within 1e-3 (Top-5 index and ordering matches exactly).
+* **Artifact size**: `23.67 MB` for the generated host release binary (excludes model bytes).
+* **Model size**: `97.83 MB`.
+* **Total bundle size**: `121.50 MB`.
+* **Inference Latency (median over 100 runs)**: `13.479 ms` (min: 12.674 ms, p95: 19.180 ms).
+* **Peak RSS**: `374.00 MB` (includes loaded model and ONNX Runtime session state).
+* **Warmup iterations**: 5.
+* **Warm pipeline E2E latency**: `13.479 ms`.
+* **Cold E2E latency**: `304.61 ms` (dominated by ORT model load time).
+* **Build steps**: Fully automated cargo build (statically linked via `ort-sys`).
 
-* **`ort` integration cost**: Very low. Compiles out of the box using `ort` version `2.0.0-rc.12` and standard Rust cargo toolchain.
-* **Backend boundary risks**: Checked and fully guarded. Raw/erased input tensors are strictly refined using explicit type boundaries (`Tensor::refine`) before crossing the ORT boundary.
-* **Kernels/runtime STARK had to implement**: **none** (exit criterion satisfied).
+*Note: Controlled comparisons against a Python baseline and a typed Rust comparator will be performed in G6-04 and G6-05 to gather concrete comparative metrics. Unmeasured estimates for these baselines are not cited.*
 
-## 6. Recommendation
+---
 
-**GO** — the prototype demonstrates a significant safety and size advantage. Preprocessing and postprocessing pipelines are statically verified and compiled into a compact, low-overhead native binary. 
+## 5. Principal Technical Comparator
 
-We recommend proceeding to the next narrow experiment: expanding checking to high-level domain semantics (color spaces, ranges) and enhancing the developer experience via language server integration (LSP).
+The principal comparator for STARK's language safety model is:
+```text
+ONNX signature importer
++ generated Rust model types
++ typed tensor/layout API
++ artifact checksum verification
++ ONNX Runtime host
++ Rust compiler and Cargo
+```
+Python remains an operational baseline, not the strongest safety comparator.
+
+---
+
+## 6. Current Status & Next Steps
+
+Evidence collection is in progress. Gate 6 decisions are not yet made. No strategy decisions, LSP work, or language expansions are authorized. The next phase will run controlled evaluations against the Python baseline and the typed Rust comparator to establish whether STARK provides a material safety advantage.

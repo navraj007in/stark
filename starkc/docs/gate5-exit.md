@@ -163,7 +163,7 @@ The STARK compiler successfully rejects all four defect classes before model exe
 
 To guarantee evaluation reproducibility, the SHA-256 checksums of all active files and scripts are recorded below:
 
-* **STARK git commit SHA**: `9b6745bbf500e303a5973272ae4ae0e648cb5456`
+* **STARK git commit SHA**: `d77e5b9ca5815efc57942e283aa49c6302dd3578`
 * **dirty**: `False`
 * **Model Checksum**: `af16a04a6ec48ac494065d4439fe9dea590d337b9ca6dc328160ccf04a217b9c`
 * **Image Checksum**: `f3f87bb8ab3c26c7ecfd3ac60421d7f32b0503d1d6c5baf8bac42ed93d86351a`
