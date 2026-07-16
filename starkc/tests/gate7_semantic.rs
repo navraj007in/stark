@@ -155,6 +155,83 @@ fn defect6_erasing_range_without_boundary_is_rejected() {
     );
 }
 
+// ---- range propagation: value-changing ops clear the range -------------------
+
+fn assert_ok(label: &str, src: &str) {
+    let out = check_src(src);
+    let diag = diagnostics(&out);
+    assert!(out.status.success(), "{label}: expected success:\n{diag}");
+}
+
+#[test]
+fn softmax_clears_the_value_range() {
+    // A `Normalized` input becomes probabilities: the result is Unspecified, so
+    // an Unspecified return type is accepted...
+    assert_ok(
+        "softmax clears",
+        "fn f(x: Tensor<Float32, [2, 10], range = Normalized>) -> Tensor<Float32, [2, 10]> \
+         { x.softmax::<1>() }",
+    );
+    // ...and re-claiming the input range on the result is rejected.
+    assert_rejected(
+        "softmax result is not Normalized",
+        "fn f(x: Tensor<Float32, [2, 10], range = Normalized>) \
+         -> Tensor<Float32, [2, 10], range = Normalized> { x.softmax::<1>() }",
+        &["value-range mismatch"],
+    );
+}
+
+#[test]
+fn argmax_clears_the_value_range() {
+    // argmax yields indices — never ranged pixels; the Int64 result is Unspecified.
+    assert_ok(
+        "argmax clears",
+        "fn f(x: Tensor<Float32, [2, 3], range = Normalized>) -> Tensor<Int64, [2]> \
+         { x.argmax::<1>() }",
+    );
+    assert_rejected(
+        "argmax result carries no range",
+        "fn f(x: Tensor<Float32, [2, 3], range = Normalized>) \
+         -> Tensor<Int64, [2], range = Normalized> { x.argmax::<1>() }",
+        &["value-range mismatch"],
+    );
+}
+
+#[test]
+fn matmul_clears_the_value_range() {
+    // The contracted product is not range-preserving; the result is Unspecified.
+    assert_rejected(
+        "matmul result carries no range",
+        "fn f(x: Tensor<Float32, [2, 3], range = Normalized>, y: Tensor<Float32, [3, 4]>) \
+         -> Tensor<Float32, [2, 4], range = Normalized> { matmul(&x, &y) }",
+        &["value-range mismatch"],
+    );
+}
+
+#[test]
+fn concat_combines_ranges_and_rejects_incompatible() {
+    assert_ok(
+        "concat same range",
+        "fn f(a: Tensor<Float32, [2, 2], range = ByteRange>, b: Tensor<Float32, [2, 2], range = ByteRange>) \
+         -> Tensor<Float32, [4, 2], range = ByteRange> { concat::<0>(&a, &b) }",
+    );
+    assert_rejected(
+        "concat incompatible ranges",
+        "fn f(a: Tensor<Float32, [2, 2], range = ByteRange>, b: Tensor<Float32, [2, 2], range = UnitRange>) \
+         -> Tensor<Float32, [4, 2], range = ByteRange> { concat::<0>(&a, &b) }",
+        &["`concat` cannot merge", "ByteRange", "UnitRange"],
+    );
+}
+
+#[test]
+fn permute_preserves_the_value_range() {
+    assert_ok(
+        "permute preserves",
+        "fn f(x: Tensor<Float32, [1, 2, 3, 4], range = UnitRange>) \
+         -> Tensor<Float32, [1, 4, 2, 3], range = UnitRange> { x.permute::<[0, 3, 1, 2]>() }",
+    );
+}
+
 // ---- ordinary arithmetic does not claim a transition -------------------------
 
 #[test]
