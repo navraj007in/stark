@@ -390,6 +390,8 @@ impl<'a> TypeChecker<'a> {
             | Builtin::TensorSum
             | Builtin::TensorSoftmax
             | Builtin::TensorCast
+            | Builtin::TensorScale255
+            | Builtin::TensorNormalize
             | Builtin::TensorToDevice => Ty::Fn {
                 params: vec![],
                 ret: Box::new(self.new_type_var()),
@@ -463,6 +465,7 @@ impl<'a> TypeChecker<'a> {
                             dtype: t.dtype,
                             shape: Shape { dims, spans },
                             device: t.device,
+                            range: t.range,
                         },
                     ))))
                 }
@@ -1129,10 +1132,10 @@ impl<'a> TypeChecker<'a> {
                 ))))
             }
             "Tensor" => {
-                if !(2..=3).contains(&arg_list.len()) {
+                if !(2..=4).contains(&arg_list.len()) {
                     self.tensor_error(
                         &format!(
-                            "`Tensor` expects two or three arguments, found {}",
+                            "`Tensor` expects two to four arguments, found {}",
                             arg_list.len()
                         ),
                         span,
@@ -1152,12 +1155,36 @@ impl<'a> TypeChecker<'a> {
                         Shape::default()
                     }
                 };
-                let device = self.build_device(arg_list.get(2), span);
+                // The `device = D` and `range = R` bindings may appear after the
+                // shape in either order; each is optional.
+                let mut device_arg = None;
+                let mut range_arg = None;
+                for arg in arg_list.iter().skip(2) {
+                    match arg {
+                        hir::GenericArg::Binding { name, .. } => match self.text(*name) {
+                            "device" => device_arg = Some(arg),
+                            "range" => range_arg = Some(arg),
+                            other => self.tensor_error(
+                                &format!(
+                                    "unknown `Tensor` binding `{other} = ...`; expected `device` or `range`"
+                                ),
+                                span,
+                            ),
+                        },
+                        _ => self.tensor_error(
+                            "a `Tensor` argument after the shape must be `device = D` or `range = R`",
+                            span,
+                        ),
+                    }
+                }
+                let device = self.build_device(device_arg, span);
+                let range = self.build_value_range(range_arg, span);
                 Some(Ty::Extension(Box::new(ExtensionTy::Tensor(
                     TensorKind::Tensor(TensorTy {
                         dtype,
                         shape,
                         device,
+                        range,
                     }),
                 ))))
             }
@@ -1379,6 +1406,61 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Resolve an optional `range = R` argument to a value-range state. An
+    /// omitted `range` is `Unspecified` (no claim). The states are a fixed,
+    /// closed set; unknown names are a tensor error.
+    fn build_value_range(
+        &mut self,
+        arg: Option<&hir::GenericArg>,
+        _span: Span,
+    ) -> crate::extensions::tensor::types::ValueRange {
+        use crate::extensions::tensor::types::ValueRange;
+        match arg {
+            None => ValueRange::Unspecified,
+            Some(hir::GenericArg::Binding { ty, .. }) => {
+                if let hir::TypeKind::Path { path, .. } = &self.hir.ty(*ty).kind {
+                    match single_segment_name(path, self) {
+                        Some("Unspecified") => ValueRange::Unspecified,
+                        Some("ByteRange") => ValueRange::ByteRange,
+                        Some("UnitRange") => ValueRange::UnitRange,
+                        Some("Normalized") => ValueRange::Normalized,
+                        _ => {
+                            self.tensor_error(
+                                "unknown value range; expected `ByteRange`, `UnitRange`, \
+                                 `Normalized`, or `Unspecified`",
+                                self.hir.ty(*ty).span,
+                            );
+                            ValueRange::Unspecified
+                        }
+                    }
+                } else {
+                    self.tensor_error(
+                        "tensor range must be a range-state name",
+                        self.hir.ty(*ty).span,
+                    );
+                    ValueRange::Unspecified
+                }
+            }
+            Some(_) => ValueRange::Unspecified,
+        }
+    }
+
+    /// Combine two operand value ranges for an elementwise op. `Unspecified` is
+    /// neutral (absorbs the other side); two different specified ranges cannot be
+    /// merged and yield `None`.
+    fn combine_value_range(
+        &self,
+        a: crate::extensions::tensor::types::ValueRange,
+        b: crate::extensions::tensor::types::ValueRange,
+    ) -> Option<crate::extensions::tensor::types::ValueRange> {
+        use crate::extensions::tensor::types::ValueRange::Unspecified;
+        match (a, b) {
+            (Unspecified, r) | (r, Unspecified) => Some(r),
+            (x, y) if x == y => Some(x),
+            _ => None,
+        }
+    }
+
     fn build_cuda_device(&mut self, args: Option<&hir::GenericArgs>, span: Span) -> Device {
         let Some(args) = args else {
             self.tensor_error(
@@ -1535,6 +1617,11 @@ impl<'a> TypeChecker<'a> {
             ),
             UnifyError::DeviceMismatch { expected, found } => {
                 format!("tensor device mismatch: expected `{expected}`, found `{found}`")
+            }
+            UnifyError::RangeMismatch { expected, found } => {
+                format!(
+                    "tensor value-range mismatch: expected `{expected}`, found `{found}`"
+                )
             }
             UnifyError::Arithmetic => "tensor dimension arithmetic overflowed".to_string(),
         };
@@ -3947,21 +4034,32 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         };
 
+        // A `refine` boundary may also assign the initial value range with an
+        // optional `range = R` binding; the remaining args are positional.
+        let range_arg = generic_args.args.iter().find(
+            |a| matches!(a, hir::GenericArg::Binding { name, .. } if self.text(*name) == "range"),
+        );
+        let range = self.build_value_range(range_arg, generic_args.span);
+        let positional: Vec<hir::GenericArg> = generic_args
+            .args
+            .iter()
+            .filter(|a| !matches!(a, hir::GenericArg::Binding { .. }))
+            .cloned()
+            .collect();
+
         let (dtype, shape) = match base {
             Ty::Extension(ext) => match &*ext {
-                ExtensionTy::Tensor(TensorKind::TensorDyn(dtype)) => {
-                    match generic_args.args.as_slice() {
-                        [hir::GenericArg::Shape(shape)] => (*dtype, self.build_refine_shape(shape)),
-                        _ => {
-                            self.tensor_error(
-                                "`TensorDyn<T>::refine` expects exactly one shape argument",
-                                generic_args.span,
-                            );
-                            return Ty::Error;
-                        }
+                ExtensionTy::Tensor(TensorKind::TensorDyn(dtype)) => match positional.as_slice() {
+                    [hir::GenericArg::Shape(shape)] => (*dtype, self.build_refine_shape(shape)),
+                    _ => {
+                        self.tensor_error(
+                            "`TensorDyn<T>::refine` expects exactly one shape argument",
+                            generic_args.span,
+                        );
+                        return Ty::Error;
                     }
-                }
-                ExtensionTy::Tensor(TensorKind::TensorAny) => match generic_args.args.as_slice() {
+                },
+                ExtensionTy::Tensor(TensorKind::TensorAny) => match positional.as_slice() {
                     [hir::GenericArg::Type(dtype), hir::GenericArg::Shape(shape)] => (
                         self.tensor_dtype(*dtype, generic_args.span),
                         self.build_refine_shape(shape),
@@ -4004,6 +4102,7 @@ impl<'a> TypeChecker<'a> {
                 dtype,
                 shape,
                 device: self.tensor_ctx.fresh_device(),
+                range,
             },
         ))));
         Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
@@ -4948,6 +5047,12 @@ enum TensorShapeRule {
     Softmax,
     Cast,
     ToDevice,
+    /// A value-range transition (Gate 7): identity shape/dtype, requires the
+    /// receiver to already be in `from`, and produces `to`.
+    RangeTransition {
+        from: crate::extensions::tensor::types::ValueRange,
+        to: crate::extensions::tensor::types::ValueRange,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -5298,6 +5403,32 @@ static TENSOR_OPS: &[TensorOpDescriptor] = &[
         TensorShapeRule::ToDevice,
         TensorResultRule::Tensor,
     ),
+    tensor_op!(
+        "scale_255",
+        1,
+        true,
+        TensorGenericSchema::None,
+        TensorDTypeRule::Preserve,
+        TensorDeviceRule::Preserve,
+        TensorShapeRule::RangeTransition {
+            from: crate::extensions::tensor::types::ValueRange::ByteRange,
+            to: crate::extensions::tensor::types::ValueRange::UnitRange,
+        },
+        TensorResultRule::Tensor,
+    ),
+    tensor_op!(
+        "normalize",
+        1,
+        true,
+        TensorGenericSchema::None,
+        TensorDTypeRule::Preserve,
+        TensorDeviceRule::Preserve,
+        TensorShapeRule::RangeTransition {
+            from: crate::extensions::tensor::types::ValueRange::UnitRange,
+            to: crate::extensions::tensor::types::ValueRange::Normalized,
+        },
+        TensorResultRule::Tensor,
+    ),
 ];
 
 /// Why an explicit `broadcast_to` failed: a rank mismatch, or a specific
@@ -5347,6 +5478,8 @@ impl TypeChecker<'_> {
             Builtin::TensorSoftmax => "softmax",
             Builtin::TensorCast => "cast",
             Builtin::TensorToDevice => "to_device",
+            Builtin::TensorScale255 => "scale_255",
+            Builtin::TensorNormalize => "normalize",
             _ => return Ty::Error,
         };
         self.check_tensor_op(op_name, None, turbofish, args, span)
@@ -5784,6 +5917,7 @@ impl TypeChecker<'_> {
                         dtype,
                         shape,
                         device: self.tensor_ctx.fresh_device(),
+                        range: crate::extensions::tensor::types::ValueRange::Unspecified,
                     },
                 ))))
             }
@@ -5849,6 +5983,7 @@ impl TypeChecker<'_> {
                         dtype,
                         shape: Shape::new(vec![dim_poly]),
                         device: self.tensor_ctx.fresh_device(),
+                        range: crate::extensions::tensor::types::ValueRange::Unspecified,
                     },
                 ))));
                 Ty::Core(CoreType::Result, vec![tensor, Ty::Error])
@@ -5932,11 +6067,32 @@ impl TypeChecker<'_> {
                             ta.dtype
                         };
 
+                        // Elementwise ops must not merge incompatible value-range
+                        // states. An `Unspecified` operand is neutral (a bare
+                        // constant); two different *specified* ranges are an error.
+                        let out_range = match self.combine_value_range(ta.range, tb.range) {
+                            Some(r) => r,
+                            None => {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        format!(
+                                            "`{}` cannot merge tensors with value ranges `{}` and `{}`",
+                                            descriptor.name, ta.range, tb.range
+                                        ),
+                                        span,
+                                    )
+                                    .with_code("E0212"),
+                                );
+                                return Ty::Error;
+                            }
+                        };
+
                         Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
                             TensorTy {
                                 dtype: out_dtype,
                                 shape: out_shape,
                                 device: ta.device,
+                                range: out_range,
                             },
                         ))))
                     }
@@ -6014,6 +6170,7 @@ impl TypeChecker<'_> {
                                 dtype: t.dtype,
                                 shape: target_shape,
                                 device: t.device,
+                                range: t.range,
                             },
                         ))))
                     }
@@ -6091,6 +6248,7 @@ impl TypeChecker<'_> {
                                     tb.shape.dims[1].clone(),
                                 ]),
                                 device: ta.device,
+                                range: ta.range,
                             },
                         ))))
                     }
@@ -6187,6 +6345,7 @@ impl TypeChecker<'_> {
                                     tb.shape.dims[2].clone(),
                                 ]),
                                 device: ta.device,
+                                range: ta.range,
                             },
                         ))))
                     }
@@ -6301,6 +6460,7 @@ impl TypeChecker<'_> {
                                 dtype: ta.dtype,
                                 shape: Shape::new(out_dims),
                                 device: ta.device,
+                                range: ta.range,
                             },
                         ))))
                     }
@@ -6383,6 +6543,7 @@ impl TypeChecker<'_> {
                                 dtype: t.dtype,
                                 shape: Shape::new(out_dims),
                                 device: t.device,
+                                range: t.range,
                             },
                         ))))
                     }
@@ -6468,6 +6629,7 @@ impl TypeChecker<'_> {
                                 dtype: t.dtype,
                                 shape: target_shape,
                                 device: t.device,
+                                range: t.range,
                             },
                         ))))
                     }
@@ -6585,6 +6747,7 @@ impl TypeChecker<'_> {
                                 dtype: t.dtype,
                                 shape: Shape::new(out_dims),
                                 device: t.device,
+                                range: t.range,
                             },
                         ))))
                     }
@@ -6658,6 +6821,7 @@ impl TypeChecker<'_> {
                                     dtype: out_dtype,
                                     shape: Shape::new(out_dims),
                                     device: t.device,
+                                    range: t.range,
                                 },
                             ))))
                         }
@@ -6677,6 +6841,7 @@ impl TypeChecker<'_> {
                             dtype: t.dtype,
                             shape: Shape::new(Vec::new()),
                             device: t.device,
+                            range: t.range,
                         }),
                     ))),
                     _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
@@ -6722,8 +6887,63 @@ impl TypeChecker<'_> {
                             dtype: target_dtype,
                             shape: t.shape.clone(),
                             device: t.device,
+                            range: t.range,
                         }),
                     ))),
+                    _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
+                }
+            }
+            TensorShapeRule::RangeTransition { from, to } => {
+                use crate::extensions::tensor::types::DType as TDType;
+                let Some(ka) = get_tensor_kind(&actual_ops[0]) else {
+                    self.diags
+                        .push(Diagnostic::error("receiver must be a tensor", span));
+                    return Ty::Error;
+                };
+                match &ka {
+                    TensorKind::Tensor(t) => {
+                        // The transition operations are defined on Float32 values.
+                        if !matches!(t.dtype, TDType::Float32 | TDType::Var(_)) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "`{}` requires a Float32 tensor, found {}",
+                                        descriptor.name,
+                                        t.dtype.name()
+                                    ),
+                                    span,
+                                )
+                                .with_code("E0212"),
+                            );
+                            return Ty::Error;
+                        }
+                        // The receiver must already carry the source value range.
+                        if t.range != from {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "`{}` requires a `{from}` tensor, found `{}`",
+                                        descriptor.name, t.range
+                                    ),
+                                    span,
+                                )
+                                .with_code("E0212")
+                                .with_note(format!(
+                                    "`{}` transitions the value range `{from}` -> `{to}`",
+                                    descriptor.name
+                                )),
+                            );
+                            return Ty::Error;
+                        }
+                        Ty::Extension(Box::new(ExtensionTy::Tensor(TensorKind::Tensor(
+                            TensorTy {
+                                dtype: t.dtype,
+                                shape: t.shape.clone(),
+                                device: t.device,
+                                range: to,
+                            },
+                        ))))
+                    }
                     _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
                 }
             }
@@ -6758,6 +6978,7 @@ impl TypeChecker<'_> {
                             dtype: t.dtype,
                             shape: t.shape.clone(),
                             device: target_device,
+                            range: t.range,
                         }),
                     ))),
                     _ => Ty::Extension(Box::new(ExtensionTy::Tensor(ka.clone()))),
@@ -6788,6 +7009,7 @@ impl TypeChecker<'_> {
                                     t.shape.dims[0].clone(),
                                 ]),
                                 device: t.device,
+                                range: t.range,
                             },
                         ))))
                     }

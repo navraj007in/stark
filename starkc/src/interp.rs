@@ -983,6 +983,8 @@ impl<'a> Interpreter<'a> {
             | Builtin::TensorSum
             | Builtin::TensorSoftmax
             | Builtin::TensorCast
+            | Builtin::TensorScale255
+            | Builtin::TensorNormalize
             | Builtin::TensorToDevice => Err(RuntimeError::new(
                 "tensor operations are not supported in the Core interpreter",
                 span,

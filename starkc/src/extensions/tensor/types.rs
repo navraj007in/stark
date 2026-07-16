@@ -124,12 +124,50 @@ impl fmt::Display for Shape {
     }
 }
 
-/// A statically-shaped tensor type `Tensor<T, S, device = D>`.
+/// A statically-tracked image value-range: the semantic tensor property Gate 7
+/// adds on top of shape/dtype/device (`Tensor<T, S, range = R>`). It is a
+/// compile-time property only — transitions are made by named operations
+/// (`scale_255`, `normalize`) and the marker does not survive into generated
+/// code. `Unspecified` is the default (no claim) and never widens: a ranged
+/// value cannot be silently laundered into `Unspecified`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ValueRange {
+    /// No value-range claim (the default for tensors without a `range =` arg).
+    #[default]
+    Unspecified,
+    /// Integer image values conceptually in `[0, 255]`.
+    ByteRange,
+    /// Floating-point values conceptually in `[0, 1]`.
+    UnitRange,
+    /// Channel-wise mean/std normalised values.
+    Normalized,
+}
+
+impl ValueRange {
+    /// The source-level name, as written in a `range = ...` annotation.
+    pub fn name(self) -> &'static str {
+        match self {
+            ValueRange::Unspecified => "Unspecified",
+            ValueRange::ByteRange => "ByteRange",
+            ValueRange::UnitRange => "UnitRange",
+            ValueRange::Normalized => "Normalized",
+        }
+    }
+}
+
+impl fmt::Display for ValueRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A statically-shaped tensor type `Tensor<T, S, device = D, range = R>`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TensorTy {
     pub dtype: DType,
     pub shape: Shape,
     pub device: Device,
+    pub range: ValueRange,
 }
 
 /// The three tensor forms (§4.2, §4.3). `TensorDyn`/`TensorAny` are the
@@ -159,6 +197,9 @@ impl fmt::Display for TensorKind {
                 match t.device {
                     Device::Var(_) => {}
                     dev => write!(f, ", device = {dev}")?,
+                }
+                if t.range != ValueRange::Unspecified {
+                    write!(f, ", range = {}", t.range)?;
                 }
                 f.write_str(">")
             }
@@ -217,6 +258,13 @@ pub enum UnifyError {
     DeviceMismatch {
         expected: Device,
         found: Device,
+    },
+    /// Value-range (semantic) mismatch: two tensors carry incompatible
+    /// image value-range states (Gate 7). A ranged value never widens to
+    /// `Unspecified`, so an accidental erase surfaces here too.
+    RangeMismatch {
+        expected: ValueRange,
+        found: ValueRange,
     },
     /// A dimension arithmetic overflow surfaced during unification.
     Arithmetic,
@@ -498,7 +546,14 @@ impl UnifyCtx {
                 b.shape.spans.get(axis).copied(),
             )?;
         }
-        self.unify_device(a.device, b.device)
+        self.unify_device(a.device, b.device)?;
+        if a.range != b.range {
+            return Err(UnifyError::RangeMismatch {
+                expected: a.range,
+                found: b.range,
+            });
+        }
+        Ok(())
     }
 
     /// Render a tensor type for diagnostics, resolving bound variables through
@@ -511,11 +566,16 @@ impl UnifyCtx {
                     Device::Var(_) => String::new(),
                     d => format!(", device = {d}"),
                 };
+                let range = match t.range {
+                    ValueRange::Unspecified => String::new(),
+                    r => format!(", range = {r}"),
+                };
                 format!(
-                    "Tensor<{}, {}{}>",
+                    "Tensor<{}, {}{}{}>",
                     self.resolve_dtype(t.dtype).name(),
                     self.display_shape(&t.shape),
-                    device
+                    device,
+                    range
                 )
             }
             TensorKind::TensorDyn(d) => format!("TensorDyn<{}>", d.name()),
@@ -671,6 +731,7 @@ impl UnifyCtx {
                     dtype: fresh_dtype(self, tensor.dtype, dtypes),
                     shape: Shape::with_spans(fresh_dims, tensor.shape.spans.clone()),
                     device,
+                    range: tensor.range,
                 }))
             }
             TensorKind::TensorDyn(dtype) => {
@@ -716,11 +777,13 @@ mod tests {
             dtype: DType::Float32,
             shape: Shape::new(vec![lit(4)]),
             device: ctx.fresh_device(),
+            range: ValueRange::Unspecified,
         };
         let b = TensorTy {
             dtype: DType::Float16,
             shape: Shape::new(vec![lit(4)]),
             device: ctx.fresh_device(),
+            range: ValueRange::Unspecified,
         };
         assert!(matches!(
             ctx.unify_tensor(&a, &b),
@@ -735,11 +798,13 @@ mod tests {
             dtype: DType::Float32,
             shape: Shape::new(vec![lit(4), lit(4)]),
             device: ctx.fresh_device(),
+            range: ValueRange::Unspecified,
         };
         let b = TensorTy {
             dtype: DType::Float32,
             shape: Shape::new(vec![lit(4)]),
             device: ctx.fresh_device(),
+            range: ValueRange::Unspecified,
         };
         assert!(matches!(
             ctx.unify_tensor(&a, &b),
@@ -849,11 +914,13 @@ mod tests {
             dtype: DType::Float32,
             shape: Shape::new(vec![Poly::var(bvar), Poly::var(hvar)]),
             device: ctx.fresh_device(),
+            range: ValueRange::Unspecified,
         };
         let b = TensorTy {
             dtype: DType::Float32,
             shape: Shape::new(vec![lit(4), lit(8)]),
             device: ctx.fresh_device(),
+            range: ValueRange::Unspecified,
         };
         ctx.unify_tensor(&a, &b).unwrap();
         assert_eq!(
@@ -885,6 +952,7 @@ mod tests {
             dtype: DType::Float32,
             shape: Shape::new(vec![lit(1)]),
             device: Device::Cpu,
+            range: ValueRange::Unspecified,
         });
         assert!(!t.is_copy());
         assert!(!TensorKind::TensorAny.is_copy());
@@ -897,6 +965,7 @@ mod tests {
             dtype: DType::Float32,
             shape: Shape::new(vec![lit(1024), lit(768)]),
             device: Device::Cpu,
+            range: ValueRange::Unspecified,
         });
         assert_eq!(t.to_string(), "Tensor<Float32, [1024, 768], device = Cpu>");
     }
