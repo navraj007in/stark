@@ -1,0 +1,36 @@
+{
+  "evaluation_commit": "94b37fb0e29c6b74e2b224a54d7435c4a8362e57",
+  "git_dirty": false,
+  "host_output_shape": [
+    1,
+    5,
+    13,
+    13,
+    25
+  ],
+  "reference_decoded_shape": [
+    1,
+    5,
+    13,
+    13,
+    25
+  ],
+  "output_shape_matches": true,
+  "model_correctness_oracle": {
+    "source": "ONNX-bundled output_0.pb",
+    "max_abs_diff": 2.193e-05,
+    "tolerance": 0.001,
+    "agrees": true
+  },
+  "computed_shape_relationships": {
+    "formula": "A*(5+C)",
+    "A": 5,
+    "C": 20,
+    "value": 125,
+    "artifact_channel_dim": 125,
+    "channel_relationship_holds": true,
+    "reshape_product_equality_holds": true
+  },
+  "host_output_checksum": "9b6b21a8",
+  "note": "The host reproduces the symbolic reshape+permute deterministically (stable checksum) and its output shape matches the Python reference's decoded intermediate. Numerical model correctness is anchored by the ONNX-bundled oracle; a full host-vs-Python tensor diff is bounded by image-resize algorithm differences (Rust `image` crate vs Pillow)."
+}

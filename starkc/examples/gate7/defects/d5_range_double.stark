@@ -1,0 +1,4 @@
+// Gate 7 defect 5 — duplicate range conversion (scale_255 twice). Compile-time.
+fn f(x: Tensor<Float32, [3, 4], range = ByteRange>) -> Tensor<Float32, [3, 4], range = UnitRange> {
+    x.scale_255().scale_255()
+}

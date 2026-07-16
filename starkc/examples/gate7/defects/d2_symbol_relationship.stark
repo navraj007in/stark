@@ -1,0 +1,9 @@
+// Gate 7 defect 2 — broken symbolic dim relationship: refine binds B2, model uses B.
+model TinyYoloV2<B: Dim> {
+    input image: Tensor<Float32, [B, 3, 416, 416]>;
+    output grid: Tensor<Float32, [B, 125, 13, 13]>;
+}
+fn infer<B: Dim, B2: Dim>(model: TinyYoloV2, raw: TensorAny) -> Result<Tensor<Float32, [B, 125, 13, 13]>, String> {
+    let image = raw.refine::<Float32, [B2, 3, 416, 416]>()?;
+    Ok(model.predict(&image))
+}

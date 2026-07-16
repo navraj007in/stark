@@ -1,0 +1,9 @@
+// Gate 7 defect 4 — missing range conversion (omit normalize). Compile-time (value-range).
+model NormNet<B: Dim> {
+    input data: Tensor<Float32, [B, 3, 4, 4], range = Normalized>;
+    output logits: Tensor<Float32, [B, 10]>;
+}
+fn infer<B: Dim>(model: NormNet, raw: TensorAny) -> Result<Tensor<Float32, [B, 10]>, String> {
+    let bytes = raw.refine::<UInt8, [B, 3, 4, 4], range = ByteRange>()?;
+    Ok(model.predict(&bytes.cast::<Float32>().scale_255()))
+}

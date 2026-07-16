@@ -1,0 +1,12 @@
+// Gate 7 defect 1 — incorrect reshape product (5*26=130 != 125). Compile-time.
+model TinyYoloV2<B: Dim> {
+    input image: Tensor<Float32, [B, 3, 416, 416]>;
+    output grid: Tensor<Float32, [B, 125, 13, 13]>;
+}
+fn decode<B: Dim>(grid: Tensor<Float32, [B, 125, 13, 13]>) -> Tensor<Float32, [B, 5, 13, 13, 26]> {
+    grid.reshape::<[B, 5, 26, 13, 13]>().permute::<[0, 1, 3, 4, 2]>()
+}
+fn infer<B: Dim>(model: TinyYoloV2, raw: TensorAny) -> Result<Tensor<Float32, [B, 5, 13, 13, 26]>, String> {
+    let image = raw.refine::<Float32, [B, 3, 416, 416]>()?;
+    Ok(decode(model.predict(&image)))
+}
