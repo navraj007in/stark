@@ -1,19 +1,19 @@
 {
   "entry": "infer",
   "pipeline": "examples/gate7/valid_pipeline.stark",
-  "deploy_ms": 7850.0,
-  "host_build_ms": 82978.6,
-  "binary_size_bytes": 24756416,
+  "deploy_ms": 902.7,
+  "host_build_ms": 15135.5,
+  "binary_size_bytes": 24774592,
   "model_size_bytes": 63480982,
-  "total_bundle_size_bytes": 88237398,
-  "startup_ms": 474.168,
+  "total_bundle_size_bytes": 88255574,
+  "startup_ms": 184.209,
   "inference_ms": {
     "iterations": 100,
-    "min": 34.117,
-    "median": 49.946,
-    "p95": 187.341
+    "min": 12.375,
+    "median": 14.25,
+    "p95": 22.661
   },
-  "peak_rss_bytes": 420184064,
+  "peak_rss_bytes": 440418304,
   "result": {
     "dtype": "Float32",
     "shape": [
