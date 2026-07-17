@@ -179,13 +179,17 @@ now carries the session's `LanguageOptions`, read once from `initialize`'s
 `initializationOptions.extensions` and reused for every subsequent parse.
 See `WP8_4_VSCODE_EXTENSION_IMPLEMENTATION.md` for the verification.
 
-### `stark.generateDocs` not built — WP8.5 doesn't exist yet
+### `stark.generateDocs` not built — was blocked on WP8.5, now just not done yet
 
-The plan lists a `stark.generateDocs` command under WP8.4, but it's a
-thin wrapper around `starkc doc` (WP8.5, Documentation Generator), which
-hasn't been implemented. Adding a command that fails with "unknown
-subcommand" on every invocation would be worse than the command not
-existing; deferred to whenever WP8.5 ships.
+The plan lists a `stark.generateDocs` command under WP8.4; at the time it
+was a thin wrapper around a command that didn't exist yet (WP8.5,
+Documentation Generator, hadn't shipped). **Update (WP8.5):** `stark doc`
+is now real and tested. The VS Code command still isn't wired up — no
+longer blocked on anything, just an unclaimed follow-up (mirror
+`formatCurrentFile`'s spawn-and-report-to-a-channel pattern in
+`commands.ts`/`extension.ts`). See
+`WP8_4_VSCODE_EXTENSION_IMPLEMENTATION.md`'s "Deliberately not built"
+section.
 
 ### VS Code UI behavior not interactively verified
 
@@ -201,4 +205,33 @@ environment is available.
 
 ---
 
-*(Add further entries above this line as Phase 8 continues — WP8.5+.)*
+## WP8.5 — Documentation Generator
+
+### Doc comments have no AST/HIR storage — same root cause as WP8.2, confirmed again
+
+As anticipated in WP8.2's entry above: `///` doc comments aren't attached
+to items anywhere queryable in the AST/HIR. `stark doc` extracts them the
+same way the formatter does — `lexer::tokenize_with_comments`'s trivia,
+re-associated with item spans by source position — rather than adding
+grammar support. See `WP8_5_DOC_GENERATOR_IMPLEMENTATION.md` for the
+extraction details.
+
+### Doc examples must be compile-*and-run* checked, not just compile-checked
+
+Found while implementing example validation: the plan's own reference doc
+example (`assert_eq(add(2, 3), 5);`) is a *runtime* assertion.
+`assert_eq(add(2, 2), 999)` parses, resolves, and typechecks perfectly
+fine (`assert_eq<T>` is generic; both sides are `Int32`) — it only fails
+when actually *executed*, matching `cargo test --doc` semantics rather
+than `cargo doc`'s compile-only check. An initial implementation stopped
+after typecheck and silently accepted a doc example whose assertion would
+always fail at runtime. Fixed by reusing `interp::run_item` (built in
+WP8.3) to actually execute each example. Worth remembering for any future
+"does this code compile" tooling built against doc comments or similar
+snippets: for STARK specifically, "compiles" and "does what the assertion
+in it claims" are different questions, since `assert`/`assert_eq` are
+runtime traps, not a static check.
+
+---
+
+*(Add further entries above this line as Phase 8 continues — WP8.6+.)*

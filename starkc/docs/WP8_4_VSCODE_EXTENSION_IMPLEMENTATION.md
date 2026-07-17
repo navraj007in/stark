@@ -92,10 +92,15 @@ issue, not a functional bug, left for a future pass.
 
 ## Deliberately not built
 
-- **`stark.generateDocs`** — the plan lists it, but WP8.5 (Documentation
-  Generator) doesn't exist yet; `starkc doc` isn't a real command. Adding
-  a menu entry that fails with "unknown command" would be worse than not
-  having it — added when WP8.5 ships.
+- **`stark.generateDocs`** — the plan lists it. At the time this WP
+  shipped, WP8.5 (Documentation Generator) didn't exist yet and `stark
+  doc` wasn't a real command, so adding a menu entry that always failed
+  with "unknown command" would have been worse than not having it.
+  **Update:** WP8.5 has since shipped (`stark doc [--open] [--output
+  <dir>]` is real) — this command is still not wired into the VS Code
+  extension; it's a small, self-contained follow-up (mirror
+  `formatCurrentFile`'s pattern: spawn `stark doc` via `packagePath`,
+  report output to a channel) whenever someone picks it up.
 - **Custom keybindings for hover/go-to-definition/find-references** — the
   plan lists `F12`/`Shift+F12`/`Ctrl+K Ctrl+I`, but these are already VS
   Code's own default keybindings for those exact editor commands; once
@@ -130,6 +135,6 @@ issue, not a functional bug, left for a future pass.
 
 Real interactive testing (install the packaged `.vsix`, or run the
 Extension Development Host) is the natural next step whenever a VS
-Code-capable environment is available. WP8.5 (Documentation Generator)
-will want to come back and add `stark.generateDocs` once `starkc doc`
-exists.
+Code-capable environment is available. Wiring `stark.generateDocs` to the
+now-real `stark doc` (WP8.5) is a small, self-contained follow-up — see
+above.

@@ -14,6 +14,7 @@ pub mod ast_dump;
 pub mod borrowck;
 pub mod deploy;
 pub mod diag;
+pub mod doc_gen;
 pub mod extensions;
 pub mod flow;
 pub mod formatter;

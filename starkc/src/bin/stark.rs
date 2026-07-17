@@ -30,6 +30,10 @@ Usage:
                                  Format the current package, or a single file.
                                  --check reports non-canonical files without
                                  modifying them (exit 1 if any differ).
+  stark doc [--open] [--output <dir>]
+                                 Generate API documentation for the current
+                                 package's public items into <dir> (default:
+                                 docs/). --open opens index.html afterward.
   stark --help                  Show this help.
 ";
 
@@ -54,6 +58,10 @@ fn main() -> ExitCode {
 
     if cmd == "test" {
         return cmd_test(&args[1..]);
+    }
+
+    if cmd == "doc" {
+        return cmd_doc(&args[1..]);
     }
 
     if cmd != "check" && cmd != "build" && cmd != "run" {
@@ -533,4 +541,159 @@ fn run_standalone_program(path: &Path, options: LanguageOptions) -> Result<(), S
     starkc::interp::run(&hir, file, &checked.tables)
         .map(|_| ())
         .map_err(|e| e.message)
+}
+
+fn cmd_doc(args: &[String]) -> ExitCode {
+    let mut open = false;
+    let mut output: Option<String> = None;
+    let mut arguments = args.iter();
+    while let Some(arg) = arguments.next() {
+        match arg.as_str() {
+            "--open" => open = true,
+            "--output" if output.is_none() => match arguments.next() {
+                Some(value) => output = Some(value.clone()),
+                None => {
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            },
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let current_dir = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("Error: failed to get current working directory: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let manifest_path = match find_package_root(&current_dir) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let package_root = manifest_path
+        .parent()
+        .expect("manifest path has a parent directory")
+        .to_path_buf();
+
+    let graph = match PackageGraph::load_from_root_with_modes(&manifest_path, false, false) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let package_name = graph.root_package_name.clone();
+
+    let mut files = Vec::new();
+    collect_stark_files(&package_root, &mut files);
+    files.sort();
+    if files.is_empty() {
+        eprintln!(
+            "Error: no `.stark` files found under {}",
+            package_root.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let options = LanguageOptions::CORE;
+    let mut all_items = Vec::new();
+    let mut all_failed_examples: Vec<(String, String)> = Vec::new();
+    let mut had_errors = false;
+    for file_path in &files {
+        let src = match std::fs::read_to_string(file_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: cannot read '{}': {}", file_path.display(), e);
+                had_errors = true;
+                continue;
+            }
+        };
+        let source = SourceFile::new(file_path.to_string_lossy().into_owned(), src.clone());
+        let (ast, diagnostics) = parse_with_options(&source, ParseMode::Program, options);
+        if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+            for diag in &diagnostics {
+                eprint!("{}", diag.render(&source));
+            }
+            eprintln!("Error: {}: parse failed", file_path.display());
+            had_errors = true;
+            continue;
+        }
+        let (_, comments, _) = starkc::lexer::tokenize_with_comments(&source);
+        let items = starkc::doc_gen::extract::extract(&ast, &source, &comments);
+        // Validate this file's examples with its own source in scope: an
+        // example commonly calls the very item it documents (the plan's
+        // own `assert_eq(add(2, 3), 5)` on `fn add`), so it must see that
+        // file's other definitions, not compile in isolation.
+        let examples = starkc::doc_gen::extract::collect_examples(&items);
+        all_failed_examples.extend(starkc::doc_gen::validate_examples(&examples, &src));
+        all_items.extend(items);
+    }
+    if had_errors {
+        eprintln!("Error: doc generation aborted: one or more files failed to parse");
+        return ExitCode::FAILURE;
+    }
+
+    let output_dir = package_root.join(output.unwrap_or_else(|| "docs".to_string()));
+    let items_documented =
+        match starkc::doc_gen::generate_from_items(&all_items, &package_name, &output_dir) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("Error: failed to write documentation site: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+
+    println!(
+        "{}: generated docs for {} item(s) into {}",
+        package_name,
+        items_documented,
+        output_dir.display()
+    );
+
+    if !all_failed_examples.is_empty() {
+        eprintln!(
+            "Error: {} doc example(s) failed:",
+            all_failed_examples.len()
+        );
+        for (owner, message) in &all_failed_examples {
+            eprintln!("  {owner}: {message}");
+        }
+        return ExitCode::FAILURE;
+    }
+
+    if open {
+        let index_path = output_dir.join("index.html");
+        if let Err(e) = open_in_browser(&index_path) {
+            eprintln!("Warning: could not open browser: {e}");
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn open_in_browser(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).status()?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(path).status()?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(path)
+            .status()?;
+    }
+    Ok(())
 }
