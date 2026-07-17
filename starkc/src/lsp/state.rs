@@ -3,6 +3,7 @@
 use crate::ast::Ast;
 use crate::diag::Diagnostic as StarkDiagnostic;
 use crate::hir::Hir;
+use crate::options::LanguageOptions;
 use crate::typecheck::TypeTables;
 use std::collections::HashMap;
 
@@ -11,6 +12,13 @@ pub struct ServerState {
     pub root_uri: Option<String>,
     pub open_documents: HashMap<String, OpenDocument>,
     pub compilation_cache: HashMap<String, CompilationResult>,
+    /// Which language extensions (e.g. `tensor`) every subsequent parse
+    /// should enable — set once from `initialize`'s `initializationOptions`
+    /// (`{"extensions": ["tensor"]}`, matching the CLI's `--extension`
+    /// flag naming) and held for the life of the session, mirroring how
+    /// `starkc check`/`stark fmt` take extensions as a fixed input rather
+    /// than something that varies per request.
+    pub options: LanguageOptions,
 }
 
 /// Open document with version tracking.
@@ -39,6 +47,7 @@ impl ServerState {
             root_uri: None,
             open_documents: HashMap::new(),
             compilation_cache: HashMap::new(),
+            options: LanguageOptions::CORE,
         }
     }
 

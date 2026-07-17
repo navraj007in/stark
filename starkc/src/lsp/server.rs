@@ -1,6 +1,5 @@
 //! LSP server implementation with message routing and document synchronization.
 
-use crate::options::LanguageOptions;
 use crate::parser::{parse_with_options, ParseMode};
 use crate::resolve::resolve_with_options;
 use crate::source::SourceFile;
@@ -144,6 +143,24 @@ impl Server {
             self.state.set_root_uri(root_uri.to_string());
         }
 
+        // `initializationOptions: { "extensions": ["tensor"] }` — matches
+        // the CLI's `--extension` flag naming. Unknown names are ignored
+        // rather than rejected: a stale/misconfigured client option
+        // shouldn't prevent the server from starting.
+        if let Some(extensions) = params
+            .get("initializationOptions")
+            .and_then(|v| v.get("extensions"))
+            .and_then(|v| v.as_array())
+        {
+            let names: Vec<String> = extensions
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            if let Ok(options) = crate::options::options_from_extension_flags(&names) {
+                self.state.options = options;
+            }
+        }
+
         let mut capabilities = HashMap::new();
         capabilities.insert("textDocumentSync".to_string(), JsonValue::Number(1.0)); // Full
         capabilities.insert("hoverProvider".to_string(), JsonValue::Bool(true));
@@ -242,11 +259,10 @@ impl Server {
     fn compile_document(&mut self, uri: &str) {
         if let Some(doc) = self.state.get_document(uri).map(|d| d.clone()) {
             let source = SourceFile::new(uri, doc.text.clone());
-            let options = LanguageOptions::default();
+            let options = self.state.options;
 
             // Parse
-            let (ast, mut diagnostics) =
-                parse_with_options(&source, ParseMode::Program, options.clone());
+            let (ast, mut diagnostics) = parse_with_options(&source, ParseMode::Program, options);
 
             let mut type_tables = None;
 
@@ -256,8 +272,7 @@ impl Server {
                 .all(|d| d.severity != crate::diag::Severity::Error)
             {
                 let source_arc = Arc::new(source);
-                let (hir, resolve_diags) =
-                    resolve_with_options(&ast, source_arc.clone(), options.clone());
+                let (hir, resolve_diags) = resolve_with_options(&ast, source_arc.clone(), options);
                 diagnostics.extend(resolve_diags);
 
                 // Try to typecheck if no resolve errors
@@ -396,9 +411,7 @@ impl Server {
             if let Some(doc) = self.state.get_document(uri) {
                 let text = doc.text.clone();
                 let source = SourceFile::new(uri, text.clone());
-                if let Ok(formatted) =
-                    crate::formatter::format_file(&source, LanguageOptions::default())
-                {
+                if let Ok(formatted) = crate::formatter::format_file(&source, self.state.options) {
                     let (end_line, end_col) = source.line_col(text.len() as u32);
                     let mut range = HashMap::new();
                     range.insert("start".to_string(), lsp_position(0, 0));
