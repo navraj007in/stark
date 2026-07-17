@@ -1,5 +1,6 @@
 use starkc::ast_dump;
 use starkc::lexer::tokenize;
+use starkc::lsp;
 use starkc::options::{options_from_extension_flags, LanguageOptions};
 use starkc::parser::{parse_with_options, ParseMode};
 use starkc::source::SourceFile;
@@ -20,6 +21,7 @@ Usage:
                               --extension <name> enables an optional language
                               extension (Gate 4+): tensor.
   starkc lex <file.stark>     Dump the token stream (debugging aid)
+  starkc lsp                  Start LSP server on stdio (for editor integration)
   starkc import <model.onnx> --out <model.stark> [--force]
                               Generate a deterministic STARK model declaration.
   starkc verify <model.onnx> --declaration <model.stark> [--model <Name>] [--message-format <text|json>]
@@ -188,6 +190,7 @@ fn main() -> ExitCode {
             cmd_run(&p, options)
         }
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
+        Some((cmd, [])) if cmd == "lsp" => cmd_lsp(),
         Some((flag, [])) if flag == "--help" || flag == "-h" => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -684,6 +687,16 @@ fn find_first_model_name(source: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn cmd_lsp() -> ExitCode {
+    match lsp::run() {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("Error: LSP server error: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn cmd_run(path: &str, options: LanguageOptions) -> ExitCode {
