@@ -1,13 +1,15 @@
 # STARK Compiler Roadmap
 
-Extracted from `STARKLANG/docs/STARK-Compiler-Build-Brief-Revised-Sonnet.md` (source of truth
-for meaning). Gates and work packages, dependencies, exit criteria, and conditional tracks.
-Standing rules, escalation IDs, and the not-yet list live in `COMPILER-CHARTER.md`. Current
-position and evidence live in `COMPILER-STATE.md` (repo root).
+Extracted from `STARKLANG/docs/STARK-Compiler-Build-Brief-Revised-Sonnet(1).md` ("Native
+Compiler Required" edition — supersedes the original `STARK-Compiler-Build-Brief-Revised-Sonnet.md`;
+see `COMPILER-STATE.md` CD-004) for meaning. Gates and work packages, dependencies, exit
+criteria, and conditional tracks. Standing rules, escalation IDs, and the not-yet list live in
+`COMPILER-CHARTER.md`. Current position and evidence live in `COMPILER-STATE.md` (repo root).
 
-Load this full file only when closing a gate, selecting a conditional track, resolving a
-roadmap-level contradiction, or reviewing a proposed change to Core semantics. Routine sessions
-should load `COMPILER-CHARTER.md` + `COMPILER-STATE.md` + the active WP file only.
+Load this full file only when closing a gate, selecting an optional track or backend tier,
+resolving a roadmap-level contradiction, or reviewing a proposed change to Core semantics.
+Routine sessions should load `COMPILER-CHARTER.md` + `COMPILER-STATE.md` + the active WP file
+only.
 
 > **Relationship to the pre-existing (non-"C") gate track.** This repository already closed a
 > different, unrelated gate sequence — `starkc/docs/gate1-exit.md` through `gate7-decision.md`
@@ -18,6 +20,12 @@ should load `COMPILER-CHARTER.md` + `COMPILER-STATE.md` + the active WP file onl
 > below (`C0`-`C10`) are a **new, independent numbering** introduced by this roadmap; they are
 > not a renumbering of the old track and do not re-open old Gate 1-5 work from zero. Gate C0's
 > job is precisely to establish how the old track's evidence maps onto the new gates.
+>
+> **CD-004 update:** the old Gate 6/7 track's REVISE / RETAIN-AS-RESEARCH-LANGUAGE verdicts
+> concerned tensor/ONNX artifact deployment specifically, and — per `COMPILER-CHARTER.md` §1.2
+> — do **not** license deferring or skipping the general native Core compiler this roadmap now
+> makes mandatory. Gate C3 below reflects that: it selects a backend *architecture*, it does not
+> re-litigate whether native compilation happens at all.
 
 ---
 
@@ -458,16 +466,17 @@ C2 closes when:
 
 ---
 
-## GATE C3 — Compiled-Language Decision Spike
+## GATE C3 — Native Compiler Architecture and Backend Selection Spike
 
-*Outcome: an evidence-backed GO, REVISE, DEFER, or STOP decision on general native Core
-compilation before committing to MIR and a production backend.*
+*Outcome: select and de-risk the architecture that will implement mandatory MIR-to-native Core
+compilation.*
 
-*This gate is intentionally small relative to a real backend.*
+*This gate chooses how STARK will compile natively; it does not decide whether STARK receives a
+native compiler.*
 
-### WP-C3.1 — Decision hypothesis and workload freeze
+### WP-C3.1 — Architecture hypothesis and workload freeze
 
-Write `STARKLANG/docs/compiler/proposals/NATIVE-CORE-DECISION.md`.
+Write `STARKLANG/docs/compiler/proposals/NATIVE-CORE-ARCHITECTURE.md`.
 Freeze a representative workload set containing at least:
 
 1. scalar arithmetic and branches;
@@ -486,28 +495,31 @@ Define measurements:
 - executable size;
 - startup time;
 - runtime performance;
-- debug/stack-trace feasibility;
+- source mapping and debug/stack-trace feasibility;
 - cross-platform effort;
 - semantic parity risk;
-- external dependency and maintenance burden.
+- external dependency and maintenance burden;
+- compatibility with the mandatory MIR and runtime ABI goals.
 
-The comparator is the existing interpreter plus any existing generated-host deployment path, not
-"no execution."
+The semantic comparator is the existing interpreter.
+The architecture comparator is not "no native compiler"; it is the strongest practical
+candidate implementation paths.
 
-### WP-C3.2 — Generated Rust/C bootstrap spike
+### WP-C3.2 — Generated Rust/C backend spike
 
-Implement a throwaway or isolated prototype for the frozen subset using generated Rust or C.
-It may use a small runtime library.
-It must not become the production architecture by default.
+Implement an isolated prototype for the frozen subset using generated Rust or C.
+It may use a small runtime library and host toolchain.
+It must not bypass type, ownership, or artifact checks already completed by the front end.
 
 Record:
 
 - unsupported constructs;
 - source-to-generated-code traceability;
-- build tool dependency;
+- build tool dependencies;
 - cross-platform behaviour;
 - semantic mismatches;
-- amount of glue per language feature.
+- amount of glue per language feature;
+- feasibility of consuming verified MIR rather than typed HIR directly.
 
 ### WP-C3.3 — Direct backend spike
 
@@ -515,9 +527,9 @@ Implement the same frozen subset using the strongest plausible simple direct bac
 to be Cranelift unless CE5 changes the candidate.
 Do not implement advanced optimisation.
 
-Record the same measurements and unsupported constructs.
+Record the same measurements and unsupported constructs as WP-C3.2.
 
-### WP-C3.4 — Architecture comparison and decision
+### WP-C3.4 — Backend and runtime architecture selection
 
 Compare:
 
@@ -527,24 +539,33 @@ generated Rust/C spike
 direct backend spike
 ```
 
-Decision rules:
+Allowed gate outcomes:
 
-- **GO:** one path shows a credible route to standalone Core programs with manageable semantic
-  and maintenance cost.
-- **REVISE:** value exists, but the workload or architecture needs one bounded follow-up spike.
-- **DEFER:** native compilation is technically viable but not currently worth the effort relative
-  to research priorities.
-- **STOP:** the full-language native path provides insufficient value or unacceptable
-  complexity; retain interpreter plus specialised deployment backends.
+- **SELECT-GENERATED:** generated Rust/C is the initial production backend behind verified MIR.
+- **SELECT-DIRECT:** the direct backend is the initial production backend behind verified MIR.
+- **REVISE:** neither spike is yet sufficient, but one specific bounded follow-up can resolve
+  the blocker. The gate stays open.
+- **BLOCKED:** no credible implementation path has been demonstrated. Escalate to the owner; C4
+  does not open and the compiler roadmap is not complete.
 
-A GO decision must select the production backend strategy under CE5 owner review.
-A DEFER or STOP decision is not failure and blocks Gates C4-C7 until explicitly revisited.
+The gate may reject either candidate without rejecting native compilation itself.
+A selected architecture must specify:
+
+- MIR consumption boundary;
+- runtime ownership and ABI direction;
+- target-platform plan;
+- debug/source mapping approach;
+- unsupported MVP features and closure plan;
+- why the rejected candidate is not the initial production path.
+
+CE5 owner review records the selected production backend strategy.
+An interpreter-only release is not an allowed C3 completion outcome.
 
 ---
 
 ## GATE C4 — MIR Contract and Verified Lowering
 
-*Conditional: opens only after Gate C3 records GO.*
+*Mandatory: opens after Gate C3 selects a backend architecture.*
 
 *Outcome: a backend-independent, validated representation of Core execution semantics.*
 
@@ -629,18 +650,22 @@ Add:
 
 ### WP-C4.6 — Gate exit
 
-C4 closes when the full Core conformance execution corpus either:
+C4 closes only when:
 
-- runs equivalently through HIR and MIR interpreters; or
-- lists bounded unsupported features that block opening C5.
+- the Core execution corpus lowered in this gate runs equivalently through HIR and MIR
+  interpreters;
+- every normative Core construct required by C5 has verified MIR lowering;
+- any remaining unsupported normative construct is recorded as a gate blocker rather than being
+  carried forward silently.
 
+If a blocker remains, C4 stays open.
 No native backend work may bypass MIR validation.
 
 ---
 
 ## GATE C5 — Native Core Backend MVP
 
-*Conditional on C4.*
+*Mandatory after C4.*
 
 *Outcome: one normal multi-file, multi-package Core application builds into a standalone
 executable.*
@@ -1155,8 +1180,8 @@ Requires:
 
 ## GATE C10 — Compiler Release Qualification
 
-*Outcome: a precise, evidence-backed release statement—not necessarily a claim that every
-optional track is complete.*
+*Outcome: a precise, evidence-backed compiler release statement with mandatory native Core
+compilation; optional extension tracks may remain scoped or deferred.*
 
 ### WP-C10.1 — Full conformance dashboard
 
@@ -1166,7 +1191,7 @@ Generate a dashboard covering:
 - type and semantic rules;
 - memory/ownership rules;
 - interpreter execution rules;
-- native execution rules if C3-C7 completed;
+- native execution rules from the mandatory C3–C7 path;
 - extension isolation;
 - tensor extension rules and backend capabilities;
 - listed deviations;
@@ -1180,7 +1205,7 @@ Add or expand:
 - malformed source corpus;
 - resolver graph fuzzing;
 - type-checker and borrow-checker generated cases;
-- MIR verifier fuzzing if MIR exists;
+- MIR verifier fuzzing;
 - malformed artifact corpus;
 - malformed diagnostic/protocol inputs;
 - timeout and memory limits for hostile inputs.
@@ -1192,8 +1217,8 @@ random programs are semantically meaningful.
 
 Run:
 
-- HIR versus MIR interpreter if MIR exists;
-- interpreter versus native backend if native exists;
+- HIR versus MIR interpreter;
+- interpreter versus native backend;
 - debug versus release;
 - repeated clean builds;
 - equivalent source transformations;
@@ -1243,11 +1268,16 @@ Performance regression thresholds may be added only after stable baselines exist
 
 ### WP-C10.7 — Release decision
 
+A compiler-track completion release requires C0–C8 and the mandatory native path C3–C7 to be
+closed. A build without the native Core backend may be published only as an internal snapshot,
+research preview, or explicitly incomplete pre-release; it is not the end state of this
+roadmap.
+
 The release statement must choose one precise form, for example:
 
 ```text
-STARK Core v1 front end and interpreter: conforming
-General native Core backend: experimental, listed deviations X/Y
+STARK Core v1 front end, interpreter, MIR, and native backend: conforming for the listed platform matrix
+General native Core backend: production MVP, listed deviations X/Y
 Tensor extension v0.1 frontend and verifier: conforming for listed scope
 Tensor backend execution: capability-limited; see matrix
 ```
@@ -1271,40 +1301,34 @@ unless CE8 review confirms the evidence supports it.
 
 # 4. Dependency and sequencing map
 
-## 4.1 Mandatory correctness path
+## 4.1 Mandatory compiler completion path
 
 ```text
 C0 Current-state truth
  -> C1 Core conformance closure
  -> C2 Reference execution + compiler services foundation
-```
-
-This path is mandatory regardless of whether native compilation proceeds.
-
-## 4.2 Native compiler path
-
-```text
-C2
- -> C3 Compiled-language decision spike
- -> [GO only] C4 MIR
+ -> C3 Native architecture and backend selection
+ -> C4 Verified MIR
  -> C5 Native MVP
- -> C6 Native parity
- -> C7 Build profiles and optimisation
+ -> C6 Native semantic parity
+ -> C7 Build profiles, reproducibility, and baseline optimisation
 ```
 
-A DEFER or STOP at C3 freezes C4-C7 without blocking C8, C9, tensor maintenance, or an
-interpreter-based research release.
+This entire path is mandatory.
+C3 may reject a backend candidate or require a bounded revision, but it may not close by
+choosing an interpreter-only end state.
+If C3 is BLOCKED, later native gates remain closed and the compiler roadmap remains incomplete.
 
-## 4.3 Language-service path
+## 4.2 Language-service path
 
 ```text
 C2
  -> C8 Semantic language services
 ```
 
-This path can run in parallel with the native track after C2.
+This path can run in parallel with the mandatory native compiler path after C2.
 
-## 4.4 Artifact-infrastructure path
+## 4.3 Artifact-infrastructure path
 
 ```text
 C2 + C9.1/C9.2
@@ -1315,20 +1339,19 @@ C2 + C9.1/C9.2
 
 Do not create generic artifact infrastructure before the second implementation exists.
 
-## 4.5 Release path
+## 4.4 Release path
 
-A release qualification gate may open when:
+A compiler-track release qualification gate may open when:
 
 ```text
-C1 and C2 are closed
-+ C8 status is explicit
-+ C9 status is explicit
-+ native track is either completed or formally DEFERRED/STOPPED
+C0–C8 are closed
++ C9 status is explicit (done, blocked on second-artifact evidence, or not required for this release)
 + tensor capability/deviation status is explicit
 ```
 
-A release does not require every conditional track to be GO.
-It requires precise claims.
+A release does not require every optional artifact or tensor-expansion track to be complete.
+It does require the general native Core compiler path to be complete and its deviations to be
+stated precisely.
 
 ---
 
@@ -1337,29 +1360,23 @@ It requires precise claims.
 Approximate Sonnet work sessions after bootstrap:
 
 ```text
-C0  3-5
-C1  7-10
-C2  6-9
-C3  3-5
-C4  7-10   conditional
-C5  7-10   conditional
-C6  8-12   conditional
-C7  5-8    conditional
-C8  6-9
-C9  4-7 after second-artifact evidence
-C10 5-8
+C0  3–5
+C1  7–10
+C2  6–9
+C3  3–5
+C4  7–10
+C5  7–10
+C6  8–12
+C7  5–8
+C8  6–9
+C9  4–7 after second-artifact evidence (optional)
+C10 5–8
 ```
 
-Interpreter/research release path without native GO:
+Mandatory compiler completion path, excluding optional C9:
 
 ```text
-approximately 31-48 sessions
-```
-
-Full native path:
-
-```text
-approximately 58-88 sessions
+approximately 57–86 sessions
 ```
 
 These are sequencing aids only.

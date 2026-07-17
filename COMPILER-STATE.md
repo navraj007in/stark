@@ -1,9 +1,10 @@
 # STARK Compiler STATE
-Updated: 2026-07-17 after WP-C0.0
+Updated: 2026-07-17 after CD-005 (governance update, mandatory-native-compiler brief)
 
 ## Position
 Gate: C1  Next: WP-C1.3  Blocked: none
-Conditional tracks: Native=deferred (see CD-002)  ArtifactInfra=blocked (no second artifact impl yet)
+Mandatory compiler path: Core=open (C1 in progress)  MIR=blocked (behind C1/C2/C3)  Native=blocked (behind C1/C2/C3)
+Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
 - Head: 6fa8c15b94bd1376a847132498d31dd356524180
@@ -116,6 +117,43 @@ Conditional tracks: Native=deferred (see CD-002)  ArtifactInfra=blocked (no seco
     substantively updated for Gates 1-5.
   - By contrast, root `README.md` is internally consistent with all seven gate exit/decision
     docs and is the most reliable of the pre-existing status documents.
+- CD-004 [2026-07-17, outside any single WP — a mid-session governance update triggered by a new
+  source document] The user provided a revised master brief,
+  `STARKLANG/docs/STARK-Compiler-Build-Brief-Revised-Sonnet(1).md` (title: "... (Native Compiler
+  Required)"), which supersedes the original `STARK-Compiler-Build-Brief-Revised-Sonnet.md` this
+  track was bootstrapped from (WP-C0.0). **This is a real, deliberate scope change, not a
+  clarification**: the original brief framed Gate C3 as an open, evidence-based question — GO,
+  REVISE, DEFER, or STOP on whether STARK needs a general native Core compiler at all, explicitly
+  naming DEFER/STOP as valid, non-failure outcomes. The revised brief removes that question
+  entirely: general native Core compilation is now a **mandatory** completion requirement (new
+  §1.2 "Guaranteed compiler completion state" in `COMPILER-CHARTER.md`), Gate C3 is renamed
+  "Native Compiler Architecture and Backend Selection Spike" and now only selects *how* (backend
+  strategy: SELECT-GENERATED / SELECT-DIRECT / REVISE / BLOCKED), never *whether*. An
+  interpreter-only release is explicitly "not an allowed C3 completion outcome," and Gates
+  C4-C7 change from *conditional* on a GO decision to *mandatory* after C3 selects an
+  architecture. Diff confirmed Gates C0-C2 and C6/C8/C9 are textually unchanged; the change is
+  scoped to §1 (framing/rules), the `COMPILER-STATE.md` template in §2.4, Gate C3's outcome
+  vocabulary, Gate C4/C5's conditionality headers, Gate C10's release-statement requirements,
+  §4's dependency map (native path folded into the single mandatory path, no more separate
+  "native compiler path" branch), §5.3's gate-decision vocabulary (adds `BLOCKED`), §7's session
+  budget (single ~57-86 session mandatory-path figure, replacing the old bifurcated
+  "interpreter-only 31-48 / full-native 58-88" framing), and §8's strategic-outcome list.
+  Regenerated `COMPILER-CHARTER.md` and `COMPILER-ROADMAP.md` in full from the new brief text
+  (same extraction method as WP-C0.0) rather than hand-patching, to guarantee fidelity; updated
+  this file's Position-line schema (`Mandatory compiler path: Core=/MIR=/Native=` +
+  `Optional tracks: ArtifactInfra=/TensorExpansion=`, replacing the old `Conditional tracks:`
+  line) and renamed the `## Backend decision` section to `## Native backend selection` with the
+  new status vocabulary (`not evaluated | SPIKING | SELECTED | REVISE | BLOCKED` + a `Selected
+  strategy` field, replacing `GO | REVISE | DEFER | STOP`). CD-002's own text is **not** rewritten
+  (append-only) but is now superseded in one specific respect: its framing that "Gate C3 will
+  need fresh evidence for the general Core compilation question" remains true, but its implicit
+  suggestion that a DEFER/STOP-style outcome remains available for general native compilation no
+  longer holds — see the correction notes added inline in `COMPILER-CHARTER.md` §1.5 and
+  `COMPILER-ROADMAP.md`'s header relationship note, both of which point back to this entry.
+  Gates C0-C2 work already completed (this entire session, through WP-C1.2) required **no
+  rework** — none of it touched native-compilation framing. Both brief files are left on disk
+  as-is (the original for historical reference, the "(1)" revision as the new live source); this
+  is a content decision, not a file-management one, and neither file was deleted or renamed.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -441,11 +479,17 @@ involving nested modules and private items should assume this stricter model.
   a `USAGE` const rather than using `clap` or another CLI-parsing crate (confirmed: no `clap`
   entry anywhere in `Cargo.toml`/`Cargo.lock`).
 
-## Backend decision
-- Status: not evaluated under the new C-numbering (Gate C3 has not opened; C0-C2 are prerequisite
-  per the mandatory correctness path in `COMPILER-ROADMAP.md` §4.1).
-- Evidence: see CD-002 for the closest existing evidence (old Gate 6/7), which bears on a
-  narrower tensor-deployment question, not general Core native compilation.
+## Native backend selection
+- Status: not evaluated (Gate C3 has not opened; C0-C2 are prerequisite per the mandatory
+  compiler completion path in `COMPILER-ROADMAP.md` §4.1). Per CD-004, this is no longer a
+  whether-question — native compilation is mandatory (`COMPILER-CHARTER.md` §1.2); C3 will
+  select *which* backend architecture (`SELECT-GENERATED`/`SELECT-DIRECT`), not decide whether
+  one is built.
+- Selected strategy: none yet.
+- Evidence: see CD-002 for the closest existing evidence (old Gate 6/7 tensor/ONNX-deployment
+  track), which bears on a narrower tensor-deployment question, not general Core native
+  compilation — informative precedent for C3's methodology, not a substitute for it. See CD-004
+  for why that old evidence can no longer be read as license to skip general native compilation.
 
 ## Diagnostic codes allocated or changed
 - None allocated yet under this governance framework. Existing normative `E####`/`W####` codes
@@ -465,9 +509,12 @@ involving nested modules and private items should assume this stricter model.
   check-conformance.py` output (2026-07-17, post-correction): 0 errors, 0 warnings.
 
 ## File inventory for current gate
-- `STARKLANG/docs/compiler/COMPILER-CHARTER.md` — created WP-C0.0.
-- `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` — created WP-C0.0.
-- `COMPILER-STATE.md` (this file) — created WP-C0.0.
+- `STARKLANG/docs/compiler/COMPILER-CHARTER.md` — created WP-C0.0; fully regenerated 2026-07-17
+  under CD-004 from the revised ("Native Compiler Required") brief.
+- `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` — created WP-C0.0; fully regenerated 2026-07-17
+  under CD-004.
+- `COMPILER-STATE.md` (this file) — created WP-C0.0; Position-line schema and Native backend
+  selection section updated 2026-07-17 under CD-004.
 - `STARKLANG/docs/compiler/work-packages/` — created WP-C0.0.
 - `starkc/docs/dev/compiler-map.md` — created WP-C0.1. Module table (21 modules + 3 binaries),
   shared/duplicated entry points, global state/fs/process/nondeterminism audit, provenance flow,
@@ -518,6 +565,11 @@ involving nested modules and private items should assume this stricter model.
   citations and scope-clarifying comments updated.
 
 ## Follow-ups
+- [ ] Housekeeping: this file is at 927 lines, over the Charter's ~700-line budget (§2.4:
+      "compressing closed gate detail into summaries"). C0's detailed session records (WP-C0.0
+      through WP-C0.5) are now fully duplicated in `starkc/docs/compiler/C0-exit-report.md` and
+      could be compressed to short summaries here without losing information. Do this as its own
+      deliberate pass, not folded into an unrelated WP, so nothing is accidentally dropped.
 - [x] WP-C0.1: produce `starkc/docs/dev/compiler-map.md` — done, see File inventory below.
 - [x] WP-C0.2: fixed `CLAUDE.md` (opening-summary/status contradiction, Gates-1-3/Gate-4-next
       claim), `starkc/README.md` (stale headline + missing 5 modules — compiler-map.md §1 is now
