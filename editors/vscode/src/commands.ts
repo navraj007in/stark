@@ -3,6 +3,7 @@ import * as path from 'path';
 import { runCompiler } from './compiler';
 import { updateDiagnostics, clearAllDiagnostics } from './diagnostics';
 import { getConfiguration } from './configuration';
+import { restartLspClient, showLspOutput } from './lspClient';
 
 function escapeShellArg(arg: string): string {
   return arg.replace(/([\\"$`])/g, '\\$1');
@@ -119,16 +120,39 @@ export async function openInStarkIde() {
   terminal.sendText(`"${escapeShellArg(idePath)}" "${escapeShellArg(document.fileName)}"`);
 }
 
-export function restartCompiler(triggerDocumentCheck: (doc: vscode.TextDocument) => void) {
+export async function restartCompiler(triggerDocumentCheck: (doc: vscode.TextDocument) => void) {
   if (!vscode.workspace.isTrusted) {
     vscode.window.showErrorMessage('STARK command execution is disabled in untrusted workspaces.');
     return;
   }
 
   clearAllDiagnostics();
+  await restartLspClient();
   vscode.window.showInformationMessage('Restarted STARK compiler integration.');
   const editor = vscode.window.activeTextEditor;
   if (editor && editor.document.languageId === 'stark') {
     triggerDocumentCheck(editor.document);
   }
+}
+
+export async function formatCurrentFile() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor || editor.document.languageId !== 'stark') {
+    vscode.window.showInformationMessage('No active STARK file to format.');
+    return;
+  }
+  await vscode.commands.executeCommand('editor.action.formatDocument');
+}
+
+export function showLanguageServerOutput() {
+  showLspOutput();
+}
+
+export async function toggleTensorMode() {
+  const config = vscode.workspace.getConfiguration('stark');
+  const current = config.get<boolean>('tensorExtensionEnabled', false);
+  await config.update('tensorExtensionEnabled', !current, vscode.ConfigurationTarget.Workspace);
+  vscode.window.showInformationMessage(
+    `STARK: tensor extension ${!current ? 'enabled' : 'disabled'}.`
+  );
 }

@@ -165,4 +165,40 @@ dead CLI surface. If/when a randomness primitive lands, revisit.
 
 ---
 
-*(Add further entries above this line as Phase 8 continues — WP8.4+.)*
+## WP8.4 — VS Code Extension
+
+### The LSP server ignored requested language extensions entirely (found and fixed)
+
+Wiring the VS Code extension's tensor-mode toggle through to `starkc lsp`
+surfaced that the server hardcoded `LanguageOptions::default()` (Core-only)
+in both `compile_document` and `handle_formatting` from WP8.1 — a client
+that asked for the `tensor` extension via LSP `initialize` would still get
+"requires extension `tensor`" errors on every tensor file. Fixed in a
+dedicated commit (`4eda834`, before this WP's own commit): `ServerState`
+now carries the session's `LanguageOptions`, read once from `initialize`'s
+`initializationOptions.extensions` and reused for every subsequent parse.
+See `WP8_4_VSCODE_EXTENSION_IMPLEMENTATION.md` for the verification.
+
+### `stark.generateDocs` not built — WP8.5 doesn't exist yet
+
+The plan lists a `stark.generateDocs` command under WP8.4, but it's a
+thin wrapper around `starkc doc` (WP8.5, Documentation Generator), which
+hasn't been implemented. Adding a command that fails with "unknown
+subcommand" on every invocation would be worse than the command not
+existing; deferred to whenever WP8.5 ships.
+
+### VS Code UI behavior not interactively verified
+
+No `code` CLI is available in this environment to launch an Extension
+Development Host, so status bar rendering, command palette entries,
+format-on-save actually firing on a real save, and hover popups were not
+interactively confirmed — only TypeScript correctness (tsc, ESLint,
+esbuild bundling) and the raw LSP protocol exchange the client depends on
+(verified via a JSON-RPC script bypassing VS Code, the same technique
+used for WP8.1/WP8.2). Flagged rather than silently claimed as tested;
+real interactive testing is the natural next step once a VS Code-capable
+environment is available.
+
+---
+
+*(Add further entries above this line as Phase 8 continues — WP8.5+.)*

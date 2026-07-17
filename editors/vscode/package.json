@@ -2,7 +2,7 @@
   "name": "stark-language",
   "displayName": "STARK Language",
   "description": "Syntax highlighting, language configuration, and snippets for the STARK programming language (Core v1 + tensor extension).",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "starklang",
   "license": "MIT",
   "engines": {
@@ -91,6 +91,26 @@
         "command": "stark.restartCompiler",
         "title": "STARK: Restart Compiler Integration",
         "category": "STARK"
+      },
+      {
+        "command": "stark.formatCurrentFile",
+        "title": "STARK: Format Document",
+        "category": "STARK"
+      },
+      {
+        "command": "stark.toggleTensorMode",
+        "title": "STARK: Toggle Tensor Extension",
+        "category": "STARK"
+      },
+      {
+        "command": "stark.showLanguageServerOutput",
+        "title": "STARK: Show LSP Output",
+        "category": "STARK"
+      },
+      {
+        "command": "stark.restartLanguageServer",
+        "title": "STARK: Restart Language Server",
+        "category": "STARK"
       }
     ],
     "menus": {
@@ -104,9 +124,22 @@
           "command": "stark.runCurrentFile",
           "when": "editorLangId == stark",
           "group": "navigation"
+        },
+        {
+          "command": "stark.formatCurrentFile",
+          "when": "editorLangId == stark",
+          "group": "navigation"
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "stark.formatCurrentFile",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "editorLangId == stark"
+      }
+    ],
     "configuration": {
       "type": "object",
       "title": "STARK Language Options",
@@ -115,6 +148,11 @@
           "type": "string",
           "default": "starkc",
           "description": "Path to the starkc compiler executable. Defaults to 'starkc' from system PATH."
+        },
+        "stark.package.path": {
+          "type": "string",
+          "default": "stark",
+          "description": "Path to the stark package-manager executable (check/build/run/test/fmt), distinct from the starkc single-file compiler. Defaults to 'stark' from system PATH."
         },
         "stark.compiler.extensions": {
           "type": "array",
@@ -138,8 +176,42 @@
           "type": "integer",
           "default": 500,
           "description": "Debounce time in milliseconds before triggering check-on-type."
+        },
+        "stark.extensionEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Master toggle for the STARK extension's compiler/language-server integration."
+        },
+        "stark.lspLogLevel": {
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "info",
+            "verbose"
+          ],
+          "default": "info",
+          "description": "Log level for the STARK language server output channel."
+        },
+        "stark.formatOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run stark fmt on the current file before saving."
+        },
+        "stark.tensorExtensionEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the tensor language extension (equivalent to adding 'tensor' to stark.compiler.extensions). Toggle via the 'STARK: Toggle Tensor Extension' command."
+        },
+        "stark.testOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run stark test in the current file's package on save."
         }
       }
     }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.0"
   }
 }
