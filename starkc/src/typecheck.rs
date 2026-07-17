@@ -372,6 +372,29 @@ impl<'a> TypeChecker<'a> {
                 params: vec![Ty::Primitive(Primitive::UInt64)],
                 ret: Box::new(Ty::Core(CoreType::Vec, vec![self.new_type_var()])),
             },
+            Builtin::HashMapNew => {
+                let key = self.new_type_var();
+                let val = self.new_type_var();
+                Ty::Fn {
+                    params: Vec::new(),
+                    ret: Box::new(Ty::Core(CoreType::HashMap, vec![key, val])),
+                }
+            }
+            Builtin::HashMapWithCapacity => {
+                let key = self.new_type_var();
+                let val = self.new_type_var();
+                Ty::Fn {
+                    params: vec![Ty::Primitive(Primitive::UInt64)],
+                    ret: Box::new(Ty::Core(CoreType::HashMap, vec![key, val])),
+                }
+            }
+            Builtin::HashSetNew => {
+                let val = self.new_type_var();
+                Ty::Fn {
+                    params: Vec::new(),
+                    ret: Box::new(Ty::Core(CoreType::HashSet, vec![val])),
+                }
+            }
             Builtin::BoxNew => {
                 let value = self.new_type_var();
                 Ty::Fn {
@@ -1002,6 +1025,13 @@ impl<'a> TypeChecker<'a> {
                     CoreType::CharsIter => "CharsIter",
                     CoreType::SplitIter => "SplitIter",
                     CoreType::VecIter => "VecIter",
+                    CoreType::HashMap => "HashMap",
+                    CoreType::HashSet => "HashSet",
+                    CoreType::KeysIter => "KeysIter",
+                    CoreType::ValuesIter => "ValuesIter",
+                    CoreType::Iter => "Iter",
+                    CoreType::MapIter => "MapIter",
+                    CoreType::FilterIter => "FilterIter",
                 };
                 if args.is_empty() {
                     name.to_string()
@@ -1178,8 +1208,27 @@ impl<'a> TypeChecker<'a> {
                             | CoreType::Option
                             | CoreType::Range
                             | CoreType::RangeInclusive
-                            | CoreType::VecIter => 1,
-                            CoreType::Result => 2,
+                            | CoreType::VecIter
+                            | CoreType::HashSet
+                            | CoreType::KeysIter
+                            | CoreType::ValuesIter
+                            | CoreType::FilterIter => 1,
+                            CoreType::Result | CoreType::HashMap | CoreType::MapIter => 2,
+                            CoreType::Iter => {
+                                if args.len() != 1 && args.len() != 2 {
+                                    self.diags.push(
+                                        Diagnostic::error(
+                                            format!(
+                                                "generic type 'Iter' expects 1 or 2 generic arguments, found {}",
+                                                args.len()
+                                            ),
+                                            node.span,
+                                        )
+                                        .with_code("E0107"),
+                                    );
+                                }
+                                args.len()
+                            }
                         };
                         self.validate_generic_arity(expected, args.len(), node.span);
                         Ty::Core(*core, args)
@@ -4748,6 +4797,74 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn is_iterator_type(&self, receiver: &Ty) -> bool {
+        if let Ty::Core(core, _) = receiver {
+            matches!(
+                core,
+                CoreType::CharsIter
+                    | CoreType::SplitIter
+                    | CoreType::VecIter
+                    | CoreType::KeysIter
+                    | CoreType::ValuesIter
+                    | CoreType::Iter
+                    | CoreType::MapIter
+                    | CoreType::FilterIter
+            )
+        } else {
+            false
+        }
+    }
+
+    fn iterator_item_type(&self, iter_ty: &Ty) -> Ty {
+        match iter_ty {
+            Ty::Core(CoreType::CharsIter, _) => Ty::Primitive(Primitive::Char),
+            Ty::Core(CoreType::SplitIter, _) => Ty::Ref {
+                mutable: false,
+                inner: Box::new(Ty::Primitive(Primitive::Str)),
+            },
+            Ty::Core(CoreType::VecIter, args) => Ty::Ref {
+                mutable: false,
+                inner: Box::new(args.get(0).cloned().unwrap_or(Ty::Error)),
+            },
+            Ty::Core(CoreType::KeysIter, args) => Ty::Ref {
+                mutable: false,
+                inner: Box::new(args.get(0).cloned().unwrap_or(Ty::Error)),
+            },
+            Ty::Core(CoreType::ValuesIter, args) => Ty::Ref {
+                mutable: false,
+                inner: Box::new(args.get(0).cloned().unwrap_or(Ty::Error)),
+            },
+            Ty::Core(CoreType::Iter, args) => {
+                if args.len() == 2 {
+                    let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                    let v = args.get(1).cloned().unwrap_or(Ty::Error);
+                    Ty::Tuple(vec![
+                        Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(k),
+                        },
+                        Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(v),
+                        },
+                    ])
+                } else {
+                    let t = args.get(0).cloned().unwrap_or(Ty::Error);
+                    Ty::Ref {
+                        mutable: false,
+                        inner: Box::new(t),
+                    }
+                }
+            }
+            Ty::Core(CoreType::MapIter, args) => args.get(1).cloned().unwrap_or(Ty::Error),
+            Ty::Core(CoreType::FilterIter, args) => {
+                let inner = args.get(0).cloned().unwrap_or(Ty::Error);
+                self.iterator_item_type(&inner)
+            }
+            _ => Ty::Error,
+        }
+    }
+
     fn core_method_signature(&mut self, receiver: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
         let unit = Ty::Primitive(Primitive::Unit);
         let bool_ty = Ty::Primitive(Primitive::Bool);
@@ -4756,6 +4873,90 @@ impl<'a> TypeChecker<'a> {
             mutable: false,
             inner: Box::new(Ty::Primitive(Primitive::Str)),
         };
+        if self.is_iterator_type(receiver) {
+            let item_ty = self.iterator_item_type(receiver);
+            match name {
+                "count" => return Some((Vec::new(), u64_ty, true)),
+                "collect" => {
+                    let c_ty = self.new_type_var();
+                    return Some((Vec::new(), c_ty, true));
+                }
+                "map" => {
+                    let u_ty = self.new_type_var();
+                    let map_fn = Ty::Fn {
+                        params: vec![item_ty.clone()],
+                        ret: Box::new(u_ty.clone()),
+                    };
+                    return Some((
+                        vec![map_fn],
+                        Ty::Core(CoreType::MapIter, vec![receiver.clone(), u_ty]),
+                        true,
+                    ));
+                }
+                "filter" => {
+                    let pred_fn = Ty::Fn {
+                        params: vec![Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(item_ty.clone()),
+                        }],
+                        ret: Box::new(bool_ty.clone()),
+                    };
+                    return Some((
+                        vec![pred_fn],
+                        Ty::Core(CoreType::FilterIter, vec![receiver.clone()]),
+                        true,
+                    ));
+                }
+                "fold" => {
+                    let b_ty = self.new_type_var();
+                    let fold_fn = Ty::Fn {
+                        params: vec![b_ty.clone(), item_ty.clone()],
+                        ret: Box::new(b_ty.clone()),
+                    };
+                    return Some((vec![b_ty.clone(), fold_fn], b_ty, true));
+                }
+                "reduce" => {
+                    let red_fn = Ty::Fn {
+                        params: vec![item_ty.clone(), item_ty.clone()],
+                        ret: Box::new(item_ty.clone()),
+                    };
+                    return Some((
+                        vec![red_fn],
+                        Ty::Core(CoreType::Option, vec![item_ty.clone()]),
+                        true,
+                    ));
+                }
+                "any" => {
+                    let pred_fn = Ty::Fn {
+                        params: vec![item_ty.clone()],
+                        ret: Box::new(bool_ty.clone()),
+                    };
+                    return Some((vec![pred_fn], bool_ty, true));
+                }
+                "all" => {
+                    let pred_fn = Ty::Fn {
+                        params: vec![item_ty.clone()],
+                        ret: Box::new(bool_ty.clone()),
+                    };
+                    return Some((vec![pred_fn], bool_ty, true));
+                }
+                "find" => {
+                    let pred_fn = Ty::Fn {
+                        params: vec![Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(item_ty.clone()),
+                        }],
+                        ret: Box::new(bool_ty.clone()),
+                    };
+                    return Some((
+                        vec![pred_fn],
+                        Ty::Core(CoreType::Option, vec![item_ty.clone()]),
+                        true,
+                    ));
+                }
+                _ => {}
+            }
+        }
         match receiver {
             Ty::Primitive(Primitive::String | Primitive::Str) => match name {
                 "len" => Some((Vec::new(), u64_ty, false)),
@@ -4918,6 +5119,148 @@ impl<'a> TypeChecker<'a> {
                     ),
                     true,
                 ))
+            }
+            Ty::Core(CoreType::HashMap, args) => {
+                let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                let v = args.get(1).cloned().unwrap_or(Ty::Error);
+                let k_ref = Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(k.clone()),
+                };
+                match name {
+                    "insert" => Some((
+                        vec![k, v.clone()],
+                        Ty::Core(CoreType::Option, vec![v]),
+                        true,
+                    )),
+                    "get" => Some((
+                        vec![k_ref.clone()],
+                        Ty::Core(
+                            CoreType::Option,
+                            vec![Ty::Ref {
+                                mutable: false,
+                                inner: Box::new(v.clone()),
+                            }],
+                        ),
+                        false,
+                    )),
+                    "get_mut" => Some((
+                        vec![k_ref.clone()],
+                        Ty::Core(
+                            CoreType::Option,
+                            vec![Ty::Ref {
+                                mutable: true,
+                                inner: Box::new(v.clone()),
+                            }],
+                        ),
+                        true,
+                    )),
+                    "remove" => Some((
+                        vec![k_ref.clone()],
+                        Ty::Core(CoreType::Option, vec![v]),
+                        true,
+                    )),
+                    "contains_key" => Some((vec![k_ref], bool_ty, false)),
+                    "len" => Some((Vec::new(), u64_ty, false)),
+                    "is_empty" => Some((Vec::new(), bool_ty, false)),
+                    "clear" => Some((Vec::new(), unit, true)),
+                    "keys" => Some((Vec::new(), Ty::Core(CoreType::KeysIter, vec![k]), false)),
+                    "values" => Some((Vec::new(), Ty::Core(CoreType::ValuesIter, vec![v]), false)),
+                    "iter" => Some((Vec::new(), Ty::Core(CoreType::Iter, vec![k, v]), false)),
+                    "extend" => {
+                        let iter_ty = self.new_type_var();
+                        Some((vec![iter_ty], unit, true))
+                    }
+                    _ => None,
+                }
+            }
+            Ty::Core(CoreType::HashSet, args) => {
+                let t = args.get(0).cloned().unwrap_or(Ty::Error);
+                let t_ref = Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(t.clone()),
+                };
+                match name {
+                    "insert" => Some((vec![t.clone()], bool_ty, true)),
+                    "remove" => Some((vec![t_ref.clone()], bool_ty, true)),
+                    "contains" => Some((vec![t_ref], bool_ty, false)),
+                    "len" => Some((Vec::new(), u64_ty, false)),
+                    "is_empty" => Some((Vec::new(), bool_ty, false)),
+                    "clear" => Some((Vec::new(), unit, true)),
+                    "iter" => Some((Vec::new(), Ty::Core(CoreType::Iter, vec![t]), false)),
+                    "extend" => {
+                        let iter_ty = self.new_type_var();
+                        Some((vec![iter_ty], unit, true))
+                    }
+                    _ => None,
+                }
+            }
+            Ty::Core(CoreType::KeysIter, args) if name == "next" => {
+                let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                Some((
+                    Vec::new(),
+                    Ty::Core(
+                        CoreType::Option,
+                        vec![Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(k),
+                        }],
+                    ),
+                    true,
+                ))
+            }
+            Ty::Core(CoreType::ValuesIter, args) if name == "next" => {
+                let v = args.get(0).cloned().unwrap_or(Ty::Error);
+                Some((
+                    Vec::new(),
+                    Ty::Core(
+                        CoreType::Option,
+                        vec![Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(v),
+                        }],
+                    ),
+                    true,
+                ))
+            }
+            Ty::Core(CoreType::Iter, args) if name == "next" => {
+                if args.len() == 2 {
+                    let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                    let v = args.get(1).cloned().unwrap_or(Ty::Error);
+                    let tuple_ty = Ty::Tuple(vec![
+                        Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(k),
+                        },
+                        Ty::Ref {
+                            mutable: false,
+                            inner: Box::new(v),
+                        },
+                    ]);
+                    Some((Vec::new(), Ty::Core(CoreType::Option, vec![tuple_ty]), true))
+                } else {
+                    let t = args.get(0).cloned().unwrap_or(Ty::Error);
+                    Some((
+                        Vec::new(),
+                        Ty::Core(
+                            CoreType::Option,
+                            vec![Ty::Ref {
+                                mutable: false,
+                                inner: Box::new(t),
+                            }],
+                        ),
+                        true,
+                    ))
+                }
+            }
+            Ty::Core(CoreType::MapIter, args) if name == "next" => {
+                let u = args.get(1).cloned().unwrap_or(Ty::Error);
+                Some((Vec::new(), Ty::Core(CoreType::Option, vec![u]), true))
+            }
+            Ty::Core(CoreType::FilterIter, args) if name == "next" => {
+                let inner = args.get(0).cloned().unwrap_or(Ty::Error);
+                let item = self.iterator_item_type(&inner);
+                Some((Vec::new(), Ty::Core(CoreType::Option, vec![item]), true))
             }
             Ty::Slice(_) => match name {
                 "len" => Some((Vec::new(), u64_ty, false)),
@@ -5191,11 +5534,19 @@ impl<'a> TypeChecker<'a> {
                 {
                     args.iter().all(|arg| self.satisfies_bound(arg, bound))
                 } else if bound_name == "Default" {
-                    *core_type == CoreType::Vec || *core_type == CoreType::Option
+                    *core_type == CoreType::Vec
+                        || *core_type == CoreType::Option
+                        || *core_type == CoreType::HashMap
+                        || *core_type == CoreType::HashSet
                 } else if bound_name == "Iterator" {
                     *core_type == CoreType::CharsIter
                         || *core_type == CoreType::SplitIter
                         || *core_type == CoreType::VecIter
+                        || *core_type == CoreType::KeysIter
+                        || *core_type == CoreType::ValuesIter
+                        || *core_type == CoreType::Iter
+                        || *core_type == CoreType::MapIter
+                        || *core_type == CoreType::FilterIter
                 } else {
                     false
                 }

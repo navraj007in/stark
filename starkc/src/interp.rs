@@ -5,7 +5,7 @@ use crate::hir::{self, BlockId, Builtin, ExprId, Hir, ItemId, LocalId, PatId, Re
 use crate::lexer::Base;
 use crate::source::{SourceFile, Span};
 use crate::typecheck::{Ty, TypeTables};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -64,6 +64,14 @@ enum Value {
     CharsIter(String, usize),
     SplitIter(Vec<String>, usize),
     VecIter(Place, usize),
+    HashMap(BTreeMap<Value, Option<Value>>),
+    HashSet(BTreeSet<Value>),
+    HashMapKeysIter(Vec<Option<Value>>, usize),
+    HashMapValuesIter(Vec<Option<Value>>, usize),
+    HashMapIter(Vec<Option<Value>>, usize),
+    HashSetIter(Vec<Option<Value>>, usize),
+    MapIter(Box<Value>, ItemId),
+    FilterIter(Box<Value>, ItemId),
 }
 
 impl fmt::Display for Value {
@@ -111,7 +119,157 @@ impl fmt::Display for Value {
             Value::CharsIter(..) => write!(f, "<CharsIter>"),
             Value::SplitIter(..) => write!(f, "<SplitIter>"),
             Value::VecIter(..) => write!(f, "<VecIter>"),
+            Value::HashMap(map) => {
+                write!(f, "HashMap{{")?;
+                for (index, (k, v)) in map.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {}", display_slot(v))?;
+                }
+                write!(f, "}}")
+            }
+            Value::HashSet(set) => {
+                write!(f, "HashSet{{")?;
+                for (index, val) in set.iter().enumerate() {
+                    if index > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{val}")?;
+                }
+                write!(f, "}}")
+            }
+            Value::HashMapKeysIter(..) => write!(f, "<KeysIter>"),
+            Value::HashMapValuesIter(..) => write!(f, "<ValuesIter>"),
+            Value::HashMapIter(..) => write!(f, "<HashMapIter>"),
+            Value::HashSetIter(..) => write!(f, "<HashSetIter>"),
+            Value::MapIter(..) => write!(f, "<MapIter>"),
+            Value::FilterIter(..) => write!(f, "<FilterIter>"),
         }
+    }
+}
+
+impl Eq for Value {}
+
+impl Ord for Value {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        fn discriminant(val: &Value) -> u8 {
+            match val {
+                Value::Unit => 0,
+                Value::Bool(_) => 1,
+                Value::Int(_) => 2,
+                Value::Float(_) => 3,
+                Value::Char(_) => 4,
+                Value::Str(_) => 5,
+                Value::String(_) => 6,
+                Value::Tuple(_) => 7,
+                Value::Array(_) => 8,
+                Value::Struct { .. } => 9,
+                Value::Enum { .. } => 10,
+                Value::Vec(_) => 11,
+                Value::Boxed(_) => 12,
+                Value::Option(_) => 13,
+                Value::Result(_) => 14,
+                Value::Range { .. } => 15,
+                Value::Ref(_) => 16,
+                Value::Function(_) => 17,
+                Value::CharsIter(..) => 18,
+                Value::SplitIter(..) => 19,
+                Value::VecIter(..) => 20,
+                Value::HashMap(_) => 21,
+                Value::HashSet(_) => 22,
+                Value::HashMapKeysIter(..) => 23,
+                Value::HashMapValuesIter(..) => 24,
+                Value::HashMapIter(..) => 25,
+                Value::HashSetIter(..) => 26,
+                Value::MapIter(..) => 27,
+                Value::FilterIter(..) => 28,
+            }
+        }
+
+        let da = discriminant(self);
+        let db = discriminant(other);
+        if da != db {
+            return da.cmp(&db);
+        }
+
+        match (self, other) {
+            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
+            (Value::Int(a), Value::Int(b)) => a.cmp(b),
+            (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
+            (Value::Char(a), Value::Char(b)) => a.cmp(b),
+            (Value::Str(a), Value::Str(b)) | (Value::String(a), Value::String(b)) => a.cmp(b),
+            (Value::Tuple(a), Value::Tuple(b))
+            | (Value::Array(a), Value::Array(b))
+            | (Value::Vec(a), Value::Vec(b)) => a.cmp(b),
+            (
+                Value::Struct {
+                    item: ia,
+                    fields: fa,
+                },
+                Value::Struct {
+                    item: ib,
+                    fields: fb,
+                },
+            ) => ia.cmp(ib).then_with(|| fa.cmp(fb)),
+            (
+                Value::Enum {
+                    item: ia,
+                    variant: va,
+                    fields: fa,
+                    named: na,
+                },
+                Value::Enum {
+                    item: ib,
+                    variant: vb,
+                    fields: fb,
+                    named: nb,
+                },
+            ) => ia
+                .cmp(ib)
+                .then_with(|| va.cmp(vb))
+                .then_with(|| fa.cmp(fb))
+                .then_with(|| na.cmp(nb)),
+            (Value::Boxed(a), Value::Boxed(b)) => a.cmp(b),
+            (Value::Option(a), Value::Option(b)) => a.cmp(b),
+            (Value::Result(a), Value::Result(b)) => match (a, b) {
+                (Ok(va), Ok(vb)) => va.cmp(vb),
+                (Err(ea), Err(eb)) => ea.cmp(eb),
+                (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+                (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+            },
+            (
+                Value::Range {
+                    start: sa,
+                    end: ea,
+                    inclusive: ia,
+                },
+                Value::Range {
+                    start: sb,
+                    end: eb,
+                    inclusive: ib,
+                },
+            ) => sa.cmp(sb).then_with(|| ea.cmp(eb)).then_with(|| ia.cmp(ib)),
+            (Value::Ref(a), Value::Ref(b)) => a
+                .frame
+                .cmp(&b.frame)
+                .then_with(|| a.local.0.cmp(&b.local.0))
+                .then_with(|| a.projections.len().cmp(&b.projections.len())),
+            (Value::Function(a), Value::Function(b)) => a.cmp(b),
+            (Value::HashMap(a), Value::HashMap(b)) => a.cmp(b),
+            (Value::HashSet(a), Value::HashSet(b)) => a.cmp(b),
+            (Value::MapIter(ia, fa), Value::MapIter(ib, fb)) => ia.cmp(ib).then_with(|| fa.cmp(fb)),
+            (Value::FilterIter(ia, fa), Value::FilterIter(ib, fb)) => {
+                ia.cmp(ib).then_with(|| fa.cmp(fb))
+            }
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -142,6 +300,7 @@ fn write_sequence(
 enum Projection {
     Field(String),
     Index(usize),
+    MapKey(Value),
 }
 
 #[derive(Clone, PartialEq)]
@@ -283,6 +442,18 @@ impl<'a> Interpreter<'a> {
             Value::CharsIter(..) => Value::CharsIter(String::new(), 0),
             Value::SplitIter(..) => Value::SplitIter(Vec::new(), 0),
             Value::VecIter(place, _) => Value::VecIter(place.clone(), 0),
+            Value::HashMap(_) => Value::HashMap(BTreeMap::new()),
+            Value::HashSet(_) => Value::HashSet(BTreeSet::new()),
+            Value::HashMapKeysIter(..) => Value::HashMapKeysIter(Vec::new(), 0),
+            Value::HashMapValuesIter(..) => Value::HashMapValuesIter(Vec::new(), 0),
+            Value::HashMapIter(..) => Value::HashMapIter(Vec::new(), 0),
+            Value::HashSetIter(..) => Value::HashSetIter(Vec::new(), 0),
+            Value::MapIter(inner, item) => {
+                Value::MapIter(Box::new(self.default_value_for(inner)), *item)
+            }
+            Value::FilterIter(inner, item) => {
+                Value::FilterIter(Box::new(self.default_value_for(inner)), *item)
+            }
         }
     }
 
@@ -515,7 +686,9 @@ impl<'a> Interpreter<'a> {
                 let value = self.expect_value(*value)?;
                 Ok(Flow::Value(self.eval_cast(value, expr_id, expr.span)?))
             }
-            hir::ExprKind::Call { callee, args } => self.eval_call(*callee, args, expr.span),
+            hir::ExprKind::Call { callee, args } => {
+                self.eval_call(expr_id, *callee, args, expr.span)
+            }
             hir::ExprKind::Field { .. } | hir::ExprKind::TupleField { .. } => {
                 let place = self.expr_place(expr_id)?;
                 Ok(Flow::Value(self.take_place(&place, expr.span)?))
@@ -889,6 +1062,7 @@ impl<'a> Interpreter<'a> {
 
     fn eval_call(
         &mut self,
+        expr_id: ExprId,
         callee: ExprId,
         args: &[ExprId],
         span: Span,
@@ -942,7 +1116,7 @@ impl<'a> Interpreter<'a> {
                 _ => Err(RuntimeError::new("expression is not callable", span)),
             },
             hir::ExprKind::Field { base, name, .. } => {
-                self.call_method(*base, self.text(*name).to_string(), args, span)
+                self.call_method(expr_id, *base, self.text(*name).to_string(), args, span)
             }
             _ => {
                 let function = self.expect_value(callee)?;
@@ -971,18 +1145,18 @@ impl<'a> Interpreter<'a> {
         match builtin {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
-                self.output.push_str(&value.to_string());
+                let deref = self.deref_value(value, span)?;
+                self.output.push_str(&deref.to_string());
                 if builtin == Builtin::Println {
                     self.output.push('\n');
                 }
                 Ok(Value::Unit)
             }
-            Builtin::Panic => Err(RuntimeError::new(
-                args.pop()
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "panic".to_string()),
-                span,
-            )),
+            Builtin::Panic => {
+                let value = args.pop().unwrap_or(Value::Unit);
+                let deref = self.deref_value(value, span)?;
+                Err(RuntimeError::new(deref.to_string(), span))
+            }
             Builtin::Assert => match args.pop() {
                 Some(Value::Bool(true)) => Ok(Value::Unit),
                 Some(Value::Bool(false)) => Err(RuntimeError::new("assertion failed", span)),
@@ -1073,6 +1247,12 @@ impl<'a> Interpreter<'a> {
                 let capacity = usize_arg(args.pop(), span)?;
                 Ok(Value::Vec(Vec::with_capacity(capacity)))
             }
+            Builtin::HashMapNew => Ok(Value::HashMap(BTreeMap::new())),
+            Builtin::HashMapWithCapacity => {
+                let _capacity = usize_arg(args.pop(), span)?;
+                Ok(Value::HashMap(BTreeMap::new()))
+            }
+            Builtin::HashSetNew => Ok(Value::HashSet(BTreeSet::new())),
             Builtin::BoxNew => Ok(Value::Boxed(Box::new(args.pop()))),
             Builtin::BoxIntoInner => match args.pop() {
                 Some(Value::Boxed(value)) => Ok((*value).unwrap_or(Value::Unit)),
@@ -1145,6 +1325,7 @@ impl<'a> Interpreter<'a> {
 
     fn call_method(
         &mut self,
+        expr_id: ExprId,
         base: ExprId,
         name: String,
         args: &[ExprId],
@@ -1152,7 +1333,7 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Flow, RuntimeError> {
         if self.is_core_value(base) {
             return self
-                .call_core_method(base, &name, args, span)
+                .call_core_method(Some(expr_id), base, &name, args, span)
                 .map(Flow::Value);
         }
         let receiver_value = self.clone_expr_place(base)?;
@@ -1361,15 +1542,20 @@ impl<'a> Interpreter<'a> {
 
     fn call_core_method(
         &mut self,
+        expr_id: Option<ExprId>,
         base: ExprId,
         name: &str,
         args: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        let values = args
+        let mut values = args
             .iter()
             .map(|arg| self.expect_value(*arg))
             .collect::<Result<Vec<_>, _>>()?;
+        if (name == "remove" || name == "contains_key" || name == "contains") && !values.is_empty()
+        {
+            values[0] = self.deref_value(values[0].clone(), span)?;
+        }
         let mut values = values.into_iter();
         let mutating = matches!(
             name,
@@ -1383,77 +1569,122 @@ impl<'a> Interpreter<'a> {
                 | "get_mut"
                 | "extend"
                 | "next"
+                | "count"
+                | "collect"
+                | "map"
+                | "filter"
+                | "fold"
+                | "reduce"
+                | "any"
+                | "all"
+                | "find"
         );
         if name == "get" {
-            let index = usize_arg(values.next(), span)?;
-            let mut place = self.core_receiver_place(base, span)?;
-            place.projections.push(Projection::Index(index));
-            return Ok(Value::Option(
-                self.place_value(&place, span)
-                    .ok()
-                    .map(|_| Box::new(Value::Ref(place))),
-            ));
+            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_val = self.place_value(&receiver_place, span)?;
+            match receiver_val {
+                Value::HashMap(map) => {
+                    let key_arg = values
+                        .next()
+                        .ok_or_else(|| RuntimeError::new("expected key argument", span))?;
+                    let key = self.deref_value(key_arg, span)?;
+                    let mut place = receiver_place;
+                    place.projections.push(Projection::MapKey(key.clone()));
+                    return Ok(Value::Option(if map.contains_key(&key) {
+                        Some(Box::new(Value::Ref(place)))
+                    } else {
+                        None
+                    }));
+                }
+                _ => {
+                    let index = usize_arg(values.next(), span)?;
+                    let mut place = receiver_place;
+                    place.projections.push(Projection::Index(index));
+                    return Ok(Value::Option(
+                        self.place_value(&place, span)
+                            .ok()
+                            .map(|_| Box::new(Value::Ref(place))),
+                    ));
+                }
+            }
         }
         if name == "get_mut" {
-            let index = usize_arg(values.next(), span)?;
-            let mut place = self.core_receiver_place(base, span)?;
-            place.projections.push(Projection::Index(index));
-            return Ok(Value::Option(
-                self.place_value(&place, span)
-                    .ok()
-                    .map(|_| Box::new(Value::Ref(place))),
-            ));
+            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_val = self.place_value(&receiver_place, span)?;
+            match receiver_val {
+                Value::HashMap(map) => {
+                    let key_arg = values
+                        .next()
+                        .ok_or_else(|| RuntimeError::new("expected key argument", span))?;
+                    let key = self.deref_value(key_arg, span)?;
+                    let mut place = receiver_place;
+                    place.projections.push(Projection::MapKey(key.clone()));
+                    return Ok(Value::Option(if map.contains_key(&key) {
+                        Some(Box::new(Value::Ref(place)))
+                    } else {
+                        None
+                    }));
+                }
+                _ => {
+                    let index = usize_arg(values.next(), span)?;
+                    let mut place = receiver_place;
+                    place.projections.push(Projection::Index(index));
+                    return Ok(Value::Option(
+                        self.place_value(&place, span)
+                            .ok()
+                            .map(|_| Box::new(Value::Ref(place))),
+                    ));
+                }
+            }
         }
         if name == "iter" {
-            let place = self.core_receiver_place(base, span)?;
-            return Ok(Value::VecIter(place, 0));
+            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_val = self.place_value(&receiver_place, span)?;
+            match receiver_val {
+                Value::HashMap(map) => {
+                    let pairs = map
+                        .iter()
+                        .map(|(k, v)| {
+                            Some(Value::Tuple(vec![
+                                Some(k.clone()),
+                                Some(v.clone().unwrap_or(Value::Unit)),
+                            ]))
+                        })
+                        .collect();
+                    return Ok(Value::HashMapIter(pairs, 0));
+                }
+                Value::HashSet(set) => {
+                    let items = set.iter().cloned().map(Some).collect();
+                    return Ok(Value::HashSetIter(items, 0));
+                }
+                _ => {
+                    return Ok(Value::VecIter(receiver_place, 0));
+                }
+            }
+        }
+        if name == "keys" {
+            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_val = self.place_value(&receiver_place, span)?;
+            if let Value::HashMap(map) = receiver_val {
+                let keys = map.keys().cloned().map(Some).collect();
+                return Ok(Value::HashMapKeysIter(keys, 0));
+            }
+        }
+        if name == "values" {
+            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_val = self.place_value(&receiver_place, span)?;
+            if let Value::HashMap(map) = receiver_val {
+                let values = map.values().map(|v| v.clone()).collect();
+                return Ok(Value::HashMapValuesIter(values, 0));
+            }
         }
         if name == "next" {
             let place = self.core_receiver_place(base, span)?;
-            let mut iter_val = self.place_value(&place, span)?.clone();
-            let res = match &mut iter_val {
-                Value::CharsIter(s, ref mut idx) => {
-                    let opt = if let Some(ch) = s.chars().nth(*idx) {
-                        *idx += 1;
-                        Value::Option(Some(Box::new(Value::Char(ch))))
-                    } else {
-                        Value::Option(None)
-                    };
-                    Some((opt, iter_val))
-                }
-                Value::SplitIter(parts, ref mut idx) => {
-                    let opt = if *idx < parts.len() {
-                        let part = parts[*idx].clone();
-                        *idx += 1;
-                        Value::Option(Some(Box::new(Value::Str(part))))
-                    } else {
-                        Value::Option(None)
-                    };
-                    Some((opt, iter_val))
-                }
-                Value::VecIter(vec_place, ref mut idx) => {
-                    let vec_val = self.place_value(vec_place, span)?;
-                    let opt = if let Value::Vec(items) = vec_val {
-                        if *idx < items.len() {
-                            let mut item_place = vec_place.clone();
-                            item_place.projections.push(Projection::Index(*idx));
-                            *idx += 1;
-                            Value::Option(Some(Box::new(Value::Ref(item_place))))
-                        } else {
-                            Value::Option(None)
-                        }
-                    } else {
-                        return Err(RuntimeError::new("expected vector in VecIter", span));
-                    };
-                    Some((opt, iter_val))
-                }
-                _ => None,
-            };
-            if let Some((opt, new_iter)) = res {
-                let iter_mut = self.place_value_mut(&place, span)?;
-                *iter_mut = new_iter;
-                return Ok(opt);
-            }
+            let iter_val = self.place_value(&place, span)?.clone();
+            let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = updated_iter;
+            return Ok(Value::Option(next_val.map(Box::new)));
         }
         if name == "extend" {
             let iter_arg = values
@@ -1462,61 +1693,42 @@ impl<'a> Interpreter<'a> {
             if let Value::Ref(iter_place) = iter_arg {
                 let place = self.core_receiver_place(base, span)?;
                 loop {
-                    let mut iter_val = self.place_value(&iter_place, span)?.clone();
-                    let (next_val, next_iter) = match &mut iter_val {
-                        Value::VecIter(vec_place, ref mut idx) => {
-                            let vec_val = self.place_value(vec_place, span)?;
-                            if let Value::Vec(items) = vec_val {
-                                if *idx < items.len() {
-                                    let mut item_place = vec_place.clone();
-                                    item_place.projections.push(Projection::Index(*idx));
-                                    *idx += 1;
-                                    (Some(Value::Ref(item_place)), Some(iter_val.clone()))
-                                } else {
-                                    (None, None)
-                                }
-                            } else {
-                                (None, None)
-                            }
-                        }
-                        Value::CharsIter(s, ref mut idx) => {
-                            if let Some(ch) = s.chars().nth(*idx) {
-                                *idx += 1;
-                                (
-                                    Some(Value::Char(ch)),
-                                    Some(Value::CharsIter(s.clone(), *idx)),
-                                )
-                            } else {
-                                (None, None)
-                            }
-                        }
-                        Value::SplitIter(parts, ref mut idx) => {
-                            if *idx < parts.len() {
-                                let part = parts[*idx].clone();
-                                *idx += 1;
-                                (
-                                    Some(Value::Str(part)),
-                                    Some(Value::SplitIter(parts.clone(), *idx)),
-                                )
-                            } else {
-                                (None, None)
-                            }
-                        }
-                        _ => {
-                            return Err(RuntimeError::new("extend expects a valid iterator", span))
-                        }
-                    };
-
-                    if let Some(new_iter) = next_iter {
-                        let iter_mut = self.place_value_mut(&iter_place, span)?;
-                        *iter_mut = new_iter;
-                    }
+                    let iter_val = self.place_value(&iter_place, span)?.clone();
+                    let (next_val, updated_iter) =
+                        self.iterator_step(iter_val, Some(&iter_place), span)?;
+                    let iter_mut = self.place_value_mut(&iter_place, span)?;
+                    *iter_mut = updated_iter;
 
                     if let Some(val) = next_val {
-                        let deref_val = self.deref_value(val, span)?;
-                        let vec_mut = self.place_value_mut(&place, span)?;
-                        if let Value::Vec(ref mut items) = vec_mut {
-                            items.push(Some(deref_val));
+                        let mut deref_val = self.deref_value(val, span)?;
+                        if let Value::Tuple(ref mut pair) = deref_val {
+                            if pair.len() == 2 {
+                                let k =
+                                    self.deref_value(pair[0].clone().unwrap_or(Value::Unit), span)?;
+                                let v =
+                                    self.deref_value(pair[1].clone().unwrap_or(Value::Unit), span)?;
+                                pair[0] = Some(k);
+                                pair[1] = Some(v);
+                            }
+                        }
+                        let coll_mut = self.place_value_mut(&place, span)?;
+                        match coll_mut {
+                            Value::Vec(ref mut items) => {
+                                items.push(Some(deref_val));
+                            }
+                            Value::HashMap(ref mut map) => {
+                                if let Value::Tuple(pair) = &deref_val {
+                                    if pair.len() == 2 {
+                                        let k = pair[0].clone().unwrap_or(Value::Unit);
+                                        let v = pair[1].clone().unwrap_or(Value::Unit);
+                                        map.insert(k, Some(v));
+                                    }
+                                }
+                            }
+                            Value::HashSet(ref mut set) => {
+                                set.insert(deref_val);
+                            }
+                            _ => {}
                         }
                     } else {
                         break;
@@ -1529,6 +1741,245 @@ impl<'a> Interpreter<'a> {
                     span,
                 ));
             }
+        }
+        if name == "count" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let mut cnt = 0u64;
+            loop {
+                let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+                iter_val = updated_iter;
+                if next_val.is_some() {
+                    cnt += 1;
+                } else {
+                    break;
+                }
+            }
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = iter_val;
+            return Ok(Value::Int(cnt as i128));
+        }
+        if name == "collect" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let mut items = Vec::new();
+            loop {
+                let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+                iter_val = updated_iter;
+                if let Some(x) = next_val {
+                    items.push(Some(x));
+                } else {
+                    break;
+                }
+            }
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = iter_val;
+
+            let mut is_hashset = false;
+            let mut is_hashmap = false;
+            if let Some(expr_id) = expr_id {
+                if let Some(ty) = self.tables.expr_types.get(&expr_id) {
+                    let mut current_ty = ty;
+                    while let Ty::Ref { inner, .. } = current_ty {
+                        current_ty = &**inner;
+                    }
+                    if let Ty::Core(crate::hir::CoreType::HashSet, _) = current_ty {
+                        is_hashset = true;
+                    } else if let Ty::Core(crate::hir::CoreType::HashMap, _) = current_ty {
+                        is_hashmap = true;
+                    }
+                }
+            }
+
+            let is_all_pairs = !items.is_empty()
+                && items.iter().all(|item| {
+                    if let Some(Value::Tuple(p)) = item {
+                        p.len() == 2
+                    } else {
+                        false
+                    }
+                });
+
+            if is_hashset {
+                let mut set = BTreeSet::new();
+                for item in items {
+                    if let Some(x) = item {
+                        set.insert(self.deref_value(x, span)?);
+                    }
+                }
+                return Ok(Value::HashSet(set));
+            } else if is_hashmap || is_all_pairs {
+                let mut map = BTreeMap::new();
+                for item in items {
+                    if let Some(Value::Tuple(p)) = item {
+                        let k = self.deref_value(p[0].clone().unwrap_or(Value::Unit), span)?;
+                        let v = self.deref_value(p[1].clone().unwrap_or(Value::Unit), span)?;
+                        map.insert(k, Some(v));
+                    }
+                }
+                return Ok(Value::HashMap(map));
+            } else {
+                let mut deref_items = Vec::new();
+                for item in items {
+                    if let Some(x) = item {
+                        deref_items.push(Some(self.deref_value(x, span)?));
+                    }
+                }
+                return Ok(Value::Vec(deref_items));
+            }
+        }
+        if name == "fold" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let mut init = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("fold expects init value", span))?;
+            let f = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("fold expects function argument", span))?;
+            loop {
+                let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+                iter_val = updated_iter;
+                if let Some(x) = next_val {
+                    init = self.call_function_pointer(f.clone(), vec![init, x], span)?;
+                } else {
+                    break;
+                }
+            }
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = iter_val;
+            return Ok(init);
+        }
+        if name == "reduce" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let f = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("reduce expects function argument", span))?;
+            let (first, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+            iter_val = updated_iter;
+            if let Some(first_val) = first {
+                let mut acc = first_val;
+                loop {
+                    let (next_val, updated_iter) =
+                        self.iterator_step(iter_val, Some(&place), span)?;
+                    iter_val = updated_iter;
+                    if let Some(x) = next_val {
+                        acc = self.call_function_pointer(f.clone(), vec![acc, x], span)?;
+                    } else {
+                        break;
+                    }
+                }
+                let iter_mut = self.place_value_mut(&place, span)?;
+                *iter_mut = iter_val;
+                return Ok(Value::Option(Some(Box::new(acc))));
+            } else {
+                let iter_mut = self.place_value_mut(&place, span)?;
+                *iter_mut = iter_val;
+                return Ok(Value::Option(None));
+            }
+        }
+        if name == "any" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let f = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("any expects function argument", span))?;
+            let mut found = false;
+            loop {
+                let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+                iter_val = updated_iter;
+                if let Some(x) = next_val {
+                    let res = self.call_function_pointer(f.clone(), vec![x], span)?;
+                    if let Value::Bool(true) = res {
+                        found = true;
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = iter_val;
+            return Ok(Value::Bool(found));
+        }
+        if name == "all" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let f = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("all expects function argument", span))?;
+            let mut all_true = true;
+            loop {
+                let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+                iter_val = updated_iter;
+                if let Some(x) = next_val {
+                    let res = self.call_function_pointer(f.clone(), vec![x], span)?;
+                    if let Value::Bool(false) = res {
+                        all_true = false;
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = iter_val;
+            return Ok(Value::Bool(all_true));
+        }
+        if name == "find" {
+            let place = self.core_receiver_place(base, span)?;
+            let mut iter_val = self.place_value(&place, span)?.clone();
+            let f = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("find expects function argument", span))?;
+            let mut found = None;
+            loop {
+                let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
+                iter_val = updated_iter;
+                if let Some(x) = next_val {
+                    let x_ref = Value::Ref(self.promote_to_temp_place(x.clone(), span)?);
+                    let res = self.call_function_pointer(f.clone(), vec![x_ref], span)?;
+                    if let Value::Bool(true) = res {
+                        found = Some(x);
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = iter_val;
+            return Ok(Value::Option(found.map(Box::new)));
+        }
+        if name == "map" {
+            let place = self.core_receiver_place(base, span)?;
+            let f = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("map expects function argument", span))?;
+            let Value::Function(func_item) = f else {
+                return Err(RuntimeError::new("expected function pointer for map", span));
+            };
+            let iter_val = self.place_value(&place, span)?.clone();
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = Value::MapIter(Box::new(iter_val), func_item);
+            return Ok(self.place_value(&place, span)?.clone());
+        }
+        if name == "filter" {
+            let place = self.core_receiver_place(base, span)?;
+            let f = values
+                .next()
+                .ok_or_else(|| RuntimeError::new("filter expects function argument", span))?;
+            let Value::Function(pred_item) = f else {
+                return Err(RuntimeError::new(
+                    "expected function pointer for filter",
+                    span,
+                ));
+            };
+            let iter_val = self.place_value(&place, span)?.clone();
+            let iter_mut = self.place_value_mut(&place, span)?;
+            *iter_mut = Value::FilterIter(Box::new(iter_val), pred_item);
+            return Ok(self.place_value(&place, span)?.clone());
         }
         let mut owned;
         let target = if mutating {
@@ -1695,6 +2146,71 @@ impl<'a> Interpreter<'a> {
                 )),
             },
             Value::Boxed(value) if name == "into_inner" => Ok(value.take().unwrap_or(Value::Unit)),
+            Value::HashMap(map) => match name {
+                "insert" => {
+                    let k = values
+                        .next()
+                        .ok_or_else(|| RuntimeError::new("HashMap::insert expects key", span))?;
+                    let v = values
+                        .next()
+                        .ok_or_else(|| RuntimeError::new("HashMap::insert expects value", span))?;
+                    Ok(Value::Option(
+                        map.insert(k, Some(v)).flatten().map(Box::new),
+                    ))
+                }
+                "remove" => {
+                    let k = values.next().ok_or_else(|| {
+                        RuntimeError::new("HashMap::remove expects key ref", span)
+                    })?;
+                    Ok(Value::Option(map.remove(&k).flatten().map(Box::new)))
+                }
+                "contains_key" => {
+                    let k = values.next().ok_or_else(|| {
+                        RuntimeError::new("HashMap::contains_key expects key ref", span)
+                    })?;
+                    Ok(Value::Bool(map.contains_key(&k)))
+                }
+                "len" => Ok(Value::Int(map.len() as i128)),
+                "is_empty" => Ok(Value::Bool(map.is_empty())),
+                "clear" => {
+                    map.clear();
+                    Ok(Value::Unit)
+                }
+                _ => Err(RuntimeError::new(
+                    format!("unsupported HashMap method '{name}'"),
+                    span,
+                )),
+            },
+            Value::HashSet(set) => match name {
+                "insert" => {
+                    let val = values
+                        .next()
+                        .ok_or_else(|| RuntimeError::new("HashSet::insert expects value", span))?;
+                    Ok(Value::Bool(set.insert(val)))
+                }
+                "remove" => {
+                    let val = values.next().ok_or_else(|| {
+                        RuntimeError::new("HashSet::remove expects value ref", span)
+                    })?;
+                    Ok(Value::Bool(set.remove(&val)))
+                }
+                "contains" => {
+                    let val = values.next().ok_or_else(|| {
+                        RuntimeError::new("HashSet::contains expects value ref", span)
+                    })?;
+                    Ok(Value::Bool(set.contains(&val)))
+                }
+                "len" => Ok(Value::Int(set.len() as i128)),
+                "is_empty" => Ok(Value::Bool(set.is_empty())),
+                "clear" => {
+                    set.clear();
+                    Ok(Value::Unit)
+                }
+                _ => Err(RuntimeError::new(
+                    format!("unsupported HashSet method '{name}'"),
+                    span,
+                )),
+            },
             _ => Err(RuntimeError::new(
                 format!("method '{name}' is unavailable for this value"),
                 span,
@@ -1954,7 +2470,214 @@ impl<'a> Interpreter<'a> {
                     node.span,
                 )),
             },
-            _ => Err(RuntimeError::new("expression is not a place", node.span)),
+            _ => {
+                let value = self.expect_value(expr)?;
+                let local_id = LocalId(1000000 + self.frame().values.len() as u32);
+                self.frame_mut().values.insert(local_id, Some(value));
+                Ok(Place {
+                    frame: self.frames.len() - 1,
+                    local: local_id,
+                    projections: Vec::new(),
+                })
+            }
+        }
+    }
+
+    fn promote_to_temp_place(&mut self, value: Value, _span: Span) -> Result<Place, RuntimeError> {
+        let local_id = LocalId(1000000 + self.frame().values.len() as u32);
+        self.frame_mut().values.insert(local_id, Some(value));
+        Ok(Place {
+            frame: self.frames.len() - 1,
+            local: local_id,
+            projections: Vec::new(),
+        })
+    }
+
+    fn call_function_pointer(
+        &mut self,
+        func: Value,
+        values: Vec<Value>,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        let Value::Function(item) = func else {
+            return Err(RuntimeError::new("expected a function pointer", span));
+        };
+        let callable = self
+            .item_callable(item)
+            .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
+        self.call_callable(callable, None, values, span)
+    }
+
+    fn iterator_step(
+        &mut self,
+        mut iter: Value,
+        iter_place: Option<&Place>,
+        span: Span,
+    ) -> Result<(Option<Value>, Value), RuntimeError> {
+        match &mut iter {
+            Value::CharsIter(s, ref mut idx) => {
+                let opt = if *idx < s.len() {
+                    let ch = s.chars().nth(*idx).unwrap();
+                    *idx += 1;
+                    Some(Value::Char(ch))
+                } else {
+                    None
+                };
+                Ok((opt, iter))
+            }
+            Value::SplitIter(parts, ref mut idx) => {
+                let opt = if *idx < parts.len() {
+                    let s = parts[*idx].clone();
+                    *idx += 1;
+                    Some(Value::String(s))
+                } else {
+                    None
+                };
+                Ok((opt, iter))
+            }
+            Value::VecIter(place, ref mut idx) => {
+                let vec_val = self.place_value(place, span)?;
+                if let Value::Vec(items) = vec_val {
+                    let opt = if *idx < items.len() {
+                        let mut item_place = place.clone();
+                        item_place.projections.push(Projection::Index(*idx));
+                        *idx += 1;
+                        Some(Value::Ref(item_place))
+                    } else {
+                        None
+                    };
+                    Ok((opt, iter))
+                } else {
+                    Err(RuntimeError::new("expected Vec", span))
+                }
+            }
+            Value::HashMapKeysIter(keys, ref mut idx) => {
+                let opt = if *idx < keys.len() {
+                    let opt_val = if let Some(place) = iter_place {
+                        let mut item_place = place.clone();
+                        item_place.projections.push(Projection::Index(*idx));
+                        *idx += 1;
+                        Value::Ref(item_place)
+                    } else {
+                        let val = keys[*idx].clone().unwrap_or(Value::Unit);
+                        *idx += 1;
+                        Value::Ref(self.promote_to_temp_place(val, span)?)
+                    };
+                    Some(opt_val)
+                } else {
+                    None
+                };
+                Ok((opt, iter))
+            }
+            Value::HashMapValuesIter(values, ref mut idx) => {
+                let opt = if *idx < values.len() {
+                    let opt_val = if let Some(place) = iter_place {
+                        let mut item_place = place.clone();
+                        item_place.projections.push(Projection::Index(*idx));
+                        *idx += 1;
+                        Value::Ref(item_place)
+                    } else {
+                        let val = values[*idx].clone().unwrap_or(Value::Unit);
+                        *idx += 1;
+                        Value::Ref(self.promote_to_temp_place(val, span)?)
+                    };
+                    Some(opt_val)
+                } else {
+                    None
+                };
+                Ok((opt, iter))
+            }
+            Value::HashMapIter(pairs, ref mut idx) => {
+                let opt = if *idx < pairs.len() {
+                    let opt_val = if let Some(place) = iter_place {
+                        let item_place = place.clone();
+                        let mut k_place = item_place.clone();
+                        k_place.projections.push(Projection::Index(*idx));
+                        k_place.projections.push(Projection::Index(0));
+
+                        let mut v_place = item_place.clone();
+                        v_place.projections.push(Projection::Index(*idx));
+                        v_place.projections.push(Projection::Index(1));
+
+                        let tuple_val = Value::Tuple(vec![
+                            Some(Value::Ref(k_place)),
+                            Some(Value::Ref(v_place)),
+                        ]);
+                        *idx += 1;
+                        tuple_val
+                    } else {
+                        let pair = pairs[*idx].clone().unwrap_or(Value::Unit);
+                        *idx += 1;
+                        if let Value::Tuple(mut elems) = pair {
+                            if elems.len() == 2 {
+                                let k = elems[0].clone().unwrap_or(Value::Unit);
+                                let v = elems[1].clone().unwrap_or(Value::Unit);
+                                let k_ref = Value::Ref(self.promote_to_temp_place(k, span)?);
+                                let v_ref = Value::Ref(self.promote_to_temp_place(v, span)?);
+                                elems[0] = Some(k_ref);
+                                elems[1] = Some(v_ref);
+                            }
+                            Value::Tuple(elems)
+                        } else {
+                            pair
+                        }
+                    };
+                    Some(opt_val)
+                } else {
+                    None
+                };
+                Ok((opt, iter))
+            }
+            Value::HashSetIter(items, ref mut idx) => {
+                let opt = if *idx < items.len() {
+                    let opt_val = if let Some(place) = iter_place {
+                        let mut item_place = place.clone();
+                        item_place.projections.push(Projection::Index(*idx));
+                        *idx += 1;
+                        Value::Ref(item_place)
+                    } else {
+                        let val = items[*idx].clone().unwrap_or(Value::Unit);
+                        *idx += 1;
+                        Value::Ref(self.promote_to_temp_place(val, span)?)
+                    };
+                    Some(opt_val)
+                } else {
+                    None
+                };
+                Ok((opt, iter))
+            }
+            Value::MapIter(inner, func) => {
+                let (next_opt, updated_inner) = self.iterator_step(*inner.clone(), None, span)?;
+                *inner = Box::new(updated_inner);
+                if let Some(x) = next_opt {
+                    let called =
+                        self.call_function_pointer(Value::Function(*func), vec![x], span)?;
+                    Ok((Some(called), iter))
+                } else {
+                    Ok((None, iter))
+                }
+            }
+            Value::FilterIter(inner, pred) => {
+                let mut current_inner = *inner.clone();
+                loop {
+                    let (next_opt, updated_inner) =
+                        self.iterator_step(current_inner, None, span)?;
+                    current_inner = updated_inner;
+                    if let Some(x) = next_opt {
+                        let x_ref = Value::Ref(self.promote_to_temp_place(x.clone(), span)?);
+                        let res =
+                            self.call_function_pointer(Value::Function(*pred), vec![x_ref], span)?;
+                        if let Value::Bool(true) = res {
+                            *inner = Box::new(current_inner);
+                            return Ok((Some(x), iter));
+                        }
+                    } else {
+                        *inner = Box::new(current_inner);
+                        return Ok((None, iter));
+                    }
+                }
+            }
+            _ => Err(RuntimeError::new("expected an iterator", span)),
         }
     }
 
@@ -2087,7 +2810,15 @@ impl<'a> Interpreter<'a> {
             | Value::Range { .. }
             | Value::CharsIter(..)
             | Value::SplitIter(..)
-            | Value::VecIter(..) => false,
+            | Value::VecIter(..)
+            | Value::HashMap(_)
+            | Value::HashSet(_)
+            | Value::HashMapKeysIter(..)
+            | Value::HashMapValuesIter(..)
+            | Value::HashMapIter(..)
+            | Value::HashSetIter(..)
+            | Value::MapIter(..)
+            | Value::FilterIter(..) => false,
         }
     }
 
@@ -2191,9 +2922,16 @@ fn project<'a>(value: &'a Value, projection: &Projection) -> Option<&'a Option<V
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get(name),
         (
-            Value::Tuple(values) | Value::Array(values) | Value::Vec(values),
+            Value::Tuple(values)
+            | Value::Array(values)
+            | Value::Vec(values)
+            | Value::HashMapKeysIter(values, _)
+            | Value::HashMapValuesIter(values, _)
+            | Value::HashMapIter(values, _)
+            | Value::HashSetIter(values, _),
             Projection::Index(index),
         ) => values.get(*index),
+        (Value::HashMap(map), Projection::MapKey(key)) => map.get(key),
         _ => None,
     }
 }
@@ -2203,9 +2941,16 @@ fn project_mut<'a>(value: &'a mut Value, projection: &Projection) -> Option<&'a 
         (Value::Struct { fields, .. }, Projection::Field(name))
         | (Value::Enum { named: fields, .. }, Projection::Field(name)) => fields.get_mut(name),
         (
-            Value::Tuple(values) | Value::Array(values) | Value::Vec(values),
+            Value::Tuple(values)
+            | Value::Array(values)
+            | Value::Vec(values)
+            | Value::HashMapKeysIter(values, _)
+            | Value::HashMapValuesIter(values, _)
+            | Value::HashMapIter(values, _)
+            | Value::HashSetIter(values, _),
             Projection::Index(index),
         ) => values.get_mut(*index),
+        (Value::HashMap(map), Projection::MapKey(key)) => map.get_mut(key),
         _ => None,
     }
 }

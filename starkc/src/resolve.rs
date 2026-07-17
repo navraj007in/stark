@@ -612,6 +612,9 @@ impl<'a> Resolver<'a> {
             "Box::into_inner" => return Res::Builtin(Builtin::BoxIntoInner),
             "std::fs::read_file" => return Res::Builtin(Builtin::ReadFile),
             "std::fs::write_file" => return Res::Builtin(Builtin::WriteFile),
+            "HashMap::new" => return Res::Builtin(Builtin::HashMapNew),
+            "HashMap::with_capacity" => return Res::Builtin(Builtin::HashMapWithCapacity),
+            "HashSet::new" => return Res::Builtin(Builtin::HashSetNew),
             _ => {}
         }
 
@@ -1970,6 +1973,13 @@ fn resolve_core_type(name: &str) -> Option<CoreType> {
         "CharsIter" => Some(CoreType::CharsIter),
         "SplitIter" => Some(CoreType::SplitIter),
         "VecIter" => Some(CoreType::VecIter),
+        "HashMap" => Some(CoreType::HashMap),
+        "HashSet" => Some(CoreType::HashSet),
+        "KeysIter" => Some(CoreType::KeysIter),
+        "ValuesIter" => Some(CoreType::ValuesIter),
+        "Iter" => Some(CoreType::Iter),
+        "MapIter" => Some(CoreType::MapIter),
+        "FilterIter" => Some(CoreType::FilterIter),
         _ => None,
     }
 }

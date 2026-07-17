@@ -323,7 +323,7 @@ Add missing APIs such as:
 
 ---
 
-### Phase 4C — Collections
+### Phase 4C — Collections (Status: Complete — 2026-07-17)
 
 Implement:
 
@@ -335,7 +335,7 @@ Implement:
 
 ---
 
-### Phase 4D — Iterators
+### Phase 4D — Iterators (Status: Complete — 2026-07-17)
 
 Implement:
 

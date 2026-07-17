@@ -87,6 +87,9 @@ pub enum Builtin {
     Swap,
     Replace,
     Take,
+    HashMapNew,
+    HashMapWithCapacity,
+    HashSetNew,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -101,6 +104,13 @@ pub enum CoreType {
     CharsIter,
     SplitIter,
     VecIter,
+    HashMap,
+    HashSet,
+    KeysIter,
+    ValuesIter,
+    Iter,
+    MapIter,
+    FilterIter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
