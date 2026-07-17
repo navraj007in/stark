@@ -118,3 +118,76 @@ fn pathological_nesting_is_a_diagnostic_not_a_crash() {
         parse_both(&src);
     }
 }
+
+/// WP-C1.1: pathological_nesting_is_a_diagnostic_not_a_crash above discards its parse result
+/// entirely (`let _ = parse(...)`), so it never confirmed the depth limit actually produces the
+/// expected diagnostic, produces it exactly once (the `depth_reported` latch in parser.rs), or
+/// leaves moderate-but-legitimate nesting unaffected. This closes that gap.
+#[test]
+fn depth_limit_fires_once_and_does_not_false_positive_below_it() {
+    // Well under parser.rs's MAX_DEPTH=200 -- must parse clean, no depth diagnostic at all.
+    let shallow = SourceFile::new("depth.stark", "-".repeat(50) + "x");
+    let (_ast, diags) = parse(&shallow, ParseMode::Snippet);
+    assert!(
+        diags
+            .iter()
+            .all(|d| !d.message.contains("nested too deeply")),
+        "moderate nesting (50 levels) must not trip the depth limit: {:?}",
+        diags
+    );
+
+    // Well over MAX_DEPTH -- must produce the diagnostic exactly once, not once per exceeded
+    // recursion attempt (which, at 50,000 levels, would otherwise be tens of thousands of
+    // duplicate diagnostics).
+    let deep = SourceFile::new("depth.stark", "-".repeat(50_000) + "x");
+    let (_ast, diags) = parse(&deep, ParseMode::Snippet);
+    let depth_diags: Vec<_> = diags
+        .iter()
+        .filter(|d| d.message.contains("nested too deeply"))
+        .collect();
+    assert_eq!(
+        depth_diags.len(),
+        1,
+        "expected exactly one depth-exceeded diagnostic, got {}: {:?}",
+        depth_diags.len(),
+        depth_diags
+    );
+}
+
+/// WP-C1.1 (checklist item 10): the fuzz generators above are deterministic in their *inputs*
+/// (fixed LCG seeds) but nothing previously checked that *outputs* (diagnostics) are stable
+/// across two runs of the identical input -- Charter §2.5 requires "generated output is
+/// deterministic across two runs". Re-parsing a sample of generated cases and comparing
+/// diagnostic (code, message, span) triples catches any nondeterministic-iteration regression
+/// (the class of bug found separately in resolve.rs's glob-import handling, DEV-007).
+#[test]
+fn diagnostics_are_deterministic_across_repeated_parses() {
+    let mut rng = Lcg(0xD00D);
+    let alphabet: Vec<char> = "!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~ \t\n"
+        .chars()
+        .collect();
+    for _ in 0..100 {
+        let len = rng.below(150);
+        let src: String = (0..len)
+            .map(|_| alphabet[rng.below(alphabet.len())])
+            .collect();
+        for mode in [ParseMode::Program, ParseMode::Snippet] {
+            let file_a = SourceFile::new("det.stark", src.clone());
+            let (_ast_a, diags_a) = parse(&file_a, mode);
+            let file_b = SourceFile::new("det.stark", src.clone());
+            let (_ast_b, diags_b) = parse(&file_b, mode);
+            let summarize = |diags: &[starkc::diag::Diagnostic]| -> Vec<(Option<String>, String)> {
+                diags
+                    .iter()
+                    .map(|d| (d.code.clone(), d.message.clone()))
+                    .collect()
+            };
+            assert_eq!(
+                summarize(&diags_a),
+                summarize(&diags_b),
+                "diagnostics differ across two parses of the identical input: {:?}",
+                src
+            );
+        }
+    }
+}

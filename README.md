@@ -146,7 +146,7 @@ The importer reads bounded model metadata only. It does not execute graph nodes.
 
 ### Native deployment prototype
 
-Early Gate 5 work can lower a supported STARK inference program into a bounded deployment IR and generate a self-contained Rust host project.
+Gate 5 lowers a supported STARK inference program into a bounded deployment IR and generates a self-contained Rust host project.
 
 ```bash
 cargo run -- deploy \
@@ -167,7 +167,7 @@ The generated project is designed to include:
 * deterministic generated source;
 * no generated `unsafe` code.
 
-This deployment path is still under active development. The complete measured Gate 5 demonstration has not yet been declared finished.
+Gate 5's measured demonstration is complete (see [`starkc/docs/gate5-exit.md`](starkc/docs/gate5-exit.md)); the follow-on Gate 6/7 decision checkpoints subsequently recorded REVISE and RETAIN AS RESEARCH LANGUAGE respectively for further tensor-track productisation — see the Delivery gates table below and [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md).
 
 ## Quick start
 
@@ -483,11 +483,16 @@ Start with:
 * [`STARKLANG/docs/index.md`](STARKLANG/docs/index.md)
 * [`STARKLANG/docs/spec/STARK-Core-v1.md`](STARKLANG/docs/spec/STARK-Core-v1.md)
 * [`STARKLANG/docs/ROADMAP.md`](STARKLANG/docs/ROADMAP.md)
-* [`STARKLANG/docs/PLAN.md`](STARKLANG/docs/PLAN.md)
+* [`STARKLANG/docs/PLAN.md`](STARKLANG/docs/PLAN.md) (currently tracks only through Gate 5; see `COMPILER-STATE.md` for current status)
 * [`starkc/docs/gate1-exit.md`](starkc/docs/gate1-exit.md)
 * [`starkc/docs/gate2-exit.md`](starkc/docs/gate2-exit.md)
 * [`starkc/docs/gate3-exit.md`](starkc/docs/gate3-exit.md)
 * [`starkc/docs/gate4-exit.md`](starkc/docs/gate4-exit.md)
+* [`starkc/docs/gate5-exit.md`](starkc/docs/gate5-exit.md)
+* [`starkc/docs/gate6-memo.md`](starkc/docs/gate6-memo.md) — decision: REVISE
+* [`starkc/docs/gate7-decision.md`](starkc/docs/gate7-decision.md) — decision: RETAIN AS RESEARCH LANGUAGE
+* [`COMPILER-STATE.md`](COMPILER-STATE.md) — current compiler-track governance position (Gate C0–C10, a newer, independent evidence-first re-closure track; see [`STARKLANG/docs/compiler/COMPILER-CHARTER.md`](STARKLANG/docs/compiler/COMPILER-CHARTER.md))
+* [`starkc/docs/dev/compiler-map.md`](starkc/docs/dev/compiler-map.md) — module-by-module compiler pipeline map
 
 ## Contributing
 

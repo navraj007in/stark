@@ -2,11 +2,17 @@
 
 **Status:** active engineering plan · **Subordinate to:** [ROADMAP.md](./ROADMAP.md)
 
-The roadmap defines *what evidence* advances the project (Gates 1–6). This
-document defines *how the work is executed*: technical decisions, work
-packages, test strategy, and risks. Where the two disagree, the roadmap wins.
-Effort figures are relative sizing for sequencing, not calendar commitments
-(per roadmap governance, no gate opens on a date).
+The roadmap defines *what evidence* advances the project (Gates 1–7 in ROADMAP.md's current
+numbering; this document's work-package detail below stops at Gate 5 — see the "Post-Gate-5
+status" note after §5). This document defines *how the work is executed*: technical decisions,
+work packages, test strategy, and risks. Where the two disagree, the roadmap wins. Effort
+figures are relative sizing for sequencing, not calendar commitments (per roadmap governance, no
+gate opens on a date).
+
+A separate, newer, independent governance track (Gate C0–C10) is re-closing Core v1 conformance
+from first evidence; see `STARKLANG/docs/compiler/COMPILER-ROADMAP.md` and the repo-root
+`COMPILER-STATE.md`. That track does not replace this plan's historical record of how Gates 1–5
+were executed — see `COMPILER-STATE.md` CD-001 for how the two numbering systems relate.
 
 Resolution is deliberately uneven: Gate 1 is planned at work-package detail,
 Gates 2–3 at milestone detail, Gates 4–5 at decision-and-shape detail. Each
@@ -271,6 +277,21 @@ Shape of the work (task breakdown when Gate 2 nears exit):
 - Gate 6 decision memo template prepared at the start of Gate 5, so evidence
   is collected against it rather than assembled afterward.
 
+### Post-Gate-5 status (added 2026-07-17, WP-C0.2)
+
+Gates 6 and 7 closed without a corresponding work-package section in this document — they were
+executed and recorded directly as `starkc/docs/gate6-memo.md` (decision: **REVISE**) and
+`starkc/docs/gate7-decision.md` (decision: **RETAIN AS RESEARCH LANGUAGE**, 2026-07-16), per
+ROADMAP.md's own Gate 6/7 sections. This plan is not being retroactively expanded with
+fabricated WP-level detail for that work; the exit/decision documents are the authoritative
+record of what was actually done. Gate 7 explicitly authorized only a `stark verify`
+external-validation track as further tensor-track work and stated no further language expansion
+was authorized at that time — WP8.1 through WP8.5 (LSP, formatter, test runner, VS Code
+extension, doc generator) were subsequently implemented anyway; whether that was an explicit,
+recorded owner override of the Gate 7 restriction is unresolved and flagged in
+`COMPILER-STATE.md` Follow-ups for governance-process review. This plan's own technical-decision
+table (§0, T12) already anticipated exactly this checkpoint ("Revisit at Gate 6").
+
 ---
 
 ## 6. Risks and Mitigations
@@ -294,6 +315,10 @@ Shape of the work (task breakdown when Gate 2 nears exit):
 4. WP1.4 step 1: type grammar + tests; proceed bottom-up.
 
 ## 8. Change Log
+- v0.6 — WP-C0.2 documentation reconciliation pass: added the "Post-Gate-5 status" note under
+  §5 recording that Gates 6–7 closed (REVISE; RETAIN AS RESEARCH LANGUAGE) without corresponding
+  WP-level sections here, and flagging the unresolved WP8.x-vs-Gate-7-restriction question. No
+  historical WP/gate evidence above this entry was altered.
 - v0.5 — WP1.5 done; **Gate 1 closed** (exit report in
   `starkc/docs/gate1-exit.md`). Renderer alignment fix behind new format
   goldens; final T10 fix to 02's Parsing Notes; syntax-error E-codes

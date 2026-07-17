@@ -41,29 +41,64 @@ def main():
         content = f.read()
         
     rules = parse_toml(content)
-    
+
     valid_statuses = {'implemented', 'partial', 'missing', 'intentionally-deferred', 'spec-defect'}
     errors = []
-    
+    warnings = []
+
+    # WP-C0.3: valid chapter identifiers are derived from the real spec directory, not a
+    # hardcoded list, so a renamed/removed spec file is caught automatically.
+    spec_dir = os.path.join(conformance_dir, 'STARKLANG', 'docs', 'spec')
+    valid_chapters = set()
+    if os.path.isdir(spec_dir):
+        for fname in os.listdir(spec_dir):
+            if fname.endswith('.md') and fname not in ('STARK-Core-v1.md',):
+                valid_chapters.add(fname[:-3])
+
+    # WP-C0.3: duplicate rule ID detection.
+    seen_ids = {}
+    for rule in rules:
+        rid = rule.get('id')
+        if rid:
+            seen_ids.setdefault(rid, 0)
+            seen_ids[rid] += 1
+    for rid, count in seen_ids.items():
+        if count > 1:
+            errors.append(f"Duplicate rule id '{rid}' appears {count} times.")
+
+    # Heuristic keywords suggesting a rule is a semantic *rejection* rule (checks that a
+    # malformed program is correctly refused) and therefore needs negative-test evidence, not
+    # just positive-test evidence. This is a heuristic over free-text `description` fields, not
+    # a structural distinction the schema currently makes (the schema has one `tests` array with
+    # no positive/negative tag) -- flagged as a WP-C0.3 known limitation, see the printed report.
+    rejection_keywords = ('check', 'error', 'prohibit', 'reject', 'invalid', 'exhaustiveness',
+                           'coherence', 'orphan', 'overlap', 'boundary', 'dangling')
+
     # Validation
     for rule in rules:
         rule_id = rule.get('id')
         if not rule_id:
             errors.append("Rule found without 'id' attribute.")
             continue
-            
+
+        chapter = rule.get('chapter')
         if 'chapter' not in rule:
             errors.append(f"Rule {rule_id} is missing 'chapter' attribute.")
+        elif valid_chapters and chapter not in valid_chapters:
+            errors.append(
+                f"Rule {rule_id} references nonexistent spec chapter '{chapter}' "
+                f"(no STARKLANG/docs/spec/{chapter}.md)."
+            )
         if 'description' not in rule:
             errors.append(f"Rule {rule_id} is missing 'description' attribute.")
         if 'status' not in rule:
             errors.append(f"Rule {rule_id} is missing 'status' attribute.")
             continue
-            
+
         status = rule['status']
         if status not in valid_statuses:
             errors.append(f"Rule {rule_id} has invalid status '{status}'; expected one of {valid_statuses}")
-            
+
         if status == 'implemented':
             source = rule.get('source')
             if not source:
@@ -72,7 +107,7 @@ def main():
                 source_path = os.path.join(conformance_dir, source)
                 if not os.path.exists(source_path):
                     errors.append(f"Rule {rule_id} source path '{source}' does not exist.")
-                    
+
             tests = rule.get('tests')
             if not tests:
                 errors.append(f"Rule {rule_id} has status 'implemented' but is missing 'tests' paths.")
@@ -83,7 +118,27 @@ def main():
                     test_path = os.path.join(conformance_dir, test_file)
                     if not os.path.exists(test_path):
                         errors.append(f"Rule {rule_id} test path '{test_file}' does not exist.")
-                        
+
+            description = (rule.get('description') or '').lower()
+            if any(kw in description for kw in rejection_keywords) and not tests:
+                warnings.append(
+                    f"Rule {rule_id} description suggests a semantic-rejection rule but has no "
+                    f"tests recorded -- verify negative-test (invalid-program) coverage exists, "
+                    f"not just positive-test coverage (heuristic, description-keyword based)."
+                )
+
+        if status == 'missing' and (rule.get('source') or rule.get('tests')):
+            warnings.append(
+                f"Rule {rule_id} is marked 'missing' but has a 'source' or 'tests' field set -- "
+                f"likely stale; a 'missing' rule should have neither."
+            )
+
+    if warnings:
+        print("Conformance Baseline Warnings (non-fatal):", file=sys.stderr)
+        for warning in warnings:
+            print(f"  - {warning}", file=sys.stderr)
+        print(file=sys.stderr)
+
     if errors:
         print("Conformance Baseline Verification Failed:", file=sys.stderr)
         for error in errors:

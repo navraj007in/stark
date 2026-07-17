@@ -212,7 +212,13 @@ fn lex_level_conformance() {
 
 fn parse_fixture(name: &str, mode: Mode) -> usize {
     let src = std::fs::read_to_string(fixture_dir().join(name)).unwrap();
-    let file = SourceFile::new(name.to_string(), src);
+    // WP-C1.1: use the full fixture path (not the bare filename) as the SourceFile name.
+    // parser.rs's `load_submodules_recursive` bypasses its "file not found for module"
+    // diagnostic for source files whose name contains "spec-fixtures"/"STARKLANG" -- this is
+    // what lets 07-Modules-and-Packages__01.stark's `mod math;` (no backing math.stark) stay a
+    // parse-pass notation fixture. That check only matches full paths; the bare filename never
+    // did. See COMPILER-STATE.md DEV-014.
+    let file = SourceFile::new(fixture_dir().join(name).to_string_lossy().into_owned(), src);
     let parse_mode = match mode {
         Mode::Program => ParseMode::Program,
         Mode::Snippet => ParseMode::Snippet,
@@ -223,7 +229,7 @@ fn parse_fixture(name: &str, mode: Mode) -> usize {
 
 fn check_fixture(name: &str, mode: Mode) -> Vec<String> {
     let src = std::fs::read_to_string(fixture_dir().join(name)).unwrap();
-    let file = SourceFile::new(name.to_string(), src);
+    let file = SourceFile::new(fixture_dir().join(name).to_string_lossy().into_owned(), src);
     let parse_mode = match mode {
         Mode::Program => ParseMode::Program,
         Mode::Snippet => ParseMode::Snippet,

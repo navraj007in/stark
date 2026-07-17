@@ -269,10 +269,21 @@ fn load_submodules_recursive(
                 continue;
             }
         } else {
+            // WP-C1.1 (2026-07-17): this used to also bypass whenever
+            // `std::env::args().any(|arg| arg.contains("test") || arg.contains("conformance"))`,
+            // which meant *any* process invocation whose argv happened to contain the substring
+            // "test" or "conformance" anywhere -- including every real `stark test` run (the
+            // subcommand name itself contains "test") and any `cargo test <filter>` invocation
+            // whose filter matched a `#[test] fn test_*` name -- silently suppressed this
+            // diagnostic instead of reporting a genuinely missing module file. Removed as an
+            // unsound runtime heuristic; see COMPILER-STATE.md DEV-014 and
+            // starkc/docs/conformance/KNOWN-DEVIATIONS.md. The three filename-based conditions
+            // below are kept: they cover the one known fixture that legitimately needs this
+            // (`STARKLANG/tests/spec-fixtures/07-Modules-and-Packages__01.stark`, a
+            // `parse-pass` notation example whose `mod math;` has no backing file on disk).
             let is_conformance = current_file.name == "test.stark"
                 || current_file.name.contains("spec-fixtures")
-                || current_file.name.contains("STARKLANG")
-                || std::env::args().any(|arg| arg.contains("test") || arg.contains("conformance"));
+                || current_file.name.contains("STARKLANG");
             if !is_conformance {
                 diags.push(
                     Diagnostic::error(
@@ -3168,6 +3179,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shr_eq_splits_in_generics_with_no_space_before_assign() {
+        // WP-C1.1: the `ShrEq` -> `GtEq` -> `Eq` split chain in eat_gt() (parser.rs) had no
+        // test. `Foo<Bar<T>>=y` with no space lexes the trailing `>>=` as one ShrEq token; two
+        // generic closes must peel it down to Eq for the assignment.
+        parse_ok("let x: Vec<Vec<Int32>>=Vec::new();", ParseMode::Snippet);
+    }
+
+    #[test]
+    fn bare_shift_expression_vs_generic_close() {
+        // WP-C1.1: no prior test parsed `a >> b` as an actual binary shift expression to
+        // contrast against the generic-closing case above -- the parser disambiguates by parse
+        // position (eat_gt is only called from generic-argument sites), but that structural
+        // guarantee had zero test evidence.
+        let d = dump_of("let z = a >> b;", ParseMode::Snippet);
+        assert!(
+            d.contains("binary Shr"),
+            "expected a real Shr binary expression, got:\n{d}"
+        );
+        parse_ok("let m: Vec<Vec<Int32>> = a >> b;", ParseMode::Snippet);
+    }
+
     // ----- expressions -----
 
     #[test]
@@ -3489,6 +3522,22 @@ mod tests {
             msgs.iter().any(|m| m.contains("reserved for future use")),
             "{msgs:?}"
         );
+    }
+
+    #[test]
+    fn reserved_word_diagnostic_in_non_expression_positions() {
+        // WP-C1.1: reserved_word_diagnostic above only covers expression position; confirm the
+        // same rejection fires in parameter-name and struct-field-name positions too.
+        for (src, where_) in [
+            ("fn f(unsafe: Int32) -> Int32 { unsafe }", "parameter name"),
+            ("struct S { macro: Int32 }", "struct field name"),
+        ] {
+            let msgs = parse_err(src, ParseMode::Snippet);
+            assert!(
+                msgs.iter().any(|m| m.contains("reserved for future use")),
+                "reserved word in {where_} position should be rejected, got {msgs:?}"
+            );
+        }
     }
 
     #[test]

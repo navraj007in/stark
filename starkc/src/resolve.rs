@@ -164,6 +164,27 @@ impl<'a> Resolver<'a> {
         &self.modules[self.current_module.0 as usize].file
     }
 
+    fn current_file_arc(&self) -> Arc<SourceFile> {
+        self.modules[self.current_module.0 as usize].file.clone()
+    }
+
+    /// WP-C1.2 (2026-07-17): `self.current_module` accurately tracks which module (and
+    /// therefore which file) is being processed at every diagnostic-construction site (it is
+    /// saved/restored around every submodule descent in declare_items/resolve_imports/
+    /// lower_crate), but resolve.rs never attached that file to its own diagnostics -- every
+    /// resolve-stage diagnostic for a non-root file in a multi-file package rendered against
+    /// the wrong file. This mirrors typecheck.rs's own if-none backfill pattern
+    /// (typecheck.rs:2041-2044 etc.) rather than requiring every call site to remember to call
+    /// `.with_file(...)` itself. See COMPILER-STATE.md DEV-006.
+    fn push_diag(&mut self, diag: Diagnostic) {
+        let diag = if diag.file.is_none() {
+            diag.with_file(self.current_file_arc())
+        } else {
+            diag
+        };
+        self.diags.push(diag);
+    }
+
     fn text(&self, span: Span) -> &str {
         if span.lo >= 0x8000_0000 {
             if let Some(s) = self.ast.synthetic_spans.get(&span) {
@@ -221,7 +242,7 @@ impl<'a> Resolver<'a> {
                     .items
                     .entry(name_str.clone())
                 {
-                    Entry::Occupied(_) => self.diags.push(
+                    Entry::Occupied(_) => self.push_diag(
                         Diagnostic::error(
                             format!("duplicate definition of '{}' in the same scope", name_str),
                             span,
@@ -369,7 +390,7 @@ impl<'a> Resolver<'a> {
             ast::UseTree::Path { path, .. } => {
                 let res = self.resolve_path(current_mod, path);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("unresolved import '{}'", self.path_to_string(path)),
                             path.span,
@@ -381,7 +402,7 @@ impl<'a> Resolver<'a> {
             ast::UseTree::Glob { prefix } => {
                 let res = self.resolve_path(current_mod, prefix);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("unresolved import '{}'", self.path_to_string(prefix)),
                             prefix.span,
@@ -393,7 +414,7 @@ impl<'a> Resolver<'a> {
             ast::UseTree::SelfImport { prefix } => {
                 let res = self.resolve_path(current_mod, prefix);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("unresolved import '{}'", self.path_to_string(prefix)),
                             prefix.span,
@@ -405,7 +426,7 @@ impl<'a> Resolver<'a> {
             ast::UseTree::Group { prefix, items } => {
                 let base_res = self.resolve_path(current_mod, prefix);
                 if base_res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("unresolved import '{}'", self.path_to_string(prefix)),
                             prefix.span,
@@ -472,11 +493,19 @@ impl<'a> Resolver<'a> {
                     if let Some(&sub_mod_id) =
                         self.submodule_map.get(&ast::ItemId(target_item_id.0))
                     {
-                        let items_to_copy: Vec<(String, Res)> = self.modules[sub_mod_id.0 as usize]
+                        // WP-C1.2 (2026-07-17): sort by name before iterating. `items` is a
+                        // HashMap, whose iteration order is randomized per-process by Rust's
+                        // default SipHash seed; iterating it directly made which of two
+                        // glob-colliding names wins (vs. gets flagged E0204 by
+                        // insert_module_item) nondeterministic across runs of the identical
+                        // program. See COMPILER-STATE.md DEV-007.
+                        let mut items_to_copy: Vec<(String, Res)> = self.modules
+                            [sub_mod_id.0 as usize]
                             .items
                             .iter()
                             .map(|(k, v)| (k.clone(), *v))
                             .collect();
+                        items_to_copy.sort_by(|a, b| a.0.cmp(&b.0));
                         for (k, v) in items_to_copy {
                             self.insert_module_item(current_mod, k, v, prefix.span);
                         }
@@ -533,11 +562,19 @@ impl<'a> Resolver<'a> {
                     if let Some(&sub_mod_id) =
                         self.submodule_map.get(&ast::ItemId(target_item_id.0))
                     {
-                        let items_to_copy: Vec<(String, Res)> = self.modules[sub_mod_id.0 as usize]
+                        // WP-C1.2 (2026-07-17): sort by name before iterating. `items` is a
+                        // HashMap, whose iteration order is randomized per-process by Rust's
+                        // default SipHash seed; iterating it directly made which of two
+                        // glob-colliding names wins (vs. gets flagged E0204 by
+                        // insert_module_item) nondeterministic across runs of the identical
+                        // program. See COMPILER-STATE.md DEV-007.
+                        let mut items_to_copy: Vec<(String, Res)> = self.modules
+                            [sub_mod_id.0 as usize]
                             .items
                             .iter()
                             .map(|(k, v)| (k.clone(), *v))
                             .collect();
+                        items_to_copy.sort_by(|a, b| a.0.cmp(&b.0));
                         for (k, v) in items_to_copy {
                             self.insert_module_item(import_mod, k, v, prefix.span);
                         }
@@ -576,7 +613,7 @@ impl<'a> Resolver<'a> {
         match self.modules[module_id.0 as usize].items.entry(name.clone()) {
             Entry::Occupied(occ) => {
                 if occ.get() != &res {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!(
                                 "duplicate definition of '{}' in the same module scope",
@@ -647,7 +684,7 @@ impl<'a> Resolver<'a> {
                             current_res = Some(Res::Item(hir::ItemId(0)));
                             current_mod = parent;
                         } else {
-                            self.diags.push(
+                            self.push_diag(
                                 Diagnostic::error("no parent module for 'super'", segment.span)
                                     .with_code("E0203"),
                             );
@@ -706,7 +743,7 @@ impl<'a> Resolver<'a> {
                 }
             } else if let Some(&res) = self.modules[current_mod.0 as usize].items.get(name_str) {
                 if !self.name_is_visible_from(current_mod, name_str, start_mod) {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(format!("item '{name_str}' is private"), segment.span)
                             .with_code("E0203"),
                     );
@@ -827,7 +864,7 @@ impl<'a> Resolver<'a> {
                         .flatten();
                     match ext_name {
                         Some(what) if !self.options.tensor() => {
-                            self.diags.push(
+                            self.push_diag(
                                 Diagnostic::error(
                                     format!("the {what} requires extension `tensor`"),
                                     path.span,
@@ -836,7 +873,7 @@ impl<'a> Resolver<'a> {
                             );
                         }
                         Some(_) => { /* tensor mode: deferred to M4.2 */ }
-                        None => self.diags.push(
+                        None => self.push_diag(
                             Diagnostic::error(
                                 format!("undefined type '{}'", self.path_to_string(path)),
                                 path.span,
@@ -889,7 +926,7 @@ impl<'a> Resolver<'a> {
             ast::ExprKind::Path { path, turbofish } => {
                 let res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("undefined variable '{}'", self.path_to_string(path)),
                             path.span,
@@ -982,7 +1019,7 @@ impl<'a> Resolver<'a> {
             ast::ExprKind::StructLit { path, fields } => {
                 let res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("undefined struct '{}'", self.path_to_string(path)),
                             path.span,
@@ -999,7 +1036,7 @@ impl<'a> Resolver<'a> {
                             let name_str = self.text(f.name).to_string();
                             let var_res = self.resolve_unqualified(&name_str);
                             if var_res == Res::Err {
-                                self.diags.push(
+                                self.push_diag(
                                     Diagnostic::error(
                                         format!(
                                             "undefined variable '{}' (shorthand field)",
@@ -1137,7 +1174,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     let var_name = name_str.to_string();
                     if self.scopes.last().unwrap().contains_key(&var_name) {
-                        self.diags.push(
+                        self.push_diag(
                             Diagnostic::error(
                                 format!(
                                     "duplicate definition of variable '{}' in the same scope",
@@ -1163,7 +1200,7 @@ impl<'a> Resolver<'a> {
             ast::PatKind::Path(path) => {
                 let res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("undefined pattern path '{}'", self.path_to_string(path)),
                             path.span,
@@ -1179,7 +1216,7 @@ impl<'a> Resolver<'a> {
             ast::PatKind::TupleVariant { path, pats } => {
                 let res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("undefined enum variant '{}'", self.path_to_string(path)),
                             path.span,
@@ -1197,7 +1234,7 @@ impl<'a> Resolver<'a> {
             ast::PatKind::Struct { path, fields } => {
                 let res = self.resolve_path(self.current_module, path);
                 if res == Res::Err {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!("undefined struct/variant '{}'", self.path_to_string(path)),
                             path.span,
@@ -1211,7 +1248,7 @@ impl<'a> Resolver<'a> {
                         let name_str = self.text(f.name);
                         let var_name = name_str.to_string();
                         if self.scopes.last().unwrap().contains_key(&var_name) {
-                            self.diags.push(
+                            self.push_diag(
                                 Diagnostic::error(format!("duplicate definition of variable '{}' in the same scope", var_name), f.name)
                                     .with_code("E0204")
                             );
@@ -1261,7 +1298,7 @@ impl<'a> Resolver<'a> {
 
                 let var_name = self.text(*name).to_string();
                 if self.scopes.last().unwrap().contains_key(&var_name) {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             format!(
                                 "duplicate definition of variable '{}' in the same scope",
@@ -1763,7 +1800,7 @@ impl<'a> Resolver<'a> {
                                 extension_reserved_name(self.text(b.path.segments[0].span))
                             {
                                 if !self.options.tensor() {
-                                    self.diags.push(
+                                    self.push_diag(
                                         Diagnostic::error(
                                             format!("the {what} requires extension `tensor`"),
                                             b.path.span,
@@ -1864,7 +1901,13 @@ impl<'a> Resolver<'a> {
             return Res::Primitive(primitive);
         }
         if let Some(builtin) = resolve_builtin(name) {
-            return Res::Builtin(builtin);
+            // WP-C1.2 (2026-07-17): gate tensor-extension builtins the same way
+            // resolve_path_relative already does (see `is_tensor_builtin` usage there). Without
+            // this, bare `min`/`max` resolved to the tensor extension's builtin even in
+            // Core-only mode -- see COMPILER-STATE.md DEV-004.
+            if !is_tensor_builtin(builtin) || self.options.tensor() {
+                return Res::Builtin(builtin);
+            }
         }
         if let Some(core_trait) = resolve_core_trait(name) {
             return Res::CoreTrait(core_trait);
@@ -2125,6 +2168,281 @@ mod tests {
         );
         // D5 const index list
         core_rejects_naming_tensor("fn f() -> Unit { let y = permute::<[0, 2, 1]>(x); }");
+    }
+
+    /// WP-C1.2 regression test for DEV-004: bare `min`/`max` in a struct-literal shorthand
+    /// field, with no local/module item of that name in scope, used to resolve unconditionally
+    /// to the tensor extension's `Builtin::TensorMin`/`TensorMax` even in Core-only mode
+    /// (`resolve_unqualified` was missing the `options.tensor()` gate `resolve_path_relative`
+    /// already had). Confirms Core-only mode now correctly reports "undefined variable"
+    /// instead, and that extension mode still resolves it to the tensor builtin (no regression
+    /// in the case DEV-004 wasn't about).
+    #[test]
+    fn bare_min_max_shorthand_field_is_gated_by_tensor_extension() {
+        let src = "struct Point { min: Int32 }\nfn f() -> Unit { let p = Point { min }; }";
+        let core_diags = resolve_diags(src, LanguageOptions::CORE);
+        assert!(
+            core_diags
+                .iter()
+                .any(|d| d.message.contains("undefined variable")),
+            "Core-only mode should reject bare 'min' shorthand field as an undefined variable, \
+             not silently resolve it to the tensor builtin: {:?}",
+            core_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // Same source under the tensor extension: `min` still isn't a local/module item, so the
+        // shorthand still resolves to the tensor builtin -- this confirms the gate only affects
+        // Core-only mode, not correct tensor-mode behavior.
+        let tensor_diags = resolve_diags(src, LanguageOptions::with_tensor());
+        assert!(
+            !tensor_diags
+                .iter()
+                .any(|d| d.message.contains("undefined variable")),
+            "tensor-extension mode should still resolve bare 'min' to the tensor builtin: {:?}",
+            tensor_diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// WP-C1.2 regression test for DEV-007: glob-import (`use mod::*`) expansion iterated an
+    /// unsorted HashMap, making which of two colliding names won (vs. got flagged E0204)
+    /// nondeterministic across runs. Runs the same colliding-glob program many times and
+    /// confirms the diagnostic set is identical every time.
+    #[test]
+    fn glob_import_collision_diagnostics_are_deterministic() {
+        let src = "mod a { pub fn item() -> Int32 { 1 } }\nmod b { pub fn item() -> Int32 { 2 } }\nuse a::*;\nuse b::*;\nfn main() -> Unit {}";
+        let first = resolve_diags(src, LanguageOptions::CORE);
+        for _ in 0..25 {
+            let again = resolve_diags(src, LanguageOptions::CORE);
+            assert_eq!(
+                first
+                    .iter()
+                    .map(|d| (&d.code, &d.message))
+                    .collect::<Vec<_>>(),
+                again
+                    .iter()
+                    .map(|d| (&d.code, &d.message))
+                    .collect::<Vec<_>>(),
+                "glob-import collision diagnostics differ across repeated resolves of the \
+                 identical program"
+            );
+        }
+    }
+
+    /// WP-C1.2 regression test for DEV-006 (resolve half): resolve-stage diagnostics for a
+    /// non-root file in a multi-file program used to render against the root file (the only
+    /// file resolve.rs's callers ever backfilled), since resolve.rs never attached `.with_file`
+    /// itself despite `current_module`/`current_file()` tracking the right file throughout.
+    /// Confirms a duplicate-definition error inside an inline submodule now carries that
+    /// submodule's own file identity, not silently the caller-supplied default.
+    #[test]
+    fn resolve_diagnostics_carry_their_own_file_not_the_caller_default() {
+        let src = "mod inner {\n    fn dup() -> Unit {}\n    fn dup() -> Unit {}\n}\nfn main() -> Unit {}";
+        let file = Arc::new(SourceFile::new("outer.stark".to_string(), src.to_string()));
+        let (tree, pdiags) = crate::parser::parse(&file, ParseMode::Program);
+        assert!(pdiags.is_empty(), "parse failed: {:?}", pdiags);
+        let (_hir, diags) = resolve(&tree, file.clone());
+        let dup = diags
+            .iter()
+            .find(|d| d.code.as_deref() == Some("E0204"))
+            .expect("expected an E0204 duplicate-definition diagnostic");
+        assert!(
+            dup.file.is_some(),
+            "resolve-stage diagnostic should carry its own file identity, not rely solely on \
+             the caller's default-file fallback at render time"
+        );
+    }
+
+    /// WP-C1.2 (checklist item 1): a local binding sharing a name with a module-level item.
+    /// `resolve_unqualified` checks lexical scopes (`self.scopes`) before module items
+    /// (resolve.rs ~1891-1897) -- confirms the local wins, and that outside the local's scope
+    /// the module item resolves normally (no residual shadowing leaking past its block).
+    #[test]
+    fn local_binding_shadows_same_named_module_item_within_its_scope_only() {
+        let (hir, diags) = check_src(
+            "fn helper() -> Int32 { 1 }\n\
+             fn main() -> Int32 {\n\
+             \x20   let outer = helper();\n\
+             \x20   let inner = { let helper = 99; helper };\n\
+             \x20   outer + inner\n\
+             }",
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+        let _ = hir;
+    }
+
+    /// WP-C1.2 (checklist item 2): `super::` from the root module has no parent -- confirms the
+    /// E0203 diagnostic (resolve.rs ~688-691) actually fires rather than panicking or silently
+    /// resolving to something else. This code path had zero test evidence before this WP despite
+    /// producing a real diagnostic.
+    #[test]
+    fn super_from_root_module_reports_e0203_not_a_panic() {
+        let diags = resolve_diags(
+            "use super::nothing;\nfn main() -> Unit {}",
+            LanguageOptions::CORE,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("E0203") && d.message.contains("super")),
+            "expected E0203 'no parent module for super', got {:?}",
+            diags
+                .iter()
+                .map(|d| (&d.code, &d.message))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// WP-C1.2 (checklist item 2): `super::` from a nested inline module correctly reaches the
+    /// parent, and `crate::` from a nested module reaches the package root -- both previously
+    /// had no dedicated test exercising navigation from a non-root starting point. Both `top`
+    /// and `mid` must be `pub`: per `07-Modules-and-Packages.md` §Visibility ("items are
+    /// private to their defining module by default"), STARK's model is *not* Rust's
+    /// descendant-inherits-ancestor's-privacy rule -- `inner` is not `top`'s or `mid`'s defining
+    /// module, so a private `top`/`mid` would correctly be rejected here regardless of nesting
+    /// depth (confirmed by `module_paths_imports_and_visibility_are_enforced` above, and by the
+    /// fact that the first version of this test, written assuming Rust-style visibility, failed
+    /// against the real implementation with exactly this rejection -- corrected here, not a
+    /// resolver bug).
+    #[test]
+    fn super_and_crate_navigate_correctly_from_a_nested_module() {
+        let (_hir, diags) = check_src(
+            "pub fn top() -> Int32 { 1 }\n\
+             mod outer {\n\
+             \x20   pub fn mid() -> Int32 { 2 }\n\
+             \x20   mod inner {\n\
+             \x20       fn via_super() -> Int32 { super::mid() }\n\
+             \x20       fn via_crate() -> Int32 { crate::top() }\n\
+             \x20   }\n\
+             }",
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+    }
+
+    /// WP-C1.2: companion negative case to the above -- confirms private items are visible only
+    /// within their *exact* defining module, not automatically to descendant modules (unlike
+    /// Rust). `top` here is intentionally non-`pub`.
+    #[test]
+    fn private_item_is_not_visible_from_a_descendant_module() {
+        let diags = resolve_diags(
+            "fn top() -> Int32 { 1 }\n\
+             mod outer {\n\
+             \x20   mod inner {\n\
+             \x20       fn via_crate() -> Int32 { crate::top() }\n\
+             \x20   }\n\
+             }",
+            LanguageOptions::CORE,
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("private")),
+            "expected a private-item-access rejection, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// WP-C1.2 (checklist item 5): single-level `pub use` re-export -- confirms an item is
+    /// visible through the re-exporting module's own path from outside, not just its original
+    /// declaration site. `reexport_vis`/`current_use_item_vis` (resolve.rs) had zero test
+    /// coverage of any kind before this WP despite being real, purpose-built logic. `inner` is
+    /// `pub mod` so this test isolates the re-export mechanism itself from the separate
+    /// "can a sibling module see another sibling's private module" question covered by
+    /// `private_item_is_not_visible_from_a_descendant_module` above.
+    #[test]
+    fn pub_use_single_level_reexport_is_visible_from_outside() {
+        let (_hir, diags) = check_src(
+            "pub mod inner {\n\
+             \x20   pub fn item() -> Int32 { 1 }\n\
+             }\n\
+             mod facade {\n\
+             \x20   pub use super::inner::item;\n\
+             }\n\
+             fn main() -> Int32 { facade::item() }",
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+    }
+
+    /// WP-C1.2 (checklist item 5): a 2-level `pub use` re-export chain (A re-exports from B,
+    /// which re-exports from C) -- confirms the fixed-point iteration in resolve_with_options
+    /// (resolve.rs ~139-151, "Pass 2... with fixed-point iteration for re-exports") actually
+    /// converges on a multi-level chain, not just a single hop.
+    #[test]
+    fn pub_use_multi_level_reexport_chain_resolves() {
+        let (_hir, diags) = check_src(
+            "pub mod c {\n\
+             \x20   pub fn item() -> Int32 { 1 }\n\
+             }\n\
+             pub mod b {\n\
+             \x20   pub use super::c::item;\n\
+             }\n\
+             mod a {\n\
+             \x20   pub use super::b::item;\n\
+             }\n\
+             fn main() -> Int32 { a::item() }",
+        );
+        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
+    }
+
+    /// WP-C1.2 (checklist item 5): `pub use` of a *private* item -- per `name_is_visible_from`
+    /// (resolve.rs ~822-833), `reexport_vis` is authoritative over the original item's own
+    /// `vis` once populated, so a `pub use` of a private item is expected to leak it. This is a
+    /// real design behavior, not an oversight -- confirmed and pinned down by this test since it
+    /// had zero prior coverage and would be easy to accidentally "fix" into a rejection later
+    /// without realizing it's intentional.
+    #[test]
+    fn pub_use_of_a_private_item_leaks_it() {
+        let (_hir, diags) = check_src(
+            "mod inner {\n\
+             \x20   fn secret() -> Int32 { 1 }\n\
+             \x20   pub use secret as facade_secret;\n\
+             }\n\
+             fn main() -> Int32 { inner::facade_secret() }",
+        );
+        // NOTE: if this assertion starts failing because `pub use` of a private item is
+        // rejected, that is a deliberate semantic change to visibility rules requiring CE1/CE2
+        // escalation (Charter), not a routine test update -- update this comment and
+        // COMPILER-STATE.md's DEV-020 record together with the fix, don't just adjust the
+        // assertion.
+        assert!(
+            diags.is_empty(),
+            "expected pub-use-of-private to leak the item (current design), got: {:?}",
+            diags
+        );
+    }
+
+    /// WP-C1.2 (checklist item 6): two explicit (non-glob) `use` imports bringing in the same
+    /// name from two different sources -- distinct from the already-fixed glob-import
+    /// nondeterminism case (DEV-007), which only affects `use mod::*`.
+    #[test]
+    fn two_explicit_use_imports_colliding_on_name_is_rejected() {
+        let diags = resolve_diags(
+            "mod a { pub fn item() -> Int32 { 1 } }\n\
+             mod b { pub fn item() -> Int32 { 2 } }\n\
+             use a::item;\n\
+             use b::item;\n\
+             fn main() -> Unit {}",
+            LanguageOptions::CORE,
+        );
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0204")),
+            "expected E0204 for two explicit `use` imports colliding on the same name, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// WP-C1.2 (checklist item 6): a `use` import colliding with an item declared directly in
+    /// the same module (as opposed to two `use` imports colliding with each other).
+    #[test]
+    fn use_import_colliding_with_directly_declared_item_is_rejected() {
+        let diags = resolve_diags(
+            "mod other { pub fn add() -> Int32 { 1 } }\n\
+             use other::add;\n\
+             fn add() -> Int32 { 2 }\n\
+             fn main() -> Unit {}",
+            LanguageOptions::CORE,
+        );
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0204")),
+            "expected E0204 for a `use` import colliding with a directly-declared item, got {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]

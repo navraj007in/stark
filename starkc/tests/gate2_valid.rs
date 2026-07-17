@@ -122,3 +122,102 @@ fn test_multi_file_module_loading() {
     // Clean up
     let _ = std::fs::remove_dir_all(&base_dir);
 }
+
+/// WP-C1.1: missing-module-file case for the `mod foo;` layout rule (checklist item 8).
+/// Regression test for DEV-014 -- `load_submodules_recursive` used to suppress this diagnostic
+/// for any process whose argv happened to contain "test" or "conformance" (which included every
+/// real `stark test` invocation), so a genuinely missing module file was silently accepted as
+/// having zero items rather than reported. See COMPILER-STATE.md DEV-014 and
+/// starkc/docs/conformance/KNOWN-DEVIATIONS.md.
+#[test]
+fn test_missing_module_file_is_reported_not_silently_accepted() {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/temp_missing_module_file");
+    if base_dir.exists() {
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    let main_src = "mod does_not_exist;\nfn main() {}";
+    let main_path = base_dir.join("main.stark");
+    std::fs::write(&main_path, main_src).unwrap();
+
+    let file = Arc::new(SourceFile::new(
+        main_path.to_string_lossy().into_owned(),
+        main_src.to_string(),
+    ));
+    let (_ast, diags) = parse(&file, ParseMode::Program);
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("E0202")),
+        "expected E0202 'file not found for module', got {:?}",
+        diags
+    );
+
+    let _ = std::fs::remove_dir_all(&base_dir);
+}
+
+/// WP-C1.1: duplicate `mod foo;` declarations in the same file (checklist item 8). Two `Mod`
+/// items with the same name are two separate item definitions in the same scope, so this is
+/// correctly caught by the resolver's ordinary duplicate-definition check (E0204) at parse+
+/// resolve time -- it never reaches the parser's `loaded_modules` path-based dedup at all, since
+/// that dedup only fires once a *single* `mod` item is actually being loaded. Confirmed by this
+/// test; the initial version of this test incorrectly assumed the file would load silently and
+/// was corrected after running it against the real implementation.
+#[test]
+fn test_duplicate_mod_declaration_is_rejected() {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/temp_duplicate_mod");
+    if base_dir.exists() {
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    let main_src = "mod math;\nmod math;\nfn main() { let _x = math::add(1, 2); }";
+    let math_src = "pub fn add(a: Int32, b: Int32) -> Int32 { a + b }";
+    std::fs::write(base_dir.join("main.stark"), main_src).unwrap();
+    std::fs::write(base_dir.join("math.stark"), math_src).unwrap();
+
+    let file = Arc::new(SourceFile::new(
+        base_dir.join("main.stark").to_string_lossy().into_owned(),
+        main_src.to_string(),
+    ));
+    let (ast, diags) = parse(&file, ParseMode::Program);
+    assert!(diags.is_empty(), "parse failed: {:?}", diags);
+
+    let (_hir, resolution) = resolve(&ast, file.clone());
+    assert!(
+        resolution
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0204")),
+        "expected E0204 duplicate definition for the repeated 'mod math;', got {:?}",
+        resolution
+    );
+
+    let _ = std::fs::remove_dir_all(&base_dir);
+}
+
+/// WP-C1.1: a circular `mod` reference (checklist item 8) -- `a.stark` declares `mod b;` and
+/// `b.stark` declares `mod a;` pointing back to the entry file. Confirms `loaded_modules`
+/// (a `HashSet<String>` keyed by resolved path) prevents infinite recursion rather than only
+/// being incidentally safe.
+#[test]
+fn test_circular_mod_reference_does_not_hang() {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/temp_circular_mod");
+    if base_dir.exists() {
+        let _ = std::fs::remove_dir_all(&base_dir);
+    }
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    let a_src = "mod b;\nfn main() {}";
+    let b_src = "mod a;\npub fn helper() {}";
+    std::fs::write(base_dir.join("a.stark"), a_src).unwrap();
+    std::fs::write(base_dir.join("b.stark"), b_src).unwrap();
+
+    let file = Arc::new(SourceFile::new(
+        base_dir.join("a.stark").to_string_lossy().into_owned(),
+        a_src.to_string(),
+    ));
+    // The assertion here is termination itself -- a regression that reintroduced unbounded
+    // recursion would hang or stack-overflow this test process, not fail an assert.
+    let (_ast, _diags) = parse(&file, ParseMode::Program);
+
+    let _ = std::fs::remove_dir_all(&base_dir);
+}

@@ -837,6 +837,23 @@ mod tests {
     }
 
     #[test]
+    fn all_reserved_words_lex_as_reserved() {
+        // WP-C1.1: keywords_reserved_and_idents above only exercises 2 of the 15 entries in
+        // RESERVED; this covers the full table so a future edit to RESERVED can't silently drop
+        // a word without a lexer-level test noticing.
+        for word in [
+            "async", "await", "yield", "where", "macro", "unsafe", "extern", "import", "export",
+            "null", "and", "or", "not", "is", "dyn",
+        ] {
+            assert_eq!(
+                kinds_ok(word),
+                vec![Reserved, Eof],
+                "'{word}' should lex as Reserved"
+            );
+        }
+    }
+
+    #[test]
     fn ident_length_limit() {
         let long = "x".repeat(256);
         let msgs = errors(&long);
@@ -1015,6 +1032,17 @@ mod tests {
         );
         assert_eq!(kinds_ok("/** doc */ fn"), vec![Keyword(Kw::Fn), Eof]);
         assert_eq!(kinds_ok("/**/ x"), vec![Ident, Eof]);
+    }
+
+    #[test]
+    fn deeply_nested_block_comments() {
+        // WP-C1.1: comments_are_skipped_including_nested above only exercises 2 nesting levels.
+        assert_eq!(
+            kinds_ok("a /* 1 /* 2 /* 3 /* 4 */ still 3 */ still 2 */ still 1 */ b"),
+            vec![Ident, Ident, Eof]
+        );
+        // An unterminated comment nested 3 deep must still error, not silently close early.
+        assert!(errors("/* 1 /* 2 /* 3 */ still 2")[0].contains("Unterminated block comment"));
     }
 
     #[test]

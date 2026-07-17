@@ -2,10 +2,13 @@
 
 ## What STARK Is (Current)
 
-STARK is a **specification-stage programming language**: a safe, compiled,
-general-purpose core (Rust-inspired ownership, no GC) with optional AI/ML
-extensions planned on top. The compiler front end (lexer + parser in
-`starkc/`) exists; semantic analysis and execution do not yet.
+STARK is a **research programming language with a working reference implementation**: a safe,
+Rust-inspired ownership core (no GC) with an optional tensor/model extension for AI/ML
+deployment. The `starkc/` implementation has a complete Core v1 front end (lexer, parser, name
+resolution, type/borrow checking), a reference interpreter, a tensor extension with bounded ONNX
+import/verify/deploy, a formatter, test runner, documentation generator, and an LSP server —
+see "Implementation Status" below for exactly what is closed vs. still open. It is not
+"specification-stage"; do not describe it that way.
 
 In early 2026 the project pivoted from an ambitious "AI-native, cloud-first"
 design to a minimal, implementable **Core v1**. The rationale is in
@@ -100,19 +103,32 @@ conflict table.
 ## Implementation Status
 
 - Specification: Core v1 complete draft (all 8 documents normative).
-- Compiler: front end plus semantic analysis and execution done (`starkc/` —
-  lexer WP1.2, parser WP1.4, semantic checker, and a typed-HIR interpreter;
-  the 121-fixture conformance suite is green and required in CI). The Python
-  code in `STARKLANG/compiler/` is a pre-pivot prototype and must not be
-  extended for Core v1 work.
-- Delivery is governed by `STARKLANG/docs/ROADMAP.md` (Gates 1–6 with
-  evidence-based exit criteria) and executed per `STARKLANG/docs/PLAN.md`
-  (standing decisions T1–T12, work packages). Gates 1–3 are closed
-  (`starkc/docs/gate1-exit.md`, `gate2-exit.md`, `gate3-exit.md`); next:
-  Gate 4, the `tensor` extension front end and ONNX import
-  (`starkc/docs/GEMINI_GATE4_IMPLEMENTATION.md`).
-- Scope discipline: work outside the current gate needs a roadmap-governed
-  proposal; see ROADMAP.md §4 non-goals.
+- Compiler: front end, semantic analysis, and execution are done (`starkc/` — lexer, parser,
+  name resolver, type/flow/borrow checker, and a typed-HIR interpreter; the 121-fixture
+  conformance suite is green). Also implemented: a `tensor` v0.1 extension front end with
+  bounded ONNX signature import/verification, a Gate-5 native deployment path (generated Rust
+  host + ONNX Runtime), a source formatter, a naming-convention test runner, a documentation
+  generator, and an LSP server. The Python code in `STARKLANG/compiler/` and `Practice/
+  Interpreter/` are pre-pivot prototypes and must not be extended for Core v1 work.
+- Delivery has been governed by **two, non-overlapping gate sequences** — do not conflate them:
+  - **Old sequence (`starkc/docs/gate1-exit.md` … `gate7-decision.md`)**, cited by
+    `STARKLANG/docs/ROADMAP.md`: all seven gates are closed. Gates 1–5 built the front end,
+    interpreter, tensor/ONNX front end, and a native ONNX-Runtime deployment demonstrator. Gates
+    6–7 are decision checkpoints, not implementation gates: Gate 6 recorded **REVISE** and Gate 7
+    recorded **RETAIN AS RESEARCH LANGUAGE** (2026-07-16), authorizing only a `stark verify`
+    external-validation track as next tensor-track work — see `starkc/docs/gate7-decision.md`.
+    `STARKLANG/docs/PLAN.md` has not been updated past Gate 5 and should not be trusted for
+    Gate 6/7 status.
+  - **New sequence (Gate C0–C10)**, defined in
+    `STARKLANG/docs/compiler/COMPILER-ROADMAP.md`/`COMPILER-CHARTER.md`, current status in
+    `COMPILER-STATE.md` (repo root): a from-scratch, evidence-first re-closure of Core v1
+    conformance, reference execution semantics, and (conditionally) native compilation. This is
+    the **active governance track for compiler work** as of 2026-07-17; consult
+    `COMPILER-STATE.md` before starting any compiler-track session, not this file's status
+    summary, which is a snapshot only.
+- Scope discipline: work outside the current gate needs a roadmap-governed proposal — see
+  `STARKLANG/docs/compiler/COMPILER-CHARTER.md` §1.6/§6 (compiler track) or
+  `STARKLANG/docs/ROADMAP.md` §4 (pre-existing non-goals).
 
 ## Working Conventions for This Repo
 
@@ -132,7 +148,9 @@ conflict table.
 
 ---
 
-**Last Updated**: July 2026
-**Status**: Core v1 specification complete; compiler front end, semantic
-analysis, and execution done (Gates 1–3 closed; Gate 4 next)
+**Last Updated**: 2026-07-17
+**Status**: Core v1 specification complete; compiler front end, semantic analysis, execution,
+tensor/ONNX extension, and native deployment demonstrator done (old-numbering Gates 1–7 closed;
+Gate 7 decision: RETAIN AS RESEARCH LANGUAGE). New evidence-first compiler governance (Gate
+C0–C10) bootstrapped 2026-07-17; see `COMPILER-STATE.md` for current position.
 **License**: MIT

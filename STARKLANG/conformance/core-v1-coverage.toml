@@ -20,25 +20,39 @@ tests = ["starkc/tests/conformance.rs"]
 id = "LEX-003"
 chapter = "01-Lexical-Grammar"
 description = "Integer Literals (decimal, hex, octal, binary, underscores as digit separators, suffixes)"
+# WP-C1.1 (2026-07-17): this rule's own description is lexical *shape* only (digit/base/
+# separator/suffix syntax), which is implemented and now more thoroughly tested (underscore
+# rules were decimal/hex-only before this WP; still not binary/octal -- see follow-up). Separate,
+# unresolved finding made while auditing this rule: no stage in the pipeline checks a suffixed
+# literal's *magnitude* against its suffix's representable range (confirmed empirically --
+# `let x: UInt8 = 300u8;` compiles and checks clean end-to-end). No normative rule in this
+# database currently represents that check at all -- it is not a status error on LEX-003 itself
+# (out of this rule's stated scope), but a gap in what the database can represent. See
+# COMPILER-STATE.md DEV-015 and starkc/docs/conformance/KNOWN-DEVIATIONS.md.
 status = "implemented"
 source = "starkc/src/lexer.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
 
 [[rule]]
 id = "LEX-004"
 chapter = "01-Lexical-Grammar"
 description = "Floating Point Literals (decimal dot/exponent notation, suffixes, underscore separator rules)"
+# WP-C1.1: same overflow-representation gap as LEX-003 applies here too (no range check for
+# float suffixes either) -- see DEV-015.
 status = "implemented"
 source = "starkc/src/lexer.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
 
 [[rule]]
 id = "LEX-005"
 chapter = "01-Lexical-Grammar"
 description = "String Literals (double-quoted with escape sequences, raw string literals)"
+# WP-C1.1: raw strings confirmed well-covered (valid + unterminated + unusual-content cases at
+# both unit-test and fixture-manifest level); regular escaped strings covered via
+# spec_string_examples/string_errors in lexer.rs.
 status = "implemented"
 source = "starkc/src/lexer.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
 
 [[rule]]
 id = "LEX-006"
@@ -76,9 +90,13 @@ tests = ["starkc/tests/conformance.rs"]
 id = "LEX-010"
 chapter = "01-Lexical-Grammar"
 description = "Comments (single-line comments, nested multi-line comments, doc comments)"
+# WP-C1.1: nesting depth strengthened from 2 to 4 levels tested (deeply_nested_block_comments),
+# plus a matching unterminated-at-depth-3 negative case. The spec's own nested-comment example
+# (01-Lexical-Grammar.md ~line 190) is not extracted into any manifest fixture (a plain ``` fence,
+# not ```stark) -- same extraction-tool gap noted for LEX-013.
 status = "implemented"
 source = "starkc/src/lexer.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
 
 [[rule]]
 id = "LEX-011"
@@ -100,9 +118,15 @@ tests = ["starkc/tests/conformance.rs"]
 id = "LEX-013"
 chapter = "01-Lexical-Grammar"
 description = "Reserved Tokens (async, await, yield, where, macro, unsafe, etc.)"
+# WP-C1.1 (2026-07-17): the manifest fixture corpus has zero fixtures touching reserved words
+# (the spec's example block at 01-Lexical-Grammar.md:211-216 is a plain ``` fence, not ```stark,
+# so the extraction tool never picked it up) -- "conformance.rs" contributed nothing to this rule
+# despite the prior citation. Real coverage is lexer.rs's/parser.rs's own inline unit tests,
+# strengthened this WP from 2/15 reserved words tested by name to all 15, plus a new
+# non-expression-position test (parameter name, struct field name).
 status = "implemented"
 source = "starkc/src/lexer.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/src/lexer.rs", "starkc/src/parser.rs", "starkc/tests/diag_format.rs"]
 
 [[rule]]
 id = "LEX-014"
@@ -117,9 +141,13 @@ tests = ["starkc/tests/conformance.rs"]
 id = "SYN-001"
 chapter = "02-Syntax-Grammar"
 description = "Program structure (sequence of global item declarations)"
+# WP-C1.1: multi-file `mod foo;` layout strengthened with 3 new gate2_valid.rs cases (missing
+# module file -- also DEV-014's regression test; duplicate mod declaration; circular mod
+# reference/termination). Also fixed a real bug found while writing the missing-file test: see
+# DEV-014.
 status = "implemented"
 source = "starkc/src/parser.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/tests/conformance.rs", "starkc/tests/gate2_valid.rs", "starkc/tests/gate2_package.rs"]
 
 [[rule]]
 id = "SYN-002"
@@ -213,9 +241,16 @@ tests = ["starkc/tests/conformance.rs"]
 id = "SYN-013"
 chapter = "02-Syntax-Grammar"
 description = "Basic Expressions (paths, literals, blocks, calls, method calls, field access, index, unary/binary, try)"
+# WP-C1.1: strengthened `>>` generic-closing-token splitting (shr_eq_splits_in_
+# generics_with_no_space_before_assign covers the previously-untested GtEq->Eq split arm;
+# bare_shift_expression_vs_generic_close adds the missing "a >> b as a real shift expression"
+# contrast case) and added a dedicated span-containment test suite
+# (starkc/tests/span_integrity.rs) checking that every expression/block node's span is contained
+# within its parent's, across the full parseable fixture corpus plus targeted generic-splitting
+# cases -- previously zero programmatic span-invariant checking existed anywhere (see DEV-018).
 status = "implemented"
 source = "starkc/src/parser.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/tests/conformance.rs", "starkc/tests/span_integrity.rs"]
 
 
 [[rule]]
@@ -287,9 +322,12 @@ tests = ["starkc/tests/conformance.rs"]
 id = "SEM-001"
 chapter = "04-Semantic-Analysis"
 description = "Identifier Resolution (local scoping, visibility boundaries)"
+# WP-C1.2 (2026-07-17): strengthened lexical-vs-module-scope shadowing coverage; pinned down
+# STARK's visibility model as stricter than Rust's (private = defining module only, no
+# descendant inheritance) -- see COMPILER-STATE.md's "Design fact pinned down by WP-C1.2" note.
 status = "implemented"
 source = "starkc/src/resolve.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/tests/conformance.rs", "starkc/src/resolve.rs"]
 
 [[rule]]
 id = "SEM-002"
@@ -335,9 +373,13 @@ tests = ["starkc/tests/conformance.rs"]
 id = "SEM-007"
 chapter = "04-Semantic-Analysis"
 description = "Coherence rules (orphan rules, overlapping implementation check)"
+# WP-C1.2 (2026-07-17): added a real two-package-workspace test (gate2_package.rs) confirming
+# cross-package orphan-rule detection actually works -- prior tests all used an in-memory single
+# file with no starkpkg.json on disk, under which find_package_root always returned None,
+# leaving cross-package coherence genuinely unverified until now. See DEV-021 (verified correct).
 status = "implemented"
 source = "starkc/src/typecheck.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/tests/conformance.rs", "starkc/tests/gate2_package.rs"]
 
 
 [[rule]]
@@ -409,23 +451,41 @@ tests = ["starkc/tests/gate3_execution.rs"]
 id = "STD-003"
 chapter = "06-Standard-Library"
 description = "Standard collections (Vec, String, HashMap, HashSet)"
+# WP-C0.3 (2026-07-17): source/tests corrected — previous citation (resolve.rs / gate3_execution)
+# undercited the actual implementation. interp.rs implements Vec/String/str/HashMap/HashSet
+# (HashMap deterministically as BTreeMap, see starkc/docs/dev/compiler-map.md §3); dedicated
+# tests are gate4b_string_vec.rs (String/str/Vec, Phase 4B) and gate4c_collections.rs
+# (HashMap/HashSet/iterators, Phase 4C/4D). Status left at "partial" (not promoted to
+# "implemented") pending a WP-C1.6 rule-level split of this one broad rule into per-API-surface
+# sub-rules, since "partial" vs. "implemented" for a rule this broad cannot be judged by source/
+# test existence alone the way PKG-004/005/006 and STD-004 could.
 status = "partial"
-source = "starkc/src/resolve.rs"
-tests = ["starkc/tests/gate3_execution.rs"]
+source = "starkc/src/interp.rs"
+tests = ["starkc/tests/gate4b_string_vec.rs", "starkc/tests/gate4c_collections.rs"]
 
 [[rule]]
 id = "STD-004"
 chapter = "06-Standard-Library"
 description = "Standard traits (Clone, Hash, Default, Display, Error, Iterator)"
-status = "missing"
+# WP-C0.3 (2026-07-17): corrected from "missing". typecheck.rs:5598-5637 recognizes Clone/Hash/
+# Display/Default/Iterator as compiler-known trait bounds; starkc/tests/gate4a_prelude_traits.rs
+# (12 tests) exercises them end-to-end. Set to "partial" rather than "implemented" pending a
+# WP-C1.3 rule-level audit of exhaustiveness (e.g. Error trait coverage, user-defined impls vs.
+# builtins) — see COMPILER-STATE.md DEV-013.
+status = "partial"
+source = "starkc/src/typecheck.rs"
+tests = ["starkc/tests/gate4a_prelude_traits.rs"]
 
 [[rule]]
 id = "STD-005"
 chapter = "06-Standard-Library"
 description = "Math operations, random, and I/O APIs"
+# WP-C0.3 (2026-07-17): tests citation corrected to the dedicated Phase 4E test file. "partial"
+# status confirmed accurate (not stale) — File struct is genuinely deferred, see
+# starkc/docs/PHASE4E_MATH_RANDOM_IO_IMPLEMENTATION.md and COMPILER-STATE.md DEV-009.
 status = "partial"
 source = "starkc/src/interp.rs"
-tests = ["starkc/tests/gate3_execution.rs"]
+tests = ["starkc/tests/phase4e_math_random_io.rs"]
 
 
 [[rule]]
@@ -440,32 +500,63 @@ tests = ["starkc/tests/conformance.rs"]
 id = "PKG-002"
 chapter = "07-Modules-and-Packages"
 description = "Path navigation (self, super, and crate navigation rules)"
+# WP-C1.2 (2026-07-17): before this WP, `super::`/`self::` had zero test evidence anywhere in
+# the suite (only `crate::` had happy-path coverage) -- including the E0203 "no parent module
+# for super" diagnostic, a real code path that had never actually been exercised. Added tests
+# for: super:: from root (E0203), super::/crate:: navigating correctly from a nested module,
+# and undeclared-dependency-import rejection (checklist item 8, package-level path resolution).
 status = "implemented"
 source = "starkc/src/resolve.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/tests/conformance.rs", "starkc/src/resolve.rs", "starkc/tests/gate2_package.rs"]
 
 [[rule]]
 id = "PKG-003"
 chapter = "07-Modules-and-Packages"
 description = "Visibility boundaries (restricting access to private items)"
+# WP-C1.2 (2026-07-17): added explicit-use-collision, use-vs-declared-item-collision, pub-use
+# single/multi-level re-export, and pub-use-of-private-item tests (the latter two were entirely
+# unrepresented: real dedicated `reexport_vis` machinery in resolve.rs had zero test coverage of
+# any kind). Also added a cross-package diagnostic file-attribution test
+# (gate2_package.rs::test_cross_package_diagnostic_reports_dependency_file_not_root_file).
 status = "implemented"
 source = "starkc/src/resolve.rs"
-tests = ["starkc/tests/conformance.rs"]
+tests = ["starkc/tests/conformance.rs", "starkc/src/resolve.rs", "starkc/tests/gate2_package.rs"]
 
 [[rule]]
 id = "PKG-004"
 chapter = "07-Modules-and-Packages"
 description = "Multi-file module layout compilation (mod foo; file lookup)"
-status = "missing"
+# WP-C0.3 (2026-07-17): corrected from "missing". parser.rs's load_submodules_recursive (:70-83)
+# implements mod-file loading; starkc/tests/gate2_package.rs and gate3_package_resolution.rs
+# exercise it end-to-end (9 tests total). Predates this correction by Phase 1 (commit 7ac8873,
+# "complete multi-file modules and recursive name resolution"), which the coverage database was
+# never updated to reflect after Phase 0 seeded it. See COMPILER-STATE.md DEV-002 (formerly
+# DEV-SEED-002).
+status = "partial"
+source = "starkc/src/parser.rs"
+tests = ["starkc/tests/gate2_package.rs", "starkc/tests/gate3_package_resolution.rs"]
 
 [[rule]]
 id = "PKG-005"
 chapter = "07-Modules-and-Packages"
 description = "Package manifests (starkpkg.json loading and verification)"
-status = "missing"
+# WP-C0.3 (2026-07-17): corrected from "missing". package.rs's Package::from_manifest (:362) and
+# find_package_root (:509) implement this; same test evidence as PKG-004 (Phase 2, commit
+# 22db94f, "package manifests, local dependencies, cycle and boundary checks"). See
+# COMPILER-STATE.md DEV-002.
+status = "partial"
+source = "starkc/src/package.rs"
+tests = ["starkc/tests/gate2_package.rs", "starkc/tests/gate3_package_resolution.rs"]
 
 [[rule]]
 id = "PKG-006"
 chapter = "07-Modules-and-Packages"
 description = "Transitive dependency resolution and lock-file pinning"
-status = "missing"
+# WP-C0.3 (2026-07-17): corrected from "missing". package.rs's PackageGraph::
+# load_from_root_with_modes (:787), Lockfile::parse/serialize (:541,:603), and
+# calculate_dir_sha256 (:690) implement this; gate3_package_resolution.rs exercises lockfile
+# read/write and dependency resolution directly (Phase 3, commit a76e32d, "reproducible
+# dependency resolution... registry lookup, hashing, locking"). See COMPILER-STATE.md DEV-002.
+status = "partial"
+source = "starkc/src/package.rs"
+tests = ["starkc/tests/gate3_package_resolution.rs"]
