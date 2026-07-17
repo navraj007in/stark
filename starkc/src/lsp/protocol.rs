@@ -192,27 +192,25 @@ fn parse_json_string(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option
     while let Some(c) = chars.next() {
         match c {
             '"' => return Some(result),
-            '\\' => {
-                match chars.next()? {
-                    '"' => result.push('"'),
-                    '\\' => result.push('\\'),
-                    '/' => result.push('/'),
-                    'b' => result.push('\u{0008}'),
-                    'f' => result.push('\u{000C}'),
-                    'n' => result.push('\n'),
-                    'r' => result.push('\r'),
-                    't' => result.push('\t'),
-                    'u' => {
-                        let hex: String = (0..4).filter_map(|_| chars.next()).collect();
-                        if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                            if let Some(ch) = char::from_u32(code) {
-                                result.push(ch);
-                            }
+            '\\' => match chars.next()? {
+                '"' => result.push('"'),
+                '\\' => result.push('\\'),
+                '/' => result.push('/'),
+                'b' => result.push('\u{0008}'),
+                'f' => result.push('\u{000C}'),
+                'n' => result.push('\n'),
+                'r' => result.push('\r'),
+                't' => result.push('\t'),
+                'u' => {
+                    let hex: String = (0..4).filter_map(|_| chars.next()).collect();
+                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
+                        if let Some(ch) = char::from_u32(code) {
+                            result.push(ch);
                         }
                     }
-                    _ => return None,
                 }
-            }
+                _ => return None,
+            },
             _ => result.push(c),
         }
     }
@@ -326,7 +324,10 @@ pub fn parse_message(content: &str) -> Result<Message, String> {
         (Some(method), _, _, Some(id)) => {
             // Request
             let id = id.as_i64().ok_or("Invalid request id")?;
-            let params = value.get("params").cloned().unwrap_or(JsonValue::Object(HashMap::new()));
+            let params = value
+                .get("params")
+                .cloned()
+                .unwrap_or(JsonValue::Object(HashMap::new()));
 
             Ok(Message::Request(Request {
                 id,
@@ -336,7 +337,10 @@ pub fn parse_message(content: &str) -> Result<Message, String> {
         }
         (Some(method), _, _, None) => {
             // Notification
-            let params = value.get("params").cloned().unwrap_or(JsonValue::Object(HashMap::new()));
+            let params = value
+                .get("params")
+                .cloned()
+                .unwrap_or(JsonValue::Object(HashMap::new()));
 
             Ok(Message::Notification(Notification {
                 method: method.to_string(),

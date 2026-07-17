@@ -16,6 +16,7 @@ pub mod deploy;
 pub mod diag;
 pub mod extensions;
 pub mod flow;
+pub mod formatter;
 pub mod hir;
 pub mod interp;
 pub mod lexer;

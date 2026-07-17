@@ -84,8 +84,7 @@ impl ServerState {
 
     /// Cache a compilation result.
     pub fn cache_compilation_result(&mut self, result: CompilationResult) {
-        self.compilation_cache
-            .insert(result.uri.clone(), result);
+        self.compilation_cache.insert(result.uri.clone(), result);
     }
 
     /// Get a cached compilation result if still valid.
@@ -119,7 +118,11 @@ mod tests {
     #[test]
     fn test_open_document() {
         let mut state = ServerState::new();
-        state.open_document("file:///test.stark".to_string(), 1, "fn main() {}".to_string());
+        state.open_document(
+            "file:///test.stark".to_string(),
+            1,
+            "fn main() {}".to_string(),
+        );
 
         let doc = state.get_document("file:///test.stark").unwrap();
         assert_eq!(doc.version, 1);
@@ -129,8 +132,16 @@ mod tests {
     #[test]
     fn test_update_document() {
         let mut state = ServerState::new();
-        state.open_document("file:///test.stark".to_string(), 1, "fn main() {}".to_string());
-        state.update_document("file:///test.stark".to_string(), 2, "fn test() {}".to_string());
+        state.open_document(
+            "file:///test.stark".to_string(),
+            1,
+            "fn main() {}".to_string(),
+        );
+        state.update_document(
+            "file:///test.stark".to_string(),
+            2,
+            "fn test() {}".to_string(),
+        );
 
         let doc = state.get_document("file:///test.stark").unwrap();
         assert_eq!(doc.version, 2);
@@ -140,7 +151,11 @@ mod tests {
     #[test]
     fn test_close_document() {
         let mut state = ServerState::new();
-        state.open_document("file:///test.stark".to_string(), 1, "fn main() {}".to_string());
+        state.open_document(
+            "file:///test.stark".to_string(),
+            1,
+            "fn main() {}".to_string(),
+        );
         state.close_document("file:///test.stark");
 
         assert!(state.get_document("file:///test.stark").is_none());

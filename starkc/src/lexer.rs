@@ -13,8 +13,10 @@
 //!   diagnostic recorded) so one bad literal doesn't hide later ones.
 //!
 //! Tokens carry no owned text: consumers slice the source via the span.
-//! Doc comments (`/** */`) are currently skipped like ordinary comments;
-//! they become trivia when tooling needs them (post-Gate-1).
+//! Comments are not part of the token stream (the parser never sees them),
+//! but `tokenize_with_comments` collects them as a separate trivia list —
+//! keyed by span, ordered by position — for tooling that must not discard
+//! them (the formatter, `starkc/src/formatter/`).
 
 use crate::diag::Diagnostic;
 use crate::source::{SourceFile, Span};
@@ -251,20 +253,53 @@ const MAX_IDENT_LEN: usize = 255;
 /// Lex an entire file. Always returns a token stream ending in `Eof`;
 /// errors are reported as diagnostics with `Error` placeholder tokens.
 pub fn tokenize(file: &SourceFile) -> (Vec<Token>, Vec<Diagnostic>) {
+    let (tokens, _comments, diags) = tokenize_with_comments(file);
+    (tokens, diags)
+}
+
+/// Like [`tokenize`], but also returns every comment in the file as trivia,
+/// ordered by position. The token stream is identical to `tokenize`'s (the
+/// parser still never sees comments); only tooling that must preserve or
+/// reformat comments (the formatter) needs this entry point.
+pub fn tokenize_with_comments(file: &SourceFile) -> (Vec<Token>, Vec<Comment>, Vec<Diagnostic>) {
     let mut lexer = Lexer {
         src: file.src.as_bytes(),
         pos: 0,
         tokens: Vec::new(),
+        comments: Vec::new(),
         diags: Vec::new(),
     };
     lexer.run();
-    (lexer.tokens, lexer.diags)
+    (lexer.tokens, lexer.comments, lexer.diags)
+}
+
+/// A comment, preserved as trivia for the formatter. Not part of the token
+/// stream; the parser never sees these.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Comment {
+    pub kind: CommentKind,
+    /// Full span including the delimiters (`//`, `/*` ... `*/`), excluding
+    /// the trailing newline for line comments.
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CommentKind {
+    /// `// text`
+    Line,
+    /// `/// text` — outer doc comment, attaches to the item that follows.
+    LineDoc,
+    /// `//! text` — inner doc comment, attaches to the enclosing item.
+    LineInnerDoc,
+    /// `/* text */`, possibly multi-line; nests per `01-Lexical-Grammar.md` §6.
+    Block,
 }
 
 struct Lexer<'src> {
     src: &'src [u8],
     pos: usize,
     tokens: Vec<Token>,
+    comments: Vec<Comment>,
     diags: Vec<Diagnostic>,
 }
 
@@ -275,7 +310,7 @@ impl Lexer<'_> {
             let b = self.src[self.pos];
             match b {
                 b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
-                b'/' if self.peek(1) == Some(b'/') => self.line_comment(),
+                b'/' if self.peek(1) == Some(b'/') => self.line_comment(start),
                 b'/' if self.peek(1) == Some(b'*') => self.block_comment(start),
                 b'0'..=b'9' => self.number(start),
                 b'"' => self.string(start),
@@ -313,14 +348,28 @@ impl Lexer<'_> {
 
     // --- comments -------------------------------------------------------
 
-    fn line_comment(&mut self) {
+    fn line_comment(&mut self, start: usize) {
+        // `///` (exactly three slashes) is an outer doc comment; `////+` is
+        // an ordinary (decorative) line comment, matching common practice.
+        let kind = if self.peek(2) == Some(b'/') && self.peek(3) != Some(b'/') {
+            CommentKind::LineDoc
+        } else if self.peek(2) == Some(b'!') {
+            CommentKind::LineInnerDoc
+        } else {
+            CommentKind::Line
+        };
         while self.pos < self.src.len() && self.src[self.pos] != b'\n' {
             self.pos += 1;
         }
+        self.comments.push(Comment {
+            kind,
+            span: self.span_from(start),
+        });
     }
 
     /// Block comments nest (`01-Lexical-Grammar.md` §6). `/**` doc comments
-    /// are skipped identically for now.
+    /// are recorded as ordinary block comments for now; doc-comment
+    /// semantics for block form are unspecified.
     fn block_comment(&mut self, start: usize) {
         self.pos += 2; // consume "/*"
         let mut depth = 1usize;
@@ -332,6 +381,10 @@ impl Lexer<'_> {
                 depth -= 1;
                 self.pos += 2;
                 if depth == 0 {
+                    self.comments.push(Comment {
+                        kind: CommentKind::Block,
+                        span: self.span_from(start),
+                    });
                     return;
                 }
             } else {
@@ -967,6 +1020,52 @@ mod tests {
     #[test]
     fn unterminated_block_comment() {
         assert!(errors("/* /* */")[0].contains("Unterminated block comment"));
+    }
+
+    fn comments(src: &str) -> Vec<(CommentKind, &str)> {
+        let file = SourceFile::new("test.stark", src);
+        let (_, comments, _) = tokenize_with_comments(&file);
+        comments
+            .iter()
+            .map(|c| (c.kind, &src[c.span.lo as usize..c.span.hi as usize]))
+            .collect()
+    }
+
+    #[test]
+    fn comments_are_collected_as_trivia() {
+        assert_eq!(
+            comments("a // line\nb"),
+            vec![(CommentKind::Line, "// line")]
+        );
+        assert_eq!(
+            comments("a /* x /* nested */ y */ b"),
+            vec![(CommentKind::Block, "/* x /* nested */ y */")]
+        );
+    }
+
+    #[test]
+    fn doc_comment_kinds_are_distinguished() {
+        assert_eq!(
+            comments("/// outer\nfn f() {}"),
+            vec![(CommentKind::LineDoc, "/// outer")]
+        );
+        assert_eq!(
+            comments("//! inner"),
+            vec![(CommentKind::LineInnerDoc, "//! inner")]
+        );
+        // Four or more slashes is a decorative line comment, not doc.
+        assert_eq!(
+            comments("//// banner"),
+            vec![(CommentKind::Line, "//// banner")]
+        );
+    }
+
+    #[test]
+    fn token_stream_is_unaffected_by_comment_collection() {
+        let file = SourceFile::new("test.stark", "a // line\nb /* c */ d");
+        let (tokens, _) = tokenize(&file);
+        let kinds: Vec<_> = tokens.iter().map(|t| t.kind).collect();
+        assert_eq!(kinds, vec![Ident, Ident, Ident, Eof]);
     }
 
     // --- operators ---------------------------------------------------------------
