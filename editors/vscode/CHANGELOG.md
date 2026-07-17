@@ -21,6 +21,19 @@
 - New settings: `stark.package.path`, `stark.extensionEnabled`,
   `stark.lspLogLevel`, `stark.formatOnSave`, `stark.tensorExtensionEnabled`,
   `stark.testOnSave`.
+- Fix: `stark.testOnSave` no longer forwards `--extension` to `stark test`
+  (the CLI doesn't accept it and would fail every run when a language
+  extension like `tensor` was configured); a note is logged to the
+  **STARK Test** channel instead of silently dropping the flags.
+- Fix: `stark.testOnSave` now runs from the saved file's own directory
+  rather than the workspace folder, so `stark test` finds the correct
+  package in workspaces containing more than one STARK package.
+- Fix: a missing/invalid `stark.package.path` binary now reports a clear
+  error (via a new child-process `error` handler) instead of an unhandled
+  exception.
+- Fix: `engines.vscode` raised to `^1.91.0` to match the actual minimum
+  required by the `vscode-languageclient` dependency (was `^1.75.0`,
+  understating the real requirement).
 
 ## 0.1.0
 

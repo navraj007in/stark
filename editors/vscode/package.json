@@ -6,7 +6,7 @@
   "publisher": "starklang",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.75.0"
+    "vscode": "^1.91.0"
   },
   "main": "./dist/extension.js",
   "categories": [

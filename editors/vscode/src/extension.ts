@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { spawn } from 'child_process';
+import * as path from 'path';
 import { runCompiler } from './compiler';
 import { updateDiagnostics, clearDiagnostics, clearAllDiagnostics, starkDiagnosticCollection } from './diagnostics';
 import { getConfiguration } from './configuration';
@@ -63,24 +64,42 @@ export async function activate(context: vscode.ExtensionContext) {
       return;
     }
     const config = getConfiguration();
+    // `stark test` (unlike `starkc check`/`starkc run`) does not currently
+    // accept `--extension` — its CLI only parses a name filter, `--ignored`,
+    // and `--show-output`; passing anything else is a usage error and the
+    // whole run fails. Extension flags are intentionally not forwarded
+    // here; note it in the output channel rather than silently dropping it
+    // without explanation.
     const args = ['test'];
-    for (const ext of config.extensions) {
-      args.push('--extension', ext);
+    const channel = getTestOutputChannel();
+    if (config.extensions.length > 0) {
+      channel.appendLine(
+        `[stark.testOnSave] Note: configured extension(s) ${config.extensions.join(', ')} are not passed to 'stark test' (it does not accept --extension yet).`
+      );
     }
+    // Run from the file's own directory, not the workspace folder:
+    // `find_package_root` walks upward from cwd looking for
+    // `starkpkg.json`, so this finds the nearest enclosing package even in
+    // a workspace containing several nested STARK packages (a workspace
+    // folder is not necessarily a package root itself).
     const proc = spawn(config.packagePath, args, {
-      cwd: vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath,
+      cwd: path.dirname(document.fileName),
       shell: false,
     });
     let output = '';
     proc.stdout?.on('data', (d) => (output += d.toString()));
     proc.stderr?.on('data', (d) => (output += d.toString()));
+    proc.on('error', (err) => {
+      channel.appendLine(`[stark.testOnSave] Failed to start '${config.packagePath}': ${err.message}`);
+      vscode.window.showErrorMessage(
+        `STARK: could not run 'stark test' (${err.message}). Check stark.package.path.`
+      );
+    });
     proc.on('exit', (code) => {
       if (code !== 0) {
         vscode.window.showWarningMessage('STARK: tests failed on save. See "STARK Test" output.');
       }
-      const channel = getTestOutputChannel();
-      channel.clear();
-      channel.append(output);
+      channel.appendLine(output);
     });
   }
 

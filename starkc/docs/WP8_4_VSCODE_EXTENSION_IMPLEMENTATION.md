@@ -54,6 +54,42 @@ raw JSON-RPC script (bypassing VS Code) that a tensor-only construct
 (`model M<B: Dim> { ... }`) formats successfully once `extensions:
 ["tensor"]` is sent at initialize, and fails without it.
 
+## Post-review fixes
+
+An external review of the WP8.4 commit (agreed with after independently
+verifying each claim against the code, not taken at face value) found
+five real issues. Four were fixed in a follow-up pass:
+
+- **`stark.testOnSave` + tensor mode failed every run.** `stark test`'s
+  CLI only parses a name filter, `--ignored`, and `--show-output` —
+  passing `--extension tensor` (which the extension unconditionally did)
+  hit its usage-error path. Fixed: extension flags are no longer
+  forwarded to `stark test`; a note is logged to the **STARK Test**
+  channel instead of silently dropping them.
+- **`testOnSave` used the workspace folder as `cwd`, not the file's own
+  package.** Works for the common single-package-per-workspace case
+  (workspace folder *is* the package root there) but picks the wrong — or
+  no — package in a workspace containing several nested STARK packages.
+  Fixed: runs from `path.dirname(document.fileName)`, so
+  `find_package_root`'s upward walk finds the nearest enclosing package
+  regardless of nesting.
+- **No `error` handler on the test child process.** A missing/misconfigured
+  `stark.package.path` would produce an unhandled `ChildProcess` 'error'
+  event rather than a clear message — a regression against
+  `compiler.ts`'s own `runCompiler`, which already handles this case.
+  Fixed: reports a clear error to both the output channel and an error
+  notification.
+- **`engines.vscode` (`^1.75.0`) understated the real requirement.**
+  `vscode-languageclient@10.1.0` itself requires `^1.91.0`; a user on an
+  older VS Code could have installed successfully and then failed at
+  activation. Fixed: raised to `^1.91.0`.
+
+**Not fixed (correctly identified, not requested):** the README/CHANGELOG
+wording for hover/go-to-definition/find-references reads as "these work"
+when the server-side handlers are still stubs (see WP8.1's own
+known-limitations note, unchanged by WP8.4) — a documentation-accuracy
+issue, not a functional bug, left for a future pass.
+
 ## Deliberately not built
 
 - **`stark.generateDocs`** — the plan lists it, but WP8.5 (Documentation
