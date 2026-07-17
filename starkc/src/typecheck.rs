@@ -338,6 +338,13 @@ impl<'a> TypeChecker<'a> {
                 params: vec![Ty::Primitive(Primitive::Bool)],
                 ret: Box::new(unit),
             },
+            Builtin::AssertEq | Builtin::AssertNe => {
+                let value = self.new_type_var();
+                Ty::Fn {
+                    params: vec![value.clone(), value],
+                    ret: Box::new(unit),
+                }
+            }
             Builtin::Sqrt => Ty::Fn {
                 params: vec![Ty::Primitive(Primitive::Float64)],
                 ret: Box::new(Ty::Primitive(Primitive::Float64)),

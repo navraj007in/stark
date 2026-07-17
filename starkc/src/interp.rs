@@ -352,6 +352,26 @@ pub fn run(
     })
 }
 
+/// Execute a specific zero-argument, receiverless function `item` as the
+/// program entry point instead of `main` — used by the test runner
+/// (`test_runner::run_test`) to invoke each discovered `test_*` function.
+pub fn run_item(
+    hir: &Hir,
+    file: Arc<SourceFile>,
+    tables: &TypeTables,
+    item: ItemId,
+) -> Result<Execution, RuntimeError> {
+    let mut interpreter = Interpreter::new(hir, file, tables);
+    let span = interpreter.hir.item(item).span;
+    let callable = interpreter
+        .item_callable(item)
+        .ok_or_else(|| RuntimeError::new("item is not executable", span))?;
+    interpreter.call_callable(callable, None, Vec::new(), span)?;
+    Ok(Execution {
+        output: interpreter.output,
+    })
+}
+
 struct Interpreter<'a> {
     hir: &'a Hir,
     file: Arc<SourceFile>,
@@ -1162,6 +1182,31 @@ impl<'a> Interpreter<'a> {
                 Some(Value::Bool(false)) => Err(RuntimeError::new("assertion failed", span)),
                 _ => Err(RuntimeError::new("assert expects Bool", span)),
             },
+            Builtin::AssertEq | Builtin::AssertNe => {
+                let right = args.pop().ok_or_else(|| {
+                    RuntimeError::new("assert_eq/assert_ne expects two arguments", span)
+                })?;
+                let left = args.pop().ok_or_else(|| {
+                    RuntimeError::new("assert_eq/assert_ne expects two arguments", span)
+                })?;
+                let left = self.deref_value(left, span)?;
+                let right = self.deref_value(right, span)?;
+                let equal = left == right;
+                let want_eq = builtin == Builtin::AssertEq;
+                if equal == want_eq {
+                    Ok(Value::Unit)
+                } else if want_eq {
+                    Err(RuntimeError::new(
+                        format!("assertion failed: `(left == right)`\n  left: `{left}`\n right: `{right}`"),
+                        span,
+                    ))
+                } else {
+                    Err(RuntimeError::new(
+                        format!("assertion failed: `(left != right)`\n  left: `{left}`\n right: `{right}`"),
+                        span,
+                    ))
+                }
+            }
             Builtin::Sqrt => match args.pop() {
                 Some(Value::Float(value)) if value >= 0.0 => Ok(Value::Float(value.sqrt())),
                 Some(Value::Float(_)) => Err(RuntimeError::new("sqrt domain error", span)),

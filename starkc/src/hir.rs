@@ -32,6 +32,8 @@ pub enum Builtin {
     Println,
     Panic,
     Assert,
+    AssertEq,
+    AssertNe,
     Sqrt,
     Drop,
     StringFrom,

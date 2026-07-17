@@ -1872,6 +1872,8 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "println" => Some(Builtin::Println),
         "panic" => Some(Builtin::Panic),
         "assert" => Some(Builtin::Assert),
+        "assert_eq" => Some(Builtin::AssertEq),
+        "assert_ne" => Some(Builtin::AssertNe),
         "sqrt" => Some(Builtin::Sqrt),
         "drop" => Some(Builtin::Drop),
         "read_file" => Some(Builtin::ReadFile),
