@@ -305,25 +305,49 @@ impact, workaround, proposed disposition, owning future gate.
 - **Owning gate:** closed under WP-C1.1 (2026-07-17). Regression test:
   `starkc/tests/gate2_valid.rs::test_missing_module_file_is_reported_not_silently_accepted`.
 
-## DEV-015 — Suffixed literal overflow is never checked
+## DEV-015 — Suffixed literal overflow is never checked (RESOLVED in WP-C1.5)
 
 - **Normative expectation:** per CLAUDE.md, "Integer overflow... always trap — in every build
-  mode." A literal whose value exceeds its suffix type's range should be rejected.
-- **Current behaviour:** confirmed empirically — `let x: UInt8 = 300u8;` compiles and
-  `starkc check` reports clean. No stage checks literal magnitude against suffix range;
-  `typecheck.rs`'s `convert_int_suffix` only maps the suffix to a type tag.
-- **User impact:** a program can declare an integer literal with a suffix that cannot represent
-  its value, and the compiler accepts it silently — later runtime behavior for that value is
-  presumably whatever bit-truncation Rust's own literal parsing does underneath, which is itself
-  unspecified from STARK's perspective.
+  mode." A literal whose value exceeds its suffix type's range should be rejected. Also
+  03-Type-System.md:28: "Default integer type is Int32 for literals that fit, Int64 otherwise"
+  (unsuffixed literals).
+- **Original behaviour:** confirmed empirically — `let x: UInt8 = 300u8;` compiled and
+  `starkc check` reported clean; `let x = 99999999999;` (unsuffixed, exceeds Int32) silently
+  typed as a broken Int32 instead of promoting to Int64. No stage checked literal magnitude
+  against suffix range; `typecheck.rs`'s `convert_int_suffix` only mapped the suffix to a type
+  tag.
+- **User impact (while open):** a program could declare an integer literal with a suffix that
+  cannot represent its value, and the compiler accepted it silently.
 - **Security/soundness impact:** low-moderate — not a memory-safety issue, but a real type-system
-  soundness gap: the declared type's range guarantee doesn't actually hold for literals.
-- **Workaround:** none; be careful with literal/suffix combinations near type boundaries.
-- **Proposed disposition:** triage where the check belongs (lexer-level immediate rejection,
-  since the lexer already knows the suffix at tokenization time, vs. typecheck/const-eval-level)
-  and implement it. Not attempted in WP-C1.1 — a real design decision, not a test-strengthening
-  task.
-- **Owning gate:** WP-C1.3 or WP-C1.5 (needs triage to pick one).
+  soundness gap: the declared type's range guarantee didn't actually hold for literals.
+- **Resolution:** design question settled (user-approved 2026-07-18): typecheck/const-eval time,
+  not the lexer — an unsuffixed literal's fit-check needs its inferred target type, which the
+  lexer never has. Fixed in `typecheck.rs`'s `check_expr` `Lit::Int` arm: suffixed literals
+  checked against their suffix's exact range (new **E0008**, via a new
+  `literal::int_suffix_range_contains` helper); unsuffixed literals promoted to Int64 if they
+  don't fit Int32, rejected (E0008) if they don't fit Int64 either. A defense-in-depth suffix
+  re-check was also added to `interp.rs::eval_lit`. Both share a new `src/literal.rs` module
+  (also used to fix a second, previously-unknown bug found while building it — see DEV-025).
+- **Owning gate:** WP-C1.5 (closed).
+
+## DEV-025 — `pat_subsumes` compared literal patterns by shape only, not value (RESOLVED in
+WP-C1.5)
+
+- **Normative expectation:** the "unreachable match arm" lint should only fire when a later arm's
+  pattern is genuinely covered by an earlier one.
+- **Original behaviour:** `Lit` (the AST/HIR literal-shape tag) carries no value for Int/Float/Str
+  — only base/suffix/raw shape info. `pat_subsumes` compared `Lit == Lit` directly, so any two
+  same-kind literal patterns were treated as equal regardless of actual value. Confirmed
+  empirically: `match x: Int32 { 1 => .., 2 => .. }` and `match x: &str { "a" => .., "b" => .. }`
+  both spuriously flagged the second, genuinely-distinct arm as redundant/unreachable. This fired
+  on essentially every real-world literal match with 2+ arms.
+- **User impact:** false-positive "unreachable match arm" (W-class, currently mislabeled E0500 —
+  see DEV-019) warnings on common, correct code.
+- **Security/soundness impact:** none — a spurious warning, not an incorrect accept/reject.
+- **Resolution:** found while building `src/literal.rs` for DEV-015. `pat_subsumes` now parses
+  both literals' actual values via `literal::eval_lit_value` and compares those instead of the
+  shape-only `Lit` tag.
+- **Owning gate:** WP-C1.5 (closed).
 
 ## DEV-016 — Repository-wide clippy debt (RESOLVED in WP-C1.4)
 

@@ -1,14 +1,15 @@
 # STARK Compiler STATE
-Updated: 2026-07-17 after CD-005 (governance update, mandatory-native-compiler brief)
+Updated: 2026-07-18 after CD-006 (float division-by-zero trap semantics, WP-C1.5)
 
 ## Position
-Gate: C1  Next: WP-C1.5  Blocked: none
+Gate: C1  Next: WP-C1.6  Blocked: none
 Mandatory compiler path: Core=open (C1 in progress)  MIR=blocked (behind C1/C2/C3)  Native=blocked (behind C1/C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head: f710d0fca2b468e700141da84f7f298cdc05aa43 (WP-C1.4's own changes are uncommitted as of
-  this session record; commit only on explicit user request, per standing workflow)
+- Head: 80ef50415b4a67c6b9f10122d923b0472bf4550c (`implement WP-C1.3 and WP-C1.4: ...`). WP-C1.5's
+  own changes are uncommitted as of this session record; commit only on explicit user request,
+  per standing workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -16,11 +17,12 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **429 passed, 0 failed, 2 ignored** across 3 unittest binaries + 31 integration-test files
+  **450 passed, 0 failed, 2 ignored** across 3 unittest binaries + 31 integration-test files
   (up from 383/0/2 and 30 files at Gate C0 close; WP-C1.1 added `span_integrity.rs` + 12 tests,
   WP-C1.2 added 15 more across `resolve.rs`'s inline tests and `gate2_package.rs`, WP-C1.3 added
   8 more across `typecheck.rs`'s and `interp.rs`'s inline test modules, WP-C1.4 added 11 more
-  across `gate2_valid.rs` and `gate3_execution.rs`). Both ignored tests are
+  across `gate2_valid.rs` and `gate3_execution.rs`, WP-C1.5 added 21 more to `gate2_valid.rs`).
+  Both ignored tests are
   intentionally opt-in (a checksum-pinned live ONNX artifact test in `tests/gate4_onnx.rs`, and
   a live-ORT-download inference test in `tests/gate5_codegen.rs`). Full per-file breakdown
   recorded in `starkc/docs/dev/compiler-map.md` (WP-C0.1; not re-regenerated for the WP-C1.1/
@@ -157,8 +159,18 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   rework** — none of it touched native-compilation framing. Both brief files are left on disk
   as-is (the original for historical reference, the "(1)" revision as the new live source); this
   is a content decision, not a file-management one, and neither file was deleted or renamed.
-
-## Conformance summary
+- CD-006 [2026-07-18, WP-C1.5] Resolved a spec-internal tension in `03-Type-System.md`'s Numeric
+  Semantics section, found during the WP-C1.5 audit and flagged to the user rather than resolved
+  unilaterally (CE2-shaped): the section states both "Division or modulo by zero is a runtime
+  error and MUST trap" and, in an adjacent bullet, "Floating-point operations follow IEEE-754
+  semantics (NaN, +/-Inf)" — the current implementation traps on `0.0 / 0.0` (a literal reading
+  of the first bullet), which is in tension with the second bullet's implied NaN/Inf behavior for
+  floats specifically. **User decision: keep trapping (current behavior); no code change.** The
+  "MUST trap" rule applies uniformly across all numeric types including floats; the IEEE-754
+  bullet is read narrowly (governing ordinary float arithmetic results — e.g. overflow producing
+  `+Inf`, not division by zero specifically, which STARK treats as an error condition like any
+  other div-by-zero). No spec or code edits made under this decision; recorded so the question is
+  not re-litigated in a future WP. `interp.rs`'s Float `BinOp::Div`/`Rem` arms are unchanged.
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
   nested-comment depth tested to 4 levels (was 2) with a matching unterminated-at-depth negative
@@ -423,17 +435,20 @@ complete or as substituting for WP-C0.4.)
   argv). Full regression test: `starkc/tests/gate2_valid.rs::
   test_missing_module_file_is_reported_not_silently_accepted`. Verified: full suite green twice,
   `cargo fmt`/targeted clippy clean on changed files.
-- DEV-015 [CONFIRMED, WP-C1.1] No pipeline stage checks a suffixed integer/float literal's
-  magnitude against its suffix's representable range. Empirically confirmed: `let x: UInt8 =
-  300u8;` compiles and `starkc check` reports clean. `typecheck.rs`'s `convert_int_suffix`
-  (`:5728-5737`) only maps the suffix to a type tag, never inspects the literal's value. Not a
-  status error on LEX-003/LEX-004 (their descriptions are lexical *shape* only), but a normative
-  concern (CLAUDE.md: "Integer overflow... always trap — in every build mode") with no
-  representation anywhere in `core-v1-coverage.toml`. Where this belongs (lexer-level immediate
-  rejection vs. typecheck/const-eval-level check) is a design question, not resolved here.
-  — owner: WP-C1.3 (types/generics/traits) or WP-C1.5 (numeric semantics) — needs triage to
-  determine which; likely the latter given CLAUDE.md frames overflow as a numeric-semantics
-  concern.
+- DEV-015 [RESOLVED, WP-C1.5] No pipeline stage checked a suffixed integer literal's magnitude
+  against its suffix's representable range (`let x: UInt8 = 300u8;` compiled clean), and
+  unsuffixed literals never got the spec's "Int32 if it fits, else Int64" treatment
+  (03-Type-System.md:28) -- `let x = 99999999999;` silently typed as a broken Int32. Fixed in
+  `check_expr`'s `Lit::Int` arm (`typecheck.rs`): suffixed literals are checked against their
+  suffix's exact range (new `literal::int_suffix_range_contains`, code **E0008**); unsuffixed
+  literals are promoted to Int64 if they don't fit Int32, and rejected outright if they don't fit
+  Int64 either. A defense-in-depth suffix-range re-check was also added to `interp.rs::eval_lit`.
+  Design question settled (user-approved 2026-07-18): typecheck/const-eval time, not the lexer --
+  an unsuffixed literal's fit-check needs its inferred target type, which the lexer never has.
+  Both checks share a new `src/literal.rs` module; building it also fixed a second,
+  previously-unknown bug found in the process -- `pat_subsumes` compared literal *patterns* by
+  shape only (no value), so `match x { 1 => .., 2 => .. }` spuriously flagged the second arm as
+  unreachable. Full detail in the `### WP-C1.5` session record.
 - DEV-016 [RESOLVED, WP-C1.4] `cargo clippy --all-targets -- -D warnings` failed with 22
   pre-existing warnings, none in files touched by WP-C1.1 (confirmed via `grep -v typecheck.rs`
   isolation — hits spanned `typecheck.rs`, `interp.rs`, `lsp/protocol.rs`, `lsp/server.rs`). CI
@@ -489,6 +504,16 @@ complete or as substituting for WP-C0.4.)
   + 1 correct), and module-loading errors share E0202 with unrelated undefined-type errors.
   (E0210, used twice in resolve.rs for "requires extension `tensor`", is NOT a deviation — it's
   an extension-scoped code the Core spec's table has no reason to enumerate.)
+  **WP-C1.5 additions to this same class**, found while touching match-arm code for the
+  exhaustiveness fix below: (4) `typecheck.rs`'s "unreachable match arm" warning uses **E0500**
+  (`:3844` as of this WP) — spec table: E0500="Trait not implemented" (an *error*, not a
+  warning); colliding with 15 other, spec-correct E0500 "trait not implemented" error sites in
+  the same file. (5) `typecheck.rs`'s "method call on non-struct/enum type" error uses **E0303**
+  (`:4955` as of WP-C1.3, now shifted by WP-C1.5's edits) — spec table: E0303="Non-exhaustive
+  match"; colliding with the (now WP-C1.5-strengthened) spec-correct E0303 exhaustiveness sites.
+  Not fixed here, same reasoning as (1)-(3): reassigning codes is a public diagnostic-contract
+  change deserving its own bounded spec-bug-protocol change, not a drive-by inside a
+  test/soundness-strengthening WP.
 - **User impact:** a tool consuming diagnostic codes programmatically (IDE quick-fixes, CI
   triage, `starkc check --message-format json` consumers) cannot distinguish "no parent for
   super" from "ambiguous trait method call" by code alone, or "unresolved import" from "used a
@@ -499,7 +524,10 @@ complete or as substituting for WP-C0.4.)
   cases.
 - **Proposed disposition:** genuine spec-bug-protocol candidate (Charter §1.5 rule 2) — needs
   new normative E02xx codes allocated for: unresolved import, no-parent-for-super, private-item-
-  access, module-file-not-found, conflicting-module-files. Not fixed here: reassigning codes is
+  access, module-file-not-found, conflicting-module-files; plus (from WP-C1.5) a new W0xxx code
+  for "unreachable match arm" (it's a warning, not an error, so E0500 was always the wrong
+  category regardless of collision) and a new E00xx code for "method call on non-struct/enum
+  type". Not fixed here: reassigning codes is
   a public diagnostic-contract change touching tests across multiple files
   (`starkc/tests/diag_format.rs` and others assert on some of these exact strings/codes), and
   deserves the full spec-fix-plus-executable-evidence treatment in one bounded change, not a
@@ -582,6 +610,14 @@ involving nested modules and private items should assume this stricter model.
   pattern to DEV-013's fixes. `Into`/`TryFrom` (the same CoreTrait family, `resolve.rs:2080-2082`)
   were not independently tested but likely share the same gap given they're conventionally
   implemented in terms of `From`. — owner: unscheduled; needs root-cause investigation first.
+- DEV-025 [RESOLVED, WP-C1.5] `pat_subsumes` (typecheck.rs) compared literal *patterns* by shape
+  only (`Lit` carries no value for Int/Float/Str, only base/suffix/raw tags), so any two
+  same-kind literal patterns were treated as equal regardless of actual value. Confirmed
+  empirically: `match x: Int32 { 1 => .., 2 => .. }` and `match x: &str { "a" => .., "b" => .. }`
+  both spuriously flagged the second, genuinely-distinct arm as unreachable — fired on
+  essentially every real-world literal match with 2+ arms. Found while building `src/literal.rs`
+  for DEV-015. Fixed: `pat_subsumes` now parses both literals' actual values via
+  `literal::eval_lit_value` and compares those instead of the shape-only `Lit` tag.
 
 ## Architecture decisions
 - AD-001 [pre-existing, old Gate 5] Native artifact-deployment backend is **ONNX Runtime via the
@@ -745,7 +781,8 @@ involving nested modules and private items should assume this stricter model.
 - [ ] WP-C8.2/C8.3: implement real LSP hover/definition/references (DEV-010).
 - [ ] WP-C8.7: interactive VS Code Extension Development Host validation (DEV-012).
 - [x] WP-C1.1: lexical and syntax requalification — closed 2026-07-17. See session record below.
-- [ ] WP-C1.3 or WP-C1.5 (triage which): fix DEV-015 (suffixed-literal overflow never checked).
+- [x] WP-C1.5: fixed DEV-015 (suffixed-literal overflow never checked) — see session record
+      below.
 - [x] WP-C1.4: DEV-016 (repo-wide clippy debt, 22 pre-existing warnings) — resolved, see session
       record below.
 - [ ] WP-C1.6: DEV-017 (coverage-database test citations lack function-level precision).
@@ -759,7 +796,9 @@ involving nested modules and private items should assume this stricter model.
 - [ ] WP-C1.6 (or a dedicated spec-bug-protocol change): DEV-019 — reallocate distinct E02xx
       codes for unresolved-import, no-parent-for-super, private-item-access, module-file-not-
       found, and conflicting-module-files (currently colliding with unrelated correct uses of
-      E0401/E0203/E0202 in flow.rs/typecheck.rs/resolve.rs itself).
+      E0401/E0203/E0202 in flow.rs/typecheck.rs/resolve.rs itself); plus (WP-C1.5 additions)
+      a new W0xxx code for "unreachable match arm" (mislabeled E0500) and a new E00xx code for
+      "method call on non-struct/enum type" (mislabeled E0303).
 - [ ] Unscheduled, needs a proposal first: DEV-022 (private-item-leakage-through-public-
       signature checking doesn't exist; spec is silent on whether it should).
 
@@ -1223,3 +1262,104 @@ this WP given the effort budget was consumed by the three deep soundness-fix cyc
 CI-driven DEV-016 detour — recorded as a known gap in this WP's own coverage, matching WP-C1.3's
 same disclosure pattern, not silently claimed as thorough.
 NEXT: WP-C1.5 (control flow, patterns, constants, and numeric semantics)
+
+### WP-C1.5 — 2026-07-18
+DONE: Control flow, patterns, constants, and numeric semantics. Research (dispatched to a
+research agent) audited the WP's 13-item checklist plus the inherited DEV-015 finding against
+`flow.rs`/`typecheck.rs`/`interp.rs`, verifying every claim empirically via scratch `.stark`
+programs rather than from code reading alone. Found six items needing real fixes and one item
+(build-mode invariance of traps) confirmed already sound. Three findings were CE1/CE2-shaped
+(genuine semantic/spec-interpretation decisions, not just bugs) and were flagged to the user
+before resolving, per the standing `stark-ce-escalation-flagging` preference; the user answered
+all three (2026-07-18):
+- **DEV-015** (inherited): fix at typecheck/const-eval time plus a defensive runtime re-check —
+  **approved and implemented**. See DEV-015's own ledger entry above for the fix detail. Building
+  its literal-parsing logic surfaced a companion, previously-unknown bug (`pat_subsumes` compared
+  literal patterns by shape only, not value — `match x { 1 => .., 2 => .. }` spuriously flagged
+  the second arm unreachable); fixed in the same pass via a new shared `src/literal.rs` module
+  (also refactored `interp.rs::eval_lit` to use it instead of its own private copy — pure
+  refactor, verified zero behavior change before building on top of it).
+- **Match exhaustiveness gap**: compile-time exhaustiveness was previously implemented only for
+  `Enum` and `Bool` scrutinees — **approved and implemented** ("implement real compile-time
+  exhaustiveness"). Extended the existing arm-tracking loop (`typecheck.rs`'s `ExprKind::Match`
+  arm) to also recognize `Option`/`Result` coverage (their `Some`/`None`/`Ok`/`Err` patterns
+  resolve via `Res::Builtin`, not `Res::Variant`, so the pre-existing `matched_variants` tracking
+  never covered them — `match opt { Some(v) => .. }` missing `None` compiled clean before this).
+  For every other scrutinee type, added a general rule: an explicit wildcard/binding arm is now
+  required to be considered exhaustive (a real usefulness/coverage algorithm for arbitrary types
+  is out of this WP's scope; this is sound — never accepts a genuinely non-exhaustive match —
+  though it can over-reject some in-practice-exhaustive matches, matching this codebase's
+  existing "reject some safe programs is intentional" philosophy). Added a recursive
+  `is_irrefutable` helper so fully-binding compound patterns (`(a, b)`, `[a, b, c]`) still count
+  as exhaustive without a redundant trailing wildcard, and exempted `Ty::Struct` scrutinees
+  entirely (a struct has exactly one shape, so a single covering arm is exhaustive by
+  construction) — both needed to avoid regressing `tests/gate2_valid.rs`'s existing fixture
+  corpus and one `interp.rs` inline test. Caught one real regression during verification: fixing
+  the `?`-operator bug below (see next item) broke `tests/gate2-valid/21_try_operator.stark`,
+  which declared its own `enum Option<T> { Some(T), None }` shadowing the prelude type — flagged
+  to the user as a genuine ambiguity (does `?`/exhaustiveness apply to shadowed lookalike types?)
+  rather than resolved unilaterally; user chose "prelude types only, update the fixture" — the
+  fixture's shadowing enum declaration was removed so it now exercises the real prelude `Option`.
+- **Float division/modulo by zero**: `03-Type-System.md`'s Numeric Semantics section states both
+  "MUST trap" and, adjacently, IEEE-754 "NaN, +/-Inf" semantics — a real spec-internal tension,
+  not just a code bug. **User decision: keep trapping, no code change** — see CD-006 above.
+Three more items were fixed directly (mechanical/tightening, not semantic-policy decisions,
+consistent with the CE-escalation-watch's "diagnostics/soundness-tightening fix directly, no
+escalation needed" carve-out):
+- Array-repeat-expression count (`[value; count]`) previously computed its length by parsing the
+  *raw source text* of `count` as a bare unsuffixed decimal — a suffixed literal (`5u32`), an
+  underscore-grouped literal (`1_0`), or a `const` item reference all silently computed length 0,
+  falsely rejecting every subsequent valid index with E0007. Added a minimal `const_eval_u64`
+  (literal, or a reference to a `const` item — not a full constant-folding pass, out of scope)
+  and a new diagnostic (**E0009**) for count expressions that aren't constant at all, replacing
+  the previous silent wrong-answer fallback.
+- The `?` operator's Result/Option identity check was a substring search over an enum's *entire
+  declaration source text* for "Result"/"Option" — confirmed exploitable: an unrelated user enum
+  with a variant literally named `ResultVariant` satisfied it, letting `?` type-check against a
+  function that doesn't return `Result`/`Option` at all. `Option`/`Result` always resolve to
+  `Ty::Core(CoreType::Option|Result, _)`, never `Ty::Enum` (confirmed via `hir::CoreType`), so the
+  `Ty::Enum` special-case was dead weight for real Option/Result and existed only to create the
+  bug; removed both `Ty::Enum` match arms entirely (2 call sites) rather than trying to make the
+  substring search more precise.
+FILES: starkc/src/literal.rs (new -- shared literal-value parsing), starkc/src/lib.rs (register
+`literal` module), starkc/src/interp.rs (refactored `eval_lit` onto the shared module; DEV-015
+defensive runtime check), starkc/src/typecheck.rs (`pat_subsumes` real literal-value comparison;
+DEV-015 magnitude checks in `Lit::Int`'s `check_expr` arm; `const_eval_u64` + array-repeat-count
+fix; `?`-operator `Ty::Enum` arm removal x2; match-exhaustiveness Option/Result tracking +
+general wildcard-required rule + `is_irrefutable` helper), starkc/tests/gate2_valid.rs (+21
+tests), starkc/tests/gate2-valid/21_try_operator.stark (removed a shadowing `enum Option<T>`
+declaration so the fixture exercises the real prelude type),
+STARKLANG/docs/compiler/work-packages/WP-C1.5.md (new), COMPILER-STATE.md,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md.
+RULES: none formally re-cited in coverage.toml this WP (a future WP-C1.6 pass should
+retroactively cite the new control-flow/pattern/numeric tests against the relevant rule IDs).
+DECISIONS: CD-006 (float division-by-zero trap semantics, keep current behavior, no code change).
+No new CE-escalation deferrals remain open from this WP -- all three flagged decisions were
+resolved by the user within this session (two approved-and-implemented, one settled by explicit
+non-action).
+EVIDENCE: MANUAL + REG -- every fix (and the settled spec-tension question) verified empirically
+via scratch `.stark` programs before writing permanent tests, confirming exact before/after
+behavior (e.g. `300u8` accepted then E0008-rejected; `[0; 5u32]` false-E0007 then correctly
+length-5; the substring-exploiting `?` case accepted then E0006-rejected; `match opt { Some(v) =>
+.. }` accepted then E0303-rejected). One real regression caught and fixed during verification
+(the `21_try_operator.stark` fixture, see above) -- confirms the empirical-verification-before-
+permanent-tests discipline is pulling its weight, not just ceremony. `cargo test --workspace
+--all-targets --all-features` run twice consecutively at the end of the WP, final state 450
+passed/0 failed/2 ignored (up from 429/0/2 at WP-C1.4's close), deterministic across both runs.
+`cargo fmt --check` clean. `cargo clippy --all-targets -- -D warnings` fully clean repo-wide.
+FOLLOW-UP: DEV-019 gained two more collision instances (E0500 misused for "unreachable match
+arm," which is a warning not the spec's "trait not implemented" error; E0303 misused for "method
+call on non-struct/enum type," not the spec's "non-exhaustive match") -- folded into DEV-019's
+existing ledger entry rather than fixed here, same reasoning as its original three (public
+diagnostic-contract change, deserves its own bounded spec-bug-protocol change). The general
+"requires wildcard" exhaustiveness rule is intentionally imprecise for compound types beyond the
+irrefutable-pattern check (e.g. it cannot prove `match x: Bool8Tuple { (true,true)=>.., ...all 4
+combinations... }` is actually exhaustive without a wildcard) -- backstopped by the interpreter's
+pre-existing "non-exhaustive match reached" runtime trap, and consistent with this WP's own
+scope-control answer that some over-rejection is an acceptable, intentional tradeoff. A real
+usefulness/coverage algorithm remains a candidate for a future WP if the over-rejection proves
+practically annoying. Also fixed a pre-existing, unrelated documentation staleness bug found
+during the consistency sweep: this file's header cited "CD-005" for the mandatory-native-compiler
+governance update, but the actual decision log entry was filed as CD-004 (off-by-one, predates
+this WP) -- corrected.
+NEXT: WP-C1.6 (conformance evidence generator)

@@ -10,6 +10,7 @@ use crate::extensions::tensor::types::{
 use crate::hir::{
     self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId, TypeId,
 };
+use crate::literal;
 use crate::options::LanguageOptions;
 use crate::source::{SourceFile, Span};
 use std::collections::{HashMap, HashSet};
@@ -250,7 +251,24 @@ impl<'a> TypeChecker<'a> {
         match (&a.kind, &b.kind) {
             (hir::PatKind::Wild | hir::PatKind::Binding { .. }, _) => true,
             (_, hir::PatKind::Wild | hir::PatKind::Binding { .. }) => false,
-            (hir::PatKind::Lit(la), hir::PatKind::Lit(lb)) => la == lb,
+            (hir::PatKind::Lit(la), hir::PatKind::Lit(lb)) => {
+                // WP-C1.5: `Lit` itself carries no value for Int/Float/Str (only shape tags --
+                // base/suffix/raw), so comparing it directly treats any two same-kind literal
+                // patterns as equal regardless of value, e.g. `match x { 1 => .., 2 => .. }`
+                // spuriously flagged the second arm as unreachable. Parse both literals' actual
+                // values from their source text (the same logic `interp.rs` uses to evaluate
+                // them) and compare those instead.
+                match (
+                    literal::eval_lit_value(*la, self.text(a.span)),
+                    literal::eval_lit_value(*lb, self.text(b.span)),
+                ) {
+                    (Some(va), Some(vb)) => va == vb,
+                    // Unparseable literal: fall back to the old shape-only comparison rather
+                    // than silently treating it as never-equal (matches this function's existing
+                    // "when in doubt" bias -- it also does not exist to catch parse failures).
+                    _ => la == lb,
+                }
+            }
             (hir::PatKind::Path { res: ra, .. }, hir::PatKind::Path { res: rb, .. }) => ra == rb,
             (hir::PatKind::Tuple(pa), hir::PatKind::Tuple(pb)) => {
                 pa.len() == pb.len()
@@ -314,6 +332,56 @@ impl<'a> TypeChecker<'a> {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// WP-C1.5: whether a pattern always matches, regardless of the scrutinee's value -- used
+    /// alongside the top-level `Wild`/`Binding` check to decide match-arm exhaustiveness. A bare
+    /// `Wild`/`Binding` is trivially irrefutable; a `Tuple`/`Array` pattern is irrefutable if
+    /// every element is; a `Struct` pattern is irrefutable if every explicit field sub-pattern
+    /// is (a shorthand field with no sub-pattern, e.g. `Point { x }`, is itself a binding).
+    /// Without this, `match pair { (a, b) => .. }` (a fully-binding tuple pattern, matches any
+    /// tuple) was flagged as non-exhaustive by the new general "requires wildcard" rule below,
+    /// even though this single arm covers every possible tuple value.
+    fn is_irrefutable(&self, pat: &hir::PatNode) -> bool {
+        match &pat.kind {
+            hir::PatKind::Wild | hir::PatKind::Binding { .. } => true,
+            hir::PatKind::Tuple(pats) | hir::PatKind::Array(pats) => pats
+                .iter()
+                .all(|&pat_id| self.is_irrefutable(self.hir.pat(pat_id))),
+            // A `Struct { .. }` pattern matching an *enum variant* (`res: Res::Variant`) is not
+            // irrefutable on its own -- other variants can still occur. Only a plain-struct
+            // pattern (exactly one possible shape) can be irrefutable this way.
+            hir::PatKind::Struct { res, fields, .. } if !matches!(res, Res::Variant(..)) => {
+                fields.iter().all(|field| {
+                    field
+                        .pat
+                        .is_none_or(|pat_id| self.is_irrefutable(self.hir.pat(pat_id)))
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// WP-C1.5: minimal constant evaluator for array-repeat-expression counts (`[value; count]`,
+    /// 02-Syntax-Grammar.md:330). Handles the two confirmed-common shapes -- a literal, or a
+    /// reference to a `const` item (recursing into its initializer) -- rather than a full
+    /// general constant-folding pass, which is out of this WP's scope.
+    fn const_eval_u64(&self, expr_id: ExprId) -> Option<u64> {
+        let expr = self.hir.expr(expr_id);
+        match &expr.kind {
+            hir::ExprKind::Lit(Lit::Int { base, suffix }) => {
+                let value = literal::parse_int_literal(self.text(expr.span), *base, *suffix)?;
+                u64::try_from(value).ok()
+            }
+            hir::ExprKind::Path {
+                res: Res::Item(item_id),
+                ..
+            } => match &self.hir.item(*item_id).kind {
+                hir::ItemKind::Const { value, .. } => self.const_eval_u64(*value),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -3005,11 +3073,53 @@ impl<'a> TypeChecker<'a> {
         let expr = self.hir.expr(expr_id);
         let ty = match &expr.kind {
             hir::ExprKind::Lit(lit) => match lit {
-                Lit::Int { suffix, .. } => {
+                // WP-C1.5 (DEV-015): no stage previously checked a literal's magnitude against
+                // its suffix's (or, for unsuffixed literals, its default-inferred) representable
+                // range -- `let x: UInt8 = 300u8;` compiled clean, and `let x = 99999999999;`
+                // silently became a broken Int32 instead of the spec's "Int32 if it fits, else
+                // Int64" (03-Type-System.md:28). Checked here, at typecheck time, since an
+                // unsuffixed literal's fit-check depends on the type it's being inferred into
+                // (Int32 vs Int64) -- the lexer sees only token shape, never a target type.
+                Lit::Int { base, suffix } => {
+                    let value = literal::parse_int_literal(self.text(expr.span), *base, *suffix);
                     if let Some(s) = suffix {
+                        if let Some(value) = value {
+                            if !literal::int_suffix_range_contains(*s, value) {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        format!(
+                                            "integer literal out of range for '{}'",
+                                            self.ty_to_string(&Ty::Primitive(convert_int_suffix(
+                                                *s
+                                            )))
+                                        ),
+                                        expr.span,
+                                    )
+                                    .with_code("E0008"),
+                                );
+                            }
+                        }
                         Ty::Primitive(convert_int_suffix(*s))
                     } else {
-                        Ty::Primitive(Primitive::Int32)
+                        match value {
+                            Some(value) if i32::try_from(value).is_ok() => {
+                                Ty::Primitive(Primitive::Int32)
+                            }
+                            Some(value) if i64::try_from(value).is_ok() => {
+                                Ty::Primitive(Primitive::Int64)
+                            }
+                            Some(_) => {
+                                self.diags.push(
+                                    Diagnostic::error(
+                                        "integer literal out of range for 'Int64'",
+                                        expr.span,
+                                    )
+                                    .with_code("E0008"),
+                                );
+                                Ty::Primitive(Primitive::Int64)
+                            }
+                            None => Ty::Primitive(Primitive::Int32),
+                        }
                     }
                 }
                 Lit::Float { suffix, .. } => {
@@ -3565,12 +3675,15 @@ impl<'a> TypeChecker<'a> {
                 if let Some(fn_ret) = &self.current_fn_ret {
                     let fn_ret = self.resolve(fn_ret);
                     match fn_ret {
-                        Ty::Enum(enum_id, _) => {
-                            let name_str = self.text(self.hir.item(enum_id).span);
-                            if name_str.contains("Result") || name_str.contains("Option") {
-                                ret_ok = true;
-                            }
-                        }
+                        // WP-C1.5: `Option`/`Result` are always `Ty::Core(CoreType::Option|
+                        // Result, _)` (see `hir::CoreType`), never `Ty::Enum` -- a `Ty::Enum`
+                        // arm here previously did a substring search over the enum's entire
+                        // declaration source text for "Result"/"Option", which let any
+                        // unrelated user enum with a matching substring anywhere in its
+                        // declaration (e.g. a variant literally named `ResultVariant`) satisfy
+                        // this check. 03-Type-System.md:590 defines `?` exclusively for
+                        // `Result<T, E>`/`Option<T>`; there is no user-extensible Try trait in
+                        // Core v1, so no `Ty::Enum` should ever satisfy this.
                         Ty::Core(CoreType::Result | CoreType::Option, _) => ret_ok = true,
                         Ty::Error => {
                             ret_ok = true; // suppress
@@ -3591,23 +3704,10 @@ impl<'a> TypeChecker<'a> {
 
                 // 2. Check try expression type
                 match self.resolve(&expr_ty) {
-                    Ty::Enum(enum_id, args) => {
-                        let name_str = self.text(self.hir.item(enum_id).span);
-                        if name_str.contains("Result") || name_str.contains("Option") {
-                            args.first().cloned().unwrap_or(Ty::Error)
-                        } else {
-                            if expr_ty != Ty::Error {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        "try operator '?' requires Result or Option",
-                                        expr.span,
-                                    )
-                                    .with_code("E0006"),
-                                );
-                            }
-                            Ty::Error
-                        }
-                    }
+                    // WP-C1.5: same fix as above -- Option/Result never resolve to `Ty::Enum`,
+                    // so this used to be exploitable via any user enum with a "Result"/"Option"
+                    // substring anywhere in its declaration text. No `Ty::Enum` arm here at all
+                    // now; it falls through to the `_` rejection below, correctly.
                     Ty::Core(CoreType::Result | CoreType::Option, args) => {
                         args.first().cloned().unwrap_or(Ty::Error)
                     }
@@ -3651,8 +3751,31 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
 
-                let count_str = self.text(self.hir.expr(*count).span);
-                let len = count_str.parse::<u64>().unwrap_or(0);
+                // WP-C1.5: `count` (02-Syntax-Grammar.md:330: "must be a compile-time constant
+                // expression") was previously computed by parsing the *raw source text* of the
+                // count expression as a bare unsuffixed decimal (`text.parse::<u64>()`) --
+                // anything else (a suffixed literal like `5u32`, an underscore-grouped literal
+                // like `1_0`, or a `const` item reference) silently failed to parse and fell
+                // back to length 0, which then falsely rejected every subsequent valid index
+                // into the array with E0007. `const_eval_u64` handles the confirmed-common
+                // shapes (a literal, or a reference to a `const` item); anything else is
+                // reported directly rather than silently defaulting to a wrong length.
+                let len = match self.const_eval_u64(*count) {
+                    Some(len) => len,
+                    None => {
+                        if !matches!(count_ty, Ty::Error) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    "array repeat count must be a compile-time constant \
+                                     expression",
+                                    self.hir.expr(*count).span,
+                                )
+                                .with_code("E0009"),
+                            );
+                        }
+                        0
+                    }
+                };
                 Ty::Array(Box::new(val_ty), len)
             }
             hir::ExprKind::StructLit { res, fields, .. } => match res {
@@ -3726,6 +3849,13 @@ impl<'a> TypeChecker<'a> {
                 let mut matched_variants = HashSet::new();
                 let mut matched_bools = HashSet::new();
                 let mut has_wildcard = false;
+                // WP-C1.5: `Option`/`Result` resolve to `Ty::Core(CoreType::Option|Result, _)`,
+                // never `Ty::Enum` (see `hir::CoreType`), and their `Some`/`None`/`Ok`/`Err`
+                // patterns resolve via `Res::Builtin`, never `Res::Variant` -- so the existing
+                // `matched_variants`/`Ty::Enum` machinery below never covered them at all.
+                // `match opt { Some(v) => .. }` (missing `None`) compiled clean before this fix.
+                let (mut matched_some, mut matched_none) = (false, false);
+                let (mut matched_ok, mut matched_err) = (false, false);
 
                 let mut preceding_patterns = Vec::new();
 
@@ -3755,17 +3885,23 @@ impl<'a> TypeChecker<'a> {
                         preceding_patterns.push(pat);
                     }
 
+                    if self.is_irrefutable(pat) {
+                        has_wildcard = true;
+                    }
                     match &pat.kind {
-                        hir::PatKind::Wild | hir::PatKind::Binding { .. } => {
-                            has_wildcard = true;
-                        }
+                        hir::PatKind::Wild | hir::PatKind::Binding { .. } => {}
                         hir::PatKind::Path { res, .. }
                         | hir::PatKind::TupleVariant { res, .. }
-                        | hir::PatKind::Struct { res, .. } => {
-                            if let Res::Variant(_, variant_idx) = res {
+                        | hir::PatKind::Struct { res, .. } => match res {
+                            Res::Variant(_, variant_idx) => {
                                 matched_variants.insert(*variant_idx);
                             }
-                        }
+                            Res::Builtin(Builtin::Some) => matched_some = true,
+                            Res::Builtin(Builtin::None) => matched_none = true,
+                            Res::Builtin(Builtin::Ok) => matched_ok = true,
+                            Res::Builtin(Builtin::Err) => matched_err = true,
+                            _ => {}
+                        },
                         hir::PatKind::Lit(Lit::Bool(value)) => {
                             matched_bools.insert(*value);
                         }
@@ -3777,27 +3913,40 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if !has_wildcard {
-                    match self.resolve(&scr_ty) {
-                        Ty::Enum(enum_id, _) => {
-                            if let Some(variants) = self.enum_variants.get(&enum_id) {
-                                if matched_variants.len() < variants.len() {
-                                    self.diags.push(
-                                        Diagnostic::error(
-                                            "non-exhaustive pattern match",
-                                            expr.span,
-                                        )
-                                        .with_code("E0303"),
-                                    );
-                                }
-                            }
-                        }
-                        Ty::Primitive(Primitive::Bool) if matched_bools.len() < 2 => {
-                            self.diags.push(
-                                Diagnostic::error("non-exhaustive pattern match", expr.span)
-                                    .with_code("E0303"),
-                            );
-                        }
-                        _ => {}
+                    let non_exhaustive = match self.resolve(&scr_ty) {
+                        Ty::Enum(enum_id, _) => self
+                            .enum_variants
+                            .get(&enum_id)
+                            .is_some_and(|variants| matched_variants.len() < variants.len()),
+                        Ty::Primitive(Primitive::Bool) => matched_bools.len() < 2,
+                        Ty::Core(CoreType::Option, _) => !(matched_some && matched_none),
+                        Ty::Core(CoreType::Result, _) => !(matched_ok && matched_err),
+                        // WP-C1.5: every other scrutinee type previously fell through here
+                        // silently, regardless of arm coverage -- `match x: Int32 { 1 => ..,
+                        // 2 => .. }` (missing every other Int32 value) compiled clean and only
+                        // trapped at runtime ("non-exhaustive match reached", interp.rs) if an
+                        // unmatched value actually occurred. 04-Semantic-Analysis.md is explicit:
+                        // "If a match is not exhaustive, it is a compile-time error." A real
+                        // usefulness/coverage algorithm (tracking which literal values or ranges
+                        // are covered) is out of this WP's scope; instead, any scrutinee type
+                        // that isn't one of the small, exactly-enumerable domains above now
+                        // requires an explicit wildcard/binding arm to be considered exhaustive
+                        // -- sound (never accepts a genuinely non-exhaustive match), and matches
+                        // this codebase's existing "reject some safe programs is intentional"
+                        // philosophy (03-Type-System.md's own framing for the analogous borrow-
+                        // checking tradeoff). `Ty::Struct` is exempted: a struct type has exactly
+                        // one shape, so any single struct-pattern arm is exhaustive over it by
+                        // construction (sub-pattern-level literal restrictions, e.g. `Point{x: 0,
+                        // ..}`, are not yet analyzed here -- same pre-existing imprecision as
+                        // before this fix, backstopped by the same runtime trap).
+                        Ty::Error | Ty::Struct(..) => false,
+                        _ => true,
+                    };
+                    if non_exhaustive {
+                        self.diags.push(
+                            Diagnostic::error("non-exhaustive pattern match", expr.span)
+                                .with_code("E0303"),
+                        );
                     }
                 }
 

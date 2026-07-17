@@ -21,6 +21,7 @@ pub mod formatter;
 pub mod hir;
 pub mod interp;
 pub mod lexer;
+pub mod literal;
 pub mod lsp;
 pub mod onnx;
 pub mod options;

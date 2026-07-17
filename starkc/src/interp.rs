@@ -2,7 +2,7 @@
 
 use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::hir::{self, BlockId, Builtin, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId};
-use crate::lexer::Base;
+use crate::literal::{self, LitValue};
 use crate::source::{SourceFile, Span};
 use crate::typecheck::{Ty, TypeTables};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -913,39 +913,32 @@ impl<'a> Interpreter<'a> {
 
     fn eval_lit(&self, lit: Lit, span: Span) -> Result<Value, RuntimeError> {
         let text = self.text(span);
-        match lit {
-            Lit::Bool(value) => Ok(Value::Bool(value)),
-            Lit::Char => parse_char(text)
-                .map(Value::Char)
-                .ok_or_else(|| RuntimeError::new("invalid character literal", span)),
-            Lit::Str { raw } => Ok(Value::Str(parse_string(text, raw))),
-            Lit::Int { base, suffix } => {
-                let mut digits = text.replace('_', "");
-                if let Some(suffix) = suffix {
-                    let suffix = format!("{suffix:?}").to_ascii_lowercase();
-                    digits.truncate(digits.len().saturating_sub(suffix.len()));
-                }
-                let (digits, radix) = match base {
-                    Base::Dec => (digits.as_str(), 10),
-                    Base::Bin => (digits.trim_start_matches("0b"), 2),
-                    Base::Oct => (digits.trim_start_matches("0o"), 8),
-                    Base::Hex => (digits.trim_start_matches("0x"), 16),
-                };
-                i128::from_str_radix(digits, radix)
-                    .map(Value::Int)
-                    .map_err(|_| RuntimeError::new("integer literal out of range", span))
+        let value = literal::eval_lit_value(lit, text)
+            .ok_or_else(|| RuntimeError::new("invalid literal", span))?;
+        // WP-C1.5 (DEV-015): defense-in-depth mirror of typecheck.rs's suffixed-literal
+        // magnitude check (`check_expr`'s `Lit::Int` arm) -- re-verified here in case a literal
+        // ever reaches evaluation without having gone through that check (e.g. a future
+        // alternate entry point). Unsuffixed-literal-vs-inferred-type magnitude is not
+        // re-checked here since that requires the type table typecheck.rs already consulted;
+        // trusting the already-validated static type for that half is the same trust boundary
+        // `check_integer_range` (used elsewhere in this file) already relies on.
+        if let (
+            LitValue::Int(value),
+            Lit::Int {
+                suffix: Some(s), ..
+            },
+        ) = (&value, lit)
+        {
+            if !literal::int_suffix_range_contains(s, *value) {
+                return Err(RuntimeError::new("integer literal out of range", span));
             }
-            Lit::Float { suffix } => {
-                let mut number = text.replace('_', "");
-                if let Some(suffix) = suffix {
-                    let suffix = format!("{suffix:?}").to_ascii_lowercase();
-                    number.truncate(number.len().saturating_sub(suffix.len()));
-                }
-                number
-                    .parse::<f64>()
-                    .map(Value::Float)
-                    .map_err(|_| RuntimeError::new("invalid float literal", span))
-            }
+        }
+        match value {
+            LitValue::Bool(value) => Ok(Value::Bool(value)),
+            LitValue::Char(value) => Ok(Value::Char(value)),
+            LitValue::Str(value) => Ok(Value::Str(value)),
+            LitValue::Int(value) => Ok(Value::Int(value)),
+            LitValue::Float(value) => Ok(Value::Float(value)),
         }
     }
 
@@ -3382,59 +3375,6 @@ fn string_arg(value: Option<Value>, span: Span) -> Result<String, RuntimeError> 
     match value {
         Some(Value::Str(value) | Value::String(value)) => Ok(value),
         _ => Err(RuntimeError::new("expected string argument", span)),
-    }
-}
-
-fn parse_string(text: &str, raw: bool) -> String {
-    let content = if raw {
-        text.strip_prefix('r').unwrap_or(text)
-    } else {
-        text
-    };
-    let content = content
-        .strip_prefix('"')
-        .and_then(|value| value.strip_suffix('"'))
-        .unwrap_or(content);
-    if raw {
-        return content.to_string();
-    }
-    let mut result = String::new();
-    let mut chars = content.chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            result.push(ch);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => result.push('\n'),
-            Some('r') => result.push('\r'),
-            Some('t') => result.push('\t'),
-            Some('0') => result.push('\0'),
-            Some('\\') => result.push('\\'),
-            Some('"') => result.push('"'),
-            Some(other) => result.push(other),
-            None => {}
-        }
-    }
-    result
-}
-
-fn parse_char(text: &str) -> Option<char> {
-    let content = text.strip_prefix('\'')?.strip_suffix('\'')?;
-    if let Some(escaped) = content.strip_prefix('\\') {
-        match escaped {
-            "n" => Some('\n'),
-            "r" => Some('\r'),
-            "t" => Some('\t'),
-            "0" => Some('\0'),
-            "\\" => Some('\\'),
-            "'" => Some('\''),
-            _ => None,
-        }
-    } else {
-        let mut chars = content.chars();
-        let value = chars.next()?;
-        chars.next().is_none().then_some(value)
     }
 }
 

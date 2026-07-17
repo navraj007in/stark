@@ -1927,6 +1927,9 @@ line | source code line
 - E0005: Wrong number of arguments
 - E0006: `?` operator in a function that does not return `Result` or `Option`
 - E0007: Index out of bounds (determinable at compile time)
+- E0008: Integer literal out of range for its type (suffixed literal exceeds its suffix's
+  representable range, or an unsuffixed literal exceeds `Int64`)
+- E0009: Array repeat count (`[value; count]`) is not a compile-time constant expression
 
 #### Ownership Errors (E0100-E0199)
 - E0100: Use of moved value

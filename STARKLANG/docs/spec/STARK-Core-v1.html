@@ -1937,6 +1937,11 @@ line | source code line
 <li>E0006: <code>?</code> operator in a function that does not return
 <code>Result</code> or <code>Option</code></li>
 <li>E0007: Index out of bounds (determinable at compile time)</li>
+<li>E0008: Integer literal out of range for its type (suffixed literal
+exceeds its suffix’s representable range, or an unsuffixed literal
+exceeds <code>Int64</code>)</li>
+<li>E0009: Array repeat count (<code>[value; count]</code>) is not a
+compile-time constant expression</li>
 </ul>
 <h4 id="ownership-errors-e0100-e0199">Ownership Errors
 (E0100-E0199)</h4>

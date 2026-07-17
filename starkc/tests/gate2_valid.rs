@@ -588,3 +588,485 @@ fn test_deref_move_into_a_tuple_literal_is_rejected() {
          got {diagnostics:?}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// WP-C1.5: control flow, patterns, constants, and numeric semantics
+// ---------------------------------------------------------------------------------------------
+
+/// `pat_subsumes` used to compare `Lit` patterns by shape only (base/suffix tags, no value),
+/// so any two same-kind integer literal patterns were treated as equal regardless of value.
+/// `2` here must not be flagged as redundant against `1`.
+#[test]
+fn test_distinct_integer_literal_patterns_are_not_flagged_unreachable() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: Int32 = 2;\n\
+            let r = match x { 1 => 10, 2 => 20, _ => 0 };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("lit_pattern_distinct.stark", source);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0500")),
+        "distinct literal patterns must not be flagged unreachable, got {diagnostics:?}"
+    );
+}
+
+/// Companion negative case: a genuinely duplicate literal pattern must still be flagged.
+#[test]
+fn test_duplicate_integer_literal_pattern_is_still_flagged_unreachable() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: Int32 = 2;\n\
+            let r = match x { 1 => 10, 1 => 99, _ => 0 };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("lit_pattern_dup.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0500")),
+        "expected E0500 (unreachable match arm) for a genuinely duplicate literal, got \
+         {diagnostics:?}"
+    );
+}
+
+/// Same literal-value-blindness bug, for string literal patterns.
+#[test]
+fn test_distinct_string_literal_patterns_are_not_flagged_unreachable() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: &str = \"b\";\n\
+            let r = match x { \"a\" => 1, \"b\" => 2, _ => 0 };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("lit_pattern_str.stark", source);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0500")),
+        "distinct string literal patterns must not be flagged unreachable, got {diagnostics:?}"
+    );
+}
+
+/// DEV-015: a suffixed integer literal whose value doesn't fit its suffix's representable range
+/// must be rejected at compile time (previously: `let x: UInt8 = 300u8;` compiled clean).
+#[test]
+fn test_suffixed_integer_literal_out_of_range_is_rejected() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: UInt8 = 300u8;\n\
+            println(x);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("dev015_suffixed.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0008")),
+        "expected E0008 (integer literal out of range), got {diagnostics:?}"
+    );
+}
+
+/// Companion positive case: a suffixed literal within range is unaffected.
+#[test]
+fn test_suffixed_integer_literal_within_range_is_accepted() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: UInt8 = 200u8;\n\
+            println(x);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("dev015_suffixed_ok.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// DEV-015: an unsuffixed integer literal that doesn't fit `Int32` must be promoted to `Int64`
+/// per 03-Type-System.md:28 ("Default integer type is Int32 for literals that fit, Int64
+/// otherwise"), not silently mistyped as a broken Int32 (previously: no check existed at all).
+#[test]
+fn test_unsuffixed_integer_literal_exceeding_int32_promotes_to_int64() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x = 99999999999;\n\
+            println(x);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("dev015_unsuffixed_big.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a literal exceeding Int32 but fitting Int64 must be accepted (promoted to Int64), got \
+         {errors:?}"
+    );
+}
+
+/// Companion: a literal exceeding even Int64's range must be rejected outright.
+#[test]
+fn test_unsuffixed_integer_literal_exceeding_int64_is_rejected() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x = 999999999999999999999;\n\
+            println(x);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("dev015_unsuffixed_toobig.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0008")),
+        "expected E0008 (integer literal out of range) for a literal exceeding Int64, got \
+         {diagnostics:?}"
+    );
+}
+
+/// Array-repeat-count const-eval previously parsed the *raw source text* of `count` as a bare
+/// unsuffixed decimal, so a suffixed literal (`5u32`) silently computed length 0, falsely
+/// rejecting every subsequent valid index into the array.
+#[test]
+fn test_array_repeat_count_accepts_a_suffixed_literal() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let a = [0; 5u32];\n\
+            println(a[4]);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("repeat_suffixed.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// Same bug, for a reference to a `const` item as the repeat count.
+#[test]
+fn test_array_repeat_count_accepts_a_const_item_reference() {
+    let source = "\
+        const N: Int32 = 3;\n\
+        fn main() -> Unit {\n\
+            let a = [7; N];\n\
+            println(a[2]);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("repeat_const.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// Companion negative case: a genuinely non-constant repeat count must be rejected with a clear
+/// diagnostic (E0009), not silently fall back to length 0 (which previously produced a confusing
+/// cascade of "index out of bounds" errors instead).
+#[test]
+fn test_array_repeat_count_rejects_a_non_constant_expression() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let mut n: Int32 = 3;\n\
+            n = n + 1;\n\
+            let a = [0; n];\n\
+            println(a[0]);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("repeat_not_const.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0009")),
+        "expected E0009 (array repeat count must be a compile-time constant expression), got \
+         {diagnostics:?}"
+    );
+}
+
+/// The `?` operator's Result/Option identity check used to be a substring search over an enum's
+/// *entire declaration source text* for "Result"/"Option" -- an unrelated user enum with a
+/// variant merely named `ResultVariant` satisfied it. 03-Type-System.md:590 defines `?`
+/// exclusively for `Result<T,E>`/`Option<T>`; there is no user-extensible Try trait in Core v1.
+#[test]
+fn test_try_operator_rejects_an_unrelated_enum_with_a_result_like_name() {
+    let source = "\
+        enum Foo { ResultVariant(Int32), Other }\n\
+        fn get() -> Foo { Foo::ResultVariant(5) }\n\
+        fn caller() -> Foo {\n\
+            let x = get()?;\n\
+            Foo::ResultVariant(x)\n\
+        }\n\
+        fn main() -> Unit {}\n\
+    "
+    .to_string();
+    let diagnostics = analyze("try_op_unrelated_enum.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0006")),
+        "expected E0006 (try operator requires Result or Option), got {diagnostics:?}"
+    );
+}
+
+/// Companion positive case: `?` on the real prelude `Result`/`Option` types is unaffected.
+#[test]
+fn test_try_operator_still_accepts_real_result_and_option() {
+    let result_source = "\
+        fn get(x: Int32) -> Result<Int32, String> {\n\
+            if x < 0 { Err(String::from(\"negative\")) } else { Ok(x) }\n\
+        }\n\
+        fn caller(x: Int32) -> Result<Int32, String> {\n\
+            let v = get(x)?;\n\
+            Ok(v + 1)\n\
+        }\n\
+        fn main() -> Unit {}\n\
+    "
+    .to_string();
+    let result_diags = analyze("try_op_result_ok.stark", result_source);
+    let result_errors: Vec<_> = result_diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(result_errors.is_empty(), "got {result_errors:?}");
+
+    let option_source = "\
+        fn get(x: Int32) -> Option<Int32> {\n\
+            if x < 0 { None } else { Some(x) }\n\
+        }\n\
+        fn caller(x: Int32) -> Option<Int32> {\n\
+            let v = get(x)?;\n\
+            Some(v + 1)\n\
+        }\n\
+        fn main() -> Unit {}\n\
+    "
+    .to_string();
+    let option_diags = analyze("try_op_option_ok.stark", option_source);
+    let option_errors: Vec<_> = option_diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(option_errors.is_empty(), "got {option_errors:?}");
+}
+
+/// Match exhaustiveness was only enforced for `Enum` and `Bool` scrutinees. `Option`/`Result`
+/// resolve to `Ty::Core`, not `Ty::Enum` (see `hir::CoreType`), so they were never covered at
+/// all -- `match opt { Some(v) => .. }` (missing `None`) compiled clean.
+#[test]
+fn test_non_exhaustive_option_match_is_rejected() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: Option<Int32> = None;\n\
+            match x { Some(v) => println(v) }\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_option.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0303")),
+        "expected E0303 (non-exhaustive pattern match), got {diagnostics:?}"
+    );
+}
+
+/// Same gap, for `Result`.
+#[test]
+fn test_non_exhaustive_result_match_is_rejected() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: Result<Int32, String> = Ok(5);\n\
+            match x { Ok(v) => println(v) }\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_result.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0303")),
+        "expected E0303 (non-exhaustive pattern match), got {diagnostics:?}"
+    );
+}
+
+/// Companion positive case: covering both Option/Result arms is still accepted.
+#[test]
+fn test_exhaustive_option_and_result_matches_are_accepted() {
+    let option_source = "\
+        fn main() -> Unit {\n\
+            let x: Option<Int32> = Some(5);\n\
+            let r = match x { Some(v) => v, None => 0 };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let option_diags = analyze("exhaustive_option_ok.stark", option_source);
+    let option_errors: Vec<_> = option_diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(option_errors.is_empty(), "got {option_errors:?}");
+
+    let result_source = "\
+        fn main() -> Unit {\n\
+            let x: Result<Int32, String> = Ok(5);\n\
+            let r = match x { Ok(v) => v, Err(_) => 0 };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let result_diags = analyze("exhaustive_result_ok.stark", result_source);
+    let result_errors: Vec<_> = result_diags
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(result_errors.is_empty(), "got {result_errors:?}");
+}
+
+/// 04-Semantic-Analysis.md: "If a match is not exhaustive, it is a compile-time error." Before
+/// this WP, exhaustiveness was checked only for Enum/Bool scrutinees; every other type (Int32,
+/// tuples, &str, etc.) silently accepted a non-exhaustive match and only trapped at *runtime* if
+/// an unmatched value actually occurred. A real usefulness/coverage algorithm is out of this
+/// WP's scope; instead any scrutinee type outside the small, exactly-enumerable domains
+/// (Bool/Enum/Option/Result) now requires an explicit wildcard/binding arm.
+#[test]
+fn test_non_exhaustive_int32_match_without_wildcard_is_rejected() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: Int32 = 2;\n\
+            let r = match x { 1 => 10, 2 => 20 };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_int32.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0303")),
+        "expected E0303 (non-exhaustive pattern match), got {diagnostics:?}"
+    );
+}
+
+/// Companion positive case: a wildcard makes the same match acceptable.
+#[test]
+fn test_int32_match_with_wildcard_is_accepted() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let x: Int32 = 2;\n\
+            let r = match x { 1 => 10, 2 => 20, _ => 0 };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_int32_ok.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// A `Ty::Struct` scrutinee is exempted from the general "requires wildcard" rule: a struct type
+/// has exactly one shape, so a single struct-pattern arm is exhaustive over it by construction,
+/// even without a trailing wildcard.
+#[test]
+fn test_single_arm_struct_match_without_wildcard_is_accepted() {
+    let source = "\
+        struct Point { x: Int32, y: Int32 }\n\
+        fn main() -> Unit {\n\
+            let p = Point { x: 1, y: 2 };\n\
+            let r = match p { Point { x, y } => x + y };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_struct.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// A fully-binding tuple pattern (`(a, b)`, every component a binding) is irrefutable and must
+/// count as a wildcard-equivalent arm, even though it isn't literally `Wild`/`Binding` at the
+/// top level. Regression guard for the general "requires wildcard" rule above -- an earlier
+/// version of this fix flagged this exact program as non-exhaustive.
+#[test]
+fn test_fully_binding_tuple_pattern_counts_as_exhaustive() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let pair: (Int32, Int32) = (2, 3);\n\
+            match pair { (a, b) => println(a + b) }\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_tuple_binding.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+/// Companion negative case: a tuple pattern with a literal component is *not* irrefutable and
+/// must still require a wildcard.
+#[test]
+fn test_tuple_pattern_with_a_literal_component_requires_wildcard() {
+    let source = "\
+        fn main() -> Unit {\n\
+            let pair: (Int32, Int32) = (1, 2);\n\
+            let r = match pair { (1, y) => y };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_tuple_partial.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0303")),
+        "expected E0303 (non-exhaustive pattern match), got {diagnostics:?}"
+    );
+}
+
+/// A struct-shaped pattern matching an *enum variant* (`Message::Named { amount }`) is not
+/// irrefutable on its own -- other variants can still occur. Regression guard distinguishing
+/// this from the plain-struct exemption above.
+#[test]
+fn test_single_enum_variant_struct_pattern_without_other_variants_is_rejected() {
+    let source = "\
+        enum Message { Number(Int32), Named { amount: Int32 }, Empty }\n\
+        fn main() -> Unit {\n\
+            let m = Message::Named { amount: 5 };\n\
+            let r = match m { Message::Named { amount } => amount };\n\
+            println(r);\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("exhaustive_enum_variant_struct.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0303")),
+        "expected E0303 (non-exhaustive pattern match), got {diagnostics:?}"
+    );
+}
