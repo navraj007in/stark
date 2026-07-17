@@ -13,28 +13,28 @@ impact, workaround, proposed disposition, owning future gate.
 
 ---
 
-## DEV-004 — `resolve.rs` tensor-builtin gating bug (bare `min`/`max`)
+## DEV-004 — `resolve.rs` tensor-builtin gating bug (bare `min`/`max`) (RESOLVED in WP-C1.2)
 
 - **Normative expectation:** Core-only compilation (no `--extension tensor`) must never resolve
   a name to a tensor-extension builtin. Charter §1.5 rule 5: "Core remains extension-neutral."
-- **Current behaviour:** `resolve_unqualified` (`resolve.rs:1854-1876`) calls `resolve_builtin`
+- **Original behaviour:** `resolve_unqualified` (`resolve.rs:1854-1876`) called `resolve_builtin`
   with no `options.tensor()` gate, unlike the correctly-gated `resolve_path_relative`
-  (`resolve.rs:682-685`). Bare `min`/`max` unconditionally resolve to
+  (`resolve.rs:682-685`). Bare `min`/`max` unconditionally resolved to
   `Builtin::TensorMin`/`TensorMax`. `resolve_unqualified` has exactly two call sites: resolving
   `self` (`resolve.rs:659`) and struct-literal shorthand-field lowering (`resolve.rs:1000`).
-- **User impact:** narrow but real. In Core-only mode, a struct-literal shorthand field named
-  exactly `min` or `max` with no local/module item of that name in scope silently resolves to
-  the tensor builtin instead of correctly failing "undefined variable 'min' (shorthand field)".
-  If a local named `min`/`max` genuinely exists, normal scope lookup takes precedence and this
-  bug does not fire.
-- **Security/soundness impact:** none directly (no memory/type safety violation), but it is an
-  extension-isolation leak — Core-only programs can observably depend on tensor-extension
+- **User impact (while open):** narrow but real. In Core-only mode, a struct-literal shorthand
+  field named exactly `min` or `max` with no local/module item of that name in scope silently
+  resolved to the tensor builtin instead of correctly failing "undefined variable 'min'
+  (shorthand field)". If a local named `min`/`max` genuinely existed, normal scope lookup took
+  precedence and the bug did not fire.
+- **Security/soundness impact:** none directly (no memory/type safety violation), but it was an
+  extension-isolation leak — Core-only programs could observably depend on tensor-extension
   identity by accident, undermining the isolation guarantee Gate C9 will need to certify.
-- **Workaround:** avoid struct-literal shorthand fields literally named `min`/`max` without an
-  in-scope local of that name; use the explicit `Point { min: min }` form instead.
-- **Proposed disposition:** fix by adding the same `options.tensor()` gate to
-  `resolve_unqualified`'s builtin-resolution branch that `resolve_path_relative` already has.
-- **Owning gate:** WP-C1.2 (name resolution, modules, visibility).
+- **Resolution:** `resolve.rs`'s `resolve_unqualified` (WP-C1.2, 2026-07-17) now applies the same
+  `options.tensor()` gate `resolve_path_relative` already had, before falling back to
+  `resolve_builtin`. Verified with a regression test:
+  `resolve.rs::bare_min_max_shorthand_field_is_gated_by_tensor_extension`.
+- **Owning gate:** WP-C1.2 (closed).
 
 ## DEV-005 — `starkc` vs `stark` CLI gating drift on warnings
 
@@ -105,30 +105,26 @@ impact, workaround, proposed disposition, owning future gate.
 - **Owning gate:** WP-C1.2 (resolve, closed) and WP-C1.4 (flow/borrowck, closed). DEV-006 fully
   resolved.
 
-## DEV-007 — `resolve.rs` glob-import (`use mod::*`) nondeterminism
+## DEV-007 — `resolve.rs` glob-import (`use mod::*`) nondeterminism (RESOLVED in WP-C1.2)
 
 - **Normative expectation:** Charter definition-of-done: "no new... nondeterministic iteration...
   introduced in compiler paths" and "generated output is deterministic across two runs."
-- **Current behaviour:** glob-import expansion copies from an unsorted `HashMap<String, Res>`
-  (`ModuleData::items`, `resolve.rs:45`) at two call sites (`resolve.rs:475-479` absolute-path,
-  `:536-540` relative-path). `insert_module_item` (`:571-595`) raises `E0204` ("duplicate
-  definition... in the same module scope") on a colliding different `Res`. Because Rust's
-  default `HashMap` uses a randomized per-process hash seed, which of two glob-colliding names
-  is treated as "first" (silently wins) vs. "second" (flagged `E0204`) varies across runs of the
-  same compiler on the same source. Diagnostics are never sorted before rendering (`grep -n
-  "sort" diag.rs` → no hits).
-- **User impact:** a program using `use mod::*` with a genuine name collision across two glob
-  sources may see `starkc check` report `E0204` on one run and silently accept a different
-  (arbitrary) resolution on another run of the identical source and compiler binary — a
-  reproducibility failure for both CI and local development.
+- **Original behaviour:** glob-import expansion copied from an unsorted `HashMap<String, Res>`
+  (`ModuleData::items`, `resolve.rs:45`) at two call sites (absolute-path and relative-path).
+  `insert_module_item` raises `E0204` ("duplicate definition... in the same module scope") on a
+  colliding different `Res`. Because Rust's default `HashMap` uses a randomized per-process hash
+  seed, which of two glob-colliding names was treated as "first" (silently wins) vs. "second"
+  (flagged `E0204`) varied across runs of the same compiler on the same source.
+- **User impact (while open):** a program using `use mod::*` with a genuine name collision
+  across two glob sources could see `starkc check` report `E0204` on one run and silently accept
+  a different (arbitrary) resolution on another run of the identical source and compiler binary —
+  a reproducibility failure for both CI and local development.
 - **Security/soundness impact:** none directly, but nondeterministic accept/reject on identical
-  input undermines trust in diagnostic reproducibility, which downstream tooling (this ledger's
-  own WP-C1.6 conformance evidence generator, CI gating) depends on being stable.
-- **Workaround:** avoid `use mod::*` glob imports where two glob sources could plausibly define
-  the same name; use explicit `use mod::{name}` imports instead.
-- **Proposed disposition:** sort glob source items by name before iterating (or by `Span`, for
-  stable "declaration order" semantics if that's the intended tie-break) at both call sites.
-- **Owning gate:** WP-C1.2.
+  input undermines trust in diagnostic reproducibility, which downstream tooling (the WP-C1.6
+  conformance evidence generator, CI gating) depends on being stable.
+- **Resolution:** both glob-expansion call sites in `resolve.rs` (WP-C1.2, 2026-07-17) now sort
+  the collected items by name before iterating, making collision-winner selection deterministic.
+- **Owning gate:** WP-C1.2 (closed).
 
 ## DEV-008 — Structural equality, not `Eq` trait dispatch, at runtime (CLOSED)
 
@@ -330,25 +326,6 @@ impact, workaround, proposed disposition, owning future gate.
   (also used to fix a second, previously-unknown bug found while building it — see DEV-025).
 - **Owning gate:** WP-C1.5 (closed).
 
-## DEV-025 — `pat_subsumes` compared literal patterns by shape only, not value (RESOLVED in
-WP-C1.5)
-
-- **Normative expectation:** the "unreachable match arm" lint should only fire when a later arm's
-  pattern is genuinely covered by an earlier one.
-- **Original behaviour:** `Lit` (the AST/HIR literal-shape tag) carries no value for Int/Float/Str
-  — only base/suffix/raw shape info. `pat_subsumes` compared `Lit == Lit` directly, so any two
-  same-kind literal patterns were treated as equal regardless of actual value. Confirmed
-  empirically: `match x: Int32 { 1 => .., 2 => .. }` and `match x: &str { "a" => .., "b" => .. }`
-  both spuriously flagged the second, genuinely-distinct arm as redundant/unreachable. This fired
-  on essentially every real-world literal match with 2+ arms.
-- **User impact:** false-positive "unreachable match arm" (W-class, currently mislabeled E0500 —
-  see DEV-019) warnings on common, correct code.
-- **Security/soundness impact:** none — a spurious warning, not an incorrect accept/reject.
-- **Resolution:** found while building `src/literal.rs` for DEV-015. `pat_subsumes` now parses
-  both literals' actual values via `literal::eval_lit_value` and compares those instead of the
-  shape-only `Lit` tag.
-- **Owning gate:** WP-C1.5 (closed).
-
 ## DEV-016 — Repository-wide clippy debt (RESOLVED in WP-C1.4)
 
 - **Normative expectation:** Charter §2.5 lists `cargo clippy --all-targets -- -D warnings`
@@ -371,23 +348,40 @@ WP-C1.5)
   and the full workspace test suite green twice consecutively with an unchanged pass count.
 - **Owning gate:** WP-C1.4 (closed).
 
-## DEV-017 — Coverage database test citations lack function-level precision
+## DEV-017 — Coverage database test citations lack function-level precision (PARTIALLY CLOSED
+in WP-C1.6)
 
 - **Normative expectation:** Charter rule 14 — conformance claims require executable evidence,
   ideally traceable to the specific test(s), not just "some test exists in this file somewhere."
-- **Current behaviour:** `tests` fields cite files only; `check-conformance.py` validates path
+- **Original behaviour:** `tests` fields cited files only; `check-conformance.py` validated path
   existence, not that the file's tests actually exercise the described rule. Before WP-C1.1,
   several rules (e.g. LEX-013) cited only `starkc/tests/conformance.rs` despite that file
   contributing zero real coverage for them — actual coverage lived, uncited, in `lexer.rs`'s/
   `parser.rs`'s own inline unit test modules.
 - **User impact:** none direct; an engineering-process/auditability gap.
 - **Security/soundness impact:** none.
-- **Workaround:** cross-reference `starkc/docs/dev/compiler-map.md` and this ledger's inline
-  `core-v1-coverage.toml` comments for function-level detail until the schema is extended.
-- **Proposed disposition:** WP-C1.6's conformance evidence generator is explicitly scoped to
-  produce "positive tests / negative tests" at rule granularity — this deviation is exactly the
-  problem that WP exists to solve.
-- **Owning gate:** WP-C1.6.
+- **Resolution (partial):** WP-C1.6 built the conformance evidence generator this deviation was
+  explicitly assigned to. Schema extended with `positive_tests`/`negative_tests` (bare path or
+  `path::function_name`, the latter validated by `check-conformance.py` for both file and
+  function existence) and `deviation` (DEV-NNN cross-reference). Of the 59 tracked rules, 20 now
+  have real, individually-verified function-level citations (the 19 that already had
+  rule-specific test files, plus LEX-006, found to have real dedicated coverage that was never
+  cited at all). `starkc/scripts/generate-conformance-report.py` emits the full per-rule report
+  (rule id, chapter, status, source, positive/negative tests, deviation, last-verified commit —
+  the last computed fresh via `git log` at generation time, never hand-typed) in JSON or
+  Markdown, wired into CI (`fixture-conformance` job: validated, generated, posted to the job
+  summary, and uploaded as an artifact).
+- **Remaining gap:** 39 of 59 rules still cite only the aggregate `starkc/tests/conformance.rs`
+  fixture-corpus runner, which mixes positive/negative coverage for every rule at once with no
+  per-rule attribution. Genuinely re-deriving that split would mean determining which of ~121
+  shared spec fixtures individually prove which rule — confirmed with the user as out of
+  WP-C1.6's effort budget, a real scope tradeoff rather than an oversight. The generator reports
+  these 39 explicitly as "unclassified," which is itself new, precise signal (previously only a
+  vague "some rules" note existed anywhere).
+- **Proposed disposition:** no dedicated future WP needed — the natural path is for each WP that
+  touches a chapter's rules to also re-cite them at this precision as part of that WP's own
+  work, using the schema/tooling this WP built.
+- **Owning gate:** WP-C1.6 (tooling closed); remaining 39-rule gap unscheduled.
 
 ## DEV-018 — AST span-integrity checking was entirely absent (partially closed)
 
@@ -418,24 +412,36 @@ WP-C1.5)
 - **Normative expectation:** `04-Semantic-Analysis.md`'s E-code table is the single source of
   truth for what each code means; Charter rule 16 requires diagnostics (including codes) remain
   part of testable, deterministic behavior.
-- **Current behaviour:** three confirmed collisions. `resolve.rs` uses E0401 ("unresolved
-  import") which collides with `flow.rs`'s correct use of E0401 ("use of possibly-uninitialized
-  variable" per spec). `resolve.rs` uses E0203 for both "no parent module for super" and "item is
-  private," neither of which is "ambiguous name" (spec's actual E0203), colliding with
-  `typecheck.rs`'s correct E0203 use for "ambiguous trait method call." `parser.rs` uses E0202
-  for module-loading errors ("file not found for module," "conflicting module files"), colliding
-  with `resolve.rs`'s own correct E0202 use for "undefined type."
+- **Current behaviour:** five confirmed collisions. Three from WP-C1.2: `resolve.rs` uses E0401
+  ("unresolved import") which collides with `flow.rs`'s correct use of E0401 ("use of
+  possibly-uninitialized variable" per spec). `resolve.rs` uses E0203 for both "no parent module
+  for super" and "item is private," neither of which is "ambiguous name" (spec's actual E0203),
+  colliding with `typecheck.rs`'s correct E0203 use for "ambiguous trait method call." `parser.rs`
+  uses E0202 for module-loading errors ("file not found for module," "conflicting module files"),
+  colliding with `resolve.rs`'s own correct E0202 use for "undefined type." Two more found during
+  WP-C1.5, while touching match-arm code for the exhaustiveness fix: `typecheck.rs`'s "unreachable
+  match arm" warning uses E0500 — spec table: E0500="Trait not implemented" (an *error*, not a
+  warning) — colliding with 15 other, spec-correct E0500 "trait not implemented" error sites in
+  the same file. `typecheck.rs`'s "method call on non-struct/enum type" error uses E0303 — spec
+  table: E0303="Non-exhaustive match" — colliding with the (WP-C1.5-strengthened) spec-correct
+  E0303 exhaustiveness sites.
 - **User impact:** any tool matching on diagnostic code alone (not message text) cannot
   distinguish these semantically distinct errors.
 - **Security/soundness impact:** none — messages are still correct; this is a machine-readable-
   contract gap.
 - **Workaround:** match on message text for the affected codes until resolved.
 - **Proposed disposition:** spec-bug-protocol candidate — allocate distinct normative E02xx
-  codes for the module/import-specific errors currently borrowing codes with unrelated meanings.
-  Not done here: reassignment is a public contract change touching multiple test files' exact
-  assertions, deserving its own bounded, evidence-backed change.
-- **Owning gate:** WP-C1.6 to catch systematically; the reallocation itself is a separate,
-  unowned spec-bug-protocol change.
+  codes for the module/import-specific errors currently borrowing codes with unrelated meanings,
+  plus (WP-C1.5 additions) a new W0xxx code for "unreachable match arm" (it's a warning, not an
+  error, so E0500 was always the wrong category regardless of the collision) and a new E00xx code
+  for "method call on non-struct/enum type." Not done here: reassignment is a public contract
+  change touching multiple test files' exact assertions, deserving its own bounded,
+  evidence-backed change.
+- **Owning gate:** unscheduled. (WP-C1.6's conformance evidence generator, closed 2026-07-18,
+  reports per-rule test evidence but does not cross-reference diagnostic codes against the spec's
+  E-code catalog — that would be a distinct, not-yet-built check; this deviation's earlier "WP-C1.6
+  to catch systematically" note assumed more overlap with that WP's actual scope than it turned
+  out to have.) The reallocation itself remains a separate, unowned spec-bug-protocol change.
 
 ## DEV-020 — `pub use` of a private item leaks it (confirmed design, not a defect)
 
@@ -535,6 +541,25 @@ WP-C1.5)
   independently tested but plausibly share the same gap.
 - **Owning gate:** unscheduled; needs root-cause investigation first.
 
+## DEV-025 — `pat_subsumes` compared literal patterns by shape only, not value (RESOLVED in
+WP-C1.5)
+
+- **Normative expectation:** the "unreachable match arm" lint should only fire when a later arm's
+  pattern is genuinely covered by an earlier one.
+- **Original behaviour:** `Lit` (the AST/HIR literal-shape tag) carries no value for Int/Float/Str
+  — only base/suffix/raw shape info. `pat_subsumes` compared `Lit == Lit` directly, so any two
+  same-kind literal patterns were treated as equal regardless of actual value. Confirmed
+  empirically: `match x: Int32 { 1 => .., 2 => .. }` and `match x: &str { "a" => .., "b" => .. }`
+  both spuriously flagged the second, genuinely-distinct arm as redundant/unreachable. This fired
+  on essentially every real-world literal match with 2+ arms.
+- **User impact:** false-positive "unreachable match arm" (W-class, currently mislabeled E0500 —
+  see DEV-019) warnings on common, correct code.
+- **Security/soundness impact:** none — a spurious warning, not an incorrect accept/reject.
+- **Resolution:** found while building `src/literal.rs` for DEV-015. `pat_subsumes` now parses
+  both literals' actual values via `literal::eval_lit_value` and compares those instead of the
+  shape-only `Lit` tag.
+- **Owning gate:** WP-C1.5 (closed).
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -575,10 +600,17 @@ attribute syntax existed. No fix owed.
   DEV-019 through DEV-022.
 - `starkc/src/typecheck.rs` and `starkc/src/interp.rs` (new WP-C1.3 tests) — source of DEV-008
   and DEV-013's closure, plus DEV-023/DEV-024.
+- `starkc/src/borrowck.rs`/`flow.rs` (WP-C1.4 tests) — source of DEV-006's closure and DEV-016.
+- `starkc/src/literal.rs`/`typecheck.rs` (WP-C1.5 tests) — source of DEV-015's closure and
+  DEV-025.
+- `starkc/scripts/generate-conformance-report.py` (WP-C1.6) — source of DEV-017's partial
+  closure.
 - DEV-001, DEV-003 do not appear above: both IDs were retired when their original seed framing
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 24 numbered deviations total (DEV-002 through DEV-024), of which DEV-002,
-DEV-008, DEV-013, DEV-014, DEV-020, and DEV-021 are closed/confirmed-correct (no fix owed); 2
-informational not-owned items (DEV-SEED-008, DEV-SEED-014).
+Current count: 23 numbered deviations total (DEV-002 through DEV-025, DEV-001/DEV-003 retired),
+of which DEV-002, DEV-006, DEV-008, DEV-013, DEV-014, DEV-015, DEV-016, DEV-020, DEV-021, and
+DEV-025 are closed/confirmed-correct (no fix owed); DEV-017 is partially closed (tooling built,
+39 of 59 rules remain unclassified); 2 informational not-owned items (DEV-SEED-008,
+DEV-SEED-014).

@@ -2,14 +2,16 @@
 Updated: 2026-07-18 after CD-006 (float division-by-zero trap semantics, WP-C1.5)
 
 ## Position
-Gate: C1  Next: WP-C1.6  Blocked: none
-Mandatory compiler path: Core=open (C1 in progress)  MIR=blocked (behind C1/C2/C3)  Native=blocked (behind C1/C2/C3)
+Gate: C2  Next: WP-C2.1  Blocked: none
+Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
+starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head: 80ef50415b4a67c6b9f10122d923b0472bf4550c (`implement WP-C1.3 and WP-C1.4: ...`). WP-C1.5's
-  own changes are uncommitted as of this session record; commit only on explicit user request,
-  per standing workflow.
+- Head: 785c1befa5645dfc90652ef72feb7e812502365b (`implement WP-C1.5: control flow, patterns,
+  constants, and numeric semantics`). WP-C1.6's and WP-C1.7's own changes (Gate C1 close) are
+  uncommitted as of this session record; commit only on explicit user request, per standing
+  workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -17,11 +19,19 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **450 passed, 0 failed, 2 ignored** across 3 unittest binaries + 31 integration-test files
-  (up from 383/0/2 and 30 files at Gate C0 close; WP-C1.1 added `span_integrity.rs` + 12 tests,
-  WP-C1.2 added 15 more across `resolve.rs`'s inline tests and `gate2_package.rs`, WP-C1.3 added
-  8 more across `typecheck.rs`'s and `interp.rs`'s inline test modules, WP-C1.4 added 11 more
-  across `gate2_valid.rs` and `gate3_execution.rs`, WP-C1.5 added 21 more to `gate2_valid.rs`).
+  **454 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 29 integration-test files**
+  (`ls starkc/tests/*.rs | wc -l`, re-counted directly during WP-C1.6's consistency sweep — the
+  "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
+  never actually verified against `ls`/`cargo test`'s own "Running ..." lines and had drifted;
+  not chasing down exactly which prior WP's arithmetic first went wrong, since that would need
+  checking out old commits for no real benefit — this line is now the corrected, directly-counted
+  baseline going forward). Up from 383/0/2 at Gate C0 close (file count at that point not
+  re-verified for the same reason). WP-C1.1 added `span_integrity.rs` + 12 tests, WP-C1.2 added
+  15 more across `resolve.rs`'s inline tests and `gate2_package.rs`, WP-C1.3 added 8 more across
+  `typecheck.rs`'s and `interp.rs`'s inline test modules, WP-C1.4 added 11 more across
+  `gate2_valid.rs` and `gate3_execution.rs`, WP-C1.5 added 21 more to `gate2_valid.rs`, WP-C1.6
+  added `conformance_report.rs` (new file) + 4 tests.
   Both ignored tests are
   intentionally opt-in (a checksum-pinned live ONNX artifact test in `tests/gate4_onnx.rs`, and
   a live-ORT-download inference test in `tests/gate5_codegen.rs`). Full per-file breakdown
@@ -42,8 +52,12 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   recorded tests, as a heuristic staleness signal for future audits. Known representational gap:
   the schema's single `tests` array does not distinguish positive from negative test evidence, so
   Charter rule 15 ("positive and negative evidence travel together") cannot be mechanically
-  verified from this database alone — flagged for WP-C1.6 (conformance evidence generator) to
-  address with a richer schema. **Coverage percentages remain provisional**: "implemented" status
+  verified from this database alone for every rule. **WP-C1.6** (closed 2026-07-18) addressed
+  this with a richer schema (`positive_tests`/`negative_tests`, function-level `path::function`
+  citations) and populated it for 20 of 59 rules with real evidence; the remaining 39 still rely
+  on the single aggregate `tests` citation and are reported as "unclassified" by the new
+  `generate-conformance-report.py`, not silently treated as verified — see DEV-017.
+  **Coverage percentages remain provisional**: "implemented" status
   for any individual rule is not re-verified at Core v1 rule-completeness depth until WP-C1.x; see
   governing rule in `COMPILER-CHARTER.md` §1.5 rule 14 and the explicit no-percentage-trust
   statement this state file and the WP-C0.5 exit report both carry.
@@ -265,7 +279,12 @@ complete or as substituting for WP-C0.4.)
   inline dated correction note on each entry (not promoted to `"implemented"` — that judgment is
   deferred to WP-C1.6's rule-level conformance generator, since these are broad rules that
   likely need splitting before "implemented" can be asserted with full confidence per Charter
-  rule 14). Root cause: the coverage database was seeded once at Phase 0 (2026-07-16, per
+  rule 14). **Update, WP-C1.6 (2026-07-18):** the generator was built and PKG-004/005/006's
+  positive/negative test evidence was re-cited at function-level precision (STD-004's was too),
+  but the `status = "partial"` → `"implemented"` promotion judgment itself was not attempted —
+  that's a substantive per-rule completeness call, not a tooling question, and remains open for
+  whichever WP next has reason to look closely at these rules. Root cause: the coverage database
+  was seeded once at Phase 0 (2026-07-16, per
   `stark-spec-parity-roadmap.md`) and never updated as Phases 1-4A subsequently closed exactly
   this scope — a "no status drift" (Charter rule 13) violation in the pre-existing process, now
   fixed. The "fourth unidentified missing rule" from WP-C0.0's provisional note is `STD-004`
@@ -464,15 +483,26 @@ complete or as substituting for WP-C0.4.)
   `.and_then(|x| Some(y))` → `.map(|x| y)` (`lsp/protocol.rs`). Verified: `cargo clippy
   --all-targets -- -D warnings` clean, `cargo fmt --check` clean, full workspace test suite green
   twice consecutively (unchanged pass count from before the cleanup).
-- DEV-017 [CONFIRMED, WP-C1.1] `core-v1-coverage.toml`'s `tests` field cites files, not
-  functions, and for several rules (before this WP) cited only the aggregate
-  `starkc/tests/conformance.rs` even when that file contributed zero actual coverage (e.g.
-  LEX-013 — no reserved-word fixture exists in the manifest at all; real coverage was always in
-  `lexer.rs`'s/`parser.rs`'s own inline unit tests, uncited). Partially corrected this WP for the
-  specific rules touched (LEX-003/004/005/010/013, SYN-001/013), but the same imprecision likely
-  affects other rules not touched this WP. Schema cannot cite individual test functions (would
-  break `check-conformance.py`'s path-existence check). — owner: WP-C1.6 (conformance evidence
-  generator) — this is exactly the rule-level-precision problem that WP exists to solve.
+- DEV-017 [PARTIALLY CLOSED, WP-C1.6] `core-v1-coverage.toml`'s `tests` field cited files, not
+  functions, and for several rules cited only the aggregate `starkc/tests/conformance.rs` even
+  when that file contributed zero actual coverage (e.g. LEX-013 — no reserved-word fixture
+  exists in the manifest at all; real coverage was always in `lexer.rs`'s/`parser.rs`'s own
+  inline unit tests, uncited). WP-C1.1 partially corrected the specific rules it touched
+  (LEX-003/004/005/010/013, SYN-001/013). **WP-C1.6** added real schema support (`positive_tests`
+  /`negative_tests`, entries either a bare file path or `path::function_name`, the latter
+  validated by `check-conformance.py` for both file and function existence) and populated it with
+  genuine function-level citations for the 19 rules that already had rule-specific (non-aggregate)
+  test files — plus LEX-006, found to have real dedicated coverage (`spec_char_examples`/
+  `char_errors`) that was never cited at all, upgraded from aggregate-only in the same pass — 20
+  rules total. The remaining 39 of 59 rules cite only the aggregate `conformance.rs` corpus, which
+  mixes positive and negative fixture coverage for every rule at once with no per-rule
+  attribution; genuinely re-deriving that split would mean determining which of ~121 shared
+  fixtures individually prove which rule, not attempted this WP (a real effort/value tradeoff,
+  flagged to and confirmed by the user before starting). Not silently claimed as closed: the new
+  `generate-conformance-report.py` reports these 39 rules as "unclassified" explicitly, which is
+  itself the first precise, machine-generated count of the remaining gap (previously only a vague
+  "some rules" note). — owner: unscheduled for the remaining 39; the tooling to close them
+  incrementally (as future WPs touch each rule's chapter) now exists.
 - DEV-018 [PARTIALLY CLOSED, WP-C1.1] No AST span-integrity invariant checking existed anywhere
   (source or tests) before this WP. Added `starkc/tests/span_integrity.rs`: checks
   child-within-parent span containment for every `Expr`/`Block` node kind with directly-named
@@ -532,9 +562,11 @@ complete or as substituting for WP-C0.4.)
   (`starkc/tests/diag_format.rs` and others assert on some of these exact strings/codes), and
   deserves the full spec-fix-plus-executable-evidence treatment in one bounded change, not a
   unilateral edit inside a test-strengthening WP.
-- **Owning gate:** WP-C1.6 (conformance evidence generator) is the natural place to catch this
-  class of issue systematically going forward; the actual reallocation is its own bounded
-  spec-bug-protocol change, owner TBD.
+- **Owning gate:** unscheduled. (WP-C1.6, closed 2026-07-18, built the conformance evidence
+  generator but that tool reports per-rule test evidence, not diagnostic-code-vs-spec-catalog
+  cross-referencing — a distinct, not-yet-built check; this entry's earlier assumption that
+  WP-C1.6 would "catch this systematically" turned out broader than that WP's actual scope.) The
+  reallocation itself is its own bounded spec-bug-protocol change, owner TBD.
 
 - DEV-020 [CONFIRMED DESIGN BEHAVIOR, WP-C1.2, not a defect] `pub use` of a private item leaks
   it. `name_is_visible_from` (`resolve.rs:822-833`) treats `reexport_vis` as authoritative over
@@ -646,9 +678,15 @@ involving nested modules and private items should assume this stricter model.
   for why that old evidence can no longer be read as license to skip general native compilation.
 
 ## Diagnostic codes allocated or changed
-- None allocated yet under this governance framework. Existing normative `E####`/`W####` codes
-  are inventoried as part of WP-C0.1 (`starkc/src/diag.rs`) and WP-C1.6 (conformance evidence
-  generator), not duplicated here until that inventory exists.
+- **E0008** [WP-C1.5] Integer literal out of range for its type (suffixed literal exceeds its
+  suffix's representable range, or an unsuffixed literal exceeds `Int64`). See DEV-015.
+- **E0009** [WP-C1.5] Array repeat count (`[value; count]`) is not a compile-time constant
+  expression.
+  Both registered in `04-Semantic-Analysis.md`'s normative Error Categories table
+  (`STARK-Core-v1.md` regenerated in the same change). No codes allocated or changed by any other
+  WP under this governance framework yet. Existing (pre-governance-framework) normative
+  `E####`/`W####` codes are inventoried as part of WP-C0.1 (`starkc/src/diag.rs`), not duplicated
+  here.
 
 ## Evidence inventory
 - `starkc/docs/gate1-exit.md` through `gate7-decision.md` — old-numbering gate evidence, see CD-001/CD-002.
@@ -763,9 +801,8 @@ involving nested modules and private items should assume this stricter model.
 - [x] WP-C1.3: resolved DEV-013 (STD-004 exhaustiveness) — closed with 2 real bugs found and
       fixed (Clone-on-builtins, default trait methods) plus 2 new deviations recorded
       (DEV-023, DEV-024). See session record below.
-- [ ] WP-C1.6: extend the coverage-database schema to distinguish positive/negative test
-      evidence per rule, so Charter rule 15 can be mechanically checked (currently only a
-      heuristic warning in `check-conformance.py`, see WP-C0.3 note).
+- [x] WP-C1.6: extended the coverage-database schema to distinguish positive/negative test
+      evidence per rule — see session record below.
 - [x] WP-C1.2: fixed DEV-004 (resolve.rs tensor-builtin gating) and DEV-007 (glob-import
       nondeterminism) — see session record below.
 - [x] WP-C1.2: fixed DEV-006's resolve.rs half (multi-file diagnostic provenance). Borrowck/flow
@@ -785,7 +822,9 @@ involving nested modules and private items should assume this stricter model.
       below.
 - [x] WP-C1.4: DEV-016 (repo-wide clippy debt, 22 pre-existing warnings) — resolved, see session
       record below.
-- [ ] WP-C1.6: DEV-017 (coverage-database test citations lack function-level precision).
+- [x] WP-C1.6: DEV-017 partially closed (schema + tooling built, 20 of 59 rules re-cited at
+      function-level precision) — see session record below. 39 rules remain unclassified,
+      unscheduled.
 - [ ] WP-C2.4: DEV-018 (build the full generic AST position-indexed walker; WP-C1.1's
       Expr/Block-only span_integrity.rs check is interim evidence, extend rather than redo).
 - [ ] WP-C1.1 follow-up (not blocking, noted in span_integrity.rs's own scope comment):
@@ -793,7 +832,8 @@ involving nested modules and private items should assume this stricter model.
       no max-value-per-suffix-type positive test exists for any of the 8 int / 2 float suffixes.
 - [x] WP-C1.2: name resolution, modules, and visibility — closed 2026-07-17. See session record
       below.
-- [ ] WP-C1.6 (or a dedicated spec-bug-protocol change): DEV-019 — reallocate distinct E02xx
+- [ ] Unscheduled (or a dedicated spec-bug-protocol change; not actually done by WP-C1.6, which
+      closed without touching E-code allocation): DEV-019 — reallocate distinct E02xx
       codes for unresolved-import, no-parent-for-super, private-item-access, module-file-not-
       found, and conflicting-module-files (currently colliding with unrelated correct uses of
       E0401/E0203/E0202 in flow.rs/typecheck.rs/resolve.rs itself); plus (WP-C1.5 additions)
@@ -1363,3 +1403,129 @@ during the consistency sweep: this file's header cited "CD-005" for the mandator
 governance update, but the actual decision log entry was filed as CD-004 (off-by-one, predates
 this WP) -- corrected.
 NEXT: WP-C1.6 (conformance evidence generator)
+
+### WP-C1.6 — 2026-07-18
+DONE: Conformance evidence generator. Scope decision flagged to the user before starting (how
+much of the inherited DEV-017 gap to actually close vs. report honestly): user approved "build
+the generator + real precision where tractable." Built:
+- **`starkc/scripts/conformance_lib.py`** (new) — extracted `core-v1-coverage.toml`'s parser out
+  of `check-conformance.py` into a shared module so the validator and the new generator can never
+  parse the schema two different ways.
+- **Schema extension**: two new optional per-rule fields, `positive_tests`/`negative_tests`.
+  Each entry is a bare file path (existence-checked, same as the legacy `tests` field) or
+  `path::function_name` (existence- and function-name-checked — `check-conformance.py` now greps
+  the target file for `fn function_name`, so a renamed/deleted test is caught, not just a
+  renamed/deleted file). A third optional field, `deviation`, records a DEV-NNN id when a rule's
+  current behavior is a tracked deviation (format-validated as `DEV-\d+`).
+- **Real re-citation, not just schema**: surveyed all 59 rules; 19 already had rule-specific
+  (non-aggregate) test files, plus LEX-006 was found to have real dedicated lexer.rs coverage
+  (`spec_char_examples`/`char_errors`) that was never cited at all (cited only the generic
+  `conformance.rs` before). Manually inspected each of those 20 rules' actual test functions
+  (grepped function names, read bodies where the name alone was ambiguous) and populated
+  `positive_tests`/`negative_tests` with real, verified `path::function` citations — not a
+  keyword-heuristic guess. The remaining 39 of 59 rules cite only the aggregate
+  `starkc/tests/conformance.rs` fixture-corpus runner, which mixes positive/negative coverage for
+  every rule with no per-rule attribution; genuinely re-deriving that split was confirmed with
+  the user as out of this WP's effort budget (would mean determining which of ~121 shared
+  fixtures individually prove which rule). The generator reports these 39 explicitly as
+  "unclassified," not silently as if fully covered or as if lacking coverage.
+- **`starkc/scripts/generate-conformance-report.py`** (new) — emits the WP's required 8-column
+  report (rule id, spec chapter, status, source, positive tests, negative tests, deviation, last
+  verified commit) per rule, `--format=json` (default, machine-readable) or `--format=markdown`
+  (human-readable table for a CI summary). Every column is read directly from the coverage
+  database or computed fresh at generation time — `last_verified_commit` is deliberately never
+  stored in the TOML; it is `git log -1 --format=%H -- <every path a rule cites>` at generation
+  time, so it can never go stale the way DEV-002's hand-typed status prose did. Verified
+  deterministic: two consecutive runs against the same commit produce byte-identical JSON.
+- **CI wiring**: added to the `fixture-conformance` job — `check-conformance.py` now actually
+  runs in CI (previously it existed but had zero CI invocation, a gap found while touching this
+  area; not a WP-C1.6-scoped finding to leave unfixed given it was one line to add and directly
+  serves this WP's "trustworthy, enforced evidence" goal); the new generator runs in both
+  formats, the Markdown table is appended to `$GITHUB_STEP_SUMMARY`, and both outputs are
+  uploaded via `actions/upload-artifact`. Changed the job's checkout to `fetch-depth: 0` (was the
+  implicit shallow default) — `last_verified_commit`'s `git log` needs real history to search,
+  not just the tip commit; confirmed this would have silently produced wrong (empty) results
+  under the previous shallow-clone default.
+FILES: starkc/scripts/conformance_lib.py (new), starkc/scripts/generate-conformance-report.py
+(new), starkc/scripts/check-conformance.py (refactored to use conformance_lib; new
+positive_tests/negative_tests/deviation validation), STARKLANG/conformance/core-v1-coverage.toml
+(new schema fields documented in a header comment; 20 rules re-cited at function-level
+precision), starkc/tests/conformance_report.rs (new, +4 tests), .github/workflows/ci.yml
+(fixture-conformance job: check-conformance.py wired in, report generation + CI summary +
+artifact upload, fetch-depth: 0), STARKLANG/docs/compiler/work-packages/WP-C1.6.md (new),
+COMPILER-STATE.md, starkc/docs/conformance/KNOWN-DEVIATIONS.md.
+RULES: none formally re-cited in coverage.toml's `tests` field beyond the 20 rules' new
+positive_tests/negative_tests additions (the point of this WP was precisely to add that
+richer citation layer, not to touch the legacy field).
+DECISIONS: none new as CD/AD records — the one real scope decision (how much of DEV-017 to
+close) was resolved via the AskUserQuestion flagged above, not a standing architectural
+decision needing its own ledger entry.
+EVIDENCE: MANUAL + REG — every one of the 20 rules' new citations was verified by reading the
+actual test function (not guessed from name alone where ambiguous, e.g. confirmed
+`test_cross_package_coherence_orphan_rule_with_real_packages` is purely negative by reading its
+assertions, not assumed from the name). `check-conformance.py`'s new validation logic
+sanity-tested against a deliberately broken citation (renamed function) to confirm it actually
+catches drift, not just happy-path tested. Report determinism verified both manually (diff of
+two runs) and via the new `json_report_is_deterministic_across_two_runs` test. `cargo test
+--workspace --all-targets --all-features` run twice consecutively at the end of the WP, final
+state 454 passed/0 failed/2 ignored (up from 450/0/2 at WP-C1.5's close), deterministic across
+both runs. `cargo fmt --check` clean. `cargo clippy --all-targets -- -D warnings` clean.
+`check-conformance.py` exits 0 against the updated schema.
+FOLLOW-UP: DEV-017 remains open for the 39 unclassified rules — now precisely quantified (not
+"some rules," an exact, machine-reported count) and the tooling to close them exists; a natural
+pattern going forward is for each future WP that touches a chapter to also re-cite that
+chapter's rules at this precision, incrementally closing the gap rather than needing another
+dedicated sweep. `check-conformance.py` was not previously run in CI at all (a pre-existing gap,
+fixed as part of this WP's CI wiring since it was directly relevant and low-risk, not a
+separate deviation).
+NEXT: WP-C1.7 (Gate exit)
+
+### WP-C1.7 — 2026-07-18
+DONE: Gate C1 exit. Wrote `starkc/docs/compiler/C1-exit-report.md` per the roadmap's exact
+requirement (conclusion must be one of `CORE-FRONTEND-CONFORMING` /
+`CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS` / `CORE-FRONTEND-NOT-YET-CONFORMING`,
+no "complete" without the rule-level report). Conclusion:
+**CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS** — justified in full in the report itself
+(all six WP-C1.x requalifications closed, every soundness-relevant finding fixed with a
+regression test in the WP that found it, but 9 real non-soundness deviations remain fully open
+and 2 more are partially closed, so plain CONFORMING would be a false claim per Charter rule 13).
+Compiled a full subsystem status matrix (Gate C0 "not yet requalified" state vs. each WP-C1.x's
+actual closure), a full 23-deviation ledger with closed/partial/open status for every DEV-NNN id,
+and a "Conformance evidence" section built entirely from WP-C1.6's new generator output (the
+first C-gate exit report able to do this — `C0-exit-report.md` had to caveat that no such tool
+existed yet).
+While compiling the deviation ledger, cross-checked every "open" `KNOWN-DEVIATIONS.md` entry
+against `COMPILER-STATE.md`'s own decision-log status (the authoritative source per the ledger's
+own header) to catch drift before it propagated into the exit report. Found and fixed two real,
+previously-undetected staleness bugs: **DEV-004** and **DEV-007** were both fully resolved in
+WP-C1.2 (confirmed against the actual source: `resolve.rs`'s `resolve_unqualified` has the
+`options.tensor()` gate; both glob-expansion call sites sort before iterating) but
+`KNOWN-DEVIATIONS.md`'s mirrored entries still described both bugs in the present tense as if
+unfixed — never updated when the fixes landed. Also found DEV-019's `KNOWN-DEVIATIONS.md` entry
+was missing the two additional E-code collision instances (E0500/E0303 misuse) that WP-C1.5
+found and *did* record in `COMPILER-STATE.md`, but the mirror update to `KNOWN-DEVIATIONS.md`
+was never made — fixed to match.
+FILES: starkc/docs/compiler/C1-exit-report.md (new), starkc/docs/conformance/KNOWN-DEVIATIONS.md
+(DEV-004, DEV-007 marked resolved with real detail; DEV-019 extended to its full 5-instance
+current state), COMPILER-STATE.md.
+RULES: none — this WP synthesizes existing evidence, it does not produce new rule-level
+citations (that remains WP-C1.6's/future WPs' job per DEV-017's disposition).
+DECISIONS: none new as CD/AD records. The CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS
+conclusion is not itself a CD-record-worthy architectural decision — it is the direct,
+mechanical consequence of the deviation ledger's actual state, argued in the exit report itself
+rather than asserted here.
+EVIDENCE: MANUAL + REG — the exit report's every factual claim traces to either a freshly-run
+command (`check-conformance.py`, `generate-conformance-report.py`, `cargo test`, `ls
+starkc/tests/*.rs`) or a specific `COMPILER-STATE.md`/`KNOWN-DEVIATIONS.md` entry, not
+recollection. The DEV-004/DEV-007 staleness finding was itself verified against actual source
+code (`grep` for the `options.tensor()` gate and the `sort_by` calls), not just trusted from
+`COMPILER-STATE.md`'s claim that they were fixed. `cargo test --workspace --all-targets
+--all-features`: 454 passed/0 failed/2 ignored (unchanged from WP-C1.6's close — this WP made no
+source-code changes, documentation only). `cargo fmt --check`/`cargo clippy --all-targets -- -D
+warnings`: unaffected, still clean (no Rust files touched).
+FOLLOW-UP: none new. All of Gate C1's open deviations (DEV-005, DEV-009 through DEV-012,
+DEV-019, DEV-022 through DEV-024, DEV-017's 39 remaining rules) carry forward into Gate C2 and
+beyond exactly as enumerated in the exit report; no follow-up item was created that isn't
+already one of those.
+NEXT: WP-C2.1 (reference interpreter contract) — Gate C2, "Reference Execution Semantics and
+Compiler Service Foundation," opens.

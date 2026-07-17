@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
+import re
 import sys
 import os
 
-def parse_toml(content):
-    rules = []
-    current_rule = None
-    for line in content.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        if line == '[[rule]]':
-            if current_rule:
-                rules.append(current_rule)
-            current_rule = {}
-            continue
-        if '=' in line:
-            key, val = line.split('=', 1)
-            key = key.strip()
-            val = val.strip()
-            if val.startswith('"') and val.endswith('"'):
-                val = val[1:-1]
-            elif val.startswith('[') and val.endswith(']'):
-                items = val[1:-1].split(',')
-                val = [i.strip().strip('"') for i in items if i.strip()]
-            if current_rule is not None:
-                current_rule[key] = val
-    if current_rule:
-        rules.append(current_rule)
-    return rules
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from conformance_lib import parse_toml  # noqa: E402
+
+DEVIATION_ID_RE = re.compile(r'^DEV-\d+$')
+
+
+def validate_evidence_entry(entry, conformance_dir, rule_id, field_name, errors):
+    """WP-C1.6: validate one `positive_tests`/`negative_tests` citation. An entry is either a
+    bare file path (existence-checked only, same as the legacy `tests` field) or
+    `path::function_name` (existence-checked, plus a `fn function_name` grep so a renamed or
+    deleted test function is caught, not just a renamed or deleted file)."""
+    path_part, _, fn_part = entry.partition('::')
+    full_path = os.path.join(conformance_dir, path_part)
+    if not os.path.exists(full_path):
+        errors.append(f"Rule {rule_id} {field_name} path '{path_part}' does not exist.")
+        return
+    if fn_part:
+        with open(full_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        if f'fn {fn_part}' not in content:
+            errors.append(
+                f"Rule {rule_id} {field_name} cites '{entry}' but no `fn {fn_part}` was found "
+                f"in '{path_part}' -- the function may have been renamed or removed."
+            )
+
 
 def main():
     conformance_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -99,6 +99,12 @@ def main():
         if status not in valid_statuses:
             errors.append(f"Rule {rule_id} has invalid status '{status}'; expected one of {valid_statuses}")
 
+        deviation = rule.get('deviation')
+        if deviation is not None and not DEVIATION_ID_RE.match(deviation):
+            errors.append(
+                f"Rule {rule_id} 'deviation' value '{deviation}' does not look like a DEV-NNN id."
+            )
+
         if status == 'implemented':
             source = rule.get('source')
             if not source:
@@ -125,6 +131,30 @@ def main():
                     f"Rule {rule_id} description suggests a semantic-rejection rule but has no "
                     f"tests recorded -- verify negative-test (invalid-program) coverage exists, "
                     f"not just positive-test coverage (heuristic, description-keyword based)."
+                )
+
+            # WP-C1.6: optional, more precise evidence fields. When present, every citation is
+            # validated the same way `tests` is (path existence), plus a function-name check for
+            # `path::function` entries. Absent is not an error -- DEV-017 confirmed most rules
+            # don't have this precision yet; the report generator surfaces that gap honestly
+            # rather than this validator inventing a requirement the schema doesn't mandate yet.
+            for field_name in ('positive_tests', 'negative_tests'):
+                field = rule.get(field_name)
+                if field is None:
+                    continue
+                if not isinstance(field, list):
+                    errors.append(f"Rule {rule_id} '{field_name}' attribute must be an array.")
+                    continue
+                for entry in field:
+                    validate_evidence_entry(entry, conformance_dir, rule_id, field_name, errors)
+
+            if any(kw in description for kw in rejection_keywords) and rule.get(
+                'negative_tests'
+            ) == []:
+                warnings.append(
+                    f"Rule {rule_id} description suggests a semantic-rejection rule but "
+                    f"'negative_tests' is explicitly empty -- confirm this rule genuinely has no "
+                    f"negative-test evidence yet, not an oversight."
                 )
 
         if status == 'missing' and (rule.get('source') or rule.get('tests')):

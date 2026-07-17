@@ -1,4 +1,34 @@
 # STARKLANG Core v1 Specification Rules Coverage Database
+#
+# Schema per [[rule]] entry:
+#   id          — stable rule identifier (e.g. "LEX-003").
+#   chapter     — spec chapter file stem under STARKLANG/docs/spec/ (no ".md").
+#   description — free text.
+#   status      — implemented | partial | missing | intentionally-deferred | spec-defect.
+#   source      — path to the primary implementing source file (required if status=implemented).
+#   tests       — legacy, file-level evidence list (required if status=implemented). Does not
+#                 distinguish positive (valid-program) from negative (invalid-program/rejection)
+#                 coverage, and often cites only the aggregate `starkc/tests/conformance.rs`
+#                 fixture-corpus runner with no per-rule attribution within it -- this was
+#                 DEV-017's finding.
+#   positive_tests / negative_tests — WP-C1.6 addition, optional. Each entry is either a bare
+#                 file path (validated for existence, same as `tests`) or `path::function_name`
+#                 (also validated that `fn function_name` exists in that file --
+#                 check-conformance.py catches a renamed/deleted test, not just a
+#                 renamed/deleted file). Omit both fields entirely for a rule that has not yet
+#                 been re-cited at this precision (most rules, as of WP-C1.6 -- see DEV-017);
+#                 `starkc/scripts/generate-conformance-report.py` reports those as
+#                 "unclassified", not as if they had zero coverage. An empty array (`[]`) means
+#                 the opposite: this rule genuinely has no evidence in that category, checked and
+#                 confirmed absent, not merely unclassified.
+#   deviation   — optional DEV-NNN id, when this rule's current behavior is tracked as a known
+#                 deviation in COMPILER-STATE.md / starkc/docs/conformance/KNOWN-DEVIATIONS.md.
+#
+# `starkc/scripts/check-conformance.py` validates this file's internal consistency (duplicate
+# ids, dangling chapter/path references, schema completeness). `starkc/scripts/
+# generate-conformance-report.py` (WP-C1.6) emits the full per-rule evidence report (rule id,
+# chapter, status, source, positive/negative tests, deviation, last-verified commit) in JSON or
+# Markdown; both are run in CI (`.github/workflows/ci.yml`'s `fixture-conformance` job).
 
 [[rule]]
 id = "LEX-001"
@@ -32,6 +62,9 @@ description = "Integer Literals (decimal, hex, octal, binary, underscores as dig
 status = "implemented"
 source = "starkc/src/lexer.rs"
 tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
+positive_tests = ["starkc/src/lexer.rs::spec_integer_examples"]
+negative_tests = ["starkc/src/lexer.rs::underscore_rules", "starkc/src/lexer.rs::invalid_suffixes_and_bodies"]
+deviation = "DEV-015"
 
 [[rule]]
 id = "LEX-004"
@@ -42,6 +75,9 @@ description = "Floating Point Literals (decimal dot/exponent notation, suffixes,
 status = "implemented"
 source = "starkc/src/lexer.rs"
 tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
+positive_tests = ["starkc/src/lexer.rs::spec_float_examples", "starkc/src/lexer.rs::dot_after_int_is_not_a_float"]
+negative_tests = ["starkc/src/lexer.rs::exponent_without_digits_is_not_an_exponent"]
+deviation = "DEV-015"
 
 [[rule]]
 id = "LEX-005"
@@ -53,6 +89,8 @@ description = "String Literals (double-quoted with escape sequences, raw string 
 status = "implemented"
 source = "starkc/src/lexer.rs"
 tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
+positive_tests = ["starkc/src/lexer.rs::spec_string_examples"]
+negative_tests = ["starkc/src/lexer.rs::string_errors"]
 
 [[rule]]
 id = "LEX-006"
@@ -61,6 +99,8 @@ description = "Character Literals (single-quoted character content or escape seq
 status = "implemented"
 source = "starkc/src/lexer.rs"
 tests = ["starkc/tests/conformance.rs"]
+positive_tests = ["starkc/src/lexer.rs::spec_char_examples", "starkc/src/lexer.rs::multibyte_char_content"]
+negative_tests = ["starkc/src/lexer.rs::char_errors"]
 
 [[rule]]
 id = "LEX-007"
@@ -97,6 +137,8 @@ description = "Comments (single-line comments, nested multi-line comments, doc c
 status = "implemented"
 source = "starkc/src/lexer.rs"
 tests = ["starkc/src/lexer.rs", "starkc/tests/conformance.rs"]
+positive_tests = ["starkc/src/lexer.rs::comments_are_skipped_including_nested", "starkc/src/lexer.rs::deeply_nested_block_comments", "starkc/src/lexer.rs::doc_comment_kinds_are_distinguished"]
+negative_tests = ["starkc/src/lexer.rs::unterminated_block_comment", "starkc/src/lexer.rs::deeply_nested_block_comments"]
 
 [[rule]]
 id = "LEX-011"
@@ -127,6 +169,8 @@ description = "Reserved Tokens (async, await, yield, where, macro, unsafe, etc.)
 status = "implemented"
 source = "starkc/src/lexer.rs"
 tests = ["starkc/src/lexer.rs", "starkc/src/parser.rs", "starkc/tests/diag_format.rs"]
+positive_tests = ["starkc/src/lexer.rs::keywords_reserved_and_idents", "starkc/src/lexer.rs::all_reserved_words_lex_as_reserved"]
+negative_tests = ["starkc/src/parser.rs::reserved_word_diagnostic", "starkc/src/parser.rs::reserved_word_diagnostic_in_non_expression_positions", "starkc/tests/diag_format.rs::reserved_word_renders_with_label"]
 
 [[rule]]
 id = "LEX-014"
@@ -148,6 +192,8 @@ description = "Program structure (sequence of global item declarations)"
 status = "implemented"
 source = "starkc/src/parser.rs"
 tests = ["starkc/tests/conformance.rs", "starkc/tests/gate2_valid.rs", "starkc/tests/gate2_package.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::all_gate2_valid_programs_pass_semantic_analysis", "starkc/tests/gate2_valid.rs::test_multi_file_module_loading"]
+negative_tests = ["starkc/tests/gate2_valid.rs::test_duplicate_mod_declaration_is_rejected", "starkc/tests/gate2_valid.rs::test_missing_module_file_is_reported_not_silently_accepted"]
 
 [[rule]]
 id = "SYN-002"
@@ -251,6 +297,8 @@ description = "Basic Expressions (paths, literals, blocks, calls, method calls, 
 status = "implemented"
 source = "starkc/src/parser.rs"
 tests = ["starkc/tests/conformance.rs", "starkc/tests/span_integrity.rs"]
+positive_tests = ["starkc/tests/span_integrity.rs::expr_and_block_spans_are_contained_across_the_fixture_corpus", "starkc/tests/span_integrity.rs::span_containment_survives_generic_close_splitting"]
+negative_tests = []
 
 
 [[rule]]
@@ -328,6 +376,8 @@ description = "Identifier Resolution (local scoping, visibility boundaries)"
 status = "implemented"
 source = "starkc/src/resolve.rs"
 tests = ["starkc/tests/conformance.rs", "starkc/src/resolve.rs"]
+positive_tests = ["starkc/src/resolve.rs::local_binding_shadows_same_named_module_item_within_its_scope_only", "starkc/src/resolve.rs::module_paths_imports_and_visibility_are_enforced"]
+negative_tests = ["starkc/src/resolve.rs::private_item_is_not_visible_from_a_descendant_module"]
 
 [[rule]]
 id = "SEM-002"
@@ -380,6 +430,8 @@ description = "Coherence rules (orphan rules, overlapping implementation check)"
 status = "implemented"
 source = "starkc/src/typecheck.rs"
 tests = ["starkc/tests/conformance.rs", "starkc/tests/gate2_package.rs"]
+positive_tests = []
+negative_tests = ["starkc/tests/gate2_package.rs::test_cross_package_coherence_orphan_rule_with_real_packages"]
 
 
 [[rule]]
@@ -438,6 +490,8 @@ description = "Prelude imports (built-in types automatically visible)"
 status = "implemented"
 source = "starkc/src/resolve.rs"
 tests = ["starkc/tests/gate2_valid.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::all_gate2_valid_programs_pass_semantic_analysis"]
+negative_tests = []
 
 [[rule]]
 id = "STD-002"
@@ -446,6 +500,8 @@ description = "Core formatting (println macro support)"
 status = "implemented"
 source = "starkc/src/interp.rs"
 tests = ["starkc/tests/gate3_execution.rs"]
+positive_tests = ["starkc/tests/gate3_execution.rs::gate3_examples_execute_with_expected_output"]
+negative_tests = []
 
 [[rule]]
 id = "STD-003"
@@ -462,6 +518,8 @@ description = "Standard collections (Vec, String, HashMap, HashSet)"
 status = "partial"
 source = "starkc/src/interp.rs"
 tests = ["starkc/tests/gate4b_string_vec.rs", "starkc/tests/gate4c_collections.rs"]
+positive_tests = ["starkc/tests/gate4b_string_vec.rs::test_string_methods", "starkc/tests/gate4b_string_vec.rs::test_vec_iter_and_extend", "starkc/tests/gate4c_collections.rs::test_hashmap_basic", "starkc/tests/gate4c_collections.rs::test_hashset_basic"]
+negative_tests = []
 
 [[rule]]
 id = "STD-004"
@@ -475,6 +533,8 @@ description = "Standard traits (Clone, Hash, Default, Display, Error, Iterator)"
 status = "partial"
 source = "starkc/src/typecheck.rs"
 tests = ["starkc/tests/gate4a_prelude_traits.rs"]
+positive_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_trait_bounds_clone_default_display", "starkc/tests/gate4a_prelude_traits.rs::test_replace", "starkc/tests/gate4a_prelude_traits.rs::test_take", "starkc/tests/gate4a_prelude_traits.rs::test_swap"]
+negative_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_float_hash_bound_rejected"]
 
 [[rule]]
 id = "STD-005"
@@ -486,6 +546,8 @@ description = "Math operations, random, and I/O APIs"
 status = "partial"
 source = "starkc/src/interp.rs"
 tests = ["starkc/tests/phase4e_math_random_io.rs"]
+positive_tests = ["starkc/tests/phase4e_math_random_io.rs::math_abs_int_and_float", "starkc/tests/phase4e_math_random_io.rs::math_clamp", "starkc/tests/phase4e_math_random_io.rs::random_range_stays_within_bounds", "starkc/tests/phase4e_math_random_io.rs::write_file_then_read_file_round_trips"]
+negative_tests = ["starkc/tests/phase4e_math_random_io.rs::read_file_missing_path_returns_io_error_not_found"]
 
 
 [[rule]]
@@ -508,6 +570,8 @@ description = "Path navigation (self, super, and crate navigation rules)"
 status = "implemented"
 source = "starkc/src/resolve.rs"
 tests = ["starkc/tests/conformance.rs", "starkc/src/resolve.rs", "starkc/tests/gate2_package.rs"]
+positive_tests = ["starkc/src/resolve.rs::super_and_crate_navigate_correctly_from_a_nested_module"]
+negative_tests = ["starkc/src/resolve.rs::super_from_root_module_reports_e0203_not_a_panic"]
 
 [[rule]]
 id = "PKG-003"
@@ -521,6 +585,8 @@ description = "Visibility boundaries (restricting access to private items)"
 status = "implemented"
 source = "starkc/src/resolve.rs"
 tests = ["starkc/tests/conformance.rs", "starkc/src/resolve.rs", "starkc/tests/gate2_package.rs"]
+positive_tests = ["starkc/src/resolve.rs::pub_use_single_level_reexport_is_visible_from_outside"]
+negative_tests = ["starkc/src/resolve.rs::private_item_is_not_visible_from_a_descendant_module"]
 
 [[rule]]
 id = "PKG-004"
@@ -535,6 +601,8 @@ description = "Multi-file module layout compilation (mod foo; file lookup)"
 status = "partial"
 source = "starkc/src/parser.rs"
 tests = ["starkc/tests/gate2_package.rs", "starkc/tests/gate3_package_resolution.rs"]
+positive_tests = ["starkc/tests/gate2_package.rs::test_three_package_workspace_compiles"]
+negative_tests = ["starkc/tests/gate2_package.rs::test_undeclared_dependency_import_is_rejected", "starkc/tests/gate2_package.rs::test_workspace_boundary_rejected"]
 
 [[rule]]
 id = "PKG-005"
@@ -547,6 +615,8 @@ description = "Package manifests (starkpkg.json loading and verification)"
 status = "partial"
 source = "starkc/src/package.rs"
 tests = ["starkc/tests/gate2_package.rs", "starkc/tests/gate3_package_resolution.rs"]
+positive_tests = ["starkc/tests/gate2_package.rs::test_three_package_workspace_compiles"]
+negative_tests = ["starkc/tests/gate2_package.rs::test_missing_manifest_rejected", "starkc/tests/gate2_package.rs::test_invalid_entry_rejected", "starkc/tests/gate2_package.rs::test_duplicate_package_names_rejected"]
 
 [[rule]]
 id = "PKG-006"
@@ -560,3 +630,5 @@ description = "Transitive dependency resolution and lock-file pinning"
 status = "partial"
 source = "starkc/src/package.rs"
 tests = ["starkc/tests/gate3_package_resolution.rs"]
+positive_tests = ["starkc/tests/gate3_package_resolution.rs::test_full_reproducible_resolution_pipeline", "starkc/tests/gate3_package_resolution.rs::test_version_req_parsing_and_matching"]
+negative_tests = ["starkc/tests/gate3_package_resolution.rs::test_conflicting_constraints_rejected"]

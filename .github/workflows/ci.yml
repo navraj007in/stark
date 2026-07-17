@@ -36,6 +36,11 @@ jobs:
     # Required-green since WP1.4 (PLAN.md: Gate 1 exit criterion).
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history, not the default shallow (depth 1): the WP-C1.6 evidence report's
+          # `last_verified_commit` column is computed via `git log -- <path>` per rule, which
+          # needs real history to search, not just the tip commit.
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -49,3 +54,16 @@ jobs:
         run: |
           cd starkc
           cargo test --test conformance
+      - name: Coverage database is internally consistent
+        run: python3 starkc/scripts/check-conformance.py
+      - name: Generate conformance evidence report (WP-C1.6)
+        run: |
+          python3 starkc/scripts/generate-conformance-report.py --format=json --out=conformance-report.json
+          python3 starkc/scripts/generate-conformance-report.py --format=markdown --out=conformance-report.md
+          cat conformance-report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-evidence-report
+          path: |
+            conformance-report.json
+            conformance-report.md
