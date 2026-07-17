@@ -20,11 +20,12 @@ struct FlowState {
 
 pub fn check(
     hir: &Hir,
-    _file: Arc<SourceFile>,
+    file: Arc<SourceFile>,
     expr_types: &HashMap<ExprId, Ty>,
 ) -> Vec<Diagnostic> {
     let mut checker = FlowChecker {
         hir,
+        file,
         expr_types,
         diagnostics: Vec::new(),
     };
@@ -34,13 +35,36 @@ pub fn check(
 
 struct FlowChecker<'a> {
     hir: &'a Hir,
+    // WP-C1.4 (2026-07-17): this was previously `_file` and structurally unused -- every flow
+    // diagnostic (E0400/E0401) rendered via the caller's default-file fallback regardless of
+    // which file the flagged item actually came from. Now swapped per item in `check_root`
+    // (mirroring borrowck.rs's identical fix, both part of DEV-006) and backfilled onto
+    // diagnostics via `push_diag`. See COMPILER-STATE.md DEV-006.
+    file: Arc<SourceFile>,
     expr_types: &'a HashMap<ExprId, Ty>,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl FlowChecker<'_> {
+    fn push_diag(&mut self, diag: Diagnostic) {
+        let diag = if diag.file.is_none() {
+            diag.with_file(self.file.clone())
+        } else {
+            diag
+        };
+        self.diagnostics.push(diag);
+    }
+
     fn check_root(&mut self) {
-        for item in &self.hir.items {
+        let root_file = self.file.clone();
+        for (index, item) in self.hir.items.iter().enumerate() {
+            let item_id = hir::ItemId(index as u32);
+            self.file = self
+                .hir
+                .item_files
+                .get(&item_id)
+                .cloned()
+                .unwrap_or_else(|| root_file.clone());
             match &item.kind {
                 hir::ItemKind::Fn(def) => self.check_fn(def),
                 hir::ItemKind::Impl { items, .. } => {
@@ -64,6 +88,7 @@ impl FlowChecker<'_> {
                 _ => {}
             }
         }
+        self.file = root_file;
 
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
             let mut state = FlowState::default();
@@ -312,7 +337,7 @@ impl FlowChecker<'_> {
     }
 
     fn assignment_error(&mut self, span: crate::source::Span) {
-        self.diagnostics.push(
+        self.push_diag(
             Diagnostic::error("assignment to immutable place", span)
                 .with_code("E0400")
                 .with_label("cannot assign to this immutable variable or field"),
@@ -360,7 +385,7 @@ impl FlowChecker<'_> {
         state: &FlowState,
     ) {
         if !state.initialized.contains(&local) {
-            self.diagnostics.push(
+            self.push_diag(
                 Diagnostic::error("use of possibly-uninitialized variable", span)
                     .with_code("E0401")
                     .with_label("variable read before it is definitely assigned"),

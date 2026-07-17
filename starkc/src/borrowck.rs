@@ -119,6 +119,74 @@ impl<'a> BorrowChecker<'a> {
         &self.file.src[span.lo as usize..span.hi as usize]
     }
 
+    /// WP-C1.4 (2026-07-17): backfill `.with_file()` when a diagnostic doesn't already carry one,
+    /// mirroring resolve.rs's `push_diag` (WP-C1.2, DEV-006's resolve half) and typecheck.rs's
+    /// per-item backfill. Every raw `self.diags.push(...)` call site in this file was converted
+    /// to go through this method instead. See COMPILER-STATE.md DEV-006.
+    fn push_diag(&mut self, diag: Diagnostic) {
+        let diag = if diag.file.is_none() {
+            diag.with_file(self.file.clone())
+        } else {
+            diag
+        };
+        self.diags.push(diag);
+    }
+
+    /// WP-C1.4: check an expression that is about to be consumed as an OWNED value -- bound to
+    /// a `let`, returned, or produced as a block's tail value -- as opposed to `check_expr`'s
+    /// general recursive traversal, which is also reached from read-only contexts (e.g. binary-
+    /// operator operands via `check_read_expr`, or field/index access through a deref, which
+    /// already have their own correct, narrower Copy checks) that must NOT be treated as moves.
+    ///
+    /// Before this fix, `place_of`/`consume_place` had no `Deref` case at all, so `*r` for
+    /// `r: &T` was never checked as a move source in any context. For non-`Copy` `T` this meant
+    /// `let owned = *r;` (or a function whose tail/return expression is `*r`) type-checked and
+    /// then silently deep-cloned `T` out of borrowed storage at runtime (`interp.rs`'s `UnOp::
+    /// Deref` evaluation uses `clone_place_value`, not move semantics) -- for a `Drop`-
+    /// implementing `T`, this duplicates the value without an explicit `.clone()`/`impl Clone`
+    /// ever being written, so its destructor then runs twice against what was conceptually one
+    /// logical resource. Confirmed empirically before this fix, both at compile time (accepted)
+    /// and at runtime (double-drop observed). This matches Rust's own rule (moving out of `*r`
+    /// behind a shared OR mutable reference is rejected unless the pointee is `Copy`) rather
+    /// than the narrower "Drop types only" reading of the checklist text, since the general
+    /// rule is what the spec's Copy/reference model implies and is what makes the fix actually
+    /// sound (a non-Copy, non-Drop type moved out from behind a reference is just as unsound --
+    /// two owners now alias the same conceptual value -- even without a destructor to
+    /// double-run). See COMPILER-STATE.md's WP-C1.4 findings.
+    ///
+    /// Also wired into every other position that builds a new owned value out of a
+    /// sub-expression: call arguments (`take(*r)`), tuple/array elements (`(*r, 1)`), and
+    /// struct-literal field values (`S { field: *r }`) -- each confirmed empirically to exhibit
+    /// the identical double-drop pattern before being covered here. Free-function call arguments
+    /// need no callee-signature awareness to apply this safely: STARK has no argument-position
+    /// auto-ref/deref-coercion (only method *receivers* auto-borrow, per 03-Type-System.md), so
+    /// `*r` in argument position only ever type-checks when the callee's parameter type already
+    /// equals the pointee type by value -- confirmed empirically that passing `*r` where a `&T`
+    /// parameter is expected is already a type error independent of this check.
+    fn check_owned_value(&mut self, expr_id: ExprId) {
+        if let hir::ExprKind::Unary {
+            op: UnOp::Deref,
+            operand,
+        } = &self.hir.expr(expr_id).kind
+        {
+            let operand = *operand;
+            let pointee_ty = self.expr_types.get(&expr_id).cloned().unwrap_or(Ty::Error);
+            if !self.is_copy_type(&pointee_ty) {
+                self.push_diag(
+                    Diagnostic::error(
+                        "cannot move a non-Copy value out of a reference",
+                        self.hir.expr(expr_id).span,
+                    )
+                    .with_code("E0100")
+                    .with_label("borrow this value instead of moving out of the reference"),
+                );
+            }
+            self.check_expr(operand);
+            return;
+        }
+        self.check_expr(expr_id);
+    }
+
     fn is_copy_type(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Primitive(primitive) => !matches!(
@@ -137,7 +205,21 @@ impl<'a> BorrowChecker<'a> {
     }
 
     fn check_crate(&mut self) {
-        for item in &self.hir.items {
+        // WP-C1.4 (2026-07-17): swap `self.file` to each item's own file (from
+        // `hir.item_files`, the same side table resolve.rs/typecheck.rs already use) before
+        // checking it, so `push_diag`'s backfill attributes diagnostics to the file the item
+        // actually came from rather than always the crate's top-level file -- for multi-file
+        // packages, every borrow-check diagnostic for a non-root-file item was previously
+        // misattributed to the root file. See COMPILER-STATE.md DEV-006.
+        let root_file = self.file.clone();
+        for (index, item) in self.hir.items.iter().enumerate() {
+            let item_id = ItemId(index as u32);
+            self.file = self
+                .hir
+                .item_files
+                .get(&item_id)
+                .cloned()
+                .unwrap_or_else(|| root_file.clone());
             match &item.kind {
                 hir::ItemKind::Fn(def) => {
                     self.check_fn_def(def);
@@ -152,6 +234,7 @@ impl<'a> BorrowChecker<'a> {
                 _ => {}
             }
         }
+        self.file = root_file;
 
         // Snippet mode check
         if let hir::Root::Snippet { stmts, tail } = &self.hir.root {
@@ -185,7 +268,7 @@ impl<'a> BorrowChecker<'a> {
         }
 
         if let Some(tail_expr) = block.tail {
-            self.check_expr(tail_expr);
+            self.check_owned_value(tail_expr);
             self.check_return_escape(tail_expr);
         }
 
@@ -204,7 +287,7 @@ impl<'a> BorrowChecker<'a> {
             hir::StmtKind::Let { local, init, .. } => {
                 let borrows_before = self.active_borrows.len();
                 if let Some(init_expr) = init {
-                    self.check_expr(*init_expr);
+                    self.check_owned_value(*init_expr);
                     self.reinitialize(&Place {
                         local: *local,
                         projections: Vec::new(),
@@ -218,7 +301,7 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
             hir::StmtKind::Return(Some(expr)) => {
-                self.check_expr(*expr);
+                self.check_owned_value(*expr);
                 self.check_return_escape(*expr);
             }
             hir::StmtKind::Break(Some(expr)) => {
@@ -248,7 +331,7 @@ impl<'a> BorrowChecker<'a> {
                         let mut has_conflict = false;
                         for b in &self.active_borrows {
                             if b.local == local_id && (*mutable || b.mutable) {
-                                self.diags.push(
+                                self.push_diag(
                                     Diagnostic::error(format!("cannot borrow variable '{}' because it is already borrowed", self.text(expr.span)), expr.span)
                                         .with_code("E0101")
                                 );
@@ -287,7 +370,7 @@ impl<'a> BorrowChecker<'a> {
                 if let Some(local_id) = self.get_root_local(*lhs) {
                     for b in &self.active_borrows {
                         if b.local == local_id {
-                            self.diags.push(
+                            self.push_diag(
                                 Diagnostic::error(
                                     format!(
                                         "cannot assign to variable '{}' because it is borrowed",
@@ -324,7 +407,7 @@ impl<'a> BorrowChecker<'a> {
                     self.check_expr(*callee);
                 }
                 for &arg in args {
-                    self.check_expr(arg);
+                    self.check_owned_value(arg);
                 }
             }
             hir::ExprKind::Field { .. } | hir::ExprKind::TupleField { .. } => {
@@ -339,7 +422,7 @@ impl<'a> BorrowChecker<'a> {
                 self.check_expr(*index);
                 let ty = self.expr_types.get(&expr_id).cloned().unwrap_or(Ty::Error);
                 if !matches!(ty, Ty::Slice(_)) && !self.is_copy_type(&ty) {
-                    self.diags.push(
+                    self.push_diag(
                         Diagnostic::error(
                             "cannot move a non-Copy value out of an indexed place",
                             expr.span,
@@ -351,13 +434,13 @@ impl<'a> BorrowChecker<'a> {
             }
             hir::ExprKind::Tuple(elems) | hir::ExprKind::Array(elems) => {
                 for &e in elems {
-                    self.check_expr(e);
+                    self.check_owned_value(e);
                 }
             }
             hir::ExprKind::StructLit { fields, .. } => {
                 for f in fields {
                     if let Some(val) = f.expr {
-                        self.check_expr(val);
+                        self.check_owned_value(val);
                     }
                 }
             }
@@ -546,7 +629,7 @@ impl<'a> BorrowChecker<'a> {
             .iter()
             .any(|borrow| borrow.local == place.local && (mutable || borrow.mutable))
         {
-            self.diags.push(
+            self.push_diag(
                 Diagnostic::error("method receiver conflicts with an active borrow", span)
                     .with_code("E0101"),
             );
@@ -611,12 +694,33 @@ impl<'a> BorrowChecker<'a> {
         if self.is_copy_type(&ty) {
             return;
         }
+        // WP-C1.4: `check_read_borrow_conflict` above only rejects reads against a *mutable*
+        // borrow (shared reads under a shared borrow are sound). A move is different: moving a
+        // non-Copy place invalidates its storage, so it must be rejected under *any* active
+        // borrow of that local, mutable or shared -- e.g. `let it = v.iter(); consume(v);` must
+        // not compile, since `it` is a live shared view into `v`'s storage. Confirmed empirically
+        // that this previously compiled and crashed at runtime; see COMPILER-STATE.md's WP-C1.4
+        // findings.
+        if self.active_borrows.iter().any(|b| b.local == place.local) {
+            self.push_diag(
+                Diagnostic::error(
+                    format!(
+                        "cannot move variable '{}' because it is borrowed",
+                        self.text(expr.span)
+                    ),
+                    expr.span,
+                )
+                .with_code("E0101")
+                .with_label("move conflict: variable is currently borrowed"),
+            );
+            return;
+        }
         if place
             .projections
             .iter()
             .any(|projection| matches!(projection, Projection::Index))
         {
-            self.diags.push(
+            self.push_diag(
                 Diagnostic::error(
                     "cannot move a non-Copy value out of an indexed place",
                     expr.span,
@@ -626,7 +730,7 @@ impl<'a> BorrowChecker<'a> {
             return;
         }
         if !place.projections.is_empty() && self.local_has_drop(place.local) {
-            self.diags.push(
+            self.push_diag(
                 Diagnostic::error(
                     "cannot partially move a value whose type implements Drop",
                     expr.span,
@@ -655,7 +759,7 @@ impl<'a> BorrowChecker<'a> {
             .iter()
             .any(|moved| places_overlap(moved, place))
         {
-            self.diags.push(
+            self.push_diag(
                 Diagnostic::error(format!("use of moved value '{}'", self.text(span)), span)
                     .with_code("E0100")
                     .with_label("value used here after move"),
@@ -672,7 +776,7 @@ impl<'a> BorrowChecker<'a> {
             .iter()
             .any(|borrow| borrow.local == local && borrow.mutable)
         {
-            self.diags.push(
+            self.push_diag(
                 Diagnostic::error(
                     format!(
                         "cannot read variable '{}' because it is mutably borrowed",
@@ -733,7 +837,7 @@ impl<'a> BorrowChecker<'a> {
                 .cloned()
                 .unwrap_or(Ty::Error);
             if !matches!(local_ty, Ty::Ref { .. }) {
-                self.diags.push(
+                self.push_diag(
                     Diagnostic::error(
                         "cannot return reference to local stack variable",
                         self.hir.expr(expr_id).span,
@@ -805,6 +909,29 @@ impl<'a> BorrowChecker<'a> {
             Ty::Array(element, _) | Ty::Slice(element) | Ty::Range(element) => {
                 Self::type_carries_borrow(element)
             }
+            // WP-C1.4: iterator CoreTypes are borrow-carrying VIEWS of their source collection
+            // regardless of their element type argument -- `VecIter<Int32>`'s only generic arg
+            // is the *element* type (Int32, not a reference), so the generic "recurse into args
+            // looking for a Ty::Ref" rule below never recognized these as borrow-carrying at
+            // all. Before this fix, `let it = v.iter();` computed `expr_carries_borrow` as false
+            // for the init expression, so the shared borrow `borrow_method_receiver` registers
+            // while evaluating `v.iter()` was immediately truncated at end of that `let`
+            // statement -- the checker believed `v` was no longer borrowed for the rest of the
+            // block, even though `it` is a live, aliasing view into `v`'s storage. Confirmed
+            // empirically: moving `v` into another function while `it` was still live compiled
+            // and then crashed at runtime ("use of unavailable value"). See COMPILER-STATE.md's
+            // WP-C1.4 findings.
+            Ty::Core(
+                CoreType::VecIter
+                | CoreType::CharsIter
+                | CoreType::SplitIter
+                | CoreType::KeysIter
+                | CoreType::ValuesIter
+                | CoreType::Iter
+                | CoreType::MapIter
+                | CoreType::FilterIter,
+                _,
+            ) => true,
             Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
                 args.iter().any(Self::type_carries_borrow)
             }

@@ -104,3 +104,46 @@ fn run_cli_executes_program_and_reports_runtime_failure() {
         .unwrap()
         .contains("runtime error: division by zero"));
 }
+
+/// WP-C1.4 coverage: CLAUDE.md's memory-model rule that traps and `panic` abort execution
+/// without running destructors ("Traps and panic abort: destructors do not run."). A live
+/// `Marker` value with a `Drop` impl is still in scope when a division-by-zero trap fires;
+/// its destructor's `println` must never execute, since the trap unwinds via `?` propagation
+/// straight out of `run_main` without passing through the interpreter's normal end-of-scope
+/// drop-execution code. Uses the CLI (not the in-process `interp::run` test helper) because
+/// `run`'s `Result<Execution, RuntimeError>` signature discards any output captured before an
+/// `Err`, making the captured-stdout assertion this test needs impossible via that helper.
+#[test]
+fn trap_aborts_without_running_pending_destructors() {
+    let binary = env!("CARGO_BIN_EXE_starkc");
+    let path =
+        std::env::temp_dir().join(format!("stark-abort-no-drop-{}.stark", std::process::id()));
+    std::fs::write(
+        &path,
+        "struct Marker { name: String } \
+         impl Drop for Marker { fn drop(&mut self) { println(self.name.as_str()); } } \
+         fn main() { \
+             let m = Marker { name: String::from(\"should-not-print\") }; \
+             let x: Int32 = 1; \
+             let y: Int32 = 0; \
+             let z = x / y; \
+             println(\"unreachable\"); \
+         }",
+    )
+    .unwrap();
+    let failure = Command::new(binary)
+        .args(["run", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(path);
+    assert!(!failure.status.success());
+    let stdout = String::from_utf8(failure.stdout).unwrap();
+    assert!(
+        !stdout.contains("should-not-print"),
+        "a trap must abort before running any pending destructor, got stdout: {stdout:?}"
+    );
+    assert!(!stdout.contains("unreachable"), "got stdout: {stdout:?}");
+    assert!(String::from_utf8(failure.stderr)
+        .unwrap()
+        .contains("runtime error: division by zero"));
+}

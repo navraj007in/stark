@@ -4763,6 +4763,99 @@ impl<'a> TypeChecker<'a> {
             None
         };
 
+        // WP-C1.3 (2026-07-17): fall back to a trait's own default method body when no impl
+        // overrides it. `candidates` above only ever collects `ImplItem::Fn` overrides -- a
+        // trait method declared with a real body (03-Type-System.md trait defaults) was never
+        // consulted at all, so calling an un-overridden default method failed to type-check
+        // with E0302 "method not found" even though the interpreter (once its own matching gap
+        // is fixed) has a real body to run. Confirmed empirically before this fix. See
+        // COMPILER-STATE.md DEV-013.
+        let default_fallback = if selected.is_none() {
+            self.hir.items.iter().find_map(|item| {
+                let hir::ItemKind::Impl {
+                    self_ty: impl_self_ty_id,
+                    trait_: Some(trait_ref),
+                    generics,
+                    ..
+                } = &item.kind
+                else {
+                    return None;
+                };
+                let impl_self_ty = self.convert_hir_type(*impl_self_ty_id);
+                let map = self.match_impl_type(&impl_self_ty, &receiver_ty, generics)?;
+                let Res::Item(trait_id) = trait_ref.res else {
+                    return None;
+                };
+                let hir::ItemKind::Trait {
+                    items: trait_items, ..
+                } = &self.hir.item(trait_id).kind
+                else {
+                    return None;
+                };
+                trait_items.iter().find_map(|trait_item| match trait_item {
+                    hir::TraitItem::Method { sig, body: Some(_) }
+                        if self.text(sig.name) == name_str =>
+                    {
+                        Some((sig.clone(), map.clone(), impl_self_ty.clone()))
+                    }
+                    _ => None,
+                })
+            })
+        } else {
+            None
+        };
+
+        if let Some((sig, map, impl_self_ty)) = default_fallback {
+            if matches!(sig.receiver, Some(hir::Receiver::RefMut))
+                && !self.is_mutable_place(base_expr)
+            {
+                self.diags.push(
+                    Diagnostic::error(
+                        "mutable method receiver requires a mutable place",
+                        name_span,
+                    )
+                    .with_code("E0400"),
+                );
+            }
+            let previous_self = self.current_self_ty.replace(impl_self_ty);
+            let params_ty: Vec<Ty> = sig
+                .params
+                .iter()
+                .map(|p| {
+                    let ty = self.convert_hir_type(p.ty);
+                    self.instantiate_ty(&ty, &map)
+                })
+                .collect();
+            let ret_ty = match sig.ret {
+                hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+                hir::RetTy::Ty(t) => {
+                    let ty = self.convert_hir_type(t);
+                    self.instantiate_ty(&ty, &map)
+                }
+                hir::RetTy::Never(_) => Ty::Never,
+            };
+            self.current_self_ty = previous_self;
+
+            if args.len() != params_ty.len() {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "wrong number of arguments: expected {}, found {}",
+                            params_ty.len(),
+                            args.len()
+                        ),
+                        call_span,
+                    )
+                    .with_code("E0005"),
+                );
+            }
+            for (arg, param_t) in args.iter().zip(params_ty) {
+                let arg_t = self.check_expr(*arg);
+                let _ = self.unify(param_t, arg_t, self.hir.expr(*arg).span);
+            }
+            return ret_ty;
+        }
+
         if let Some((def, _, map, impl_self_ty)) = selected {
             if matches!(def.sig.receiver, Some(hir::Receiver::RefMut))
                 && !self.is_mutable_place(base_expr)
@@ -4905,19 +4998,19 @@ impl<'a> TypeChecker<'a> {
             },
             Ty::Core(CoreType::VecIter, args) => Ty::Ref {
                 mutable: false,
-                inner: Box::new(args.get(0).cloned().unwrap_or(Ty::Error)),
+                inner: Box::new(args.first().cloned().unwrap_or(Ty::Error)),
             },
             Ty::Core(CoreType::KeysIter, args) => Ty::Ref {
                 mutable: false,
-                inner: Box::new(args.get(0).cloned().unwrap_or(Ty::Error)),
+                inner: Box::new(args.first().cloned().unwrap_or(Ty::Error)),
             },
             Ty::Core(CoreType::ValuesIter, args) => Ty::Ref {
                 mutable: false,
-                inner: Box::new(args.get(0).cloned().unwrap_or(Ty::Error)),
+                inner: Box::new(args.first().cloned().unwrap_or(Ty::Error)),
             },
             Ty::Core(CoreType::Iter, args) => {
                 if args.len() == 2 {
-                    let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                    let k = args.first().cloned().unwrap_or(Ty::Error);
                     let v = args.get(1).cloned().unwrap_or(Ty::Error);
                     Ty::Tuple(vec![
                         Ty::Ref {
@@ -4930,7 +5023,7 @@ impl<'a> TypeChecker<'a> {
                         },
                     ])
                 } else {
-                    let t = args.get(0).cloned().unwrap_or(Ty::Error);
+                    let t = args.first().cloned().unwrap_or(Ty::Error);
                     Ty::Ref {
                         mutable: false,
                         inner: Box::new(t),
@@ -4939,7 +5032,7 @@ impl<'a> TypeChecker<'a> {
             }
             Ty::Core(CoreType::MapIter, args) => args.get(1).cloned().unwrap_or(Ty::Error),
             Ty::Core(CoreType::FilterIter, args) => {
-                let inner = args.get(0).cloned().unwrap_or(Ty::Error);
+                let inner = args.first().cloned().unwrap_or(Ty::Error);
                 self.iterator_item_type(&inner)
             }
             _ => Ty::Error,
@@ -4954,6 +5047,38 @@ impl<'a> TypeChecker<'a> {
             mutable: false,
             inner: Box::new(Ty::Primitive(Primitive::Str)),
         };
+        // WP-C1.3 (2026-07-17): `.clone()` had no method-signature entry for ANY compiler-
+        // builtin type -- `Clone` as a *bound* (satisfies_bound) already recognized String/Vec/
+        // Option/Result/etc., but calling `.clone()` on a value of one of these types
+        // unconditionally failed with "method call on non-struct/enum type" (confirmed
+        // empirically -- struct types with a hand-written `impl Clone for T` worked fine, since
+        // those go through ordinary impl-block method resolution; every compiler-builtin type
+        // did not). Scoped to genuinely value-like core types; iterator/cursor CoreTypes
+        // (CharsIter/SplitIter/VecIter/KeysIter/ValuesIter/Iter/MapIter/FilterIter) and `Random`
+        // are deliberately excluded -- cloning cursor/stateful-stream semantics is not requested
+        // or normatively specified, and adding it would be new semantics, not a bug fix (Charter
+        // rule 4). See COMPILER-STATE.md DEV-013.
+        if name == "clone" {
+            let clonable = matches!(receiver, Ty::Primitive(Primitive::String | Primitive::Str))
+                || matches!(
+                    receiver,
+                    Ty::Core(
+                        CoreType::Vec
+                            | CoreType::Box
+                            | CoreType::Option
+                            | CoreType::Result
+                            | CoreType::Range
+                            | CoreType::RangeInclusive
+                            | CoreType::HashMap
+                            | CoreType::HashSet
+                            | CoreType::IOError,
+                        _
+                    )
+                );
+            if clonable {
+                return Some((Vec::new(), receiver.clone(), false));
+            }
+        }
         if self.is_iterator_type(receiver) {
             let item_ty = self.iterator_item_type(receiver);
             match name {
@@ -5202,7 +5327,7 @@ impl<'a> TypeChecker<'a> {
                 ))
             }
             Ty::Core(CoreType::HashMap, args) => {
-                let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                let k = args.first().cloned().unwrap_or(Ty::Error);
                 let v = args.get(1).cloned().unwrap_or(Ty::Error);
                 let k_ref = Ty::Ref {
                     mutable: false,
@@ -5256,7 +5381,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Ty::Core(CoreType::HashSet, args) => {
-                let t = args.get(0).cloned().unwrap_or(Ty::Error);
+                let t = args.first().cloned().unwrap_or(Ty::Error);
                 let t_ref = Ty::Ref {
                     mutable: false,
                     inner: Box::new(t.clone()),
@@ -5277,7 +5402,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Ty::Core(CoreType::KeysIter, args) if name == "next" => {
-                let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                let k = args.first().cloned().unwrap_or(Ty::Error);
                 Some((
                     Vec::new(),
                     Ty::Core(
@@ -5291,7 +5416,7 @@ impl<'a> TypeChecker<'a> {
                 ))
             }
             Ty::Core(CoreType::ValuesIter, args) if name == "next" => {
-                let v = args.get(0).cloned().unwrap_or(Ty::Error);
+                let v = args.first().cloned().unwrap_or(Ty::Error);
                 Some((
                     Vec::new(),
                     Ty::Core(
@@ -5306,7 +5431,7 @@ impl<'a> TypeChecker<'a> {
             }
             Ty::Core(CoreType::Iter, args) if name == "next" => {
                 if args.len() == 2 {
-                    let k = args.get(0).cloned().unwrap_or(Ty::Error);
+                    let k = args.first().cloned().unwrap_or(Ty::Error);
                     let v = args.get(1).cloned().unwrap_or(Ty::Error);
                     let tuple_ty = Ty::Tuple(vec![
                         Ty::Ref {
@@ -5320,7 +5445,7 @@ impl<'a> TypeChecker<'a> {
                     ]);
                     Some((Vec::new(), Ty::Core(CoreType::Option, vec![tuple_ty]), true))
                 } else {
-                    let t = args.get(0).cloned().unwrap_or(Ty::Error);
+                    let t = args.first().cloned().unwrap_or(Ty::Error);
                     Some((
                         Vec::new(),
                         Ty::Core(
@@ -5339,7 +5464,7 @@ impl<'a> TypeChecker<'a> {
                 Some((Vec::new(), Ty::Core(CoreType::Option, vec![u]), true))
             }
             Ty::Core(CoreType::FilterIter, args) if name == "next" => {
-                let inner = args.get(0).cloned().unwrap_or(Ty::Error);
+                let inner = args.first().cloned().unwrap_or(Ty::Error);
                 let item = self.iterator_item_type(&inner);
                 Some((Vec::new(), Ty::Core(CoreType::Option, vec![item]), true))
             }
@@ -5518,7 +5643,31 @@ impl<'a> TypeChecker<'a> {
 
     fn require_operator_bound(&mut self, ty: &Ty, required: &str, span: Span) {
         let ty = self.resolve(ty);
-        let satisfied = match &ty {
+        let satisfied = self.ty_satisfies_operator_bound(&ty, required);
+        if !satisfied {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "type '{}' does not satisfy operator trait '{required}'",
+                        self.ty_to_string(&ty)
+                    ),
+                    span,
+                )
+                .with_code("E0500"),
+            );
+        }
+    }
+
+    /// WP-C1.3: whether `ty` satisfies the compiler-known operator-desugaring bound `required`
+    /// ("Num" | "Eq" | "Ord"). Recurses into `Ty::Core` container type arguments (`Option<T>`,
+    /// `Result<T, E>`, `Vec<T>`, `Box<T>`) so e.g. `Option<Int32> == Option<Int32>` type-checks
+    /// -- container types have no `Ty::Core` arm at all before this WP, so every `==`/`<` on any
+    /// of these normatively "essential" standard-library types (06-Standard-Library.md) was
+    /// unconditionally rejected. `HashMap`/`HashSet`/iterator/`Random`/`IOError` CoreTypes are
+    /// deliberately excluded: they are not normatively specified as Eq/Ord-comparable, and
+    /// giving them one now would be new semantics, not a bug fix (Charter rule 4).
+    fn ty_satisfies_operator_bound(&self, ty: &Ty, required: &str) -> bool {
+        match ty {
             Ty::Primitive(primitive) => match required {
                 "Num" => is_numeric(*primitive),
                 "Eq" | "Ord" => !matches!(primitive, Primitive::Unit),
@@ -5528,7 +5677,8 @@ impl<'a> TypeChecker<'a> {
                 mutable: false,
                 inner,
             } if required == "Eq" || required == "Ord" => {
-                matches!(self.resolve(inner), Ty::Primitive(p) if !matches!(p, Primitive::Unit))
+                let inner = self.resolve(inner);
+                self.ty_satisfies_operator_bound(&inner, required)
             }
             Ty::Param(name) => self.current_fn_generics.as_ref().is_some_and(|params| {
                 params.iter().any(|param| {
@@ -5549,22 +5699,19 @@ impl<'a> TypeChecker<'a> {
                     return false;
                 };
                 self.text(trait_ref.path.span) == required
-                    && self.types_equal(&self.type_from_hir_without_diagnostics(*self_ty), &ty)
+                    && self.types_equal(&self.type_from_hir_without_diagnostics(*self_ty), ty)
             }),
+            Ty::Core(core_type, args) if required == "Eq" || required == "Ord" => {
+                matches!(
+                    core_type,
+                    CoreType::Option | CoreType::Result | CoreType::Vec | CoreType::Box
+                ) && args.iter().all(|arg| {
+                    let arg = self.resolve(arg);
+                    self.ty_satisfies_operator_bound(&arg, required)
+                })
+            }
             Ty::Infer(_) | Ty::Error => true,
             _ => false,
-        };
-        if !satisfied {
-            self.diags.push(
-                Diagnostic::error(
-                    format!(
-                        "type '{}' does not satisfy operator trait '{required}'",
-                        self.ty_to_string(&ty)
-                    ),
-                    span,
-                )
-                .with_code("E0500"),
-            );
         }
     }
 
@@ -8139,6 +8286,45 @@ mod tests {
         let mut type_diags = check(&hir, file);
         all_diags.append(&mut type_diags);
         all_diags
+    }
+
+    /// WP-C1.3: `Ty::Core` (Option/Result/Vec/Box) had no arm in `require_operator_bound` at
+    /// all before this WP, so `==`/`<` on any of these normatively "essential" standard-library
+    /// types (06-Standard-Library.md) was unconditionally rejected with E0500, even when their
+    /// type arguments are obviously comparable primitives. Confirmed empirically via
+    /// `starkc check` before writing this test (not merely inferred from source reading).
+    #[test]
+    fn option_result_vec_box_satisfy_eq_when_their_type_args_do() {
+        for src in [
+            "fn main() { let a: Option<Int32> = Some(1); let b: Option<Int32> = Some(1); let _c = a == b; }",
+            "fn main() { let a: Result<Int32, String> = Ok(1); let b: Result<Int32, String> = Ok(1); let _c = a == b; }",
+            "fn main() { let a: Vec<Int32> = Vec::new(); let b: Vec<Int32> = Vec::new(); let _c = a == b; }",
+            // Nested: Option<Option<Int32>> should recurse correctly.
+            "fn main() { let a: Option<Option<Int32>> = Some(Some(1)); let b: Option<Option<Int32>> = Some(Some(1)); let _c = a == b; }",
+        ] {
+            let diags = check_src(src);
+            assert!(diags.is_empty(), "{src}: unexpected diagnostics {diags:?}");
+        }
+    }
+
+    /// WP-C1.3: the recursive `Ty::Core` bound check must still correctly *reject* a container
+    /// whose type argument does not itself satisfy Eq -- confirms the fix isn't overly
+    /// permissive (e.g. accidentally treating every `Option<T>` as Eq regardless of `T`).
+    #[test]
+    fn option_of_non_eq_type_is_rejected() {
+        let diags = check_src(
+            "struct NoEq { x: Int32 } \
+             fn main() { \
+                 let a: Option<NoEq> = Some(NoEq { x: 1 }); \
+                 let b: Option<NoEq> = Some(NoEq { x: 1 }); \
+                 let _c = a == b; \
+             }",
+        );
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0500")),
+            "expected E0500 for Option<NoEq> == Option<NoEq>, got {:?}",
+            diags
+        );
     }
 
     /// Parse, resolve, and type-check a program with the `tensor` extension.

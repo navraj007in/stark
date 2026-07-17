@@ -2,12 +2,13 @@
 Updated: 2026-07-17 after CD-005 (governance update, mandatory-native-compiler brief)
 
 ## Position
-Gate: C1  Next: WP-C1.3  Blocked: none
+Gate: C1  Next: WP-C1.5  Blocked: none
 Mandatory compiler path: Core=open (C1 in progress)  MIR=blocked (behind C1/C2/C3)  Native=blocked (behind C1/C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head: 6fa8c15b94bd1376a847132498d31dd356524180
+- Head: f710d0fca2b468e700141da84f7f298cdc05aa43 (WP-C1.4's own changes are uncommitted as of
+  this session record; commit only on explicit user request, per standing workflow)
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -15,13 +16,15 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **410 passed, 0 failed, 2 ignored** across 3 unittest binaries + 31 integration-test files
+  **429 passed, 0 failed, 2 ignored** across 3 unittest binaries + 31 integration-test files
   (up from 383/0/2 and 30 files at Gate C0 close; WP-C1.1 added `span_integrity.rs` + 12 tests,
-  WP-C1.2 added 15 more across `resolve.rs`'s inline tests and `gate2_package.rs`). Both ignored
-  tests are intentionally opt-in (a checksum-pinned live ONNX artifact test in
-  `tests/gate4_onnx.rs`, and a live-ORT-download inference test in `tests/gate5_codegen.rs`).
-  Full per-file breakdown recorded in `starkc/docs/dev/compiler-map.md` (WP-C0.1; not
-  re-regenerated for the WP-C1.1/C1.2 deltas — see that file's own scope note).
+  WP-C1.2 added 15 more across `resolve.rs`'s inline tests and `gate2_package.rs`, WP-C1.3 added
+  8 more across `typecheck.rs`'s and `interp.rs`'s inline test modules, WP-C1.4 added 11 more
+  across `gate2_valid.rs` and `gate3_execution.rs`). Both ignored tests are
+  intentionally opt-in (a checksum-pinned live ONNX artifact test in `tests/gate4_onnx.rs`, and
+  a live-ORT-download inference test in `tests/gate5_codegen.rs`). Full per-file breakdown
+  recorded in `starkc/docs/dev/compiler-map.md` (WP-C0.1; not re-regenerated for the WP-C1.1/
+  C1.2/C1.3 deltas — see that file's own scope note).
 - Core spec revision: `STARKLANG/docs/spec/` files 00-07, normative per `CLAUDE.md`. Spec
   fixture corpus: `STARKLANG/tests/spec-fixtures/manifest.toml`, 121 entries (parse-pass 67,
   semantic-error 18, notation 30, lex-pass 4, parse-fail 2).
@@ -170,10 +173,24 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   span-containment (new `starkc/tests/span_integrity.rs`, DEV-018 — first-ever programmatic
   span-invariant check in the codebase, covering `Expr`/`Block` nodes across the full parseable
   fixture corpus).
-- Types: old Gate 2 (`gate2-exit.md`, closed 2026-07-15) covers resolution/HIR, type + control
-  flow checking, generics/traits, ownership/borrows, 26-program `tests/gate2-valid/` corpus.
-  Pending WP-C1.3 requalification; the equality/trait-dispatch closure the new roadmap flags
-  (Charter WP-C1.3) is now **confirmed present**, see DEV-008 — not merely a risk to check for.
+- Types: WP-C1.3 requalification complete (2026-07-17). The equality/trait-dispatch closure the
+  roadmap flags is now **fully resolved** (DEV-008 closed — real `Eq::eq` dispatch implemented,
+  plus a companion fix so `Ty::Core` container types satisfy Eq/Ord bounds at all). STD-004
+  (standard traits) exhaustiveness audit closed (DEV-013) with 2 real bugs found and fixed:
+  `.clone()` was entirely non-functional on every compiler-builtin type (String/Vec/Option/
+  Result/HashMap/HashSet/Range/IOError), and trait default method bodies were never used as a
+  fallback when unoverridden — both now fixed with regression tests. `Error`/`Hash`/`Display`/
+  `Clone` as generic *bounds* were already correctly recognized throughout (the DEV-013 seed's
+  worry about `Error` support was checking the wrong function). Two new deviations found and
+  recorded but deliberately not fixed to keep scope bounded: DEV-023 (`Display`/`Hash` share
+  Clone's old "missing as a callable method on builtins" bug, not yet fixed) and DEV-024 (`From`
+  trait `Type::from(value)` associated-function calls fail to resolve, root cause not yet
+  isolated). Local inference boundaries, generic substitution, associated types, orphan/overlap,
+  and conflicting-impl diagnostics were spot-checked against existing tests
+  (`gate5_semantic_gaps.rs`, `typecheck.rs`'s own test module) and found adequately covered —
+  not subjected to the same exhaustive research-agent audit as WP-C1.1/C1.2 given the WP's time
+  budget was consumed by the two substantial bug-fix cycles above; a future pass could still
+  deepen this if warranted.
 - Semantics: old Gate 2/3 coverage; pending WP-C1.3-C1.5.
 - Memory: old Gate 2 M2.4 (ownership/borrows); pending WP-C1.4 full positive/negative corpus
   construction — not yet confirmed to exist at that depth.
@@ -198,18 +215,37 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
 (Seed list only — WP-C0.4 owns the full ledger with normative expectation / current behaviour /
 impact / workaround / disposition / owning gate for each. Do not treat this seed list as
 complete or as substituting for WP-C0.4.)
-- DEV-008 [CONFIRMED, WP-C0.2, via `starkc/docs/PHASE8_GRAMMAR_GAPS.md:132-145`] Equality is
-  pure structural equality on the interpreter's internal `Value` enum (Rust-derived `PartialEq`
-  in `interp.rs`, `BinOp::Eq`/`Ne`) — there is no dispatch through a user's `Eq` trait
-  implementation at runtime. `Eq` as a trait bound is currently a type-checker-only concept
-  (checked as a bound, never dispatched as a method at runtime). The interpreter's structural
-  equality happens to match a correct `derive(Eq)`, but a hand-written custom `impl Eq for T`
-  (if expressible at all — unconfirmed whether users can implement `Eq` by hand vs. only
-  auto-derive) would be silently ignored at runtime. `assert_eq`/`assert_ne` inherit the same
-  behavior. This is exactly the risk pattern WP-C1.3 names ("hidden interpreter-only structural
-  equality rule is not accepted as an undocumented third behaviour") — now confirmed present,
-  not hypothetical. — owner: WP-C1.3 (close via implementing normative dispatch, or correcting
-  an unambiguous spec defect per the spec-bug protocol — not a third behaviour).
+- DEV-008 [CLOSED, WP-C1.3, 2026-07-17] Equality was pure structural equality on the
+  interpreter's internal `Value` enum — no dispatch through a user's `Eq` trait implementation
+  at runtime. **Resolved via option 1** (Charter §1.6 rule 3/WP-C1.3 text): implemented normative
+  dispatch, not a spec correction — the spec unambiguously specifies `Eq` as a normal,
+  user-implementable trait (`03-Type-System.md:389-406`: `trait Eq { fn eq(&self, other: &Self)
+  -> Bool; }` with a worked example `impl Eq for Point` containing real per-field comparison
+  logic; confirmed identically in `06-Standard-Library.md:107-109`) and states the operator
+  desugaring rule explicitly (`03-Type-System.md:516-523`: `==`/`!=` desugar to `Eq::eq`/negation
+  except for primitive types, which keep built-in intrinsic comparison). `typecheck.rs`'s
+  `require_operator_bound` (pre-fix) already REQUIRED a real `impl Eq for T` to exist for any
+  struct/enum `==` to type-check (`Ty::Struct(..)|Ty::Enum(..)` arm searches `hir.items` for a
+  matching impl) — so the type checker's own contract already assumed real dispatch; only the
+  interpreter was out of sync.
+  - **Fix 1 (interp.rs):** `eval_binary` now looks up a resolved `Eq` impl via the existing
+    `find_method`/`call_user_method` machinery (already used for ordinary method calls) before
+    falling back to structural comparison; only struct/enum values are looked up (primitives and
+    `Ty::Core` container types have no user-overridable Eq per "operator overloading for
+    user-defined types... is a future extension," `03-Type-System.md:529-530`, so structural
+    comparison remains exactly correct for them). Verified with a deliberately non-structural
+    custom `eq()` (always returns `true` regardless of field values) — proves real dispatch, not
+    coincidental agreement with structural equality.
+  - **Fix 2 (typecheck.rs, found while investigating):** `Ty::Core` (Option/Result/Vec/Box) had
+    **no arm at all** in `require_operator_bound` — confirmed empirically that `Option<Int32> ==
+    Option<Int32>` was unconditionally rejected with E0500 before this fix, despite `Int32`
+    obviously satisfying `Eq`. Added a recursive `ty_satisfies_operator_bound` helper checking
+    container type arguments; verified both the positive case and that it still correctly
+    rejects `Option<NoEqStruct>`.
+  - Regression tests: `interp.rs::custom_eq_impl_is_dispatched_not_structural`,
+    `::custom_eq_impl_is_dispatched_for_ne_too`, `::option_and_vec_equality_are_structural`;
+    `typecheck.rs::option_result_vec_box_satisfy_eq_when_their_type_args_do`,
+    `::option_of_non_eq_type_is_rejected`.
 - DEV-002 [CLOSED, WP-C0.3, 2026-07-17] `core-v1-coverage.toml` listed `PKG-004`/`PKG-005`/
   `PKG-006` and `STD-004` as `missing` despite working, tested implementations (Phase 1-4A
   commits `7ac8873`/`22db94f`/`a76e32d`/`f8c64b5`). Corrected in `STARKLANG/conformance/
@@ -255,7 +291,8 @@ complete or as substituting for WP-C0.4.)
   (bare file vs. package graph) under different default options, not interchangeable front ends.
   Full detail: `starkc/docs/dev/compiler-map.md` §2. — owner: WP-C1.x triage, WP-C0.4 ledger
   entry.
-- DEV-006 [PARTIALLY CLOSED — resolve half fixed WP-C1.2, 2026-07-17] Multi-file diagnostic provenance loss. `Span` carries no file
+- DEV-006 [RESOLVED — resolve half fixed WP-C1.2, borrowck/flow half fixed WP-C1.4, 2026-07-17]
+  Multi-file diagnostic provenance loss. `Span` carries no file
   identity (`source.rs:10-13`) and there is no `FileId`/`SourceId` type anywhere in the crate.
   Parse and typecheck stages correctly back-fill per-item file identity onto diagnostics; resolve
   (20 diagnostic sites, zero `.with_file()` calls), flow analysis (`flow.rs:21-24`, file param
@@ -269,7 +306,12 @@ complete or as substituting for WP-C0.4.)
   Verified with a same-package regression test AND a new cross-package test
   (`gate2_package.rs::test_cross_package_diagnostic_reports_dependency_file_not_root_file`,
   confirming the trickier case where the file identity must come from a dependency package, not
-  just a different file in the same package). **Flow/borrowck half still open** — owner: WP-C1.4.
+  just a different file in the same package). **Flow/borrowck half fixed WP-C1.4**: same
+  `push_diag`/per-item `self.file` swap pattern (via `hir.item_files`) applied to both
+  `borrowck.rs` and `flow.rs`; `flow::check`'s previously-unused `_file` parameter is now a real,
+  used field. Verified with two new regression tests
+  (`gate2_valid.rs::test_borrowck_diagnostic_in_nonroot_file_reports_correct_file`,
+  `test_flow_diagnostic_in_nonroot_file_reports_correct_file`). DEV-006 fully resolved.
 - DEV-007 [CONFIRMED, WP-C0.1] `resolve.rs` glob-import (`use mod::*`) nondeterminism. Glob
   expansion copies from an unsorted `HashMap<String, Res>` at two call sites (`resolve.rs:
   475-479`, `:536-540`); which of two colliding glob-imported names is treated as "first"
@@ -304,14 +346,51 @@ complete or as substituting for WP-C0.4.)
   available in the implementing environment. Verified so far: TypeScript correctness
   (tsc/ESLint/esbuild) and raw LSP JSON-RPC exchange only. Matches Charter WP-C8.7 exactly
   ("protocol tests alone do not prove UI behaviour"). — owner: WP-C8.7.
-- DEV-013 [CONFIRMED, WP-C0.3] `STD-004` (standard traits: Clone/Hash/Default/Display/Error/
-  Iterator) exhaustiveness is unresolved. Confirmed *present* (see DEV-002 correction above:
-  typecheck.rs recognizes these as compiler-known bounds, gate4a_prelude_traits.rs tests them),
-  but not yet confirmed *complete* against the full normative surface — in particular whether
-  `Error` trait support exists (not seen in the `typecheck.rs:5598-5637` bound-name list checked
-  during WP-C0.3) and whether users can hand-write `impl <StdTrait> for T` vs. only trigger
-  compiler-builtin behavior (directly relevant to DEV-008's `Eq`-dispatch finding — the same
-  question likely applies to `Clone`/`Hash`/etc.). — owner: WP-C1.3 rule-level audit.
+- DEV-013 [CLOSED, WP-C1.3, 2026-07-17] `STD-004` (standard traits: Clone/Hash/Default/Display/
+  Error/Iterator) exhaustiveness audit. Findings, precise per sub-question:
+  - **`Error` trait bound checking: confirmed working, not broken.** `resolve.rs:2079` classifies
+    `Error` as `CoreTrait::Error`; `typecheck.rs`'s `satisfies_bound` (the generic trait-bound
+    checker used for `fn f<T: Error>(...)`, distinct from `require_operator_bound`) handles any
+    struct/enum trait name generically via a real "does `impl <TraitName> for <Type>` exist in
+    HIR" search — it was never hardcoded to a fixed string list the way the narrower operator-
+    desugaring bound checker is. Verified empirically end-to-end: `fn describe<E: Error>(e: E) ->
+    String { e.message() }` called with a real `impl Error for MyError` both type-checks and
+    executes correctly. The original DEV-013 seed's "not seen in the bound-name list" observation
+    was checking the wrong function (`require_operator_bound`, which only handles the 3 operator
+    traits Eq/Ord/Num, not general trait bounds).
+  - **`Clone`/`Hash`/`Display` as bounds: confirmed working** (same generic mechanism).
+  - **`Clone` as a *callable method* on compiler-builtin types: confirmed BROKEN, now fixed.**
+    `s.clone()` on a `String`, `Vec`, `Option`, `Result`, `HashMap`, `HashSet`, `Range`, or
+    `IOError` value failed with E0303 "method call on non-struct/enum type" — `Clone` satisfied
+    as a *bound* (recognized), but `.clone()` had no method-signature entry in
+    `core_method_signature` (typecheck.rs) or dispatch case in `call_core_method` (interp.rs) for
+    any builtin type; only struct/enum values with a hand-written `impl Clone for T` worked,
+    since those go through ordinary impl-block method resolution. **Fixed**: added a generic
+    `.clone()` case in both (interp.rs's is a single dispatch point reusing `Value`'s existing
+    derived Rust `Clone`, since none of these types have user-overridable Clone bodies per
+    "operator overloading for user-defined types... is a future extension"). Scoped to
+    genuinely value-like CoreTypes; iterator/cursor CoreTypes and `Random` deliberately excluded
+    (cloning stream/cursor state is unspecified, would be new semantics). Regression tests:
+    `interp.rs::clone_works_for_builtin_core_types`.
+  - **Default trait method bodies: confirmed BROKEN, now fixed** (found while testing the trait
+    family broadly, not originally part of DEV-013's own question, but squarely inside WP-C1.3's
+    own checklist — "default methods" is explicitly named). A trait method declared with a real
+    body (`03-Type-System.md` trait defaults; HIR already carries it as `TraitItem::Method {
+    body: Some(_), .. }`) was never used as a fallback when an implementing type didn't override
+    it — confirmed empirically as E0302 "method not found" at typecheck time (interp.rs's
+    `find_method` had the same gap, one layer down). **Fixed in both stages**: typecheck.rs gained
+    a `default_fallback` search (after ordinary impl-override candidate collection finds
+    nothing, before concluding "not found") that looks up the implemented trait's own default
+    body and type-checks the call against its signature; interp.rs's `find_method` gained the
+    analogous fallback for execution. Verified both that an un-overridden default runs AND that
+    an overriding impl still correctly takes precedence. Regression tests:
+    `interp.rs::default_trait_method_runs_when_not_overridden`,
+    `::overriding_impl_takes_precedence_over_trait_default`.
+  - **Whether users can hand-write `impl <StdTrait> for T` vs. only auto-derive: confirmed —
+    yes, hand-written impls are the normal, spec-shown mechanism** (see DEV-008's closure; there
+    is no separate "auto-derive-only" mode for any of these traits in Core v1 as currently
+    specified or implemented).
+  - **New, NOT fixed, deviations found while closing this one** — see DEV-023 and DEV-024 below.
 - DEV-SEED-014 No attribute syntax (`#[test]`, `#[ignore]`, etc.) exists in Core v1 — confirmed
   deliberate scope restriction, not a bug (`PHASE8_GRAMMAR_GAPS.md:83-113`): no `#` handling in
   the lexer, no attribute AST node, nothing in `01-Lexical-Grammar.md`/`02-Syntax-Grammar.md`.
@@ -355,13 +434,21 @@ complete or as substituting for WP-C0.4.)
   — owner: WP-C1.3 (types/generics/traits) or WP-C1.5 (numeric semantics) — needs triage to
   determine which; likely the latter given CLAUDE.md frames overflow as a numeric-semantics
   concern.
-- DEV-016 [CONFIRMED, WP-C1.1] `cargo clippy --all-targets -- -D warnings` fails with 22
+- DEV-016 [RESOLVED, WP-C1.4] `cargo clippy --all-targets -- -D warnings` failed with 22
   pre-existing warnings, none in files touched by WP-C1.1 (confirmed via `grep -v typecheck.rs`
-  isolation — remaining hits span `typecheck.rs`, `lsp/protocol.rs`, and others). The Charter
-  §2.5 definition-of-done lists clean clippy as a default requirement; this has apparently never
-  actually held for the repository as a whole. Not fixed here (out of WP-C1.1's module scope —
-  touches `typecheck.rs`/`lsp/protocol.rs`, neither owned by this WP). — owner: unscheduled;
-  candidate for a small dedicated cleanup WP, or fold into whichever WP next touches each file.
+  isolation — hits spanned `typecheck.rs`, `interp.rs`, `lsp/protocol.rs`, `lsp/server.rs`). CI
+  had been red since the 2026-07-17 03:29 push for this exact reason (`cargo clippy --all-targets
+  -- -D warnings` in `.github/workflows/ci.yml`'s `fmt, clippy, test` job), continuously through
+  several unrelated feature commits and both governance-bootstrap commits. Fixed as a standalone
+  cleanup during WP-C1.4 at the user's explicit request (mechanical, zero-behavior-change):
+  13x `args.get(0)` → `args.first()` in `typecheck.rs`; 2x explicit-closure-clone → `.cloned()`
+  (`interp.rs`, `lsp/server.rs`); 2x manual `if let Some` in a `for` loop → `.into_iter().flatten()`
+  (`interp.rs`); 3x `*inner = Box::new(x)` → `**inner = x` (avoids a needless allocation,
+  `interp.rs`); `JsonValue`'s inherent `to_string` → `impl std::fmt::Display` (`lsp/protocol.rs`,
+  no call-site changes needed since the blanket `ToString` impl covers `Display`); one
+  `.and_then(|x| Some(y))` → `.map(|x| y)` (`lsp/protocol.rs`). Verified: `cargo clippy
+  --all-targets -- -D warnings` clean, `cargo fmt --check` clean, full workspace test suite green
+  twice consecutively (unchanged pass count from before the cleanup).
 - DEV-017 [CONFIRMED, WP-C1.1] `core-v1-coverage.toml`'s `tests` field cites files, not
   functions, and for several rules (before this WP) cited only the aggregate
   `starkc/tests/conformance.rs` even when that file contributed zero actual coverage (e.g.
@@ -465,6 +552,37 @@ tests were written assuming Rust-style descendant-inherits-privacy semantics and
 the real implementation, which is what surfaced this. Any future WP writing STARK test fixtures
 involving nested modules and private items should assume this stricter model.
 
+## Known deviations (WP-C1.3 additions)
+- DEV-023 [CONFIRMED, WP-C1.3, not fixed] `Display`/`.fmt()` and `Hash`/`.hash()` are missing as
+  *callable methods* on compiler-builtin types — the same bug class as DEV-013's Clone finding
+  (now fixed for Clone), confirmed present for these two but deliberately not fixed in this WP to
+  keep scope bounded after two substantial fixes already landed. Empirically confirmed:
+  `String::from("hi").fmt()` and `"hi".hash()`-style calls both fail with E0303 "method call on
+  non-struct/enum type 'String'", exactly mirroring the pre-fix Clone symptom. `Display`/`Hash`
+  as *bounds* are already correctly recognized (same `satisfies_bound`/`Ty::Core` recursive-arg
+  mechanism as Clone/Eq/Ord). Likely fix shape, by analogy with the Clone fix: `.fmt()` could
+  reuse the interpreter's existing `impl fmt::Display for Value` (already used by `print`/
+  `println` for these exact types) as a generic dispatch point; `.hash()` would need a new
+  UInt64-producing hash function reused from wherever `HashMap`/`HashSet` key hashing is
+  currently implemented internally (unverified whether that internal hash is itself exposed in a
+  reusable form — needs its own investigation, unlike Clone/Display which had directly reusable
+  machinery already in hand). — owner: unscheduled; candidate for a focused follow-up WP given
+  the fix pattern is now well-understood from the Clone precedent.
+- DEV-024 [CONFIRMED, WP-C1.3, not fixed] `From` trait associated-function calls fail to
+  resolve. Empirically confirmed: a real `impl From<Celsius> for Fahrenheit { fn from(c:
+  Celsius) -> Fahrenheit {...} }` followed by `Fahrenheit::from(c)` fails with E0200 "associated
+  function 'from' not found" despite the impl existing. Unlike DEV-008/013's method-call path
+  (`receiver.method()`), this is an *associated/static* function call (`Type::function()`,
+  called without an existing receiver value) — likely a different resolution path
+  (`find_associated_fn` in interp.rs, glimpsed at interp.rs:1643 during DEV-013's investigation,
+  and its typecheck.rs counterpart) that may have the same "doesn't search trait impls, only
+  inherent impls" gap as the method-call path had for defaults, or may be specific to `From`'s
+  generic trait parameter (`From<Celsius>`) confusing the self-type match. Root cause not yet
+  isolated — this needs its own investigation before a fix, not assumed to be the identical
+  pattern to DEV-013's fixes. `Into`/`TryFrom` (the same CoreTrait family, `resolve.rs:2080-2082`)
+  were not independently tested but likely share the same gap given they're conventionally
+  implemented in terms of `From`. — owner: unscheduled; needs root-cause investigation first.
+
 ## Architecture decisions
 - AD-001 [pre-existing, old Gate 5] Native artifact-deployment backend is **ONNX Runtime via the
   `ort` crate**, pinned `=2.0.0-rc.12`, statically linked, CPU execution provider only
@@ -563,6 +681,17 @@ involving nested modules and private items should assume this stricter model.
   workspace (the latter two were previously unverified end-to-end; both now confirmed working).
 - `STARKLANG/conformance/core-v1-coverage.toml` — SEM-001, SEM-007, PKG-002, PKG-003 test
   citations and scope-clarifying comments updated.
+- `STARKLANG/docs/compiler/work-packages/WP-C1.3.md` — created WP-C1.3. Active WP scope,
+  inherited-findings section (DEV-008/013), scope-control answers, input packet.
+- `starkc/src/typecheck.rs` — DEV-008 companion fix (`ty_satisfies_operator_bound`, recursive
+  `Ty::Core` Eq/Ord bound checking); DEV-013 fixes (`.clone()` method-signature entry for builtin
+  types in `core_method_signature`; `default_fallback` trait-default-method search in the
+  method-call-checking function); +4 new inline unit tests.
+- `starkc/src/interp.rs` — DEV-008 fix (`eval_binary` dispatches to a resolved `Eq::eq` impl for
+  struct/enum values before falling back to structural comparison; signature changed to
+  `&mut self` plus a new `lhs_expr: ExprId` parameter); DEV-013 fixes (generic `.clone()`
+  dispatch point in `call_core_method`; `find_method` gained a trait-default-method fallback);
+  +6 new inline unit tests.
 
 ## Follow-ups
 - [ ] Housekeeping: this file is at 927 lines, over the Charter's ~700-line budget (§2.4:
@@ -595,24 +724,30 @@ involving nested modules and private items should assume this stricter model.
       spec-chapter-validity checks plus non-fatal staleness/negative-test-coverage warnings.
 - [x] WP-C0.4: built `starkc/docs/conformance/KNOWN-DEVIATIONS.md` — DEV-004 through DEV-013
       (10 entries, full structured format) plus DEV-SEED-008/014 as informational/not-owned.
-- [ ] WP-C1.3: resolve DEV-013 (STD-004 exhaustiveness — Error trait, hand-written impls).
+- [x] WP-C1.3: resolved DEV-013 (STD-004 exhaustiveness) — closed with 2 real bugs found and
+      fixed (Clone-on-builtins, default trait methods) plus 2 new deviations recorded
+      (DEV-023, DEV-024). See session record below.
 - [ ] WP-C1.6: extend the coverage-database schema to distinguish positive/negative test
       evidence per rule, so Charter rule 15 can be mechanically checked (currently only a
       heuristic warning in `check-conformance.py`, see WP-C0.3 note).
 - [x] WP-C1.2: fixed DEV-004 (resolve.rs tensor-builtin gating) and DEV-007 (glob-import
       nondeterminism) — see session record below.
 - [x] WP-C1.2: fixed DEV-006's resolve.rs half (multi-file diagnostic provenance). Borrowck/flow
-      half remains open for WP-C1.4.
-- [ ] WP-C1.3: close DEV-008 (structural-vs-trait equality) per the spec-bug protocol or by
-      implementing normative dispatch.
+      half closed in WP-C1.4 — see session record below. DEV-006 fully resolved.
+- [x] WP-C1.3: closed DEV-008 (structural-vs-trait equality) by implementing normative dispatch
+      (option 1 — the spec unambiguously specifies real Eq dispatch, not a spec defect).
 - [ ] WP-C1.x (triage which WP owns CLI-behavior consistency): resolve DEV-005 (starkc
       check/run gating disagreement on warnings).
+- [ ] Unscheduled: DEV-023 (Display/.fmt() and Hash/.hash() missing on builtin types — same bug
+      class as DEV-013's Clone finding, fix pattern well-understood from that precedent).
+- [ ] Unscheduled, needs root-cause investigation first: DEV-024 (From trait associated-function
+      calls fail to resolve — Type::from(value) form doesn't work despite a real impl existing).
 - [ ] WP-C8.2/C8.3: implement real LSP hover/definition/references (DEV-010).
 - [ ] WP-C8.7: interactive VS Code Extension Development Host validation (DEV-012).
 - [x] WP-C1.1: lexical and syntax requalification — closed 2026-07-17. See session record below.
 - [ ] WP-C1.3 or WP-C1.5 (triage which): fix DEV-015 (suffixed-literal overflow never checked).
-- [ ] Unscheduled: DEV-016 (repo-wide clippy debt, 22 pre-existing warnings outside WP-C1.1's
-      touched files).
+- [x] WP-C1.4: DEV-016 (repo-wide clippy debt, 22 pre-existing warnings) — resolved, see session
+      record below.
 - [ ] WP-C1.6: DEV-017 (coverage-database test citations lack function-level precision).
 - [ ] WP-C2.4: DEV-018 (build the full generic AST position-indexed walker; WP-C1.1's
       Expr/Block-only span_integrity.rs check is interim evidence, extend rather than redo).
@@ -933,3 +1068,158 @@ FOLLOW-UP: DEV-019 (owner: WP-C1.6 to catch systematically; reallocation itself 
 DEV-022 (unscheduled, needs a proposal). DEV-006's flow/borrowck half remains open for WP-C1.4.
 See "Follow-ups" section above for the complete, current list.
 NEXT: WP-C1.3 (types, generics, traits, and operator semantics)
+
+---
+
+### WP-C1.3 — 2026-07-17
+DONE: Types, generics, traits, and operator semantics requalification. Closed both inherited
+findings with real fixes, not just tests: **DEV-008** (equality dispatch) — confirmed via direct
+spec reading (`03-Type-System.md:389-406,516-531`) that `Eq` is a normal, user-implementable
+trait with `==`/`!=` normatively desugaring to `Eq::eq`, settling the "spec vs. compiler" question
+in favor of implementing real dispatch (not a spec defect). Implemented it in `interp.rs`
+(`eval_binary` now dispatches to a resolved `Eq` impl for struct/enum values via the existing
+`find_method`/`call_user_method` machinery, verified with a deliberately non-structural custom
+`eq()` to prove real dispatch) and found+fixed a companion gap while investigating
+(`typecheck.rs`'s `require_operator_bound` had no `Ty::Core` arm at all, so `Option<Int32> ==
+Option<Int32>` was unconditionally rejected — confirmed empirically before fixing). **DEV-013**
+(STD-004 exhaustiveness) — refuted the original "Error trait may be unsupported" worry (it was
+checking the wrong function; the real bound-checker handles arbitrary trait names generically)
+but discovered two significant, previously-unknown, real bugs while testing the trait family
+broadly: `.clone()` was completely non-functional on every compiler-builtin type (String, Vec,
+Option, Result, HashMap, HashSet, Range, IOError — confirmed via direct empirical testing, not
+inferred), and trait default method bodies were never used as a fallback when an implementing
+type didn't override them (a core, spec-documented Core v1 feature, explicitly named in this
+WP's own checklist, completely broken). Fixed both, in both typecheck.rs and interp.rs
+(two-stage fixes, since a call must both type-check and execute correctly). While testing this
+trait family, found two more real bugs and made a deliberate scope-discipline decision to record
+rather than fix them, having already delivered four substantial fixes: DEV-023 (`Display`/`.fmt()`
+and `Hash`/`.hash()` share Clone's exact "missing as callable method on builtins" bug, not yet
+applied to them) and DEV-024 (`From` trait `Type::from(value)` associated-function calls fail to
+resolve — root cause not yet isolated, likely a different code path than the method-call fixes
+above). Spot-checked (not exhaustively audited) the remaining checklist items — local inference,
+generic substitution, associated types, orphan/overlap, conflicting-impl diagnostics — against
+existing test coverage and found it adequate; did not run the full research-agent audit process
+used for WP-C1.1/C1.2 given the WP's effort budget was consumed by the two deep bug-fix cycles.
+FILES: starkc/src/typecheck.rs (2 fixes: `ty_satisfies_operator_bound` extraction + `Ty::Core`
+arm; `.clone()` core-method-signature entry; `default_fallback` trait-default search; +4 tests),
+starkc/src/interp.rs (2 fixes: `eval_binary` Eq dispatch + signature change; generic `.clone()`
+dispatch; `find_method` trait-default fallback; +6 tests), STARKLANG/conformance/
+core-v1-coverage.toml (unchanged this WP — no rule-status citations needed updating),
+STARKLANG/docs/compiler/work-packages/WP-C1.3.md (new), COMPILER-STATE.md,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md
+RULES: none formally re-cited in coverage.toml this WP (the fixes are runtime/type-checker
+behavior corrections underlying SEM-002 "Trait Resolution" and TYP-006 "Trait Bounds," not new
+rule-level evidence entries — a future WP-C1.6 pass should retroactively cite these tests)
+DECISIONS: none new as CD/AD records; DEV-008 and DEV-013 closures plus DEV-023/DEV-024 are
+deviation records. The DEV-008 fix is explicitly authorized as "option 1" under WP-C1.3's own
+text ("implementing the normative dispatch semantics consistently in checking and execution");
+not an escalation-requiring change since it doesn't alter the accepted/rejected program set,
+only makes already-type-checked programs execute consistently with what the type checker already
+required.
+EVIDENCE: MANUAL + REG — direct spec reading for the Eq dispatch question (not assumption);
+every fix verified empirically via scratch `.stark` programs BEFORE writing permanent tests, to
+confirm the exact before/after behavior change (e.g. `Option<Int32> == Option<Int32>` rejected
+before, accepted after; custom non-structural `eq()` ignored before, dispatched after; `.clone()`
+"method call on non-struct/enum type" before, working after; default trait method "not found"
+before, running after). `cargo test --workspace --all-targets --all-features` run 4+ times across
+the session, final state 418 passed/0 failed/2 ignored (up from 410/0/2). `cargo fmt --check`
+clean. `cargo clippy --all-targets -- -D warnings` clean on all WP-C1.3-touched files (confirmed
+via line-range diff that all remaining warnings are pre-existing DEV-016 debt, not introduced
+here). `check-conformance.py` unaffected (no coverage.toml changes this WP).
+FOLLOW-UP: DEV-023 (owner: unscheduled, fix pattern well-understood), DEV-024 (owner:
+unscheduled, needs root-cause investigation first — do not assume it matches DEV-013's fix
+pattern). A future WP-C1.6 pass should add rule-level test citations to coverage.toml for the
+Eq/Clone/default-method fixes landed here. The lighter-weight checklist spot-check (vs. C1.1/
+C1.2's exhaustive research-agent audit) means local inference/generic substitution/associated
+types/orphan-overlap/conflicting-impls have NOT been exhaustively re-verified — recorded as a
+known gap in this WP's own coverage, not silently claimed as thorough.
+NEXT: WP-C1.4 (ownership, borrowing, lifetimes, and drop checking)
+
+### WP-C1.4 — 2026-07-17
+DONE: Ownership, borrowing, lifetimes, and drop checking. Closed the inherited finding
+(**DEV-006**'s borrowck/flow half — multi-file diagnostic provenance) with the same
+`push_diag`/`item_files`-swap pattern used for resolve.rs in WP-C1.2; DEV-006 is now fully
+resolved. Research (dispatched to a research agent given the user's standing preference to route
+research-heavy sub-tasks to a stronger model where useful) surfaced three candidate soundness
+gaps against the checklist; flagged all three to the user as CE2-shaped before resolving, per the
+user's 2026-07-17 standing preference (`stark-ce-escalation-flagging` memory) — the user answered
+"I'll fix them myself now," authorizing full fixes with my own engineering judgment on design.
+Investigation and fixes, in order:
+- **Deref-move of a non-Copy value (`*r` for `r: &T`)** — confirmed `place_of`/`consume_place`
+  had no `Deref` case at all, so `*r` type-checked and silently deep-cloned `T` out of borrowed
+  storage at runtime (`interp.rs`'s `UnOp::Deref` uses `clone_place_value`, not move semantics);
+  for a `Drop`-implementing `T` this double-runs the destructor with no explicit `.clone()` ever
+  written. Fixed via a new `check_owned_value` helper (narrower than `check_expr`'s general
+  traversal, which is also reached from genuinely-sound read-only contexts — comparisons,
+  reborrowing `&*r`, field/index access through a deref — that must NOT be treated as moves).
+  Initially wired into the three confirmed-dangerous "owning" positions (let-init, return,
+  block-tail); while documenting the fix, recognized the same pattern applied to call arguments
+  and aggregate construction (tuple/array elements, struct-literal fields) — confirmed
+  empirically that `take(*r)` and `(*r, 1)` for a `Drop` type both compiled and double-dropped —
+  and closed those too, verifying along the way that free-function call arguments need no
+  callee-signature awareness (STARK has no argument-position auto-ref/deref-coercion, so `*r`
+  only type-checks against a callee parameter when the parameter is already the pointee type by
+  value).
+- **Iterator/collection borrow exclusivity** — `let it = v.iter();` must keep a shared borrow of
+  `v` alive as long as `it` is (a live aliasing view), per 03-Type-System.md's borrow-carrying-
+  types rule. Two independent bugs combined to defeat this, both confirmed via before/after
+  empirical testing (the dangerous program compiled and crashed at runtime pre-fix): (1)
+  `type_carries_borrow` had no case for iterator CoreTypes (`VecIter`, `CharsIter`, etc. — their
+  only generic argument is the *element* type, not a reference, so the generic
+  recurse-into-args-looking-for-`Ty::Ref` rule never matched them), so the borrow registered
+  while evaluating `v.iter()` was truncated at the end of the `let` statement instead of
+  persisting; (2) even with the borrow correctly kept alive, `consume_place`'s conflict check
+  (`check_read_borrow_conflict`) only rejected moves against a *mutable* active borrow — correct
+  for reads (concurrent shared reads are sound) but wrong for a move, which invalidates storage a
+  shared borrow still aliases regardless of mutability. Fixed both: a new iterator-CoreType arm
+  in `type_carries_borrow`, and a new any-active-borrow check in `consume_place` gated to the
+  non-Copy (move) path only.
+- **Shortest-input-lifetime rule** (the `fn longest(x: &str, y: &str) -> &str` worked example) —
+  flagged by the research agent as the most architecturally significant gap, on the theory that
+  no code traces a call's reference-typed arguments to its borrow-carrying return type. Empirical
+  verification found this was a false alarm: `check_expr`'s handling of `&expr`/ref-returning-
+  method arguments already registers a borrow on the argument's local unconditionally, wherever
+  that argument expression appears, and `check_stmt`'s `Let` branch already keeps every borrow
+  registered while evaluating the init expression alive past the `let` whenever the bound type
+  carries a borrow (`longest`'s `&str` return type does). The combination already implements rule
+  3's "regardless of which branch was taken" conservative semantics — confirmed against the
+  spec's own literal worked example — with zero code changes needed. Recorded as a verified-sound
+  regression test, not a fix.
+Also fixed, at the user's explicit request after a GitHub Actions failure notification mid-WP:
+**DEV-016** (repo-wide clippy debt, 22 pre-existing warnings unrelated to this WP's own files,
+had kept CI red since the 2026-07-17 03:29 push across several unrelated commits) — see DEV-016's
+entry above for the itemized mechanical fixes; now closed.
+FILES: starkc/src/borrowck.rs (push_diag/item_files-swap; `check_owned_value` new method, wired
+into 6 call sites; `type_carries_borrow` iterator-CoreType arm; `consume_place` any-active-borrow
+move check), starkc/src/flow.rs (push_diag/item_files-swap; `file` field now used, no longer
+`_file`), starkc/src/interp.rs (DEV-016: 2 clippy fixes, no behavior change),
+starkc/src/lsp/protocol.rs (DEV-016: 2 clippy fixes, `JsonValue::to_string` → `impl Display`, no
+call-site changes needed), starkc/src/lsp/server.rs (DEV-016: 1 clippy fix), starkc/src/
+typecheck.rs (DEV-016: 13x `args.get(0)` → `args.first()`), starkc/tests/gate2_valid.rs (+10
+tests: 2 DEV-006 provenance regressions, 8 soundness-fix regressions), starkc/tests/
+gate3_execution.rs (+1 test: abort-without-drop semantics, item 16 of the WP checklist — found
+correctly implemented, previously untested), STARKLANG/docs/compiler/work-packages/WP-C1.4.md
+(new), COMPILER-STATE.md, starkc/docs/conformance/KNOWN-DEVIATIONS.md.
+RULES: none formally re-cited in coverage.toml this WP (a future WP-C1.6 pass should retroactively
+cite the new borrowck/drop tests against the relevant OWN-xxx/memory-model rule IDs).
+DECISIONS: none new as CD/AD records. All three soundness fixes tighten existing, already-
+approved checks to close confirmed holes in their own coverage (not new semantic decisions, and
+not weakenings requiring Charter §2.2 escalation) — consistent with the CE-escalation-watch note
+in WP-C1.4.md and the user's explicit "I'll fix them myself now" authorization.
+EVIDENCE: MANUAL + REG — every fix (and the one refuted false alarm) verified empirically via
+scratch `.stark`/`.rs` programs BEFORE writing permanent tests, confirming the exact before/after
+diagnostic or runtime behavior (e.g. deref-move: silently accepted and double-cloned before,
+E0100 after; iterator move: compiled and crashed with "use of unavailable value" before, E0101
+after; shortest-lifetime: E0101 already fired with zero code changes). `cargo test --workspace
+--all-targets --all-features` run twice consecutively at the end of the WP, final state 429
+passed/0 failed/2 ignored (up from 418/0/2 at WP-C1.3's close), deterministic across both runs.
+`cargo fmt --check` clean. `cargo clippy --all-targets -- -D warnings` fully clean repo-wide
+(DEV-016 closed this WP, not just avoided in touched files).
+FOLLOW-UP: item 13 (partial-move-of-Drop-type) and item 16 (abort-without-drop) from the WP
+checklist were found correctly implemented but previously untested; both now have permanent
+regression tests, no further action needed. The lighter-weight per-item checklist coverage (1, 4,
+8, 9, 11, 12, 14a, 15a/15b) from the original WP-C1.4.md scope was not exhaustively re-audited
+this WP given the effort budget was consumed by the three deep soundness-fix cycles plus the
+CI-driven DEV-016 detour — recorded as a known gap in this WP's own coverage, matching WP-C1.3's
+same disclosure pattern, not silently claimed as thorough.
+NEXT: WP-C1.5 (control flow, patterns, constants, and numeric semantics)

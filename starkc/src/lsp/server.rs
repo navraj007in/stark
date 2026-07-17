@@ -257,7 +257,7 @@ impl Server {
 
     /// Compile a document and cache results
     fn compile_document(&mut self, uri: &str) {
-        if let Some(doc) = self.state.get_document(uri).map(|d| d.clone()) {
+        if let Some(doc) = self.state.get_document(uri).cloned() {
             let source = SourceFile::new(uri, doc.text.clone());
             let options = self.state.options;
 

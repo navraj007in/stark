@@ -738,7 +738,7 @@ impl<'a> Interpreter<'a> {
                 let left = self.expect_value(*lhs)?;
                 let right = self.expect_value(*rhs)?;
                 Ok(Flow::Value(
-                    self.eval_binary(*op, left, right, expr_id, expr.span)?,
+                    self.eval_binary(*op, left, right, expr_id, *lhs, expr.span)?,
                 ))
             }
             hir::ExprKind::Assign { op, lhs, rhs } => {
@@ -748,7 +748,7 @@ impl<'a> Interpreter<'a> {
                     right
                 } else {
                     let current = self.take_place(&place, expr.span)?;
-                    self.eval_binary(assign_binop(*op), current, right, expr_id, expr.span)?
+                    self.eval_binary(assign_binop(*op), current, right, expr_id, *lhs, expr.span)?
                 };
                 self.write_place(&place, value, expr.span)?;
                 Ok(Flow::Value(Value::Unit))
@@ -1008,16 +1008,36 @@ impl<'a> Interpreter<'a> {
     }
 
     fn eval_binary(
-        &self,
+        &mut self,
         op: BinOp,
         left: Value,
         right: Value,
         expr: ExprId,
+        lhs_expr: ExprId,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         let left = self.deref_value(left, span)?;
         let right = self.deref_value(right, span)?;
         if matches!(op, BinOp::Eq | BinOp::Ne) {
+            // WP-C1.3 (2026-07-17): dispatch to a user-defined `impl Eq for T`'s `eq` method
+            // when one exists, per 03-Type-System.md "Operators and Traits" (`==`/`!=` desugar
+            // to `Eq::eq`) -- structural `Value` equality was previously used unconditionally,
+            // even for struct/enum values whose type has a real, type-checker-verified `impl Eq`
+            // with custom comparison logic (typecheck.rs's `require_operator_bound` already
+            // requires such an impl to exist for any struct/enum `==`, so this dispatch cannot
+            // find a program that type-checks but has no matching impl). Primitives and
+            // Ty::Core container types (Option/Result/Vec/Box/String) have no user-overridable
+            // Eq impl in Core v1 (operator overloading is a future extension per the spec), so
+            // structural comparison remains exactly correct for them -- only struct/enum values
+            // are looked up here. See COMPILER-STATE.md DEV-008.
+            if let Some(nominal) = nominal_item(&left) {
+                if let Some(method) = self.find_method(Some(nominal), "eq", None) {
+                    let result =
+                        self.call_user_method(method, lhs_expr, left.clone(), vec![right], span)?;
+                    let equal = matches!(result, Value::Bool(true));
+                    return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
+                }
+            }
             let equal = match (&left, &right) {
                 (
                     Value::String(left) | Value::Str(left),
@@ -1607,7 +1627,7 @@ impl<'a> Interpreter<'a> {
             ) {
                 return None;
             }
-            items.iter().find_map(|item| match item {
+            let overridden = items.iter().find_map(|item| match item {
                 hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == name => {
                     Some(Callable {
                         receiver: def.sig.receiver.zip(def.sig.receiver_local),
@@ -1616,6 +1636,35 @@ impl<'a> Interpreter<'a> {
                     })
                 }
                 _ => None,
+            });
+            // WP-C1.3 (2026-07-17): fall back to the trait's own default method body
+            // (`TraitItem::Method { body: Some(_), .. }`, 03-Type-System.md trait defaults) when
+            // this impl block doesn't override the method. The HIR already carries default
+            // bodies (they were simply never consulted here) -- confirmed empirically that a
+            // trait method with a real body, left un-overridden by an implementing struct,
+            // failed with "method not found" before this fix. See COMPILER-STATE.md DEV-013.
+            overridden.or_else(|| {
+                let trait_id = match trait_.as_ref()?.res {
+                    Res::Item(id) => id,
+                    _ => return None,
+                };
+                let hir::ItemKind::Trait {
+                    items: trait_items, ..
+                } = &self.hir.item(trait_id).kind
+                else {
+                    return None;
+                };
+                trait_items.iter().find_map(|item| match item {
+                    hir::TraitItem::Method {
+                        sig,
+                        body: Some(body),
+                    } if self.text(sig.name) == name => Some(Callable {
+                        receiver: sig.receiver.zip(sig.receiver_local),
+                        params: sig.params.iter().map(|param| param.local).collect(),
+                        body: *body,
+                    }),
+                    _ => None,
+                })
             })
         })
     }
@@ -1781,6 +1830,33 @@ impl<'a> Interpreter<'a> {
                 | "next_float"
                 | "range"
         );
+        // WP-C1.3 (2026-07-17): generic `.clone()` for every core-type value. `Value` already
+        // derives Rust `Clone` (a deep/structural copy, which is exactly STARK's Clone semantics
+        // for these built-in collection/string/option/result types -- none of them are
+        // user-overridable per 03-Type-System.md "operator overloading for user-defined types...
+        // is a future extension", so there is no alternate `clone()` body to dispatch to, unlike
+        // struct/enum Clone impls which go through the ordinary call_method/find_method path).
+        // The type-checker (`core_method_signature`) only accepts "clone" for the value-like
+        // core types listed there; this mirrors that set. See COMPILER-STATE.md DEV-013.
+        if name == "clone" {
+            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_val = self.place_value(&receiver_place, span)?;
+            if matches!(
+                receiver_val,
+                Value::String(_)
+                    | Value::Str(_)
+                    | Value::Vec(_)
+                    | Value::Boxed(_)
+                    | Value::Option(_)
+                    | Value::Result(_)
+                    | Value::HashMap(_)
+                    | Value::HashSet(_)
+                    | Value::Range { .. }
+                    | Value::IOError(_)
+            ) {
+                return Ok(receiver_val.clone());
+            }
+        }
         if name == "get" {
             let receiver_place = self.core_receiver_place(base, span)?;
             let receiver_val = self.place_value(&receiver_place, span)?;
@@ -1876,7 +1952,7 @@ impl<'a> Interpreter<'a> {
             let receiver_place = self.core_receiver_place(base, span)?;
             let receiver_val = self.place_value(&receiver_place, span)?;
             if let Value::HashMap(map) = receiver_val {
-                let values = map.values().map(|v| v.clone()).collect();
+                let values = map.values().cloned().collect();
                 return Ok(Value::HashMapValuesIter(values, 0));
             }
         }
@@ -2004,10 +2080,8 @@ impl<'a> Interpreter<'a> {
 
             if is_hashset {
                 let mut set = BTreeSet::new();
-                for item in items {
-                    if let Some(x) = item {
-                        set.insert(self.deref_value(x, span)?);
-                    }
+                for x in items.into_iter().flatten() {
+                    set.insert(self.deref_value(x, span)?);
                 }
                 return Ok(Value::HashSet(set));
             } else if is_hashmap || is_all_pairs {
@@ -2022,10 +2096,8 @@ impl<'a> Interpreter<'a> {
                 return Ok(Value::HashMap(map));
             } else {
                 let mut deref_items = Vec::new();
-                for item in items {
-                    if let Some(x) = item {
-                        deref_items.push(Some(self.deref_value(x, span)?));
-                    }
+                for x in items.into_iter().flatten() {
+                    deref_items.push(Some(self.deref_value(x, span)?));
                 }
                 return Ok(Value::Vec(deref_items));
             }
@@ -2911,7 +2983,7 @@ impl<'a> Interpreter<'a> {
             }
             Value::MapIter(inner, func) => {
                 let (next_opt, updated_inner) = self.iterator_step(*inner.clone(), None, span)?;
-                *inner = Box::new(updated_inner);
+                **inner = updated_inner;
                 if let Some(x) = next_opt {
                     let called =
                         self.call_function_pointer(Value::Function(*func), vec![x], span)?;
@@ -2931,11 +3003,11 @@ impl<'a> Interpreter<'a> {
                         let res =
                             self.call_function_pointer(Value::Function(*pred), vec![x_ref], span)?;
                         if let Value::Bool(true) = res {
-                            *inner = Box::new(current_inner);
+                            **inner = current_inner;
                             return Ok((Some(x), iter));
                         }
                     } else {
-                        *inner = Box::new(current_inner);
+                        **inner = current_inner;
                         return Ok((None, iter));
                     }
                 }
@@ -3415,6 +3487,140 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "hi!\n14\ntrue\n");
+    }
+
+    /// WP-C1.3 regression test for DEV-008: `==`/`!=` used to be pure structural equality on
+    /// the interpreter's `Value` enum regardless of any user-defined `impl Eq for T`. This
+    /// struct's `eq` deliberately does NOT implement structural comparison (it ignores its
+    /// fields and always returns `true`), so a passing test here proves real dispatch, not a
+    /// coincidental match with structural equality.
+    #[test]
+    fn custom_eq_impl_is_dispatched_not_structural() {
+        let execution = execute(
+            "struct Always { tag: Int32 } \
+             impl Eq for Always { fn eq(&self, other: &Always) -> Bool { true } } \
+             fn main() { \
+                 let a = Always { tag: 1 }; \
+                 let b = Always { tag: 2 }; \
+                 println(a == b); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "true\n",
+            "expected the custom (always-true) eq() to be dispatched despite differing fields"
+        );
+    }
+
+    /// WP-C1.3: `!=` must negate the *dispatched* result, not fall back to structural
+    /// inequality when a custom `eq` exists.
+    #[test]
+    fn custom_eq_impl_is_dispatched_for_ne_too() {
+        let execution = execute(
+            "struct Never { tag: Int32 } \
+             impl Eq for Never { fn eq(&self, other: &Never) -> Bool { false } } \
+             fn main() { \
+                 let a = Never { tag: 1 }; \
+                 let b = Never { tag: 1 }; \
+                 println(a != b); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "true\n",
+            "expected != to negate the custom (always-false) eq(), even though fields are equal"
+        );
+    }
+
+    /// WP-C1.3 regression test for the companion typecheck.rs finding made while investigating
+    /// DEV-008: `Ty::Core` container types (Option/Result/Vec) had no arm in
+    /// `require_operator_bound` at all, so `==` on `Option<Int32>` was unconditionally rejected
+    /// by the type checker even though Int32 is obviously Eq. Confirms both that it now
+    /// type-checks AND that comparison remains ordinary structural equality (no dispatch,
+    /// consistent with Core v1 having no user-overridable Eq for compiler container types).
+    #[test]
+    fn option_and_vec_equality_are_structural() {
+        let execution = execute(
+            "fn main() { \
+                 let a: Option<Int32> = Some(1); \
+                 let b: Option<Int32> = Some(1); \
+                 let c: Option<Int32> = Some(2); \
+                 println(a == b); \
+                 println(a == c); \
+                 let mut v1: Vec<Int32> = Vec::new(); \
+                 v1.push(1); \
+                 let mut v2: Vec<Int32> = Vec::new(); \
+                 v2.push(1); \
+                 println(v1 == v2); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\nfalse\ntrue\n");
+    }
+
+    /// WP-C1.3 regression test for DEV-013: `.clone()` was not a recognized method for ANY
+    /// compiler-builtin type at all (String, Vec, Option, Result, HashMap, HashSet, ...) --
+    /// confirmed empirically as "method call on non-struct/enum type" before this fix, even
+    /// though `Clone` as a *bound* was already correctly recognized for these types. Covers the
+    /// most commonly used builtin types; the fix is generic (matches on `Value` variant), not
+    /// per-type, so this is representative rather than exhaustive.
+    #[test]
+    fn clone_works_for_builtin_core_types() {
+        let execution = execute(
+            "fn main() { \
+                 let s = String::from(\"hi\"); \
+                 let s2 = s.clone(); \
+                 println(s2.as_str()); \
+                 let mut v: Vec<Int32> = Vec::new(); \
+                 v.push(1); \
+                 let v2 = v.clone(); \
+                 println(v2.len()); \
+                 let o: Option<Int32> = Some(5); \
+                 let o2 = o.clone(); \
+                 println(o2.is_some()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "hi\n1\ntrue\n");
+    }
+
+    /// WP-C1.3 regression test for DEV-013: a trait method declared with a real default body
+    /// (03-Type-System.md trait defaults) was never used as a fallback when an implementing
+    /// type didn't override it -- confirmed empirically as "method not found" before this fix,
+    /// despite the HIR already carrying the default body (`TraitItem::Method.body: Some(_)`).
+    #[test]
+    fn default_trait_method_runs_when_not_overridden() {
+        let execution = execute(
+            "trait Greet { \
+                 fn name(&self) -> String; \
+                 fn greet(&self) -> String { String::from(\"Hello\") } \
+             } \
+             struct Bob {} \
+             impl Greet for Bob { fn name(&self) -> String { String::from(\"Bob\") } } \
+             fn main() { let b = Bob {}; println(b.greet().as_str()); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Hello\n");
+    }
+
+    /// WP-C1.3: companion test -- an implementing type that DOES override the default must use
+    /// its own body, not the trait's default.
+    #[test]
+    fn overriding_impl_takes_precedence_over_trait_default() {
+        let execution = execute(
+            "trait Greet { \
+                 fn name(&self) -> String; \
+                 fn greet(&self) -> String { String::from(\"Hello\") } \
+             } \
+             struct Bob {} \
+             impl Greet for Bob { \
+                 fn name(&self) -> String { String::from(\"Bob\") } \
+                 fn greet(&self) -> String { String::from(\"Yo\") } \
+             } \
+             fn main() { let b = Bob {}; println(b.greet().as_str()); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Yo\n");
     }
 
     #[test]

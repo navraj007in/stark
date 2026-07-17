@@ -64,41 +64,46 @@ impact, workaround, proposed disposition, owning future gate.
 - **Owning gate:** WP-C1.x (triage exact ownership; behavior consistency isn't cleanly owned by
   any single C1 sub-WP as currently scoped).
 
-## DEV-006 — Multi-file diagnostic provenance loss (resolve/flow/borrowck)
+## DEV-006 — Multi-file diagnostic provenance loss (resolve/flow/borrowck) (RESOLVED in WP-C1.4)
 
 - **Normative expectation:** Charter §1.5 rule 17: "Source identity must survive the pipeline.
   AST/HIR/MIR/query results and diagnostics must retain the correct file, module, package, and
   artifact provenance."
-- **Current behaviour:** `Span` carries no file identity at all (`source.rs:10-13`); there is no
+- **Original behaviour:** `Span` carries no file identity at all (`source.rs:10-13`); there is no
   `FileId`/`SourceId` type anywhere in the crate. Parse (`parser.rs:359-363`) and typecheck
-  (`typecheck.rs:1916-1919,2065-2068` plus 4 backfill sites) correctly reconstruct per-item file
-  identity via a `HashMap<ItemId, Arc<SourceFile>>` side table. Resolve (`resolve.rs`, 20
+  (`typecheck.rs:1916-1919,2065-2068` plus 4 backfill sites) correctly reconstructed per-item
+  file identity via a `HashMap<ItemId, Arc<SourceFile>>` side table. Resolve (`resolve.rs`, 20
   diagnostic sites, zero `.with_file()` calls), flow analysis (`flow.rs:21-24`, file parameter
   named `_file` and structurally unused), and borrow checking (`borrowck.rs`, single
-  whole-crate `self.file`, no per-item lookup) do not — they render every diagnostic against
+  whole-crate `self.file`, no per-item lookup) did not — every diagnostic rendered against
   whichever file the top-level caller happened to pass (always the package's root file).
-- **User impact:** for any multi-file `stark` package (the only paths using `PackageGraph` — 
-  `stark check`/`build`/`run`/`test`), a name-resolution, control-flow, or borrow-check
-  error/warning originating in a non-root `mod`-loaded file renders with the **wrong filename**
-  and byte offsets mapped against the **wrong file's** line-start table. `SourceFile::line_col`
-  clamps out-of-range offsets (`source.rs:70`) rather than panicking, so this fails silently,
-  producing a plausible-looking but incorrect `-->` diagnostic header — actively misleading
-  during debugging, not just an omission.
-- **Security/soundness impact:** none to compiled-program safety (the underlying check still
-  runs correctly; only its *reported location* is wrong), but it is a diagnostics-integrity gap
-  that Charter rule 16 ("diagnostics are part of behaviour") treats as a first-class defect, not
+- **User impact (while open):** for any multi-file `stark` package (the only paths using
+  `PackageGraph` — `stark check`/`build`/`run`/`test`), a name-resolution, control-flow, or
+  borrow-check error/warning originating in a non-root `mod`-loaded file rendered with the
+  **wrong filename** and byte offsets mapped against the **wrong file's** line-start table.
+  `SourceFile::line_col` clamps out-of-range offsets (`source.rs:70`) rather than panicking, so
+  this failed silently, producing a plausible-looking but incorrect `-->` diagnostic header —
+  actively misleading during debugging, not just an omission.
+- **Security/soundness impact:** none to compiled-program safety (the underlying check still ran
+  correctly; only its *reported location* was wrong), but it was a diagnostics-integrity gap that
+  Charter rule 16 ("diagnostics are part of behaviour") treats as a first-class defect, not
   cosmetic.
-- **Workaround:** for multi-file packages, if a resolve/flow/borrowck diagnostic's reported file
-  looks suspicious, manually check every file in the package rather than trusting the printed
-  location.
-- **Proposed disposition:** extend resolve's `.with_file()` usage to match typecheck's pattern
-  (resolve already has full access to per-module file identity via `ModuleData::file`); extend
-  flow/borrowck to accept and use per-item file lookups the way typecheck does, rather than a
-  single whole-crate file. Considering a real `FileId`/`SourceId` type is a larger,
-  CE3-adjacent-but-not-quite architectural question worth raising if the ad hoc `Arc<SourceFile>`
-  threading pattern proves insufficient once this is fixed properly.
-- **Owning gate:** WP-C1.2 (resolve) and WP-C1.4 (borrowck); flow is a smaller fix bundled with
-  either.
+- **Resolution:** fixed in two stages. **WP-C1.2** fixed the resolve half: added
+  `push_diag`/`current_file_arc()` helpers (`resolve.rs`), mirroring typecheck.rs's own
+  if-none backfill pattern; all 20 `self.diags.push` call sites converted to `self.push_diag`.
+  Verified with a same-package regression test and a cross-package test
+  (`gate2_package.rs::test_cross_package_diagnostic_reports_dependency_file_not_root_file`).
+  **WP-C1.4** fixed the flow/borrowck half: the same `push_diag` pattern plus a per-item
+  `self.file` swap (via `hir.item_files`) applied to both `borrowck.rs` and `flow.rs`;
+  `flow::check`'s previously-unused `_file` parameter is now a real, used field. Verified with
+  two regression tests
+  (`gate2_valid.rs::test_borrowck_diagnostic_in_nonroot_file_reports_correct_file`,
+  `test_flow_diagnostic_in_nonroot_file_reports_correct_file`). A real `FileId`/`SourceId` type
+  was considered and explicitly not pursued — the ad hoc `Arc<SourceFile>`-threading fix pattern
+  proved sufficient across all four pipeline stages, so the larger architectural question never
+  became load-bearing.
+- **Owning gate:** WP-C1.2 (resolve, closed) and WP-C1.4 (flow/borrowck, closed). DEV-006 fully
+  resolved.
 
 ## DEV-007 — `resolve.rs` glob-import (`use mod::*`) nondeterminism
 
@@ -125,40 +130,36 @@ impact, workaround, proposed disposition, owning future gate.
   stable "declaration order" semantics if that's the intended tie-break) at both call sites.
 - **Owning gate:** WP-C1.2.
 
-## DEV-008 — Structural equality, not `Eq` trait dispatch, at runtime
+## DEV-008 — Structural equality, not `Eq` trait dispatch, at runtime (CLOSED)
 
 - **Normative expectation:** per the roadmap's own framing (WP-C1.3): equality dispatch must
-  follow one consistent, documented semantics — either the compiler dispatches through a user's
-  `Eq` implementation at runtime, or an unambiguous spec defect is corrected via the spec-bug
-  protocol. "A hidden interpreter-only structural equality rule is not accepted as an
-  undocumented third behaviour."
-- **Current behaviour:** `==`/`!=` (`BinOp::Eq`/`Ne` in `interp.rs`) are implemented as pure
-  structural equality on the interpreter's internal `Value` enum via Rust's derived `PartialEq`
-  — there is no dispatch through a user's `Eq` trait implementation at runtime. `Eq` as a trait
-  bound is currently a type-checker-only concept: checked as a bound during type checking, never
-  dispatched as a method during execution. `assert_eq`/`assert_ne` (added in Phase 4E/WP8.3)
-  inherit the same behavior, since they compare `Value`s the same way `==`/`!=` do.
-- **User impact:** the interpreter's structural equality happens to match what a correct
-  `derive(Eq)` would produce for ordinary data. A user-written *custom* `impl Eq for T` (if
-  expressible at all in Core v1 — unconfirmed whether users can hand-write `Eq` vs. only
-  auto-derive it) would be silently ignored at runtime: the program would type-check against
-  the custom impl's bound but execute using structural equality regardless of what that impl
-  says.
-- **Security/soundness impact:** low-to-moderate — this is exactly the kind of "hidden
-  interpreter-only rule" the Charter singles out as unacceptable. It's a semantic-consistency
-  gap between what the type checker verifies and what the interpreter executes, which is the
-  category of bug that erodes trust in "the interpreter is the semantic reference" (Charter
-  rule 6).
-- **Workaround:** none at the language level; document that `Eq` behaves as if always
-  structurally derived, regardless of any custom implementation, until this is resolved.
-- **Proposed disposition:** first determine whether Core v1 actually permits hand-written `impl
-  Eq for T` (if not — if `Eq` is auto-derive-only — this deviation may collapse to a
-  documentation gap rather than a behavior gap). If hand-written impls are permitted, implement
-  real trait dispatch in the interpreter; if not, and structural equality is the intended
-  semantics for all `Eq` types, document that explicitly in `04-Semantic-Analysis.md` or
-  `06-Standard-Library.md` per the spec-bug protocol so it's no longer an undocumented "hidden"
-  rule.
-- **Owning gate:** WP-C1.3 — explicitly the correct owner per the roadmap's own text.
+  follow one consistent, documented semantics. The spec settles which one: `Eq` is a normal,
+  user-implementable trait (`03-Type-System.md:389-406`, worked example `impl Eq for Point` with
+  real per-field logic; `06-Standard-Library.md:107-109` identically) and `==`/`!=` normatively
+  desugar to `Eq::eq`/negation except for primitive types, which keep built-in intrinsic
+  comparison (`03-Type-System.md:516-531`).
+- **Previous behaviour:** `==`/`!=` were pure structural equality on the interpreter's `Value`
+  enum unconditionally — no dispatch through a user's `Eq` implementation, even though
+  `typecheck.rs`'s `require_operator_bound` already required a real `impl Eq for T` to exist for
+  any struct/enum `==` to type-check in the first place.
+- **Resolved 2026-07-17 (WP-C1.3), option 1 — implemented normative dispatch:**
+  `eval_binary` (interp.rs) now looks up a resolved `Eq` impl via the existing `find_method`/
+  `call_user_method` machinery before falling back to structural comparison; only struct/enum
+  values are looked up (primitives and `Ty::Core` containers have no user-overridable Eq per
+  Core v1's "operator overloading... is a future extension" rule, so structural comparison
+  remains exactly correct for them). Verified with a deliberately non-structural custom `eq()`
+  (always returns `true`) to prove real dispatch, not coincidental agreement.
+- **Companion fix found while investigating:** `Ty::Core` (Option/Result/Vec/Box) had no arm at
+  all in `require_operator_bound` — `Option<Int32> == Option<Int32>` was unconditionally
+  rejected with E0500 despite `Int32` obviously satisfying `Eq`. Added a recursive bound-
+  satisfaction check over container type arguments.
+- **User impact:** none remaining — both the dispatch gap and the Option/Result/Vec rejection
+  gap are closed.
+- **Regression tests:** `interp.rs::custom_eq_impl_is_dispatched_not_structural`,
+  `::custom_eq_impl_is_dispatched_for_ne_too`, `::option_and_vec_equality_are_structural`;
+  `typecheck.rs::option_result_vec_box_satisfy_eq_when_their_type_args_do`,
+  `::option_of_non_eq_type_is_rejected`.
+- **Owning gate:** closed, WP-C1.3.
 
 ## DEV-009 — `File` has no first-class runtime representation
 
@@ -250,25 +251,39 @@ impact, workaround, proposed disposition, owning future gate.
   `stark.generateDocs`/tensor-mode-toggle commands.
 - **Owning gate:** WP-C8.7.
 
-## DEV-013 — `STD-004` (standard traits) exhaustiveness unresolved
+## DEV-013 — `STD-004` (standard traits) exhaustiveness audit (CLOSED, with new findings)
 
 - **Normative expectation:** `06-Standard-Library.md`'s trait surface (Clone, Hash, Default,
-  Display, Error, Iterator).
-- **Current behaviour:** `typecheck.rs:5598-5637` recognizes `Clone`/`Hash`/`Display`/`Default`/
-  `Iterator` as compiler-known trait bounds; `gate4a_prelude_traits.rs` (12 tests) exercises
-  them. `grep -n '"Error"' typecheck.rs` found **no** matches during WP-C0.3/C0.4 — `Error`
-  trait bound recognition is unconfirmed and may be genuinely absent, not merely untested.
-  Separately unconfirmed: whether users can hand-write `impl <StdTrait> for T` versus only
-  trigger compiler-builtin behavior when the bound is satisfied structurally (the same open
-  question DEV-008 raises for `Eq`, likely generalizing to this whole trait family).
-- **User impact:** unknown until resolved — could range from "fully covered, this was just an
-  undertested corner" to "Error trait support genuinely doesn't exist yet."
-- **Security/soundness impact:** none identified yet; contingent on the resolution.
-- **Workaround:** none; unresolved.
-- **Proposed disposition:** WP-C1.3 rule-level audit — confirm or refute `Error` trait support,
-  and resolve the hand-written-impl-vs-builtin-only question for this trait family alongside
-  DEV-008.
-- **Owning gate:** WP-C1.3.
+  Display, Error, Iterator) should be recognized both as trait *bounds* and as callable
+  *methods*, with default method bodies used when not overridden.
+- **Findings, resolved 2026-07-17 (WP-C1.3):**
+  - `Error` trait bound checking: **confirmed working.** The original "not seen in the bound-
+    name list" observation was checking the wrong function — `satisfies_bound` (the general
+    trait-bound checker) handles any struct/enum trait name generically via a real impl-existence
+    search, unlike the narrower `require_operator_bound` (only Eq/Ord/Num). Verified end-to-end
+    with a real `impl Error for MyError` and a generic `fn describe<E: Error>(e: E) -> String`.
+  - `Clone`/`Hash`/`Display` as bounds: confirmed working (same mechanism).
+  - **`Clone` as a callable method on compiler-builtin types: confirmed BROKEN, now FIXED.**
+    `.clone()` on `String`/`Vec`/`Option`/`Result`/`HashMap`/`HashSet`/`Range`/`IOError` failed
+    with E0303 "method call on non-struct/enum type" — recognized as a bound, but with no
+    method-signature entry or dispatch case anywhere for any builtin type. Fixed with a generic
+    dispatch point in both `core_method_signature` (typecheck.rs) and `call_core_method`
+    (interp.rs, reusing `Value`'s existing derived Rust `Clone`).
+  - **Default trait method bodies: confirmed BROKEN, now FIXED** (found while testing the trait
+    family broadly; squarely inside WP-C1.3's own checklist item "default methods"). A trait
+    method with a real default body was never used as a fallback when unoverridden — the HIR
+    already carried `TraitItem::Method { body: Some(_), .. }`, it was simply never consulted.
+    Fixed in both typecheck.rs (a `default_fallback` search before concluding "not found") and
+    interp.rs (`find_method` gained the analogous fallback). Verified both that an unoverridden
+    default runs and that an overriding impl still takes precedence.
+  - Hand-written-impl-vs-builtin-only question: confirmed — hand-written impls are the normal,
+    spec-shown mechanism for all these traits (no separate auto-derive-only mode exists).
+- **Regression tests:** `interp.rs::clone_works_for_builtin_core_types`,
+  `::default_trait_method_runs_when_not_overridden`,
+  `::overriding_impl_takes_precedence_over_trait_default`.
+- **New deviations found while closing this one, deliberately NOT fixed in this WP (scope
+  discipline after two substantial fixes already landed) — see DEV-023 and DEV-024 below.**
+- **Owning gate:** closed, WP-C1.3.
 
 ## DEV-014 — `parser.rs` test-environment detection suppressed real errors (CLOSED)
 
@@ -310,19 +325,27 @@ impact, workaround, proposed disposition, owning future gate.
   task.
 - **Owning gate:** WP-C1.3 or WP-C1.5 (needs triage to pick one).
 
-## DEV-016 — Repository-wide clippy debt (pre-existing, not WP-C1.1-introduced)
+## DEV-016 — Repository-wide clippy debt (RESOLVED in WP-C1.4)
 
 - **Normative expectation:** Charter §2.5 lists `cargo clippy --all-targets -- -D warnings`
   passing as a default definition-of-done requirement.
-- **Current behaviour:** 22 clippy errors exist across `typecheck.rs`, `lsp/protocol.rs`, and
-  other files not touched by WP-C1.1 (confirmed by isolating clippy output to files this WP
-  changed: zero hits).
-- **User impact:** none to compiled-program behavior; this is a code-quality/CI-hygiene gap.
+- **Original behaviour:** 22 clippy errors existed across `typecheck.rs`, `interp.rs`,
+  `lsp/protocol.rs`, and `lsp/server.rs`, none touched by WP-C1.1 (confirmed by isolating clippy
+  output to files that WP changed: zero hits). CI (`.github/workflows/ci.yml`'s `fmt, clippy,
+  test` job) had been red since the 2026-07-17 03:29 push for exactly this reason, across several
+  unrelated feature commits and both governance-bootstrap commits.
+- **User impact:** none to compiled-program behavior; this was a code-quality/CI-hygiene gap.
 - **Security/soundness impact:** none identified.
-- **Workaround:** none needed; doesn't affect correctness.
-- **Proposed disposition:** clean up opportunistically when each affected file is next touched
-  by an owning WP, or open a small dedicated cleanup WP.
-- **Owning gate:** unscheduled.
+- **Resolution:** fixed as a standalone cleanup during WP-C1.4 at the user's explicit request.
+  All 22 fixes are mechanical and zero-behavior-change: 13x `args.get(0)` → `args.first()`
+  (`typecheck.rs`); 2x explicit-closure-clone → `.cloned()` (`interp.rs`, `lsp/server.rs`); 2x
+  manual `if let Some` inside a `for` loop → `.into_iter().flatten()` (`interp.rs`); 3x
+  `*inner = Box::new(x)` → `**inner = x` (avoids a needless allocation, `interp.rs`);
+  `JsonValue`'s inherent `to_string` → `impl std::fmt::Display` (`lsp/protocol.rs` — no call-site
+  changes needed, the blanket `ToString` impl covers `Display`); one
+  `.and_then(|x| Some(y))` → `.map(|x| y)` (`lsp/protocol.rs`). Verified clean clippy, clean fmt,
+  and the full workspace test suite green twice consecutively with an unchanged pass count.
+- **Owning gate:** WP-C1.4 (closed).
 
 ## DEV-017 — Coverage database test citations lack function-level precision
 
@@ -442,6 +465,52 @@ impact, workaround, proposed disposition, owning future gate.
 
 ---
 
+## DEV-023 — `Display`/`.fmt()` and `Hash`/`.hash()` missing as callable methods on builtin types
+
+- **Normative expectation:** `Display`/`Hash` should be callable as methods on any type
+  satisfying the bound, including compiler-builtin types (String, Vec, Option, ...), matching
+  the pattern `Clone` now follows after DEV-013's fix.
+- **Current behaviour:** the same bug class as DEV-013's Clone finding, confirmed present but
+  not fixed: `String::from("hi").fmt()` and `"hi".hash()`-style calls fail with E0303 "method
+  call on non-struct/enum type 'String'". `Display`/`Hash` as *bounds* are already correctly
+  recognized (same mechanism as Clone/Eq/Ord).
+- **User impact:** a generic function bound by `T: Display` or `T: Hash` cannot actually call
+  `.fmt()`/`.hash()` on a `T` instantiated with a builtin type, even though the bound check
+  passes — the same "bound satisfied, method missing" trap DEV-013 found for Clone.
+- **Security/soundness impact:** none identified — a missing-method usability gap, not a
+  soundness issue.
+- **Workaround:** none for builtin types; works normally for struct/enum types with a
+  hand-written `impl Display`/`impl Hash`.
+- **Proposed disposition:** by analogy with the Clone fix: `.fmt()` could reuse the
+  interpreter's existing `impl fmt::Display for Value` (already used by `print`/`println` for
+  exactly these types) as a generic dispatch point. `.hash()` needs its own investigation —
+  unverified whether the internal hash used for `HashMap`/`HashSet` keys is exposed in a form
+  reusable for a user-callable `.hash()` returning `UInt64`.
+- **Owning gate:** unscheduled; candidate for a focused follow-up WP given the fix pattern is
+  now well-understood from the Clone precedent.
+
+## DEV-024 — `From` trait associated-function calls fail to resolve
+
+- **Normative expectation:** `impl From<A> for B { fn from(a: A) -> B {...} }` followed by
+  `B::from(a)` should resolve and execute the impl.
+- **Current behaviour:** confirmed empirically broken — a real `impl From<Celsius> for
+  Fahrenheit` followed by `Fahrenheit::from(c)` fails to type-check with E0200 "associated
+  function 'from' not found" despite the impl existing.
+- **User impact:** the `From`/`Into`/`TryFrom` conversion pattern (`resolve.rs:2080-2082`
+  classifies all three as `CoreTrait`s) does not work via the conventional `Type::from(value)`
+  call form.
+- **Security/soundness impact:** none identified — a missing-resolution usability gap.
+- **Workaround:** none currently known; would need a manually-named conversion function instead
+  of implementing `From`.
+- **Proposed disposition:** root cause not yet isolated — unlike DEV-013's method-call findings,
+  this is an *associated/static* function call (`Type::function()`, no receiver value), a
+  different resolution path (`find_associated_fn` in interp.rs and its typecheck.rs counterpart)
+  that may have an analogous "doesn't search trait impls" gap, or may be specific to `From`'s
+  generic trait parameter confusing the self-type match. Needs its own investigation before a
+  fix is attempted, not assumed to be the same pattern as DEV-013's fixes. `Into`/`TryFrom` not
+  independently tested but plausibly share the same gap.
+- **Owning gate:** unscheduled; needs root-cause investigation first.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -480,10 +549,12 @@ attribute syntax existed. No fix owed.
   of DEV-014 (closed) through DEV-018.
 - `starkc/src/resolve.rs` and `starkc/tests/gate2_package.rs` (new WP-C1.2 tests) — source of
   DEV-019 through DEV-022.
+- `starkc/src/typecheck.rs` and `starkc/src/interp.rs` (new WP-C1.3 tests) — source of DEV-008
+  and DEV-013's closure, plus DEV-023/DEV-024.
 - DEV-001, DEV-003 do not appear above: both IDs were retired when their original seed framing
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 22 numbered deviations total (DEV-002 through DEV-022), of which DEV-002,
-DEV-014, DEV-020, and DEV-021 are closed/confirmed-correct (no fix owed); 2 informational
-not-owned items (DEV-SEED-008, DEV-SEED-014).
+Current count: 24 numbered deviations total (DEV-002 through DEV-024), of which DEV-002,
+DEV-008, DEV-013, DEV-014, DEV-020, and DEV-021 are closed/confirmed-correct (no fix owed); 2
+informational not-owned items (DEV-SEED-008, DEV-SEED-014).

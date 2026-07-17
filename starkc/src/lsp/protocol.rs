@@ -48,34 +48,36 @@ impl JsonValue {
             _ => None,
         }
     }
+}
 
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for JsonValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JsonValue::Null => "null".to_string(),
-            JsonValue::Bool(b) => b.to_string(),
+            JsonValue::Null => write!(f, "null"),
+            JsonValue::Bool(b) => write!(f, "{}", b),
             JsonValue::Number(n) => {
                 if n.fract() == 0.0 {
-                    format!("{}", *n as i64)
+                    write!(f, "{}", *n as i64)
                 } else {
-                    n.to_string()
+                    write!(f, "{}", n)
                 }
             }
-            JsonValue::String(s) => format!("\"{}\"", escape_json_string(s)),
+            JsonValue::String(s) => write!(f, "\"{}\"", escape_json_string(s)),
             JsonValue::Array(arr) => {
                 let items = arr
                     .iter()
                     .map(|v| v.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                format!("[{}]", items)
+                write!(f, "[{}]", items)
             }
             JsonValue::Object(obj) => {
                 let items = obj
                     .iter()
-                    .map(|(k, v)| format!("\"{}\":{}", escape_json_string(k), v.to_string()))
+                    .map(|(k, v)| format!("\"{}\":{}", escape_json_string(k), v))
                     .collect::<Vec<_>>()
                     .join(",");
-                format!("{{{}}}", items)
+                write!(f, "{{{}}}", items)
             }
         }
     }
@@ -351,15 +353,13 @@ pub fn parse_message(content: &str) -> Result<Message, String> {
             // Response
             let id = id.as_i64().ok_or("Invalid response id")?;
             let result = value.get("result").cloned();
-            let error = value.get("error").and_then(|e| {
-                Some(ResponseError {
-                    code: e.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32,
-                    message: e
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("Unknown error")
-                        .to_string(),
-                })
+            let error = value.get("error").map(|e| ResponseError {
+                code: e.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32,
+                message: e
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Unknown error")
+                    .to_string(),
             });
 
             Ok(Message::Response(Response { id, result, error }))
