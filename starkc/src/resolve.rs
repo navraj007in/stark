@@ -615,6 +615,16 @@ impl<'a> Resolver<'a> {
             "HashMap::new" => return Res::Builtin(Builtin::HashMapNew),
             "HashMap::with_capacity" => return Res::Builtin(Builtin::HashMapWithCapacity),
             "HashSet::new" => return Res::Builtin(Builtin::HashSetNew),
+            // Phase 4E: `math::min`/`math::max` are qualified-only — bare
+            // `min`/`max` are already claimed by the `tensor` extension.
+            "math::min" | "std::math::min" => return Res::Builtin(Builtin::MathMin),
+            "math::max" | "std::math::max" => return Res::Builtin(Builtin::MathMax),
+            "Random::new" => return Res::Builtin(Builtin::RandomNew),
+            "IOError::NotFound" => return Res::Builtin(Builtin::IOErrorNotFound),
+            "IOError::PermissionDenied" => return Res::Builtin(Builtin::IOErrorPermissionDenied),
+            "IOError::AlreadyExists" => return Res::Builtin(Builtin::IOErrorAlreadyExists),
+            "IOError::InvalidInput" => return Res::Builtin(Builtin::IOErrorInvalidInput),
+            "IOError::Other" => return Res::Builtin(Builtin::IOErrorOther),
             _ => {}
         }
 
@@ -1920,6 +1930,30 @@ fn resolve_builtin(name: &str) -> Option<Builtin> {
         "to_device" => Some(Builtin::TensorToDevice),
         "scale_255" => Some(Builtin::TensorScale255),
         "normalize" => Some(Builtin::TensorNormalize),
+        // Phase 4E: Math (bare names that don't collide with the tensor
+        // extension's bare `min`/`max`; those are `math::min`/`math::max`,
+        // resolved via the qualified-path table in `resolve_path_relative`).
+        "PI" => Some(Builtin::MathPi),
+        "E" => Some(Builtin::MathE),
+        "abs" => Some(Builtin::MathAbs),
+        "clamp" => Some(Builtin::MathClamp),
+        "pow" => Some(Builtin::Pow),
+        "log" => Some(Builtin::Log),
+        "log10" => Some(Builtin::Log10),
+        "exp" => Some(Builtin::Exp),
+        "sin" => Some(Builtin::Sin),
+        "cos" => Some(Builtin::Cos),
+        "tan" => Some(Builtin::Tan),
+        "asin" => Some(Builtin::Asin),
+        "acos" => Some(Builtin::Acos),
+        "atan" => Some(Builtin::Atan),
+        "atan2" => Some(Builtin::Atan2),
+        "floor" => Some(Builtin::Floor),
+        "ceil" => Some(Builtin::Ceil),
+        "round" => Some(Builtin::Round),
+        "trunc" => Some(Builtin::Trunc),
+        "eprint" => Some(Builtin::Eprint),
+        "eprintln" => Some(Builtin::Eprintln),
         _ => None,
     }
 }
@@ -1982,6 +2016,8 @@ fn resolve_core_type(name: &str) -> Option<CoreType> {
         "Iter" => Some(CoreType::Iter),
         "MapIter" => Some(CoreType::MapIter),
         "FilterIter" => Some(CoreType::FilterIter),
+        "Random" => Some(CoreType::Random),
+        "IOError" => Some(CoreType::IOError),
         _ => None,
     }
 }

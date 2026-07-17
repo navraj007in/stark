@@ -425,7 +425,7 @@ impl<'a> TypeChecker<'a> {
                     CoreType::Result,
                     vec![
                         Ty::Primitive(Primitive::String),
-                        Ty::Primitive(Primitive::String),
+                        Ty::Core(CoreType::IOError, Vec::new()),
                     ],
                 )),
             },
@@ -444,7 +444,7 @@ impl<'a> TypeChecker<'a> {
                     CoreType::Result,
                     vec![
                         Ty::Primitive(Primitive::Unit),
-                        Ty::Primitive(Primitive::String),
+                        Ty::Core(CoreType::IOError, Vec::new()),
                     ],
                 )),
             },
@@ -545,6 +545,74 @@ impl<'a> TypeChecker<'a> {
                     ret: Box::new(value),
                 }
             }
+            // -- Phase 4E: Math constants and functions --
+            Builtin::MathPi | Builtin::MathE => Ty::Primitive(Primitive::Float64),
+            Builtin::MathAbs => {
+                let value = self.new_type_var();
+                Ty::Fn {
+                    params: vec![value.clone()],
+                    ret: Box::new(value),
+                }
+            }
+            Builtin::MathMin | Builtin::MathMax => {
+                let value = self.new_type_var();
+                Ty::Fn {
+                    params: vec![value.clone(), value.clone()],
+                    ret: Box::new(value),
+                }
+            }
+            Builtin::MathClamp => {
+                let value = self.new_type_var();
+                Ty::Fn {
+                    params: vec![value.clone(), value.clone(), value.clone()],
+                    ret: Box::new(value),
+                }
+            }
+            Builtin::Pow | Builtin::Atan2 => Ty::Fn {
+                params: vec![
+                    Ty::Primitive(Primitive::Float64),
+                    Ty::Primitive(Primitive::Float64),
+                ],
+                ret: Box::new(Ty::Primitive(Primitive::Float64)),
+            },
+            Builtin::Log
+            | Builtin::Log10
+            | Builtin::Exp
+            | Builtin::Sin
+            | Builtin::Cos
+            | Builtin::Tan
+            | Builtin::Asin
+            | Builtin::Acos
+            | Builtin::Atan
+            | Builtin::Floor
+            | Builtin::Ceil
+            | Builtin::Round
+            | Builtin::Trunc => Ty::Fn {
+                params: vec![Ty::Primitive(Primitive::Float64)],
+                ret: Box::new(Ty::Primitive(Primitive::Float64)),
+            },
+            // -- Phase 4E: stderr --
+            Builtin::Eprint | Builtin::Eprintln => Ty::Fn {
+                params: vec![Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(Ty::Primitive(Primitive::Str)),
+                }],
+                ret: Box::new(unit),
+            },
+            // -- Phase 4E: Random (simple LCG per `06-Standard-Library.md`) --
+            Builtin::RandomNew => Ty::Fn {
+                params: vec![Ty::Primitive(Primitive::UInt64)],
+                ret: Box::new(Ty::Core(CoreType::Random, Vec::new())),
+            },
+            // -- Phase 4E: IOError variant constructors --
+            Builtin::IOErrorNotFound
+            | Builtin::IOErrorPermissionDenied
+            | Builtin::IOErrorAlreadyExists
+            | Builtin::IOErrorInvalidInput => Ty::Core(CoreType::IOError, Vec::new()),
+            Builtin::IOErrorOther => Ty::Fn {
+                params: vec![Ty::Primitive(Primitive::String)],
+                ret: Box::new(Ty::Core(CoreType::IOError, Vec::new())),
+            },
         }
     }
 
@@ -1039,6 +1107,8 @@ impl<'a> TypeChecker<'a> {
                     CoreType::Iter => "Iter",
                     CoreType::MapIter => "MapIter",
                     CoreType::FilterIter => "FilterIter",
+                    CoreType::Random => "Random",
+                    CoreType::IOError => "IOError",
                 };
                 if args.is_empty() {
                     name.to_string()
@@ -1209,7 +1279,11 @@ impl<'a> TypeChecker<'a> {
                     Res::CoreType(core) => {
                         let args = self.convert_generic_type_args(args.as_ref());
                         let expected = match core {
-                            CoreType::String | CoreType::CharsIter | CoreType::SplitIter => 0,
+                            CoreType::String
+                            | CoreType::CharsIter
+                            | CoreType::SplitIter
+                            | CoreType::Random
+                            | CoreType::IOError => 0,
                             CoreType::Vec
                             | CoreType::Box
                             | CoreType::Option
@@ -5280,6 +5354,21 @@ impl<'a> TypeChecker<'a> {
                     "is_empty" => Some((Vec::new(), bool_ty, false)),
                     _ => None,
                 },
+                _ => None,
+            },
+            // Phase 4E: `Random` (simple LCG, `06-Standard-Library.md`
+            // "Random numbers" — `&mut self`, matching the spec exactly).
+            Ty::Core(CoreType::Random, _) => match name {
+                "next_int" => Some((Vec::new(), u64_ty, true)),
+                "next_float" => Some((Vec::new(), Ty::Primitive(Primitive::Float64), true)),
+                "range" => Some((
+                    vec![
+                        Ty::Primitive(Primitive::Int32),
+                        Ty::Primitive(Primitive::Int32),
+                    ],
+                    Ty::Primitive(Primitive::Int32),
+                    true,
+                )),
                 _ => None,
             },
             _ => None,

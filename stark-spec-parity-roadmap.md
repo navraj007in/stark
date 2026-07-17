@@ -353,29 +353,53 @@ Borrow-carrying iterator types must interact correctly with the borrow checker.
 
 ---
 
-### Phase 4E — Math, Random, and I/O
+### Phase 4E — Math, Random, and I/O (Status: Partially complete — 2026-07-17)
 
 Implement:
 
-- logarithmic and exponential functions;
-- trigonometry;
-- rounding;
-- `Random`;
-- `File`;
-- `IOError`;
-- stderr output;
-- structured file operations.
+- logarithmic and exponential functions; ✅
+- trigonometry; ✅
+- rounding; ✅
+- `Random`; ✅
+- `File`; ❌ deferred — see note below
+- `IOError`; ✅
+- stderr output; ✅
+- structured file operations. ⚠️ `read_file`/`write_file` only (whole-file
+  read/write); no persistent `File` handle
+
+**`File` struct deferred, not implemented.** `Value` (the interpreter's
+runtime representation) derives `Clone` + `PartialEq` uniformly across
+~30 variants; a real OS file handle (`std::fs::File`) implements neither,
+so giving `File` first-class `Value` representation would require either
+a fallible/panicking manual `Clone` impl or restructuring `Value`'s
+equality entirely — a materially larger, riskier change than the rest of
+this phase, discovered partway through implementation. `read_file`/
+`write_file` (upgraded in this pass to return `Result<String, IOError>`,
+matching the spec, instead of `Result<String, String>`) cover the common
+whole-file read/write cases the spec's `File::open`+`read_to_string` and
+`File::create`+`write_str` combinations would otherwise be used for.
+`File::open`/`create`/`read_to_string`/`write`/`write_str`/`close` remain
+unimplemented pending that architectural decision.
 
 ### Exit Criteria
 
-- Every normative standard-library signature has an implementation.
-- Every documented behavioral guarantee has tests.
-- Borrow-carrying iterators cannot outlive their source.
-- The standard library is accessible through a real `std` package/module tree rather than only hardcoded resolver names.
+- Every normative standard-library signature has an implementation. ⚠️ all
+  except `File`'s methods (see above).
+- Every documented behavioral guarantee has tests. ✅ for everything
+  implemented (`starkc/tests/phase4e_math_random_io.rs`, 13 tests).
+- Borrow-carrying iterators cannot outlive their source. — unaffected by
+  this phase (no new iterator types).
+- The standard library is accessible through a real `std` package/module
+  tree rather than only hardcoded resolver names. ❌ not attempted — every
+  prior Phase 4 sub-phase (4A-4D) also ships via hardcoded resolver names,
+  not a real `std` module tree; this remains a standing gap across all of
+  Phase 4, not specific to 4E.
 
 ### Relative Size
 
-Very large; deliver incrementally.
+Very large; delivered incrementally (this pass: math functions/constants,
+`eprint`/`eprintln`, `Random`, `IOError`, upgraded `read_file`/
+`write_file`; `File` deferred).
 
 ---
 

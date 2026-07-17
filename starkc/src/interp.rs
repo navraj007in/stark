@@ -72,6 +72,54 @@ enum Value {
     HashSetIter(Vec<Option<Value>>, usize),
     MapIter(Box<Value>, ItemId),
     FilterIter(Box<Value>, ItemId),
+    /// Simple LCG state (`06-Standard-Library.md` "Random numbers"); the
+    /// mutable state is the seed itself, updated in place by `next_int`.
+    Random(u64),
+    IOError(IOErrorKind),
+}
+
+/// Mirrors the `IOError` enum in `06-Standard-Library.md`. Given its own
+/// runtime representation (like `Value::Option`/`Value::Result`) rather
+/// than going through the generic `Value::Enum{item,variant,..}` path,
+/// since it has no corresponding real HIR item — `IOError::NotFound` etc.
+/// resolve directly to `Builtin` constructors (`resolve.rs`), the same
+/// pattern already used for `Some`/`None`/`Ok`/`Err`.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum IOErrorKind {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    InvalidInput,
+    Other(String),
+}
+
+impl fmt::Display for IOErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IOErrorKind::NotFound => write!(f, "NotFound"),
+            IOErrorKind::PermissionDenied => write!(f, "PermissionDenied"),
+            IOErrorKind::AlreadyExists => write!(f, "AlreadyExists"),
+            IOErrorKind::InvalidInput => write!(f, "InvalidInput"),
+            IOErrorKind::Other(msg) => write!(f, "Other({msg})"),
+        }
+    }
+}
+
+impl IOErrorKind {
+    /// Map a `std::io::Error` to the closest `IOErrorKind`, matching the
+    /// spec's variant set (`NotFound`/`PermissionDenied`/`AlreadyExists`/
+    /// `InvalidInput`/`Other`).
+    fn from_io_error(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => IOErrorKind::NotFound,
+            std::io::ErrorKind::PermissionDenied => IOErrorKind::PermissionDenied,
+            std::io::ErrorKind::AlreadyExists => IOErrorKind::AlreadyExists,
+            std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
+                IOErrorKind::InvalidInput
+            }
+            _ => IOErrorKind::Other(error.to_string()),
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -145,6 +193,8 @@ impl fmt::Display for Value {
             Value::HashSetIter(..) => write!(f, "<HashSetIter>"),
             Value::MapIter(..) => write!(f, "<MapIter>"),
             Value::FilterIter(..) => write!(f, "<FilterIter>"),
+            Value::Random(_) => write!(f, "<Random>"),
+            Value::IOError(kind) => write!(f, "IOError::{kind}"),
         }
     }
 }
@@ -184,6 +234,8 @@ impl Ord for Value {
                 Value::HashSetIter(..) => 26,
                 Value::MapIter(..) => 27,
                 Value::FilterIter(..) => 28,
+                Value::Random(_) => 29,
+                Value::IOError(_) => 30,
             }
         }
 
@@ -262,6 +314,8 @@ impl Ord for Value {
             (Value::FilterIter(ia, fa), Value::FilterIter(ib, fb)) => {
                 ia.cmp(ib).then_with(|| fa.cmp(fb))
             }
+            (Value::Random(a), Value::Random(b)) => a.cmp(b),
+            (Value::IOError(a), Value::IOError(b)) => a.cmp(b),
             _ => std::cmp::Ordering::Equal,
         }
     }
@@ -474,6 +528,8 @@ impl<'a> Interpreter<'a> {
             Value::FilterIter(inner, item) => {
                 Value::FilterIter(Box::new(self.default_value_for(inner)), *item)
             }
+            Value::Random(_) => Value::Random(0),
+            Value::IOError(_) => Value::IOError(IOErrorKind::NotFound),
         }
     }
 
@@ -918,6 +974,18 @@ impl<'a> Interpreter<'a> {
                 named: BTreeMap::new(),
             }),
             Res::Builtin(Builtin::None) => Ok(Value::Option(None)),
+            Res::Builtin(Builtin::MathPi) => Ok(Value::Float(std::f64::consts::PI)),
+            Res::Builtin(Builtin::MathE) => Ok(Value::Float(std::f64::consts::E)),
+            Res::Builtin(Builtin::IOErrorNotFound) => Ok(Value::IOError(IOErrorKind::NotFound)),
+            Res::Builtin(Builtin::IOErrorPermissionDenied) => {
+                Ok(Value::IOError(IOErrorKind::PermissionDenied))
+            }
+            Res::Builtin(Builtin::IOErrorAlreadyExists) => {
+                Ok(Value::IOError(IOErrorKind::AlreadyExists))
+            }
+            Res::Builtin(Builtin::IOErrorInvalidInput) => {
+                Ok(Value::IOError(IOErrorKind::InvalidInput))
+            }
             _ => Err(RuntimeError::new(
                 "path is not a runtime value",
                 self.hir.expr(expr).span,
@@ -1315,7 +1383,9 @@ impl<'a> Interpreter<'a> {
                 let path = string_arg(args.pop(), span)?;
                 Ok(match std::fs::read_to_string(path) {
                     Ok(value) => Value::Result(Ok(Box::new(Value::String(value)))),
-                    Err(error) => Value::Result(Err(Box::new(Value::String(error.to_string())))),
+                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                        IOErrorKind::from_io_error(&error),
+                    )))),
                 })
             }
             Builtin::WriteFile => {
@@ -1326,8 +1396,92 @@ impl<'a> Interpreter<'a> {
                 let path = string_arg(args.pop(), span)?;
                 Ok(match std::fs::write(path, content) {
                     Ok(()) => Value::Result(Ok(Box::new(Value::Unit))),
-                    Err(error) => Value::Result(Err(Box::new(Value::String(error.to_string())))),
+                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                        IOErrorKind::from_io_error(&error),
+                    )))),
                 })
+            }
+            // -- Phase 4E: Math constants and functions --
+            Builtin::MathAbs => match args.pop() {
+                Some(Value::Int(value)) => value
+                    .checked_abs()
+                    .map(Value::Int)
+                    .ok_or_else(|| RuntimeError::new("integer overflow", span)),
+                Some(Value::Float(value)) => Ok(Value::Float(value.abs())),
+                _ => Err(RuntimeError::new("abs expects Int or Float", span)),
+            },
+            Builtin::MathMin | Builtin::MathMax => {
+                let b = args.pop();
+                let a = args.pop();
+                let ord = numeric_cmp(&a, &b, span)?;
+                let want = if builtin == Builtin::MathMin {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+                Ok(if ord == want || ord == std::cmp::Ordering::Equal {
+                    a.unwrap()
+                } else {
+                    b.unwrap()
+                })
+            }
+            Builtin::MathClamp => {
+                let max = args.pop();
+                let min = args.pop();
+                let value = args.pop();
+                if numeric_cmp(&value, &min, span)? == std::cmp::Ordering::Less {
+                    Ok(min.unwrap())
+                } else if numeric_cmp(&value, &max, span)? == std::cmp::Ordering::Greater {
+                    Ok(max.unwrap())
+                } else {
+                    Ok(value.unwrap())
+                }
+            }
+            Builtin::Pow => {
+                let exp = float_arg(args.pop(), span)?;
+                let base = float_arg(args.pop(), span)?;
+                Ok(Value::Float(base.powf(exp)))
+            }
+            Builtin::Atan2 => {
+                let x = float_arg(args.pop(), span)?;
+                let y = float_arg(args.pop(), span)?;
+                Ok(Value::Float(y.atan2(x)))
+            }
+            Builtin::Log => Ok(Value::Float(float_arg(args.pop(), span)?.ln())),
+            Builtin::Log10 => Ok(Value::Float(float_arg(args.pop(), span)?.log10())),
+            Builtin::Exp => Ok(Value::Float(float_arg(args.pop(), span)?.exp())),
+            Builtin::Sin => Ok(Value::Float(float_arg(args.pop(), span)?.sin())),
+            Builtin::Cos => Ok(Value::Float(float_arg(args.pop(), span)?.cos())),
+            Builtin::Tan => Ok(Value::Float(float_arg(args.pop(), span)?.tan())),
+            Builtin::Asin => Ok(Value::Float(float_arg(args.pop(), span)?.asin())),
+            Builtin::Acos => Ok(Value::Float(float_arg(args.pop(), span)?.acos())),
+            Builtin::Atan => Ok(Value::Float(float_arg(args.pop(), span)?.atan())),
+            Builtin::Floor => Ok(Value::Float(float_arg(args.pop(), span)?.floor())),
+            Builtin::Ceil => Ok(Value::Float(float_arg(args.pop(), span)?.ceil())),
+            Builtin::Round => Ok(Value::Float(float_arg(args.pop(), span)?.round())),
+            Builtin::Trunc => Ok(Value::Float(float_arg(args.pop(), span)?.trunc())),
+            // -- Phase 4E: stderr --
+            Builtin::Eprint => {
+                eprint!("{}", string_arg(args.pop(), span)?);
+                Ok(Value::Unit)
+            }
+            Builtin::Eprintln => {
+                eprintln!("{}", string_arg(args.pop(), span)?);
+                Ok(Value::Unit)
+            }
+            // -- Phase 4E: Random --
+            Builtin::RandomNew => Ok(Value::Random(u64_arg(args.pop(), span)?)),
+            // -- Phase 4E: IOError --
+            Builtin::IOErrorNotFound => Ok(Value::IOError(IOErrorKind::NotFound)),
+            Builtin::IOErrorPermissionDenied => Ok(Value::IOError(IOErrorKind::PermissionDenied)),
+            Builtin::IOErrorAlreadyExists => Ok(Value::IOError(IOErrorKind::AlreadyExists)),
+            Builtin::IOErrorInvalidInput => Ok(Value::IOError(IOErrorKind::InvalidInput)),
+            Builtin::IOErrorOther => Ok(Value::IOError(IOErrorKind::Other(string_arg(
+                args.pop(),
+                span,
+            )?))),
+            Builtin::MathPi | Builtin::MathE => {
+                Err(RuntimeError::new("PI/E are constants, not callable", span))
             }
             Builtin::TensorZeros
             | Builtin::TensorOnes
@@ -1623,6 +1777,9 @@ impl<'a> Interpreter<'a> {
                 | "any"
                 | "all"
                 | "find"
+                | "next_int"
+                | "next_float"
+                | "range"
         );
         if name == "get" {
             let receiver_place = self.core_receiver_place(base, span)?;
@@ -2256,6 +2413,46 @@ impl<'a> Interpreter<'a> {
                     span,
                 )),
             },
+            // Phase 4E: `Random` (simple LCG; MMIX/Knuth multiplier and
+            // increment — any full-period 64-bit LCG constants satisfy the
+            // spec's "simple linear congruential generator").
+            Value::Random(seed) => match name {
+                "next_int" => {
+                    *seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    Ok(Value::Int(*seed as i128))
+                }
+                "next_float" => {
+                    *seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    Ok(Value::Float(*seed as f64 / (u64::MAX as f64 + 1.0)))
+                }
+                "range" => {
+                    let min = match values.next() {
+                        Some(Value::Int(v)) => v,
+                        _ => return Err(RuntimeError::new("range expects Int32 min", span)),
+                    };
+                    let max = match values.next() {
+                        Some(Value::Int(v)) => v,
+                        _ => return Err(RuntimeError::new("range expects Int32 max", span)),
+                    };
+                    if max <= min {
+                        return Err(RuntimeError::new("Random::range requires max > min", span));
+                    }
+                    *seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    let span_size = (max - min) as u64;
+                    let offset = (*seed % span_size) as i128;
+                    Ok(Value::Int(min + offset))
+                }
+                _ => Err(RuntimeError::new(
+                    format!("unsupported Random method '{name}'"),
+                    span,
+                )),
+            },
             _ => Err(RuntimeError::new(
                 format!("method '{name}' is unavailable for this value"),
                 span,
@@ -2328,6 +2525,21 @@ impl<'a> Interpreter<'a> {
                     },
                 ) => Ok(item == actual && variant == actual_variant),
                 (Res::Builtin(Builtin::None), Value::Option(None)) => Ok(true),
+                (Res::Builtin(Builtin::IOErrorNotFound), Value::IOError(IOErrorKind::NotFound)) => {
+                    Ok(true)
+                }
+                (
+                    Res::Builtin(Builtin::IOErrorPermissionDenied),
+                    Value::IOError(IOErrorKind::PermissionDenied),
+                ) => Ok(true),
+                (
+                    Res::Builtin(Builtin::IOErrorAlreadyExists),
+                    Value::IOError(IOErrorKind::AlreadyExists),
+                ) => Ok(true),
+                (
+                    Res::Builtin(Builtin::IOErrorInvalidInput),
+                    Value::IOError(IOErrorKind::InvalidInput),
+                ) => Ok(true),
                 _ => Ok(false),
             },
             hir::PatKind::TupleVariant { res, pats, .. } => {
@@ -2349,6 +2561,12 @@ impl<'a> Interpreter<'a> {
                     }
                     (Res::Builtin(Builtin::Err), Value::Result(Err(value))) => {
                         vec![Some((**value).clone())]
+                    }
+                    (
+                        Res::Builtin(Builtin::IOErrorOther),
+                        Value::IOError(IOErrorKind::Other(msg)),
+                    ) => {
+                        vec![Some(Value::String(msg.clone()))]
                     }
                     _ => return Ok(false),
                 };
@@ -2863,7 +3081,9 @@ impl<'a> Interpreter<'a> {
             | Value::HashMapIter(..)
             | Value::HashSetIter(..)
             | Value::MapIter(..)
-            | Value::FilterIter(..) => false,
+            | Value::FilterIter(..)
+            | Value::Random(_)
+            | Value::IOError(_) => false,
         }
     }
 
@@ -3047,6 +3267,42 @@ fn usize_arg(value: Option<Value>, span: Span) -> Result<usize, RuntimeError> {
         Some(Value::Int(value)) => usize::try_from(value)
             .map_err(|_| RuntimeError::new("integer does not fit usize", span)),
         _ => Err(RuntimeError::new("expected integer argument", span)),
+    }
+}
+
+fn u64_arg(value: Option<Value>, span: Span) -> Result<u64, RuntimeError> {
+    match value {
+        Some(Value::Int(value)) => {
+            u64::try_from(value).map_err(|_| RuntimeError::new("integer does not fit u64", span))
+        }
+        _ => Err(RuntimeError::new("expected integer argument", span)),
+    }
+}
+
+fn float_arg(value: Option<Value>, span: Span) -> Result<f64, RuntimeError> {
+    match value {
+        Some(Value::Float(value)) => Ok(value),
+        _ => Err(RuntimeError::new("expected Float64 argument", span)),
+    }
+}
+
+/// Numeric comparison for `math::min`/`math::max`/`clamp` (`T: Ord`, Int or
+/// Float only — a narrower runtime scope than the unconstrained type
+/// variable these builtins get in `typecheck.rs`; see
+/// `docs/PHASE8_GRAMMAR_GAPS.md`'s note on `assert_eq`/`Eq` for the same
+/// pattern elsewhere).
+fn numeric_cmp(
+    a: &Option<Value>,
+    b: &Option<Value>,
+    span: Span,
+) -> Result<std::cmp::Ordering, RuntimeError> {
+    match (a, b) {
+        (Some(Value::Int(a)), Some(Value::Int(b))) => Ok(a.cmp(b)),
+        (Some(Value::Float(a)), Some(Value::Float(b))) => Ok(a.total_cmp(b)),
+        _ => Err(RuntimeError::new(
+            "expected two Int or two Float arguments",
+            span,
+        )),
     }
 }
 

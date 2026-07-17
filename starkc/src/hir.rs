@@ -92,6 +92,36 @@ pub enum Builtin {
     HashMapNew,
     HashMapWithCapacity,
     HashSetNew,
+    // -- Phase 4E: Math, Random, I/O (`06-Standard-Library.md`) --
+    MathPi,
+    MathE,
+    MathAbs,
+    MathMin,
+    MathMax,
+    MathClamp,
+    Pow,
+    Log,
+    Log10,
+    Exp,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Floor,
+    Ceil,
+    Round,
+    Trunc,
+    Eprint,
+    Eprintln,
+    RandomNew,
+    IOErrorNotFound,
+    IOErrorPermissionDenied,
+    IOErrorAlreadyExists,
+    IOErrorInvalidInput,
+    IOErrorOther,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -113,6 +143,8 @@ pub enum CoreType {
     Iter,
     MapIter,
     FilterIter,
+    Random,
+    IOError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
