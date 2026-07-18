@@ -113,9 +113,6 @@ impl InsertionMap {
     fn get(&self, key: &Value) -> Option<&Option<Value>> {
         self.position(key).map(|index| &self.0[index].1)
     }
-    fn get_mut(&mut self, key: &Value) -> Option<&mut Option<Value>> {
-        self.position(key).map(|index| &mut self.0[index].1)
-    }
     fn remove(&mut self, key: &Value) -> Option<Option<Value>> {
         self.position(key).map(|index| self.0.remove(index).1)
     }
@@ -519,7 +516,10 @@ fn write_sequence(
 enum Projection {
     Field(String),
     Index(usize),
-    MapKey(Value),
+    /// Stable entry position inside an insertion-ordered map. A live reference
+    /// prevents structural mutation, so the position cannot change while the
+    /// projection is usable.
+    MapIndex(usize),
 }
 
 #[derive(Clone, PartialEq)]
@@ -878,7 +878,16 @@ impl<'a> Interpreter<'a> {
             hir::ExprKind::Path { res, .. } => Ok(Flow::Value(self.eval_path(*res, expr_id)?)),
             hir::ExprKind::Unary { op, operand } => {
                 let value = match op {
-                    UnOp::Ref { .. } => Value::Ref(self.expr_place(*operand)?),
+                    UnOp::Ref { .. } => {
+                        let place = self.expr_place(*operand)?;
+                        // A range-index place is a synthetic slot containing a slice view.
+                        // The language value for `&base[a..b]` is the view itself, not a
+                        // reference to that synthetic slot (which dies with a method frame).
+                        match self.place_value(&place, expr.span)?.clone() {
+                            Value::Slice(base, start, end) => Value::Slice(base, start, end),
+                            _ => Value::Ref(place),
+                        }
+                    }
                     UnOp::Deref => {
                         let reference = self.expect_value(*operand)?;
                         let Value::Ref(place) = reference else {
@@ -1036,30 +1045,57 @@ impl<'a> Interpreter<'a> {
                 let iterable = self.expect_value(*iter)?;
                 match iterable {
                     Value::Range { .. } | Value::Array(_) | Value::Vec(_) | Value::Slice(..) => {
-                        for value in self.iter_values(iterable, expr.span)? {
+                        let mut remaining = self.iter_values(iterable, expr.span)?.into_iter();
+                        while let Some(value) = remaining.next() {
                             self.frame_mut().insert(*local, Some(value));
-                            match self.eval_block(*body)? {
+                            let flow = self.eval_block(*body)?;
+                            self.cleanup_locals(&[*local])?;
+                            match flow {
                                 Flow::Value(_) | Flow::Continue => {}
-                                Flow::Break(_) => break,
-                                flow => return Ok(flow),
+                                Flow::Break(value) => {
+                                    self.drop_value(value)?;
+                                    for value in remaining.rev() {
+                                        self.drop_value(value)?;
+                                    }
+                                    break;
+                                }
+                                flow => {
+                                    for value in remaining.rev() {
+                                        self.drop_value(value)?;
+                                    }
+                                    return Ok(flow);
+                                }
                             }
                         }
                     }
                     iterator => {
                         let iterator_place = self.promote_to_temp_place(iterator, expr.span)?;
+                        let mut escaped = None;
                         while let Some(value) =
                             self.next_for_iterator(&iterator_place, expr.span)?
                         {
                             self.frame_mut().insert(*local, Some(value));
-                            match self.eval_block(*body)? {
+                            let flow = self.eval_block(*body)?;
+                            self.cleanup_locals(&[*local])?;
+                            match flow {
                                 Flow::Value(_) | Flow::Continue => {}
-                                Flow::Break(_) => break,
-                                flow => return Ok(flow),
+                                Flow::Break(value) => {
+                                    self.drop_value(value)?;
+                                    break;
+                                }
+                                flow => {
+                                    escaped = Some(flow);
+                                    break;
+                                }
                             }
+                        }
+                        let iterator = self.take_place(&iterator_place, expr.span)?;
+                        self.drop_value(iterator)?;
+                        if let Some(flow) = escaped {
+                            return Ok(flow);
                         }
                     }
                 }
-                self.cleanup_locals(&[*local])?;
                 Ok(Flow::Value(Value::Unit))
             }
             hir::ExprKind::Block(block) => self.eval_block(*block),
@@ -1215,7 +1251,11 @@ impl<'a> Interpreter<'a> {
             // structural comparison remains exactly correct for them -- only struct/enum values
             // are looked up here. See COMPILER-STATE.md DEV-008.
             if let Some(nominal) = nominal_item(&left) {
-                if let Some(method) = self.find_method(Some(nominal), "eq", None) {
+                if let Some(method) = self.find_method(
+                    Some(nominal),
+                    "eq",
+                    Some(Res::CoreTrait(hir::CoreTrait::Eq)),
+                ) {
                     // WP-C2.2: `call_user_method` now takes a receiver *place* (DEV-034/035).
                     // `left` is already fully evaluated here; promote it to a temp place rather
                     // than re-resolving `lhs_expr`, which could re-run its side effects.
@@ -1245,7 +1285,11 @@ impl<'a> Interpreter<'a> {
             // `Ord::cmp`, just as equality above dispatches through `Eq::eq`. The type checker
             // has already required a matching `Ord` implementation.
             if let Some(nominal) = nominal_item(&left) {
-                if let Some(method) = self.find_method(Some(nominal), "cmp", None) {
+                if let Some(method) = self.find_method(
+                    Some(nominal),
+                    "cmp",
+                    Some(Res::CoreTrait(hir::CoreTrait::Ord)),
+                ) {
                     let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
                     let ordering =
                         self.call_user_method(method, receiver_place, left, vec![right], span)?;
@@ -1821,7 +1865,11 @@ impl<'a> Interpreter<'a> {
         let receiver_place = self.core_receiver_place(*first, span)?;
         let receiver = self.clone_place_value(&receiver_place, span)?;
         let method = self
-            .find_method(nominal_item(&receiver), &method_name, Some(trait_id))
+            .find_method(
+                nominal_item(&receiver),
+                &method_name,
+                Some(Res::Item(trait_id)),
+            )
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
         let values = rest
             .iter()
@@ -1835,7 +1883,7 @@ impl<'a> Interpreter<'a> {
         &self,
         nominal: Option<ItemId>,
         name: &str,
-        trait_filter: Option<ItemId>,
+        trait_filter: Option<Res>,
     ) -> Option<Callable> {
         // WP-C2.2 (DEV-026): inherent methods shadow trait methods of the same name
         // unconditionally (03-Type-System.md "Method Calls and Auto-Borrowing", rule 1).
@@ -1856,7 +1904,7 @@ impl<'a> Interpreter<'a> {
         &self,
         nominal: Option<ItemId>,
         name: &str,
-        trait_filter: Option<ItemId>,
+        trait_filter: Option<Res>,
         inherent_only: bool,
     ) -> Option<Callable> {
         let nominal = nominal?;
@@ -1873,9 +1921,9 @@ impl<'a> Interpreter<'a> {
             if inherent_only != trait_.is_none() {
                 return None;
             }
-            if trait_filter.is_some_and(|expected| {
-                !matches!(trait_, Some(reference) if reference.res == Res::Item(expected))
-            }) {
+            if trait_filter.is_some_and(
+                |expected| !matches!(trait_, Some(reference) if reference.res == expected),
+            ) {
                 return None;
             }
             if !matches!(
@@ -2055,6 +2103,198 @@ impl<'a> Interpreter<'a> {
         )
     }
 
+    /// Execute collection operations that either require language-level `Eq`
+    /// or discard owned values. They must run outside the generic `&mut
+    /// target` match so discarded values can be routed through `drop_value`.
+    fn call_collection_ownership_method(
+        &mut self,
+        receiver_place: &Place,
+        name: &str,
+        arguments: &mut Vec<Value>,
+        span: Span,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let snapshot = self.clone_place_value(receiver_place, span)?;
+        match snapshot {
+            Value::Vec(_) if name == "clear" => {
+                let removed = match self.place_value_mut(receiver_place, span)? {
+                    Value::Vec(values) => std::mem::take(values),
+                    _ => unreachable!(),
+                };
+                for value in removed.into_iter().rev().flatten() {
+                    self.drop_value(value)?;
+                }
+                Ok(Some(Value::Unit))
+            }
+            Value::HashMap(map) => {
+                let key = arguments.first().cloned();
+                let position = if let Some(key) = key.as_ref() {
+                    let keys = map.keys().cloned().collect::<Vec<_>>();
+                    self.language_position(&keys, key, span)?
+                } else {
+                    None
+                };
+                match name {
+                    "get" | "get_mut" => {
+                        let Some(index) = position else {
+                            return Ok(Some(Value::Option(None)));
+                        };
+                        let mut place = receiver_place.clone();
+                        place.projections.push(Projection::MapIndex(index));
+                        Ok(Some(Value::Option(Some(Box::new(Value::Ref(place))))))
+                    }
+                    "insert" => {
+                        if arguments.len() < 2 {
+                            return Err(RuntimeError::new(
+                                "HashMap::insert expects key and value",
+                                span,
+                            ));
+                        }
+                        let key = arguments.remove(0);
+                        let value = arguments.remove(0);
+                        if let Some(index) = position {
+                            let old = match self.place_value_mut(receiver_place, span)? {
+                                Value::HashMap(map) => map.0[index].1.replace(value),
+                                _ => unreachable!(),
+                            };
+                            // The stored key remains; ownership of the newly supplied equal key
+                            // is consumed by the call and must be destroyed.
+                            self.drop_value(key)?;
+                            Ok(Some(Value::Option(old.map(Box::new))))
+                        } else {
+                            match self.place_value_mut(receiver_place, span)? {
+                                Value::HashMap(map) => map.0.push((key, Some(value))),
+                                _ => unreachable!(),
+                            }
+                            Ok(Some(Value::Option(None)))
+                        }
+                    }
+                    "remove" => {
+                        let Some(index) = position else {
+                            return Ok(Some(Value::Option(None)));
+                        };
+                        let (stored_key, value) =
+                            match self.place_value_mut(receiver_place, span)? {
+                                Value::HashMap(map) => map.0.remove(index),
+                                _ => unreachable!(),
+                            };
+                        self.drop_value(stored_key)?;
+                        Ok(Some(Value::Option(value.map(Box::new))))
+                    }
+                    "contains_key" => Ok(Some(Value::Bool(position.is_some()))),
+                    "clear" => {
+                        let removed = match self.place_value_mut(receiver_place, span)? {
+                            Value::HashMap(map) => std::mem::take(&mut map.0),
+                            _ => unreachable!(),
+                        };
+                        for (key, value) in removed.into_iter().rev() {
+                            if let Some(value) = value {
+                                self.drop_value(value)?;
+                            }
+                            self.drop_value(key)?;
+                        }
+                        Ok(Some(Value::Unit))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            Value::HashSet(set) => {
+                let value = arguments.first().cloned();
+                let position = if let Some(value) = value.as_ref() {
+                    self.language_position(&set.0, value, span)?
+                } else {
+                    None
+                };
+                match name {
+                    "insert" => {
+                        if arguments.is_empty() {
+                            return Err(RuntimeError::new("HashSet::insert expects value", span));
+                        }
+                        let value = arguments.remove(0);
+                        if position.is_some() {
+                            self.drop_value(value)?;
+                            Ok(Some(Value::Bool(false)))
+                        } else {
+                            match self.place_value_mut(receiver_place, span)? {
+                                Value::HashSet(set) => set.0.push(value),
+                                _ => unreachable!(),
+                            }
+                            Ok(Some(Value::Bool(true)))
+                        }
+                    }
+                    "remove" => {
+                        let Some(index) = position else {
+                            return Ok(Some(Value::Bool(false)));
+                        };
+                        let stored = match self.place_value_mut(receiver_place, span)? {
+                            Value::HashSet(set) => set.0.remove(index),
+                            _ => unreachable!(),
+                        };
+                        self.drop_value(stored)?;
+                        Ok(Some(Value::Bool(true)))
+                    }
+                    "contains" => Ok(Some(Value::Bool(position.is_some()))),
+                    "clear" => {
+                        let removed = match self.place_value_mut(receiver_place, span)? {
+                            Value::HashSet(set) => std::mem::take(&mut set.0),
+                            _ => unreachable!(),
+                        };
+                        for value in removed.into_iter().rev() {
+                            self.drop_value(value)?;
+                        }
+                        Ok(Some(Value::Unit))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn language_position(
+        &mut self,
+        values: &[Value],
+        needle: &Value,
+        span: Span,
+    ) -> Result<Option<usize>, RuntimeError> {
+        for (index, value) in values.iter().enumerate() {
+            if self.language_equal(value.clone(), needle.clone(), span)? {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
+    fn language_equal(
+        &mut self,
+        left: Value,
+        right: Value,
+        span: Span,
+    ) -> Result<bool, RuntimeError> {
+        let left = self.deref_value(left, span)?;
+        let right = self.deref_value(right, span)?;
+        if let Some(nominal) = nominal_item(&left) {
+            if let Some(method) = self.find_method(
+                Some(nominal),
+                "eq",
+                Some(Res::CoreTrait(hir::CoreTrait::Eq)),
+            ) {
+                let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
+                let argument_place = self.promote_to_temp_place(right, span)?;
+                return match self.call_user_method(
+                    method,
+                    receiver_place,
+                    left,
+                    vec![Value::Ref(argument_place)],
+                    span,
+                )? {
+                    Value::Bool(value) => Ok(value),
+                    _ => Err(RuntimeError::new("Eq::eq must return Bool", span)),
+                };
+            }
+        }
+        Ok(left == right)
+    }
+
     fn call_core_method(
         &mut self,
         expr_id: Option<ExprId>,
@@ -2069,15 +2309,21 @@ impl<'a> Interpreter<'a> {
         // arguments first and resolved the receiver lazily inside each method-name branch
         // (also re-resolving it — and re-running index subexpressions — once per use).
         let receiver_place = self.core_receiver_place(base, span)?;
-        let mut values = args
+        let mut arguments = args
             .iter()
             .map(|arg| self.expect_value(*arg))
             .collect::<Result<Vec<_>, _>>()?;
-        if (name == "remove" || name == "contains_key" || name == "contains") && !values.is_empty()
+        if (name == "remove" || name == "contains_key" || name == "contains")
+            && !arguments.is_empty()
         {
-            values[0] = self.deref_value(values[0].clone(), span)?;
+            arguments[0] = self.deref_value(arguments[0].clone(), span)?;
         }
-        let mut values = values.into_iter();
+        if let Some(result) =
+            self.call_collection_ownership_method(&receiver_place, name, &mut arguments, span)?
+        {
+            return Ok(result);
+        }
+        let mut values = arguments.into_iter();
         let mutating = matches!(
             name,
             "push"
@@ -2140,12 +2386,12 @@ impl<'a> Interpreter<'a> {
                         .ok_or_else(|| RuntimeError::new("expected key argument", span))?;
                     let key = self.deref_value(key_arg, span)?;
                     let mut place = receiver_place;
-                    place.projections.push(Projection::MapKey(key.clone()));
-                    return Ok(Value::Option(if map.contains_key(&key) {
-                        Some(Box::new(Value::Ref(place)))
-                    } else {
-                        None
-                    }));
+                    let keys = map.keys().cloned().collect::<Vec<_>>();
+                    let position = self.language_position(&keys, &key, span)?;
+                    if let Some(index) = position {
+                        place.projections.push(Projection::MapIndex(index));
+                    }
+                    return Ok(Value::Option(position.map(|_| Box::new(Value::Ref(place)))));
                 }
                 _ => {
                     let index = usize_arg(values.next(), span)?;
@@ -2169,12 +2415,12 @@ impl<'a> Interpreter<'a> {
                         .ok_or_else(|| RuntimeError::new("expected key argument", span))?;
                     let key = self.deref_value(key_arg, span)?;
                     let mut place = receiver_place;
-                    place.projections.push(Projection::MapKey(key.clone()));
-                    return Ok(Value::Option(if map.contains_key(&key) {
-                        Some(Box::new(Value::Ref(place)))
-                    } else {
-                        None
-                    }));
+                    let keys = map.keys().cloned().collect::<Vec<_>>();
+                    let position = self.language_position(&keys, &key, span)?;
+                    if let Some(index) = position {
+                        place.projections.push(Projection::MapIndex(index));
+                    }
+                    return Ok(Value::Option(position.map(|_| Box::new(Value::Ref(place)))));
                 }
                 _ => {
                     let index = usize_arg(values.next(), span)?;
@@ -2271,22 +2517,41 @@ impl<'a> Interpreter<'a> {
                                 pair[1] = Some(v);
                             }
                         }
-                        let coll_mut = self.place_value_mut(&place, span)?;
-                        match coll_mut {
-                            Value::Vec(ref mut items) => {
+                        match self.clone_place_value(&place, span)? {
+                            Value::Vec(_) => {
+                                let Value::Vec(items) = self.place_value_mut(&place, span)? else {
+                                    unreachable!()
+                                };
                                 items.push(Some(deref_val));
                             }
-                            Value::HashMap(ref mut map) => {
-                                if let Value::Tuple(pair) = &deref_val {
-                                    if pair.len() == 2 {
-                                        let k = pair[0].clone().unwrap_or(Value::Unit);
-                                        let v = pair[1].clone().unwrap_or(Value::Unit);
-                                        map.insert(k, Some(v));
-                                    }
+                            Value::HashMap(_) => {
+                                let Value::Tuple(mut pair) = deref_val else {
+                                    continue;
+                                };
+                                if pair.len() == 2 {
+                                    let key = pair[0].take().unwrap_or(Value::Unit);
+                                    let value = pair[1].take().unwrap_or(Value::Unit);
+                                    let mut arguments = vec![key, value];
+                                    let returned = self
+                                        .call_collection_ownership_method(
+                                            &place,
+                                            "insert",
+                                            &mut arguments,
+                                            span,
+                                        )?
+                                        .expect("HashMap insert is handled");
+                                    // `extend` does not expose a replaced value.
+                                    self.drop_value(returned)?;
                                 }
                             }
-                            Value::HashSet(ref mut set) => {
-                                set.insert(deref_val);
+                            Value::HashSet(_) => {
+                                let mut arguments = vec![deref_val];
+                                self.call_collection_ownership_method(
+                                    &place,
+                                    "insert",
+                                    &mut arguments,
+                                    span,
+                                )?;
                             }
                             _ => {}
                         }
@@ -2363,7 +2628,12 @@ impl<'a> Interpreter<'a> {
             if is_hashset {
                 let mut set = InsertionSet::new();
                 for x in items.into_iter().flatten() {
-                    set.insert(self.deref_value(x, span)?);
+                    let value = self.deref_value(x, span)?;
+                    if self.language_position(&set.0, &value, span)?.is_some() {
+                        self.drop_value(value)?;
+                    } else {
+                        set.0.push(value);
+                    }
                 }
                 return Ok(Value::HashSet(set));
             } else if is_hashmap || is_all_pairs {
@@ -2372,7 +2642,16 @@ impl<'a> Interpreter<'a> {
                     if let Some(Value::Tuple(p)) = item {
                         let k = self.deref_value(p[0].clone().unwrap_or(Value::Unit), span)?;
                         let v = self.deref_value(p[1].clone().unwrap_or(Value::Unit), span)?;
-                        map.insert(k, Some(v));
+                        let keys = map.keys().cloned().collect::<Vec<_>>();
+                        if let Some(index) = self.language_position(&keys, &k, span)? {
+                            let old = map.0[index].1.replace(v);
+                            self.drop_value(k)?;
+                            if let Some(old) = old {
+                                self.drop_value(old)?;
+                            }
+                        } else {
+                            map.0.push((k, Some(v)));
+                        }
                     }
                 }
                 return Ok(Value::HashMap(map));
@@ -2654,7 +2933,7 @@ impl<'a> Interpreter<'a> {
                     vector.clear();
                     Ok(Value::Unit)
                 }
-                "as_slice" => Ok(Value::Array(vector.clone())),
+                "as_slice" => Ok(Value::Slice(receiver_place.clone(), 0, vector.len())),
                 _ => Err(RuntimeError::new(
                     format!("unsupported Vec method '{name}'"),
                     span,
@@ -3182,7 +3461,11 @@ impl<'a> Interpreter<'a> {
         let current = self.clone_place_value(iterator_place, span)?;
         let next = if nominal_item(&current).is_some() {
             let method = self
-                .find_method(nominal_item(&current), "next", None)
+                .find_method(
+                    nominal_item(&current),
+                    "next",
+                    Some(Res::CoreTrait(hir::CoreTrait::Iterator)),
+                )
                 .ok_or_else(|| RuntimeError::new("value is not iterable", span))?;
             self.call_user_method(method, iterator_place.clone(), current, Vec::new(), span)?
         } else {
@@ -3776,6 +4059,19 @@ impl<'a> Interpreter<'a> {
             Value::Result(result) => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
                 Ok(child) | Err(child) => self.drop_value(*child)?,
             },
+            Value::HashMap(map) => {
+                for (key, child) in std::mem::take(&mut map.0).into_iter().rev() {
+                    if let Some(child) = child {
+                        self.drop_value(child)?;
+                    }
+                    self.drop_value(key)?;
+                }
+            }
+            Value::HashSet(set) => {
+                for child in std::mem::take(&mut set.0).into_iter().rev() {
+                    self.drop_value(child)?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -3925,7 +4221,9 @@ fn project<'a>(value: &'a Value, projection: &Projection) -> Option<&'a Option<V
             | Value::HashSetIter(values, _),
             Projection::Index(index),
         ) => values.get(*index),
-        (Value::HashMap(map), Projection::MapKey(key)) => map.get(key),
+        (Value::HashMap(map), Projection::MapIndex(index)) => {
+            map.0.get(*index).map(|(_, value)| value)
+        }
         _ => None,
     }
 }
@@ -3944,7 +4242,9 @@ fn project_mut<'a>(value: &'a mut Value, projection: &Projection) -> Option<&'a 
             | Value::HashSetIter(values, _),
             Projection::Index(index),
         ) => values.get_mut(*index),
-        (Value::HashMap(map), Projection::MapKey(key)) => map.get_mut(key),
+        (Value::HashMap(map), Projection::MapIndex(index)) => {
+            map.0.get_mut(*index).map(|(_, value)| value)
+        }
         _ => None,
     }
 }
@@ -4479,6 +4779,180 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "4\n5\nnext\n1\nnext\n2\nnext\n3\nnext\n");
+    }
+
+    #[test]
+    fn language_protocols_ignore_same_named_inherent_methods() {
+        let execution = execute(
+            "struct Always { tag: Int32 } \
+             impl Eq for Always { fn eq(&self, other: &Always) -> Bool { true } } \
+             impl Always { fn eq(&self, other: &Always) -> Bool { false } } \
+             struct Point { x: Int32 } \
+             impl Ord for Point { \
+                 fn cmp(&self, other: &Point) -> Ordering { \
+                     if self.x < other.x { Ordering::Less } \
+                     else if self.x > other.x { Ordering::Greater } \
+                     else { Ordering::Equal } \
+                 } \
+             } \
+             impl Point { fn cmp(&self, other: &Point) -> Ordering { Ordering::Greater } } \
+             struct Counter { n: Int32 } \
+             impl Iterator for Counter { \
+                 type Item = Int32; \
+                 fn next(&mut self) -> Option<Int32> { \
+                     if self.n < 2 { self.n += 1; Some(self.n) } else { None } \
+                 } \
+             } \
+             impl Counter { fn next(&mut self) -> Option<Int32> { None } } \
+             fn main() { \
+                 println(Always { tag: 1 } == Always { tag: 2 }); \
+                 println(Point { x: 1 } < Point { x: 2 }); \
+                 for value in (Counter { n: 0 }) { println(value); } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\ntrue\n1\n2\n");
+    }
+
+    #[test]
+    fn for_loop_drops_each_binding_and_unconsumed_tail() {
+        let execution = execute(
+            "struct Loud { label: String, stop: Bool } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn all() { \
+                 let mut values: Vec<Loud> = Vec::new(); \
+                 values.push(Loud { label: String::from(\"first\"), stop: false }); \
+                 values.push(Loud { label: String::from(\"second\"), stop: false }); \
+                 for value in values { println(\"body\"); } \
+             } \
+             fn early() { \
+                 let mut values: Vec<Loud> = Vec::new(); \
+                 values.push(Loud { label: String::from(\"one\"), stop: true }); \
+                 values.push(Loud { label: String::from(\"two\"), stop: false }); \
+                 values.push(Loud { label: String::from(\"three\"), stop: false }); \
+                 for value in values { if value.stop { break; } } \
+             } \
+             fn main() { all(); early(); }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output,
+            "body\nfirst\nbody\nsecond\none\nthree\ntwo\n"
+        );
+    }
+
+    #[test]
+    fn collection_discard_paths_run_stark_destructors() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             impl Eq for Loud { fn eq(&self, other: &Loud) -> Bool { false } } \
+             impl Hash for Loud { fn hash(&self) -> UInt64 { 0u64 } } \
+             fn main() { \
+                 { \
+                     let mut values: Vec<Loud> = Vec::new(); \
+                     values.push(Loud { label: String::from(\"vec-clear\") }); \
+                     values.clear(); \
+                 } \
+                 { \
+                     let mut map: HashMap<Int32, Loud> = HashMap::new(); \
+                     map.insert(1, Loud { label: String::from(\"map-clear\") }); \
+                     map.clear(); \
+                 } \
+                 { \
+                     let mut map: HashMap<Int32, Loud> = HashMap::new(); \
+                     map.insert(1, Loud { label: String::from(\"map-scope\") }); \
+                 } \
+                 { \
+                     let mut set: HashSet<Loud> = HashSet::new(); \
+                     set.insert(Loud { label: String::from(\"set-scope\") }); \
+                 } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output,
+            "vec-clear\nmap-clear\nmap-scope\nset-scope\n"
+        );
+    }
+
+    #[test]
+    fn collection_replacement_and_removal_drop_consumed_keys() {
+        let execution = execute(
+            "struct Key { label: String } \
+             impl Eq for Key { fn eq(&self, other: &Key) -> Bool { true } } \
+             impl Hash for Key { fn hash(&self) -> UInt64 { 0u64 } } \
+             impl Drop for Key { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 { \
+                     let mut map: HashMap<Key, Int32> = HashMap::new(); \
+                     map.insert(Key { label: String::from(\"map-stored\") }, 1); \
+                     map.insert(Key { label: String::from(\"map-duplicate\") }, 2); \
+                     map.remove(&Key { label: String::from(\"map-probe\") }); \
+                 } \
+                 { \
+                     let mut set: HashSet<Key> = HashSet::new(); \
+                     set.insert(Key { label: String::from(\"set-stored\") }); \
+                     set.insert(Key { label: String::from(\"set-duplicate\") }); \
+                     set.remove(&Key { label: String::from(\"set-probe\") }); \
+                 } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output,
+            "map-duplicate\nmap-stored\nset-duplicate\nset-stored\n"
+        );
+    }
+
+    #[test]
+    fn returned_range_and_vec_as_slice_are_borrowed_views() {
+        let execution = execute(
+            "struct Buffer { values: Vec<Int32> } \
+             impl Buffer { fn tail(&self) -> &[Int32] { &self.values[1..3] } } \
+             struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 let mut numbers: Vec<Int32> = Vec::new(); \
+                 numbers.push(10); numbers.push(20); numbers.push(30); \
+                 let buffer = Buffer { values: numbers }; \
+                 let tail = buffer.tail(); \
+                 println(tail[0]); \
+                 let mut values: Vec<Loud> = Vec::new(); \
+                 values.push(Loud { label: String::from(\"once\") }); \
+                 let slice = values.as_slice(); \
+                 println(slice.len()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "20\n1\nonce\n");
+    }
+
+    #[test]
+    fn hash_collections_use_language_eq_for_keys() {
+        let execution = execute(
+            "struct Key { id: Int32 } \
+             impl Eq for Key { fn eq(&self, other: &Key) -> Bool { true } } \
+             impl Hash for Key { fn hash(&self) -> UInt64 { 0u64 } } \
+             fn main() { \
+                 let mut map: HashMap<Key, Int32> = HashMap::new(); \
+                 map.insert(Key { id: 1 }, 10); \
+                 map.insert(Key { id: 2 }, 20); \
+                 println(map.len()); \
+                 println(map.contains_key(&Key { id: 99 })); \
+                 match map.get_mut(&Key { id: 75 }) { \
+                     Some(value) => { *value = 30; } \
+                     None => {} \
+                 } \
+                 println(*map.get(&Key { id: 50 }).unwrap()); \
+                 let mut set: HashSet<Key> = HashSet::new(); \
+                 println(set.insert(Key { id: 1 })); \
+                 println(set.insert(Key { id: 2 })); \
+                 println(set.contains(&Key { id: 99 })); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "1\ntrue\n30\ntrue\nfalse\ntrue\n");
     }
 
     /// WP-C2.2 (DEV-028): range indexing in a place context creates a slice view. Reads and

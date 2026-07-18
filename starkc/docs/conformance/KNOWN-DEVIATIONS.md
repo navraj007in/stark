@@ -929,9 +929,10 @@ WP-C1.5)
   manifest.toml`'s own triage data (machine-readable, structured) — route the exemption through
   that data (e.g. a test-harness-only flag passed explicitly for that one fixture) rather than a
   runtime string-match against arbitrary file paths that can collide with real user projects.
-- **Owning gate:** unscheduled. Found during the WP-C2.1 correction pass (external review); not a
+- **Owning gate:** WP-C2.6. Found during the WP-C2.1 correction pass (external review); not a
   new bug (present since WP-C1.1's DEV-014 fix), but its residual risk to real user projects was
-  not previously flagged or recorded as its own deviation.
+  not previously flagged or recorded as its own deviation. Scheduled by the WP-C2.2 correction
+  pass alongside the differential corpus's multi-file hardening coverage.
 
 ## DEV-037 — Runtime field/index projection did not auto-dereference references (RESOLVED in WP-C2.2)
 
@@ -945,6 +946,82 @@ WP-C1.5)
   reference chain before appending the projection. Regression:
   `interp::tests::field_access_through_reference_auto_derefs`.
 - **Owning gate:** found and closed in WP-C2.2.
+
+## DEV-038 — Operator and iterator protocols used unqualified method lookup (RESOLVED in WP-C2.2 correction pass)
+
+- **Normative expectation:** `==` invokes `Eq::eq`, ordering operators invoke `Ord::cmp`, and
+  `for` advances through `Iterator::next`; an unrelated inherent method with the same name
+  cannot replace a named trait protocol.
+- **Original behaviour:** all three runtime paths called `find_method(..., None)`. Because
+  ordinary method lookup correctly prefers inherent methods, inherent `eq`, `cmp`, or `next`
+  methods hijacked the language protocols.
+- **Resolution:** protocol paths pass the corresponding `Res::CoreTrait` identity into method
+  lookup; ordinary source calls retain inherent-first behavior. Regression:
+  `interp::tests::language_protocols_ignore_same_named_inherent_methods`.
+- **Owning gate:** found by post-WP-C2.2 external review and closed in the WP-C2.2 correction
+  pass.
+
+## DEV-039 — `for` bindings and unconsumed tails skipped observable destruction (RESOLVED in WP-C2.2 correction pass)
+
+- **Normative expectation:** every owned loop binding is destroyed at its iteration boundary,
+  including `continue`, `break`, `return`, and `?` exits; values remaining in a consumed
+  iterable are also destroyed exactly once.
+- **Original behaviour:** each iteration overwrote the same frame slot and cleaned it only
+  after the loop, so only the final binding ran its STARK destructor. Breaking or escaping also
+  let the host drop the unconsumed iterator tail without STARK destruction.
+- **Resolution:** every body result is followed by explicit binding cleanup, remaining direct
+  iterable values are destroyed on early exit, and promoted iterator owners are destroyed when
+  the loop ends. Regression: `interp::tests::for_loop_drops_each_binding_and_unconsumed_tail`.
+- **Owning gate:** found by post-WP-C2.2 external review and closed in the correction pass.
+
+## DEV-040 — Collection discard paths bypassed STARK destructors (RESOLVED in WP-C2.2 correction pass)
+
+- **Normative expectation:** container destruction and ownership-discarding operations run each
+  contained value's language-level destructor exactly once.
+- **Original behaviour:** `drop_value` had no `HashMap`/`HashSet` recursion; `Vec::clear`,
+  map/set clear, removed stored keys/elements, and duplicate/replacement inputs were discarded
+  by Rust rather than the STARK `Drop` protocol.
+- **Resolution:** container destruction recursively drains owned entries, clear operations
+  extract and destroy contents, and replacement/removal paths explicitly destroy consumed keys
+  and elements outside active collection borrows. Regressions:
+  `collection_discard_paths_run_stark_destructors` and
+  `collection_replacement_and_removal_drop_consumed_keys`.
+- **Owning gate:** found by post-WP-C2.2 external review and closed in the correction pass.
+
+## DEV-041 — Returned range-slice references targeted a popped temporary (RESOLVED in WP-C2.2 correction pass)
+
+- **Normative expectation:** `&self.values[a..b]` returned from a borrowing method remains a
+  live view into the caller-owned receiver.
+- **Original behaviour:** range indexing promoted a `Value::Slice` into a method-frame temporary,
+  then `&` returned a reference to that temporary. Receiver rebasing correctly ignored the
+  non-receiver local, and the caller trapped with "dangling reference."
+- **Resolution:** taking a reference to a range-index place returns the slice view itself, whose
+  base place is rebased through the receiver. Regression:
+  `interp::tests::returned_range_and_vec_as_slice_are_borrowed_views`.
+- **Owning gate:** found by post-WP-C2.2 external review and closed in the correction pass.
+
+## DEV-042 — `Vec::as_slice` cloned elements instead of borrowing (RESOLVED in WP-C2.2 correction pass)
+
+- **Normative expectation:** `Vec::as_slice(&self) -> &[T]` returns a view of the original
+  vector and does not clone or acquire ownership of its elements.
+- **Original behaviour:** the interpreter returned `Value::Array(vector.clone())`, causing
+  observable double destruction for `Drop` elements.
+- **Resolution:** `as_slice` returns a `Value::Slice` over the already-resolved vector place.
+  Regression: `interp::tests::returned_range_and_vec_as_slice_are_borrowed_views`.
+- **Owning gate:** found by post-WP-C2.2 external review and closed in the correction pass.
+
+## DEV-043 — Hash collections used structural host equality for keys (RESOLVED in WP-C2.2 correction pass)
+
+- **Normative expectation:** `HashMap<K, V>` and `HashSet<T>` key identity follows the
+  language-level `Eq` implementation required by their public bounds.
+- **Original behaviour:** insertion-ordered collection lookup used derived Rust equality over
+  `Value`, so custom `Eq::eq` implementations were ignored by insert/get/contains/remove and
+  duplicate detection.
+- **Resolution:** collection lookup invokes trait-qualified `Eq::eq`; map references use a
+  stable insertion index rather than repeating structural lookup. Insert, lookup, removal,
+  extend, and collect paths share the language relation. Regression:
+  `interp::tests::hash_collections_use_language_eq_for_keys`.
+- **Owning gate:** found by post-WP-C2.2 external review and closed in the correction pass.
 
 ## Informational (not owned deviations)
 
@@ -995,11 +1072,12 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 35 numbered deviations total (DEV-002 through DEV-037, DEV-001/DEV-003 retired).
+Current count: 41 numbered deviations total (DEV-002 through DEV-043, DEV-001/DEV-003 retired).
 DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was found and repaired
-during that work. DEV-017 remains partially closed (tooling built, 39 of 59 rules remain
-unclassified). DEV-036 remains open and unscheduled because it is a parser/test-harness
-exemption issue outside interpreter semantic repair. The optional candidates DEV-009, DEV-023,
-and DEV-024 also remain open; WP-C2.2's charter explicitly admitted those only "as capacity
-allows," and none was needed to close the ten inherited interpreter-execution findings.
+during that work. DEV-038 through DEV-043 were found by the post-WP-C2.2 review and closed in
+the correction pass. DEV-017 remains partially closed (tooling built, 39 of 59 rules remain
+unclassified). DEV-036 remains open, now explicitly owned by WP-C2.6 as a parser-loader
+hardening regression in the differential corpus. The optional candidates DEV-009, DEV-023, and
+DEV-024 also remain open; WP-C2.2's charter explicitly admitted those only "as capacity allows,"
+and none was needed to close the inherited interpreter-execution findings.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).

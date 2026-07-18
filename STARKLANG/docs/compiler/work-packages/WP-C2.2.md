@@ -3,10 +3,11 @@
 Gate: C2 (Reference Execution Semantics and Compiler Service Foundation). Extracted verbatim in
 scope from `STARKLANG/docs/compiler/COMPILER-ROADMAP.md`.
 
-Status: **Completed 2026-07-18.** All ten inherited owned findings (DEV-026 through DEV-035) are
-closed with regression coverage; adjacent DEV-037 was found and closed in the same work. The
-explicitly optional candidates DEV-009/023/024 remain open, and parser-owned DEV-036 remains out
-of scope. See `COMPILER-STATE.md` for evidence and the next work package.
+Status: **Completed 2026-07-18; correction pass completed 2026-07-18.** All ten inherited owned
+findings (DEV-026 through DEV-035) and adjacent DEV-037 are closed. A post-completion review
+found six additional runtime defects, recorded and closed as DEV-038 through DEV-043 with
+establishing regressions. The explicitly optional candidates DEV-009/023/024 remain open.
+Parser-owned DEV-036 remains outside this interpreter WP and is scheduled to WP-C2.6.
 
 ## Scope
 
@@ -99,5 +100,5 @@ if it grows beyond a local change).
 
 ## Execution log
 
-See `COMPILER-STATE.md` session record `### WP-C2.2` for dated evidence, files touched, and
-decisions.
+See `COMPILER-STATE.md` session records `### WP-C2.2` and
+`### WP-C2.2 correction pass` for dated evidence, files touched, and decisions.

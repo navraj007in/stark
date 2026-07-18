@@ -437,6 +437,9 @@ CLI text output and LSP publication must derive from this form.
 
 ### WP-C2.6 — Differential interpreter corpus
 
+Close DEV-036 by replacing filename-based missing-module suppression with an explicit
+test-harness/conformance input mode and permanent real-project collision regressions.
+
 Build a generated and hand-written corpus that stresses:
 
 - every expression and statement form;

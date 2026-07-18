@@ -1,5 +1,5 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.3 (shared project-analysis entry point)
+Updated: 2026-07-18 after WP-C2.2 correction pass
 
 ## Position
 Gate: C2  Next: WP-C2.4  Blocked: none
@@ -8,8 +8,8 @@ starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=bloc
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head before this uncommitted WP: `79177d3327a6` (`complete WP-C2.2 interpreter semantic
-  repair`). Commit only on explicit user request, per standing workflow.
+- Head before this uncommitted correction pass: `f419b5c` (`complete WP-C2.3 shared project
+  analysis`). Commit only on explicit user request, per standing workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -17,7 +17,7 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **461 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  **467 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 29 integration-test files**
   (`ls starkc/tests/*.rs | wc -l`, re-counted directly during WP-C1.6's consistency sweep — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
@@ -1916,4 +1916,40 @@ partially evidenced rules, unchanged by this architecture-only WP.
 FOLLOW-UP: WP-C2.4 should build position/definition/reference/type queries on `QueryHandle` and
 `SymbolIndex`; it must not persist or expose raw arena indexes. Rich multi-span diagnostic
 transport remains WP-C2.5.
+NEXT: WP-C2.4 (position and symbol query infrastructure)
+
+### WP-C2.2 correction pass — 2026-07-18
+DONE: Reopened WP-C2.2 after external source review, independently reproduced all six reported
+runtime defects against `79177d33`/the current interpreter, recorded them as DEV-038 through
+DEV-043, and closed each with its establishing regression. `Eq`, `Ord`, and `Iterator` protocol
+execution is now trait-qualified while ordinary calls remain inherent-first (DEV-038). `for`
+destroys every binding at its iteration boundary, destroys unconsumed direct tails, and cleans
+promoted iterator owners across `break`, `continue`, `return`, and propagation (DEV-039).
+`HashMap`/`HashSet` destruction and ownership-discarding collection operations now route
+contents, removed entries, duplicate inputs, and replacement keys through STARK `Drop`
+(DEV-040). Returned range slices carry the receiver-backed slice view rather than a reference
+to a popped synthetic local (DEV-041), and `Vec::as_slice` returns the same borrowed view model
+instead of a cloned array (DEV-042). Hash collection lookup/insertion/removal/extend/collect use
+the key type's trait-qualified language `Eq`, with stable entry-index projections for returned
+map references (DEV-043).
+FILES: starkc/src/interp.rs, starkc/docs/conformance/KNOWN-DEVIATIONS.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.2.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md, COMPILER-STATE.md.
+RULES: none — the correction repairs runtime behavior against existing operator, iterator,
+borrowed-slice, collection-bound, and exactly-once destruction rules; conformance database
+citations are unchanged.
+DECISIONS: none. Collection destruction uses reverse stored/insertion order where the spec does
+not separately prescribe container-internal order, matching aggregate reverse-order behavior.
+Map value references now project by insertion index; live borrows already forbid structural
+mutation, so that index is stable for the reference lifetime. DEV-036 is explicitly scheduled
+to WP-C2.6 rather than left unscheduled.
+EVIDENCE: REG + FULL — six new focused interpreter regressions cover trait-protocol shadowing,
+per-iteration and early-exit destruction, collection clear/scope/replacement/removal
+destruction, returned range views and `Vec::as_slice`, and custom-`Eq` map/set behavior.
+`cargo test --workspace --all-targets --all-features`: 467 passed/0 failed/2 ignored (up from
+461/0/2). `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D
+warnings`, and `git diff --check` are clean; `scripts/check-conformance.py` exits 0 at 53/59
+implemented or partially evidenced rules, unchanged by this runtime correction.
+FOLLOW-UP: DEV-036 is owned by WP-C2.6. Optional DEV-009/023/024 remain open under their prior
+dispositions. C2.3 remains complete and unchanged by this correction.
 NEXT: WP-C2.4 (position and symbol query infrastructure)
