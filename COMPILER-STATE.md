@@ -1,5 +1,5 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.11
+Updated: 2026-07-18 after the post-WP-C2.11 correction pass (DEV-044 through DEV-050)
 
 ## Position
 Gate: C2  Next: WP-C2.12  Blocked: none
@@ -8,10 +8,14 @@ starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=bloc
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: WP-C2.11 implementation alignment and adversarial conformance.
-- Transition base commit: `88b509e` (`correct C2.8 and C2.9 semantic freeze`).
-- Current committed head at the start of WP-C2.11: `88b509e`. This event-style provenance avoids trying to
-  embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
+- Last completed transition: post-WP-C2.11 correction pass (external review of the committed
+  WP-C2.11 alignment work; six confirmed runtime-semantics defects independently reproduced and
+  fixed, one claim corrected to a narrower scope, one claim refuted). See the dated session
+  record below for detail.
+- Transition base commit: `c676875` (`complete WP-C2.11 implementation alignment`).
+- Current committed head at the start of this correction pass: `c676875`. This event-style
+  provenance avoids trying to embed a commit's own not-yet-known SHA in itself. Commit only on
+  explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -19,7 +23,9 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **517 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  **533 passed, 0 failed, 2 ignored** (up from 517/0/2 at WP-C2.11's close; +16 new regression
+  tests added by the post-WP-C2.11 correction pass, one per confirmed defect plus companion
+  non-regression cases) across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 30 integration-test files**
   (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`, re-counted against the
   post-WP-C2.7 tree — the
@@ -2438,4 +2444,65 @@ parsing, Python compilation, and whitespace checks. Final regression count is 51
 DEVIATIONS: DEV-009, DEV-018, DEV-019, DEV-022, DEV-023, and DEV-024 resolved. DEV-017's
 high-cost granular slice is closed; legacy broad entries remain transition history. DEV-036
 remains owned by C2.12.
+NEXT: WP-C2.12 (Differential interpreter corpus and DEV-036 closure)
+
+---
+
+### Post-WP-C2.11 correction pass — 2026-07-18
+DONE: An external review of the committed `c676875` (WP-C2.11) alignment work claimed nine
+runtime-semantics defects plus an evidence-citation-quality finding. Every claim was
+independently reproduced against the built compiler before being trusted (real `.stark` repros,
+not code-reading alone), per this project's standing practice of not accepting external review
+claims uncritically — the same discipline that caught CD-008/CD-007 being wrong-as-written
+earlier in Gate C2. Result: **six confirmed and fixed** (comparison operators moved non-`Copy`
+operands instead of borrowing them, DEV-044; `?` inside an aggregate initializer did not stop
+evaluation of later elements, DEV-045; float-to-int casts rejected any fractional value instead
+of truncating, DEV-046; `Drop::drop(&mut self)` mutated a clone instead of real storage,
+DEV-048; `Float32` display used `Float64`'s digits, DEV-049; negative `sqrt` trapped instead of
+returning NaN, DEV-050), **one confirmed but overstated** (signed `MIN % -1`/`MIN / -1`: only
+`Rem` was actually broken — `Div` already trapped correctly via the existing range check, since
+its i128 result doesn't fit the declared width; the review's claim that both operators failed
+was corrected to `Rem`-only before fixing, DEV-047), and **one refuted** (`main` entrypoint
+selection allegedly counting type-namespace items alongside `fn main` — tested directly with a
+`struct main { .. }` beside `fn main() { .. }`; the compiler already rejects this as
+`E0204` duplicate definition at name resolution, before entrypoint selection ever runs; no
+deviation opened). One claim (NaN bit-payload canonicalization) was left unconfirmed — plausible
+given no canonicalization code was found, but not independently verified at the bit level, and
+not fixed.
+FILES: `starkc/src/interp.rs` (six fixes — see DEV-044 through DEV-050 in
+`starkc/docs/conformance/KNOWN-DEVIATIONS.md` for the exact mechanism of each — plus 16 new
+inline regression tests, one per confirmed defect plus companion non-regression/unaffected-path
+cases), `starkc/docs/conformance/KNOWN-DEVIATIONS.md` (DEV-044 through DEV-050 added, count
+line updated), `COMPILER-STATE.md`.
+RULES: none — this pass repairs interpreter behavior against already-normative C2.7–C2.10
+decisions; it does not change the conformance coverage database or any normative specification
+text (every fix corrects the implementation to match the spec/abstract machine as already
+frozen, not the other way around).
+DECISIONS: none new as CD/AD records. All six fixes tighten existing, already-approved semantics
+(comparison borrowing, aggregate-construction cleanup order, cast truncation, signed-remainder
+trapping, destructor mutation visibility, and Float32 display fidelity) to match what C2.7–C2.9
+already froze — none weakens a check or changes the accepted/rejected program set in the
+permissive direction, so none required CE-escalation before fixing (consistent with the
+CE-escalation-watch discipline applied throughout this correction pass: each finding was
+categorized as a diagnostics/execution-correctness fix, not a semantic-weakening one, before
+proceeding).
+EVIDENCE: MANUAL + REG — every one of the nine original claims (six confirmed, one corrected,
+one refuted, one left unconfirmed) was independently reproduced or refuted via a real `.stark`
+program run against the built `starkc` binary before any code changed, not trusted from the
+review's description alone (e.g. the `MIN / -1` vs `MIN % -1` distinction was only discovered by
+testing both operators separately). `cargo test --workspace --all-targets --all-features`:
+**533 passed / 0 failed / 2 ignored** (up from 517/0/2), run twice (once before formatting,
+once after) with identical results. `cargo fmt --all -- --check` clean. `cargo clippy
+--workspace --all-targets --all-features -- -D warnings` clean. Every new regression test was
+run individually (`cargo test --lib interp::tests::`) before the full-suite sweep; one test's
+own assertion was wrong on first write (`sqrt(4.0)` renders `"2.0"`, not `"2"` — a test-authoring
+mistake caught by the test itself failing, not a compiler bug) and corrected.
+FOLLOW-UP: DEV-049 records one deliberately out-of-scope residual gap — a `Float32` value
+formatted only through the generic, static-type-free `Display for Value` path (e.g. nested
+inside a printed struct/collection) still uses `Float64` digits; fixing that needs a type marker
+on `Value::Float` itself, a larger change touching roughly 40 call sites, unscheduled. NaN
+bit-payload canonicalization (the one unconfirmed original claim) remains uninvestigated and
+unscheduled. Nothing here changes WP-C2.12's own scope (DEV-036 closure plus the differential
+corpus) — this correction pass exists specifically so C2.12's corpus captures genuinely-correct
+interpreter behavior rather than snapshotting six additional undetected bugs into its baseline.
 NEXT: WP-C2.12 (Differential interpreter corpus and DEV-036 closure)

@@ -1255,8 +1255,26 @@ impl<'a> Interpreter<'a> {
                     let left = self.expect_bool(*lhs)?;
                     return Ok(Flow::Value(Value::Bool(left || self.expect_bool(*rhs)?)));
                 }
-                let left = self.expect_value(*lhs)?;
-                let right = self.expect_value(*rhs)?;
+                // Equality/ordering desugar to `Eq::eq(&self, &other)`/`Ord::cmp(&self, &other)`
+                // (03-Type-System.md "Operators and Traits"): both operands are borrowed, not
+                // consumed. Evaluating a place operand (a local, field, index, or deref target)
+                // through the ordinary move-or-copy path would move a non-`Copy` value out of
+                // its storage just to compare it, making it unusable afterward even though the
+                // comparison never took ownership. `expect_value_borrowed` clones place operands
+                // instead; non-place operands (call results, literals) have no other owner, so
+                // ordinary evaluation is unaffected.
+                let (left, right) = if matches!(
+                    op,
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                ) {
+                    let left = self.expect_value_borrowed(*lhs)?;
+                    let right = self.expect_value_borrowed(*rhs)?;
+                    (left, right)
+                } else {
+                    let left = self.expect_value(*lhs)?;
+                    let right = self.expect_value(*rhs)?;
+                    (left, right)
+                };
                 Ok(Flow::Value(
                     self.eval_binary(*op, left, right, expr_id, expr.span)?,
                 ))
@@ -1310,18 +1328,14 @@ impl<'a> Interpreter<'a> {
                     )),
                 }
             }
-            hir::ExprKind::Tuple(values) => Ok(Flow::Value(Value::Tuple(
-                values
-                    .iter()
-                    .map(|value| self.expect_value(*value).map(Some))
-                    .collect::<Result<_, _>>()?,
-            ))),
-            hir::ExprKind::Array(values) => Ok(Flow::Value(Value::Array(
-                values
-                    .iter()
-                    .map(|value| self.expect_value(*value).map(Some))
-                    .collect::<Result<_, _>>()?,
-            ))),
+            hir::ExprKind::Tuple(values) => match self.eval_aggregate_elements(values)? {
+                Ok(values) => Ok(Flow::Value(Value::Tuple(values))),
+                Err(propagated) => Ok(Flow::Propagate(propagated)),
+            },
+            hir::ExprKind::Array(values) => match self.eval_aggregate_elements(values)? {
+                Ok(values) => Ok(Flow::Value(Value::Array(values))),
+                Err(propagated) => Ok(Flow::Propagate(propagated)),
+            },
             hir::ExprKind::Repeat { value, count } => {
                 let value = self.expect_value(*value)?;
                 let count = usize::try_from(self.expect_int(*count)?).map_err(|_| {
@@ -1459,6 +1473,36 @@ impl<'a> Interpreter<'a> {
                 self.hir.expr(expr).span,
             )),
         }
+    }
+
+    /// Evaluates an operand for a borrowing context (currently: comparison operators). If
+    /// `expr` is a place expression (a local, field, tuple field, index, or deref target), its
+    /// value is cloned rather than moved, leaving the original storage usable afterward. Other
+    /// expressions (calls, literals, freshly built aggregates) have no other owner, so ordinary
+    /// `expect_value` evaluation is used instead. Deliberately does not delegate to
+    /// `expr_place`, whose non-place fallback arm evaluates-and-stashes into a synthetic temp
+    /// local that nothing ever cleans up -- correct for its own callers (which immediately
+    /// consume or write through the returned place) but not safe to reuse here.
+    fn expect_value_borrowed(&mut self, expr: ExprId) -> Result<Value, RuntimeError> {
+        let is_place = matches!(
+            self.hir.expr(expr).kind,
+            hir::ExprKind::Path {
+                res: Res::Local(_) | Res::SelfValue(_),
+                ..
+            } | hir::ExprKind::Field { .. }
+                | hir::ExprKind::TupleField { .. }
+                | hir::ExprKind::Index { .. }
+                | hir::ExprKind::Unary {
+                    op: UnOp::Deref,
+                    ..
+                }
+        );
+        if is_place {
+            let span = self.hir.expr(expr).span;
+            let place = self.expr_place(expr)?;
+            return self.clone_place_value(&place, span);
+        }
+        self.expect_value(expr)
     }
 
     fn expect_bool(&mut self, expr: ExprId) -> Result<bool, RuntimeError> {
@@ -1682,6 +1726,19 @@ impl<'a> Interpreter<'a> {
                         return Err(RuntimeError::new("invalid shift count", span));
                     }
                 }
+                // `MIN % -1` traps even though its mathematical result (0) is representable:
+                // the operation is undefined at the CPU instruction level, matching `MIN / -1`
+                // (which already traps here via the post-hoc range check below, since the wider
+                // `i128` carrier lets `checked_div`/`checked_rem` succeed where the declared
+                // width would overflow). `Rem` alone needs this explicit guard because its
+                // mathematical result always happens to fit back into the declared width.
+                if op == BinOp::Rem && right == -1 {
+                    if let Some(min) = signed_integer_min(self.tables.expr_types.get(&expr)) {
+                        if left == min {
+                            return Err(RuntimeError::new("integer overflow", span));
+                        }
+                    }
+                }
                 let value = match op {
                     BinOp::Add => left.checked_add(right),
                     BinOp::Sub => left.checked_sub(right),
@@ -1769,11 +1826,18 @@ impl<'a> Interpreter<'a> {
                 self.normalize_numeric(Value::Float(value), expr, span)
             }
             Value::Float(value) if matches!(target, Ty::Primitive(p) if is_integer(p)) => {
-                if !value.is_finite() || value.fract() != 0.0 {
+                // A finite float-to-integer cast truncates toward zero, then traps only when
+                // the truncated result is unrepresentable in the target width (not merely
+                // because the source had a nonzero fractional part). NaN and infinities always
+                // trap. `.trunc() as i128` truncates finite f64 values toward zero exactly; the
+                // subsequent `check_integer_range` call performs the actual representability
+                // check against the target's declared width.
+                if !value.is_finite() {
                     return Err(RuntimeError::new("numeric cast out of range", span));
                 }
-                let value = value as i128;
-                self.check_integer_range(value, expr, span).map(Value::Int)
+                let truncated = value.trunc() as i128;
+                self.check_integer_range(truncated, expr, span)
+                    .map(Value::Int)
             }
             _ => Err(RuntimeError::new("invalid numeric cast", span)),
         }
@@ -1838,7 +1902,8 @@ impl<'a> Interpreter<'a> {
                         .iter()
                         .map(|arg| self.expect_value(*arg))
                         .collect::<Result<Vec<_>, _>>()?;
-                    self.call_builtin(*builtin, values, span).map(Flow::Value)
+                    self.call_builtin(*builtin, values, args, span)
+                        .map(Flow::Value)
                 }
                 Res::Item(item) => {
                     let values = args
@@ -1852,16 +1917,18 @@ impl<'a> Interpreter<'a> {
                         .map(Flow::Value)
                 }
                 Res::Variant(item, variant) => {
-                    let values = args
-                        .iter()
-                        .map(|arg| self.expect_value(*arg).map(Some))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok(Flow::Value(Value::Enum {
-                        item: *item,
-                        variant: *variant,
-                        fields: values,
-                        named: BTreeMap::new(),
-                    }))
+                    // A positional enum-variant constructor (`Some(x)`, `MyEnum::Variant(a, b)`)
+                    // is aggregate construction via call syntax, the same construct
+                    // `eval_aggregate_elements` already covers for tuple/array literals.
+                    match self.eval_aggregate_elements(args)? {
+                        Ok(values) => Ok(Flow::Value(Value::Enum {
+                            item: *item,
+                            variant: *variant,
+                            fields: values,
+                            named: BTreeMap::new(),
+                        })),
+                        Err(propagated) => Ok(Flow::Propagate(propagated)),
+                    }
                 }
                 Res::TraitMember(trait_id, member) => {
                     self.call_qualified_trait(*trait_id, *member, args, span)
@@ -1904,14 +1971,24 @@ impl<'a> Interpreter<'a> {
         &mut self,
         builtin: Builtin,
         mut args: Vec<Value>,
+        arg_exprs: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        // The static type of the (sole) argument, when known -- lets `Print`/`Println`/`Panic`
+        // format a `Float32` value using its own shortest-round-trip digits rather than the
+        // `f64` representation the runtime `Value` enum stores it in. See `format_runtime_value`
+        // and `canonical_float32`. Cloned to an owned value up front so it doesn't hold a
+        // borrow of `self` across the `&mut self` calls below.
+        let arg_ty = arg_exprs
+            .first()
+            .and_then(|expr| self.tables.expr_types.get(expr))
+            .cloned();
         match builtin {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
                 self.output
-                    .push_str(&self.format_runtime_value(&deref, span)?);
+                    .push_str(&self.format_runtime_value(&deref, arg_ty.as_ref(), span)?);
                 if builtin == Builtin::Println {
                     self.output.push('\n');
                 }
@@ -1921,7 +1998,7 @@ impl<'a> Interpreter<'a> {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
                 Err(RuntimeError::new(
-                    self.format_runtime_value(&deref, span)?,
+                    self.format_runtime_value(&deref, arg_ty.as_ref(), span)?,
                     span,
                 ))
             }
@@ -1955,9 +2032,12 @@ impl<'a> Interpreter<'a> {
                     ))
                 }
             }
+            // Transcendental domain errors produce NaN rather than a language trap (the
+            // standard-library math contract, distinct from the numeric-trap rules governing
+            // integer overflow/division and float-to-int casts). `f64::sqrt` already returns
+            // NaN for negative finite inputs, so no domain branch is needed.
             Builtin::Sqrt => match args.pop() {
-                Some(Value::Float(value)) if value >= 0.0 => Ok(Value::Float(value.sqrt())),
-                Some(Value::Float(_)) => Err(RuntimeError::new("sqrt domain error", span)),
+                Some(Value::Float(value)) => Ok(Value::Float(value.sqrt())),
                 _ => Err(RuntimeError::new("sqrt expects Float64", span)),
             },
             Builtin::Drop => {
@@ -2789,6 +2869,14 @@ impl<'a> Interpreter<'a> {
         }
         if name == "fmt" {
             let receiver = self.place_value(&receiver_place, span)?;
+            // See `format_runtime_value`/`canonical_float32`: a `Float32` receiver must format
+            // using its own shortest-round-trip digits, not the `f64` representation `Value`
+            // stores it in. `receiver_ty` (above) already carries the checked static type.
+            if let (Value::Float(inner), Ty::Primitive(Primitive::Float32)) =
+                (receiver, &receiver_ty)
+            {
+                return Ok(Value::String(canonical_float32(*inner as f32)));
+            }
             return Ok(Value::String(receiver.to_string()));
         }
         if name == "hash" {
@@ -3653,6 +3741,35 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// Evaluates aggregate element expressions (tuple/array elements) left to right, stopping
+    /// immediately -- without evaluating any later element at all -- when one element's
+    /// evaluation triggers early transfer via `?` (`Flow::Propagate`). `Ok(Ok(values))` is
+    /// ordinary completion; `Ok(Err(propagated))` means early transfer occurred, already
+    /// -completed elements were destroyed in reverse completion order (matching ordinary
+    /// failed-aggregate-construction cleanup per the abstract machine), and `propagated` is the
+    /// value the caller should wrap in `Flow::Propagate`. `expect_value`'s existing
+    /// `pending_propagation` channel is reused rather than introducing a new control-flow
+    /// representation; a genuine Rust-level trap (`Err(RuntimeError)`) still unwinds immediately
+    /// via `?` with no cleanup, unchanged from before this fix -- traps abort without running
+    /// pending destructors.
+    fn eval_aggregate_elements(
+        &mut self,
+        values: &[ExprId],
+    ) -> Result<Result<Vec<Option<Value>>, Value>, RuntimeError> {
+        let mut completed: Vec<Value> = Vec::with_capacity(values.len());
+        for value in values {
+            let evaluated = self.expect_value(*value)?;
+            if let Some(propagated) = self.pending_propagation.take() {
+                for value in completed.into_iter().rev() {
+                    self.drop_value(value)?;
+                }
+                return Ok(Err(propagated));
+            }
+            completed.push(evaluated);
+        }
+        Ok(Ok(completed.into_iter().map(Some).collect()))
+    }
+
     fn eval_struct_lit(
         &mut self,
         res: Res,
@@ -3660,10 +3777,22 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> Result<Flow, RuntimeError> {
         let mut values = BTreeMap::new();
+        let mut completed_order: Vec<String> = Vec::new();
         for field in fields {
             let name = self.text(field.name).to_string();
             let value = if let Some(expr) = field.expr {
-                self.expect_value(expr)?
+                let value = self.expect_value(expr)?;
+                // See `eval_aggregate_elements` for the same stop-and-clean-up-in-reverse
+                // pattern applied here to named struct/enum-struct-variant fields.
+                if let Some(propagated) = self.pending_propagation.take() {
+                    for name in completed_order.into_iter().rev() {
+                        if let Some(Some(value)) = values.remove(&name) {
+                            self.drop_value(value)?;
+                        }
+                    }
+                    return Ok(Flow::Propagate(propagated));
+                }
+                value
             } else {
                 let local = self.find_local_by_name(&name).ok_or_else(|| {
                     RuntimeError::new(format!("unknown shorthand field '{name}'"), field.name)
@@ -3677,6 +3806,7 @@ impl<'a> Interpreter<'a> {
                     field.name,
                 )?
             };
+            completed_order.push(name.clone());
             values.insert(name, Some(value));
         }
         match res {
@@ -4394,7 +4524,17 @@ impl<'a> Interpreter<'a> {
         Ok(value)
     }
 
-    fn format_runtime_value(&self, value: &Value, span: Span) -> Result<String, RuntimeError> {
+    fn format_runtime_value(
+        &self,
+        value: &Value,
+        ty: Option<&Ty>,
+        span: Span,
+    ) -> Result<String, RuntimeError> {
+        if let Value::Float(inner) = value {
+            if matches!(ty, Some(Ty::Primitive(Primitive::Float32))) {
+                return Ok(canonical_float32(*inner as f32));
+            }
+        }
         let Value::Slice(place, start, end) = value else {
             return Ok(value.to_string());
         };
@@ -4558,11 +4698,30 @@ impl<'a> Interpreter<'a> {
         if let Some(item) = nominal_item(&value) {
             if let Some(callable) = self.find_drop(item) {
                 let mut frame = Frame::default();
-                if let Some((_, local)) = callable.receiver {
-                    frame.insert(local, Some(value.clone()));
+                // Move the real value into the destructor's `self` binding rather than a clone:
+                // `Drop::drop(&mut self)` may legally mutate or replace fields (e.g. via
+                // `replace(&mut self.field, ..)`), and those mutations must be visible to the
+                // recursive field destruction below. A cloned receiver would let the destructor
+                // observe and mutate a throwaway copy while `value` itself stayed pristine,
+                // causing the pre-destructor field state to be dropped a second time and any
+                // replacement value installed during `drop()` to never be dropped at all.
+                let receiver_local = callable.receiver.map(|(_, local)| local);
+                if let Some(local) = receiver_local {
+                    frame.insert(local, Some(value));
+                    value = Value::Unit;
                 }
                 self.frames.push(frame);
                 let result = self.eval_block(callable.body);
+                if let Some(local) = receiver_local {
+                    if let Some(restored) = self
+                        .frame_mut()
+                        .values
+                        .get_mut(&local)
+                        .and_then(Option::take)
+                    {
+                        value = restored;
+                    }
+                }
                 self.frames.pop();
                 result?;
             }
@@ -4853,6 +5012,16 @@ fn is_integer(primitive: Primitive) -> bool {
     )
 }
 
+fn signed_integer_min(ty: Option<&Ty>) -> Option<i128> {
+    match ty {
+        Some(Ty::Primitive(Primitive::Int8)) => Some(i8::MIN as i128),
+        Some(Ty::Primitive(Primitive::Int16)) => Some(i16::MIN as i128),
+        Some(Ty::Primitive(Primitive::Int32)) => Some(i32::MIN as i128),
+        Some(Ty::Primitive(Primitive::Int64)) => Some(i64::MIN as i128),
+        _ => None,
+    }
+}
+
 fn integer_width(ty: Option<&Ty>) -> Option<u32> {
     match ty {
         Some(Ty::Primitive(Primitive::Int8 | Primitive::UInt8)) => Some(8),
@@ -4902,10 +5071,43 @@ fn canonical_float(value: f64) -> String {
             "0.0".to_string()
         };
     }
-    let shortest = value.to_string();
+    canonical_float_digits(&value.to_string())
+}
+
+// Canonical display must use the shortest decimal representation that round-trips to the
+// *declared* IEEE type. `Value::Float` stores every float as `f64` (Float32 results are
+// rounded to `f32` precision by `normalize_numeric` but kept in the same `f64`-carrying
+// variant), so formatting always went through `f64::to_string()`'s shortest-round-trip
+// algorithm even for a value the checker knows is Float32 -- producing the f64-round-trip
+// digits (e.g. `0.10000000149011612` for `0.1f32`) instead of the shorter f32-round-trip
+// digits (`0.1`). Callers that know the static type is Float32 (`println`, `.fmt()`) route
+// through this instead; callers with no static-type context (the generic `Display for Value`
+// impl used when a Float32 value is nested inside a printed struct/collection) still fall back
+// to `canonical_float`, a known residual gap distinct from the type-aware bug this fixes.
+fn canonical_float32(value: f32) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value == f32::INFINITY {
+        return "inf".to_string();
+    }
+    if value == f32::NEG_INFINITY {
+        return "-inf".to_string();
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() {
+            "-0.0".to_string()
+        } else {
+            "0.0".to_string()
+        };
+    }
+    canonical_float_digits(&value.to_string())
+}
+
+fn canonical_float_digits(shortest: &str) -> String {
     let (sign, unsigned) = shortest
         .strip_prefix('-')
-        .map_or(("", shortest.as_str()), |rest| ("-", rest));
+        .map_or(("", shortest), |rest| ("-", rest));
     let (mantissa, explicit_exponent) = unsigned
         .split_once(['e', 'E'])
         .map_or((unsigned, 0_i32), |(mantissa, exponent)| {
@@ -6074,5 +6276,322 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "3\n0\n1\n2\n3\n");
+    }
+
+    /// Post-WP-C2.11 correction (external review, independently reproduced before fixing):
+    /// `==`/`Ord::cmp` desugar to borrowed trait calls (`Eq::eq(&self, other: &Self)`), so
+    /// comparing two non-`Copy` operands must not move them. Before the fix, evaluating a bare
+    /// local as a comparison operand went through ordinary move-or-copy evaluation
+    /// (`eval_path`'s `Res::Local` arm unconditionally calls `take_place`), so `a == b` for two
+    /// `String`s moved both operands out of their storage; using `a` afterward failed with
+    /// "use of unavailable value" despite the comparison never taking ownership.
+    #[test]
+    fn comparison_operands_remain_usable_afterward() {
+        let execution = execute(
+            "fn main() { \
+                 let a = String::from(\"a\"); \
+                 let b = String::from(\"b\"); \
+                 let _same = a == b; \
+                 let _ne = a != b; \
+                 let _lt = a < b; \
+                 let _le = a <= b; \
+                 let _gt = a > b; \
+                 let _ge = a >= b; \
+                 println(a.as_str()); \
+                 println(b.as_str()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "a\nb\n");
+    }
+
+    /// Companion to `comparison_operands_remain_usable_afterward`: generic `T: Eq`/`T: Ord`
+    /// bounds dispatch through the same borrowed-operand path (`eval_binary`'s nominal-lookup
+    /// branch), so a generic comparison function must not move its non-`Copy` arguments either.
+    #[test]
+    fn generic_eq_and_ord_bounds_do_not_move_their_operands() {
+        let execution = execute(
+            "fn compare<T: Ord>(x: T, y: T) -> Bool { x < y } \
+             fn main() { \
+                 let a = String::from(\"a\"); \
+                 let b = String::from(\"b\"); \
+                 println(compare(a.clone(), b.clone())); \
+                 println(a.as_str()); \
+                 println(b.as_str()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\na\nb\n");
+    }
+
+    /// Post-WP-C2.11 correction: `?` inside an aggregate initializer (tuple/array/struct/enum
+    /// literal) must stop construction immediately on early transfer, not evaluate later
+    /// elements for their side effects. Before the fix, `expect_value` swallowed
+    /// `Flow::Propagate` into `pending_propagation` and returned a dummy `Value::Unit`, so the
+    /// `.map(expect_value).collect()` pattern used to build tuples/arrays kept going -- a later
+    /// side-effecting element ran even though an earlier element had already propagated an
+    /// error.
+    #[test]
+    fn early_transfer_inside_a_tuple_stops_later_elements_from_running() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn side_effect() -> Int32 { println(\"ran\"); 0 } \
+             fn helper() -> Result<(Int32, Int32, Int32), String> { \
+                 let value = (1, fail()?, side_effect()); \
+                 Ok(value) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "done\n",
+            "side_effect() must not run once fail()? has already propagated"
+        );
+    }
+
+    /// Companion to the tuple case: positional enum-variant construction (`Pair::Two(a, b)`) is
+    /// aggregate construction via call syntax and shares the exact same underlying bug/fix
+    /// (`eval_call`'s `Res::Variant` arm used the same unchecked `.map().collect()` pattern).
+    #[test]
+    fn early_transfer_inside_an_enum_variant_stops_later_elements_from_running() {
+        let execution = execute(
+            "enum Pair { Two(Int32, Int32) } \
+             fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn side_effect() -> Int32 { println(\"ran\"); 0 } \
+             fn helper() -> Result<Pair, String> { \
+                 let value = Pair::Two(fail()?, side_effect()); \
+                 Ok(value) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "done\n");
+    }
+
+    /// Post-WP-C2.11 correction: already-completed aggregate elements must be destroyed in
+    /// reverse completion order when a later element's evaluation triggers early transfer
+    /// (matching ordinary failed-aggregate-construction cleanup), not silently leaked.
+    #[test]
+    fn early_transfer_inside_a_tuple_drops_completed_elements_in_reverse_order() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn helper() -> Result<(Loud, Loud, Int32), String> { \
+                 let value = ( \
+                     Loud { label: String::from(\"first\") }, \
+                     Loud { label: String::from(\"second\") }, \
+                     fail()?, \
+                 ); \
+                 Ok(value) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "second\nfirst\ndone\n");
+    }
+
+    /// Post-WP-C2.11 correction: a finite float-to-integer cast truncates toward zero and traps
+    /// only when the truncated result doesn't fit the target width -- it must not reject every
+    /// value with a nonzero fractional part. Before the fix, `eval_cast` rejected any
+    /// `value.fract() != 0.0`, so `3.9f64 as Int32` trapped instead of producing `3`.
+    #[test]
+    fn float_to_int_cast_truncates_toward_zero_instead_of_trapping_on_fractions() {
+        let execution = execute(
+            "fn main() { \
+                 println(3.9f64 as Int32); \
+                 println((-3.9f64) as Int32); \
+                 println(0.5f64 as Int32); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "3\n-3\n0\n");
+    }
+
+    /// Companion negative case: NaN and infinities still trap (only the fractional-truncation
+    /// behavior changed, not the NaN/infinite rejection).
+    #[test]
+    fn float_to_int_cast_still_traps_on_nan_and_infinity() {
+        let error = execute("fn main() { println((0.0f64 / 0.0f64) as Int32); }").unwrap_err();
+        assert!(
+            error.message.contains("out of range"),
+            "NaN must still trap: {error:?}"
+        );
+        let error = execute("fn main() { println((1.0f64 / 0.0f64) as Int32); }").unwrap_err();
+        assert!(
+            error.message.contains("out of range"),
+            "infinity must still trap: {error:?}"
+        );
+    }
+
+    /// Post-WP-C2.11 correction: signed `MIN % -1` traps even though its mathematical result
+    /// (0) is representable, matching `MIN / -1` (already trapped: the wider `i128` carrier's
+    /// `checked_div`/`checked_rem` succeed where the declared width would overflow, but for
+    /// `Rem` the mathematical result always happens to fit back into the declared width, so the
+    /// post-hoc range check alone never catches it). Scoped to `Rem` only -- `Div` already
+    /// traps correctly and needed no change.
+    #[test]
+    fn signed_min_rem_negative_one_traps() {
+        let error = execute(
+            "fn main() { \
+                 let base: Int8 = -127i8; \
+                 let m: Int8 = base - 1i8; \
+                 println(m % -1i8); \
+             }",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("overflow"), "{error:?}");
+    }
+
+    /// Companion: `MIN / -1` already trapped before this fix and must continue to.
+    #[test]
+    fn signed_min_div_negative_one_still_traps() {
+        let error = execute(
+            "fn main() { \
+                 let base: Int8 = -127i8; \
+                 let m: Int8 = base - 1i8; \
+                 println(m / -1i8); \
+             }",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("overflow"), "{error:?}");
+    }
+
+    /// Companion: ordinary `Rem`/`Div` by values other than `-1`, and `MIN % -1`/`MIN / -1` for
+    /// unsigned types (which have no negative MIN and so cannot trigger this trap), are
+    /// unaffected.
+    #[test]
+    fn rem_and_div_by_values_other_than_negative_one_are_unaffected() {
+        let execution = execute(
+            "fn main() { \
+                 let base: Int8 = -127i8; \
+                 let m: Int8 = base - 1i8; \
+                 println(m % 3i8); \
+                 println(m / 3i8); \
+                 println(7i8 % -1i8); \
+                 let u: UInt8 = 200u8; \
+                 println(u % 255u8); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "-2\n-42\n0\n200\n");
+    }
+
+    /// Post-WP-C2.11 correction: `Drop::drop(&mut self)` must operate on the destructor's real
+    /// storage, not a clone. Before the fix, `drop_value` bound a *clone* of the value as
+    /// `self`, so any mutation performed inside `drop()` (e.g. `replace(&mut self.field, ..)`)
+    /// only affected the throwaway clone: the recursive field destruction that follows always
+    /// saw the pristine, never-mutated original, so the pre-destructor field value was dropped
+    /// a second time and the replacement value installed during `drop()` was never dropped at
+    /// all.
+    #[test]
+    fn drop_mutation_through_mut_self_affects_real_storage() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             struct Container { field: Loud } \
+             impl Drop for Container { \
+                 fn drop(&mut self) { \
+                     let old = replace(&mut self.field, Loud { label: String::from(\"replacement\") }); \
+                     println(\"dropping old explicitly:\"); \
+                     drop(old); \
+                 } \
+             } \
+             fn main() { \
+                 let _c = Container { field: Loud { label: String::from(\"original\") } }; \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "dropping old explicitly:\noriginal\nreplacement\n",
+            "the explicit drop(old) must print \"original\" exactly once, and the container's \
+             own end-of-scope field destruction must see and drop the replacement value, not a \
+             second copy of the original"
+        );
+    }
+
+    /// Companion: an ordinary `Drop` impl that does not mutate `self` is unaffected by the
+    /// move-instead-of-clone receiver change (already covered indirectly by
+    /// `runs_drop_in_reverse_declaration_order` above; this pins down the single-value case
+    /// specifically as a regression guard for the receiver-handling rewrite itself).
+    #[test]
+    fn drop_without_self_mutation_still_runs_exactly_once() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 let _value = Loud { label: String::from(\"once\") }; \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "once\n");
+    }
+
+    /// Post-WP-C2.11 correction: canonical display must use the shortest decimal
+    /// representation that round-trips to the *declared* IEEE type. `Value::Float` stores every
+    /// float as `f64` (Float32 results are rounded to `f32` precision but kept in the same
+    /// `f64`-carrying representation), so `println`/`.fmt()` previously always formatted via
+    /// `f64`'s shortest-round-trip algorithm even for a checked-Float32 value, producing digits
+    /// like `0.10000000149011612` for `0.1f32` instead of the shorter, correct `0.1`.
+    #[test]
+    fn float32_println_and_fmt_use_float32_round_trip_digits_not_float64() {
+        let execution = execute(
+            "fn main() { \
+                 let x: Float32 = 0.1f32; \
+                 println(x); \
+                 println(x.fmt()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "0.1\n0.1\n");
+    }
+
+    /// Companion regression guard: `Float64` formatting must be completely unaffected by the
+    /// Float32-awareness added to `format_runtime_value`/`.fmt()`.
+    #[test]
+    fn float64_println_and_fmt_are_unaffected_by_the_float32_fix() {
+        let execution = execute(
+            "fn main() { \
+                 let x: Float64 = 0.1f64; \
+                 println(x); \
+                 println(x.fmt()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "0.1\n0.1\n");
+    }
+
+    /// Post-WP-C2.11 correction: the standard-library math contract classifies transcendental
+    /// domain errors (e.g. `sqrt` of a negative number) as producing NaN, not a language trap --
+    /// distinct from the numeric-trap rules governing integer overflow/division and
+    /// float-to-int casts. Before the fix, `Builtin::Sqrt` returned a `RuntimeError` ("sqrt
+    /// domain error") for any negative finite input.
+    #[test]
+    fn negative_sqrt_returns_nan_instead_of_trapping() {
+        let execution = execute(
+            "fn main() { \
+                 let x = sqrt(-4.0f64); \
+                 println(x != x); \
+                 println(x); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\nNaN\n");
+    }
+
+    /// Companion: ordinary non-negative `sqrt` is unaffected.
+    #[test]
+    fn nonnegative_sqrt_is_unaffected() {
+        let execution = execute("fn main() { println(sqrt(4.0f64)); }").unwrap();
+        assert_eq!(execution.output, "2.0\n");
     }
 }

@@ -1039,6 +1039,151 @@ WP-C1.5)
   `interp::tests::hash_collections_use_language_eq_for_keys`.
 - **Owning gate:** found by post-WP-C2.2 external review and closed in the correction pass.
 
+## DEV-044 — Comparison operators moved non-`Copy` operands instead of borrowing them (RESOLVED post-WP-C2.11)
+
+- **Normative expectation:** `03-Type-System.md` "Operators and Traits" desugars `==`/`!=` to
+  `Eq::eq(&self, other: &Self)` and `<`/`<=`/`>`/`>=` to `Ord::cmp(&self, other: &Self)` — both
+  operands are borrowed, not consumed.
+- **Original behaviour:** `eval_path`'s `Res::Local` arm unconditionally calls `take_place` when
+  evaluating a bare local as an expression, so `a == b` for two non-`Copy` values (e.g.
+  `String`) moved both operands out of storage before `eval_binary`'s `Eq`/`Ord` dispatch ever
+  ran. Using either operand afterward failed at runtime with "use of unavailable value" despite
+  the comparison never taking ownership.
+- **Resolution:** a new `expect_value_borrowed` evaluates comparison operands: place
+  expressions (locals, fields, tuple fields, indices, deref targets) are cloned via
+  `clone_place_value` instead of moved; non-place expressions (call results, literals) are
+  unaffected, since they have no other owner. Regressions:
+  `interp::tests::comparison_operands_remain_usable_afterward`,
+  `::generic_eq_and_ord_bounds_do_not_move_their_operands`.
+- **Owning gate:** found by external review of the committed WP-C2.11 alignment work,
+  independently reproduced, and closed in this correction pass.
+
+## DEV-045 — `?` inside an aggregate initializer did not stop evaluation of later elements (RESOLVED post-WP-C2.11)
+
+- **Normative expectation:** the abstract machine (`CORE-V1-ABSTRACT-MACHINE.md`) requires
+  aggregate initializers to evaluate left to right and stop immediately on early transfer,
+  destroying already-completed elements in reverse completion order.
+- **Original behaviour:** `expect_value` swallowed `Flow::Propagate` into
+  `self.pending_propagation` and returned a dummy `Value::Unit`, so the `.map(expect_value)
+  .collect()` pattern used to build tuple/array literals and positional enum-variant
+  constructors (`Pair::Two(a, b)`) kept evaluating later elements for their side effects even
+  after an earlier element had already propagated a `Result`/`Option` early return via `?`.
+  Already-completed elements were also never explicitly destroyed on this path.
+- **Resolution:** a new `eval_aggregate_elements` helper evaluates elements left to right,
+  checks `pending_propagation` after each one, and on early transfer destroys completed
+  elements in reverse order via `drop_value` before returning the propagated value — applied to
+  tuple literals, array literals, and positional enum-variant construction (`eval_call`'s
+  `Res::Variant` arm). Named struct/enum-struct-variant field construction
+  (`eval_struct_lit`) received the same stop-and-clean-up-in-reverse treatment inline, since its
+  `BTreeMap`-based field accumulation doesn't fit the same shared-Vec helper. A genuine
+  Rust-level trap (`RuntimeError`) is unaffected — it still unwinds immediately via `?` with no
+  cleanup, matching existing trap-abort semantics. Regressions:
+  `interp::tests::early_transfer_inside_a_tuple_stops_later_elements_from_running`,
+  `::early_transfer_inside_an_enum_variant_stops_later_elements_from_running`,
+  `::early_transfer_inside_a_tuple_drops_completed_elements_in_reverse_order`.
+- **Owning gate:** found by external review of the committed WP-C2.11 alignment work,
+  independently reproduced (confirmed via a side-effecting element genuinely running after an
+  earlier `?`), and closed in this correction pass. Struct-literal field construction and
+  positional enum-variant construction were not in the review's own repro but share the exact
+  same root cause and were fixed in the same pass rather than left as a known adjacent gap.
+
+## DEV-046 — Float-to-integer casts rejected any nonzero fractional part instead of truncating (RESOLVED post-WP-C2.11)
+
+- **Normative expectation:** a finite float-to-integer cast truncates toward zero, then traps
+  only when the truncated result is unrepresentable in the target width.
+- **Original behaviour:** `eval_cast`'s float-to-integer arm rejected any value with
+  `value.fract() != 0.0` outright, so `3.9f64 as Int32` trapped instead of producing `3`.
+- **Resolution:** the fractional-part check was replaced with `.trunc()` followed by the
+  existing `check_integer_range` call against the target width; NaN and infinities still trap
+  (`!value.is_finite()`), unchanged. Regressions:
+  `interp::tests::float_to_int_cast_truncates_toward_zero_instead_of_trapping_on_fractions`,
+  `::float_to_int_cast_still_traps_on_nan_and_infinity`.
+- **Owning gate:** found by external review of the committed WP-C2.11 alignment work,
+  independently reproduced, and closed in this correction pass.
+
+## DEV-047 — Signed `MIN % -1` did not trap (RESOLVED post-WP-C2.11; `MIN / -1` was never broken)
+
+- **Normative expectation:** both `MIN / -1` and `MIN % -1` trap for a signed integer type,
+  since the mathematical quotient is not representable at the CPU instruction level.
+- **Original behaviour:** all integer arithmetic is carried in a wider `i128`, so
+  `checked_div`/`checked_rem` never overflow at that width; the post-hoc `check_integer_range`
+  call catches `MIN / -1` (its i128 result doesn't fit the declared width) but not `MIN % -1`
+  (its mathematical result, `0`, always fits). An external review's initial claim that *both*
+  operators were broken was independently checked before fixing: `MIN / -1` was confirmed
+  already trapping correctly and needed no change; only `Rem` had the gap.
+- **Resolution:** an explicit guard traps `Rem` when `right == -1` and `left` equals the
+  declared signed type's minimum value (new `signed_integer_min` helper), scoped to `Rem` only.
+  Regressions: `interp::tests::signed_min_rem_negative_one_traps`,
+  `::signed_min_div_negative_one_still_traps` (non-regression guard for the already-correct
+  `Div` case), `::rem_and_div_by_values_other_than_negative_one_are_unaffected`.
+- **Owning gate:** found by external review of the committed WP-C2.11 alignment work; the
+  review's claim was independently verified per-operator (not trusted as stated) before
+  scoping the fix, and closed in this correction pass.
+
+## DEV-048 — `Drop::drop(&mut self)` mutated a clone instead of the destructor's real storage (RESOLVED post-WP-C2.11)
+
+- **Normative expectation:** `Drop::drop(&mut self)` may mutate or replace fields (e.g. via
+  `replace(&mut self.field, ..)`), and those mutations determine what the surrounding automatic
+  field destruction subsequently sees and destroys.
+- **Original behaviour:** `drop_value` bound a *clone* of the value as the destructor's `self`
+  local. Any mutation inside `drop()` only affected the throwaway clone; the frame was then
+  discarded and the function proceeded to recursively destroy the pristine, never-mutated
+  original. A destructor that used `replace()` to swap in a new field value and explicitly drop
+  the old one caused double destruction of the pre-destructor field state and silently skipped
+  destruction of the replacement value entirely.
+- **Resolution:** `drop_value` now moves the real value into the destructor's `self` binding
+  (mirroring the existing `RefMut`-receiver move/write-back convention already used by ordinary
+  method calls in `call_user_method`), reads back whatever `self` holds after the destructor
+  body runs, and uses that (possibly mutated) value for the subsequent recursive field
+  destruction instead of the stale pre-destructor snapshot. Regressions:
+  `interp::tests::drop_mutation_through_mut_self_affects_real_storage`,
+  `::drop_without_self_mutation_still_runs_exactly_once`.
+- **Owning gate:** found by external review of the committed WP-C2.11 alignment work,
+  independently reproduced (confirmed the pre-destructor field value printed twice and the
+  replacement value never printed at all), and closed in this correction pass.
+
+## DEV-049 — `Float32` display used `Float64`'s shortest-round-trip digits (RESOLVED post-WP-C2.11)
+
+- **Normative expectation:** canonical display uses the shortest decimal representation that
+  round-trips to the *declared* IEEE type.
+- **Original behaviour:** `Value::Float` stores every float as `f64` (Float32 results are
+  rounded to `f32` precision by `normalize_numeric` but kept in the same `f64`-carrying
+  representation), and `canonical_float`/`.fmt()` always formatted via `f64::to_string()`'s
+  shortest-round-trip algorithm regardless of the checked static type, so `println(0.1f32)`
+  printed `0.10000000149011612` instead of `0.1`.
+- **Resolution:** `canonical_float`'s digit-formatting body was extracted into a shared
+  `canonical_float_digits` helper reused by a new `canonical_float32`. `println`/`print`/`panic`
+  (via a new `arg_exprs` parameter threaded into `call_builtin`) and `.fmt()` (which already had
+  the checked receiver type in scope) now format through `canonical_float32` when the static
+  type is `Float32`. **Known residual gap, not fixed here:** a `Float32` value formatted only
+  through the generic `Display for Value` impl with no static-type context available (e.g.
+  nested inside a struct/collection printed as a whole) still falls back to `canonical_float`'s
+  `f64` digits — fixing that would need a type marker on `Value::Float` itself, a larger change
+  touching roughly 40 call sites, out of scope for this correction pass. Regressions:
+  `interp::tests::float32_println_and_fmt_use_float32_round_trip_digits_not_float64`,
+  `::float64_println_and_fmt_are_unaffected_by_the_float32_fix`.
+- **Owning gate:** found by external review of the committed WP-C2.11 alignment work,
+  independently reproduced, and closed (for the two directly-printed cases) in this correction
+  pass. The nested-value residual gap is unscheduled.
+
+## DEV-050 — Negative `sqrt` trapped instead of returning NaN (RESOLVED post-WP-C2.11)
+
+- **Normative expectation:** the standard-library math contract classifies transcendental
+  domain errors (e.g. `sqrt` of a negative number) as producing NaN, not a language trap —
+  distinct from the numeric-trap rules governing integer overflow/division and float-to-int
+  casts.
+- **Original behaviour:** `Builtin::Sqrt` returned a `RuntimeError` ("sqrt domain error") for
+  any negative finite input.
+- **Resolution:** the domain check was removed; `f64::sqrt` already returns NaN for negative
+  finite inputs. Regressions: `interp::tests::negative_sqrt_returns_nan_instead_of_trapping`,
+  `::nonnegative_sqrt_is_unaffected`.
+- **Owning gate:** found by external review of the committed WP-C2.11 alignment work,
+  independently reproduced, and closed in this correction pass. A companion claim in the same
+  review — that `main` entrypoint selection incorrectly counts type-namespace items (e.g. a
+  `struct main` coexisting with `fn main`) — was independently tested and **refuted**: the
+  compiler already rejects this at name resolution (`E0204` duplicate definition) before
+  entrypoint selection runs; no corresponding deviation was opened.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1088,14 +1233,20 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 41 numbered deviations total (DEV-002 through DEV-043, DEV-001/DEV-003 retired).
+Current count: 48 numbered deviations total (DEV-002 through DEV-050, DEV-001/DEV-003 retired).
 DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was found and repaired
 during that work. DEV-038 through DEV-043 were found by the post-WP-C2.2 review and closed in
-the correction pass. DEV-017 remains partially closed (tooling built, 39 of 59 rules remain
-unclassified). DEV-036 remains open, now explicitly owned by WP-C2.12 as a parser-loader
-hardening regression in the differential corpus. DEV-009, DEV-022, DEV-023, and DEV-024 remain
-open with C2.8/C2.9 decision ownership and C2.11 implementation/evidence ownership assigned by
-WP-C2.6.
+the correction pass. DEV-044 through DEV-050 were found by an external review of the committed
+WP-C2.11 alignment work -- each independently reproduced against the compiler before being
+trusted, one review claim (`MIN / -1` also failing to trap) found overstated and corrected to
+its actual `Rem`-only scope, one review claim (`main` entrypoint counting type-namespace items)
+independently refuted and not opened as a deviation -- and closed in a post-WP-C2.11 correction
+pass; DEV-049 records one known residual gap left open (Float32 values formatted only through
+the generic, static-type-free `Display for Value` path). DEV-017 remains partially closed
+(tooling built, 39 of 59 rules remain unclassified). DEV-036 remains open, now explicitly owned
+by WP-C2.12 as a parser-loader hardening regression in the differential corpus. DEV-009,
+DEV-022, DEV-023, and DEV-024 remain open with C2.8/C2.9 decision ownership and C2.11
+implementation/evidence ownership assigned by WP-C2.6.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping
