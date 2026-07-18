@@ -242,8 +242,8 @@ or native-backend problem.
 
 ### 1.8 Terminology
 
-- **normative specification** — the numbered Core v1 source documents 00–07 under
-  `STARKLANG/docs/spec/` and approved extension specifications under
+- **normative specification** — the numbered Core v1 source documents 00–07 and approved
+  `CORE-V1-*.md` semantic chapters under `STARKLANG/docs/spec/`, plus approved extension specifications under
   `STARKLANG/docs/extensions/`. Generated/concise summaries and compiler-governance ledgers are
   not normative.
 - **semantic-freeze governance ledger** — non-normative inventories and pending decision

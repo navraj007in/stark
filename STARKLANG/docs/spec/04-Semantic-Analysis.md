@@ -308,12 +308,10 @@ Rules:
 - The enclosing function return type must be compatible with the propagated type.
 
 ## Runtime Error Semantics (Core v1)
-- A runtime error (e.g., integer overflow, division by zero, out-of-bounds indexing, failing `as` cast) MUST terminate the current program execution.
-- `panic(...)` is a runtime error that terminates the program after emitting the provided message.
-- Termination is an **abort**: the program stops immediately with a non-zero
-  exit status. Destructors (`Drop`) are NOT run for live values, and no
-  unwinding or recovery mechanism exists in Core v1. (Catchable panics and
-  unwind-with-destructors are possible future extensions.)
+Static analysis must identify operations whose normative runtime rule can trap and preserve the
+source location of that operation. Trap categories, abort behavior, and the absence of
+unwinding are defined solely by `CORE-V1-ABSTRACT-MACHINE.md` (`TRAP-CATEGORY-001` and
+`DROP-ABORT-001`). Numeric and process-specific classifications are completed by C2.9.
 
 ### 10. Trait Constraint Checking
 

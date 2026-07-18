@@ -1080,3 +1080,14 @@ hardening regression in the differential corpus. DEV-009, DEV-022, DEV-023, and 
 open with C2.8/C2.9 decision ownership and C2.11 implementation/evidence ownership assigned by
 WP-C2.6.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
+
+### WP-C2.7 abstract-machine rule mapping
+
+The normative abstract machine now gives every runtime deviation a representation-independent
+rule: DEV-024/026/027/038/043 → `EXEC-DISPATCH-001`; DEV-028/041/042 →
+`REF-SLICE-001`; DEV-029 → `DROP-ORDER-001`; DEV-030 → `PAT-DROP-001`; DEV-031 →
+`EXEC-FOR-001`; DEV-032 → `OBS-COMPARE-001` plus the standard-library iteration rule;
+DEV-033 → `EXEC-EVAL-001`; DEV-034 → `EXEC-ONCE-001`; DEV-035 → `REF-RETURN-001`;
+DEV-037 → `REF-PROJECT-001`; DEV-039 → `DROP-LOOP-001`; and DEV-040 →
+`DROP-COLLECTION-001`. Closed entries remain regression evidence; open entries retain their
+C2.8–C2.11 disposition.

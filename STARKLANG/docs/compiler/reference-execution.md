@@ -4,6 +4,11 @@ Status: WP-C2.1 deliverable, Gate C2 ("Reference Execution Semantics and Compile
 Foundation"). Documentation only — no `starkc/src/*.rs` changes were made to produce this
 document.
 
+**Authority update (WP-C2.7, 2026-07-18):** this remains historical implementation/deviation
+evidence. Runtime semantics are now defined solely by
+`STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md`; line-numbered interpreter descriptions and
+pre-C2.2 deviation states below are not normative and must not override that document.
+
 ## Purpose and method
 
 This document states, for each topic in `COMPILER-ROADMAP.md`'s WP-C2.1 scope, what the

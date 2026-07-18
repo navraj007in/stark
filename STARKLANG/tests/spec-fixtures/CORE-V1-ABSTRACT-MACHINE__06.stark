@@ -1,0 +1,6 @@
+struct Cell { value: Int32 }
+impl Cell {
+    fn value_ref(&self) -> &Int32 { &self.value }
+}
+let cell = Cell { value: 42 };
+let reference = cell.value_ref();

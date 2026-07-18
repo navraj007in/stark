@@ -1,0 +1,4 @@
+struct Loud { label: String }
+impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } }
+let live = Loud { label: String::from("not dropped") };
+panic("abort");

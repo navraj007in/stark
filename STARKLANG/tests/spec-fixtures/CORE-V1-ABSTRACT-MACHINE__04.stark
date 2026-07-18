@@ -1,0 +1,3 @@
+let mut text = String::from("first");
+let moved = text;
+text = String::from("second"); // text is initialized again; no old text remains to drop.

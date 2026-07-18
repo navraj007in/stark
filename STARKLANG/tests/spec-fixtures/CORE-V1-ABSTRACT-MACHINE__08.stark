@@ -1,0 +1,5 @@
+for item in values {
+    if skip(item) { continue; }
+    if stop(item) { break; }
+    consume(item);
+}

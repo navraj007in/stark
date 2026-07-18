@@ -1,0 +1,4 @@
+let mut map: HashMap<String, Loud> = HashMap::new();
+map.insert(String::from("key"), Loud::new("value"));
+let removed = map.remove(&String::from("key"));
+map.clear();

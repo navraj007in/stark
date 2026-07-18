@@ -1,8 +1,0 @@
-// Stack allocated (small, known size)
-let point = Point { x: 1.0, y: 2.0 };
-let array = [1, 2, 3, 4, 5];
-
-// Heap allocated (dynamic size, large objects)
-let string = String::from("hello");
-let vector: Vec<Int32> = Vec::new();
-let boxed = Box::new(large_object);

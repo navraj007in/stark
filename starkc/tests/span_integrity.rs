@@ -211,6 +211,7 @@ fn expr_and_block_spans_are_contained_across_the_fixture_corpus() {
     paths.sort();
     assert!(paths.len() >= 100, "expected the full fixture corpus");
     let skip = skip_verdicts();
+    let expected_checked = paths.len() - skip.len();
     let mut checked = 0usize;
 
     let mut failures = Vec::new();
@@ -244,9 +245,9 @@ fn expr_and_block_spans_are_contained_across_the_fixture_corpus() {
             }
         }
     }
-    assert!(
-        checked >= 80,
-        "expected most of the corpus to be checked (parse-pass/semantic-error/lex-pass), got {checked}"
+    assert_eq!(
+        checked, expected_checked,
+        "every eligible manifest fixture must receive span-integrity checks"
     );
     assert!(
         failures.is_empty(),

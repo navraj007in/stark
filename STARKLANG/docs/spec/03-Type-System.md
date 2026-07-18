@@ -537,38 +537,11 @@ fn max<T: Ord>(a: T, b: T) -> T {
 ```
 
 ### Evaluation Order (Core v1)
-Evaluation order is defined construct by construct below; each
-subexpression's side effects (including traps) fully complete before the
-next begins. Most constructs evaluate left to right in their written order,
-but **assignment is a named exception** (its right-hand side evaluates
-before its left-hand-side place is resolved, even though the place is
-written first) — see the assignment rule below.
-
-- **Binary operators** (excluding `&&`/`||`): the left operand evaluates
-  fully before the right operand begins.
-- **`&&`/`||`**: short-circuiting — the left operand evaluates first, and the
-  right operand evaluates only if needed to determine the result (`&&`: only
-  if the left is `true`; `||`: only if the left is `false`).
-- **`if`/`match`**: the condition (`if`) or scrutinee (`match`) evaluates
-  before any branch/arm; `match` arms are tried in source order and the first
-  matching arm wins.
-- **Function calls**: arguments evaluate left to right, before the call
-  itself executes.
-- **Method calls**: the receiver evaluates before any argument; arguments
-  then evaluate left to right.
-- **Struct, tuple, and array literals**: fields/elements evaluate left to
-  right, in the order written.
-- **Assignment** (`lhs = rhs`, including compound assignment): the
-  right-hand side evaluates fully before the left-hand-side place is
-  resolved. This means side effects in a place expression's own
-  subexpressions (e.g. an index: `arr[f()] = g();`) run *after* the
-  right-hand side: `g()` before `f()`.
-- **Indexing** (`expr[index]`): the base expression resolves to a place
-  before the index expression evaluates.
-
-This evaluation order is normative for all Core v1 implementations: two
-conforming implementations must produce identical observable side-effect
-ordering for the same program.
+Runtime evaluation order is defined solely by
+`CORE-V1-ABSTRACT-MACHINE.md` (`EXEC-EVAL-001`, `EXEC-ONCE-001`, and
+`EXEC-ASSIGN-001`). Type checking must preserve those rules and must not
+introduce an evaluation or ownership transfer merely to select a type,
+method, or trait implementation.
 
 ### Copy and Drop (Soundness Rules)
 - `Copy` may be implemented for a type only if **all** of its fields are
@@ -576,12 +549,7 @@ ordering for the same program.
 - A type MUST NOT implement both `Copy` and `Drop` (a copyable type would run
   its destructor once per copy).
 - `Drop::drop` MUST NOT be called explicitly; use the free function
-  `drop(value)`, which takes ownership and runs the destructor exactly once.
-  After `drop(v)`, `v` is moved-from.
-- Every owned value's destructor runs **exactly once**: at end of scope, at
-  explicit `drop`, or when its owner is consumed — never twice. For values
-  moved on only some control-flow paths, the implementation MUST track
-  initialization state (e.g. drop flags) to preserve exactly-once semantics.
+  `drop(value)`. After `drop(v)`, `v` is moved-from.
 - **Partial moves**: moving a field out of a struct is permitted only if the
   struct's type does not implement `Drop`. After a partial move, the whole
   value may no longer be used or moved, but its remaining fields may be.
@@ -589,6 +557,10 @@ ordering for the same program.
   variable makes it valid again (definite-assignment tracking).
 - Moving an element out of an indexed place (`v[i]`) is a compile-time error;
   use APIs that transfer ownership explicitly (e.g. `Vec::remove`, `Vec::pop`).
+
+The execution and ordering of moves, copies, replacement, `drop(value)`,
+partial-value destruction, and trap termination are defined solely by
+`CORE-V1-ABSTRACT-MACHINE.md`.
 
 ## Error Types and Handling
 

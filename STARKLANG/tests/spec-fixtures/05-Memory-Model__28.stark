@@ -1,6 +1,0 @@
-let data = RefCell::new(42);
-{
-    let mut borrowed = data.borrow_mut();  // Runtime borrow check
-    *borrowed = 43;
-}
-// data.borrow() now yields 43

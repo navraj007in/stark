@@ -7,13 +7,24 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = ROOT / "docs" / "spec"
-SOURCES = sorted(SPEC.glob("0[0-7]-*.md"))
+SOURCES = [
+    SPEC / "00-Core-Language-Overview.md",
+    SPEC / "01-Lexical-Grammar.md",
+    SPEC / "02-Syntax-Grammar.md",
+    SPEC / "03-Type-System.md",
+    SPEC / "04-Semantic-Analysis.md",
+    SPEC / "CORE-V1-ABSTRACT-MACHINE.md",
+    SPEC / "05-Memory-Model.md",
+    SPEC / "06-Standard-Library.md",
+    SPEC / "07-Modules-and-Packages.md",
+]
 COMBINED = SPEC / "STARK-Core-v1.md"
 
 
 def main() -> None:
-    if len(SOURCES) != 8:
-        raise SystemExit(f"expected 8 numbered Core sources, found {len(SOURCES)}")
+    missing = [str(path) for path in SOURCES if not path.is_file()]
+    if missing:
+        raise SystemExit("missing Core source(s): " + ", ".join(missing))
 
     combined = "\n\n\n---\n\n".join(path.read_text(encoding="utf-8").rstrip() for path in SOURCES)
     COMBINED.write_text(combined + "\n", encoding="utf-8")

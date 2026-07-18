@@ -18,8 +18,8 @@ those are non-core extensions, not part of Core v1.
 
 ## Source of Truth
 
-**Normative spec (Core v1): numbered source documents 00–07 under
-`STARKLANG/docs/spec/`**
+**Normative spec (Core v1): numbered source documents 00–07 and approved
+`CORE-V1-*.md` semantic chapters under `STARKLANG/docs/spec/`**
 
 | Document | Contents |
 | --- | --- |
@@ -28,28 +28,22 @@ those are non-core extensions, not part of Core v1.
 | `02-Syntax-Grammar.md` | Full EBNF: items, generics, `self` receivers, patterns, ranges, casts |
 | `03-Type-System.md` | Types, ownership/borrowing, references-and-lifetimes rules, generics, coherence, numeric semantics |
 | `04-Semantic-Analysis.md` | Name resolution, borrow checking, exhaustiveness, definite assignment, error codes |
-| `05-Memory-Model.md` | Ownership, moves, Copy vs Move, Drop, layout |
+| `CORE-V1-ABSTRACT-MACHINE.md` | Values, places, execution, moves, references, destruction, traps |
+| `05-Memory-Model.md` | Memory-safety guarantees and authority boundaries |
 | `06-Standard-Library.md` | Prelude, Option/Result, Vec/HashMap/String, Iterator, IO, math |
 | `07-Modules-and-Packages.md` | `mod`/`use`, visibility, `starkpkg.json` manifest |
 | `09-STARK-Language-Spec-v1.md` | Concise conformance summary |
 
 `09-STARK-Language-Spec-v1.md` is a non-normative summary. Compiler-governance ledgers and
 pending decisions live under `STARKLANG/docs/compiler/semantic-freeze/` and are non-normative;
-only approved decisions transferred into documents 00–07 define Core behavior.
+only approved decisions transferred into the normative source documents define Core behavior.
 
 `STARKLANG/docs/spec/STARK-Core-v1.md` (+ `.html`, `.pdf`) is a **generated
-compilation** of files 00–07. Never edit it directly — edit the individual
-files, then regenerate:
+compilation** of the normative Core source documents. Never edit it directly — edit the
+individual files, then regenerate:
 
 ```bash
-cd STARKLANG/docs/spec
-for f in 00-Core-Language-Overview 01-Lexical-Grammar 02-Syntax-Grammar \
-         03-Type-System 04-Semantic-Analysis 05-Memory-Model \
-         06-Standard-Library 07-Modules-and-Packages; do
-  cat "$f.md"; printf '\n\n---\n\n'
-done > STARK-Core-v1.md
-pandoc STARK-Core-v1.md -s --metadata title="STARK-Core-v1" -o STARK-Core-v1.html
-pandoc STARK-Core-v1.md -s --metadata title="STARK-Core-v1" --pdf-engine=weasyprint -o STARK-Core-v1.pdf
+python3 STARKLANG/tools/build-core-spec.py
 ```
 
 **Extensions (optional, non-core): `STARKLANG/docs/extensions/`**
@@ -107,10 +101,10 @@ conflict table.
 
 ## Implementation Status
 
-- Specification: Core v1 complete draft (numbered source documents 00–07 normative; concise and
-  generated views non-normative).
+- Specification: Core v1 complete draft (numbered source documents 00–07 and approved
+  `CORE-V1-*.md` semantic chapters normative; concise and generated views non-normative).
 - Compiler: front end, semantic analysis, and execution are done (`starkc/` — lexer, parser,
-  name resolver, type/flow/borrow checker, and a typed-HIR interpreter; the 122-fixture
+  name resolver, type/flow/borrow checker, and a typed-HIR interpreter; the 104-fixture
   conformance suite is green). Also implemented: a `tensor` v0.1 extension front end with
   bounded ONNX signature import/verification, a Gate-5 native deployment path (generated Rust
   host + ONNX Runtime), a source formatter, a naming-convention test runner, a documentation

@@ -1,0 +1,5 @@
+struct Loud { label: String }
+impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } }
+let pair = (Loud { label: String::from("bound") },
+            Loud { label: String::from("wildcard") });
+match pair { (kept, _) => println(kept.label.as_str()), }

@@ -1,0 +1,43 @@
+snippet
+  struct Loud @1:1
+    field label
+      type-primitive String @1:22
+  impl Drop for @2:1
+    self-ty
+      type-path Loud @2:15
+    method
+      sig drop @2:22
+        receiver RefMut
+      block @2:41
+        expr-stmt @2:43
+          call @2:43
+            path println @2:43
+            call @2:51
+              field as_str @2:51
+                field label @2:51
+                  path self @2:51
+  let pair @3:1
+    tuple @3:12
+      struct-lit Loud @3:13
+        field-init label
+          call @3:27
+            path String::from @3:27
+            lit-str "bound" @3:40
+      struct-lit Loud @4:13
+        field-init label
+          call @4:27
+            path String::from @4:27
+            lit-str "wildcard" @4:40
+  tail
+    match @5:1
+      path pair @5:7
+      arm
+        pat-tuple @5:14
+          pat-binding kept @5:15
+          pat-wild @5:21
+        call @5:27
+          path println @5:27
+          call @5:35
+            field as_str @5:35
+              field label @5:35
+                path kept @5:35

@@ -31,8 +31,8 @@ const CASES: &[(&str, ParseMode)] = &[
     ("03-Type-System__40.stark", ParseMode::Program),
     ("04-Semantic-Analysis__12.stark", ParseMode::Program),
     ("04-Semantic-Analysis__15.stark", ParseMode::Snippet),
-    ("05-Memory-Model__11.stark", ParseMode::Snippet),
-    ("05-Memory-Model__20.stark", ParseMode::Snippet),
+    ("CORE-V1-ABSTRACT-MACHINE__04.stark", ParseMode::Snippet),
+    ("CORE-V1-ABSTRACT-MACHINE__05.stark", ParseMode::Snippet),
     ("06-Standard-Library__16.stark", ParseMode::Program),
     ("07-Modules-and-Packages__03.stark", ParseMode::Program),
 ];

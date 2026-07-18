@@ -80,6 +80,38 @@ def main():
             )
             errors.append(f"Duplicate granular inventory IDs: {', '.join(duplicates)}.")
 
+        abstract_machine_path = os.path.join(
+            conformance_dir,
+            'STARKLANG',
+            'docs',
+            'spec',
+            'CORE-V1-ABSTRACT-MACHINE.md',
+        )
+        if not os.path.exists(abstract_machine_path):
+            errors.append(f"Normative abstract machine not found at {abstract_machine_path}.")
+        else:
+            with open(abstract_machine_path, 'r', encoding='utf-8') as f:
+                abstract_machine_content = f.read()
+            abstract_ids = re.findall(
+                r'\*\*([A-Z][A-Z0-9-]*-\d{3})\.\*\*', abstract_machine_content
+            )
+            duplicate_abstract_ids = sorted(
+                rule_id for rule_id in set(abstract_ids) if abstract_ids.count(rule_id) > 1
+            )
+            if duplicate_abstract_ids:
+                errors.append(
+                    "Duplicate abstract-machine rule IDs: "
+                    + ', '.join(duplicate_abstract_ids)
+                    + "."
+                )
+            missing_inventory_ids = sorted(set(abstract_ids) - inventory_id_set)
+            if missing_inventory_ids:
+                errors.append(
+                    "Abstract-machine rules missing from the completeness inventory: "
+                    + ', '.join(missing_inventory_ids)
+                    + "."
+                )
+
         legacy_entries = split_map.get('legacy', [])
         mapped_legacy_ids = [entry.get('id') for entry in legacy_entries]
         coverage_ids = [rule.get('id') for rule in rules]

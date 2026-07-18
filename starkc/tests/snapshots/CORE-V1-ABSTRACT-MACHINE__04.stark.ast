@@ -1,0 +1,13 @@
+snippet
+  let mut text @1:1
+    call @1:16
+      path String::from @1:16
+      lit-str "first" @1:29
+  let moved @2:1
+    path text @2:13
+  expr-stmt @3:1
+    assign Assign @3:1
+      path text @3:1
+      call @3:8
+        path String::from @3:8
+        lit-str "second" @3:21

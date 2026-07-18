@@ -1,18 +1,16 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.6
+Updated: 2026-07-18 after WP-C2.7
 
 ## Position
-Gate: C2  Next: WP-C2.7  Blocked: none
+Gate: C2  Next: WP-C2.8  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: WP-C2.6 Core completeness inventory and specification authority.
-- Transition base commit: `1ebcb2eec8d8cb95ea0e71c50b7bd16e08151230`
-  (`correct Gate C2 semantic-freeze preflight`).
-- Current committed head at the start of WP-C2.6:
-  `1ebcb2eec8d8cb95ea0e71c50b7bd16e08151230`. This event-style provenance avoids trying to
+- Last completed transition: WP-C2.7 abstract machine and execution semantics.
+- Transition base commit: `8596c88` (`complete WP-C2.6 semantic inventory`).
+- Current committed head at the start of WP-C2.7: `8596c88`. This event-style provenance avoids trying to
   embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -21,10 +19,10 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **473 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  **489 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 30 integration-test files**
   (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`, re-counted against the
-  post-WP-C2.5 tree — the
+  post-WP-C2.7 tree — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
   never actually verified against `ls`/`cargo test`'s own "Running ..." lines and had drifted;
   not chasing down exactly which prior WP's arithmetic first went wrong, since that would need
@@ -40,9 +38,11 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   a live-ORT-download inference test in `tests/gate5_codegen.rs`). Full per-file breakdown
   recorded in `starkc/docs/dev/compiler-map.md` (WP-C0.1; not re-regenerated for the WP-C1.1/
   C1.2/C1.3 deltas — see that file's own scope note).
-- Core spec revision: `STARKLANG/docs/spec/` files 00-07, normative per `CLAUDE.md`. Spec
-  fixture corpus: `STARKLANG/tests/spec-fixtures/manifest.toml`, 122 entries (parse-pass 68,
-  semantic-error 18, notation 30, lex-pass 4, parse-fail 2).
+- Core spec revision: `STARKLANG/docs/spec/` files 00-07 plus
+  `CORE-V1-ABSTRACT-MACHINE.md`, normative per `CLAUDE.md`. Spec fixture corpus:
+  `STARKLANG/tests/spec-fixtures/manifest.toml`, 104 entries (parse-pass 56,
+  semantic-error 16, notation 27, lex-pass 4, parse-fail 1). WP-C2.7 removed 28 stale,
+  duplicative memory-model examples and added 10 abstract-machine adversarial examples.
 - Tensor spec revision: `STARKLANG/docs/extensions/Tensor-Model-Types.md` (extension `tensor`
   v0.1), `AI-Extensions.md` (non-normative sketches).
 - Conformance DB: `STARKLANG/conformance/core-v1-coverage.toml`, 59 `[[rule]]` entries.
@@ -271,6 +271,17 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   122; `extract-spec-examples.sh` confirms the manifest is back in sync). DEV-029 is now a
   confirmed, spec-backed deviation rather than an inferred one — its ledger entry updated to cite
   the new normative text instead of describing the rule as inferred.
+- CD-012 [2026-07-18, WP-C2.7] Approved CORE-Q-006 and the normative Core v1 abstract machine.
+  Runtime authority moves from scattered operational prose to
+  `CORE-V1-ABSTRACT-MACHINE.md`. Evaluation is exactly once; assignment evaluates RHS before
+  destination, installs the new value before destroying the old; normal early transfers clean
+  exited scopes; language traps abort without unwinding, including during destination resolution
+  and partial aggregate construction. Reference identity is abstract and survives legal
+  ownership/call transfers; returned receiver-derived references designate caller objects and
+  range slices are live views. CORE-Q-020 is approved only for runtime ownership/destruction of
+  existing Core patterns, and CORE-Q-017 only for the language-trap boundary; C2.8/C2.9 retain
+  their remaining portions. This decision defines semantics but deliberately defers compiler/
+  interpreter alignment and adversarial rule evidence to C2.11.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -2131,3 +2142,46 @@ were regenerated/checked. The adjacent `sort_by_key` Clippy correction in
 FOLLOW-UP: WP-C2.7 must create the abstract machine and decide CORE-Q-006/related execution
 questions before any implementation alignment.
 NEXT: WP-C2.7 (Abstract machine and execution semantics)
+
+### WP-C2.7 — 2026-07-18
+DONE: Added the normative, backend-independent Core v1 abstract machine and made it the sole
+runtime authority. Defined abstract values/objects/storage/owners, places/projections,
+initialization, temporaries, exactly-once evaluation, construct-complete evaluation order,
+normal control transfer, moves/copies/partial moves/reinitialization, assignment/replacement,
+partial aggregate behavior, pattern ownership, deterministic destruction, caller-stable
+reference identity, live slice views, trap abort, and the differential observation comparator.
+Replaced competing runtime/layout prose in the type, semantic-analysis, and memory chapters
+with legality/safety summaries and normative cross-references. Added ten manifest-triaged
+adversarial abstract-machine examples and removed 28 stale duplicative memory-model examples.
+FILES: STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md,
+STARKLANG/docs/spec/00-Core-Language-Overview.md, STARKLANG/docs/spec/03-Type-System.md,
+STARKLANG/docs/spec/04-Semantic-Analysis.md, STARKLANG/docs/spec/05-Memory-Model.md,
+generated combined Markdown/HTML/PDF, STARKLANG/tools/build-core-spec.py,
+STARKLANG/tools/extract-spec-examples.sh, STARKLANG/tests/spec-fixtures/manifest.toml and
+generated fixture set, STARKLANG/docs/compiler/reference-execution.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.7.md,
+STARKLANG/docs/compiler/COMPILER-CHARTER.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, starkc/scripts/check-conformance.py,
+starkc/tests/snapshots.rs, starkc/tests/span_integrity.rs and updated snapshot goldens,
+CLAUDE.md, COMPILER-STATE.md.
+RULES: introduced `AM-*`, `EXEC-*`, `MOVE-*`, `REF-*`, `DROP-*`, and
+`OBS-COMPARE-001` abstract-machine rules; linked all prior runtime deviations to named rules.
+DECISIONS: CORE-Q-006 approved. CORE-Q-020 runtime ownership/destruction for existing Core
+patterns approved, with C2.8 static work pending. CORE-Q-017 language-trap/abort boundary
+approved, with C2.9 external/resource classification pending. RHS-before-destination assignment,
+install-before-old-drop replacement, no unwind for destination/aggregate traps, and deterministic
+normal-transfer cleanup are normative.
+EVIDENCE: DOC + fixture conformance + full regression. Ten new abstract-machine examples parse under their
+manifest verdicts; the synchronized corpus contains 104 fixtures (56 parse-pass, 16
+semantic-error, 27 notation, 4 lex-pass, 1 parse-fail). The 70-page A4 combined PDF,
+Markdown, and HTML regenerate successfully. Conformance validation, snapshot and span-integrity
+coverage, formatting, Clippy with warnings denied, Python compilation, and whitespace checks
+pass. `cargo test --workspace --all-targets --all-features` passes 489 tests with 0 failures and
+2 intentional opt-in tests ignored. No Rust compiler/interpreter behavior changed; only
+fixture-migration test infrastructure changed, and C2.11 retains implementation alignment.
+FOLLOW-UP: WP-C2.8 must settle type identity/well-formedness, inference, traits/coherence,
+remaining static pattern rules, and constant evaluation against this execution model.
+NEXT: WP-C2.8 (Type, trait, pattern and constant semantics)

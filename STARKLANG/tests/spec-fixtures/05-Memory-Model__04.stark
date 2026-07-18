@@ -1,4 +1,0 @@
-let s1 = String::from("hello");
-let s2 = s1;                // Ownership moved from s1 to s2
-// println(s2.as_str());    // OK: s2 owns the string
-// println(s1.as_str());    // Error: s1 no longer valid

@@ -1,0 +1,1 @@
+let value = (Loud::new("completed"), fail()); // A trap in fail() does not unwind completed.

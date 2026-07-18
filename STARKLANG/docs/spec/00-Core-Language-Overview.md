@@ -2,8 +2,9 @@
 
 ## Introduction
 This document provides an overview of the complete STARK core language specification. The
-numbered source documents 00–07 in `docs/spec/` are normative for Core v1. The concise summary
-and generated combined artifacts are non-normative views, and compiler-governance ledgers under
+numbered source documents 00–07 plus `CORE-V1-ABSTRACT-MACHINE.md` in `docs/spec/` are
+normative for Core v1. The concise summary and generated combined artifacts are non-normative
+views, and compiler-governance ledgers under
 `docs/compiler/semantic-freeze/` are non-normative. The core language defines the
 general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and
 standard library). Non-core extensions are defined separately.
@@ -61,13 +62,21 @@ Rules for meaningful program validation:
 - **Error Reporting**: Comprehensive diagnostics with suggestions
 
 ### 5. Memory Model ([05-Memory-Model.md](./05-Memory-Model.md))
-Memory safety through compile-time analysis:
+Memory-safety guarantees and their authority boundaries:
 - **Ownership Rules**: Single ownership, automatic cleanup
 - **Move Semantics**: Explicit ownership transfer
 - **Borrowing System**: Immutable and mutable references
 - **Lifetime Tracking**: Reference validity guarantees
 - **Allocation Independence**: Safety rules do not promise a physical allocation strategy
 - **Drop System**: Deterministic resource cleanup
+
+### Abstract Machine ([CORE-V1-ABSTRACT-MACHINE.md](./CORE-V1-ABSTRACT-MACHINE.md))
+Defines backend-independent execution:
+- **Values and Places**: Abstract objects, storage, owners, and projections
+- **Evaluation**: Exact order, exactly-once evaluation, and normal control transfer
+- **Moves and Destruction**: Replacement, partial moves, temporaries, loops, and collections
+- **References**: Identity-preserving projection, returned references, and slice views
+- **Traps and Observations**: Abort boundary and the differential execution comparator
 
 ### 6. Standard Library ([06-Standard-Library.md](./06-Standard-Library.md))
 Essential types and functions for practical programming:

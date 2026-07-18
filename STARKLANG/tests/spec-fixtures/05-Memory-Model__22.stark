@@ -1,2 +1,0 @@
-struct Pair { first: Loud, second: Loud }
-// Dropping a Pair value drops `second` before `first`.

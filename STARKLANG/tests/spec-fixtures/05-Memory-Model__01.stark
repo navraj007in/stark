@@ -1,6 +1,0 @@
-// Stack-allocated values
-let x: Int32 = 42;              // x stored on stack
-let y: [Int32; 4] = [1, 2, 3, 4];  // y stored on stack
-
-struct Point { x: Float64, y: Float64 }
-let p: Point = Point { x: 1.0, y: 2.0 };  // p stored on stack

@@ -33,8 +33,8 @@
 #             "statement level"; it is not a source-language entry point.
 #
 # Verdict census (keep in sync when re-triaging):
-#   parse-pass 68, semantic-error 18, notation 30, lex-pass 4, parse-fail 2
-#   = 122 fixtures.
+#   parse-pass 56, semantic-error 16, notation 27, lex-pass 4, parse-fail 1
+#   = 104 fixtures.
 
 ["00-Core-Language-Overview__01.stark"]
 verdict = "parse-pass"
@@ -350,130 +350,50 @@ verdict = "semantic-error"
 mode = "snippet"
 errors = "E0500"
 
-["05-Memory-Model__01.stark"]
+["CORE-V1-ABSTRACT-MACHINE__01.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "next_index and make_value are illustrative external functions"
+
+["CORE-V1-ABSTRACT-MACHINE__02.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 
-["05-Memory-Model__02.stark"]
+["CORE-V1-ABSTRACT-MACHINE__03.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "Loud and fail are illustrative external items"
+
+["CORE-V1-ABSTRACT-MACHINE__04.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 
-["05-Memory-Model__03.stark"]
+["CORE-V1-ABSTRACT-MACHINE__05.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 
-["05-Memory-Model__04.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "error case is commented out"
-
-["05-Memory-Model__05.stark"]
+["CORE-V1-ABSTRACT-MACHINE__06.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 
-["05-Memory-Model__06.stark"]
-verdict = "parse-pass"
-mode = "program"
-note = "error case is commented out"
-
-["05-Memory-Model__07.stark"]
-verdict = "notation"
-note = "Copy/Move type catalog"
-
-["05-Memory-Model__08.stark"]
+["CORE-V1-ABSTRACT-MACHINE__07.stark"]
 verdict = "parse-pass"
 mode = "snippet"
+note = "values, skip, stop, and consume are illustrative external items"
 
-["05-Memory-Model__09.stark"]
+["CORE-V1-ABSTRACT-MACHINE__08.stark"]
 verdict = "parse-pass"
 mode = "snippet"
+note = "Loud is an illustrative external item"
 
-["05-Memory-Model__10.stark"]
-verdict = "parse-pass"
-mode = "program"
-
-["05-Memory-Model__11.stark"]
+["CORE-V1-ABSTRACT-MACHINE__09.stark"]
 verdict = "parse-pass"
 mode = "snippet"
-note = "error cases commented out; `make` undefined (extraction artifact)"
+note = "Loud::new is illustrative"
 
-["05-Memory-Model__12.stark"]
+["CORE-V1-ABSTRACT-MACHINE__10.stark"]
 verdict = "parse-pass"
 mode = "snippet"
-
-["05-Memory-Model__13.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-
-["05-Memory-Model__14.stark"]
-verdict = "semantic-error"
-mode = "snippet"
-errors = "E0101"
-
-["05-Memory-Model__15.stark"]
-verdict = "parse-pass"
-mode = "program"
-
-["05-Memory-Model__16.stark"]
-verdict = "parse-fail"
-mode = "program"
-note = "lifetime annotations are a future feature; Core v1 rejects (`'a` fails in the lexer)"
-
-["05-Memory-Model__17.stark"]
-verdict = "semantic-error"
-mode = "program"
-errors = "E0103"
-
-["05-Memory-Model__18.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "Point, large_object undefined (extraction artifact)"
-
-["05-Memory-Model__19.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "Rc/Arc are future features, not in the Core v1 stdlib (gate2-revisit)"
-
-["05-Memory-Model__20.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "close_file undefined (extraction artifact)"
-
-["05-Memory-Model__21.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-
-["05-Memory-Model__22.stark"]
-verdict = "parse-pass"
-mode = "program"
-note = "Loud undefined (extraction artifact); a top-level struct item, not a snippet"
-
-["05-Memory-Model__23.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "error case is commented out"
-
-["05-Memory-Model__24.stark"]
-verdict = "notation"
-note = "Copy type catalog mixed with code"
-
-["05-Memory-Model__25.stark"]
-verdict = "notation"
-note = "Move type catalog mixed with code"
-
-["05-Memory-Model__26.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-
-["05-Memory-Model__27.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "Rc is a future feature; some_value undefined (gate2-revisit)"
-
-["05-Memory-Model__28.stark"]
-verdict = "parse-pass"
-mode = "snippet"
-note = "RefCell is a future feature (gate2-revisit)"
 
 ["06-Standard-Library__01.stark"]
 verdict = "notation"

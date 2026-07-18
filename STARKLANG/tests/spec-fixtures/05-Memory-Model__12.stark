@@ -1,7 +1,0 @@
-fn read_string(s: &String) -> UInt64 {
-    s.len()                 // Can read but not modify
-}
-
-let my_string = String::from("hello");
-let length = read_string(&my_string);  // Borrow my_string
-println(my_string.as_str()); // my_string still accessible

@@ -1,3 +1,0 @@
-let s = String::from("hello");
-drop(s);                    // Explicitly drop s
-// println(s.as_str());     // Error: s has been dropped

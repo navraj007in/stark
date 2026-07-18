@@ -1,7 +1,0 @@
-// Single-threaded reference counting (future feature)
-let data = Rc::new(v);
-let data2 = data.clone();   // Increment reference count
-
-// Multi-threaded reference counting (future feature)
-let shared = Arc::new(v);
-let shared2 = shared.clone();
