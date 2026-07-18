@@ -1201,7 +1201,8 @@ WP-C1.5)
   `::float64_println_and_fmt_are_unaffected_by_the_float32_fix`.
 - **Owning gate:** found by external review of the committed WP-C2.11 alignment work,
   independently reproduced, and closed (for the two directly-printed cases) in this correction
-  pass. The nested-value residual gap is unscheduled.
+  pass. The nested-value residual gap was closed by DEV-058 in the following correction-brief
+  session.
 
 ## DEV-050 — Negative `sqrt` trapped instead of returning NaN (RESOLVED post-WP-C2.11)
 
@@ -1375,6 +1376,184 @@ WP-C1.5)
   imports don't populate the same module-items lookup a direct `use` does" — needs its own
   investigation of the `use`-import population path in `resolve.rs`. — unscheduled.
 
+## DEV-056 — `?` propagation was swallowed outside aggregate-construction call sites (RESOLVED)
+
+- **Normative expectation:** early transfer via `?` must stop evaluation of every later
+  sub-expression in the same construct, unconditionally — not just inside tuple/array/struct/
+  enum-variant literals (DEV-045's original scope).
+- **Original behaviour:** `expect_value` converts `Flow::Propagate` into `pending_propagation` +
+  a dummy `Value::Unit`. Only aggregate-construction call sites checked the flag before
+  continuing (DEV-045). Every other sequential-evaluation context kept going: ordinary/
+  associated/builtin function calls, method calls (both user-method and core/builtin-type
+  dispatch), binary operands, `&&`/`||` right operands, assignment right-hand sides, ranges,
+  repeat expressions, `if`/`while` conditions, match scrutinees, and `break` values (`return`
+  alone already checked the flag). Confirmed empirically to run real, visible side effects that
+  should never have executed — not merely a spurious diagnostic:
+  `sink(fail()?, side_effect())` printed `SIDE EFFECT`/`CALLED` before finally reaching `done`.
+- **Resolution:** a new `eval_call_arguments` helper (mirroring `eval_aggregate_elements`'s
+  stop-and-clean-up-in-reverse contract, but returning plain owned values instead of
+  aggregate-storage `Option<Value>` slots) is now used by every call-argument-evaluating site.
+  `call_core_method` (a large dispatcher with a single caller, `call_method`) uses the
+  "function-boundary adapter" exception: it re-arms `pending_propagation` and returns a dummy
+  value on propagation, and its one caller checks the flag immediately, exactly mirroring
+  `expect_value`'s own existing convention but with a caller guaranteed to check it. Binary
+  operands, `&&`/`||`, assignment, ranges, repeat, `if`/`while` conditions, match scrutinees, and
+  `break` each gained an explicit `pending_propagation` check between their sequential
+  sub-evaluations. `expect_bool`/`expect_int` were changed to pass a placeholder through
+  (instead of reporting a misleading "expected Bool"/"expected integer" trap) when propagation is
+  pending, on the condition that every one of their call sites checks `pending_propagation`
+  immediately afterward — verified true for all eight call sites as of this fix, including one
+  (`expr_place`'s computed-index case) that cannot itself return `Flow::Propagate` (a documented,
+  narrower residual: it fails loudly with a dedicated error instead of truly propagating, which
+  is a real, separate architectural gap in `expr_place`'s non-`Flow`-aware return type, left open
+  rather than attempted as part of this fix).
+  Regressions (all in `interp.rs`): `try_in_call_argument_stops_later_arguments_and_callee`,
+  `try_in_method_argument_stops_later_arguments_and_method_body`,
+  `try_in_binary_operand_stops_rhs_evaluation`,
+  `try_in_and_or_right_operand_propagates_not_converted_to_bool`,
+  `try_in_range_low_bound_stops_high_bound_evaluation`,
+  `try_in_repeat_value_stops_array_construction`,
+  `try_in_break_value_propagates_out_of_the_enclosing_function`,
+  `try_drops_completed_call_argument_temporaries_in_reverse_order`,
+  `try_in_return_expression_still_propagates_without_dummy_unit`.
+- **Owning gate:** found in an external correction brief following WP-C2.12, independently
+  reproduced against the current head before fixing, closed the same session.
+
+## DEV-057 — Eq/Ord comparison dispatch passed owned clones instead of true borrowed places (RESOLVED)
+
+- **Normative expectation:** `==`/`!=`/`<`/`<=`/`>`/`>=` desugar to `Eq::eq(&self, &other)`/
+  `Ord::cmp(&self, &other)` (`03-Type-System.md` "Operators and Traits") — both operands are
+  borrowed, never owned by the comparison.
+- **Original behaviour:** `eval_binary`'s nominal Eq/Ord dispatch promoted a *clone* of the left
+  operand into a temporary place and passed a *clone* of the right operand as an ordinary owned
+  method argument. This was wrong in two independent, differently-manifesting ways: (1) the
+  receiver's clone silently vanished via ordinary Rust-level drop when `call_user_method`
+  extracted it before frame cleanup (correct for a real reference, since dropping a reference
+  does nothing — but here the "reference" was actually an owned clone, so its data and any
+  `Drop::drop` call were lost entirely, with no STARK-level destructor firing at all); (2) the
+  argument's clone was bound as an ordinary owned parameter local, so the callee's own normal
+  per-parameter cleanup gave it a *real*, extra `Drop::drop` call, before the comparison's own
+  caller-visible side effects had even finished. Confirmed empirically:
+  `println(a == b); println("after");` for a `Drop`-bearing `Key` printed `b`'s destructor
+  *before* `"after"`, then printed both `a` and `b` again at their real, correct scope-end —
+  i.e. `b` was destroyed twice and out of order.
+- **Resolution:** a new `resolve_comparison_operand` helper resolves each comparison operand to
+  both a value (for the non-dispatching structural-equality fallback, which never needs place
+  identity) and, for a place expression, the *real* `Place`. `eval_binary`'s signature now
+  threads `(Value, Option<Place>)` per side; the nominal dispatch path passes `Value::Ref(place)`
+  for both operands — a genuine borrow of the original storage — instead of a clone, for both
+  the receiver and the argument. A non-place operand (a call result with no other owner) still
+  needs a fresh temporary to point the reference at; found and fixed a *second*, broader,
+  pre-existing bug while implementing this: `promote_to_temp_place` (used at 15+ call sites
+  throughout the interpreter — comparison temporaries, for-loop iterator storage, string/Vec/
+  HashMap iteration `Value::Ref` wrapping, range-slice views) bypasses `Frame::insert` entirely
+  (a raw `.values.insert(...)` call), so its temporary is never recorded in `Frame::order` and is
+  silently discarded via ordinary Rust-level deallocation when the frame is popped, with *no*
+  `Drop::drop` call ever firing for it — confirmed empirically (a `Drop`-bearing temporary
+  comparison operand never printed its destructor at all, not even at program end). Rather than
+  changing the shared, widely-used `promote_to_temp_place` (which several existing call sites
+  rely on *not* double-owning a value that is also separately owned elsewhere, e.g. iterator
+  snapshots — confirmed by a regression when this was tried broadly first), added a new, narrowly
+  -scoped `promote_to_owned_temp_place` that does register through `Frame::insert`, used only at
+  the two new non-place-operand fallback sites this fix introduces.
+  Regressions (all in `interp.rs`): `eq_on_drop_type_does_not_create_or_drop_clones`,
+  `ord_on_drop_type_does_not_create_or_drop_clones`,
+  `comparison_of_field_and_index_places_borrows_original_storage`,
+  `comparison_of_temporary_operands_evaluates_each_once_and_drops_after_call`,
+  `shared_receiver_method_observes_original_place_without_owned_clone_cleanup`.
+- **Owning gate:** found in the same external correction brief as DEV-056, independently
+  reproduced against the current head before fixing, closed the same session.
+
+## DEV-058 — Float32 nested inside a tuple/array/Option/Result/struct still formatted via Float64 digits (RESOLVED)
+
+- **Normative expectation:** canonical display uses the shortest decimal representation that
+  round-trips to the *declared* IEEE type, for a `Float32` value in *any* position, not only when
+  it is the immediate operand of `println`/`.fmt()`.
+- **Original behaviour:** this is exactly the residual gap DEV-049 left open. `Value::Float`
+  stored every float as a bare `f64` with no width marker; `println`/`.fmt()` were special-cased
+  (via an external static-type lookup at the call site) to detect a checked-Float32 operand and
+  format it through `canonical_float32`, but the *generic*, recursive `Display for Value` impl —
+  reached whenever a Float32 is nested inside a printed tuple, array, `Option`, `Result`, or
+  struct, all of which format their contents through `ToString`/`Display` with no static-type
+  context available at that point — always fell back to `canonical_float`'s `f64` digits.
+  Confirmed empirically: `println((0.1f32, 7))` printed `(0.10000000149011612, 7)` instead of
+  `(0.1, 7)`.
+- **Resolution:** added a `FloatWidth { F32, F64 }` tag carried directly on `Value::Float(f64,
+  FloatWidth)`, so the runtime value itself knows its declared width independent of any
+  external type-table lookup. `Display for Value`'s `Float` arm now matches on the tag directly
+  and picks `canonical_float32`/`canonical_float` accordingly — fixing the nested-formatting gap
+  for free, since `write_sequence`/`display_slot`/`Option`/`Result`'s `Display` arms all route
+  through this same recursive impl. This let two now-redundant external-type-table special cases
+  be deleted entirely: `.fmt()`'s `receiver_ty`-based Float32 check in `call_core_method`, and
+  `format_runtime_value`'s `ty: Option<&Ty>` parameter (which also let `call_builtin`'s `arg_ty`
+  computation and the `arg_exprs` parameter it depended on be removed, since nothing else in
+  `call_builtin` used them). Every other `Value::Float` construction site across the interpreter
+  (arithmetic, casts, unary negation, literal evaluation, the `Float64`-only math builtins,
+  `MathPi`/`MathE`, `Random::next_float`, `default_value_for`) was updated to tag the correct
+  width: arithmetic/casts/negation route through the existing `normalize_numeric` helper (which
+  already looked up the expression's static type to decide `f32`-rounding, extended here to also
+  set the tag from that same lookup); literal evaluation reads the width straight off the
+  literal's own suffix (`0.1f32` vs. unsuffixed, which the checker already defaults to
+  `Float64`); the transcendental math builtins are `Float64 -> Float64` only by signature (per
+  `typecheck.rs`) and always tag `F64`; `math::abs` is generically `T -> T` and preserves the
+  input's own tag. Regressions (all in `interp.rs`):
+  `float32_nested_in_tuple_uses_float32_round_trip_digits`,
+  `float32_nested_in_array_uses_float32_round_trip_digits`,
+  `float32_nested_in_option_and_result_use_float32_round_trip_digits`,
+  `float32_nested_in_struct_uses_float32_round_trip_digits`,
+  `float32_arithmetic_result_nested_in_tuple_uses_float32_round_trip_digits`,
+  `float32_cast_to_float64_uses_float64_round_trip_digits_not_float32` (the last proves the
+  formatting difference tracks the value's declared width, not an unconditional `f32`-rounding).
+  All pre-existing DEV-049 regressions continue to pass unchanged.
+- **Owning gate:** correction-brief Issue 3 (post-WP-C2.12), reproduced against the current head
+  before fixing, closed the same session.
+
+## DEV-059 — NaN-producing float operations did not canonicalize to the spec's fixed bit pattern (RESOLVED)
+
+- **Normative expectation:** `NUM-FLOAT-OP-001` (`CORE-V1-ABSTRACT-MACHINE.md`): "NaN propagates
+  as a quiet NaN; operations that create a NaN produce the canonical quiet NaN with sign zero and
+  all payload bits other than the quiet bit zero" — a specific, fixed bit pattern for a given
+  width (`0x7ff8_0000_0000_0000` for `Float64`, `0x7fc0_0000` for `Float32`), not merely "some
+  NaN." The same rule carves out unary negation: "Negation flips the sign bit, including for zero
+  and NaN" — `-NaN` must flip whatever sign bit the operand already had, not force sign zero.
+- **Original behaviour:** every NaN-producing primitive operation (`0.0 / 0.0`, `inf - inf`,
+  `sqrt` of a negative number, arithmetic on an already-NaN operand, the transcendental math
+  builtins for out-of-domain inputs) simply returned whatever bit pattern the host `f64`/`f32`
+  arithmetic instruction happened to produce, with no canonicalization step at all. IEEE 754 only
+  mandates the exponent field and the quiet bit for a quiet NaN — sign and the remaining payload
+  bits are otherwise unconstrained — so two different NaN-producing paths were not guaranteed
+  (and were not verified) to produce bit-identical results, violating the "canonical" requirement
+  even though every NaN still printed as `NaN` (which is bit-pattern-insensitive and so never
+  surfaced the gap through any existing test).
+- **Resolution:** added `canonical_nan_bits(width: FloatWidth) -> f64` (the two literal bit
+  patterns above, spelled out explicitly rather than relying on `f32::NAN`/`f64::NAN` — which
+  happen to already equal them — so the canonicalization is self-documenting at the call site)
+  and `canonicalize_nan(value, width)` (returns `canonical_nan_bits(width)` if `value.is_nan()`,
+  else `value` unchanged — infinities, signed zero, and every finite value pass through
+  untouched). Wired into every primitive-arithmetic and standard-math-builtin call site that can
+  produce a float result: `Add`/`Sub`/`Mul`/`Div`/`Rem` (via a new `canonicalize_float_result`
+  wrapper around the existing `normalize_numeric` call), `sqrt`, `math::abs`, `math::pow`,
+  `atan2`, and the remaining transcendental builtins (`log`/`log10`/`exp`/`sin`/`cos`/`tan`/
+  `asin`/`acos`/`atan`/`floor`/`ceil`/`round`/`trunc`). Unary negation deliberately does **not**
+  route through canonicalization — Rust's `-x` for floats lowers to a pure sign-bit-flip
+  (`fneg`), matching the spec's explicit negation carve-out; canonicalizing there would have
+  wrongly forced a negated NaN back to sign zero. Regressions (all in `interp.rs`, using a new
+  `eval_function_result` test helper that runs a zero-argument function through the interpreter
+  and returns its `Value` directly, since no STARK-level program can observe a float's bit
+  pattern -- there is no bit-reinterpretation primitive in Core v1 and `println`'s `NaN` text is
+  identical for every bit pattern):
+  `division_by_zero_produces_the_canonical_quiet_nan_bit_pattern_for_float64`,
+  `::_for_float32`, `sqrt_of_negative_produces_the_canonical_quiet_nan_bit_pattern`,
+  `infinity_minus_infinity_produces_the_canonical_quiet_nan_bit_pattern` (a *created* NaN, not a
+  propagated one), `arithmetic_on_an_already_nan_operand_produces_the_canonical_quiet_nan_bit_pattern`
+  (a *propagated* NaN, required to canonicalize identically to a created one),
+  `every_nan_producing_path_yields_the_same_canonical_bits_for_float64` (the brief's required
+  cross-operation assertion — four independently-shaped NaN-producing expressions all compared
+  bit-for-bit equal), and `negating_a_canonical_nan_flips_its_sign_bit_instead_of_forcing_sign_zero`
+  (proves the negation carve-out is honored, not silently canonicalized away).
+- **Owning gate:** correction-brief Issue 4 (post-WP-C2.12), reproduced against the current head
+  before fixing, closed the same session.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1424,7 +1603,17 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 53 numbered deviations total (DEV-002 through DEV-055, DEV-001/DEV-003 retired).
+Current count: 57 numbered deviations total (DEV-002 through DEV-059, DEV-001/DEV-003 retired).
+DEV-056 (`?` propagation swallowed outside aggregate construction), DEV-057 (Eq/Ord
+comparison dispatch passed owned clones instead of borrowed places), DEV-058 (Float32 nested
+inside a tuple/array/Option/Result/struct still formatted via Float64 digits -- the residual gap
+DEV-049 left open), and DEV-059 (NaN-producing float operations did not canonicalize to the
+spec's fixed bit pattern) were found in an external correction brief following WP-C2.12,
+independently reproduced against the current head before fixing, and all four **closed** with
+real fixes in the same session -- DEV-057's investigation also found and fixed a second, broader,
+pre-existing bug (`promote_to_temp_place`'s 15+ call sites never registered their temporary in
+`Frame::order`, so its value was silently discarded via ordinary Rust-level deallocation with no
+`Drop::drop` call ever firing).
 DEV-051, DEV-052, and DEV-055 were found by WP-C2.12 while building the differential execution
 corpus; none fixed (corpus-building is not a semantic-repair WP). DEV-053 and DEV-054 were also
 found there, investigated as a dedicated follow-up in the same session, found to share one root
@@ -1442,8 +1631,9 @@ WP-C2.11 alignment work -- each independently reproduced against the compiler be
 trusted, one review claim (`MIN / -1` also failing to trap) found overstated and corrected to
 its actual `Rem`-only scope, one review claim (`main` entrypoint counting type-namespace items)
 independently refuted and not opened as a deviation -- and closed in a post-WP-C2.11 correction
-pass; DEV-049 records one known residual gap left open (Float32 values formatted only through
-the generic, static-type-free `Display for Value` path). DEV-017 remains partially closed
+pass; DEV-049 recorded one known residual gap left open at the time (Float32 values formatted
+only through the generic, static-type-free `Display for Value` path), closed by DEV-058 in a
+later correction-brief session. DEV-017 remains partially closed
 (tooling built, 39 of 59 rules remain unclassified). DEV-036 is closed (WP-C2.12): the
 filename/path-based module-loader bypass is replaced by an explicit, harness-only opt-in named
 by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 remain open with C2.8/C2.9 decision

@@ -610,6 +610,20 @@ non-soundness-critical, listed, and owned. It must also verify negative evidence
 soundness-relevant rule, generated/normative specification agreement, and accurate current-head
 and next-gate state. C3 opens only with a frozen outcome.
 
+Completed on 2026-07-18. Verdict **CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS**:
+all 24 open questions (CORE-Q-001–024) approved; the 166-row completeness inventory has zero
+absent/contradictory/unclassified rows (6 remain `pending-owner-approval` governance
+bookkeeping, behavior already implemented and tested); `CORE-V1-ABSTRACT-MACHINE.md` verified
+independent of MIR/Rust-implementation internals; all 34 `core-v1-c2.11-evidence.toml` rules
+carry non-empty negative-test evidence; generated/normative specs verified in sync; 33
+deviations closed this gate (including DEV-053/054, the most severe finding of the compiler
+track — a bare `None` pattern silently matching any value with wrong runtime output), 8 remain
+open and non-soundness-relevant. WP-C2.12 (differential corpus) is explicitly not exhaustive —
+an initial, representative corpus exists and passes cleanly; the roadmap's "generated" coverage
+and cross-backend replay (the latter blocked behind Gate C3 by the roadmap's own dependency
+structure) remain open, non-blocking follow-up work. Full report:
+`starkc/docs/compiler/C2-exit-report.md`. Gate C3 opens; next WP-C3.1.
+
 ---
 
 ## GATE C3 — Native Compiler Architecture and Backend Selection Spike

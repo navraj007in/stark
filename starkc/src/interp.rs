@@ -206,12 +206,29 @@ fn constant_expr_allowed(hir: &Hir, expr: ExprId) -> Result<(), (Span, &'static 
     }
 }
 
+/// Correction-brief Issue 3: `Value::Float` carries its declared width so the runtime value
+/// itself knows whether it's a `Float32` or `Float64`, independent of any static-type-table
+/// lookup at the point of use. Before this, every `Float32` value was stored as a plain `f64`
+/// with no width marker at all -- correct for arithmetic (Float32 operations are already
+/// rounded to `f32` precision after each primitive operation, per the frozen numeric contract,
+/// and then widened back to `f64` for uniform storage), but losing the information needed to
+/// format a `Float32` value using its own shortest-round-trip digits once it's nested inside a
+/// tuple/array/struct/collection and reaches the generic recursive `Display for Value` impl,
+/// which has no static-type context to consult. Math builtins (`sqrt`, `sin`, `cos`, ...) are
+/// typed `Float64 -> Float64` only (`typecheck.rs`'s builtin signatures), so they always
+/// produce `F64` and never need to preserve an argument's width.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FloatWidth {
+    F32,
+    F64,
+}
+
 #[derive(Clone, PartialEq)]
 enum Value {
     Unit,
     Bool(bool),
     Int(i128),
-    Float(f64),
+    Float(f64, FloatWidth),
     Char(char),
     Str(String),
     String(String),
@@ -467,7 +484,10 @@ impl fmt::Display for Value {
             Value::Unit => write!(f, "()"),
             Value::Bool(value) => write!(f, "{value}"),
             Value::Int(value) => write!(f, "{value}"),
-            Value::Float(value) => write!(f, "{}", canonical_float(*value)),
+            Value::Float(value, FloatWidth::F32) => {
+                write!(f, "{}", canonical_float32(*value as f32))
+            }
+            Value::Float(value, FloatWidth::F64) => write!(f, "{}", canonical_float(*value)),
             Value::Char(value) => write!(f, "{value}"),
             Value::Str(value) | Value::String(value) => write!(f, "{value}"),
             Value::Tuple(values) => write_sequence(f, "(", ")", values),
@@ -558,7 +578,7 @@ impl Ord for Value {
                 Value::Unit => 0,
                 Value::Bool(_) => 1,
                 Value::Int(_) => 2,
-                Value::Float(_) => 3,
+                Value::Float(..) => 3,
                 Value::Char(_) => 4,
                 Value::Str(_) => 5,
                 Value::String(_) => 6,
@@ -601,7 +621,7 @@ impl Ord for Value {
         match (self, other) {
             (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
             (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
+            (Value::Float(a, _), Value::Float(b, _)) => a.total_cmp(b),
             (Value::Char(a), Value::Char(b)) => a.cmp(b),
             (Value::Str(a), Value::Str(b)) | (Value::String(a), Value::String(b)) => a.cmp(b),
             (Value::Tuple(a), Value::Tuple(b))
@@ -852,7 +872,7 @@ impl<'a> Interpreter<'a> {
             Value::Unit => Value::Unit,
             Value::Bool(_) => Value::Bool(false),
             Value::Int(_) => Value::Int(0),
-            Value::Float(_) => Value::Float(0.0),
+            Value::Float(_, width) => Value::Float(0.0, *width),
             Value::Char(_) => Value::Char('\0'),
             Value::Str(_) | Value::String(_) => Value::String(String::new()),
             Value::Tuple(elems) => {
@@ -1248,12 +1268,38 @@ impl<'a> Interpreter<'a> {
             }
             hir::ExprKind::Binary { op, lhs, rhs } => {
                 if *op == BinOp::And {
-                    let left = self.expect_bool(*lhs)?;
-                    return Ok(Flow::Value(Value::Bool(left && self.expect_bool(*rhs)?)));
+                    let left = self.expect_value(*lhs)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    let Value::Bool(left) = left else {
+                        return Err(RuntimeError::new("expected Bool", self.hir.expr(*lhs).span));
+                    };
+                    if !left {
+                        return Ok(Flow::Value(Value::Bool(false)));
+                    }
+                    let right = self.expect_bool(*rhs)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    return Ok(Flow::Value(Value::Bool(right)));
                 }
                 if *op == BinOp::Or {
-                    let left = self.expect_bool(*lhs)?;
-                    return Ok(Flow::Value(Value::Bool(left || self.expect_bool(*rhs)?)));
+                    let left = self.expect_value(*lhs)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    let Value::Bool(left) = left else {
+                        return Err(RuntimeError::new("expected Bool", self.hir.expr(*lhs).span));
+                    };
+                    if left {
+                        return Ok(Flow::Value(Value::Bool(true)));
+                    }
+                    let right = self.expect_bool(*rhs)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    return Ok(Flow::Value(Value::Bool(right)));
                 }
                 // Equality/ordering desugar to `Eq::eq(&self, &other)`/`Ord::cmp(&self, &other)`
                 // (03-Type-System.md "Operators and Traits"): both operands are borrowed, not
@@ -1263,39 +1309,85 @@ impl<'a> Interpreter<'a> {
                 // comparison never took ownership. `expect_value_borrowed` clones place operands
                 // instead; non-place operands (call results, literals) have no other owner, so
                 // ordinary evaluation is unaffected.
-                let (left, right) = if matches!(
+                //
+                // Both branches check `pending_propagation` after the left operand, before the
+                // right operand ever evaluates: `?` in `lhs` must stop `rhs` from running at all,
+                // not silently continue with a dummy `Value::Unit` left operand. The comparison
+                // branch also threads real operand *places* through to `eval_binary` (Correction
+                // brief Issue 2): passing only cloned values, as `expect_value_borrowed` alone
+                // would, loses the original storage identity that `Eq::eq`/`Ord::cmp` dispatch
+                // needs to borrow rather than duplicate.
+                let (left, right, left_place, right_place) = if matches!(
                     op,
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
                 ) {
-                    let left = self.expect_value_borrowed(*lhs)?;
-                    let right = self.expect_value_borrowed(*rhs)?;
-                    (left, right)
+                    let (left, left_place) = self.resolve_comparison_operand(*lhs)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    let (right, right_place) = self.resolve_comparison_operand(*rhs)?;
+                    (left, right, left_place, right_place)
                 } else {
                     let left = self.expect_value(*lhs)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
                     let right = self.expect_value(*rhs)?;
-                    (left, right)
+                    (left, right, None, None)
                 };
-                Ok(Flow::Value(
-                    self.eval_binary(*op, left, right, expr_id, expr.span)?,
-                ))
+                if let Some(propagated) = self.pending_propagation.take() {
+                    // The right operand itself propagated; already-evaluated `left` was either a
+                    // borrow (nothing owned to clean up) or a fresh temporary with no destructor
+                    // side effects distinguishable from ordinary drop order, so no explicit
+                    // cleanup beyond normal drop semantics is required here.
+                    return Ok(Flow::Propagate(propagated));
+                }
+                Ok(Flow::Value(self.eval_binary(
+                    *op,
+                    (left, left_place),
+                    (right, right_place),
+                    expr_id,
+                    expr.span,
+                )?))
             }
             hir::ExprKind::Assign { op, lhs, rhs } => {
                 let right = self.expect_value(*rhs)?;
+                if let Some(propagated) = self.pending_propagation.take() {
+                    return Ok(Flow::Propagate(propagated));
+                }
                 let place = self.expr_place(*lhs)?;
                 let value = if *op == AssignOp::Assign {
                     right
                 } else {
                     let current = self.take_place(&place, expr.span)?;
-                    self.eval_binary(assign_binop(*op), current, right, expr_id, expr.span)?
+                    // Compound-assignment operators (`+=`, `-=`, ...) never desugar to `Eq`/`Ord`
+                    // dispatch (there is no `==`-assignment form), so no operand place is needed.
+                    self.eval_binary(
+                        assign_binop(*op),
+                        (current, None),
+                        (right, None),
+                        expr_id,
+                        expr.span,
+                    )?
                 };
                 self.write_place(&place, value, expr.span)?;
                 Ok(Flow::Value(Value::Unit))
             }
-            hir::ExprKind::Range { lo, hi, inclusive } => Ok(Flow::Value(Value::Range {
-                start: self.expect_int(*lo)?,
-                end: self.expect_int(*hi)?,
-                inclusive: *inclusive,
-            })),
+            hir::ExprKind::Range { lo, hi, inclusive } => {
+                let start = self.expect_int(*lo)?;
+                if let Some(propagated) = self.pending_propagation.take() {
+                    return Ok(Flow::Propagate(propagated));
+                }
+                let end = self.expect_int(*hi)?;
+                if let Some(propagated) = self.pending_propagation.take() {
+                    return Ok(Flow::Propagate(propagated));
+                }
+                Ok(Flow::Value(Value::Range {
+                    start,
+                    end,
+                    inclusive: *inclusive,
+                }))
+            }
             hir::ExprKind::Cast { expr: value, .. } => {
                 let value = self.expect_value(*value)?;
                 Ok(Flow::Value(self.eval_cast(value, expr_id, expr.span)?))
@@ -1338,7 +1430,15 @@ impl<'a> Interpreter<'a> {
             },
             hir::ExprKind::Repeat { value, count } => {
                 let value = self.expect_value(*value)?;
-                let count = usize::try_from(self.expect_int(*count)?).map_err(|_| {
+                if let Some(propagated) = self.pending_propagation.take() {
+                    return Ok(Flow::Propagate(propagated));
+                }
+                let count_value = self.expect_int(*count)?;
+                if let Some(propagated) = self.pending_propagation.take() {
+                    self.drop_value(value)?;
+                    return Ok(Flow::Propagate(propagated));
+                }
+                let count = usize::try_from(count_value).map_err(|_| {
                     RuntimeError::new("invalid repeat count", self.hir.expr(*count).span)
                 })?;
                 Ok(Flow::Value(Value::Array(vec![Some(value); count])))
@@ -1351,7 +1451,11 @@ impl<'a> Interpreter<'a> {
                 then_block,
                 else_,
             } => {
-                if self.expect_bool(*cond)? {
+                let cond_value = self.expect_bool(*cond)?;
+                if let Some(propagated) = self.pending_propagation.take() {
+                    return Ok(Flow::Propagate(propagated));
+                }
+                if cond_value {
                     self.eval_block(*then_block)
                 } else if let Some(else_expr) = else_ {
                     self.eval_expr(*else_expr)
@@ -1361,6 +1465,9 @@ impl<'a> Interpreter<'a> {
             }
             hir::ExprKind::Match { scrutinee, arms } => {
                 let value = self.expect_value(*scrutinee)?;
+                if let Some(propagated) = self.pending_propagation.take() {
+                    return Ok(Flow::Propagate(propagated));
+                }
                 for arm in arms {
                     let mut bindings = Vec::new();
                     if self.match_pattern(arm.pat, &value, &mut bindings)? {
@@ -1388,7 +1495,14 @@ impl<'a> Interpreter<'a> {
                 }
             },
             hir::ExprKind::While { cond, body } => {
-                while self.expect_bool(*cond)? {
+                loop {
+                    let cond_value = self.expect_bool(*cond)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    if !cond_value {
+                        break;
+                    }
                     match self.eval_block(*body)? {
                         Flow::Value(_) | Flow::Continue => {}
                         Flow::Break(_) => break,
@@ -1483,7 +1597,22 @@ impl<'a> Interpreter<'a> {
     /// `expr_place`, whose non-place fallback arm evaluates-and-stashes into a synthetic temp
     /// local that nothing ever cleans up -- correct for its own callers (which immediately
     /// consume or write through the returned place) but not safe to reuse here.
-    fn expect_value_borrowed(&mut self, expr: ExprId) -> Result<Value, RuntimeError> {
+    /// Resolves a comparison operand (`==`/`!=`/`<`/`<=`/`>`/`>=`), returning both a value (for
+    /// the structural-equality fallback used by primitives and `Ty::Core` container types, which
+    /// never dispatches to user code and so never needs place identity) and, for a place
+    /// expression, the *real* place itself. Nominal `Eq`/`Ord` dispatch (`eval_binary`) uses that
+    /// real place to pass `Value::Ref(place)` -- a genuine borrow of the original storage -- to
+    /// the user's `eq`/`cmp` method, instead of the value returned here (a clone, needed only for
+    /// the non-dispatching structural-comparison path, which never involves user-code execution
+    /// or frame cleanup and so has no drop-timing hazard). Passing the *clone* as if it were the
+    /// real operand is exactly the correction-brief Issue 2 bug: the callee's own per-parameter
+    /// cleanup then destroys what should have been a mere reference. Non-place operands (call
+    /// results, literals) have no other owner and no place to borrow, so `None` is returned for
+    /// them; the caller promotes a fresh temporary only if nominal dispatch actually needs one.
+    fn resolve_comparison_operand(
+        &mut self,
+        expr: ExprId,
+    ) -> Result<(Value, Option<Place>), RuntimeError> {
         let is_place = matches!(
             self.hir.expr(expr).kind,
             hir::ExprKind::Path {
@@ -1500,14 +1629,23 @@ impl<'a> Interpreter<'a> {
         if is_place {
             let span = self.hir.expr(expr).span;
             let place = self.expr_place(expr)?;
-            return self.clone_place_value(&place, span);
+            let value = self.clone_place_value(&place, span)?;
+            Ok((value, Some(place)))
+        } else {
+            Ok((self.expect_value(expr)?, None))
         }
-        self.expect_value(expr)
     }
 
     fn expect_bool(&mut self, expr: ExprId) -> Result<bool, RuntimeError> {
         match self.expect_value(expr)? {
             Value::Bool(value) => Ok(value),
+            // If `?` inside `expr` just propagated, `expect_value` returned a dummy
+            // `Value::Unit` and left `pending_propagation` set -- pass a placeholder through
+            // rather than reporting a misleading "expected Bool" trap; the caller is required
+            // to check `pending_propagation` immediately after this call (every call site does)
+            // and will correctly convert it to `Flow::Propagate` before the placeholder value
+            // could ever be observed or acted on.
+            _ if self.pending_propagation.is_some() => Ok(false),
             _ => Err(RuntimeError::new("expected Bool", self.hir.expr(expr).span)),
         }
     }
@@ -1515,6 +1653,9 @@ impl<'a> Interpreter<'a> {
     fn expect_int(&mut self, expr: ExprId) -> Result<i128, RuntimeError> {
         match self.expect_value(expr)? {
             Value::Int(value) => Ok(value),
+            // See `expect_bool`'s matching arm: a pending propagation must reach the caller's
+            // own `pending_propagation` check, not this function's type-mismatch error path.
+            _ if self.pending_propagation.is_some() => Ok(0),
             _ => Err(RuntimeError::new(
                 "expected integer",
                 self.hir.expr(expr).span,
@@ -1549,7 +1690,15 @@ impl<'a> Interpreter<'a> {
             LitValue::Char(value) => Ok(Value::Char(value)),
             LitValue::Str(value) => Ok(Value::Str(value)),
             LitValue::Int(value) => Ok(Value::Int(value)),
-            LitValue::Float(value) => Ok(Value::Float(value)),
+            LitValue::Float(value) => {
+                let width = match lit {
+                    Lit::Float {
+                        suffix: Some(crate::lexer::FloatSuffix::F32),
+                    } => FloatWidth::F32,
+                    _ => FloatWidth::F64,
+                };
+                Ok(Value::Float(value, width))
+            }
         }
     }
 
@@ -1578,8 +1727,10 @@ impl<'a> Interpreter<'a> {
                 named: BTreeMap::new(),
             }),
             Res::Builtin(Builtin::None) => Ok(Value::Option(None)),
-            Res::Builtin(Builtin::MathPi) => Ok(Value::Float(std::f64::consts::PI)),
-            Res::Builtin(Builtin::MathE) => Ok(Value::Float(std::f64::consts::E)),
+            Res::Builtin(Builtin::MathPi) => {
+                Ok(Value::Float(std::f64::consts::PI, FloatWidth::F64))
+            }
+            Res::Builtin(Builtin::MathE) => Ok(Value::Float(std::f64::consts::E, FloatWidth::F64)),
             Res::Builtin(Builtin::IOErrorNotFound) => Ok(Value::IOError(IOErrorKind::NotFound)),
             Res::Builtin(Builtin::IOErrorPermissionDenied) => {
                 Ok(Value::IOError(IOErrorKind::PermissionDenied))
@@ -1615,8 +1766,8 @@ impl<'a> Interpreter<'a> {
                 .map(Value::Int)
                 .ok_or_else(|| RuntimeError::new("integer overflow", span))
                 .and_then(|value| self.normalize_numeric(value, expr, span)),
-            (UnOp::Neg, Value::Float(value)) => {
-                self.normalize_numeric(Value::Float(-value), expr, span)
+            (UnOp::Neg, Value::Float(value, width)) => {
+                self.normalize_numeric(Value::Float(-value, width), expr, span)
             }
             (UnOp::Not, Value::Bool(value)) => Ok(Value::Bool(!value)),
             (UnOp::BitNot, Value::Int(value)) => {
@@ -1639,14 +1790,20 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// `left`/`right` bundle each operand's value with its real place, when the operand is a
+    /// place expression (see `resolve_comparison_operand`) -- grouped into one tuple parameter
+    /// per side to keep the parameter count under clippy's `too_many_arguments` threshold rather
+    /// than passing four related values separately.
     fn eval_binary(
         &mut self,
         op: BinOp,
-        left: Value,
-        right: Value,
+        left: (Value, Option<Place>),
+        right: (Value, Option<Place>),
         expr: ExprId,
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        let (left, left_place) = left;
+        let (right, right_place) = right;
         let left = self.deref_value(left, span)?;
         let right = self.deref_value(right, span)?;
         if matches!(op, BinOp::Eq | BinOp::Ne) {
@@ -1667,15 +1824,34 @@ impl<'a> Interpreter<'a> {
                     "eq",
                     Some(Res::CoreTrait(hir::CoreTrait::Eq)),
                 ) {
-                    // WP-C2.2: `call_user_method` now takes a receiver *place* (DEV-034/035).
-                    // `left` is already fully evaluated here; promote it to a temp place rather
-                    // than re-resolving `lhs_expr`, which could re-run its side effects.
-                    let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
+                    // Correction-brief Issue 2: `Eq::eq(&self, &other)` borrows both operands --
+                    // it never takes ownership. Passing owned clones here (the pre-fix
+                    // behavior) is observably wrong two different ways: the receiver's clone
+                    // silently vanished via ordinary Rust-level drop with no STARK-level
+                    // `Drop::drop` call at all (data loss for any `Drop`-observable identity),
+                    // while the argument's clone got a *real*, extra `Drop::drop` call fired by
+                    // the callee's own normal per-parameter cleanup, at the wrong time relative
+                    // to the original operand's own destruction. `Value::Ref(place)` for a real
+                    // place operand fixes both: the callee's `self`/`other` locals hold genuine
+                    // references, so cleanup of either is a no-op (`drop_value` treats `Ref` as
+                    // borrowed, never owned), and the *real* value being compared is the
+                    // original operand's own storage -- never duplicated at all. A non-place
+                    // operand (a call result, with no other owner) still needs a temporary to
+                    // point the reference at; that temporary's own eventual cleanup is unchanged
+                    // from before this fix (naturally scoped to the enclosing frame).
+                    let receiver_place = match left_place {
+                        Some(place) => place,
+                        None => self.promote_to_owned_temp_place(left.clone(), span)?,
+                    };
+                    let argument_place = match right_place {
+                        Some(place) => place,
+                        None => self.promote_to_owned_temp_place(right.clone(), span)?,
+                    };
                     let result = self.call_user_method(
                         method,
-                        receiver_place,
-                        left.clone(),
-                        vec![right],
+                        receiver_place.clone(),
+                        Value::Ref(receiver_place),
+                        vec![Value::Ref(argument_place)],
                         span,
                     )?;
                     let equal = matches!(result, Value::Bool(true));
@@ -1701,9 +1877,23 @@ impl<'a> Interpreter<'a> {
                     "cmp",
                     Some(Res::CoreTrait(hir::CoreTrait::Ord)),
                 ) {
-                    let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
-                    let ordering =
-                        self.call_user_method(method, receiver_place, left, vec![right], span)?;
+                    // Same fix as the `Eq::eq` dispatch above: `Ord::cmp(&self, &other)` borrows
+                    // both operands.
+                    let receiver_place = match left_place {
+                        Some(place) => place,
+                        None => self.promote_to_owned_temp_place(left.clone(), span)?,
+                    };
+                    let argument_place = match right_place {
+                        Some(place) => place,
+                        None => self.promote_to_owned_temp_place(right.clone(), span)?,
+                    };
+                    let ordering = self.call_user_method(
+                        method,
+                        receiver_place.clone(),
+                        Value::Ref(receiver_place),
+                        vec![Value::Ref(argument_place)],
+                        span,
+                    )?;
                     let Value::Ordering(ordering) = ordering else {
                         return Err(RuntimeError::new("Ord::cmp must return Ordering", span));
                     };
@@ -1775,12 +1965,32 @@ impl<'a> Interpreter<'a> {
                 })?;
                 self.check_integer_range(value, expr, span).map(Value::Int)
             }
-            (Value::Float(left), Value::Float(right)) => match op {
-                BinOp::Add => self.normalize_numeric(Value::Float(left + right), expr, span),
-                BinOp::Sub => self.normalize_numeric(Value::Float(left - right), expr, span),
-                BinOp::Mul => self.normalize_numeric(Value::Float(left * right), expr, span),
-                BinOp::Div => self.normalize_numeric(Value::Float(left / right), expr, span),
-                BinOp::Rem => self.normalize_numeric(Value::Float(left % right), expr, span),
+            (Value::Float(left, width), Value::Float(right, _)) => match op {
+                BinOp::Add => canonicalize_float_result(self.normalize_numeric(
+                    Value::Float(left + right, width),
+                    expr,
+                    span,
+                )),
+                BinOp::Sub => canonicalize_float_result(self.normalize_numeric(
+                    Value::Float(left - right, width),
+                    expr,
+                    span,
+                )),
+                BinOp::Mul => canonicalize_float_result(self.normalize_numeric(
+                    Value::Float(left * right, width),
+                    expr,
+                    span,
+                )),
+                BinOp::Div => canonicalize_float_result(self.normalize_numeric(
+                    Value::Float(left / right, width),
+                    expr,
+                    span,
+                )),
+                BinOp::Rem => canonicalize_float_result(self.normalize_numeric(
+                    Value::Float(left % right, width),
+                    expr,
+                    span,
+                )),
                 BinOp::Pow => Err(RuntimeError::new(
                     "floating-point `**` is not a Core v1 operation",
                     span,
@@ -1820,12 +2030,12 @@ impl<'a> Interpreter<'a> {
                 self.check_integer_range(value, expr, span).map(Value::Int)
             }
             Value::Int(value) if matches!(target, Ty::Primitive(p) if is_float(p)) => {
-                self.normalize_numeric(Value::Float(value as f64), expr, span)
+                self.normalize_numeric(Value::Float(value as f64, FloatWidth::F64), expr, span)
             }
-            Value::Float(value) if matches!(target, Ty::Primitive(p) if is_float(p)) => {
-                self.normalize_numeric(Value::Float(value), expr, span)
+            Value::Float(value, width) if matches!(target, Ty::Primitive(p) if is_float(p)) => {
+                self.normalize_numeric(Value::Float(value, width), expr, span)
             }
-            Value::Float(value) if matches!(target, Ty::Primitive(p) if is_integer(p)) => {
+            Value::Float(value, _) if matches!(target, Ty::Primitive(p) if is_integer(p)) => {
                 // A finite float-to-integer cast truncates toward zero, then traps only when
                 // the truncated result is unrepresentable in the target width (not merely
                 // because the source had a nonzero fractional part). NaN and infinities always
@@ -1876,13 +2086,15 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Value, RuntimeError> {
         match value {
             Value::Int(value) => self.check_integer_range(value, expr, span).map(Value::Int),
-            Value::Float(value)
+            Value::Float(value, _) => {
                 if matches!(
                     self.tables.expr_types.get(&expr),
                     Some(Ty::Primitive(Primitive::Float32))
-                ) =>
-            {
-                Ok(Value::Float((value as f32) as f64))
+                ) {
+                    Ok(Value::Float((value as f32) as f64, FloatWidth::F32))
+                } else {
+                    Ok(Value::Float(value, FloatWidth::F64))
+                }
             }
             value => Ok(value),
         }
@@ -1897,25 +2109,20 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Flow, RuntimeError> {
         match &self.hir.expr(callee).kind {
             hir::ExprKind::Path { res, .. } => match res {
-                Res::Builtin(builtin) => {
-                    let values = args
-                        .iter()
-                        .map(|arg| self.expect_value(*arg))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    self.call_builtin(*builtin, values, args, span)
-                        .map(Flow::Value)
-                }
-                Res::Item(item) => {
-                    let values = args
-                        .iter()
-                        .map(|arg| self.expect_value(*arg))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let callable = self.item_callable(*item).ok_or_else(|| {
-                        RuntimeError::new("item is not callable", self.hir.expr(callee).span)
-                    })?;
-                    self.call_callable(callable, None, values, span)
-                        .map(Flow::Value)
-                }
+                Res::Builtin(builtin) => match self.eval_call_arguments(args)? {
+                    Ok(values) => self.call_builtin(*builtin, values, span).map(Flow::Value),
+                    Err(propagated) => Ok(Flow::Propagate(propagated)),
+                },
+                Res::Item(item) => match self.eval_call_arguments(args)? {
+                    Ok(values) => {
+                        let callable = self.item_callable(*item).ok_or_else(|| {
+                            RuntimeError::new("item is not callable", self.hir.expr(callee).span)
+                        })?;
+                        self.call_callable(callable, None, values, span)
+                            .map(Flow::Value)
+                    }
+                    Err(propagated) => Ok(Flow::Propagate(propagated)),
+                },
                 Res::Variant(item, variant) => {
                     // A positional enum-variant constructor (`Some(x)`, `MyEnum::Variant(a, b)`)
                     // is aggregate construction via call syntax, the same construct
@@ -1933,17 +2140,18 @@ impl<'a> Interpreter<'a> {
                 Res::TraitMember(trait_id, member) => {
                     self.call_qualified_trait(*trait_id, *member, args, span)
                 }
-                Res::AssociatedFn(item, name) => {
-                    let values = args
-                        .iter()
-                        .map(|arg| self.expect_value(*arg))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    let callable = self
-                        .find_associated_fn(*item, self.text(*name))
-                        .ok_or_else(|| RuntimeError::new("associated function not found", span))?;
-                    self.call_callable(callable, None, values, span)
-                        .map(Flow::Value)
-                }
+                Res::AssociatedFn(item, name) => match self.eval_call_arguments(args)? {
+                    Ok(values) => {
+                        let callable = self
+                            .find_associated_fn(*item, self.text(*name))
+                            .ok_or_else(|| {
+                                RuntimeError::new("associated function not found", span)
+                            })?;
+                        self.call_callable(callable, None, values, span)
+                            .map(Flow::Value)
+                    }
+                    Err(propagated) => Ok(Flow::Propagate(propagated)),
+                },
                 _ => Err(RuntimeError::new("expression is not callable", span)),
             },
             hir::ExprKind::Field { base, name, .. } => {
@@ -1951,18 +2159,22 @@ impl<'a> Interpreter<'a> {
             }
             _ => {
                 let function = self.expect_value(callee)?;
+                if let Some(propagated) = self.pending_propagation.take() {
+                    return Ok(Flow::Propagate(propagated));
+                }
                 let Value::Function(item) = function else {
                     return Err(RuntimeError::new("expression is not callable", span));
                 };
-                let values = args
-                    .iter()
-                    .map(|arg| self.expect_value(*arg))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let callable = self
-                    .item_callable(item)
-                    .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
-                self.call_callable(callable, None, values, span)
-                    .map(Flow::Value)
+                match self.eval_call_arguments(args)? {
+                    Ok(values) => {
+                        let callable = self
+                            .item_callable(item)
+                            .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
+                        self.call_callable(callable, None, values, span)
+                            .map(Flow::Value)
+                    }
+                    Err(propagated) => Ok(Flow::Propagate(propagated)),
+                }
             }
         }
     }
@@ -1971,24 +2183,14 @@ impl<'a> Interpreter<'a> {
         &mut self,
         builtin: Builtin,
         mut args: Vec<Value>,
-        arg_exprs: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        // The static type of the (sole) argument, when known -- lets `Print`/`Println`/`Panic`
-        // format a `Float32` value using its own shortest-round-trip digits rather than the
-        // `f64` representation the runtime `Value` enum stores it in. See `format_runtime_value`
-        // and `canonical_float32`. Cloned to an owned value up front so it doesn't hold a
-        // borrow of `self` across the `&mut self` calls below.
-        let arg_ty = arg_exprs
-            .first()
-            .and_then(|expr| self.tables.expr_types.get(expr))
-            .cloned();
         match builtin {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
                 self.output
-                    .push_str(&self.format_runtime_value(&deref, arg_ty.as_ref(), span)?);
+                    .push_str(&self.format_runtime_value(&deref, span)?);
                 if builtin == Builtin::Println {
                     self.output.push('\n');
                 }
@@ -1998,7 +2200,7 @@ impl<'a> Interpreter<'a> {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
                 Err(RuntimeError::new(
-                    self.format_runtime_value(&deref, arg_ty.as_ref(), span)?,
+                    self.format_runtime_value(&deref, span)?,
                     span,
                 ))
             }
@@ -2037,7 +2239,10 @@ impl<'a> Interpreter<'a> {
             // integer overflow/division and float-to-int casts). `f64::sqrt` already returns
             // NaN for negative finite inputs, so no domain branch is needed.
             Builtin::Sqrt => match args.pop() {
-                Some(Value::Float(value)) => Ok(Value::Float(value.sqrt())),
+                Some(Value::Float(value, _)) => Ok(Value::Float(
+                    canonicalize_nan(value.sqrt(), FloatWidth::F64),
+                    FloatWidth::F64,
+                )),
                 _ => Err(RuntimeError::new("sqrt expects Float64", span)),
             },
             Builtin::Drop => {
@@ -2181,7 +2386,9 @@ impl<'a> Interpreter<'a> {
                     .checked_abs()
                     .map(Value::Int)
                     .ok_or_else(|| RuntimeError::new("integer overflow", span)),
-                Some(Value::Float(value)) => Ok(Value::Float(value.abs())),
+                Some(Value::Float(value, width)) => {
+                    Ok(Value::Float(canonicalize_nan(value.abs(), width), width))
+                }
                 _ => Err(RuntimeError::new("abs expects Int or Float", span)),
             },
             Builtin::MathMin | Builtin::MathMax => {
@@ -2214,26 +2421,71 @@ impl<'a> Interpreter<'a> {
             Builtin::Pow => {
                 let exp = float_arg(args.pop(), span)?;
                 let base = float_arg(args.pop(), span)?;
-                Ok(Value::Float(base.powf(exp)))
+                Ok(Value::Float(
+                    canonicalize_nan(base.powf(exp), FloatWidth::F64),
+                    FloatWidth::F64,
+                ))
             }
             Builtin::Atan2 => {
                 let x = float_arg(args.pop(), span)?;
                 let y = float_arg(args.pop(), span)?;
-                Ok(Value::Float(y.atan2(x)))
+                Ok(Value::Float(
+                    canonicalize_nan(y.atan2(x), FloatWidth::F64),
+                    FloatWidth::F64,
+                ))
             }
-            Builtin::Log => Ok(Value::Float(float_arg(args.pop(), span)?.ln())),
-            Builtin::Log10 => Ok(Value::Float(float_arg(args.pop(), span)?.log10())),
-            Builtin::Exp => Ok(Value::Float(float_arg(args.pop(), span)?.exp())),
-            Builtin::Sin => Ok(Value::Float(float_arg(args.pop(), span)?.sin())),
-            Builtin::Cos => Ok(Value::Float(float_arg(args.pop(), span)?.cos())),
-            Builtin::Tan => Ok(Value::Float(float_arg(args.pop(), span)?.tan())),
-            Builtin::Asin => Ok(Value::Float(float_arg(args.pop(), span)?.asin())),
-            Builtin::Acos => Ok(Value::Float(float_arg(args.pop(), span)?.acos())),
-            Builtin::Atan => Ok(Value::Float(float_arg(args.pop(), span)?.atan())),
-            Builtin::Floor => Ok(Value::Float(float_arg(args.pop(), span)?.floor())),
-            Builtin::Ceil => Ok(Value::Float(float_arg(args.pop(), span)?.ceil())),
-            Builtin::Round => Ok(Value::Float(float_arg(args.pop(), span)?.round())),
-            Builtin::Trunc => Ok(Value::Float(float_arg(args.pop(), span)?.trunc())),
+            Builtin::Log => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.ln(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Log10 => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.log10(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Exp => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.exp(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Sin => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.sin(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Cos => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.cos(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Tan => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.tan(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Asin => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.asin(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Acos => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.acos(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Atan => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.atan(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Floor => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.floor(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Ceil => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.ceil(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Round => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.round(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
+            Builtin::Trunc => Ok(Value::Float(
+                canonicalize_nan(float_arg(args.pop(), span)?.trunc(), FloatWidth::F64),
+                FloatWidth::F64,
+            )),
             // -- Phase 4E: stderr --
             Builtin::Eprint => {
                 eprint!("{}", string_arg(args.pop(), span)?);
@@ -2308,9 +2560,11 @@ impl<'a> Interpreter<'a> {
         span: Span,
     ) -> Result<Flow, RuntimeError> {
         if self.is_core_value(base) {
-            return self
-                .call_core_method(Some(expr_id), base, &name, args, span)
-                .map(Flow::Value);
+            let result = self.call_core_method(Some(expr_id), base, &name, args, span)?;
+            return Ok(match self.pending_propagation.take() {
+                Some(propagated) => Flow::Propagate(propagated),
+                None => Flow::Value(result),
+            });
         }
         // WP-C2.2 (DEV-034): resolve the receiver to a place exactly once, before anything else.
         // A place expression resolves without re-running its subexpressions later; a non-place
@@ -2326,12 +2580,12 @@ impl<'a> Interpreter<'a> {
         let method = self.find_method(nominal, &name, None).ok_or_else(|| {
             RuntimeError::new(format!("method '{name}' not found at runtime"), span)
         })?;
-        let values = args
-            .iter()
-            .map(|arg| self.expect_value(*arg))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.call_user_method(method, receiver_place, receiver_value, values, span)
-            .map(Flow::Value)
+        match self.eval_call_arguments(args)? {
+            Ok(values) => self
+                .call_user_method(method, receiver_place, receiver_value, values, span)
+                .map(Flow::Value),
+            Err(propagated) => Ok(Flow::Propagate(propagated)),
+        }
     }
 
     fn call_qualified_trait(
@@ -2361,12 +2615,12 @@ impl<'a> Interpreter<'a> {
                 Some(Res::Item(trait_id)),
             )
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
-        let values = rest
-            .iter()
-            .map(|arg| self.expect_value(*arg))
-            .collect::<Result<Vec<_>, _>>()?;
-        self.call_user_method(method, receiver_place, receiver, values, span)
-            .map(Flow::Value)
+        match self.eval_call_arguments(rest)? {
+            Ok(values) => self
+                .call_user_method(method, receiver_place, receiver, values, span)
+                .map(Flow::Value),
+            Err(propagated) => Ok(Flow::Propagate(propagated)),
+        }
     }
 
     fn find_method(
@@ -2816,10 +3070,23 @@ impl<'a> Interpreter<'a> {
             .get(&base)
             .cloned()
             .unwrap_or(Ty::Error);
-        let mut arguments = args
-            .iter()
-            .map(|arg| self.expect_value(*arg))
-            .collect::<Result<Vec<_>, _>>()?;
+        // This function has exactly one caller (`call_method`), which checks
+        // `pending_propagation` immediately after calling it and before doing anything else --
+        // the "function-boundary adapter" exception to routing propagation through `Flow`
+        // directly (this dispatcher's body is too large to convert every internal `Ok(value)`
+        // return to `Ok(Flow::Value(value))` without a much larger, riskier rewrite for no
+        // behavioral benefit, since propagation can only originate here from argument
+        // evaluation, never from the dispatcher body itself). Re-arming
+        // `pending_propagation` here and returning a dummy value mirrors `expect_value`'s own
+        // existing convention exactly, just with a caller that is guaranteed to check it
+        // immediately rather than one that might not.
+        let mut arguments = match self.eval_call_arguments(args)? {
+            Ok(values) => values,
+            Err(propagated) => {
+                self.pending_propagation = Some(propagated);
+                return Ok(Value::Unit);
+            }
+        };
         if (name == "remove" || name == "contains_key" || name == "contains")
             && !arguments.is_empty()
         {
@@ -2869,14 +3136,8 @@ impl<'a> Interpreter<'a> {
         }
         if name == "fmt" {
             let receiver = self.place_value(&receiver_place, span)?;
-            // See `format_runtime_value`/`canonical_float32`: a `Float32` receiver must format
-            // using its own shortest-round-trip digits, not the `f64` representation `Value`
-            // stores it in. `receiver_ty` (above) already carries the checked static type.
-            if let (Value::Float(inner), Ty::Primitive(Primitive::Float32)) =
-                (receiver, &receiver_ty)
-            {
-                return Ok(Value::String(canonical_float32(*inner as f32)));
-            }
+            // `Value::Float` carries its own `FloatWidth`, so `Display for Value` already picks
+            // the right shortest-round-trip digits -- no external static-type lookup needed here.
             return Ok(Value::String(receiver.to_string()));
         }
         if name == "hash" {
@@ -3674,7 +3935,10 @@ impl<'a> Interpreter<'a> {
                     *seed = seed
                         .wrapping_mul(6364136223846793005)
                         .wrapping_add(1442695040888963407);
-                    Ok(Value::Float(*seed as f64 / (u64::MAX as f64 + 1.0)))
+                    Ok(Value::Float(
+                        *seed as f64 / (u64::MAX as f64 + 1.0),
+                        FloatWidth::F64,
+                    ))
                 }
                 "range" => {
                     let min = match values.next() {
@@ -3752,6 +4016,34 @@ impl<'a> Interpreter<'a> {
     /// representation; a genuine Rust-level trap (`Err(RuntimeError)`) still unwinds immediately
     /// via `?` with no cleanup, unchanged from before this fix -- traps abort without running
     /// pending destructors.
+    /// Evaluates call-argument expressions left to right, stopping immediately -- without
+    /// evaluating any later argument at all -- when one argument's evaluation triggers early
+    /// transfer via `?`. Shares `eval_aggregate_elements`'s stop-and-clean-up-in-reverse
+    /// contract (see its doc comment) but returns plain owned values rather than
+    /// aggregate-storage `Option<Value>` slots, matching how call arguments are consumed
+    /// (moved into the callee's parameter locals, not tracked as move-able aggregate fields).
+    /// Used by every call-argument-evaluating site (ordinary/associated/builtin function calls,
+    /// user-method and qualified-trait-method calls, core/builtin-type method calls) so `?`
+    /// inside any argument position stops evaluation of every later argument and the call
+    /// itself, instead of `expect_value`'s dummy-`Value::Unit`-on-propagation swallowing it.
+    fn eval_call_arguments(
+        &mut self,
+        args: &[ExprId],
+    ) -> Result<Result<Vec<Value>, Value>, RuntimeError> {
+        let mut completed: Vec<Value> = Vec::with_capacity(args.len());
+        for arg in args {
+            let evaluated = self.expect_value(*arg)?;
+            if let Some(propagated) = self.pending_propagation.take() {
+                for value in completed.into_iter().rev() {
+                    self.drop_value(value)?;
+                }
+                return Ok(Err(propagated));
+            }
+            completed.push(evaluated);
+        }
+        Ok(Ok(completed))
+    }
+
     fn eval_aggregate_elements(
         &mut self,
         values: &[ExprId],
@@ -4260,7 +4552,20 @@ impl<'a> Interpreter<'a> {
                         node.span,
                     );
                 }
-                let index = usize::try_from(self.expect_int(*index)?)
+                let index_value = self.expect_int(*index)?;
+                if self.pending_propagation.take().is_some() {
+                    // `expr_place` returns a bare `Place`, not `Flow`, so it cannot itself
+                    // signal early transfer to its caller (a real, documented architectural
+                    // gap -- see DEV-045's follow-up notes). Fail loudly rather than silently
+                    // using `expect_int`'s placeholder `0` as a real index: this is no worse
+                    // than this site's pre-existing "negative index" rejection for a genuinely
+                    // out-of-range value, just reached via a different condition.
+                    return Err(RuntimeError::new(
+                        "index expression did not produce a value",
+                        self.hir.expr(*index).span,
+                    ));
+                }
+                let index = usize::try_from(index_value)
                     .map_err(|_| RuntimeError::new("negative index", self.hir.expr(*index).span))?;
                 if let Value::Slice(base_place, start, end) =
                     self.place_value(&place, node.span)?.clone()
@@ -4302,6 +4607,35 @@ impl<'a> Interpreter<'a> {
     fn promote_to_temp_place(&mut self, value: Value, _span: Span) -> Result<Place, RuntimeError> {
         let local_id = LocalId(1000000 + self.frame().values.len() as u32);
         self.frame_mut().values.insert(local_id, Some(value));
+        Ok(Place {
+            frame: self.frames.len() - 1,
+            local: local_id,
+            projections: Vec::new(),
+        })
+    }
+
+    /// Like `promote_to_temp_place`, but for a value this call actually creates sole,
+    /// no-other-owner storage for (as opposed to `promote_to_temp_place`'s many existing uses,
+    /// which momentarily wrap a *view* into data still separately owned elsewhere -- e.g.
+    /// iterator snapshots that clone a value out for `Value::Ref` wrapping while the iterator's
+    /// own backing storage still holds it too, or the collection-probe key path). Registers the
+    /// new local through `Frame::insert` so it participates in `Frame::order` and is correctly
+    /// destroyed exactly once when the frame is cleaned up -- `promote_to_temp_place` bypasses
+    /// `Frame::insert` (a raw `.values.insert(...)`), so anything placed there is never in
+    /// `order` and is silently discarded via ordinary Rust-level deallocation with no
+    /// STARK-level `Drop::drop` call at all when the frame is popped. Confirmed empirically:
+    /// swapping a non-place comparison operand's temp through this instead of the plain helper
+    /// is what makes `comparison_of_temporary_operands_evaluates_each_once_and_drops_after_call`
+    /// (Correction brief Issue 2) actually observe the destructor. Using this helper at one of
+    /// `promote_to_temp_place`'s existing view-only call sites would double-drop the underlying
+    /// data; use it only where this call is the value's sole and complete owner.
+    fn promote_to_owned_temp_place(
+        &mut self,
+        value: Value,
+        _span: Span,
+    ) -> Result<Place, RuntimeError> {
+        let local_id = LocalId(1000000 + self.frame().values.len() as u32);
+        self.frame_mut().insert(local_id, Some(value));
         Ok(Place {
             frame: self.frames.len() - 1,
             local: local_id,
@@ -4524,17 +4858,7 @@ impl<'a> Interpreter<'a> {
         Ok(value)
     }
 
-    fn format_runtime_value(
-        &self,
-        value: &Value,
-        ty: Option<&Ty>,
-        span: Span,
-    ) -> Result<String, RuntimeError> {
-        if let Value::Float(inner) = value {
-            if matches!(ty, Some(Ty::Primitive(Primitive::Float32))) {
-                return Ok(canonical_float32(*inner as f32));
-            }
-        }
+    fn format_runtime_value(&self, value: &Value, span: Span) -> Result<String, RuntimeError> {
         let Value::Slice(place, start, end) = value else {
             return Ok(value.to_string());
         };
@@ -4636,7 +4960,7 @@ impl<'a> Interpreter<'a> {
             Value::Unit
             | Value::Bool(_)
             | Value::Int(_)
-            | Value::Float(_)
+            | Value::Float(..)
             | Value::Char(_)
             | Value::Str(_)
             | Value::Ref(_)
@@ -5075,15 +5399,11 @@ fn canonical_float(value: f64) -> String {
 }
 
 // Canonical display must use the shortest decimal representation that round-trips to the
-// *declared* IEEE type. `Value::Float` stores every float as `f64` (Float32 results are
-// rounded to `f32` precision by `normalize_numeric` but kept in the same `f64`-carrying
-// variant), so formatting always went through `f64::to_string()`'s shortest-round-trip
-// algorithm even for a value the checker knows is Float32 -- producing the f64-round-trip
-// digits (e.g. `0.10000000149011612` for `0.1f32`) instead of the shorter f32-round-trip
-// digits (`0.1`). Callers that know the static type is Float32 (`println`, `.fmt()`) route
-// through this instead; callers with no static-type context (the generic `Display for Value`
-// impl used when a Float32 value is nested inside a printed struct/collection) still fall back
-// to `canonical_float`, a known residual gap distinct from the type-aware bug this fixes.
+// *declared* IEEE type. `Value::Float` carries its own `FloatWidth` tag, so both the top-level
+// `println`/`.fmt()` paths and the generic recursive `Display for Value` impl (reached when a
+// Float32 is nested inside a tuple/array/struct/collection) route through this for a Float32
+// value instead of `canonical_float`'s `f64` shortest-round-trip digits (which would otherwise
+// produce e.g. `0.10000000149011612` for `0.1f32` instead of the shorter, correct `0.1`).
 fn canonical_float32(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -5102,6 +5422,47 @@ fn canonical_float32(value: f32) -> String {
         };
     }
     canonical_float_digits(&value.to_string())
+}
+
+/// Correction-brief Issue 4: `NUM-FLOAT-OP-001` requires every primitive operation that produces
+/// a NaN result to yield "the canonical quiet NaN with sign zero and all payload bits other than
+/// the quiet bit zero" -- a specific, fixed bit pattern, not merely "some NaN." A platform's
+/// native NaN-producing instructions are not guaranteed to agree on sign or payload bits (IEEE
+/// 754 only mandates the exponent field and that the quiet bit distinguishes quiet from
+/// signaling), so this must be forced explicitly rather than trusted to fall out of `f64`/`f32`
+/// arithmetic. `f32::from_bits(0x7fc0_0000)`/`f64::from_bits(0x7ff8_0000_0000_0000)` are already
+/// exactly Rust's own `f32::NAN`/`f64::NAN` constants -- spelled out as literal bit patterns here
+/// so the canonicalization is explicit and self-documenting rather than relying on a constant
+/// whose bit pattern isn't visible at the call site. The one normative exception is unary
+/// negation ("Negation flips the sign bit, including for zero and NaN"): callers that implement
+/// `-x` must NOT route through this, since it must flip whatever sign bit the operand already
+/// had rather than forcing sign zero.
+fn canonical_nan_bits(width: FloatWidth) -> f64 {
+    match width {
+        FloatWidth::F32 => f64::from(f32::from_bits(0x7fc0_0000)),
+        FloatWidth::F64 => f64::from_bits(0x7ff8_0000_0000_0000),
+    }
+}
+
+/// Forces `value` to the canonical quiet NaN for `width` if it is any NaN at all, leaving every
+/// other value (including infinities and signed zero) untouched. See `canonical_nan_bits`.
+fn canonicalize_nan(value: f64, width: FloatWidth) -> f64 {
+    if value.is_nan() {
+        canonical_nan_bits(width)
+    } else {
+        value
+    }
+}
+
+/// Applies `canonicalize_nan` to a `Value::Float` produced by a primitive operation or standard
+/// math builtin, leaving every other `Value` (including a propagated `RuntimeError`) untouched.
+/// Every call site that constructs a `Value::Float` result from a computation that can produce
+/// NaN routes through this -- *except* unary negation, per `canonical_nan_bits`'s doc comment.
+fn canonicalize_float_result(result: Result<Value, RuntimeError>) -> Result<Value, RuntimeError> {
+    result.map(|value| match value {
+        Value::Float(inner, width) => Value::Float(canonicalize_nan(inner, width), width),
+        other => other,
+    })
 }
 
 fn canonical_float_digits(shortest: &str) -> String {
@@ -5268,7 +5629,7 @@ fn u64_arg(value: Option<Value>, span: Span) -> Result<u64, RuntimeError> {
 
 fn float_arg(value: Option<Value>, span: Span) -> Result<f64, RuntimeError> {
     match value {
-        Some(Value::Float(value)) => Ok(value),
+        Some(Value::Float(value, _)) => Ok(value),
         _ => Err(RuntimeError::new("expected Float64 argument", span)),
     }
 }
@@ -5285,7 +5646,7 @@ fn numeric_cmp(
 ) -> Result<std::cmp::Ordering, RuntimeError> {
     match (a, b) {
         (Some(Value::Int(a)), Some(Value::Int(b))) => Ok(a.cmp(b)),
-        (Some(Value::Float(a)), Some(Value::Float(b))) => Ok(a.total_cmp(b)),
+        (Some(Value::Float(a, _)), Some(Value::Float(b, _))) => Ok(a.total_cmp(b)),
         _ => Err(RuntimeError::new(
             "expected two Int or two Float arguments",
             span,
@@ -6570,6 +6931,97 @@ mod tests {
         assert_eq!(execution.output, "0.1\n0.1\n");
     }
 
+    /// Correction-brief Issue 3: `Value::Float` now carries its own `FloatWidth` tag, so the
+    /// *generic* recursive `Display for Value` impl (used whenever a Float32 is nested inside
+    /// a printed tuple/array/struct/collection, with no static-type context available at that
+    /// point) formats correctly too -- not just the top-level `println`/`.fmt()` paths the prior
+    /// WP-C2.11 pass fixed via an external type-table lookup. Before this fix, a Float32 nested
+    /// in a tuple printed via `f64`'s shortest-round-trip digits (`0.10000000149011612`).
+    #[test]
+    fn float32_nested_in_tuple_uses_float32_round_trip_digits() {
+        let execution = execute(
+            "fn main() { \
+                 let pair: (Float32, Int32) = (0.1f32, 7); \
+                 println(pair); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "(0.1, 7)\n");
+    }
+
+    #[test]
+    fn float32_nested_in_array_uses_float32_round_trip_digits() {
+        let execution = execute(
+            "fn main() { \
+                 let values: [Float32; 2] = [0.1f32, 2.5f32]; \
+                 println(values); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "[0.1, 2.5]\n");
+    }
+
+    #[test]
+    fn float32_nested_in_option_and_result_use_float32_round_trip_digits() {
+        let execution = execute(
+            "fn main() { \
+                 let some_value: Option<Float32> = Some(0.1f32); \
+                 let ok_value: Result<Float32, String> = Ok(0.1f32); \
+                 println(some_value); \
+                 println(ok_value); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Some(0.1)\nOk(0.1)\n");
+    }
+
+    #[test]
+    fn float32_nested_in_struct_uses_float32_round_trip_digits() {
+        let execution = execute(
+            "struct Point { x: Float32 } \
+             fn main() { \
+                 let p = Point { x: 0.1f32 }; \
+                 println(p); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "{x: 0.1}\n");
+    }
+
+    /// A Float32 arithmetic result must keep its width tag through the operation (not just at
+    /// literal construction), so it still formats with `f32` round-trip digits once nested.
+    #[test]
+    fn float32_arithmetic_result_nested_in_tuple_uses_float32_round_trip_digits() {
+        let execution = execute(
+            "fn main() { \
+                 let a: Float32 = 0.1f32; \
+                 let b: Float32 = 0.2f32; \
+                 let sum = a + b; \
+                 let pair = (sum, true); \
+                 println(pair); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "(0.3, true)\n");
+    }
+
+    /// Distinguishes a genuine Float32 value from an equal-valued Float64: an explicit `as
+    /// Float64` cast must widen to the full `f64` shortest-round-trip digits, proving the
+    /// formatting difference tracks the value's own declared width rather than always rounding
+    /// to `f32`.
+    #[test]
+    fn float32_cast_to_float64_uses_float64_round_trip_digits_not_float32() {
+        let execution = execute(
+            "fn main() { \
+                 let x: Float32 = 0.1f32; \
+                 let y: Float64 = x as Float64; \
+                 println(y); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "0.10000000149011612\n");
+    }
+
     /// Post-WP-C2.11 correction: the standard-library math contract classifies transcendental
     /// domain errors (e.g. `sqrt` of a negative number) as producing NaN, not a language trap --
     /// distinct from the numeric-trap rules governing integer overflow/division and
@@ -6593,6 +7045,172 @@ mod tests {
     fn nonnegative_sqrt_is_unaffected() {
         let execution = execute("fn main() { println(sqrt(4.0f64)); }").unwrap();
         assert_eq!(execution.output, "2.0\n");
+    }
+
+    /// Runs `source` and returns the `Value` a zero-argument function named `function_name`
+    /// evaluates to -- used by the Issue-4 NaN-canonicalization tests below to inspect a
+    /// `Value::Float`'s exact bit pattern via `f64::to_bits`/`f32::to_bits`, which no STARK-level
+    /// program can observe on its own (there is no bit-reinterpretation primitive in Core v1;
+    /// `println`'s `NaN` text is bit-pattern-insensitive, since every NaN prints identically).
+    fn eval_function_result(source: &str, function_name: &str) -> Value {
+        let file = Arc::new(SourceFile::new("test.stark", source));
+        let (ast, parse_diags) = parse(&file, ParseMode::Program);
+        assert!(parse_diags.is_empty(), "parse diagnostics: {parse_diags:?}");
+        let (hir, resolve_diags) = resolve(&ast, file.clone());
+        assert!(
+            resolve_diags.is_empty(),
+            "resolve diagnostics: {resolve_diags:?}"
+        );
+        let checked = typecheck::analyze(&hir, file.clone());
+        assert!(
+            checked
+                .diagnostics
+                .iter()
+                .all(|diag| diag.severity != crate::diag::Severity::Error),
+            "type diagnostics: {:?}",
+            checked.diagnostics
+        );
+        let mut interpreter = Interpreter::new(&hir, file.clone(), &checked.tables);
+        let item_id = (0..hir.items.len())
+            .map(|index| ItemId(index as u32))
+            .find(|item| {
+                matches!(&hir.item(*item).kind, hir::ItemKind::Fn(def) if interpreter.text(def.sig.name) == function_name)
+            })
+            .unwrap_or_else(|| panic!("function '{function_name}' not found"));
+        let span = interpreter.hir.item(item_id).span;
+        let callable = interpreter
+            .item_callable(item_id)
+            .unwrap_or_else(|| panic!("'{function_name}' is not callable"));
+        interpreter
+            .call_callable(callable, None, Vec::new(), span)
+            .unwrap_or_else(|error| panic!("evaluating '{function_name}' failed: {error:?}"))
+    }
+
+    /// Correction-brief Issue 4 (`NUM-FLOAT-OP-001`): "operations that create a NaN produce the
+    /// canonical quiet NaN with sign zero and all payload bits other than the quiet bit zero" --
+    /// a specific, fixed bit pattern, not merely "some NaN." `f64::to_bits` inspection proves the
+    /// exact pattern, which printed `NaN` text alone cannot (every NaN prints identically
+    /// regardless of sign or payload).
+    #[test]
+    fn division_by_zero_produces_the_canonical_quiet_nan_bit_pattern_for_float64() {
+        let result = eval_function_result(
+            "fn make() -> Float64 { 0.0f64 / 0.0f64 } fn main() { }",
+            "make",
+        );
+        let Value::Float(value, FloatWidth::F64) = result else {
+            panic!("expected a tagged Float64, got {result}");
+        };
+        assert!(value.is_nan());
+        assert_eq!(value.to_bits(), 0x7ff8_0000_0000_0000);
+    }
+
+    #[test]
+    fn division_by_zero_produces_the_canonical_quiet_nan_bit_pattern_for_float32() {
+        let result = eval_function_result(
+            "fn make() -> Float32 { 0.0f32 / 0.0f32 } fn main() { }",
+            "make",
+        );
+        let Value::Float(value, FloatWidth::F32) = result else {
+            panic!("expected a tagged Float32, got {result}");
+        };
+        assert!(value.is_nan());
+        assert_eq!((value as f32).to_bits(), 0x7fc0_0000);
+    }
+
+    #[test]
+    fn sqrt_of_negative_produces_the_canonical_quiet_nan_bit_pattern() {
+        let result = eval_function_result(
+            "fn make() -> Float64 { sqrt(-1.0f64) } fn main() { }",
+            "make",
+        );
+        let Value::Float(value, FloatWidth::F64) = result else {
+            panic!("expected a tagged Float64, got {result}");
+        };
+        assert!(value.is_nan());
+        assert_eq!(value.to_bits(), 0x7ff8_0000_0000_0000);
+    }
+
+    /// `inf - inf` is a NaN *created* by the operation itself (not a NaN propagated from an
+    /// already-NaN operand) -- both are required to canonicalize identically.
+    #[test]
+    fn infinity_minus_infinity_produces_the_canonical_quiet_nan_bit_pattern() {
+        let result = eval_function_result(
+            "fn make() -> Float64 { \
+                 let inf = 1.0f64 / 0.0f64; \
+                 inf - inf \
+             } \
+             fn main() { }",
+            "make",
+        );
+        let Value::Float(value, FloatWidth::F64) = result else {
+            panic!("expected a tagged Float64, got {result}");
+        };
+        assert!(value.is_nan());
+        assert_eq!(value.to_bits(), 0x7ff8_0000_0000_0000);
+    }
+
+    /// A NaN *propagated* from an already-NaN operand into a further arithmetic operation must
+    /// also canonicalize to the same bit pattern -- not merely a freshly-created NaN.
+    #[test]
+    fn arithmetic_on_an_already_nan_operand_produces_the_canonical_quiet_nan_bit_pattern() {
+        let result = eval_function_result(
+            "fn make() -> Float64 { \
+                 let n = 0.0f64 / 0.0f64; \
+                 n + 1.0f64 \
+             } \
+             fn main() { }",
+            "make",
+        );
+        let Value::Float(value, FloatWidth::F64) = result else {
+            panic!("expected a tagged Float64, got {result}");
+        };
+        assert!(value.is_nan());
+        assert_eq!(value.to_bits(), 0x7ff8_0000_0000_0000);
+    }
+
+    /// Cross-operation assertion required by the correction brief: every distinct NaN-producing
+    /// path (zero-divided-by-zero, negative `sqrt`, infinity subtraction, and a propagated-input
+    /// operation) must yield bit-for-bit the same canonical pattern for a given width -- not just
+    /// each individually matching the spec's literal bit pattern.
+    #[test]
+    fn every_nan_producing_path_yields_the_same_canonical_bits_for_float64() {
+        let paths: &[&str] = &[
+            "0.0f64 / 0.0f64",
+            "sqrt(-1.0f64)",
+            "(1.0f64 / 0.0f64) - (1.0f64 / 0.0f64)",
+            "(0.0f64 / 0.0f64) + 1.0f64",
+        ];
+        let bits: Vec<u64> = paths
+            .iter()
+            .map(|expr| {
+                let source = format!("fn make() -> Float64 {{ {expr} }} fn main() {{ }}");
+                match eval_function_result(&source, "make") {
+                    Value::Float(value, FloatWidth::F64) => value.to_bits(),
+                    other => panic!("expected a tagged Float64, got {other}"),
+                }
+            })
+            .collect();
+        assert!(
+            bits.iter().all(|&b| b == bits[0]),
+            "expected every path to canonicalize to the same bits, got {bits:x?}"
+        );
+        assert_eq!(bits[0], 0x7ff8_0000_0000_0000);
+    }
+
+    /// Companion carve-out required by `NUM-FLOAT-OP-001`: unary negation flips whatever sign bit
+    /// a NaN already has -- it must NOT be routed through canonicalization, since that's a bit
+    /// operation on an existing value, not an operation that "creates" a NaN result.
+    #[test]
+    fn negating_a_canonical_nan_flips_its_sign_bit_instead_of_forcing_sign_zero() {
+        let result = eval_function_result(
+            "fn make() -> Float64 { -(0.0f64 / 0.0f64) } fn main() { }",
+            "make",
+        );
+        let Value::Float(value, FloatWidth::F64) = result else {
+            panic!("expected a tagged Float64, got {result}");
+        };
+        assert!(value.is_nan());
+        assert_eq!(value.to_bits(), 0xfff8_0000_0000_0000);
     }
 
     /// DEV-053 (found building the WP-C2.12 differential corpus, fixed as a follow-up
@@ -6686,5 +7304,350 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "7\n-1\n42\n");
+    }
+
+    /// Correction brief Issue 1 (found post-WP-C2.12): `?` propagation was swallowed by
+    /// `expect_value` into `pending_propagation` + a dummy `Value::Unit`, and only
+    /// aggregate-construction call sites (tuple/array/struct/enum literals, fixed as DEV-045)
+    /// checked the flag before continuing. Every other sequential-evaluation context --
+    /// ordinary/associated/builtin function calls, method calls, binary operands, `&&`/`||`,
+    /// assignment, ranges, repeat expressions, `if`/`while` conditions, match scrutinees, and
+    /// `break` values -- kept evaluating later sub-expressions (and their side effects) after an
+    /// earlier one had already propagated. Confirmed to produce real side effects that should
+    /// never have run, not just a spurious diagnostic.
+    #[test]
+    fn try_in_call_argument_stops_later_arguments_and_callee() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn side_effect() -> Int32 { println(\"SIDE EFFECT\"); 2 } \
+             fn sink(a: Int32, b: Int32) -> Int32 { println(\"CALLED\"); b } \
+             fn helper() -> Result<Int32, String> { \
+                 let value = sink(fail()?, side_effect()); \
+                 Ok(value) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "done\n",
+            "side_effect() and sink()'s own body must not run once fail()? has propagated"
+        );
+    }
+
+    /// Companion: the same bug for a user-method call's argument list, and for the qualified
+    /// (`is_core_value`-gated `call_core_method`) dispatch path, which required a return-type
+    /// adapter rather than a direct `Flow`-returning signature since it is a large dispatcher
+    /// with a single caller (`call_method`) that checks `pending_propagation` immediately.
+    #[test]
+    fn try_in_method_argument_stops_later_arguments_and_method_body() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn side_effect() -> Int32 { println(\"SIDE EFFECT METHOD ARG\"); 2 } \
+             struct Adder { total: Int32 } \
+             impl Adder { \
+                 fn add(&self, a: Int32, b: Int32) -> Int32 { println(\"METHOD CALLED\"); a + b } \
+             } \
+             fn helper() -> Result<Int32, String> { \
+                 let adder = Adder { total: 0 }; \
+                 let value = adder.add(fail()?, side_effect()); \
+                 Ok(value) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "done\n");
+    }
+
+    /// Companion: `?` in the left operand of a binary expression (both the comparison-operator
+    /// borrowing path and the ordinary arithmetic path) must stop the right operand from
+    /// evaluating, instead of continuing with a dummy `Value::Unit` left operand.
+    #[test]
+    fn try_in_binary_operand_stops_rhs_evaluation() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn side_effect() -> Int32 { println(\"SIDE EFFECT RHS\"); 2 } \
+             fn helper() -> Result<Int32, String> { \
+                 let value = fail()? + side_effect(); \
+                 Ok(value) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "done\n");
+    }
+
+    /// Companion: `&&`/`||` short-circuit correctly on `Bool` operands, but the right operand
+    /// itself can also contain `?` -- propagating from the right operand of a short-circuit
+    /// operator must not be silently converted into `false`/`true`.
+    #[test]
+    fn try_in_and_or_right_operand_propagates_not_converted_to_bool() {
+        let execution = execute(
+            "fn fail() -> Result<Bool, String> { Err(String::from(\"boom\")) } \
+             fn side_effect() -> Bool { println(\"SIDE EFFECT AND\"); true } \
+             fn helper_and() -> Result<Bool, String> { \
+                 let v = true && (fail()? && side_effect()); \
+                 Ok(v) \
+             } \
+             fn helper_or() -> Result<Bool, String> { \
+                 let v = false || (fail()? || side_effect()); \
+                 Ok(v) \
+             } \
+             fn main() { \
+                 let a = helper_and(); \
+                 let b = helper_or(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "done\n");
+    }
+
+    /// Companion: `?` in a range's low bound must stop the high bound from evaluating.
+    #[test]
+    fn try_in_range_low_bound_stops_high_bound_evaluation() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn side_effect() -> Int32 { println(\"SIDE EFFECT RANGE HI\"); 5 } \
+             fn helper() -> Result<Int32, String> { \
+                 let r = fail()?..side_effect(); \
+                 Ok(1) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "done\n");
+    }
+
+    /// Companion: `?` in a repeat expression's value must stop the array from being built (the
+    /// count is always a compile-time constant per `02-Syntax-Grammar.md`, so only the repeated
+    /// value position is reachable at runtime, but the fix covers both positions defensively).
+    #[test]
+    fn try_in_repeat_value_stops_array_construction() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn helper() -> Result<Int32, String> { \
+                 let arr = [fail()?; 3]; \
+                 println(\"ARRAY BUILT\"); \
+                 Ok(1) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "done\n");
+    }
+
+    /// Companion: `break` did not check `pending_propagation` after evaluating its value
+    /// expression, unlike `return` (which already did) -- `break fail()?;` wrapped the dummy
+    /// `Value::Unit` into `Flow::Break(Value::Unit)` instead of propagating out of the
+    /// enclosing function entirely.
+    #[test]
+    fn try_in_break_value_propagates_out_of_the_enclosing_function() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn helper() -> Result<Int32, String> { \
+                 loop { \
+                     break fail()?; \
+                 } \
+                 println(\"UNREACHABLE\"); \
+                 Ok(1) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "done\n",
+            "break fail()? must propagate out of helper(), not print UNREACHABLE"
+        );
+    }
+
+    /// Confirms already-completed, Drop-bearing call-argument temporaries are destroyed in
+    /// reverse completion order when a later argument's evaluation triggers early transfer --
+    /// matching the abstract machine's failed-aggregate-construction cleanup rule, now extended
+    /// to ordinary call arguments via `eval_call_arguments`.
+    #[test]
+    fn try_drops_completed_call_argument_temporaries_in_reverse_order() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn sink(a: Loud, b: Loud, c: Int32) -> Int32 { c } \
+             fn helper() -> Result<Int32, String> { \
+                 let value = sink( \
+                     Loud { label: String::from(\"first\") }, \
+                     Loud { label: String::from(\"second\") }, \
+                     fail()?, \
+                 ); \
+                 Ok(value) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "second\nfirst\ndone\n");
+    }
+
+    /// Regression guard: `return`'s own pre-existing propagation handling (the one sequential-
+    /// evaluation context that was already correct before this fix) is unaffected.
+    #[test]
+    fn try_in_return_expression_still_propagates_without_dummy_unit() {
+        let execution = execute(
+            "fn fail() -> Result<Int32, String> { Err(String::from(\"boom\")) } \
+             fn helper() -> Result<Int32, String> { \
+                 if true { \
+                     return Ok(fail()?); \
+                 } \
+                 Ok(0) \
+             } \
+             fn main() { \
+                 let _ = helper(); \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "done\n");
+    }
+
+    /// Correction brief Issue 2 (found post-WP-C2.12): `Eq::eq(&self, &other)`/`Ord::cmp(&self,
+    /// &other)` borrow both operands -- they never take ownership. Before this fix,
+    /// `eval_binary`'s nominal-dispatch path passed owned clones for both: the receiver's clone
+    /// silently vanished via ordinary Rust-level drop with *no* STARK-level `Drop::drop` call at
+    /// all (data loss), while the argument's clone got a *real*, extra `Drop::drop` call fired
+    /// by the callee's own normal per-parameter cleanup, before the comparison's caller-visible
+    /// side effects (`println("after")`) even ran. Fixed by resolving each place operand's real
+    /// `Place` (`resolve_comparison_operand`) and passing `Value::Ref(place)` into the dispatch
+    /// instead of a clone.
+    #[test]
+    fn eq_on_drop_type_does_not_create_or_drop_clones() {
+        let execution = execute(
+            "struct Key { label: String } \
+             impl Eq for Key { fn eq(&self, other: &Key) -> Bool { true } } \
+             impl Drop for Key { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 let a = Key { label: String::from(\"a\") }; \
+                 let b = Key { label: String::from(\"b\") }; \
+                 println(a == b); \
+                 println(\"after\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "true\nafter\nb\na\n",
+            "no destructor may run before \"after\"; a and b must each drop exactly once, at \
+             their own normal (reverse-declaration-order) scope end"
+        );
+    }
+
+    /// Companion: the same borrow contract for `Ord::cmp`.
+    #[test]
+    fn ord_on_drop_type_does_not_create_or_drop_clones() {
+        let execution = execute(
+            "struct Key { label: String, rank: Int32 } \
+             impl Ord for Key { fn cmp(&self, other: &Key) -> Ordering { \
+                 if self.rank < other.rank { Ordering::Less } \
+                 else if self.rank > other.rank { Ordering::Greater } \
+                 else { Ordering::Equal } \
+             } } \
+             impl Drop for Key { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 let a = Key { label: String::from(\"a\"), rank: 1 }; \
+                 let b = Key { label: String::from(\"b\"), rank: 2 }; \
+                 println(a < b); \
+                 println(\"after\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\nafter\nb\na\n");
+    }
+
+    /// Companion: a field/index place operand (not a bare local) must also borrow its original
+    /// storage rather than a clone-then-new-temporary.
+    #[test]
+    fn comparison_of_field_and_index_places_borrows_original_storage() {
+        let execution = execute(
+            "struct Key { label: String } \
+             impl Eq for Key { fn eq(&self, other: &Key) -> Bool { true } } \
+             impl Drop for Key { fn drop(&mut self) { println(self.label.as_str()); } } \
+             struct Holder { key: Key } \
+             fn main() { \
+                 let holder = Holder { key: Key { label: String::from(\"held\") } }; \
+                 let mut values: Vec<Key> = Vec::new(); \
+                 values.push(Key { label: String::from(\"indexed\") }); \
+                 println(holder.key == values[0]); \
+                 println(\"after\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "true\nafter\nindexed\nheld\n",
+            "no destructor may run before \"after\"; holder/values are real named locals, so \
+             their fields correctly drop at main's own scope end (reverse declaration order), \
+             not before or during the comparison"
+        );
+    }
+
+    /// Confirms a non-place (temporary, no-other-owner) comparison operand is still evaluated
+    /// exactly once and destroyed exactly once, after the comparison completes -- using
+    /// `promote_to_owned_temp_place` rather than the plain `promote_to_temp_place` helper, which
+    /// (found while fixing this issue) does not register its temporary in `Frame::order` at all,
+    /// so a value placed there is silently discarded via ordinary Rust-level deallocation with
+    /// no `Drop::drop` call ever firing.
+    #[test]
+    fn comparison_of_temporary_operands_evaluates_each_once_and_drops_after_call() {
+        let execution = execute(
+            "struct Key { label: String } \
+             impl Eq for Key { fn eq(&self, other: &Key) -> Bool { true } } \
+             impl Drop for Key { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn make(label: String) -> Key { Key { label: label } } \
+             fn main() { \
+                 println(make(String::from(\"temp_left\")) == make(String::from(\"temp_right\"))); \
+                 println(\"after\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "true\nafter\ntemp_right\ntemp_left\n",
+            "each temporary must drop exactly once, after the comparison, in reverse creation \
+             order -- not silently leaked and not dropped before \"after\""
+        );
+    }
+
+    /// Companion regression guard: an ordinary `&self` method call (not a comparison) already
+    /// worked correctly before this fix (`call_user_method`'s own receiver-extraction-before-
+    /// cleanup handling) and must remain unaffected by the `promote_to_owned_temp_place`
+    /// addition or the `eval_binary` signature change.
+    #[test]
+    fn shared_receiver_method_observes_original_place_without_owned_clone_cleanup() {
+        let execution = execute(
+            "struct Key { label: String } \
+             impl Key { fn describe(&self) -> String { self.label.clone() } } \
+             impl Drop for Key { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 let a = Key { label: String::from(\"a\") }; \
+                 println(a.describe().as_str()); \
+                 println(\"after\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "a\nafter\na\n");
     }
 }

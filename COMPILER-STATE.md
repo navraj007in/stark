@@ -1,27 +1,27 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.12 (in progress — DEV-036, DEV-053, DEV-054 closed; initial differential corpus built)
+Updated: 2026-07-18 after WP-C2.13 — Gate C2 closed, CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS
 
 ## Position
-Gate: C2  Next: WP-C2.12 (continues — see Follow-ups)  Blocked: none
-Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
-starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
+Gate: C3  Next: WP-C3.1 (Architecture hypothesis and workload freeze)  Blocked: none
+Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
+closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
+(behind C3, mandatory per CD-004 — C3 selects how, not whether)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: WP-C2.12 started (differential interpreter corpus), plus a
-  same-session follow-up investigation and fix for DEV-053/DEV-054 (a real, previously-silent
-  wrong-runtime-output pattern-matching defect, not the exhaustiveness-algorithm bug originally
-  suspected). DEV-036 closed with a real code fix (not documentation-only). A new
-  execution-snapshot test harness was built and populated with an initial, representative (not
-  exhaustive) corpus across all seven named coverage categories, all seven named
-  metamorphic-transformation classes, and workspace relocation. Five new compiler gaps found and
-  recorded while building it (DEV-051 through DEV-055); two (DEV-053/054) investigated and
-  closed with a real fix, three remain open. WP-C2.12 itself remains open — see Follow-ups and
-  its own work-package file for exactly what's done vs. remaining. See the dated session records
-  below for full detail.
-- Transition base commit: `9e0b7a3` (`fix post-WP-C2.11 interpreter defects found by external
-  review (DEV-044..DEV-050)`).
-- Current committed head at the start of this WP: `9e0b7a3`. This event-style provenance avoids
+- Last completed transition: WP-C2.13 (Gate C2 exit and Core v1 semantic freeze). Verdict
+  **CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS** — all 24 high-cost open
+  questions (CORE-Q-001..024) approved, 166-row completeness inventory has zero
+  absent/contradictory/unclassified rows (6 remain `pending-owner-approval` governance
+  bookkeeping only, behavior already implemented/tested), 33 deviations closed this gate
+  (seventeen WP-C2.2 runtime-semantics defects, six WP-C2.11 items, DEV-036, seven
+  post-WP-C2.11 correction-pass items, DEV-053/054), 8 remain open and non-soundness-relevant.
+  Full report: `starkc/docs/compiler/C2-exit-report.md`. Gate C3 (Native Compiler Architecture
+  and Backend Selection Spike) now open.
+- Transition base commit: `e270575` (`add compiler support coverage for .st sources` — an
+  unrelated, user-authored commit that landed after WP-C2.12's own commit `2b005d8`; not Gate C2
+  work, noted only for head accuracy).
+- Current committed head at the start of this WP: `e270575`. This event-style provenance avoids
   trying to embed a commit's own not-yet-known SHA in itself. Commit only on explicit user
   request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
@@ -30,16 +30,12 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   `rust-version = "1.85"` (crate MSRV). The Gate-5 *generated deployment host* (not `starkc`
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
-- Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/, tracked
-  files only — an unrelated, untracked, pre-existing `tests/source_extensions.rs` file with its
-  own 5 tests also sits in the working tree; not part of this project's tracked codebase or this
-  count, see the DEV-053/DEV-054 session record's note on it):
-  **546 passed, 0 failed, 2 ignored** (up from 533/0/2 at the post-WP-C2.11 correction pass's
-  close; +5 DEV-036 closure regressions [3 in `gate2_valid.rs`, 2 in `parser.rs`] + 3 new
-  `exec_snapshots.rs` tests + 5 DEV-053/054 fix regressions [4 in `interp.rs`, 1 in
-  `resolve.rs`]) across **4 unittest binaries** (`src/lib.rs`,
-  `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 31 integration-test files**
-  (new: `tests/exec_snapshots.rs`; `find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`,
+- Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/, against
+  current head `e270575`, which now legitimately includes `tests/source_extensions.rs` — the
+  unrelated `.st`-extension commit — as committed, tracked code, no longer excluded):
+  **551 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 32 integration-test files**
+  (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`,
   re-counted against the
   post-WP-C2.7 tree — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
@@ -1097,6 +1093,22 @@ involving nested modules and private items should assume this stricter model.
   by-module compiler map produced (`starkc/docs/dev/compiler-map.md`). Explicit non-claim: no
   conformance percentage from this gate is trusted for Core v1/tensor v0.1 conformance purposes
   — see exit report's "No conformance percentage is trusted" section. Next: Gate C1.
+- C1: **CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS** (2026-07-17/18). Full report:
+  `starkc/docs/compiler/C1-exit-report.md`. Six requalification WPs closed (lexical/syntax, name
+  resolution/modules/visibility, types/generics/traits, ownership/borrowing/drop checking,
+  control flow/patterns/constants/numerics, conformance evidence generator); 12 of 23 deviations
+  closed, 2 partially closed, 9 open and non-soundness-relevant. This entry backfilled during
+  WP-C2.13's consistency sweep — not recorded here at the time of C1's own close. Next: Gate C2.
+- C2: **CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS** (2026-07-18). Full report:
+  `starkc/docs/compiler/C2-exit-report.md`. Reference-execution contract, abstract machine, and
+  future-boundaries specifications written from scratch; all 24 high-cost open questions
+  approved; 166-row completeness inventory has zero absent/contradictory/unclassified rows (6
+  pending-owner-approval governance-only); 33 deviations closed this gate (the largest body of
+  runtime-semantics fixes in the compiler track's history, including DEV-053/054 — a bare `None`
+  pattern silently matching any value with wrong runtime output, the most severe finding to
+  date), 8 remain open and non-soundness-relevant. WP-C2.12's differential corpus is
+  representative, not exhaustive — explicitly disclosed, not disqualifying (cross-backend replay
+  is blocked behind Gate C3 by the roadmap's own dependency order). Next: Gate C3, WP-C3.1.
 
 ---
 
@@ -2718,3 +2730,313 @@ unaffected by this fix. WP-C2.12's own remaining scope (generated coverage, deep
 breadth, cross-backend replay behind Gate C3) is unchanged by this follow-up.
 NEXT: WP-C2.12 continues (generated coverage, deeper per-category breadth), then WP-C2.13 (Gate
 C2 exit and Core v1 semantic freeze) once the corpus is judged sufficient.
+
+---
+
+### WP-C2.13 — 2026-07-18
+DONE: Gate C2 exit. Wrote `starkc/docs/compiler/C2-exit-report.md` per the roadmap's exact
+requirements. Verdict: **CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS**, not plain
+FROZEN and not NOT-YET-FROZEN. Gathered fresh evidence for every roadmap-required property
+rather than assuming the prior session's understanding: re-derived the completeness-inventory
+status distribution directly from `CORE-V1-COMPLETENESS.md` (166 real rows after excluding
+repeated section-header rows — 155 `complete/specified`, 6 `partial/specified` all marked
+`pending-owner-approval`, 4 `complete/prohibited`, 1 `complete/deliberately-unspecified`, **zero**
+absent/contradictory/unclassified); confirmed all 24 rows in `CORE-V1-OPEN-QUESTIONS.md`
+(CORE-Q-001 through CORE-Q-024, incl. 005A/013A/013B) are Approved, zero pending/rejected;
+grepped `CORE-V1-ABSTRACT-MACHINE.md` for MIR/Rust-internals leakage and found only its own
+explicit disclaimer plus one forward-looking mention of a future MIR interpreter as a
+comparator, confirming the roadmap's "MIR-relevant concepts are independent of MIR" property
+holds; verified all 34 rules in `core-v1-c2.11-evidence.toml` carry non-empty
+`negative_tests`; re-ran `extract-spec-examples.sh` (manifest in sync) and
+`build-core-spec.py` (regenerates cleanly) to verify generated/normative agreement; ran the full
+workspace test suite fresh against the actual current head.
+The central tension going in: WP-C2.12 (differential interpreter corpus) is explicitly **not**
+closed — its own work-package file and this file's own prior Position header both said so. Did
+not paper over this to produce a clean verdict. Resolved it by reading the roadmap's own
+dependency structure literally: cross-backend replay (the largest piece of WP-C2.12's remaining
+scope) is explicitly named as work that happens *after* Gate C3 opens, since neither a MIR
+interpreter nor a native backend exists yet — it cannot be a C2.13 precondition without the
+roadmap contradicting its own gate ordering. The corpus that *does* exist (17 hand-written cases
+across all seven named categories, all seven named metamorphic-transformation classes, one
+workspace-relocation test) passes 100% with zero known failures; its incompleteness is
+depth/breadth, not a masked failure. Treated this the same way the Gate C1 report treated
+DEV-017's 39-of-59-unclassified gap: real, disclosed, bounded, and not disqualifying on its own.
+Found and fixed one real arithmetic error while writing the deviation-ledger tally (grep-counted
+the exact closed-DEV-id list with Python rather than trusting a running mental count: 33 closed
+this gate, not the "34"/"eighteen WP-C2.2 defects" first written — WP-C2.2 closed seventeen, not
+eighteen).
+Also discovered, while checking `git log` for current-head accuracy, that the repository head
+had moved since WP-C2.12's own commit: a new commit `e270575` (`add compiler support coverage
+for .st sources`), authored directly by the user (Navraj Singh) outside this session, unrelated
+to Gate C2 — confirmed via `git show --stat` that it contains exactly the `main.rs`/
+`source_extensions.rs` changes this session had deliberately excluded from its own WP-C2.12
+commit. Reported this plainly in the exit report and this file's own head/test-count fields
+(now legitimately 551/0/2 including `source_extensions.rs`'s 5 tests, since that file is
+committed and tracked as of the new head) rather than silently absorbing or ignoring the change.
+FILES: `starkc/docs/compiler/C2-exit-report.md` (new), COMPILER-STATE.md (Position moved to
+Gate C3/WP-C3.1, Repository baseline updated, this session record).
+RULES: none changed (documentation only — this is the gate-close event itself, not a new
+implementation change).
+DECISIONS: none new as CD/AD records (this is the gate-close event itself). The
+FROZEN-WITH-LISTED-DEVIATIONS verdict is this WP's own deliverable, not a CD entry, per the
+roadmap's own outcome vocabulary.
+EVIDENCE: MANUAL + DOC + REG — every claim in the exit report (completeness-ledger distribution,
+open-question approval states, MIR-independence, negative-evidence coverage, spec sync,
+deviation counts) was independently re-derived from the actual files (grep/python tallies, not
+recalled from earlier context) before being written into the report. `cargo test --workspace
+--all-targets --all-features` against current head `e270575`: **551 passed / 0 failed / 2
+ignored**. `extract-spec-examples.sh`: manifest in sync. `build-core-spec.py`: regenerates
+cleanly (only pre-existing, unrelated CSS-lint warnings from the PDF stylesheet, not new).
+FOLLOW-UP: two items flagged in the exit report as owner decisions, not this WP's own blockers:
+(1) the six `pending-owner-approval` completeness rows need a governance sign-off (behavior
+already correct, paperwork only); (2) whether to complete WP-C2.12's remaining scope (case
+generator, deeper per-category breadth) before or alongside Gate C3's own work — nothing in C3
+depends on it, but a richer corpus strengthens C3's eventual native-vs-interpreter parity
+evidence. Neither blocks WP-C3.1.
+NEXT: WP-C3.1 (Architecture hypothesis and workload freeze) — Gate C3 opens.
+
+---
+
+### Post-Gate-C2 correction brief — DEV-056/DEV-057 (Issues 1-2 of 8) — 2026-07-18
+DONE: An external correction brief, arriving after WP-C2.13's Gate C2 exit report was written,
+claimed eight issues against the reference interpreter. Independently reproduced each of the two
+claimed release-blocking/critical items against the current head before touching any code, per
+the brief's own required method and this session's standing practice. Both confirmed real,
+severe, and not overstated:
+- **DEV-056** — `?` propagation was swallowed by `expect_value`'s `pending_propagation` +
+  dummy-`Value::Unit` mechanism everywhere *except* the aggregate-construction call sites DEV-045
+  had already fixed. Confirmed with an escalating series of repros culminating in the flattest
+  possible case, an ordinary function call: `sink(fail()?, side_effect())` printed
+  `SIDE EFFECT`/`CALLED` before `done`, proving real side effects ran that should never have
+  been reached. Fixed by extending the same stop-and-clean-up-in-reverse contract
+  (`eval_call_arguments`, mirroring `eval_aggregate_elements`) to every call-argument site
+  (ordinary/associated/builtin/function-value calls, user-method calls, qualified-trait calls,
+  core-method dispatch via a documented function-boundary-adapter exception for one large
+  single-caller dispatcher), plus explicit checks in binary operands, `&&`/`||`, assignment,
+  ranges, repeat expressions, `if`/`while` conditions, match scrutinees, and `break` (`return`
+  alone was already correct). Weakening `expect_bool`/`expect_int` to pass a placeholder through
+  on pending propagation (instead of a misleading type-mismatch trap) required auditing and
+  fixing every one of their 8 call sites to check the flag immediately afterward — one
+  (`expr_place`'s computed-index case) cannot itself return `Flow::Propagate` (a real, separate,
+  documented architectural gap in that function's non-`Flow`-aware return type) and instead now
+  fails loudly with a dedicated error rather than silently using a wrong index, which is
+  no worse than its pre-existing behavior. 9 new regression tests.
+- **DEV-057** — `eval_binary`'s nominal Eq/Ord dispatch passed *clones* for both operands where
+  the language contract (`Eq::eq(&self, &other)`/`Ord::cmp(&self, &other)`) requires borrows.
+  This was wrong in two independent ways: the receiver's clone silently vanished with no
+  STARK-level `Drop::drop` call at all (confirmed: `println(a == b); println("after");` for a
+  `Drop`-bearing `Key` printed `b`'s destructor *before* `"after"`, then printed both `a` and `b`
+  again at their real scope-end — `b` destroyed twice, out of order). Fixed via a new
+  `resolve_comparison_operand` helper that resolves each place operand to its real `Place` (not
+  just a cloned value), threaded through `eval_binary`'s signature as `(Value, Option<Place>)`
+  per side, with `Value::Ref(place)` passed into dispatch instead of a clone. While implementing
+  this, found and fixed a second, broader, pre-existing bug: `promote_to_temp_place` (15+
+  call sites across the interpreter) bypasses `Frame::insert` entirely, so nothing placed there
+  was ever recorded in `Frame::order` — any `Drop`-bearing value routed through it was silently
+  discarded via ordinary Rust-level deallocation with **no** `Drop::drop` call ever firing, for
+  *any* of its 15+ call sites, not just comparisons. Rather than changing the shared helper
+  broadly (confirmed by one regression that several existing call sites rely on it *not*
+  double-owning a value also owned elsewhere, e.g. iterator snapshots), added a narrowly-scoped
+  `promote_to_owned_temp_place` used only at the two new non-place-operand fallback sites this
+  fix introduces. 5 new regression tests.
+Both fixes were verified against the brief's exact required output strings character-for-
+character (Issue 1: `"done\n"` with no leaked side effects across nine constructs; Issue 2:
+`"true\nafter\nb\na\n"` exactly) before being accepted as complete, not just "no crash."
+FILES: `starkc/src/interp.rs` (both fixes; 14 new inline regression tests; removed
+`expect_value_borrowed`, now fully superseded by `resolve_comparison_operand` and left as dead
+code otherwise), `starkc/docs/conformance/KNOWN-DEVIATIONS.md` (new DEV-056, DEV-057, both
+closed), COMPILER-STATE.md.
+RULES: none — both are interpreter runtime-semantics corrections against already-normative rules
+(construct-complete evaluation order and early-transfer cleanup per `CORE-V1-ABSTRACT-MACHINE.md`;
+the `Eq`/`Ord` borrow contract per `03-Type-System.md`); no conformance-database rule citation or
+normative specification text changed.
+DECISIONS: none new as CD/AD records. Both fixes are spec-consistent corrections under Charter
+§2.2 Sonnet-level autonomy — neither weakens an existing check or changes the accepted/rejected
+program set in a permissive direction; both make already-accepted programs execute correctly
+instead of incorrectly.
+EVIDENCE: MANUAL + REG — every claim (the original bugs, the `promote_to_temp_place` double-
+bug-class discovery, the double-drop regression this surfaced and its narrower fix, and the
+non-regression of every existing corpus/test) was verified with real `.stark` programs run
+against the built `starkc` binary before and after each fix, not inferred from code reading
+alone. `cargo test --workspace --all-targets --all-features`: **565 passed / 0 failed / 2
+ignored** (up from 551/0/2 pre-brief). `cargo fmt --all -- --check` clean. `cargo clippy
+--workspace --all-targets --all-features -- -D warnings` clean (one `too_many_arguments` lint
+surfaced by `eval_binary`'s new parameters was fixed by bundling `(Value, Option<Place>)` per
+operand into one tuple parameter each, not suppressed).
+**Note on Gate C2's already-published exit report:** `starkc/docs/compiler/C2-exit-report.md`
+was written before this correction brief arrived and asserted "the interpreter passes the frozen
+corpus" — true of the corpus that existed, which happened not to exercise either DEV-056's or
+DEV-057's exact shape (no existing test called `?` from inside a plain function-call argument
+position, and no existing test compared two `Drop`-bearing structs by value while also printing
+around the comparison). This does not retroactively invalidate the FROZEN-WITH-LISTED-DEVIATIONS
+verdict — both defects are now found, fixed, and regression-tested, the same disposition every
+other mid-gate finding in this compiler track has received — but it is a concrete illustration
+of exactly the limitation that report's own "WP-C2.12 status" section flagged: a representative,
+non-exhaustive corpus can pass cleanly while real, severe defects remain undetected. See
+`C2-exit-report.md`'s own dated addendum for the formal cross-reference.
+FOLLOW-UP: Issues 3-5 (Float32 nested-formatting width loss, NaN bit canonicalization, C2.11
+evidence-citation relevance) and Issues 6-8 (DEV-051, DEV-052, DEV-055 disposition) from the same
+correction brief remain open, not yet investigated this pass — Issue 3 in particular requires
+adding width identity to the runtime `Value::Float` representation (touching around 44 call
+sites across arithmetic, casts, comparisons, standard math, and formatting), a materially larger
+and riskier change than Issues 1-2, deliberately not started without a checkpoint given the
+scope. Reported to the user for a decision on how to proceed rather than continuing unilaterally.
+NEXT: user decision on Issues 3-8, then continue this correction brief or proceed to WP-C3.1.
+
+### Post-Gate-C2 correction brief — DEV-058 (Issue 3 of 8) — 2026-07-18
+DONE: user selected "continue through Issue 5." Implemented Issue 3 — `Value::Float` nested
+inside a tuple/array/`Option`/`Result`/struct still formatted via `Float64`'s shortest-round-trip
+digits instead of `Float32`'s, the residual gap DEV-049 explicitly left open (its fix only
+covered the two directly-printed cases, `println`/`.fmt()`, via an external static-type lookup
+at the call site — the generic recursive `Display for Value` impl reached from any nested
+position has no such context available). Reproduced first: `println((0.1f32, 7))` printed
+`(0.10000000149011612, 7)` against the current head, confirming the claim before touching code.
+Root fix: added `FloatWidth { F32, F64 }` and changed `Value::Float(f64)` to `Value::Float(f64,
+FloatWidth)` so the runtime value carries its own declared width. Surveyed and updated all ~44
+construction/match sites in `interp.rs` via iterative `cargo build` (not blind bulk replace,
+given the `promote_to_temp_place` regression earlier this session from exactly that kind of
+broad, uninspected change) — each site individually judged for the semantically correct width:
+`Display for Value`'s `Float` arm now matches the tag directly (fixes nested formatting for
+every caller for free, since tuples/arrays/`Option`/`Result`/structs all format their contents
+through this same recursive impl); arithmetic/casts/unary-negation route through the existing
+`normalize_numeric` helper (already looked up the expr's static type for `f32`-rounding, extended
+to also set the tag from that lookup); literal evaluation reads width from the literal's own
+suffix; the `Float64 -> Float64`-only math builtins (confirmed via `typecheck.rs` signatures:
+`Sqrt`, `Pow`/`Atan2`, `Log`/`Log10`/`Exp`/`Sin`/`Cos`/`Tan`/`Asin`/`Acos`/`Atan`/`Floor`/`Ceil`/
+`Round`/`Trunc`, `MathPi`/`MathE`, `Random::next_float`) always tag `F64`; `math::abs` is
+generically `T -> T` (per its type signature) and preserves the input's own tag; comparisons
+(`Ord::cmp`, `numeric_cmp`) are width-agnostic (compare the raw `f64`, wildcard the tag).
+Two now-redundant external-type-table special cases were deleted as dead weight rather than left
+alongside the new mechanism: `.fmt()`'s `receiver_ty`-based Float32 check in `call_core_method`,
+and `format_runtime_value`'s `ty: Option<&Ty>` parameter — removing the latter let
+`call_builtin`'s now-unused `arg_ty` computation and the `arg_exprs` parameter it depended on be
+removed too (nothing else in `call_builtin` read them). 6 new regression tests added covering
+exactly the brief's required scenarios: Float32 nested in a tuple, an array, `Option`/`Result`,
+and a user struct (all via the generic display path); a Float32 arithmetic result nested in a
+tuple (proving the tag survives computation, not just literal construction); and an explicit
+`as Float64` cast producing the full `f64` digit string (proving the formatting difference tracks
+the value's own declared width, not an unconditional `f32`-rounding). All pre-existing DEV-049
+regressions continue to pass unchanged.
+FILES: `starkc/src/interp.rs` (the `FloatWidth` enum/tag and all ~44 dependent call sites; 6 new
+inline regression tests; two dead external-type-table special cases removed),
+`starkc/docs/conformance/KNOWN-DEVIATIONS.md` (new DEV-058, closed; DEV-049 updated to
+cross-reference DEV-058 as the closure of its residual gap; count line updated to 56), this file.
+RULES: none — a runtime-representation correction against an already-normative rule (canonical
+display uses the shortest decimal representation that round-trips to the *declared* IEEE type,
+`03-Type-System.md`); no conformance-database rule citation or normative specification text
+changed.
+DECISIONS: none new as CD/AD records. Spec-consistent correction under Charter §2.2 Sonnet-level
+autonomy — makes an already-accepted program's output correct where it was previously wrong; does
+not change the accepted/rejected program set.
+EVIDENCE: MANUAL + REG — the original nested-formatting bug and each of the 6 new regression
+scenarios were run against the built `starkc` binary / interpreter test harness before and after
+the fix, not inferred from code reading alone. `cargo test --workspace --all-targets
+--all-features`: **571 passed / 0 failed / 2 ignored** (up from 565/0/2 pre-Issue-3, exactly the
++6 new tests, zero regressions elsewhere). `cargo fmt --all -- --check` clean. `cargo clippy
+--workspace --all-targets --all-features -- -D warnings` clean.
+NEXT: Issue 4 (NaN bit-pattern canonicalization) and Issue 5 (C2.11 evidence-citation relevance),
+per the user's "continue through Issue 5" instruction. Issues 6-8 (DEV-051/052/055 disposition)
+remain deferred.
+
+### Post-Gate-C2 correction brief — DEV-059 (Issue 4 of 8) — 2026-07-18
+DONE: implemented Issue 4 — NaN-producing float operations returned whatever bit pattern the
+host `f64`/`f32` instruction happened to produce, with no canonicalization, against
+`NUM-FLOAT-OP-001`'s explicit requirement ("operations that create a NaN produce the canonical
+quiet NaN with sign zero and all payload bits other than the quiet bit zero"). Reproduced the gap
+first (via the new `eval_function_result` test helper below): different NaN-producing paths were
+not verified to be bit-identical, though every NaN printed the same `NaN` text regardless (bit-
+insensitive), which is why nothing in the existing corpus had ever caught it. Root fix: two small
+helpers — `canonical_nan_bits(width)` (literal `0x7ff8_0000_0000_0000` for `Float64`,
+`0x7fc0_0000` for `Float32`, spelled out explicitly at the call site rather than relying on
+`f32::NAN`/`f64::NAN`, which happen to already equal them) and `canonicalize_nan(value, width)`
+(forces to the canonical bits if `value.is_nan()`, otherwise passes through unchanged — leaves
+infinities/signed-zero/finite values untouched). Wired into `Add`/`Sub`/`Mul`/`Div`/`Rem` (via a
+new `canonicalize_float_result` wrapper around the existing `normalize_numeric` call), `sqrt`,
+`math::abs`, and every remaining `Float64`-only transcendental builtin (`pow`/`atan2`/`log`/
+`log10`/`exp`/`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`floor`/`ceil`/`round`/`trunc`). Deliberately
+did **not** wire it into unary negation: the spec's own text carves that out ("Negation flips the
+sign bit, including for zero and NaN"), and Rust's `-x` for floats already lowers to a pure
+sign-bit-flip (`fneg`) — canonicalizing there would have wrongly forced a negated NaN's sign back
+to zero, breaking the very carve-out the spec names. Verified this distinction empirically with a
+dedicated regression (`negating_a_canonical_nan_flips_its_sign_bit_instead_of_forcing_sign_zero`)
+rather than assuming it from reading the code. 7 new regression tests, all using a new
+`eval_function_result` test helper — none of the required bit-pattern assertions are observable
+from a STARK program's own output (there's no bit-reinterpretation primitive in Core v1, and
+`println`'s `NaN` text is identical for every bit pattern), so the helper runs a zero-argument
+function through the interpreter directly and returns its `Value` for `to_bits()` inspection.
+Covered: `0.0/0.0` for both widths, `sqrt(-1.0)`, `inf - inf` (a *created* NaN), arithmetic on an
+already-NaN operand (a *propagated* NaN, required to canonicalize identically to a created one),
+the brief's required cross-operation assertion (four independently-shaped NaN-producing
+expressions all bit-for-bit equal), and the negation carve-out.
+FILES: `starkc/src/interp.rs` (`canonical_nan_bits`/`canonicalize_nan`/`canonicalize_float_result`
+helpers; all NaN-producing arithmetic/math-builtin call sites wired to them; 7 new inline
+regression tests plus the `eval_function_result` test helper), `starkc/docs/conformance/
+KNOWN-DEVIATIONS.md` (new DEV-059, closed; count line updated to 57), this file.
+RULES: none — a runtime-correctness fix against an already-normative rule (`NUM-FLOAT-OP-001`,
+`CORE-V1-ABSTRACT-MACHINE.md`); no conformance-database rule citation or normative specification
+text changed.
+DECISIONS: none new as CD/AD records. Spec-consistent correction under Charter §2.2 Sonnet-level
+autonomy — makes an already-accepted program's float output match the spec's mandated bit
+pattern where it was previously host-dependent; does not change the accepted/rejected program
+set.
+EVIDENCE: MANUAL + REG — every one of the 7 new regression scenarios was run against the actual
+interpreter (not inferred from code reading), including the negation carve-out's exact opposite-
+of-canonicalization behavior. `cargo test --workspace --all-targets --all-features`: **578
+passed / 0 failed / 2 ignored** (up from 571/0/2 pre-Issue-4, exactly the +7 new tests, zero
+regressions elsewhere). `cargo fmt --all -- --check` clean. `cargo clippy --workspace
+--all-targets --all-features -- -D warnings` clean.
+NEXT: Issue 5 (C2.11 evidence-citation relevance), per the user's "continue through Issue 5"
+instruction. Issues 6-8 (DEV-051/052/055 disposition) remain deferred.
+
+### Post-Gate-C2 correction brief — Issue 5 of 8 (evidence-citation relevance) — 2026-07-18
+DONE: implemented Issue 5, the last of the three the user authorized ("continue through Issue
+5"). Independently re-verified the brief's claim before fixing anything: `core-v1-c2.11-
+evidence.toml`'s `NUM-FLOAT-FORMAT-001` and `STD-FORMAT-001` both cited
+`typecheck.rs::floating_exponent_operator_is_rejected` as `negative_tests` — that test is about
+`**` being a type error for floats, unrelated to either rule (float-format precision and
+`Display` byte-exactness respectively); `STD-CONVERT-001` cited
+`ambiguous_trait_associated_functions_require_qualification` — an associated-function
+resolution-ambiguity test, not a numeric-conversion failure. Both confirmed accurate by direct
+inspection: `check-conformance.py`'s citation validator only checks that the cited file/function
+*exists* (a `fn name` grep), never that it's semantically about the rule it's attached to — so
+these three passed validation while being wrong. Found the identical mis-citation in
+`NUM-FLOAT-OP-001` while fixing the others (not named in the brief, same
+`floating_exponent_operator_is_rejected` copy-paste). Fixed all four with citations that are
+actually about the cited rule, preferring the brief's own suggestion to reuse Issues 1-4's new
+regression tests where topically apt: `NUM-FLOAT-FORMAT-001` → `float32_cast_to_float64_uses_
+float64_round_trip_digits_not_float32` (proves Float32/Float64 are genuinely distinct declared
+precisions); `STD-FORMAT-001` → `float32_arithmetic_result_nested_in_tuple_uses_float32_round_
+trip_digits` (Display byte-exactness for an arithmetic result, not just a literal); `NUM-FLOAT-
+OP-001` → `every_nan_producing_path_yields_the_same_canonical_bits_for_float64` (positive) and
+`negating_a_canonical_nan_flips_its_sign_bit_instead_of_forcing_sign_zero` (negative, proving the
+negation carve-out is honored rather than blindly canonicalized); `STD-CONVERT-001` →
+`every_integer_width_traps_on_overflow_and_invalid_operations`, since `STD-CONVERT-001`'s own
+normative text explicitly ties failing numeric conversions to "the exact `NUM-CAST-001`
+value/range rules" (no numeric `TryFrom`/`FromStr` builtin exists yet to test more directly —
+confirmed by grep, not assumed — so citing the rule's own named dependency is the honest fix, not
+a fabricated conversion-specific test). Also added the brief's requested new evidence entries:
+`EXEC-CFLOW-001` ("which early exits are normal transfers and how do they clean scopes" — already
+in the granular completeness inventory but had zero executable evidence in this database despite
+being exactly DEV-056/DEV-057's territory) and `TRAIT-LAW-001` ("what semantic laws bind `Eq`,
+`Ord`, and `Hash`" — same gap, DEV-057's territory), both citing the DEV-056/DEV-057 regression
+tests. Did not touch `NUM-FLOAT-TRAIT-001`'s existing negative citation
+(`gate4a_prelude_traits.rs::test_float_hash_bound_rejected`) — independently confirmed genuinely
+relevant, not part of this defect pattern.
+FILES: `STARKLANG/conformance/core-v1-c2.11-evidence.toml` (4 citations corrected, 2 new rule
+entries added), `starkc/docs/compiler/C2-exit-report.md` (addendum extended), this file. No
+`starkc/src/*.rs` changes — evidence-database-only, no new regression tests needed (every new
+citation targets a test that already exists and already passes).
+RULES: none — a conformance-evidence-database correction; no normative specification text
+changed, no rule ID added/removed/redefined.
+DECISIONS: none new as CD/AD records. Evidence-quality correction under Charter §2.2 Sonnet-level
+autonomy — corrects which existing, passing tests are cited as proof for a rule, does not change
+any rule's implementation status or the accepted/rejected program set.
+EVIDENCE: MANUAL — every one of the 10 newly-cited functions confirmed to exist via `grep "fn
+<name>"` against the actual file before citing (not assumed from memory of what was added
+earlier this session); `python3 scripts/check-conformance.py` re-run clean after every edit
+(89.8%/53-of-59 overall coverage, unchanged from before this pass — a citation-quality fix, not
+an implementation-status change). `cargo build --workspace --tests`, `cargo fmt --all --
+--check`, and `cargo clippy --workspace --all-targets --all-features -- -D warnings` all
+re-verified clean (expected, since no `.rs` files changed).
+NEXT: Issues 6-8 (DEV-051/052/055 disposition) remain deferred, per the user's "continue through
+Issue 5" instruction — the three issues authorized this pass (3, 4, 5) are now complete.

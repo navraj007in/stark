@@ -110,14 +110,14 @@ id = "NUM-FLOAT-FORMAT-001"
 status = "implemented"
 source = ["starkc/src/interp.rs"]
 positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
-negative_tests = ["starkc/src/typecheck.rs::floating_exponent_operator_is_rejected"]
+negative_tests = ["starkc/src/interp.rs::float32_cast_to_float64_uses_float64_round_trip_digits_not_float32"]
 
 [[rule]]
 id = "NUM-FLOAT-OP-001"
 status = "implemented"
 source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
-positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
-negative_tests = ["starkc/src/typecheck.rs::floating_exponent_operator_is_rejected"]
+positive_tests = ["starkc/src/interp.rs::every_nan_producing_path_yields_the_same_canonical_bits_for_float64"]
+negative_tests = ["starkc/src/interp.rs::negating_a_canonical_nan_flips_its_sign_bit_instead_of_forcing_sign_zero"]
 
 [[rule]]
 id = "NUM-FLOAT-TRAIT-001"
@@ -215,7 +215,7 @@ id = "STD-FORMAT-001"
 status = "implemented"
 source = ["starkc/src/interp.rs"]
 positive_tests = ["starkc/src/interp.rs::builtin_display_and_hash_are_directly_callable"]
-negative_tests = ["starkc/src/typecheck.rs::floating_exponent_operator_is_rejected"]
+negative_tests = ["starkc/src/interp.rs::float32_arithmetic_result_nested_in_tuple_uses_float32_round_trip_digits"]
 
 [[rule]]
 id = "STD-HASH-001"
@@ -236,7 +236,7 @@ id = "STD-CONVERT-001"
 status = "implemented"
 source = ["starkc/src/typecheck.rs", "starkc/src/interp.rs"]
 positive_tests = ["starkc/src/interp.rs::executes_trait_associated_conversion_functions"]
-negative_tests = ["starkc/src/typecheck.rs::ambiguous_trait_associated_functions_require_qualification"]
+negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_and_invalid_operations"]
 
 [[rule]]
 id = "TRAP-CATEGORY-001"
@@ -244,3 +244,24 @@ status = "implemented"
 source = ["starkc/src/interp.rs", "starkc/src/main.rs", "starkc/src/bin/stark.rs"]
 positive_tests = ["starkc/tests/gate3_execution.rs::executable_entrypoint_status_and_stream_contract"]
 negative_tests = ["starkc/tests/gate3_execution.rs::trap_aborts_without_running_pending_destructors"]
+
+# Correction-brief Issue 5: the two rules below (both already present in the granular
+# completeness inventory) had zero executable evidence in this database -- added after DEV-056/
+# DEV-057 gave each concrete, targeted regression coverage.
+
+[[rule]]
+id = "EXEC-CFLOW-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::try_in_call_argument_stops_later_arguments_and_callee"]
+negative_tests = ["starkc/src/interp.rs::try_drops_completed_call_argument_temporaries_in_reverse_order"]
+
+[[rule]]
+id = "TRAIT-LAW-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = [
+    "starkc/src/interp.rs::eq_on_drop_type_does_not_create_or_drop_clones",
+    "starkc/src/interp.rs::ord_on_drop_type_does_not_create_or_drop_clones",
+]
+negative_tests = ["starkc/src/interp.rs::comparison_of_temporary_operands_evaluates_each_once_and_drops_after_call"]
