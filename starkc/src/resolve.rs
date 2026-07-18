@@ -516,6 +516,10 @@ impl<'a> Resolver<'a> {
                         for (k, v) in items_to_copy {
                             self.insert_module_item(current_mod, k, v, prefix.span);
                         }
+                    } else if let Some(variants) = self.enum_variant_items(target_item_id) {
+                        for (name, variant_res) in variants {
+                            self.insert_module_item(current_mod, name, variant_res, prefix.span);
+                        }
                     }
                 }
             }
@@ -537,10 +541,46 @@ impl<'a> Resolver<'a> {
                         for item in items {
                             self.resolve_use_tree_relative(current_mod, sub_mod_id, item);
                         }
+                    } else if self.enum_variant_items(target_item_id).is_some() {
+                        for item in items {
+                            self.resolve_enum_variant_group_item(current_mod, target_item_id, item);
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// One leaf of a `use Color::{Red, Green};`-style group whose prefix names an enum (see
+    /// `enum_variant_items`) rather than a module -- each leaf must be a bare variant name
+    /// (nested groups/globs under an enum variant aren't meaningful, so anything else is simply
+    /// not imported, same as an unresolved path would be).
+    fn resolve_enum_variant_group_item(
+        &mut self,
+        current_mod: ModuleId,
+        enum_item_id: hir::ItemId,
+        item: &ast::UseTree,
+    ) {
+        let ast::UseTree::Path { path, alias } = item else {
+            return;
+        };
+        let Some(last) = path.segments.last() else {
+            return;
+        };
+        let variant_name = self.text(last.span).to_string();
+        let Some(variants) = self.enum_variant_items(enum_item_id) else {
+            return;
+        };
+        let Some((_, variant_res)) = variants.into_iter().find(|(name, _)| *name == variant_name)
+        else {
+            return;
+        };
+        let bind_name = if let Some(alias_span) = alias {
+            self.text(*alias_span).to_string()
+        } else {
+            variant_name
+        };
+        self.insert_module_item(current_mod, bind_name, variant_res, path.span);
     }
 
     fn resolve_use_tree_relative(
@@ -585,6 +625,10 @@ impl<'a> Resolver<'a> {
                         for (k, v) in items_to_copy {
                             self.insert_module_item(import_mod, k, v, prefix.span);
                         }
+                    } else if let Some(variants) = self.enum_variant_items(target_item_id) {
+                        for (name, variant_res) in variants {
+                            self.insert_module_item(import_mod, name, variant_res, prefix.span);
+                        }
                     }
                 }
             }
@@ -606,9 +650,34 @@ impl<'a> Resolver<'a> {
                         for item in items {
                             self.resolve_use_tree_relative(import_mod, sub_mod_id, item);
                         }
+                    } else if self.enum_variant_items(target_item_id).is_some() {
+                        for item in items {
+                            self.resolve_enum_variant_group_item(import_mod, target_item_id, item);
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// DEV-055: a glob/group `use` whose prefix names an enum (not a module) enumerates the
+    /// enum's own variants as importable names, exactly as `use Color::*;` should bring `Red`,
+    /// `Green`, `Blue` into scope the same way a real submodule's items would. Before this, the
+    /// glob/group expansion below only ever consulted `submodule_map` (real modules) and did
+    /// nothing at all when the prefix was an enum, since an enum's variants are resolved
+    /// dynamically through `item_details` (see `resolve_path_relative`'s `ItemDefDetail::Enum`
+    /// arm) rather than being pre-populated into a module's `items` map the way real submodule
+    /// contents are.
+    fn enum_variant_items(&self, item_id: hir::ItemId) -> Option<Vec<(String, Res)>> {
+        match self.item_details.get(&item_id) {
+            Some(ItemDefDetail::Enum { variants }) => Some(
+                variants
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, name)| (name.clone(), Res::Variant(item_id, idx as u32)))
+                    .collect(),
+            ),
+            _ => None,
         }
     }
 
@@ -791,6 +860,15 @@ impl<'a> Resolver<'a> {
                         current_res = Some(Res::ModelLoad(item_id));
                     }
                     _ => return Res::Err,
+                }
+            } else if let Some(Res::CoreTrait(core_trait)) = current_res {
+                // DEV-052: a `CoreTrait` (`Eq`, `Ord`, `Hash`, ...) has no `hir::ItemKind::Trait`
+                // declaration item to look a member up against the way the `Res::Item` arm above
+                // does for a user-declared trait -- it's resolved directly by name instead.
+                if core_trait_method_name(core_trait) == Some(name_str) {
+                    current_res = Some(Res::CoreTraitMember(core_trait, segment.span));
+                } else {
+                    return Res::Err;
                 }
             } else {
                 return Res::Err;
@@ -2114,6 +2192,22 @@ fn resolve_core_trait(name: &str) -> Option<CoreTrait> {
     }
 }
 
+/// DEV-052: the fixed, single callable method name for each `CoreTrait` that supports qualified-
+/// call syntax (`Eq::eq(&a, &b)`). Traits with no directly user-callable single method (`Copy`,
+/// `Num`, `Index`, ...) return `None`, matching how a user-declared trait with no matching
+/// member also fails to resolve a bogus qualified-call segment.
+pub(crate) fn core_trait_method_name(core_trait: CoreTrait) -> Option<&'static str> {
+    match core_trait {
+        CoreTrait::Eq => Some("eq"),
+        CoreTrait::Ord => Some("cmp"),
+        CoreTrait::Hash => Some("hash"),
+        CoreTrait::Clone => Some("clone"),
+        CoreTrait::Display => Some("fmt"),
+        CoreTrait::Default => Some("default"),
+        _ => None,
+    }
+}
+
 fn resolve_primitive(name: &str) -> Option<ast::Primitive> {
     match name {
         "Int8" => Some(ast::Primitive::Int8),
@@ -2251,6 +2345,51 @@ mod tests {
                  identical program"
             );
         }
+    }
+
+    /// DEV-055: a glob `use` whose prefix names an enum (not a module) used to expand to
+    /// nothing at all, since `resolve_use_tree`'s `Glob` arm only ever consulted
+    /// `submodule_map` (populated for real modules only) and an enum's variants are resolved
+    /// dynamically through `item_details`, never pre-populated into a module's `items` map.
+    /// Confirms a bare, glob-imported unit variant now resolves as an expression.
+    #[test]
+    fn glob_imported_enum_variant_resolves_as_bare_expression() {
+        let src = "enum Color { Red, Green, Blue }\nuse Color::*;\nfn main() -> Unit { let c: Color = Red; }";
+        let diags = resolve_diags(src, LanguageOptions::CORE);
+        assert!(
+            diags.is_empty(),
+            "expected 'Red' to resolve via the glob import: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Companion: a group `use` (`use Color::{Red, Blue};`) whose prefix names an enum hits the
+    /// identical `submodule_map`-only gap in `resolve_use_tree`'s `Group` arm, fixed the same
+    /// way via `resolve_enum_variant_group_item`. Confirms only the *named* variants resolve --
+    /// `Green`, deliberately left out of the group, must still be undefined.
+    #[test]
+    fn group_imported_enum_variants_resolve_selectively() {
+        let src = "enum Color { Red, Green, Blue }\nuse Color::{Red, Blue};\nfn main() -> Unit { let c: Color = Red; let d: Color = Blue; }";
+        let diags = resolve_diags(src, LanguageOptions::CORE);
+        assert!(
+            diags.is_empty(),
+            "expected 'Red' and 'Blue' to resolve via the group import: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+
+        let excluded_src = "enum Color { Red, Green, Blue }\nuse Color::{Red, Blue};\nfn main() -> Unit { let c: Color = Green; }";
+        let excluded_diags = resolve_diags(excluded_src, LanguageOptions::CORE);
+        assert!(
+            excluded_diags
+                .iter()
+                .any(|d| d.message.contains("undefined variable")),
+            "'Green' was not named in the group import and must stay undefined, not leak in \
+             alongside 'Red'/'Blue': {:?}",
+            excluded_diags
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     /// WP-C1.2 regression test for DEV-006 (resolve half): resolve-stage diagnostics for a

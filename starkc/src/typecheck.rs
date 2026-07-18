@@ -120,6 +120,12 @@ pub struct TypeChecker<'a> {
     loop_nesting: u32,
     loop_contexts: Vec<LoopContext>,
     current_fn_generics: Option<Vec<hir::GenericParam>>,
+    /// DEV-051: set while type-checking a trait's own default-method bodies (alongside
+    /// `current_self_ty = Ty::Param("Self")`) so `resolve_method` can look up a sibling trait
+    /// method called through `self` directly against *this* trait's item list, the same way it
+    /// already looks up a bounded generic type parameter's trait methods. `None` everywhere
+    /// else (ordinary functions, `impl` method bodies, where `self`'s type is already concrete).
+    current_trait_id: Option<ItemId>,
 
     // Bounds checks to run at the end of checking
     bounds_checks: Vec<(Ty, Vec<hir::TraitRef>, Span)>,
@@ -204,6 +210,7 @@ pub fn analyze_with_options(
         loop_nesting: 0,
         loop_contexts: Vec::new(),
         current_fn_generics: None,
+        current_trait_id: None,
         bounds_checks: Vec::new(),
         tensor_ctx: UnifyCtx::new(),
         dim_scope: HashMap::new(),
@@ -2312,6 +2319,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 hir::ItemKind::Trait { items, .. } => {
                     let prev_self = self.current_self_ty.take();
+                    let prev_trait = self.current_trait_id.replace(item_id);
                     self.current_self_ty = Some(Ty::Param("Self".to_string()));
                     for trait_item in items {
                         if let hir::TraitItem::Method {
@@ -2327,6 +2335,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     self.current_self_ty = prev_self;
+                    self.current_trait_id = prev_trait;
                 }
                 hir::ItemKind::Const { value, ty, .. } => {
                     let expected_ty = self.convert_hir_type(*ty);
@@ -3560,6 +3569,7 @@ impl<'a> TypeChecker<'a> {
                     self.builtin_type(*builtin)
                 }
                 Res::TraitMember(_, _) => Ty::Error,
+                Res::CoreTraitMember(_, _) => Ty::Error,
                 Res::Err
                 | Res::TypeParam
                 | Res::CoreTrait(_)
@@ -3759,6 +3769,12 @@ impl<'a> TypeChecker<'a> {
                 } = &self.hir.expr(*callee).kind
                 {
                     self.check_qualified_trait_call(*trait_id, *member, args, expr.span)
+                } else if let hir::ExprKind::Path {
+                    res: Res::CoreTraitMember(core_trait, method_span),
+                    ..
+                } = &self.hir.expr(*callee).kind
+                {
+                    self.check_qualified_core_trait_call(*core_trait, *method_span, args, expr.span)
                 } else if let hir::ExprKind::Path {
                     res: Res::Builtin(builtin),
                     turbofish,
@@ -4875,6 +4891,127 @@ impl<'a> TypeChecker<'a> {
         FnSigTy { params, ret }
     }
 
+    /// DEV-052: `Eq::eq(&a, &b)`-style qualified calls to a compiler-known `CoreTrait`'s method.
+    /// Unlike `check_qualified_trait_call` (a user-declared trait, which has an
+    /// `hir::ItemKind::Trait` item whose declared signature is authoritative for every
+    /// implementor), a `CoreTrait` has no such declaration item -- each `impl <CoreTrait> for T`
+    /// writes its own method signature directly, so the *matching impl's own* signature is used
+    /// instead of one inherited from a shared trait declaration. `receiver_ty`'s own `impl`
+    /// search matches by source-text trait name (`self.text(trait_ref.path.span)`), mirroring
+    /// `ty_satisfies_operator_bound`'s existing approach for the same compiler-known traits.
+    fn check_qualified_core_trait_call(
+        &mut self,
+        core_trait: hir::CoreTrait,
+        method_span: Span,
+        args: &[ExprId],
+        span: Span,
+    ) -> Ty {
+        let method_name = self.text(method_span).to_string();
+        let core_trait_name = core_trait_source_name(core_trait);
+
+        let actual_args: Vec<Ty> = args.iter().map(|arg| self.check_expr(*arg)).collect();
+        let Some(first_actual) = actual_args.first() else {
+            self.diags.push(
+                Diagnostic::error("qualified trait method requires a receiver", span)
+                    .with_code("E0005"),
+            );
+            return Ty::Error;
+        };
+        let mut receiver_type = self.resolve(first_actual);
+        while let Ty::Ref { inner, .. } = receiver_type {
+            receiver_type = self.resolve(&inner);
+        }
+
+        let mut selected: Option<hir::FnSig> = None;
+        for item in &self.hir.items {
+            let hir::ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                items,
+                generics,
+            } = &item.kind
+            else {
+                continue;
+            };
+            if self.text(trait_ref.path.span) != core_trait_name {
+                continue;
+            }
+            let implementation_type = self.convert_hir_type(*self_ty);
+            if self
+                .match_impl_type(&implementation_type, &receiver_type, generics)
+                .is_none()
+            {
+                continue;
+            }
+            selected = items.iter().find_map(|impl_item| match impl_item {
+                hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == method_name => {
+                    Some(def.sig.clone())
+                }
+                _ => None,
+            });
+            if selected.is_some() {
+                break;
+            }
+        }
+
+        let Some(sig) = selected else {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "type '{}' does not implement '{core_trait_name}'",
+                        self.ty_to_string(&receiver_type)
+                    ),
+                    span,
+                )
+                .with_code("E0500"),
+            );
+            return Ty::Error;
+        };
+
+        let mut expected = Vec::new();
+        if let Some(receiver) = sig.receiver {
+            expected.push(match receiver {
+                hir::Receiver::Value => receiver_type.clone(),
+                hir::Receiver::Ref => Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(receiver_type.clone()),
+                },
+                hir::Receiver::RefMut => Ty::Ref {
+                    mutable: true,
+                    inner: Box::new(receiver_type.clone()),
+                },
+            });
+        }
+        expected.extend(
+            sig.params
+                .iter()
+                .map(|param| self.convert_hir_type(param.ty)),
+        );
+        let result = match sig.ret {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(ty) => self.convert_hir_type(ty),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+
+        if expected.len() != actual_args.len() {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "wrong number of arguments: expected {}, found {}",
+                        expected.len(),
+                        actual_args.len()
+                    ),
+                    span,
+                )
+                .with_code("E0005"),
+            );
+        }
+        for ((expected, actual), arg) in expected.into_iter().zip(actual_args).zip(args) {
+            let _ = self.unify(expected, actual, self.hir.expr(*arg).span);
+        }
+        result
+    }
+
     fn check_qualified_trait_call(
         &mut self,
         trait_id: ItemId,
@@ -5213,6 +5350,62 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Looks up trait `trait_id`'s own declared signature for method `name_str` (a required
+    /// method or another default), without needing any concrete `impl` -- used both for a
+    /// bounded generic type parameter's method call and for `self.other_method()` called from
+    /// inside a trait's own default-method body (DEV-051), where in either case the receiver's
+    /// type is an abstract placeholder (`Ty::Param`), not a real struct/enum, so there is no
+    /// `impl` to match against yet.
+    fn find_trait_method_sig(&self, trait_id: ItemId, name_str: &str) -> Option<hir::FnSig> {
+        let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
+            return None;
+        };
+        items.iter().find_map(|trait_item| match trait_item {
+            hir::TraitItem::Method { sig, .. } if self.text(sig.name) == name_str => {
+                Some(sig.clone())
+            }
+            _ => None,
+        })
+    }
+
+    /// Checks a call's arguments against an already-resolved trait method signature (see
+    /// `find_trait_method_sig`) and returns its return type.
+    fn check_trait_member_call(
+        &mut self,
+        sig: &hir::FnSig,
+        args: &[ExprId],
+        call_span: Span,
+    ) -> Ty {
+        let params_ty: Vec<Ty> = sig
+            .params
+            .iter()
+            .map(|p| self.convert_hir_type(p.ty))
+            .collect();
+        let ret_ty = match sig.ret {
+            hir::RetTy::Unit => Ty::Primitive(Primitive::Unit),
+            hir::RetTy::Ty(t) => self.convert_hir_type(t),
+            hir::RetTy::Never(_) => Ty::Never,
+        };
+        if args.len() != params_ty.len() {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "wrong number of arguments: expected {}, found {}",
+                        params_ty.len(),
+                        args.len()
+                    ),
+                    call_span,
+                )
+                .with_code("E0005"),
+            );
+        }
+        for (arg, param_t) in args.iter().zip(params_ty) {
+            let arg_t = self.check_expr(*arg);
+            let _ = self.unify(param_t, arg_t, self.hir.expr(*arg).span);
+        }
+        ret_ty
+    }
+
     fn resolve_method(
         &mut self,
         base_expr: ExprId,
@@ -5230,58 +5423,25 @@ impl<'a> TypeChecker<'a> {
         }
 
         if let Ty::Param(p_name) = &resolved_base {
-            if let Some(generics) = &self.current_fn_generics {
-                for param in generics {
+            if let Some(generics) = self.current_fn_generics.clone() {
+                for param in &generics {
                     if self.text(param.name) == p_name {
                         for bound in &param.bounds {
-                            let bound_trait_name = self.text(bound.path.span);
-                            for item in &self.hir.items {
-                                if let hir::ItemKind::Trait { name, items, .. } = &item.kind {
-                                    if self.text(*name) == bound_trait_name {
-                                        for trait_item in items {
-                                            if let hir::TraitItem::Method { sig, .. } = trait_item {
-                                                if self.text(sig.name) == name_str {
-                                                    let params_ty: Vec<Ty> = sig
-                                                        .params
-                                                        .iter()
-                                                        .map(|p| self.convert_hir_type(p.ty))
-                                                        .collect();
-                                                    let ret_ty = match sig.ret {
-                                                        hir::RetTy::Unit => {
-                                                            Ty::Primitive(Primitive::Unit)
-                                                        }
-                                                        hir::RetTy::Ty(t) => {
-                                                            self.convert_hir_type(t)
-                                                        }
-                                                        hir::RetTy::Never(_) => Ty::Never,
-                                                    };
-                                                    if args.len() != params_ty.len() {
-                                                        self.diags.push(
-                                                            Diagnostic::error(
-                                                                format!(
-                                                                    "wrong number of arguments: expected {}, found {}",
-                                                                    params_ty.len(),
-                                                                    args.len()
-                                                                ),
-                                                                call_span,
-                                                            )
-                                                            .with_code("E0005"),
-                                                        );
-                                                    }
-                                                    for (arg, param_t) in args.iter().zip(params_ty)
-                                                    {
-                                                        let arg_t = self.check_expr(*arg);
-                                                        let _ = self.unify(
-                                                            param_t,
-                                                            arg_t,
-                                                            self.hir.expr(*arg).span,
-                                                        );
-                                                    }
-                                                    return ret_ty;
-                                                }
-                                            }
+                            let bound_trait_name = self.text(bound.path.span).to_string();
+                            let bound_trait_id =
+                                self.hir.items.iter().enumerate().find_map(|(idx, item)| {
+                                    if let hir::ItemKind::Trait { name, .. } = &item.kind {
+                                        if self.text(*name) == bound_trait_name {
+                                            return Some(ItemId(idx as u32));
                                         }
                                     }
+                                    None
+                                });
+                            if let Some(bound_trait_id) = bound_trait_id {
+                                if let Some(sig) =
+                                    self.find_trait_method_sig(bound_trait_id, &name_str)
+                                {
+                                    return self.check_trait_member_call(&sig, args, call_span);
                                 }
                             }
                         }
@@ -5293,6 +5453,27 @@ impl<'a> TypeChecker<'a> {
         let mut receiver_ty = resolved_base.clone();
         while let Ty::Ref { inner, .. } = receiver_ty {
             receiver_ty = self.resolve(&inner);
+        }
+
+        // DEV-051: `self.other_method()` called from inside a trait's own default-method body
+        // has `current_self_ty == Ty::Param("Self")` (set alongside `current_trait_id` while
+        // checking `hir::ItemKind::Trait`'s default bodies), so `self`'s dereferenced type here
+        // is `Ty::Param("Self")` -- there's no concrete `impl` to match against yet, since the
+        // default body is checked once, generically, at the trait declaration site rather than
+        // once per implementor. The trait's own declared signature for `name_str` (required or
+        // another default) is authoritative regardless: every real implementor is separately
+        // checked elsewhere to provide a matching method, so calling it through `self` from a
+        // sibling default body is always legal. (Checked after the deref loop above, unlike the
+        // bounded-generic-parameter case just above, because a generic parameter received by
+        // value has no reference to peel off, but `self` is always received by reference.)
+        if let Ty::Param(p_name) = &receiver_ty {
+            if p_name == "Self" {
+                if let Some(trait_id) = self.current_trait_id {
+                    if let Some(sig) = self.find_trait_method_sig(trait_id, &name_str) {
+                        return self.check_trait_member_call(&sig, args, call_span);
+                    }
+                }
+            }
         }
 
         if self.options.tensor() {
@@ -6550,6 +6731,31 @@ fn convert_int_suffix(suffix: crate::lexer::IntSuffix) -> Primitive {
         crate::lexer::IntSuffix::U16 => Primitive::UInt16,
         crate::lexer::IntSuffix::U32 => Primitive::UInt32,
         crate::lexer::IntSuffix::U64 => Primitive::UInt64,
+    }
+}
+
+/// DEV-052: reverse of `resolve.rs`'s private `resolve_core_trait` -- the source spelling of a
+/// `CoreTrait`, used to match an `impl <name> for T` block by its trait-ref source text, the
+/// same way `ty_satisfies_operator_bound` already does for these compiler-known traits.
+fn core_trait_source_name(core_trait: hir::CoreTrait) -> &'static str {
+    match core_trait {
+        hir::CoreTrait::Copy => "Copy",
+        hir::CoreTrait::Drop => "Drop",
+        hir::CoreTrait::Eq => "Eq",
+        hir::CoreTrait::Ord => "Ord",
+        hir::CoreTrait::Num => "Num",
+        hir::CoreTrait::Clone => "Clone",
+        hir::CoreTrait::Hash => "Hash",
+        hir::CoreTrait::Default => "Default",
+        hir::CoreTrait::Display => "Display",
+        hir::CoreTrait::Error => "Error",
+        hir::CoreTrait::From => "From",
+        hir::CoreTrait::Into => "Into",
+        hir::CoreTrait::TryFrom => "TryFrom",
+        hir::CoreTrait::Index => "Index",
+        hir::CoreTrait::IndexMut => "IndexMut",
+        hir::CoreTrait::Iterator => "Iterator",
+        hir::CoreTrait::FromIterator => "FromIterator",
     }
 }
 
@@ -9058,6 +9264,126 @@ mod tests {
         let mut type_diags = check(&hir, file);
         all_diags.append(&mut type_diags);
         all_diags
+    }
+
+    /// DEV-051: a trait default method body calling another method of the same trait through
+    /// `self` used to fail with `E0302 method 'name' not found for type '&Self'`. Root cause:
+    /// `resolve_method`'s only mechanism for a receiver with no concrete `impl` to match (an
+    /// abstract `Ty::Param` receiver) was scoped to a bounded *generic function* type parameter
+    /// (`fn f<T: Greet>(x: T)`), never to `self` inside a trait's own default-method body
+    /// (`current_self_ty == Ty::Param("Self")`while type-checking that body generically, once,
+    /// at the trait declaration site). Fixed by adding `current_trait_id` (set alongside
+    /// `current_self_ty` for a trait's default bodies) and checking it the same way, after the
+    /// reference-deref loop since `self` is always received by reference unlike a by-value
+    /// generic parameter. Confirmed empirically via `starkc check` before writing this test.
+    #[test]
+    fn trait_default_method_calling_sibling_trait_method_through_self_type_checks() {
+        let src = "trait Greet { \
+                       fn name(&self) -> String; \
+                       fn greeting(&self) -> String { self.name() } \
+                   } \
+                   struct Person { label: String } \
+                   impl Greet for Person { \
+                       fn name(&self) -> String { self.label.clone() } \
+                   } \
+                   fn main() { let p = Person { label: String::from(\"Ada\") }; let _ = p.greeting(); }";
+        let diags = check_src(src);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    }
+
+    /// Companion: a default method calling *another default* sibling method (neither has been
+    /// overridden) must also type-check -- `find_trait_method_sig` matches on name alone,
+    /// regardless of whether the found method has a body.
+    #[test]
+    fn trait_default_method_calling_another_default_method_type_checks() {
+        let src = "trait Greet { \
+                       fn name(&self) -> String; \
+                       fn shout(&self) -> String { self.greeting() } \
+                       fn greeting(&self) -> String { self.name() } \
+                   } \
+                   struct Person { label: String } \
+                   impl Greet for Person { \
+                       fn name(&self) -> String { self.label.clone() } \
+                   } \
+                   fn main() { let p = Person { label: String::from(\"Ada\") }; let _ = p.shout(); }";
+        let diags = check_src(src);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    }
+
+    /// The DEV-051 fix must not silently swallow a genuine arity mismatch -- calling a sibling
+    /// trait method with the wrong number of arguments from inside a default body must still
+    /// raise `E0005`, proving `check_trait_member_call`'s argument check still runs on this path.
+    #[test]
+    fn trait_default_method_wrong_arg_count_to_sibling_trait_method_still_errors() {
+        let src = "trait Greet { \
+                       fn name(&self, suffix: String) -> String; \
+                       fn greeting(&self) -> String { self.name() } \
+                   } \
+                   struct Person { label: String } \
+                   impl Greet for Person { \
+                       fn name(&self, suffix: String) -> String { self.label.clone() } \
+                   } \
+                   fn main() { let p = Person { label: String::from(\"Ada\") }; let _ = p.greeting(); }";
+        let diags = check_src(src);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0005")),
+            "expected E0005 for the missing argument, got: {diags:?}"
+        );
+    }
+
+    /// DEV-060 (found while writing DEV-051's regression tests, NOT fixed here -- see
+    /// `KNOWN-DEVIATIONS.md`): calling the same un-overridden trait *default* method twice on
+    /// the same receiver incorrectly reports `E0100 use of moved value` on the second call, even
+    /// though the method only takes `&self`. Confirmed present on the pre-DEV-051-fix head too
+    /// (via `git stash`), so this is a separate, pre-existing defect in the `default_fallback`
+    /// method-resolution path in `resolve_method`, not something the DEV-051 fix introduced --
+    /// and confirmed narrow: two calls to an *overridden* trait method, or two calls to an
+    /// ordinary inherent method, are both unaffected (`interp.rs`'s
+    /// `repeated_call_to_overridden_trait_method_is_unaffected_by_dev060`/
+    /// `::repeated_call_to_inherent_method_is_unaffected_by_dev060`).
+    #[test]
+    fn repeated_call_to_unoverridden_default_trait_method_is_wrongly_flagged_as_move() {
+        let src = "trait Greet { \
+                       fn name(&self) -> String; \
+                       fn greeting(&self) -> String { self.name() } \
+                   } \
+                   struct Person { label: String } \
+                   impl Greet for Person { \
+                       fn name(&self) -> String { self.label.clone() } \
+                   } \
+                   fn main() { \
+                       let p = Person { label: String::from(\"Ada\") }; \
+                       println(p.greeting()); \
+                       println(p.greeting()); \
+                   }";
+        let diags = check_src(src);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0100")),
+            "expected the still-open DEV-060 'use of moved value' defect; if this now passes, \
+             DEV-060 has been fixed and this test should be rewritten to assert success: \
+             {diags:?}"
+        );
+    }
+
+    /// DEV-052: a qualified call to a `CoreTrait` the receiver type does not actually implement
+    /// must still be rejected -- confirms the fix doesn't accidentally accept a genuinely
+    /// invalid program just because the qualified-call *syntax* now resolves.
+    #[test]
+    fn qualified_call_to_unimplemented_core_trait_is_rejected() {
+        let src = "struct Point { x: Int32 } \
+                   fn main() { \
+                       let a = Point { x: 1 }; \
+                       let b = Point { x: 1 }; \
+                       let _ = Eq::eq(&a, &b); \
+                   }";
+        let diags = check_src(src);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code.as_deref() == Some("E0500")
+                    && d.message.contains("does not implement")),
+            "expected an E0500 rejection for a Point with no impl Eq: {diags:?}"
+        );
     }
 
     /// WP-C1.3: `Ty::Core` (Option/Result/Vec/Box) had no arm in `require_operator_bound` at

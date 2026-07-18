@@ -622,7 +622,52 @@ open and non-soundness-relevant. WP-C2.12 (differential corpus) is explicitly no
 an initial, representative corpus exists and passes cleanly; the roadmap's "generated" coverage
 and cross-backend replay (the latter blocked behind Gate C3 by the roadmap's own dependency
 structure) remain open, non-blocking follow-up work. Full report:
-`starkc/docs/compiler/C2-exit-report.md`. Gate C3 opens; next WP-C3.1.
+`starkc/docs/compiler/C2-exit-report.md`. Gate C3 opens only after the C3-entry transition
+below; next C3-ENTRY.
+
+---
+
+## C3-ENTRY — Native Readiness and Carry-Forward Closure
+
+*Mandatory transition before WP-C3.1. This does not reopen C2; it makes C2 carry-forward
+ownership explicit before native architecture work begins.*
+
+Required closure:
+
+- formally approve the six completeness rows still marked `pending-owner-approval`;
+- resolve or explicitly assign DEV-051, DEV-052, and DEV-055 — **done 2026-07-19**: all three
+  closed with real fixes and regression tests in a post-Gate-C2 correction-brief session; see
+  `KNOWN-DEVIATIONS.md` and `COMPILER-STATE.md`'s dated `### Post-Gate-C2 correction brief —
+  Issues 6-8` session record. One new, separate, narrower deviation (DEV-060: repeated call to
+  an un-overridden trait default method wrongly flagged as a move) was found while writing
+  DEV-051's regression tests and remains open, unscheduled;
+- freeze a versioned execution corpus for C3/C4;
+- transfer unfinished WP-C2.12 generated-corpus work to C4.4 and C6.5 ownership;
+- transfer unfinished WP-C2.12 cross-backend replay work to C4.4, C5.6, and C6.5 ownership;
+- establish mandatory CI for the native-development path.
+
+DEV ownership defaults unless superseded by owner decision:
+
+```text
+DEV-051 trait default sibling calls -> RESOLVED 2026-07-19
+DEV-052 qualified CoreTrait calls -> RESOLVED 2026-07-19
+DEV-055 glob-imported unit variants -> RESOLVED 2026-07-19
+```
+
+CI baseline before native work expands:
+
+```text
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features
+cargo test --workspace --all-targets --all-features
+spec regeneration consistency
+fixture extraction consistency
+conformance database validation
+execution snapshot verification
+```
+
+Once MIR/native work begins, CI must add MIR verifier tests, native smoke builds,
+HIR/MIR/native differential cases, and the supported-target compile matrix.
 
 ---
 
@@ -646,7 +691,14 @@ Freeze a representative workload set containing at least:
 5. ownership moves and deterministic drops;
 6. strings/Vec operations through the existing runtime surface;
 7. a multi-file, multi-package CLI application;
-8. one error/trap workload.
+8. one error/trap workload;
+9. a generic function and generic nominal type;
+10. user-defined trait method and operator dispatch;
+11. default trait method calling another trait method;
+12. references, mutable references, and slices;
+13. a Drop-bearing nominal value passed through trait dispatch;
+14. an opaque host resource with deterministic Drop;
+15. basic file read/write through the proposed provider boundary.
 
 Define measurements:
 
@@ -659,11 +711,16 @@ Define measurements:
 - cross-platform effort;
 - semantic parity risk;
 - external dependency and maintenance burden;
-- compatibility with the mandatory MIR and runtime ABI goals.
+- compatibility with the mandatory MIR and runtime ABI goals;
+- monomorphisation or equivalent generic-instantiation complexity;
+- trait-dispatch representation and symbol-instantiation complexity;
+- reference, slice, and Drop-bearing resource ABI risk.
 
 The semantic comparator is the existing interpreter.
 The architecture comparator is not "no native compiler"; it is the strongest practical
 candidate implementation paths.
+C3 does not require full C6 generic and trait parity, but it must spike representative
+generics, trait dispatch, references, and resource Drop before selecting a backend.
 
 ### WP-C3.2 — Generated Rust/C backend spike
 
@@ -847,6 +904,22 @@ Under CE4, specify:
 - host platform assumptions;
 - versioning between compiler and runtime.
 
+This WP also owns **Native Provider ABI v0.1**, specifying:
+
+- opaque resource handles;
+- provider function calling convention;
+- ownership transfer into and out of providers;
+- borrowed buffer arguments;
+- provider errors versus language traps versus host failure;
+- provider identity and version;
+- integrity hash and origin;
+- supported target triples;
+- capability declaration;
+- resource Drop/close semantics;
+- whether provider operations may block;
+- whether providers may call back into STARK;
+- explicit prohibition on concurrent callbacks until a concurrency extension specifies them.
+
 Do not let the chosen backend's incidental representation become the language specification.
 
 ### WP-C5.2 — Scalar native lowering
@@ -877,7 +950,7 @@ Add:
 Build one application with:
 
 - at least three packages;
-- cross-package generic calls where supported;
+- cross-package generic calls through the bounded MVP generic path;
 - public/private compiler checks already completed before code generation;
 - deterministic symbol generation;
 - one standalone executable output.
@@ -955,16 +1028,21 @@ migration.
 
 ### WP-C6.4 — Platform matrix
 
-Target at minimum:
+Platform tiers:
 
 ```text
-linux-x64
-macos-arm64
-macos-x64
-windows-x64
+Tier 1 — required for Native Systems Preview
+- linux-x64
+- macos-arm64
+
+Tier 2 — required for Core v1 Stable
+- windows-x64
+
+Tier 3 — supported when CI/toolchain availability justifies it
+- macos-x64
 ```
 
-CI or owner-supplied machines must verify the supported matrix.
+CI or owner-supplied machines must verify the supported tier matrix.
 Unsupported targets fail before linking with a clear diagnostic.
 
 ### WP-C6.5 — Full differential suite
@@ -1067,6 +1145,14 @@ Measure frozen workloads for:
 - interpreter/native ratio;
 - debug/release ratio;
 - backend maintenance complexity.
+
+Include practical systems workloads once the systems roadmap has provided them:
+
+- file-processing CLI;
+- JSON parser workload;
+- sequential HTTP server;
+- request-routing benchmark;
+- allocation-heavy String/Vec workload.
 
 Do not claim a general performance multiple from a small workload.
 
@@ -1343,6 +1429,37 @@ Requires:
 *Outcome: a precise, evidence-backed compiler release statement with mandatory native Core
 compilation; optional extension tracks may remain scoped or deferred.*
 
+### Release classes
+
+#### Native Developer Preview
+
+May be published after C5 with:
+
+- standalone native executables;
+- bounded supported Core subset;
+- explicit unsupported diagnostics;
+- one Tier-1 target;
+- no full Core conformance claim.
+
+#### Native Systems Preview
+
+May be published after C6 plus P1 with:
+
+- native Core semantic parity for the listed scope;
+- filesystem/process/time/network providers;
+- sequential HTTP application;
+- listed targets and deviations.
+
+#### Core v1 Stable
+
+Requires C7, C8, and C10 with:
+
+- full native parity for the claimed scope;
+- reproducibility;
+- language services;
+- robustness/security qualification;
+- compatibility policy.
+
 ### WP-C10.1 — Full conformance dashboard
 
 Generate a dashboard covering:
@@ -1429,9 +1546,9 @@ Performance regression thresholds may be added only after stable baselines exist
 ### WP-C10.7 — Release decision
 
 A compiler-track completion release requires C0–C8 and the mandatory native path C3–C7 to be
-closed. A build without the native Core backend may be published only as an internal snapshot,
-research preview, or explicitly incomplete pre-release; it is not the end state of this
-roadmap.
+closed. Native Developer Preview and Native Systems Preview are permitted staged releases, but
+they are not the end state of this roadmap. A build without the native Core backend may be
+published only as an internal snapshot, research preview, or explicitly incomplete pre-release.
 
 The release statement must choose one precise form, for example:
 
@@ -1467,6 +1584,7 @@ unless CE8 review confirms the evidence supports it.
 C0 Current-state truth
  -> C1 Core conformance closure
  -> C2 Reference execution + compiler services foundation
+ -> C3-ENTRY Native readiness and carry-forward closure
  -> C3 Native architecture and backend selection
  -> C4 Verified MIR
  -> C5 Native MVP
@@ -1479,7 +1597,30 @@ C3 may reject a backend candidate or require a bounded revision, but it may not 
 choosing an interpreter-only end state.
 If C3 is BLOCKED, later native gates remain closed and the compiler roadmap remains incomplete.
 
-## 4.2 Language-service path
+## 4.2 Practical systems checkpoint
+
+The companion systems roadmap lives at `STARKLANG/docs/ecosystem/SYSTEMS-ROADMAP.md`.
+It may begin implementation once the C5 provider ABI is available, but its mandatory checkpoint
+is evaluated after C6.
+
+```text
+P1 — Native Systems Baseline
+Entry: C5 runtime/provider ABI available + sufficient C6 String/Vec/resource parity
+Exit:
+- standalone native executable
+- arguments and environment
+- file read/write
+- monotonic time and sleep
+- TCP listener and stream
+- pure-STARK JSON
+- pure-STARK HTTP/1.1 routing
+- three working REST endpoints
+- no host-language business logic
+```
+
+P1 does not redefine Core conformance. It proves practical capability.
+
+## 4.3 Language-service path
 
 ```text
 C2
@@ -1488,7 +1629,7 @@ C2
 
 This path can run in parallel with the mandatory native compiler path after C2.
 
-## 4.3 Artifact-infrastructure path
+## 4.4 Artifact-infrastructure path
 
 ```text
 C2 + C9.1/C9.2
@@ -1499,12 +1640,13 @@ C2 + C9.1/C9.2
 
 Do not create generic artifact infrastructure before the second implementation exists.
 
-## 4.4 Release path
+## 4.5 Release path
 
 A compiler-track release qualification gate may open when:
 
 ```text
 C0–C8 are closed
++ P1 status is explicit for Native Systems Preview or later
 + C9 status is explicit (done, blocked on second-artifact evidence, or not required for this release)
 + tensor capability/deviation status is explicit
 ```

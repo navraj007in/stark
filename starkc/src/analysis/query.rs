@@ -1179,6 +1179,7 @@ impl<'a, 'q> HirIndexer<'a, 'q> {
             | Res::ParamAssoc(_, _)
             | Res::Builtin(_)
             | Res::CoreTrait(_)
+            | Res::CoreTraitMember(_, _)
             | Res::CoreType(_)
             | Res::Err => None,
         };

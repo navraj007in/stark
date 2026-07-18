@@ -1222,50 +1222,99 @@ WP-C1.5)
   compiler already rejects this at name resolution (`E0204` duplicate definition) before
   entrypoint selection runs; no corresponding deviation was opened.
 
-## DEV-051 — Trait default methods cannot call another trait method on `self`
+## DEV-051 — Trait default methods cannot call another trait method on `self` (RESOLVED)
 
 - **Normative expectation:** a trait default method body may call other methods of the same
   trait through `self`, exactly as an ordinary method body can call sibling methods.
-- **Current behaviour:** confirmed with a minimal repro (a `Greet` trait with a required
+- **Original behaviour:** confirmed with a minimal repro (a `Greet` trait with a required
   `fn name(&self) -> String` and a default `fn greeting(&self) -> String { self.name() }`,
   implemented for a struct that only overrides `name`): calling `self.name()` from inside the
-  default `greeting()` body fails to type-check with `E0302 method 'name' not found for type
-  '&Self'`. Ordinary (non-default) method-to-method calls on `self` are unaffected; this is
+  default `greeting()` body failed to type-check with `E0302 method 'name' not found for type
+  '&Self'`. Ordinary (non-default) method-to-method calls on `self` were unaffected; this was
   specific to a default method body calling a sibling trait method.
+- **Root cause:** `resolve_method` already had a mechanism for a receiver with no concrete
+  `impl` to match against a bounded *generic function* type parameter (`fn f<T: Greet>(x: T) {
+  x.greet() }`, whose receiver type is `Ty::Param("T")`) — but never for `self` inside a
+  trait's own default-method body, whose receiver type is `Ty::Param("Self")` (set alongside a
+  new `current_trait_id` field while checking `hir::ItemKind::Trait`'s default bodies, which are
+  type-checked once, generically, at the trait declaration site rather than once per
+  implementor). The generic-parameter mechanism also only ever checked the receiver's type
+  *before* the reference-deref loop, which is correct for a by-value generic parameter but wrong
+  for `self` (always received by reference) — an early attempt at this fix placed the "Self"
+  check in the same spot and it still failed, since `resolved_base` at that point is still `&Self`
+  (a `Ty::Ref`), not the bare `Ty::Param("Self")` the check was testing for.
+- **Resolution:** extracted the existing per-trait-method-signature lookup/arg-check logic (
+  previously inlined only for the generic-parameter case) into two small shared helpers,
+  `find_trait_method_sig`/`check_trait_member_call`, and added a second call site for the
+  `Self`-receiver case, positioned *after* the reference-deref loop (unlike the generic-parameter
+  case, positioned before it) since `self` is always received by reference. Regressions:
+  `typecheck::tests::trait_default_method_calling_sibling_trait_method_through_self_type_checks`,
+  `::trait_default_method_calling_another_default_method_type_checks` (a default method calling
+  *another* un-overridden default, not just a required method),
+  `::trait_default_method_wrong_arg_count_to_sibling_trait_method_still_errors` (confirms the
+  fix doesn't silently swallow a genuine arity mismatch),
+  `interp::tests::trait_default_method_calling_sibling_trait_method_through_self_executes` (the
+  decisive end-to-end regression: type-checks *and* executes to the expected output, not just a
+  diagnostic-count check).
 - **User impact:** a common, idiomatic trait-default pattern (a default method built out of
-  calls to other trait methods) does not work at all.
+  calls to other trait methods) did not work at all.
 - **Security/soundness impact:** none identified — a rejection of legal code (availability), not
   an acceptance of illegal code.
-- **Workaround:** implement the calling method directly per-impl instead of as a trait default,
-  or require every implementor to override it.
 - **Owning gate:** found while building the WP-C2.12 differential corpus (`starkc/tests/
   exec_snapshots/struct_enum_trait__04_trait_default_and_override.stark` was redesigned to avoid
-  this construct rather than fixed). Not investigated further; root cause not isolated. —
-  unscheduled.
+  this construct rather than fixed). Reproduced against the current head before fixing; closed
+  this session. See DEV-060 for a separate, narrower defect found while writing this fix's
+  regression tests.
 
-## DEV-052 — `Trait::method(...)` qualified-call syntax fails to resolve for compiler CoreTraits
+## DEV-052 — `Trait::method(...)` qualified-call syntax fails to resolve for compiler CoreTraits (RESOLVED)
 
 - **Normative expectation:** `03-Type-System.md`:670 documents `Trait::method(receiver, ...)` as
   normal fully-qualified call syntax, with no carve-out for compiler-recognized traits
   (`Eq`, `Ord`, `Hash`, `Display`, `Clone`, etc. — `hir::CoreTrait`).
   `resolve.rs`/`eval_call`'s `Res::TraitMember(trait_id, member)` path (confirmed present and
   working via `call_qualified_trait`) demonstrates the mechanism is implemented in general.
-- **Current behaviour:** confirmed with a minimal repro: `Describe::describe(&m)` for a
-  user-defined `trait Describe` resolves and executes correctly, but `Eq::eq(&a, &b)` for a
-  struct with a real `impl Eq for P { fn eq(&self, other: &P) -> Bool { ... } }` fails at
-  resolve time with `E0200 undefined variable 'Eq::eq'`. The same qualified-call syntax works
-  for a user-declared trait and fails for a compiler CoreTrait name.
+- **Original behaviour:** confirmed with a minimal repro: `Describe::describe(&m)` for a
+  user-defined `trait Describe` resolved and executed correctly, but `Eq::eq(&a, &b)` for a
+  struct with a real `impl Eq for P { fn eq(&self, other: &P) -> Bool { ... } }` failed at
+  resolve time with `E0200 undefined variable 'Eq::eq'`. The same qualified-call syntax worked
+  for a user-declared trait and failed for a compiler CoreTrait name.
+- **Root cause:** confirmed exactly the suspicion recorded when this was first found:
+  `resolve_path_relative`'s multi-segment loop only ever continued past a first segment
+  resolving to `Res::Item(item_id)` — a real trait *declaration* item, whose member is looked up
+  by matching the segment text against `ItemDefDetail::Trait { items }`. A `CoreTrait` has no
+  such declaration item at all (it's resolved directly to `Res::CoreTrait(core_trait)` by name,
+  with nothing to index a member against), so the loop's final `else` branch returned `Res::Err`
+  for any second segment following a `CoreTrait` name, regardless of what it named.
+- **Resolution:** added `Res::CoreTraitMember(CoreTrait, Span)` (the method-name segment's span,
+  matching the existing `SelfAssoc`/`ParamAssoc` idiom of carrying a `Span` rather than an owned
+  `String`, since `Res` derives `Copy`), resolved when the second segment names that trait's one
+  fixed callable method (a new `core_trait_method_name` table — `Eq`→"eq", `Ord`→"cmp",
+  `Hash`→"hash", `Clone`→"clone", `Display`→"fmt", `Default`→"default"; other `CoreTrait`s have no
+  single directly-callable method and stay unresolved, same as an unknown member of a real
+  trait). Typecheck's handling (`check_qualified_core_trait_call`) finds the *matching impl's
+  own* method signature directly (a `CoreTrait` has no shared declaration signature the way a
+  user trait does — each `impl <CoreTrait> for T` writes its method signature itself), matching
+  the impl by its trait-ref's source text against a small `core_trait_source_name` table (the
+  same approach `ty_satisfies_operator_bound` already uses for these traits). The interpreter's
+  dispatch (`call_qualified_core_trait`) is far simpler: it reuses the *exact same*
+  `find_method(nominal, method_name, Some(Res::CoreTrait(core_trait)))` lookup the `==`/`<`
+  operator sugar already calls for these traits — a qualified call is just an explicit spelling
+  of the same dispatch, not a separate mechanism, so no new impl-scanning logic was needed on
+  the interpreter side at all. Regressions:
+  `interp::tests::qualified_call_to_core_trait_eq_method_resolves_and_executes`,
+  `::qualified_call_to_core_trait_ord_method_resolves_and_executes` (confirms the fix isn't
+  accidentally specific to `Eq`), `::qualified_call_to_user_declared_trait_is_unaffected_by_the_
+  core_trait_fix` (the pre-existing user-trait path is a separate mechanism, untouched),
+  `typecheck::tests::qualified_call_to_unimplemented_core_trait_is_rejected` (confirms the fix
+  doesn't accidentally accept a genuinely invalid program just because the syntax now resolves).
 - **User impact:** narrow — fully-qualified calls to `Eq`/`Ord`/etc. (needed only to disambiguate
-  when a type also has an inherent method of the same name) do not work; the operator sugar
-  (`==`, `<`, etc.) is unaffected and is how these traits are normally invoked.
+  when a type also has an inherent method of the same name) did not work; the operator sugar
+  (`==`, `<`, etc.) was unaffected and remains how these traits are normally invoked.
 - **Security/soundness impact:** none identified — a rejection of legal code, not an acceptance
   of illegal code.
-- **Workaround:** use the operator form instead of the fully-qualified form for CoreTraits.
 - **Owning gate:** found while building the WP-C2.12 differential corpus (the "trait-qualified
   calls" metamorphic pair was redesigned around a user-defined trait instead of `Eq`, rather than
-  fixed). Root cause not isolated — likely `resolve.rs`'s path-resolution for a leading
-  `TraitName::` segment special-cases user-declared trait items and never checks the
-  `CoreTrait` table the same way ordinary `==`/`<` dispatch does. — unscheduled.
+  fixed at the time). Reproduced against the current head before fixing; closed this session.
 
 ## DEV-053 — A bare `None` (or any other builtin-resolved) pattern never matched by value; it silently acted as an unconditional wildcard (RESOLVED, root cause corrected from the original finding)
 
@@ -1325,8 +1374,8 @@ WP-C1.5)
   `::repeated_none_within_one_tuple_pattern_no_longer_collides`,
   `::ordinary_binding_and_payload_patterns_are_unaffected_by_the_none_fix`.
 - **Owning gate:** found while building the WP-C2.12 differential corpus; investigated and
-  closed as a dedicated follow-up in the same session. See DEV-055 for a related, narrower,
-  *not* fixed finding surfaced during this investigation.
+  closed as a dedicated follow-up in the same session. See DEV-055 for a related, narrower
+  finding surfaced during this investigation (a separate root cause, closed in a later session).
 
 ## DEV-054 — A tuple pattern with the same by-value identifier repeated across components was rejected as a duplicate binding (RESOLVED, same root cause and fix as DEV-053)
 
@@ -1346,35 +1395,54 @@ WP-C1.5)
 - **Owning gate:** found while building the WP-C2.12 differential corpus; closed by the same fix
   as DEV-053, same session.
 
-## DEV-055 — A bare, glob-imported unit enum variant name does not resolve at all (as an expression or a pattern)
+## DEV-055 — A bare, glob-imported unit enum variant name does not resolve at all (as an expression or a pattern) (RESOLVED)
 
 - **Normative expectation:** `use Color::*;` should make `Color`'s variants usable unqualified,
   as both values and patterns, the same as any other glob-imported name.
-- **Current behaviour:** confirmed with a minimal repro: after `enum Color { Red, Green, Blue }
-  use Color::*;`, a bare `Red` used as an *expression* (`let c: Color = Red;`) fails with `E0200
+- **Original behaviour:** confirmed with a minimal repro: after `enum Color { Red, Green, Blue }
+  use Color::*;`, a bare `Red` used as an *expression* (`let c: Color = Red;`) failed with `E0200
   undefined variable 'Red'`. Used bare in *pattern* position (`match c { Red => 1, Green => 2,
-  Blue => 3 }`, with `c` constructed via the qualified `Color::Blue`), all three arms are
-  accepted syntactically but exhibit DEV-053's exact wildcard-collapse symptom: the first arm
-  matches unconditionally and the other two are flagged unreachable, printing `1` regardless of
-  `c`'s real value. **Not fixed by the DEV-053 fix** — confirmed still present afterward — because
-  the root cause is different: `resolve.rs`'s `lower_pattern` (and, evidently, expression-position
-  bare-identifier resolution) checks `self.modules[current_module].items` for the name, and a
-  glob import apparently does not populate that map the way a direct `use Color::Red;` (or
-  presumably a locally-declared item) would; this is not the `Res::Builtin` gap DEV-053 fixed.
-- **User impact:** a glob-imported unit enum variant cannot be referred to unqualified at all,
+  Blue => 3 }`, with `c` constructed via the qualified `Color::Blue`), all three arms were
+  accepted syntactically but exhibited DEV-053's exact wildcard-collapse symptom: the first arm
+  matched unconditionally and the other two were flagged unreachable, printing `1` regardless of
+  `c`'s real value. **Not fixed by the DEV-053 fix** — confirmed still present afterward — root
+  cause was different from DEV-053's.
+- **Root cause:** `resolve_use_tree`'s `Glob`/`Group` arms only ever consulted `submodule_map` (a
+  map from real-module items to their `ModuleId`) to find the set of names to copy into scope.
+  An enum item is never a key in `submodule_map` — its variants are resolved dynamically through
+  `item_details`'s `ItemDefDetail::Enum` arm at path-resolution time (see
+  `resolve_path_relative`), never pre-populated into a module's `items` map the way a real
+  submodule's contents are. So `use Color::*;`/`use Color::{Red, Blue};` silently expanded to
+  *nothing* when the prefix was an enum, rather than erroring or working — this is why the
+  qualified forms (`Color::Red`, a direct non-glob `use Color::Red;`) were unaffected: both go
+  through `resolve_path_relative`'s per-segment `item_details` lookup directly, never through the
+  glob/group expansion machinery.
+- **Resolution:** added `enum_variant_items(item_id)`, which returns each variant's name paired
+  with its `Res::Variant`, if `item_id` names an enum. Wired into both `resolve_use_tree` and
+  `resolve_use_tree_relative`'s `Glob` arms (as an `else if` fallback after the existing
+  `submodule_map` check) and both functions' `Group` arms (via a new
+  `resolve_enum_variant_group_item` helper, since a group's items must be matched individually
+  against the enum's variant list rather than bulk-copied). Regressions:
+  `resolve.rs::glob_imported_enum_variant_resolves_as_bare_expression`,
+  `::group_imported_enum_variants_resolve_selectively` (also confirms a variant deliberately
+  left out of a group import correctly stays undefined, ruling out an overly-broad fix that
+  imports every variant regardless of what the group actually names),
+  `interp.rs::glob_imported_enum_variant_resolves_and_executes_as_bare_expression`,
+  `::glob_imported_enum_variant_discriminates_in_pattern_position_not_wildcard_collapsed` (the
+  decisive end-to-end regression: `match Color::Blue { Red => 1, Green => 2, Blue => 3 }` now
+  prints `3`, not the wildcard-collapsed `1`), `::group_imported_enum_variants_discriminate_in_
+  pattern_position`.
+- **User impact:** a glob-imported unit enum variant could not be referred to unqualified at all,
   either as a value or in a pattern — silently wrong pattern-match results if attempted, or a
   compile error for the expression form.
-- **Security/soundness impact:** the pattern-position half is the same class of silent-wrong-
+- **Security/soundness impact:** the pattern-position half was the same class of silent-wrong-
   output defect as DEV-053 (a pattern that should discriminate on variant identity instead
-  matches unconditionally) — real, but narrower in practice, since it requires a glob import
-  specifically (`use Color::Red;`/`Color::Blue` qualified forms are unaffected).
-- **Workaround:** use the qualified form (`Color::Red`) in both expression and pattern position
-  instead of relying on the glob import to bring the bare name into scope.
+  matched unconditionally) — real, but narrower in practice, since it required a glob or group
+  import specifically (`use Color::Red;`/`Color::Blue` qualified forms were unaffected).
 - **Owning gate:** found while investigating DEV-053 (confirmed as a deliberate differential
   test — bare glob-imported names were used as a control case to scope DEV-053's fix precisely,
-  and turned out to have their own, separate defect). Root cause not isolated beyond "glob
-  imports don't populate the same module-items lookup a direct `use` does" — needs its own
-  investigation of the `use`-import population path in `resolve.rs`. — unscheduled.
+  and turned out to have their own, separate defect). Reproduced against the current head before
+  fixing; closed this session.
 
 ## DEV-056 — `?` propagation was swallowed outside aggregate-construction call sites (RESOLVED)
 
@@ -1554,6 +1622,35 @@ WP-C1.5)
 - **Owning gate:** correction-brief Issue 4 (post-WP-C2.12), reproduced against the current head
   before fixing, closed the same session.
 
+## DEV-060 — Repeated call to an un-overridden trait default method is wrongly flagged as a move
+
+- **Normative expectation:** calling a `&self` method twice on the same receiver never moves it;
+  the second call should see the same borrowed value as the first, exactly as two calls to an
+  ordinary inherent method or an overridden trait method already do.
+- **Current behaviour:** confirmed with a minimal repro: for a `Greet` trait with a required
+  `fn name(&self) -> String` and a default `fn greeting(&self) -> String { self.name() }`,
+  implemented for a struct that only overrides `name`, calling `p.greeting(); p.greeting();`
+  (two calls, same receiver `p`) raises `E0100 use of moved value 'p'` on the *second* call, even
+  though `greeting` only takes `&self`. Confirmed narrow: two calls to an *overridden* trait
+  method (`p.name(); p.name();`), or two calls to an ordinary inherent method, are both
+  unaffected — the defect is specific to a method resolved through the `default_fallback` path
+  in `resolve_method` (an un-overridden trait default), not method dispatch in general.
+- **User impact:** any un-overridden trait default method can only be called once per receiver
+  per scope — a real, fairly common pattern (calling the same default-implemented method twice)
+  is rejected outright.
+- **Security/soundness impact:** none identified — a rejection of legal code (availability), not
+  an acceptance of illegal code.
+- **Workaround:** override the method per-impl instead of relying on the trait default, or bind
+  the result of the first call instead of calling it again.
+- **Owning gate:** found while writing DEV-051's regression tests (confirmed present on the
+  pre-DEV-051-fix head too, via `git stash`, so this is a separate, pre-existing defect, not one
+  introduced by DEV-051's fix). Root cause not isolated beyond "the `default_fallback` method
+  path in `resolve_method`/its interaction with `borrowck.rs`'s move analysis" — needs its own
+  investigation. Regressions documenting the current (defective) behavior and its scope:
+  `typecheck::tests::repeated_call_to_unoverridden_default_trait_method_is_wrongly_flagged_as_move`,
+  `interp::tests::repeated_call_to_overridden_trait_method_is_unaffected_by_dev060`,
+  `::repeated_call_to_inherent_method_is_unaffected_by_dev060`. — unscheduled.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1603,7 +1700,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 57 numbered deviations total (DEV-002 through DEV-059, DEV-001/DEV-003 retired).
+Current count: 58 numbered deviations total (DEV-002 through DEV-060, DEV-001/DEV-003 retired).
 DEV-056 (`?` propagation swallowed outside aggregate construction), DEV-057 (Eq/Ord
 comparison dispatch passed owned clones instead of borrowed places), DEV-058 (Float32 nested
 inside a tuple/array/Option/Result/struct still formatted via Float64 digits -- the residual gap
@@ -1615,15 +1712,21 @@ pre-existing bug (`promote_to_temp_place`'s 15+ call sites never registered thei
 `Frame::order`, so its value was silently discarded via ordinary Rust-level deallocation with no
 `Drop::drop` call ever firing).
 DEV-051, DEV-052, and DEV-055 were found by WP-C2.12 while building the differential execution
-corpus; none fixed (corpus-building is not a semantic-repair WP). DEV-053 and DEV-054 were also
-found there, investigated as a dedicated follow-up in the same session, found to share one root
-cause (a bare `None` pattern never matched by value -- it silently acted as an unconditional
-wildcard, confirmed to produce **wrong runtime output**, not merely a spurious diagnostic --
-DEV-053's original "tuple-pattern usefulness/exhaustiveness" framing was itself a downstream
-artifact of this same misclassification, not a separate algorithm bug), and **closed** with a
-real fix in `resolve.rs`/`typecheck.rs`. DEV-055 (glob-imported unit variants not resolving at
-all, bare) was found as a control case while scoping that fix and is a separate, still-open
-defect.
+corpus, initially left unfixed (corpus-building is not a semantic-repair WP); all three were
+independently reproduced against the current head and **closed** with real fixes in a later
+correction-brief session (DEV-051: trait default methods couldn't call a sibling trait method
+through `self`, fixed in `typecheck.rs`'s `resolve_method`; DEV-052: qualified `Trait::method(...)`
+syntax didn't resolve for compiler `CoreTrait`s, fixed via a new `Res::CoreTraitMember` in
+`resolve.rs`/`typecheck.rs`/`interp.rs`; DEV-055: glob-imported unit enum variants didn't resolve
+at all, fixed in `resolve.rs`). DEV-053 and DEV-054 were also found there, investigated as a
+dedicated follow-up in the same original session, found to share one root cause (a bare `None`
+pattern never matched by value -- it silently acted as an unconditional wildcard, confirmed to
+produce **wrong runtime output**, not merely a spurious diagnostic -- DEV-053's original
+"tuple-pattern usefulness/exhaustiveness" framing was itself a downstream artifact of this same
+misclassification, not a separate algorithm bug), and **closed** with a real fix in
+`resolve.rs`/`typecheck.rs`. DEV-060 (repeated call to an un-overridden trait default method
+wrongly flagged as a move) was found while writing DEV-051's regression tests, confirmed
+pre-existing and unrelated to that fix (via `git stash`), and remains open, unscheduled.
 DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was found and repaired
 during that work. DEV-038 through DEV-043 were found by the post-WP-C2.2 review and closed in
 the correction pass. DEV-044 through DEV-050 were found by an external review of the committed

@@ -3,7 +3,7 @@
 use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::diag::Diagnostic;
 use crate::hir::{
-    self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId,
+    self, BlockId, Builtin, CoreTrait, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId,
 };
 use crate::literal::{self, LitValue};
 use crate::source::{SourceFile, Span};
@@ -2140,6 +2140,9 @@ impl<'a> Interpreter<'a> {
                 Res::TraitMember(trait_id, member) => {
                     self.call_qualified_trait(*trait_id, *member, args, span)
                 }
+                Res::CoreTraitMember(core_trait, _) => {
+                    self.call_qualified_core_trait(*core_trait, args, span)
+                }
                 Res::AssociatedFn(item, name) => match self.eval_call_arguments(args)? {
                     Ok(values) => {
                         let callable = self
@@ -2613,6 +2616,42 @@ impl<'a> Interpreter<'a> {
                 nominal_item(&receiver),
                 &method_name,
                 Some(Res::Item(trait_id)),
+            )
+            .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
+        match self.eval_call_arguments(rest)? {
+            Ok(values) => self
+                .call_user_method(method, receiver_place, receiver, values, span)
+                .map(Flow::Value),
+            Err(propagated) => Ok(Flow::Propagate(propagated)),
+        }
+    }
+
+    /// DEV-052: `Eq::eq(&a, &b)`-style qualified calls to a compiler-known `CoreTrait`'s method.
+    /// Unlike `call_qualified_trait` (a user-declared trait, whose HIR item must be scanned for
+    /// the member's declared name), a `CoreTrait` has no declaration item at all -- its single
+    /// callable method name is fixed per trait (`resolve.rs`'s `core_trait_method_name`, shared
+    /// so both modules agree), and dispatch reuses the exact same `find_method(..., Some(Res::
+    /// CoreTrait(core_trait)))` lookup the `==`/`<`/etc. operator sugar already uses for these
+    /// traits (`eval_binary`'s nominal Eq/Ord dispatch) -- a qualified call is just an explicit
+    /// spelling of the same dispatch, not a separate mechanism.
+    fn call_qualified_core_trait(
+        &mut self,
+        core_trait: CoreTrait,
+        args: &[ExprId],
+        span: Span,
+    ) -> Result<Flow, RuntimeError> {
+        let method_name = crate::resolve::core_trait_method_name(core_trait)
+            .ok_or_else(|| RuntimeError::new("invalid trait call", span))?;
+        let Some((first, rest)) = args.split_first() else {
+            return Err(RuntimeError::new("trait call requires receiver", span));
+        };
+        let receiver_place = self.core_receiver_place(*first, span)?;
+        let receiver = self.clone_place_value(&receiver_place, span)?;
+        let method = self
+            .find_method(
+                nominal_item(&receiver),
+                method_name,
+                Some(Res::CoreTrait(core_trait)),
             )
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
         match self.eval_call_arguments(rest)? {
@@ -7213,6 +7252,128 @@ mod tests {
         assert_eq!(value.to_bits(), 0xfff8_0000_0000_0000);
     }
 
+    /// DEV-055: a bare, glob-imported unit enum variant did not resolve at all as an
+    /// expression -- `resolve_use_tree`'s `Glob` arm only ever consulted `submodule_map` (real
+    /// modules), and an enum's variants are resolved dynamically through `item_details`, never
+    /// pre-populated into a module's `items` map the way a real submodule's contents are. See
+    /// `resolve.rs`'s `glob_imported_enum_variant_resolves_as_bare_expression` for the
+    /// resolve-stage half of this regression.
+    #[test]
+    fn glob_imported_enum_variant_resolves_and_executes_as_bare_expression() {
+        let execution = execute(
+            "enum Color { Red, Green, Blue } \
+             use Color::*; \
+             fn main() { \
+                 let c: Color = Red; \
+                 println(\"ok\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "ok\n");
+    }
+
+    /// DEV-055's more severe half: in *pattern* position, a bare glob-imported variant used to
+    /// exhibit DEV-053's exact wildcard-collapse symptom (the first arm matched unconditionally,
+    /// later arms flagged unreachable) rather than genuinely discriminating on variant identity.
+    /// Confirms `match Color::Blue { Red => 1, Green => 2, Blue => 3 }` now prints `3`, not `1`.
+    #[test]
+    fn glob_imported_enum_variant_discriminates_in_pattern_position_not_wildcard_collapsed() {
+        let execution = execute(
+            "enum Color { Red, Green, Blue } \
+             use Color::*; \
+             fn main() { \
+                 let c = Color::Blue; \
+                 let n = match c { Red => 1, Green => 2, Blue => 3 }; \
+                 println(n); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "3\n");
+    }
+
+    /// Companion for the group-import form (`use Color::{Red, Green, Blue};`), which hit the
+    /// identical `submodule_map`-only gap in `resolve_use_tree`'s `Group` arm.
+    #[test]
+    fn group_imported_enum_variants_discriminate_in_pattern_position() {
+        let execution = execute(
+            "enum Color { Red, Green, Blue } \
+             use Color::{Red, Green, Blue}; \
+             fn main() { \
+                 let c = Color::Blue; \
+                 let n = match c { Red => 1, Green => 2, Blue => 3 }; \
+                 println(n); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "3\n");
+    }
+
+    /// Companion regression for DEV-060 (see `typecheck.rs`'s
+    /// `repeated_call_to_unoverridden_default_trait_method_is_wrongly_flagged_as_move` for the
+    /// decisive diagnostic-level regression): two calls to an *overridden* trait method (not a
+    /// default fallback) are unaffected by DEV-060.
+    #[test]
+    fn repeated_call_to_overridden_trait_method_is_unaffected_by_dev060() {
+        let execution = execute(
+            "trait Greet { fn name(&self) -> String; } \
+             struct Person { label: String } \
+             impl Greet for Person { \
+                 fn name(&self) -> String { self.label.clone() } \
+             } \
+             fn main() { \
+                 let p = Person { label: String::from(\"Ada\") }; \
+                 println(p.name()); \
+                 println(p.name()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Ada\nAda\n");
+    }
+
+    /// Companion: two calls to an ordinary inherent (non-trait) method are unaffected by
+    /// DEV-060.
+    #[test]
+    fn repeated_call_to_inherent_method_is_unaffected_by_dev060() {
+        let execution = execute(
+            "struct Person { label: String } \
+             impl Person { \
+                 fn greeting(&self) -> String { self.label.clone() } \
+             } \
+             fn main() { \
+                 let p = Person { label: String::from(\"Ada\") }; \
+                 println(p.greeting()); \
+                 println(p.greeting()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Ada\nAda\n");
+    }
+
+    /// DEV-051 end-to-end: a trait default method calling a sibling trait method through `self`
+    /// (both directly, and transitively through a chain of two default methods) now type-checks
+    /// *and* executes correctly. See `typecheck.rs`'s `trait_default_method_calling_sibling_
+    /// trait_method_through_self_type_checks` for the type-checking half of this regression.
+    #[test]
+    fn trait_default_method_calling_sibling_trait_method_through_self_executes() {
+        let execution = execute(
+            "trait Greet { \
+                 fn name(&self) -> String; \
+                 fn shout(&self) -> String { self.greeting() } \
+                 fn greeting(&self) -> String { self.name() } \
+             } \
+             struct Person { label: String } \
+             impl Greet for Person { \
+                 fn name(&self) -> String { self.label.clone() } \
+             } \
+             fn main() { \
+                 let p = Person { label: String::from(\"Ada\") }; \
+                 println(p.shout()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Ada\n");
+    }
+
     /// DEV-053 (found building the WP-C2.12 differential corpus, fixed as a follow-up
     /// investigation): a bare `None` pattern never matched by value -- `resolve.rs`'s
     /// `lower_pattern` only recognized `Res::Variant`/`Res::Item` as "known value" resolutions
@@ -7649,5 +7810,78 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "a\nafter\na\n");
+    }
+
+    /// DEV-052: `Trait::method(...)` fully-qualified call syntax (`03-Type-System.md`:670)
+    /// resolved and executed for a user-declared trait but failed at resolve time
+    /// (`E0200 undefined variable 'Eq::eq'`) for a compiler-known `CoreTrait` (`Eq`, `Ord`,
+    /// `Hash`, `Display`, `Clone`, `Default`). Root cause: `resolve_path_relative`'s
+    /// multi-segment loop only ever continued past a first segment resolving to
+    /// `Res::Item(item_id)` (a real trait *declaration* item, indexed by member position) --
+    /// never past `Res::CoreTrait(core_trait)`, since a `CoreTrait` has no such declaration item
+    /// at all. Fixed by adding a new `Res::CoreTraitMember(CoreTrait, Span)`, resolved when the
+    /// second segment names that `CoreTrait`'s one fixed callable method
+    /// (`core_trait_method_name`, shared between `resolve.rs` and `interp.rs`), and dispatched
+    /// through the *same* `find_method(..., Some(Res::CoreTrait(core_trait)))` lookup the
+    /// `==`/`<`/etc. operator sugar already uses -- a qualified call is just an explicit
+    /// spelling of the same dispatch, not a separate mechanism.
+    #[test]
+    fn qualified_call_to_core_trait_eq_method_resolves_and_executes() {
+        let execution = execute(
+            "struct Point { x: Int32 } \
+             impl Eq for Point { fn eq(&self, other: &Point) -> Bool { self.x == other.x } } \
+             fn main() { \
+                 let a = Point { x: 1 }; \
+                 let b = Point { x: 1 }; \
+                 let c = Point { x: 2 }; \
+                 println(Eq::eq(&a, &b)); \
+                 println(Eq::eq(&a, &c)); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\nfalse\n");
+    }
+
+    /// Companion: `Ord::cmp` (a different `CoreTrait`, a different fixed method name) resolves
+    /// and executes too, confirming the fix isn't accidentally specific to `Eq`.
+    #[test]
+    fn qualified_call_to_core_trait_ord_method_resolves_and_executes() {
+        let execution = execute(
+            "struct Point { x: Int32 } \
+             impl Ord for Point { \
+                 fn cmp(&self, other: &Point) -> Ordering { \
+                     if self.x < other.x { Ordering::Less } \
+                     else if self.x > other.x { Ordering::Greater } \
+                     else { Ordering::Equal } \
+                 } \
+             } \
+             fn main() { \
+                 let a = Point { x: 1 }; \
+                 let b = Point { x: 2 }; \
+                 println(Ord::cmp(&a, &b)); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Less\n");
+    }
+
+    /// Companion regression guard: the qualified-call syntax for a user-*declared* trait
+    /// (`Res::TraitMember`, `call_qualified_trait`) is a separate code path from the new
+    /// `CoreTrait` handling and must remain unaffected by it.
+    #[test]
+    fn qualified_call_to_user_declared_trait_is_unaffected_by_the_core_trait_fix() {
+        let execution = execute(
+            "trait Describe { fn describe(&self) -> String; } \
+             struct Widget { label: String } \
+             impl Describe for Widget { \
+                 fn describe(&self) -> String { self.label.clone() } \
+             } \
+             fn main() { \
+                 let w = Widget { label: String::from(\"gadget\") }; \
+                 println(Describe::describe(&w)); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "gadget\n");
     }
 }

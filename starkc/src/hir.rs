@@ -207,6 +207,11 @@ pub enum Res {
     Builtin(Builtin),
     /// A compiler-known Core marker trait supplied by the prelude.
     CoreTrait(CoreTrait),
+    /// DEV-052: a method selected from a compiler-known `CoreTrait` path (`Eq::eq`, `Ord::cmp`,
+    /// ...), distinct from `TraitMember` because a `CoreTrait` has no `hir::ItemKind::Trait`
+    /// declaration item to index a member into -- the method-name segment's own span is carried
+    /// instead, resolved to text on demand (the same idiom as `SelfAssoc`/`ParamAssoc`).
+    CoreTraitMember(CoreTrait, Span),
     /// A nominal type supplied by the Core prelude.
     CoreType(CoreType),
     /// The load associated function for a nominal model type.

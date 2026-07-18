@@ -1,8 +1,8 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.13 — Gate C2 closed, CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS
+Updated: 2026-07-18 after roadmap amendment — C3-entry transition inserted before WP-C3.1
 
 ## Position
-Gate: C3  Next: WP-C3.1 (Architecture hypothesis and workload freeze)  Blocked: none
+Gate: C3-ENTRY  Next: Native Readiness and Carry-Forward Closure before WP-C3.1  Blocked: none
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
@@ -340,6 +340,18 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   mode selects the root `main`. Floating `**` is rejected. Standard hash values use canonical
   FNV-1a encodings and primitive Display bytes are exact. `std-full` freezes availability and
   explicitly stated behavior only; unstated method edge cases are not conformance claims.
+- CD-018 [2026-07-18, roadmap amendment before WP-C3.1] Adopted the post-C2 roadmap correction
+  brief without replacing the core C3-C7 sequence. Inserted mandatory `C3-ENTRY — Native
+  Readiness and Carry-Forward Closure` before WP-C3.1; made pending-owner-approval rows,
+  DEV-051/052/055 ownership, WP-C2.12 generated-corpus/cross-backend transfer, versioned corpus
+  freeze, and native-path CI baseline explicit. Strengthened C3.1's frozen workload with
+  generics, trait dispatch, default trait sibling calls, references/slices, Drop-bearing trait
+  dispatch, opaque host resources, and provider-boundary file I/O. Added Native Provider ABI
+  v0.1 to C5.1, removed C5.4's "where supported" generic-call escape hatch, introduced platform
+  tiers, added real systems workloads to C7 measurement, and created
+  `STARKLANG/docs/ecosystem/SYSTEMS-ROADMAP.md` with S0-S7 plus the post-C6 P1 Native Systems
+  Baseline checkpoint. This is a sequencing and evidence-governance amendment; it does not
+  reopen C2 or change Core v1 semantics.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -3040,3 +3052,83 @@ an implementation-status change). `cargo build --workspace --tests`, `cargo fmt 
 re-verified clean (expected, since no `.rs` files changed).
 NEXT: Issues 6-8 (DEV-051/052/055 disposition) remain deferred, per the user's "continue through
 Issue 5" instruction — the three issues authorized this pass (3, 4, 5) are now complete.
+
+### Post-Gate-C2 correction brief — Issues 6-8 (DEV-051, DEV-052, DEV-055) — 2026-07-19
+DONE: user said "fix them" (Issues 6-8, previously deferred). Reproduced and closed all three
+with real fixes, one working method throughout: reproduce on current head, isolate root cause by
+reading the relevant resolver/checker code rather than guessing, fix, add regression tests, run
+full verification, update docs.
+- **DEV-055** (fixed first, most precisely diagnosed already): `use Color::*;`/`use
+  Color::{Red, Blue};` silently expanded to nothing when the prefix names an enum rather than a
+  real module. Root cause: `resolve_use_tree`'s `Glob`/`Group` arms (and their `_relative`
+  counterparts) only ever consulted `submodule_map` (real modules); an enum's variants are
+  resolved dynamically through `item_details`, never pre-populated into a module's `items` map.
+  Fixed by adding `enum_variant_items`/`resolve_enum_variant_group_item`, wired into both arms in
+  both functions. 5 new regression tests (`resolve.rs` x2, `interp.rs` x3), including one
+  confirming a variant deliberately left out of a group import correctly stays undefined (rules
+  out an overly-broad "import everything" fix).
+- **DEV-051**: a trait default method body calling a sibling trait method through `self`
+  (`self.name()` inside `fn greeting(&self) { self.name() }`) failed to type-check with `E0302`.
+  Root cause: `resolve_method` already had a mechanism for an abstract `Ty::Param` receiver with
+  no concrete `impl` to match (a bounded *generic function* type parameter), but it was scoped
+  only to that case, never to `self` inside a trait's own default-method body (`current_self_ty
+  == Ty::Param("Self")`, checked once, generically, at the trait declaration site). A first
+  attempt placed the new check in the same spot as the existing one and it still failed, since
+  `self`'s type at that point is `&Self` (a `Ty::Ref`), not bare `Ty::Param("Self")` — moved it
+  to after the reference-deref loop, unlike the by-value generic-parameter case. Added
+  `current_trait_id` (set alongside `current_self_ty` for trait default bodies) plus two shared
+  helpers (`find_trait_method_sig`/`check_trait_member_call`) refactored out of the
+  previously-inlined generic-parameter logic. 4 new regression tests, including a
+  default-calling-another-default case and a wrong-arg-count case (confirms the fix doesn't
+  silently swallow a genuine arity mismatch). **Side finding, NOT fixed** (confirmed pre-existing
+  via `git stash`, not introduced by this fix): DEV-060 — calling the same un-overridden default
+  method twice on one receiver wrongly raises `E0100 use of moved value` on the second call; two
+  calls to an *overridden* trait method or an ordinary inherent method are both unaffected.
+  Recorded as a new open deviation with its own regression tests documenting the current
+  (defective) behavior and its exact scope, rather than silently worked around.
+- **DEV-052**: `Eq::eq(&a, &b)` (fully-qualified call syntax) failed to resolve
+  (`E0200 undefined variable 'Eq::eq'`) while the same syntax worked for a user-declared trait.
+  Root cause: `resolve_path_relative`'s multi-segment loop only continued past a first segment
+  resolving to `Res::Item` (a real trait declaration item, member indexed against
+  `ItemDefDetail::Trait`); a `CoreTrait` (`Eq`, `Ord`, ...) has no such declaration item at all.
+  Fixed by adding `Res::CoreTraitMember(CoreTrait, Span)`, resolved via a new
+  `core_trait_method_name` table (one fixed callable method name per `CoreTrait`: `Eq`→"eq",
+  `Ord`→"cmp", `Hash`→"hash", `Clone`→"clone", `Display`→"fmt", `Default`→"default"). Typecheck
+  (`check_qualified_core_trait_call`) finds the matching impl's own method signature directly
+  (no shared trait declaration to instantiate from, unlike the user-trait case), matching impls
+  by trait-ref source text against a new `core_trait_source_name` table (mirroring
+  `ty_satisfies_operator_bound`'s existing approach). The interpreter side needed no new
+  impl-scanning logic at all: `call_qualified_core_trait` reuses the *exact* `find_method(...,
+  Some(Res::CoreTrait(_)))` lookup the `==`/`<` operator sugar already calls for these traits — a
+  qualified call is just an explicit spelling of the same dispatch. 4 new regression tests
+  (`Eq` and `Ord`, an unimplemented-trait rejection, and a guard confirming the pre-existing
+  user-trait qualified-call path is unaffected).
+FILES: `starkc/src/resolve.rs` (DEV-055's `enum_variant_items`/`resolve_enum_variant_group_item`;
+DEV-052's `core_trait_method_name` table and path-resolution wiring; both regression tests),
+`starkc/src/typecheck.rs` (DEV-051's `current_trait_id` field and `find_trait_method_sig`/
+`check_trait_member_call` helpers; DEV-052's `check_qualified_core_trait_call`/
+`core_trait_source_name`; all three fixes' regression tests plus DEV-060's documentation test),
+`starkc/src/interp.rs` (DEV-055/DEV-051 end-to-end regression tests; DEV-052's
+`call_qualified_core_trait`; DEV-060's two scope-confirming companion tests),
+`starkc/src/hir.rs` (new `Res::CoreTraitMember` variant), `starkc/src/analysis/query.rs`
+(exhaustiveness update for the new `Res` variant), `starkc/docs/conformance/
+KNOWN-DEVIATIONS.md` (DEV-051/052/055 marked resolved with full root-cause writeups; new
+DEV-060 opened; count line updated to 58), this file.
+RULES: none — three runtime/type-check-semantics corrections against already-normative rules
+(trait default-method dispatch and fully-qualified trait-call syntax per `03-Type-System.md`;
+glob-import name resolution per `07-Modules-and-Packages.md`); no conformance-database rule
+citation or normative specification text changed.
+DECISIONS: none new as CD/AD records. All three are spec-consistent corrections under Charter
+§2.2 Sonnet-level autonomy — each makes a previously-rejected legal program accepted and correct,
+none weakens an existing check or changes accepted behavior in a way that admits an unsound
+program.
+EVIDENCE: MANUAL + REG — every fix's original bug and every new regression scenario was run
+against the actual compiler (not inferred from code reading alone); DEV-060's pre-existing,
+unrelated-to-DEV-051 status was independently confirmed via `git stash` against the pre-fix head
+before being recorded, not assumed. `cargo test --workspace --all-targets --all-features`:
+**594 passed / 0 failed / 2 ignored** (up from 578/0/2 pre-this-pass, exactly the 16 new tests
+across the three fixes — see each fix's own count above — zero regressions elsewhere). `cargo fmt --all -- --check` clean. `cargo clippy --workspace --all-targets
+--all-features -- -D warnings` clean. `python3 scripts/check-conformance.py` re-run clean
+(89.8%/53-of-59, unchanged -- none of these three fixes touch the conformance evidence database).
+NEXT: no further work authorized this pass. DEV-060 (new, open) and DEV-009/DEV-022/DEV-023/
+DEV-024 (long-open, C2.8/C2.9-owned) are the remaining known deviations without a fix.

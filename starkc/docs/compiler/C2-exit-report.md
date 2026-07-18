@@ -422,3 +422,34 @@ they clean scopes," the exact DEV-056/DEV-057 territory) and `TRAIT-LAW-001` ("w
 bind `Eq`, `Ord`, and `Hash`") — were given their first evidence entries, citing the DEV-056/
 DEV-057 regression tests. `check-conformance.py` re-run clean after all changes (89.8%/53-of-59
 overall, unchanged — this was a citation-quality fix, not an implementation-status change).
+
+## Addendum 2 — 2026-07-19, DEV-051/DEV-052/DEV-055 closed; DEV-060 found
+
+This report's own "Deviations found this gate" table (below) lists **DEV-051** (trait default
+methods couldn't call a sibling trait method through `self`), **DEV-052** (qualified
+`Trait::method(...)` syntax didn't resolve for compiler `CoreTrait`s), and **DEV-055** (bare
+glob-imported unit enum variants didn't resolve at all) as `Open, unscheduled`. All three were
+independently reproduced against the current head in a later session and **closed** with real
+fixes: DEV-051 in `typecheck.rs`'s `resolve_method` (a new `current_trait_id` field lets a
+default-method body's `self.other_method()` look its sibling up directly against the trait's own
+declared signature, mirroring the pre-existing bounded-generic-parameter mechanism); DEV-052 via
+a new `hir::Res::CoreTraitMember` variant threaded through `resolve.rs`/`typecheck.rs`/
+`interp.rs`, whose interpreter-side dispatch reuses the exact same `find_method(..., Some(Res::
+CoreTrait(_)))` lookup the `==`/`<` operator sugar already uses for these traits; DEV-055 in
+`resolve_use_tree`'s `Glob`/`Group` arms (an enum prefix, not just a real submodule, is now
+handled). See `COMPILER-STATE.md`'s dated `### Post-Gate-C2 correction brief` session records
+for full detail.
+
+While writing DEV-051's regression tests, a fourth, separate defect was found and confirmed
+*not* introduced by that fix (via `git stash` against the pre-fix head): **DEV-060** — calling
+the same un-overridden trait *default* method twice on one receiver incorrectly raises `E0100
+use of moved value` on the second call, even though the method only takes `&self`. Two calls to
+an *overridden* trait method, or to an ordinary inherent method, are both unaffected, narrowing
+the defect specifically to the `default_fallback` method-resolution path. This one remains open,
+unscheduled, and is recorded in `KNOWN-DEVIATIONS.md`.
+
+None of this retroactively changes the verdict
+(`CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS`) — three more listed deviations
+closed with real fixes and regression tests, one new one found and honestly disclosed rather
+than fixed under time pressure, the same disposition every other finding in this compiler track
+has received.
