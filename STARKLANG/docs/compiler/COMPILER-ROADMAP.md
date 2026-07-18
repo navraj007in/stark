@@ -712,12 +712,26 @@ Freeze a representative workload set containing at least:
 19. a function value stored in a struct field (route-table shape);
 20. a cross-package function reference;
 21. a monomorphised generic function used as a function value, if Core permits it (if it does
-    not, record that boundary explicitly in the freeze rather than dropping the item).
+    not, record that boundary explicitly in the freeze rather than dropping the item);
+22. repeated indirect invocation through one function-value local (`apply_twice(f, v)` shape,
+    `f(f(v))`) — function values are `Copy` per `03-Type-System.md` §Copy and Drop, so no
+    move may be flagged on the second call (CD-022; DEV-060 is this bug class for default
+    trait methods);
+23. a `Copy` aggregate containing a function-value field, copied, with both copies invoked
+    (CD-022).
 
-Items 16-21 exercise **existing frozen Core v1 capability** — non-capturing `fn(...) -> ...`
+Items 16-23 exercise **existing frozen Core v1 capability** — non-capturing `fn(...) -> ...`
 function types (`03-Type-System.md`) with `Value::Function` runtime representation — not a
-future closure feature (CD-021). Any of them that fails against the current implementation is
-a new DEV entry surfaced before backend selection, which is the point of freezing them here.
+future closure feature (CD-021/CD-022). Any of them that fails against the current
+implementation is a new DEV entry surfaced before backend selection, which is the point of
+freezing them here. Ownership properties are already settled: function values are `Copy`
+(`03-Type-System.md` §Copy and Drop), hence never `Drop`. Two properties remain unresolved
+and must be settled **before backend selection** — from the frozen spec if it decides them,
+otherwise escalated (CE1/CE2) as spec-silent, never invented by MIR or ABI design (CD-022):
+
+- whether function values participate in `Eq`/`Ord`/`Hash` at all;
+- the canonical identity of a monomorphised generic function value (the interpreter's current
+  `Value::Function(ItemId)` comparison is incidental representation until decided).
 
 Define measurements:
 
@@ -1506,13 +1520,17 @@ Requires C7, C8, and C10 with:
 - robustness/security qualification;
 - compatibility policy.
 
-This release class may describe compiler maturity independently, but must not claim practical
-systems-platform maturity unless P1 is complete.
+Because C7.7 cannot close before P1 (§4.2, CD-019), this class necessarily carries P1's
+evidence. The distinction from STARK v1 General-Purpose Stable is **claim scope, not
+evidence**: Core v1 Compiler Stable asserts compiler maturity only and must not assert
+general-purpose systems-platform maturity (CD-022 — this replaces an earlier "unless P1 is
+complete" conditional that CD-019's C7 gating had made vacuous).
 
 #### STARK v1 General-Purpose Stable
 
-Requires Core v1 Compiler Stable plus completed P1. This is the first release class allowed to
-claim general-purpose practical systems-platform maturity.
+Requires Core v1 Compiler Stable, which already includes completed P1 via C7 (CD-019/CD-022);
+no additional evidence gate is added. This is the first release class permitted to claim
+general-purpose practical systems-platform maturity — the same evidence, the wider claim.
 
 ### WP-C10.1 — Full conformance dashboard
 

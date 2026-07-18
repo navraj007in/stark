@@ -23,8 +23,10 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   before WP-C3.1.
 - Transition base commit: `c268d7c` (`Add systems ecosystem roadmap`), after the post-Gate-C2
   correction-brief commit that resolved DEV-051, DEV-052, and DEV-055 and opened DEV-060.
-- Current committed head: `9e85396` (`Tighten C3-entry systems roadmap gates`, the CD-019
-  amendment commit). Commit only on explicit user request.
+- Amendment base commit: `60b49e2` (`CD-021 function-value native validation...`) — the head
+  this state revision was written against. (Field renamed from "Current committed head" under
+  CD-022: a commit cannot record its own SHA, so that framing was permanently one behind;
+  the live head is always `git log`, never this file.) Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -420,6 +422,28 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   section + future-closure-compatibility section, outcomes GO/REVISE-ABI/
   DEFER-ESCAPING-BORROWS/ANNOTATIONS-LIKELY/NO-CURRENT-DESIGN) remains a separate proposal to
   be drafted before WP-C5.1; it is a recommendation, not yet approved work.
+- CD-022 [2026-07-19, owner-approved follow-up amendment — external review of CD-020/CD-021
+  commits] Three changes. (a) **Release-class coherence repair, preserving CD-019.** External
+  review correctly found two superimposed models: C7.7 requires P1 (CD-019), Core v1 Compiler
+  Stable requires C7, so its "must not claim systems-platform maturity unless P1 is complete"
+  conditional was vacuous and General-Purpose Stable's "+P1" added no evidence. Resolution
+  keeps CD-019's C7 gating (its motive — no toy-workload performance report — stands) and
+  recasts the two stable classes as differing in **claim scope, not evidence**: Compiler
+  Stable necessarily carries P1 evidence but asserts compiler maturity only; General-Purpose
+  Stable adds no evidence gate and is the class permitted to assert systems-platform
+  maturity. The reviewer's alternative (decouple C7 from P1) was considered and rejected as a
+  CD-019 reversal. (b) **Function-value property validation.** WP-C3.1 gains workload items
+  22 (repeated indirect invocation through one local — spec-guaranteed by function values
+  being `Copy`, `03-Type-System.md` §Copy and Drop; DEV-060 is this bug class for default
+  trait methods) and 23 (`Copy` aggregate with a function-value field, copied, both copies
+  invoked), plus a pre-backend-selection requirement to settle the two genuinely open
+  properties — `Eq`/`Ord`/`Hash` participation and monomorphised-generic function-value
+  identity — from the frozen spec or by CE1/CE2 escalation, never by MIR/ABI accident. The
+  reviewer's broader open-question list (Copy? repeated calls? Drop?) was narrowed: those are
+  already frozen by the spec's Copy rule. (c) **State-header field rename**: "Current
+  committed head" → "Amendment base commit" (self-referential staleness by construction).
+  Outstanding from the same review, not part of this entry: a demonstrated green CI run
+  (requires pushing to origin; no run exists yet).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -746,4 +770,22 @@ interp.rs:260). No count/enumeration references to the C3.1 workload existed to 
 FOLLOW-UP: draft the "Callable ABI and Future Closure Compatibility Spike" proposal before
 WP-C5.1 (recommended during C3 spike work); WP-C3-ENTRY blockers unchanged and still open.
 NEXT: WP-C3-ENTRY blocker closure (six completeness rows, DEV-060, corpus freeze, green CI
-run); then C3-entry exit artifact; then WP-C3.1 with the 21-item workload.
+run); then C3-entry exit artifact; then WP-C3.1 with the 21-item workload [23 after CD-022].
+
+### CD-022 follow-up amendment — 2026-07-19
+DONE: applied the owner-approved CD-022 (see decision log): release-class claim-scope repair
+(Compiler Stable vs General-Purpose Stable, CD-019 preserved), WP-C3.1 workload items 22-23
+plus the pre-backend-selection Eq/Hash/monomorphised-identity resolution requirement,
+state-header field renamed to "Amendment base commit".
+FILES: STARKLANG/docs/compiler/COMPILER-ROADMAP.md, COMPILER-STATE.md.
+RULES: none — no normative Core rule, compiler, or interpreter change. The two open
+function-value properties are flagged for settlement, not settled here.
+DECISIONS: CD-022 (owner-approved this session).
+EVIDENCE: spec citation verified by direct read before recording (03-Type-System.md:748-749 —
+function values are Copy); release-class contradiction verified against the roadmap text
+(C7.7 P1 gate vs the vacuous conditional). Workload numbering re-verified contiguous 1-23.
+FOLLOW-UP: push to origin and record one green run of the updated CI workflow (last
+C3-entry CI blocker item); callable-ABI/closure-compatibility spike proposal still pending,
+pre-C5.1.
+NEXT: WP-C3-ENTRY blocker closure (six completeness rows, DEV-060, corpus freeze, green CI);
+then C3-entry exit artifact; then WP-C3.1 with the 23-item workload.
