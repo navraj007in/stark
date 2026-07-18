@@ -7,7 +7,7 @@ Status: **Completed 2026-07-18; correction pass completed 2026-07-18.** All ten 
 findings (DEV-026 through DEV-035) and adjacent DEV-037 are closed. A post-completion review
 found six additional runtime defects, recorded and closed as DEV-038 through DEV-043 with
 establishing regressions. The explicitly optional candidates DEV-009/023/024 remain open.
-Parser-owned DEV-036 remains outside this interpreter WP and is scheduled to WP-C2.6.
+Parser-owned DEV-036 remains outside this interpreter WP and is scheduled to WP-C2.12.
 
 ## Scope
 
@@ -72,7 +72,7 @@ associated-function resolution), **DEV-009** (`File` has no runtime representati
   receiver-handling cluster DEV-034/DEV-035 shares code paths with `&mut self` write-back — a fix
   must not break the existing mutation semantics that currently work).
 - **Strongest existing comparator:** the 454-test suite plus each deviation's establishing repro;
-  the differential corpus (WP-C2.6) does not exist yet, so this WP's own before/after repro
+  the differential corpus (WP-C2.12) does not exist yet, so this WP's own before/after repro
   discipline is the strongest available evidence.
 - **Negative result that would stop this WP/gate:** discovering a deviation whose fix requires
   changing normative spec text again (all spec-side questions were settled in WP-C2.1 +

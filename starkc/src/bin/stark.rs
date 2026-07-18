@@ -6,6 +6,7 @@ use starkc::resolve::{resolve, resolve_with_options};
 use starkc::source::SourceFile;
 use starkc::test_runner::{self, Outcome};
 use starkc::typecheck;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -111,9 +112,8 @@ fn main() -> ExitCode {
     let analysis =
         starkc::analysis::analyze_project(starkc::analysis::ProjectInput::package(graph), options);
     let root_file = analysis.root_file.clone();
-    for diag in &analysis.diagnostics {
-        eprint!("{}", diag.render(&root_file));
-    }
+    let diagnostic_batch = analysis.diagnostic_batch(&HashMap::new());
+    eprint!("{}", diagnostic_batch.render(&analysis.source_map));
     if analysis.has_errors() {
         eprintln!("{}: package compilation failed", root_package_name);
         return ExitCode::FAILURE;

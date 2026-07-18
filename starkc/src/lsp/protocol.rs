@@ -72,8 +72,10 @@ impl std::fmt::Display for JsonValue {
                 write!(f, "[{}]", items)
             }
             JsonValue::Object(obj) => {
-                let items = obj
-                    .iter()
+                let mut entries = obj.iter().collect::<Vec<_>>();
+                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                let items = entries
+                    .into_iter()
                     .map(|(k, v)| format!("\"{}\":{}", escape_json_string(k), v))
                     .collect::<Vec<_>>()
                     .join(",");
@@ -401,6 +403,16 @@ mod tests {
         let val = parse_json(r#"{"key":"value","num":42}"#).unwrap();
         assert_eq!(val.get("key").and_then(|v| v.as_str()), Some("value"));
         assert_eq!(val.get("num").and_then(|v| v.as_i64()), Some(42));
+    }
+
+    #[test]
+    fn object_encoding_is_deterministic_and_key_sorted() {
+        let value = JsonValue::Object(HashMap::from([
+            ("zeta".to_string(), JsonValue::Number(2.0)),
+            ("alpha".to_string(), JsonValue::Number(1.0)),
+        ]));
+        assert_eq!(value.to_string(), r#"{"alpha":1,"zeta":2}"#);
+        assert_eq!(value.to_string(), value.to_string());
     }
 
     #[test]

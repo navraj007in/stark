@@ -435,37 +435,111 @@ Define and implement a single structured diagnostic form supporting:
 
 CLI text output and LSP publication must derive from this form.
 
-### WP-C2.6 — Differential interpreter corpus
+### WP-C2.6 — Core completeness inventory and specification authority
+
+Create `STARKLANG/docs/spec/CORE-V1-COMPLETENESS.md`: one consistently structured row for every
+normative question, recording its domain, exact question, completeness status, behaviour class,
+normative home and rule ID, positive and negative implementation evidence, compatibility cost,
+owning WP (C2.7–C2.11), and decision state.
+
+Audit lexing/source encoding, grammar, names/scopes, type identity and well-formedness,
+inference/coercions, traits/coherence, ownership/borrowing, places/moves/temporaries,
+patterns/destruction, constants, numeric behaviour, strings/Unicode, modules, packages/package
+identity, entry/process behaviour, standard-library language hooks, layout observability,
+panic/trap termination, target-defined behaviour, and extension boundaries.
+
+Create an authoritative specification map assigning one normative home to each concept. Split
+the current broad conformance rules into stable granular IDs for independently observable or
+rejectable behaviours. Remove stale implementation-planning prose from generated normative
+specifications. Create `STARKLANG/docs/spec/CORE-V1-OPEN-QUESTIONS.md`, recording each unresolved
+question, urgency, rationale, delay cost, recommended default, alternatives, compatibility
+impact, owner, and approval state. This WP inventories and assigns decisions; it does not make
+unrelated implementation changes.
+
+### WP-C2.7 — Abstract machine and execution semantics
+
+Create `STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md`, defining values, objects, storage,
+owners, locals, temporaries, places/projections, initialization and moved-from state without
+reference to Rust, HIR arenas, MIR, or interpreter frame layout.
+
+Define expression/place evaluation, value/place contexts, temporary lifetime, evaluation order,
+early termination and partial evaluation; move/copy/reinitialization and partial moves;
+assignment/replacement; aggregate construction and failure cleanup; every destruction category;
+reference identity/projection/return/slice/receiver validity; and the observable comparator
+(streams, exit/trap category and source, harnessed return, destruction order, and artifact
+verification result). Every legal Core expression must have language-level execution behaviour.
+
+### WP-C2.8 — Type, trait, pattern and constant semantics
+
+Settle transparent type aliases, package/module/name/generic nominal identity, recursive-type
+finite sizedness, Core unsized boundaries, and edge types. Specify inference/defaulting,
+expected-type propagation, ambiguity, normalization, and generic inference. Define an
+implementation-independent trait/coherence algorithm with no Core v1 specialization or negative
+impls. Add normative pattern ownership/destruction semantics. Define a bounded, deterministic
+constant-evaluation subset, including cycle, overflow, trap, and cross-package behaviour.
+
+### WP-C2.9 — Numeric, layout, text, process and package contracts
+
+Complete integer and floating-point operation semantics, including shifts, overflow, casts,
+NaN, infinity, signed zero, reproducibility, and the explicit `Eq`/`Ord`/`Hash` decision for
+floats. Classify layout observability and target dependence without promising a stable Core v1
+ABI. Define UTF-8 source/string boundaries and indexing, executable entry signatures and process
+exit/stream/startup/shutdown behaviour, and package/public-API identity including versions,
+content/source identity, aliases, re-exports, lockfiles, and package-level coherence.
+
+### WP-C2.10 — Future-extension compatibility boundaries
+
+Create `STARKLANG/docs/spec/CORE-V1-FUTURE-BOUNDARIES.md`. Protect future ownership-aware
+capturing closures and lifetime parameters without implementing them. Scope Core v1 explicitly
+to safe, single-threaded execution and record future concurrency requirements. Keep general
+unsafe/FFI out of Core v1; host access uses approved native-provider interfaces with explicit
+ABI, provenance, and capability metadata. Do not add macros or compile-time generation merely
+to compensate for package/build-tooling gaps.
+
+### WP-C2.11 — Implementation alignment and adversarial conformance
+
+Implement the decisions approved by C2.6–C2.10. Each correction updates the normative source,
+generated combined specification, compiler/interpreter, diagnostic catalogue, positive and
+negative evidence, conformance database, deviation ledger, state, and roadmap together.
+
+Required adversarial matrices cover numeric boundaries; aliases, nominal/recursive/sized types;
+temporaries/drop and failed aggregate construction; pattern ownership; constants; Unicode;
+package/version/public identity; and every accepted/rejected executable entry signature. Resolve
+DEV-019's diagnostic-code collisions here unless an earlier bounded correction updates the same
+complete evidence set.
+
+### WP-C2.12 — Differential interpreter corpus
 
 Close DEV-036 by replacing filename-based missing-module suppression with an explicit
 test-harness/conformance input mode and permanent real-project collision regressions.
 
-Build a generated and hand-written corpus that stresses:
+Build generated and hand-written coverage for every expression and statement, primitive
+operation, struct/enum/generic/trait/method, ownership/drop edge, `Option`/`Result`, collection
+and iterator, and multi-file/package execution case with deterministic output/failure snapshots.
+Metamorphic transformations include alpha-renaming, harmless scopes, equivalent explicit and
+inferred generics, trait-qualified calls, field shorthand/explicit initialization, equivalent
+pattern decompositions, equivalent non-overlapping match-arm order, and package relocation
+without identity change. The same snapshot must later run against the HIR interpreter, MIR
+interpreter, and native debug/release builds.
 
-- every expression and statement form;
-- every primitive operation;
-- structs, enums, generics, traits, and methods;
-- ownership/drop edge cases;
-- `Option`/`Result` propagation;
-- collections and iterators;
-- multi-file and multi-package execution;
-- deterministic output and failure messages.
+### WP-C2.13 — Gate C2 exit and Core v1 semantic freeze
 
-Use metamorphic tests where a source transformation should preserve behaviour.
-Examples: alpha-renaming, harmless block nesting, equivalent match ordering where
-non-overlapping, and explicit versus inferred generic arguments.
+Create `starkc/docs/compiler/C2-exit-report.md` with one outcome:
 
-### WP-C2.7 — Gate exit
+```text
+CORE-V1-SEMANTIC-FOUNDATION-FROZEN
+CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS
+CORE-V1-SEMANTIC-FOUNDATION-NOT-YET-FROZEN
+```
 
-C2 closes when:
-
-- the interpreter is documented as the semantic oracle;
-- all known runtime semantic deviations are closed or explicitly listed;
-- shared project analysis exists;
-- position/symbol/type queries have compiler tests;
-- structured diagnostics can be emitted consistently;
-- later native and LSP work can consume these APIs without re-parsing semantics
-  independently.
+The report must establish whether a second implementation can follow the normative documents
+alone; every observable behaviour is specified, implementation-defined, target-defined,
+deliberately unspecified, or prohibited; MIR-relevant concepts are independent of MIR;
+high-cost future decisions are settled or protected; the interpreter passes the frozen corpus;
+package identity and executable entry behaviour are defined; and remaining deviations are
+non-soundness-critical, listed, and owned. It must also verify negative evidence for every
+soundness-relevant rule, generated/normative specification agreement, and accurate current-head
+and next-gate state. C3 opens only with a frozen outcome.
 
 ---
 

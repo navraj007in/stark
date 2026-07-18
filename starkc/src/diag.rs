@@ -14,8 +14,11 @@
 //! The renderer is deliberately small and dependency-free (PLAN.md T7):
 //! matching the spec's format exactly matters more than gradient underlines.
 
+use crate::analysis::{SourceId, SourceMap, SourceProvenance};
 use crate::source::{SourceFile, Span};
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Severity {
@@ -24,12 +27,33 @@ pub enum Severity {
 }
 
 impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+    }
+
     fn heading(self) -> &'static str {
         match self {
             Severity::Error => "Error",
             Severity::Warning => "Warning",
         }
     }
+
+    fn uncategorized_code(self) -> &'static str {
+        match self {
+            Severity::Error => "E0000",
+            Severity::Warning => "W0000",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RelatedDiagnostic {
+    pub message: String,
+    pub span: Span,
+    pub file: Arc<SourceFile>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +68,10 @@ pub struct Diagnostic {
     pub label: String,
     pub helps: Vec<String>,
     pub notes: Vec<String>,
-    pub file: Option<std::sync::Arc<SourceFile>>,
+    pub file: Option<Arc<SourceFile>>,
+    pub related: Vec<RelatedDiagnostic>,
+    pub rule_id: Option<String>,
+    pub deviation_id: Option<String>,
 }
 
 impl Diagnostic {
@@ -58,6 +85,9 @@ impl Diagnostic {
             helps: Vec::new(),
             notes: Vec::new(),
             file: None,
+            related: Vec::new(),
+            rule_id: None,
+            deviation_id: None,
         }
     }
 
@@ -71,10 +101,13 @@ impl Diagnostic {
             helps: Vec::new(),
             notes: Vec::new(),
             file: None,
+            related: Vec::new(),
+            rule_id: None,
+            deviation_id: None,
         }
     }
 
-    pub fn with_file(mut self, file: std::sync::Arc<SourceFile>) -> Self {
+    pub fn with_file(mut self, file: Arc<SourceFile>) -> Self {
         self.file = Some(file);
         self
     }
@@ -96,6 +129,30 @@ impl Diagnostic {
 
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
+        self
+    }
+
+    pub fn with_related(
+        mut self,
+        file: Arc<SourceFile>,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
+        self.related.push(RelatedDiagnostic {
+            message: message.into(),
+            span,
+            file,
+        });
+        self
+    }
+
+    pub fn with_rule_id(mut self, rule_id: impl Into<String>) -> Self {
+        self.rule_id = Some(rule_id.into());
+        self
+    }
+
+    pub fn with_deviation_id(mut self, deviation_id: impl Into<String>) -> Self {
+        self.deviation_id = Some(deviation_id.into());
         self
     }
 
@@ -157,6 +214,334 @@ impl Diagnostic {
         }
         out
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticLocation {
+    pub source: SourceId,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticRelatedInformation {
+    pub message: String,
+    pub location: DiagnosticLocation,
+}
+
+/// Compiler-owned diagnostic form consumed by CLI and language-service transports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructuredDiagnostic {
+    pub code: String,
+    pub severity: Severity,
+    pub message: String,
+    pub primary: DiagnosticLocation,
+    pub label: Option<String>,
+    pub related: Vec<DiagnosticRelatedInformation>,
+    pub notes: Vec<String>,
+    pub help: Vec<String>,
+    pub source_version: Option<i64>,
+    pub rule_id: Option<String>,
+    pub deviation_id: Option<String>,
+}
+
+/// A deterministic diagnostic snapshot for one analysis session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticBatch {
+    pub schema_version: u32,
+    pub sources: Vec<DiagnosticSource>,
+    pub extensions: Vec<String>,
+    pub diagnostics: Vec<StructuredDiagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiagnosticSource {
+    pub id: SourceId,
+    pub file: String,
+    pub kind: DiagnosticSourceKind,
+    pub package: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagnosticSourceKind {
+    Root,
+    Module,
+}
+
+impl DiagnosticSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Root => "root",
+            Self::Module => "module",
+        }
+    }
+}
+
+impl DiagnosticBatch {
+    pub(crate) fn from_compiler_diagnostics(
+        diagnostics: &[Diagnostic],
+        sources: &SourceMap,
+        default_source: SourceId,
+        source_versions: &HashMap<SourceId, i64>,
+        extensions: Vec<String>,
+    ) -> Self {
+        let diagnostics = diagnostics
+            .iter()
+            .map(|diagnostic| {
+                let primary_source = diagnostic
+                    .file
+                    .as_ref()
+                    .map(|file| {
+                        sources.id_for_name(&file.name).unwrap_or_else(|| {
+                            panic!(
+                                "diagnostic primary file `{}` is absent from the source map",
+                                file.name
+                            )
+                        })
+                    })
+                    .unwrap_or(default_source);
+                let related = diagnostic
+                    .related
+                    .iter()
+                    .map(|related| {
+                        let source = sources.id_for_name(&related.file.name).unwrap_or_else(|| {
+                            panic!(
+                                "diagnostic related file `{}` is absent from the source map",
+                                related.file.name
+                            )
+                        });
+                        DiagnosticRelatedInformation {
+                            message: related.message.clone(),
+                            location: DiagnosticLocation {
+                                source,
+                                span: related.span,
+                            },
+                        }
+                    })
+                    .collect();
+                StructuredDiagnostic {
+                    code: diagnostic
+                        .code
+                        .clone()
+                        .unwrap_or_else(|| diagnostic.severity.uncategorized_code().to_string()),
+                    severity: diagnostic.severity,
+                    message: diagnostic.message.clone(),
+                    primary: DiagnosticLocation {
+                        source: primary_source,
+                        span: diagnostic.span,
+                    },
+                    label: (!diagnostic.label.is_empty()).then(|| diagnostic.label.clone()),
+                    related,
+                    notes: diagnostic.notes.clone(),
+                    help: diagnostic.helps.clone(),
+                    source_version: source_versions.get(&primary_source).copied(),
+                    rule_id: diagnostic.rule_id.clone(),
+                    deviation_id: diagnostic.deviation_id.clone(),
+                }
+            })
+            .collect();
+        Self {
+            schema_version: 1,
+            sources: sources
+                .files()
+                .iter()
+                .map(|source| {
+                    let (kind, package) = match &source.provenance {
+                        SourceProvenance::Root { package } => {
+                            (DiagnosticSourceKind::Root, package.clone())
+                        }
+                        SourceProvenance::Module { package } => {
+                            (DiagnosticSourceKind::Module, package.clone())
+                        }
+                    };
+                    DiagnosticSource {
+                        id: source.id,
+                        file: source.file.name.clone(),
+                        kind,
+                        package,
+                    }
+                })
+                .collect(),
+            extensions,
+            diagnostics,
+        }
+    }
+
+    pub fn render(&self, sources: &SourceMap) -> String {
+        let mut output = String::new();
+        for diagnostic in &self.diagnostics {
+            output.push_str(&diagnostic.render(sources));
+        }
+        output
+    }
+
+    pub fn to_json(&self, sources: &SourceMap) -> String {
+        let source_records = self
+            .sources
+            .iter()
+            .map(|source| {
+                format!(
+                    "{{\"sourceId\":{},\"file\":\"{}\",\"kind\":\"{}\",\"package\":{}}}",
+                    source.id.as_u32(),
+                    escape_json(&source.file),
+                    source.kind.as_str(),
+                    option_json(source.package.as_deref())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let diagnostics = self
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.to_json(sources))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"schemaVersion\":{},",
+                "\"tool\":\"starkc\",",
+                "\"toolVersion\":\"{}\",",
+                "\"extensions\":{},",
+                "\"sources\":[{}],",
+                "\"diagnostics\":[{}]",
+                "}}"
+            ),
+            self.schema_version,
+            env!("CARGO_PKG_VERSION"),
+            string_array_json(&self.extensions),
+            source_records,
+            diagnostics
+        )
+    }
+}
+
+impl StructuredDiagnostic {
+    pub fn render(&self, sources: &SourceMap) -> String {
+        let primary = sources
+            .get(self.primary.source)
+            .expect("structured diagnostic source must exist");
+        let diagnostic = Diagnostic {
+            severity: self.severity,
+            code: (self.code != self.severity.uncategorized_code()).then(|| self.code.clone()),
+            message: self.message.clone(),
+            span: self.primary.span,
+            label: self.label.clone().unwrap_or_default(),
+            helps: self.help.clone(),
+            notes: self.notes.clone(),
+            file: Some(primary.file.clone()),
+            related: Vec::new(),
+            rule_id: self.rule_id.clone(),
+            deviation_id: self.deviation_id.clone(),
+        };
+        let mut rendered = diagnostic.render(&primary.file);
+        for related in &self.related {
+            let record = sources
+                .get(related.location.source)
+                .expect("related diagnostic source must exist");
+            let (line, column) = record.file.line_col(related.location.span.lo);
+            let _ = writeln!(
+                rendered,
+                "   = related: {}:{line}:{column}: {}",
+                record.file.name, related.message
+            );
+        }
+        rendered
+    }
+
+    fn to_json(&self, sources: &SourceMap) -> String {
+        let primary = sources
+            .get(self.primary.source)
+            .expect("structured diagnostic source must exist");
+        let related = self
+            .related
+            .iter()
+            .map(|related| {
+                let source = sources
+                    .get(related.location.source)
+                    .expect("related diagnostic source must exist");
+                format!(
+                    "{{\"message\":\"{}\",\"sourceId\":{},\"file\":\"{}\",\"span\":{}}}",
+                    escape_json(&related.message),
+                    related.location.source.as_u32(),
+                    escape_json(&source.file.name),
+                    span_json(related.location.span)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            concat!(
+                "{{",
+                "\"code\":\"{}\",",
+                "\"severity\":\"{}\",",
+                "\"message\":\"{}\",",
+                "\"primary\":{{\"sourceId\":{},\"file\":\"{}\",\"span\":{},\"label\":{}}},",
+                "\"related\":[{}],",
+                "\"notes\":{},",
+                "\"help\":{},",
+                "\"sourceVersion\":{},",
+                "\"ruleId\":{},",
+                "\"deviationId\":{}",
+                "}}"
+            ),
+            escape_json(&self.code),
+            self.severity.as_str(),
+            escape_json(&self.message),
+            self.primary.source.as_u32(),
+            escape_json(&primary.file.name),
+            span_json(self.primary.span),
+            option_json(self.label.as_deref()),
+            related,
+            string_array_json(&self.notes),
+            string_array_json(&self.help),
+            self.source_version
+                .map_or_else(|| "null".to_string(), |version| version.to_string()),
+            option_json(self.rule_id.as_deref()),
+            option_json(self.deviation_id.as_deref())
+        )
+    }
+}
+
+fn span_json(span: Span) -> String {
+    format!("{{\"startByte\":{},\"endByte\":{}}}", span.lo, span.hi)
+}
+
+fn option_json(value: Option<&str>) -> String {
+    value.map_or_else(
+        || "null".to_string(),
+        |value| format!("\"{}\"", escape_json(value)),
+    )
+}
+
+fn string_array_json(values: &[String]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|value| format!("\"{}\"", escape_json(value)))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+pub(crate) fn escape_json(value: &str) -> String {
+    let mut escaped = String::new();
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0c}' => escaped.push_str("\\f"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character <= '\u{1f}' => {
+                let _ = write!(escaped, "\\u{:04x}", character as u32);
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 #[cfg(test)]

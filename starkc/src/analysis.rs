@@ -5,7 +5,7 @@
 //! validation, and tooling should use [`analyze_project`].
 
 use crate::ast::Ast;
-use crate::diag::{Diagnostic, Severity};
+use crate::diag::{Diagnostic, DiagnosticBatch, Severity};
 use crate::hir::{Hir, ItemKind, Res};
 use crate::options::{ExtensionSet, LanguageOptions};
 use crate::package::PackageGraph;
@@ -50,8 +50,14 @@ impl ProjectInput {
 }
 
 /// Stable source identity within one analysis result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SourceId(u32);
+
+impl SourceId {
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
 
 /// How a source file entered an analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,6 +284,24 @@ impl ProjectAnalysis {
             .filter(|symbol| symbol.name.to_ascii_lowercase().contains(&query))
             .collect()
     }
+
+    pub fn diagnostic_batch(&self, source_versions: &HashMap<SourceId, i64>) -> DiagnosticBatch {
+        let root = self
+            .source_map
+            .id_for_name(&self.root_file.name)
+            .expect("analysis root source must exist in its source map");
+        DiagnosticBatch::from_compiler_diagnostics(
+            &self.diagnostics,
+            &self.source_map,
+            root,
+            source_versions,
+            if self.options.tensor() {
+                vec!["tensor".to_string()]
+            } else {
+                Vec::new()
+            },
+        )
+    }
 }
 
 /// Run the canonical parse → resolve → typecheck pipeline.
@@ -376,6 +400,9 @@ fn build_source_map(
     }
     let mut seen = HashSet::new();
     files.retain(|file| seen.insert(file.name.clone()));
+    let mut non_root = files.split_off(1);
+    non_root.sort_by(|left, right| left.name.cmp(&right.name));
+    files.extend(non_root);
 
     let root_package = graph.map(|graph| graph.root_package_name.clone());
     let mut map = SourceMap::default();
@@ -518,6 +545,29 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_json_matches_the_schema_v1_golden() {
+        let file = Arc::new(SourceFile::new("golden.stark", "fn main() { missing; }\n"));
+        let analysis = analyze_project(ProjectInput::program(file), LanguageOptions::with_tensor());
+        let source = analysis.source_map.id_for_name("golden.stark").unwrap();
+        let batch = analysis.diagnostic_batch(&HashMap::from([(source, 9)]));
+        assert_eq!(
+            batch.to_json(&analysis.source_map),
+            concat!(
+                "{\"schemaVersion\":1,\"tool\":\"starkc\",\"toolVersion\":\"0.1.0\",",
+                "\"extensions\":[\"tensor\"],",
+                "\"sources\":[{\"sourceId\":0,\"file\":\"golden.stark\",",
+                "\"kind\":\"root\",\"package\":null}],",
+                "\"diagnostics\":[{\"code\":\"E0200\",\"severity\":\"error\",",
+                "\"message\":\"undefined variable 'missing'\",",
+                "\"primary\":{\"sourceId\":0,\"file\":\"golden.stark\",",
+                "\"span\":{\"startByte\":12,\"endByte\":19},\"label\":null},",
+                "\"related\":[],\"notes\":[],\"help\":[],\"sourceVersion\":9,",
+                "\"ruleId\":null,\"deviationId\":null}]}"
+            )
+        );
+    }
+
+    #[test]
     fn position_symbol_type_and_enclosing_queries_share_stable_handles() {
         let source = "pub struct User { id: Int32 }\n\
                       fn helper(x: Int32) -> Int32 { x }\n\
@@ -590,7 +640,7 @@ mod tests {
             root_path.to_string_lossy().into_owned(),
             root_source,
         ));
-        let analysis = analyze_project(ProjectInput::program(file), LanguageOptions::CORE);
+        let mut analysis = analyze_project(ProjectInput::program(file), LanguageOptions::CORE);
         assert!(!analysis.has_errors(), "{:?}", analysis.diagnostics);
         let root_id = analysis
             .source_map
@@ -630,6 +680,43 @@ mod tests {
         );
         assert!(analysis.enclosing(symbol).unwrap().module.is_some());
         assert_eq!(analysis.document_symbols(child_id).len(), 1);
+
+        let root_file = analysis.source_map.get(root_id).unwrap().file.clone();
+        let child_file = analysis.source_map.get(child_id).unwrap().file.clone();
+        analysis.diagnostics.push(
+            Diagnostic::error("cross-file contract violation", Span::new(0, 3))
+                .with_file(root_file)
+                .with_code("E0999")
+                .with_label("primary")
+                .with_related(child_file, Span::new(7, 13), "declared here")
+                .with_note("transport note")
+                .with_help("transport help")
+                .with_rule_id("TEST-RULE-001")
+                .with_deviation_id("DEV-TEST"),
+        );
+        let versions = HashMap::from([(root_id, 17)]);
+        let batch = analysis.diagnostic_batch(&versions);
+        let transported = batch.diagnostics.last().unwrap();
+        assert_eq!(transported.primary.source, root_id);
+        assert_eq!(transported.related[0].location.source, child_id);
+        assert_eq!(transported.source_version, Some(17));
+        assert_eq!(transported.rule_id.as_deref(), Some("TEST-RULE-001"));
+        assert_eq!(transported.deviation_id.as_deref(), Some("DEV-TEST"));
+        assert_eq!(
+            batch
+                .sources
+                .iter()
+                .find(|source| source.id == child_id)
+                .unwrap()
+                .kind,
+            crate::diag::DiagnosticSourceKind::Module
+        );
+        let first_json = batch.to_json(&analysis.source_map);
+        let second_json = batch.to_json(&analysis.source_map);
+        assert_eq!(first_json, second_json);
+        assert!(first_json.contains("\"sourceVersion\":17"));
+        assert!(first_json.contains(&format!("\"sourceId\":{}", child_id.as_u32())));
+        assert!(batch.render(&analysis.source_map).contains("related: "));
 
         std::fs::remove_dir_all(directory).unwrap();
     }

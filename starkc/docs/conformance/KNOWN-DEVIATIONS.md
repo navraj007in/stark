@@ -437,11 +437,12 @@ in WP-C1.6)
   for "method call on non-struct/enum type." Not done here: reassignment is a public contract
   change touching multiple test files' exact assertions, deserving its own bounded,
   evidence-backed change.
-- **Owning gate:** unscheduled. (WP-C1.6's conformance evidence generator, closed 2026-07-18,
+- **Owning gate:** WP-C2.11. (WP-C1.6's conformance evidence generator, closed 2026-07-18,
   reports per-rule test evidence but does not cross-reference diagnostic codes against the spec's
   E-code catalog — that would be a distinct, not-yet-built check; this deviation's earlier "WP-C1.6
   to catch systematically" note assumed more overlap with that WP's actual scope than it turned
-  out to have.) The reallocation itself remains a separate, unowned spec-bug-protocol change.
+  out to have.) WP-C2.5 stabilizes the transport without freezing this pre-alpha catalogue;
+  WP-C2.11 owns the evidence-complete reallocation.
 
 ## DEV-020 — `pub use` of a private item leaks it (confirmed design, not a defect)
 
@@ -929,7 +930,7 @@ WP-C1.5)
   manifest.toml`'s own triage data (machine-readable, structured) — route the exemption through
   that data (e.g. a test-harness-only flag passed explicitly for that one fixture) rather than a
   runtime string-match against arbitrary file paths that can collide with real user projects.
-- **Owning gate:** WP-C2.6. Found during the WP-C2.1 correction pass (external review); not a
+- **Owning gate:** WP-C2.12. Found during the WP-C2.1 correction pass (external review); not a
   new bug (present since WP-C1.1's DEV-014 fix), but its residual risk to real user projects was
   not previously flagged or recorded as its own deviation. Scheduled by the WP-C2.2 correction
   pass alongside the differential corpus's multi-file hardening coverage.
@@ -1076,7 +1077,7 @@ Current count: 41 numbered deviations total (DEV-002 through DEV-043, DEV-001/DE
 DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was found and repaired
 during that work. DEV-038 through DEV-043 were found by the post-WP-C2.2 review and closed in
 the correction pass. DEV-017 remains partially closed (tooling built, 39 of 59 rules remain
-unclassified). DEV-036 remains open, now explicitly owned by WP-C2.6 as a parser-loader
+unclassified). DEV-036 remains open, now explicitly owned by WP-C2.12 as a parser-loader
 hardening regression in the differential corpus. The optional candidates DEV-009, DEV-023, and
 DEV-024 also remain open; WP-C2.2's charter explicitly admitted those only "as capacity allows,"
 and none was needed to close the inherited interpreter-execution findings.

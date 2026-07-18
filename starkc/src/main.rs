@@ -4,6 +4,7 @@ use starkc::lsp;
 use starkc::options::{options_from_extension_flags, LanguageOptions};
 use starkc::parser::{parse_with_options, ParseMode};
 use starkc::source::SourceFile;
+use std::collections::HashMap;
 use std::process::ExitCode;
 
 const USAGE: &str = "\
@@ -560,13 +561,12 @@ fn cmd_check(
         options,
     );
     let diags = &analysis.diagnostics;
+    let batch = analysis.diagnostic_batch(&HashMap::new());
 
     if message_format == "json" {
-        print_json_diagnostics(&file_arc.name, diags);
+        println!("{}", batch.to_json(&analysis.source_map));
     } else {
-        for diag in diags {
-            eprint!("{}", diag.render(&file_arc));
-        }
+        eprint!("{}", batch.render(&analysis.source_map));
     }
 
     let error_count = diags
@@ -584,79 +584,6 @@ fn cmd_check(
         }
         ExitCode::SUCCESS
     }
-}
-
-fn print_json_diagnostics(file_name: &str, diagnostics: &[starkc::diag::Diagnostic]) {
-    let mut diags_json = Vec::new();
-    for diag in diagnostics {
-        let severity_str = match diag.severity {
-            starkc::diag::Severity::Error => "error",
-            starkc::diag::Severity::Warning => "warning",
-        };
-        let code_str = match &diag.code {
-            Some(c) => format!("\"code\":\"{}\"", starkc::onnx::escape_json(c)),
-            None => "\"code\":null".to_string(),
-        };
-
-        let label_json = if !diag.label.is_empty() {
-            format!(
-                "[{{\"message\":\"{}\",\"file\":\"{}\",\"range\":{{\"startByte\":{},\"endByte\":{}}}}}]",
-                starkc::onnx::escape_json(&diag.label),
-                starkc::onnx::escape_json(file_name),
-                diag.span.lo,
-                diag.span.hi
-            )
-        } else {
-            "[]".to_string()
-        };
-
-        let notes_json = diag
-            .notes
-            .iter()
-            .map(|n| format!("\"{}\"", starkc::onnx::escape_json(n)))
-            .collect::<Vec<_>>()
-            .join(",");
-
-        let help_str = if diag.helps.is_empty() {
-            "\"help\":null".to_string()
-        } else {
-            format!(
-                "\"help\":\"{}\"",
-                starkc::onnx::escape_json(&diag.helps.join("\n"))
-            )
-        };
-
-        diags_json.push(format!(
-            "{{\
-              \"severity\":\"{severity_str}\",\
-              {code_str},\
-              \"message\":\"{message}\",\
-              \"file\":\"{file}\",\
-              \"range\":{{\"startByte\":{start},\"endByte\":{end}}},\
-              \"labels\":{labels},\
-              \"notes\":[{notes}],\
-              {help}\
-            }}",
-            message = starkc::onnx::escape_json(&diag.message),
-            file = starkc::onnx::escape_json(file_name),
-            start = diag.span.lo,
-            end = diag.span.hi,
-            labels = label_json,
-            notes = notes_json,
-            help = help_str
-        ));
-    }
-
-    println!(
-        "{{\
-          \"schemaVersion\":1,\
-          \"tool\":\"starkc\",\
-          \"toolVersion\":\"{}\",\
-          \"diagnostics\":[{}]\
-        }}",
-        env!("CARGO_PKG_VERSION"),
-        diags_json.join(",")
-    );
 }
 
 fn find_first_model_name(source: &str) -> Option<String> {

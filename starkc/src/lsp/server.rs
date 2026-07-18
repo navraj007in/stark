@@ -1,8 +1,9 @@
 //! LSP server implementation with message routing and document synchronization.
 
 use crate::analysis::{analyze_project, ProjectInput};
-use crate::source::SourceFile;
-use std::collections::HashMap;
+use crate::diag::{DiagnosticBatch, StructuredDiagnostic};
+use crate::source::{SourceFile, Span};
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 
@@ -110,24 +111,28 @@ impl Server {
     fn handle_notification<W: Write>(
         &mut self,
         notif: &Notification,
-        _writer: &mut W,
+        writer: &mut W,
     ) -> std::io::Result<bool> {
         match notif.method.as_str() {
             "initialized" => Ok(true),
             "textDocument/didOpen" => {
                 self.handle_did_open(&notif.params);
+                self.publish_cached_diagnostics(&notif.params, writer)?;
                 Ok(true)
             }
             "textDocument/didChange" => {
                 self.handle_did_change(&notif.params);
+                self.publish_cached_diagnostics(&notif.params, writer)?;
                 Ok(true)
             }
             "textDocument/didClose" => {
+                self.clear_published_diagnostics(&notif.params, writer)?;
                 self.handle_did_close(&notif.params);
                 Ok(true)
             }
             "textDocument/didSave" => {
                 self.handle_did_save(&notif.params);
+                self.publish_cached_diagnostics(&notif.params, writer)?;
                 Ok(true)
             }
             "exit" => Ok(false),
@@ -269,6 +274,108 @@ impl Server {
 
             self.state.cache_compilation_result(result);
         }
+    }
+
+    fn publish_cached_diagnostics<W: Write>(
+        &self,
+        params: &JsonValue,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        let uri = params
+            .get("textDocument")
+            .and_then(|document| document.get("uri"))
+            .and_then(JsonValue::as_str);
+        let Some(uri) = uri else {
+            return Ok(());
+        };
+        let Some(compilation) = self.state.compilation_cache.get(uri) else {
+            return Ok(());
+        };
+        let root_source = compilation
+            .analysis
+            .source_map
+            .id_for_name(uri)
+            .expect("compiled LSP document must be in its source map");
+        let versions = HashMap::from([(root_source, i64::from(compilation.version))]);
+        let batch = compilation.analysis.diagnostic_batch(&versions);
+        self.publish_batch(
+            uri,
+            compilation.version,
+            &compilation.analysis,
+            &batch,
+            writer,
+        )
+    }
+
+    fn publish_batch<W: Write>(
+        &self,
+        root_uri: &str,
+        root_version: i32,
+        analysis: &crate::analysis::ProjectAnalysis,
+        batch: &DiagnosticBatch,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        let root_source = analysis
+            .source_map
+            .id_for_name(root_uri)
+            .expect("compiled LSP document must be in its source map");
+        let mut grouped: BTreeMap<crate::analysis::SourceId, Vec<&StructuredDiagnostic>> =
+            BTreeMap::new();
+        grouped.entry(root_source).or_default();
+        for diagnostic in &batch.diagnostics {
+            grouped
+                .entry(diagnostic.primary.source)
+                .or_default()
+                .push(diagnostic);
+        }
+
+        for (source, diagnostics) in grouped {
+            let record = analysis
+                .source_map
+                .get(source)
+                .expect("published diagnostic source must exist");
+            let uri = source_uri(&record.file.name);
+            let version = (source == root_source).then_some(root_version);
+            let values = diagnostics
+                .into_iter()
+                .map(|diagnostic| lsp_diagnostic(analysis, diagnostic))
+                .collect();
+            let mut params = HashMap::new();
+            params.insert("uri".to_string(), JsonValue::String(uri));
+            params.insert(
+                "version".to_string(),
+                version.map_or(JsonValue::Null, |value| JsonValue::Number(f64::from(value))),
+            );
+            params.insert("diagnostics".to_string(), JsonValue::Array(values));
+            self.send_notification(
+                "textDocument/publishDiagnostics",
+                JsonValue::Object(params),
+                writer,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn clear_published_diagnostics<W: Write>(
+        &self,
+        params: &JsonValue,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        let Some(uri) = params
+            .get("textDocument")
+            .and_then(|document| document.get("uri"))
+            .and_then(JsonValue::as_str)
+        else {
+            return Ok(());
+        };
+        let mut publish = HashMap::new();
+        publish.insert("uri".to_string(), JsonValue::String(uri.to_string()));
+        publish.insert("diagnostics".to_string(), JsonValue::Array(Vec::new()));
+        self.send_notification(
+            "textDocument/publishDiagnostics",
+            JsonValue::Object(publish),
+            writer,
+        )
     }
 
     /// Handle textDocument/hover request
@@ -440,6 +547,23 @@ impl Server {
         Ok(())
     }
 
+    fn send_notification<W: Write>(
+        &self,
+        method: &str,
+        params: JsonValue,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        let mut object = HashMap::new();
+        object.insert("jsonrpc".to_string(), JsonValue::String("2.0".to_string()));
+        object.insert("method".to_string(), JsonValue::String(method.to_string()));
+        object.insert("params".to_string(), params);
+        let content = JsonValue::Object(object).to_string();
+        let header = format!("Content-Length: {}\r\n\r\n", content.len());
+        writer.write_all(header.as_bytes())?;
+        writer.write_all(content.as_bytes())?;
+        writer.flush()
+    }
+
     /// Create an error response
     fn error_response(&self, id: i64, code: i32, message: &str) -> Response {
         Response {
@@ -466,6 +590,162 @@ fn lsp_position(line: i64, character: i64) -> JsonValue {
     JsonValue::Object(pos)
 }
 
+fn lsp_diagnostic(
+    analysis: &crate::analysis::ProjectAnalysis,
+    diagnostic: &StructuredDiagnostic,
+) -> JsonValue {
+    let primary = analysis
+        .source_map
+        .get(diagnostic.primary.source)
+        .expect("LSP diagnostic source must exist");
+    let mut value = HashMap::new();
+    value.insert(
+        "range".to_string(),
+        lsp_range(&primary.file, diagnostic.primary.span),
+    );
+    value.insert(
+        "severity".to_string(),
+        JsonValue::Number(match diagnostic.severity {
+            crate::diag::Severity::Error => 1.0,
+            crate::diag::Severity::Warning => 2.0,
+        }),
+    );
+    value.insert(
+        "code".to_string(),
+        JsonValue::String(diagnostic.code.clone()),
+    );
+    value.insert(
+        "source".to_string(),
+        JsonValue::String("starkc".to_string()),
+    );
+    value.insert(
+        "message".to_string(),
+        JsonValue::String(match &diagnostic.label {
+            Some(label) => format!("{}\n{label}", diagnostic.message),
+            None => diagnostic.message.clone(),
+        }),
+    );
+    if !diagnostic.related.is_empty() {
+        let related = diagnostic
+            .related
+            .iter()
+            .map(|related| {
+                let source = analysis
+                    .source_map
+                    .get(related.location.source)
+                    .expect("LSP related diagnostic source must exist");
+                let mut location = HashMap::new();
+                location.insert(
+                    "uri".to_string(),
+                    JsonValue::String(source_uri(&source.file.name)),
+                );
+                location.insert(
+                    "range".to_string(),
+                    lsp_range(&source.file, related.location.span),
+                );
+                let mut information = HashMap::new();
+                information.insert("location".to_string(), JsonValue::Object(location));
+                information.insert(
+                    "message".to_string(),
+                    JsonValue::String(related.message.clone()),
+                );
+                JsonValue::Object(information)
+            })
+            .collect();
+        value.insert("relatedInformation".to_string(), JsonValue::Array(related));
+    }
+    let mut data = HashMap::new();
+    data.insert(
+        "sourceVersion".to_string(),
+        diagnostic
+            .source_version
+            .map_or(JsonValue::Null, |version| JsonValue::Number(version as f64)),
+    );
+    data.insert(
+        "sourceId".to_string(),
+        JsonValue::Number(diagnostic.primary.source.as_u32() as f64),
+    );
+    let (source_kind, package) = match &primary.provenance {
+        crate::analysis::SourceProvenance::Root { package } => ("root", package),
+        crate::analysis::SourceProvenance::Module { package } => ("module", package),
+    };
+    data.insert(
+        "sourceKind".to_string(),
+        JsonValue::String(source_kind.to_string()),
+    );
+    data.insert(
+        "package".to_string(),
+        package.clone().map_or(JsonValue::Null, JsonValue::String),
+    );
+    data.insert(
+        "extensions".to_string(),
+        JsonValue::Array(if analysis.options.tensor() {
+            vec![JsonValue::String("tensor".to_string())]
+        } else {
+            Vec::new()
+        }),
+    );
+    data.insert(
+        "ruleId".to_string(),
+        diagnostic
+            .rule_id
+            .clone()
+            .map_or(JsonValue::Null, JsonValue::String),
+    );
+    data.insert(
+        "deviationId".to_string(),
+        diagnostic
+            .deviation_id
+            .clone()
+            .map_or(JsonValue::Null, JsonValue::String),
+    );
+    data.insert(
+        "help".to_string(),
+        JsonValue::Array(
+            diagnostic
+                .help
+                .iter()
+                .map(|help| JsonValue::String(help.clone()))
+                .collect(),
+        ),
+    );
+    data.insert(
+        "notes".to_string(),
+        JsonValue::Array(
+            diagnostic
+                .notes
+                .iter()
+                .map(|note| JsonValue::String(note.clone()))
+                .collect(),
+        ),
+    );
+    value.insert("data".to_string(), JsonValue::Object(data));
+    JsonValue::Object(value)
+}
+
+fn lsp_range(file: &SourceFile, span: Span) -> JsonValue {
+    let (start_line, start_column) = file.line_col(span.lo);
+    let (end_line, end_column) = file.line_col(span.hi);
+    let mut range = HashMap::new();
+    range.insert(
+        "start".to_string(),
+        lsp_position((start_line - 1) as i64, (start_column - 1) as i64),
+    );
+    range.insert(
+        "end".to_string(),
+        lsp_position((end_line - 1) as i64, (end_column - 1) as i64),
+    );
+    JsonValue::Object(range)
+}
+
+fn source_uri(name: &str) -> String {
+    if name.contains("://") {
+        name.to_string()
+    } else {
+        format!("file://{name}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,5 +754,31 @@ mod tests {
     fn test_server_creation() {
         let server = Server::new();
         assert_eq!(server.state.open_documents.len(), 0);
+    }
+
+    #[test]
+    fn publishes_shared_diagnostics_with_document_version() {
+        let uri = "file:///diagnostic.stark";
+        let mut server = Server::new();
+        server
+            .state
+            .open_document(uri.to_string(), 23, "fn main() { missing; }".to_string());
+        server.compile_document(uri);
+
+        let mut document = HashMap::new();
+        document.insert("uri".to_string(), JsonValue::String(uri.to_string()));
+        let mut params = HashMap::new();
+        params.insert("textDocument".to_string(), JsonValue::Object(document));
+        let mut output = Vec::new();
+        server
+            .publish_cached_diagnostics(&JsonValue::Object(params), &mut output)
+            .unwrap();
+
+        let message = String::from_utf8(output).unwrap();
+        assert!(message.contains("textDocument/publishDiagnostics"));
+        assert!(message.contains("\"version\":23"));
+        assert!(message.contains("\"sourceVersion\":23"));
+        assert!(message.contains("\"code\":\"E0200\""), "{message}");
+        assert!(message.contains("\"diagnostics\":[{"), "{message}");
     }
 }

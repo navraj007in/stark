@@ -1,14 +1,14 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.4 (position and symbol query infrastructure)
+Updated: 2026-07-18 after WP-C2.5 (structured diagnostics transport)
 
 ## Position
-Gate: C2  Next: WP-C2.5  Blocked: none
+Gate: C2  Next: WP-C2.6  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head before this uncommitted WP: `a3f8b5e` (`correct WP-C2.2 runtime semantics`). Commit only
+- Head before this uncommitted WP: `27fb365` (`complete WP-C2.4 position queries`). Commit only
   on explicit user request, per standing workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -17,8 +17,8 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **469 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
-  `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 29 integration-test files**
+  **473 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 30 integration-test files**
   (`ls starkc/tests/*.rs | wc -l`, re-counted directly during WP-C1.6's consistency sweep — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
   never actually verified against `ls`/`cargo test`'s own "Running ..." lines and had drifted;
@@ -992,7 +992,7 @@ involving nested modules and private items should assume this stricter model.
       no max-value-per-suffix-type positive test exists for any of the 8 int / 2 float suffixes.
 - [x] WP-C1.2: name resolution, modules, and visibility — closed 2026-07-17. See session record
       below.
-- [ ] Unscheduled (or a dedicated spec-bug-protocol change; not actually done by WP-C1.6, which
+- [ ] WP-C2.11 (dedicated spec-bug-protocol change; not done by WP-C1.6, which
       closed without touching E-code allocation): DEV-019 — reallocate distinct E02xx
       codes for unresolved-import, no-parent-for-super, private-item-access, module-file-not-
       found, and conflicting-module-files (currently colliding with unrelated correct uses of
@@ -1982,3 +1982,47 @@ FOLLOW-UP: WP-C2.5 should transport diagnostics in one structured, source-versio
 Resolved member identities can be indexed when the HIR begins carrying them; C2.4 does not
 invent identities that semantic analysis does not provide.
 NEXT: WP-C2.5 (diagnostics transport contract)
+
+### WP-C2.5 — 2026-07-18
+DONE: Added one compiler-owned `DiagnosticBatch`/`StructuredDiagnostic` transport produced by
+`ProjectAnalysis`. Every transported diagnostic has a stable code (specific catalogue code or
+reserved `E0000`/`W0000` fallback), severity, message, primary session `SourceId`/span/label,
+ordered cross-file related locations, notes, help, optional source version, and optional Core
+rule/deviation IDs. The batch retains deterministic source records with root/module and package
+provenance plus enabled-extension identity. Non-root sources are sorted by name before session
+IDs are assigned.
+Both `starkc check` text/JSON and package `stark check`/`build`/`run` text diagnostics now render
+the batch. The LSP publishes the same records on open/change/save, includes document version and
+source provenance in diagnostic data, maps related locations to `relatedInformation`, and clears
+diagnostics on close. Its minimal JSON object encoder now sorts keys. Text rendering preserves
+the prior no-code presentation for uncatalogued diagnostics even though transport/JSON carries
+the total fallback code.
+Amended Gate C2 to insert the approved semantic-completeness sequence: C2.6 inventory/authority,
+C2.7 abstract machine, C2.8 type/trait/pattern/constants, C2.9 numeric/layout/text/process/package,
+C2.10 future boundaries, C2.11 alignment/adversarial conformance, C2.12 differential corpus, and
+C2.13 semantic-freeze exit. DEV-019 code collisions are explicitly owned by C2.11 without
+freezing their current pre-alpha assignments; DEV-036 moved with the corpus to C2.12.
+FILES: starkc/src/diag.rs, starkc/src/analysis.rs, starkc/src/main.rs,
+starkc/src/bin/stark.rs, starkc/src/lsp/protocol.rs, starkc/src/lsp/server.rs,
+starkc/tests/diagnostic_transport.rs, starkc/docs/compiler/diagnostic-transport.md,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.5.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.2.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md, COMPILER-STATE.md.
+RULES: none — the transport and roadmap architecture do not alter Core semantic rules or
+conformance citations.
+DECISIONS: none. Transport stabilization explicitly does not freeze diagnostic-code allocation.
+The roadmap amendment follows the owner-provided semantic-freeze execution plan and does not
+start C2.6 decisions or any C3/MIR/backend work.
+EVIDENCE: REG + FULL — exact schema-v1 JSON golden; end-to-end deterministic CLI JSON; sorted
+LSP JSON objects; real `publishDiagnostics` with source version; and cross-file primary/related
+source, rendering, rule, deviation, source-kind, and extension-provenance transport.
+`cargo test --workspace --all-targets --all-features`: 473 passed/0 failed/2 ignored (up from
+469/0/2; three new unit tests and one new integration test).
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D
+warnings`, `git diff --check`, and `python3 scripts/check-conformance.py` are clean;
+`python3 scripts/generate-conformance-report.py --format=json` exits 0. Conformance remains
+53/59 implemented or partially evidenced rules.
+FOLLOW-UP: C2.6 must produce `CORE-V1-COMPLETENESS.md`, the normative authority map, granular
+rule-ID plan, and `CORE-V1-OPEN-QUESTIONS.md` before semantic decisions are implemented.
+NEXT: WP-C2.6 (Core completeness inventory and specification authority)
