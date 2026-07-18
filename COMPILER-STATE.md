@@ -1,16 +1,16 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.8
+Updated: 2026-07-18 after WP-C2.9
 
 ## Position
-Gate: C2  Next: WP-C2.9  Blocked: none
+Gate: C2  Next: WP-C2.10  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: WP-C2.8 type, trait, pattern, and constant semantics.
-- Transition base commit: `dc743b0` (`correct WP-C2.7 abstract machine semantics`).
-- Current committed head at the start of WP-C2.8: `dc743b0`. This event-style provenance avoids trying to
+- Last completed transition: WP-C2.9 numeric, layout, text, process, and package contracts.
+- Transition base commit: `2ecc5c0` (`complete WP-C2.8 static semantics`).
+- Current committed head at the start of WP-C2.9: `2ecc5c0`. This event-style provenance avoids trying to
   embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -299,6 +299,15 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   approved because C2.9 still supplies canonical package/version identity. Numeric results,
   float trait participation, layout-query results, and resource-limit classification likewise
   remain C2.9 inputs. Compiler/interpreter alignment and granular evidence remain C2.11 work.
+- CD-015 [2026-07-18, WP-C2.9] Approved the numeric, target, text, process, package, and
+  standard-library contract freeze. Integers are fixed-width and checked; primitive floats use
+  reproducible IEEE operations but do not implement `Eq`/`Ord`/`Hash`; text is valid UTF-8 with
+  byte offsets and Unicode 15.1 casing. Package identity is relocation-stable and lock-backed,
+  with one selected version per source/name/major line. Only `size_of`/`align_of` expose
+  target layout and Core promises no ABI. Four no-argument `main` signatures have deterministic
+  status/stream mappings. `core-min` is mandatory and `std-full` is optional but indivisible.
+  Resource, compiler-limit, API-error, language-trap, and host/process failures are distinct.
+  CORE-Q-005, Q008–Q014, Q017–Q019, Q021, Q023, and Q024 are approved; alignment remains C2.11.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -2278,3 +2287,41 @@ positive/negative evidence.
 FOLLOW-UP: WP-C2.9 must settle numeric, layout, text, process, package-identity, resource, and
 standard-library profile contracts without reopening C2.8's algorithms.
 NEXT: WP-C2.9 (Numeric, layout, text, process and package contracts)
+
+### WP-C2.9 — 2026-07-18
+DONE: Completed the Core v1 numeric/target/ecosystem contract freeze. Defined strict source
+UTF-8, identifier and escape boundaries, parser-recovery observability, static bounds,
+fixed-width checked integer operations, IEEE float operations/traits/reproducibility, numeric
+casts, UTF-8 string units/boundaries/iteration/casing, deterministic module and import behavior,
+public API reachability, manifests, dependency sources and SemVer selection, relocation-stable
+package/public-item identity, major-line coexistence, lockfiles, executable entry/status/stream
+mapping, layout-query/ABI boundaries, resource/limit classification, and required formatting,
+hash, I/O, conversion, math, random, and standard-library profile contracts.
+FILES: STARKLANG/docs/spec/01-Lexical-Grammar.md,
+STARKLANG/docs/spec/02-Syntax-Grammar.md, STARKLANG/docs/spec/03-Type-System.md,
+STARKLANG/docs/spec/04-Semantic-Analysis.md,
+STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md,
+STARKLANG/docs/spec/06-Standard-Library.md,
+STARKLANG/docs/spec/07-Modules-and-Packages.md and regenerated combined Markdown/HTML/PDF;
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.9.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, starkc/scripts/check-conformance.py,
+COMPILER-STATE.md.
+RULES: forty-six C2.9-owned `LEX-*`, `SYN-RECOVERY-001`, `TYPE-CAST-001`,
+`FLOW-BOUNDS-001`, `NUM-*`, `TEXT-*`, `MOD-*`, `PKG-*`, `PROC-*`, assigned `STD-*`,
+`LAYOUT-*`, `TRAP-CATEGORY-001`, and `LIMIT-*` rules, mechanically enumerated by the validator.
+DECISIONS: CORE-Q-005, Q008–Q014, Q017–Q019, Q021, Q023, and Q024 approved. No C2.10
+future-boundary decision or C2.11 implementation/evidence claim is included.
+EVIDENCE: DOC + fixture conformance + full regression. The synchronized corpus remains 112
+fixtures (64 parse-pass, 16 semantic-error, 27 notation, 4 lex-pass, 1 parse-fail), with no
+fixture renumbering. Combined Markdown/HTML/PDF regeneration succeeds (PDF: 86 A4 pages).
+`cargo test --workspace --all-targets --all-features` passes 489 tests with 0 failures and 2
+intentional opt-in tests ignored. Rust formatting, Clippy with warnings denied, conformance
+validation/report generation, Python compilation, governance-document parsing, fixture
+synchronization, and whitespace checks pass. No Rust compiler/interpreter behavior changed;
+C2.11 retains alignment, diagnostic allocation, deviation closure, and granular evidence.
+FOLLOW-UP: WP-C2.10 must freeze future closure/lifetime, threading, unsafe/FFI/native-provider,
+and reserved-syntax compatibility boundaries without implementing them.
+NEXT: WP-C2.10 (Future-extension compatibility boundaries)

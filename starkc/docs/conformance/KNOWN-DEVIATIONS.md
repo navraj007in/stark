@@ -173,8 +173,8 @@ impact, workaround, proposed disposition, owning future gate.
   non-`Copy`, non-`Clone` runtime resource type (`File` would be the first of its kind — `Vec`/
   `String`/`HashMap`/`HashSet` are all currently `Clone`-able Rust types wrapped as `Value`
   variants). This is a real interpreter-value-model design question, not a small patch.
-- **Owning gate:** WP-C2.9 decides the Core I/O/profile/process contract; WP-C2.11 implements
-  and evidences the approved contract. C2.6 inventory row `STD-IO-001`.
+- **Owning gate:** WP-C2.11 implements and evidences C2.9's approved `STD-IO-001`,
+  `STD-PROFILE-001`, and process contract.
 
 ## DEV-010 — LSP hover/definition/references are protocol stubs
 
@@ -475,9 +475,10 @@ in WP-C1.6)
   reclassify granular evidence against both C2.8 coherence rules after C2.9 fixes package
   identity; this does not reopen DEV-021 as a known compiler defect.
 
-## DEV-022 — Private-item leakage through public signatures: unimplemented, spec-silent
+## DEV-022 — Private-item leakage through public signatures: unimplemented
 
-- **Normative expectation:** none — the spec does not require this check either way.
+- **Normative expectation:** `MOD-REEXPORT-001` requires every transitive item in a public
+  signature to be publicly nameable by consumers.
 - **Current behaviour:** no stage checks whether a `pub fn`'s signature or a `pub struct`'s
   fields transitively expose a private type. Confirmed absent in both resolve.rs and
   typecheck.rs.
@@ -488,11 +489,9 @@ in WP-C1.6)
   type safety.
 - **Workaround:** none; be conscious of this when designing public APIs across module
   boundaries.
-- **Proposed disposition:** requires a language-design decision (does STARK want this check?)
-  and, if yes, a normative spec addition before any implementation — Charter rule 4 forbids
-  adding a new rejection rule inside an implementation WP. Not a bug to fix, a feature to decide
-  on.
-- **Owning gate:** WP-C2.9 decision (`CORE-Q-023`); WP-C2.11 implementation/evidence if approved.
+- **Proposed disposition:** implement the C2.9-approved public-reachability check with positive
+  and negative cross-package evidence.
+- **Owning gate:** WP-C2.11 implementation/evidence (`CORE-Q-023` approved).
 
 ---
 
@@ -541,8 +540,8 @@ in WP-C1.6)
   generic trait parameter confusing the self-type match. Needs its own investigation before a
   fix is attempted, not assumed to be the same pattern as DEV-013's fixes. `Into`/`TryFrom` not
   independently tested but plausibly share the same gap.
-- **Owning gate:** WP-C2.8 settles associated-item/conversion semantics; WP-C2.11 performs the
-  root-cause correction and evidence update.
+- **Owning gate:** WP-C2.11 performs the root-cause correction and evidence update against
+  C2.8 associated-item selection and C2.9 `STD-CONVERT-001`.
 
 ## DEV-025 — `pat_subsumes` compared literal patterns by shape only, not value (RESOLVED in
 WP-C1.5)

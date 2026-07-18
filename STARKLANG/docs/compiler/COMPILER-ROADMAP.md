@@ -532,6 +532,12 @@ ABI. Define UTF-8 source/string boundaries and indexing, executable entry signat
 exit/stream/startup/shutdown behaviour, and package/public-API identity including versions,
 content/source identity, aliases, re-exports, lockfiles, and package-level coherence.
 
+Completed on 2026-07-18. Forty-six granular rules now freeze the C2.9 contracts and close
+`CORE-Q-005`, `CORE-Q-008`–`CORE-Q-014`, `CORE-Q-017`–`CORE-Q-019`, `CORE-Q-021`,
+`CORE-Q-023`, and `CORE-Q-024`. The work changes normative specification/governance only;
+implementation alignment, diagnostics, deviation closure, and adversarial evidence remain
+WP-C2.11.
+
 ### WP-C2.10 — Future-extension compatibility boundaries
 
 Create `STARKLANG/docs/spec/CORE-V1-FUTURE-BOUNDARIES.md`. Protect future ownership-aware

@@ -454,6 +454,13 @@ Notes:
 - Trailing commas are allowed in lists
 
 ## Parsing Notes
+**SYN-RECOVERY-001.** For Core conformance, parsing observes only acceptance
+or rejection and the required primary diagnostic category/location.
+Token insertion/deletion, synchronization points, cascaded diagnostics,
+partial syntax trees, and recovery continuation are implementation-defined
+tooling behavior. Recovery must not accept a source that the grammar rejects
+or reject a source that the grammar accepts.
+
 - When a `>` is expected in generic-argument position and the next token is
   `>>`, `>>=`, or `>=` (maximal munch), the parser MUST split off a single
   `>` and re-tokenize the remainder (`>`, `>=`, or `=` respectively) — so

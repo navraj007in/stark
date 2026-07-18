@@ -188,6 +188,11 @@ Rules:
 - Cannot be keywords
 - Maximum length: 255 characters
 
+**LEX-IDENT-002.** Identifier length is measured in ASCII bytes. Core
+identifiers are ASCII-only and may contain at most 255 bytes. The lexer must
+reject an overlength identifier as one token and continue at its end; it may
+not truncate, split, or intern a colliding prefix.
+
 ### 3. Literals
 
 #### Integer Literals
@@ -251,6 +256,13 @@ RAW_STRING := 'r"' .*? '"'
 
 ESCAPE_SEQUENCE := '\' (n|t|r|0|\\|'|"|x[0-9a-fA-F]{2}|u{[0-9a-fA-F]{1,6}})
 ```
+
+**LEX-ESCAPE-001.** `\xNN` contributes exactly one byte and is legal in a
+string only when the complete decoded string is valid UTF-8; in a character
+literal it must denote one ASCII scalar. `\u{H...}` must contain one through
+six hexadecimal digits and denote a Unicode scalar value, excluding surrogate
+code points and values above U+10FFFF. An invalid escape rejects the literal;
+no replacement character is inserted.
 
 Examples:
 ```stark
@@ -365,6 +377,13 @@ and, or, not, is, dyn
 1. **Maximal Munch**: Always match the longest possible token
 2. **Whitespace**: Ignored except for token separation
 3. **Encoding**: Source files must be valid UTF-8
+
+**LEX-SOURCE-001.** A Core source is a sequence of UTF-8 bytes. A byte-order
+mark at the start is not source whitespace and is rejected. Any invalid UTF-8
+sequence rejects the source before tokenization at the first invalid byte
+offset. Tools may transcode input before presenting it as Core source, but
+that transport conversion is outside the language and cannot affect source
+identity or diagnostics for the resulting bytes.
 
 ## Error Handling
 
@@ -834,6 +853,13 @@ Notes:
 - Trailing commas are allowed in lists
 
 ## Parsing Notes
+**SYN-RECOVERY-001.** For Core conformance, parsing observes only acceptance
+or rejection and the required primary diagnostic category/location.
+Token insertion/deletion, synchronization points, cascaded diagnostics,
+partial syntax trees, and recovery continuation are implementation-defined
+tooling behavior. Recovery must not accept a source that the grammar rejects
+or reject a source that the grammar accepts.
+
 - When a `>` is expected in generic-argument position and the next token is
   `>>`, `>>=`, or `>=` (maximal munch), the parser MUST split off a single
   `>` and re-tokenize the remainder (`>`, `>=`, or `=` respectively) — so
@@ -1368,6 +1394,12 @@ Cast semantics (`as`):
 - Integer to float and float to integer: float-to-int truncates toward zero and
   MUST trap if the result does not fit the target type (including NaN/Inf).
 
+**TYPE-CAST-001.** `as` is legal only between numeric primitive types.
+Its exact checked conversion result is `NUM-CAST-001`. A cast never invokes a
+trait, allocates, changes ownership, or silently wraps. A statically known
+failing cast is a compile-time error; otherwise the required failure is a
+language trap at the cast expression.
+
 ### Reference Coercions
 ```stark
 &mut T -> &T        // Mutable reference to immutable reference
@@ -1807,11 +1839,23 @@ one must produce its classified diagnostic and must never be cached as a
 semantic constant value.
 
 ## Numeric Semantics (Core v1)
-- Integer overflow and underflow are runtime errors and MUST trap. This applies
-  in every build configuration; there is no mode in which overflow wraps
-  silently.
-- Division or modulo by zero is a runtime error and MUST trap.
-- Floating-point operations follow IEEE-754 semantics (NaN, +/-Inf).
+
+**NUM-FLOAT-FORMAT-001.** `Float32` is IEEE 754 binary32 and `Float64` is
+IEEE 754 binary64. All value observations use those formats; an implementation
+may use wider intermediates only when it rounds to the declared format at
+every operation boundary and produces the same result.
+
+**NUM-FLOAT-TRAIT-001.** `Float32` and `Float64` implement `Copy`, `Clone`,
+`Default`, and `Display`, but not `Eq`, `Ord`, or `Hash`. Primitive `==` and
+ordering comparisons remain IEEE comparisons: NaN compares unequal to every
+value including itself, every ordered comparison with NaN is false, and
+`-0.0 == +0.0` is true. Generic APIs requiring `Eq`, `Ord`, or `Hash` reject
+floating arguments. Explicit future wrapper types may provide total or
+bitwise contracts without changing the primitive types.
+
+Integer, floating-operation, conversion, and reproducibility rules are
+defined by the corresponding `NUM-*` rules in
+`CORE-V1-ABSTRACT-MACHINE.md`.
 
 ## Type Safety Guarantees
 
@@ -2231,6 +2275,14 @@ let x = 44;               // Error: redeclaration in same scope
 ### 8. Array Bounds Analysis
 
 #### Static Bounds Checking
+**FLOW-BOUNDS-001.** Indexing an array by a compile-time constant is rejected
+when the value is outside `0 <= index < N`. A constant range is rejected when
+either endpoint is outside `0..=N`, when start exceeds end, or when an
+inclusive end would require an element at `N`. The same proof is required for
+constant `Vec`/slice lengths only when their length is itself statically
+known. Failure to prove an error preserves the abstract-machine runtime check;
+it is never permission to omit that check.
+
 ```stark
 let arr: [Int32; 3] = [1, 2, 3];
 let x = arr[2];           // OK: index in bounds
@@ -2897,6 +2949,58 @@ let live = Loud { label: String::from("not dropped") };
 panic("abort");
 ```
 
+## Numeric operations and conversions
+
+**NUM-INT-ARITH-001.** Signed integers are fixed-width two's-complement values and unsigned
+integers are fixed-width binary values of the width in their type name. Integer addition,
+subtraction, multiplication, exponentiation, and unary negation compute the mathematical result
+and trap when it is not representable in the result type. This checked behavior is identical in
+all build modes and targets. Negating an unsigned value is ill-typed; negating the minimum
+signed value traps. Integer exponentiation requires a nonnegative exponent and traps otherwise;
+each intermediate multiply is checked.
+
+**NUM-INT-DIV-001.** Integer division by zero and remainder by zero trap. Signed division
+truncates toward zero; the remainder satisfies `a == (a / b) * b + (a % b)` and has the sign of
+`a` or is zero. Dividing the minimum signed value by `-1`, and taking its remainder by `-1`,
+trap because the intermediate quotient is not representable. Unsigned division and remainder
+use ordinary Euclidean nonnegative quotient/remainder.
+
+**NUM-SHIFT-001.** A shift count may have any integer type, but its mathematical value must be
+nonnegative and strictly less than the bit width of the left operand; otherwise the operation
+traps. Left shift traps when the mathematical result is not representable. Unsigned right shift
+fills with zero; signed right shift is arithmetic and rounds toward negative infinity. No shift
+count is masked or reduced modulo the width.
+
+**NUM-CAST-001.** Numeric conversion is checked as follows:
+
+- integer to integer preserves the mathematical value and traps if the target cannot represent
+  it;
+- `Float32` to `Float64` is exact; `Float64` to `Float32` rounds once using
+  round-to-nearest, ties-to-even and may produce signed infinity;
+- integer to float rounds once using round-to-nearest, ties-to-even;
+- finite float to integer first truncates toward zero and then traps unless the result is
+  representable; NaN and either infinity always trap.
+
+Conversion preserves a floating zero's sign and infinity's sign. A statically evaluated failing
+conversion is a compile-time error instead of a runtime trap.
+
+**NUM-FLOAT-OP-001.** Each primitive floating `+`, `-`, `*`, `/`, unary `-`, and comparison
+uses IEEE 754 binary32/binary64 with round-to-nearest, ties-to-even. Floating division by zero
+does not trap: it produces the IEEE infinity or NaN result. Floating `%` is the correctly
+rounded value of `x - trunc(x / y) * y` using the exact mathematical quotient, with the sign of
+a nonzero result matching `x`; zero divisor, infinite dividend, or NaN operand produces NaN.
+NaN propagates as a quiet NaN; operations that create a NaN produce the canonical quiet NaN
+with sign zero and all payload bits other than the quiet bit zero. Negation flips the sign
+bit, including for zero and NaN. Implementations may not reassociate operations, contract
+multiply-add, flush subnormals, or use a different rounding mode.
+
+For the same declared float type, inputs, and sequence of primitive operations/casts, the
+result bits are backend- and target-independent under `NUM-FLOAT-REPRO-001`. Decimal literals
+are converted directly to the destination format using
+round-to-nearest, ties-to-even, independent of host parsing. Transcendental and other
+standard-library math functions follow `STD-MATH-001`; they are not primitive operations and
+need not be bit-identical across targets.
+
 ## Trap categories
 
 **TRAP-CATEGORY-001.** A *language trap* is a failure explicitly required by a normative Core
@@ -2905,10 +3009,12 @@ checked arithmetic failure, and failing checked conversion where the owning nume
 requires a trap. It records a stable category and the source location of the operation that
 failed.
 
-Allocation exhaustion, stack exhaustion, host I/O failure, OS termination, compiler limits,
-and target failures are not silently reclassified as language traps. C2.9 classifies those
-conditions under CORE-Q-017. A conforming implementation must not report an internal host panic
-as though it were a specified STARK trap.
+Allocation exhaustion, stack exhaustion, recursion/call-depth exhaustion, unavailable host
+services, host I/O failure outside an API's `Result`, target failure, and OS termination are
+`host/process failure`, not language traps. Ordinary file/stream failures handled by the
+standard-library contract produce `Result` and do not terminate execution. Compiler limits
+reject compilation with a classified diagnostic. An implementation must never report an
+internal host panic as a specified STARK trap.
 
 ## Observable execution and differential comparison
 
@@ -2918,7 +3024,7 @@ applicable observations match:
 
 - stdout bytes in order;
 - stderr bytes in order;
-- abstract exit category (`success`, `language trap`, `host/process failure`);
+- abstract exit category (`normal(status)`, `language trap`, `host/process failure`);
 - returned Core value for a harnessed function, compared by its Core value semantics;
 - language-trap category;
 - language-trap source identity and span;
@@ -3389,6 +3495,16 @@ iteration order for the same sequence of insertions/removals, regardless of
 internal storage strategy (see "Performance Notes" below, which describes
 storage, not iteration order).
 
+**STD-HASH-001.** `HashMap` and `HashSet` determine key identity exclusively
+with lawful `Eq` and use `Hash::hash` only to select candidate buckets.
+Collisions must be resolved by `Eq`; unequal keys with equal hashes remain
+distinct. Replacing an equal key retains the first stored key and its
+insertion position. Their observable iteration order is the first-insertion
+order above and is independent of hash values, collision strategy, capacity,
+target, and process. Primitive/standard-type hash implementations must be
+stable for one Core version and target contract; user hash law violations
+have the behavior in `TRAIT-LAW-001`.
+
 ## String Module (std::string)
 
 ### String Type
@@ -3432,6 +3548,32 @@ impl str {
     // ... similar methods to String
 }
 ```
+
+**TEXT-UTF8-001.** Every `String` and `str` value contains valid UTF-8.
+Literals, file reads, conversions, mutation, concatenation, and native
+providers must validate before a value becomes observable. Invalid external
+bytes produce the API's error result; no operation creates a partially valid
+string or silently substitutes U+FFFD.
+
+**TEXT-INDEX-001.** String offsets and lengths are unsigned UTF-8 byte offsets.
+`len`, `find`, `substring`, and split/view boundaries use bytes. Core provides
+no `string[index]` element operator. `bytes` yields encoded bytes in order;
+`chars` is the scalar-value API.
+
+**TEXT-BOUNDARY-001.** A byte offset used as a string boundary must be at zero,
+at the byte length, or at the first byte of a UTF-8 scalar. `substring` traps
+when either offset is not a scalar boundary, either is out of range, or start
+exceeds end. Search/split operations return only valid boundaries.
+
+**TEXT-ITER-001.** `chars` yields Unicode scalar values in source order;
+`bytes` yields each UTF-8 byte in source order. Neither normalizes text or
+combines grapheme clusters. `pop` removes and returns the last scalar, and
+`push` appends the scalar's UTF-8 encoding.
+
+**TEXT-CASE-001.** Character classification and `to_lowercase`/
+`to_uppercase` use Unicode 15.1 Default Case Conversion, independent of
+locale. A mapping may expand one scalar to several and preserves their
+specified order. Core performs no normalization before or after mapping.
 
 ## Math Module (std::math)
 
@@ -3482,6 +3624,23 @@ impl Random {
 }
 ```
 
+**STD-MATH-001.** Integer `abs` follows checked integer arithmetic; floating
+`abs` clears the sign bit. `min`, `max`, and `clamp` dispatch through lawful
+`Ord` and evaluate arguments once. `floor`, `ceil`, `round` (nearest integer,
+ties away from zero), and `trunc` produce the exact IEEE result and preserve
+an already-integral signed zero. Transcendental functions return the IEEE
+special-case result and a finite result within one ulp of the exact real
+result (`pow` within two ulp); their last bit may be target-defined. Domain
+errors produce NaN rather than a language trap.
+
+**STD-RANDOM-001.** `Random` is the reproducible 64-bit LCG
+`state = state * 6364136223846793005 + 1442695040888963407 (mod 2^64)`.
+`new(seed)` installs `seed`; `next_int` advances once and returns the state.
+`next_float` advances once and returns the correctly rounded `Float64` value
+`state / 2^64` in `[0,1)`. `range(min,max)` requires `min < max`, advances
+once, and returns `min + state % (max-min)`, hence `min` is inclusive and
+`max` exclusive; an invalid range traps without advancing.
+
 ## IO Module (std::io)
 
 ### Basic IO Operations
@@ -3517,6 +3676,22 @@ enum IOError {
 fn read_file(path: &str) -> Result<String, IOError>
 fn write_file(path: &str, content: &str) -> Result<Unit, IOError>
 ```
+
+**STD-IO-001.** The `std-full` profile provides the APIs above and a
+first-class, non-`Copy` `File` resource whose ownership may be moved but not
+cloned. Ordinary open/create/read/write/close failures return `IOError`;
+`NotFound`, `PermissionDenied`, `AlreadyExists`, and `InvalidInput` are used
+when the host exposes that distinction, otherwise `Other` carries stable
+human-readable context. Reads validate UTF-8. A successful write reports the
+number of bytes accepted; callers must handle a short write. Dropping an open
+file attempts close but cannot surface a new language trap.
+
+**STD-FORMAT-001.** `Display::fmt` returns valid UTF-8 and is ordinary trait
+dispatch. `print`/`eprint` append exactly the argument bytes; `println`/
+`eprintln` append those bytes followed by byte `0x0A`, independent of host
+newline convention. Successful calls preserve program order. The process
+contract flushes submitted stdout/stderr before reporting normal return or a
+language trap; a stream write/flush failure is a host/process failure.
 
 ## Error Module (std::error)
 
@@ -3623,6 +3798,14 @@ trait FromStr {
 }
 ```
 
+**STD-CONVERT-001.** Numeric `From` exists only for conversions that preserve
+every source value. Potentially failing numeric conversions use `TryFrom` and
+the exact `NUM-CAST-001` value/range rules. `FromStr` accepts the corresponding
+Core literal body without a type suffix or surrounding whitespace and returns
+`Err` for malformed, non-finite textual forms, overflow, or underflow; it
+never silently clamps or wraps. `as` remains the only trapping numeric
+conversion syntax.
+
 ## Essential Trait Implementations
 
 ### Default Implementations
@@ -3667,10 +3850,18 @@ impl Ord for Int32 {
 Two standard-library conformance profiles are defined. A conforming
 implementation MUST state which profile it implements.
 
+**STD-PROFILE-001.** `core-min` is required for every Core v1 implementation.
+`std-full` is an optional, indivisible advertised capability: claiming it
+requires every API and behavioral rule assigned below, including file I/O and
+`Random`. A missing host facility prevents the `std-full` claim rather than
+changing an API's meaning. Extensions may add profiles but may not call them
+Core v1 or weaken these profiles.
+
 ### Profile: `core-min` (MVP)
 The minimum standard library for Core v1 conformance:
 - Prelude: primitive types, `Option`, `Result`, `Ordering`, essential traits
-  (`Copy`, `Clone`, `Drop`, `Eq`, `Ord`, `Num`), `print`, `println`, `panic`
+  (`Copy`, `Clone`, `Drop`, `Eq`, `Ord`, `Hash`, `Default`, `Display`,
+  `Iterator`, `Index`, `IndexMut`, `Num`), `print`, `println`, `panic`
 - `String` and `str` (construction, `len`, `push`/`push_str`, `as_str`,
   `chars`)
 - `Vec<T>` (construction, `push`, `pop`, `len`, `get`/`get_mut`, indexing)
@@ -3682,7 +3873,7 @@ The minimum standard library for Core v1 conformance:
 Everything in this document: `core-min` plus `HashMap`, `HashSet`, the
 `Iterator` trait with combinators and all iterator/view types, the full
 `String` API, the math module, file IO, `std::mem` utilities, the conversion
-traits, and `Hash`/`Default`/`Display`/`Index`/`IndexMut`.
+traits, and the full required-trait implementations for standard types.
 
 Items in *neither* profile (informative future work, not required for any
 Core v1 conformance claim): buffered IO, regular expressions, time/date,
@@ -3736,11 +3927,18 @@ mod inline {
 ```
 
 ### File-Based Modules
-A declaration `mod name;` loads one of the following files, in order:
+A declaration `mod name;` has the following candidate files:
 1. `name.stark`
 2. `name/mod.stark`
 
 The loaded file defines the contents of the module `name`.
+
+**MOD-FILE-001.** Resolution is relative to the declaring source file's
+module directory and must remain within the canonical package root after
+resolving `.`/`..` and symbolic links. Exactly one candidate above must exist;
+if both exist, the declaration is ambiguous and rejected. One canonical file
+may define at most one module in a package. Missing files are always errors
+outside an explicitly identified conformance-harness input mode.
 
 ## Module Paths
 Paths use `::` separators.
@@ -3754,6 +3952,14 @@ Examples:
 use crate::utils::math::add;
 use super::config;
 ```
+
+**MOD-PATH-001.** `crate` starts at the current package root, `self` at the
+current module, and each `super` moves exactly one parent and is rejected at
+the root. An unqualified first segment follows `NAME-RESOLVE-001`; a
+dependency alias starts at that dependency's public root. Later segments are
+resolved only within the preceding module/type namespace. Filesystem paths,
+checkout locations, and import aliases never participate in public-item
+identity.
 
 ## Imports (`use`)
 The `use` statement brings names into scope.
@@ -3770,6 +3976,14 @@ Rules:
 - `pub use` re-exports the imported name from the current module.
 - Aliases with `as` are local to the current module.
 
+**MOD-USE-001.** Nested imports expand as if each leaf were a separate import.
+An explicit alias introduces only the alias. A glob imports all public names
+in the selected namespaces but never recursively imports another module's
+imports. Two imported leaves that introduce the same namespace/name are
+ambiguous unless they resolve to the same canonical item; an explicit local
+item also conflicts rather than silently winning. Import processing is
+independent of declaration and filesystem order.
+
 ## Visibility
 - Items are private to their defining module by default.
 - `pub` makes an item visible to parent modules and external modules.
@@ -3777,6 +3991,19 @@ Rules:
 
 Visibility applies to:
 - Functions, structs, enums, traits, impl blocks, consts, type aliases, and modules.
+
+**MOD-VIS-001.** A private item is usable in its defining module and
+descendant modules only. A public item is externally reachable only through a
+path whose every module and re-export edge is public. Fields and enum variants
+follow their declarations' explicit visibility rules; an `impl` cannot make
+its self type or trait more visible.
+
+**MOD-REEXPORT-001.** Every type and trait appearing transitively in a public
+function, constant, field, variant, alias, trait item, or implementation
+signature must be nameable by consumers through a public canonical path.
+Private items and dependency items lacking a public re-export are rejected in
+public API. `pub use` cannot re-export an item the re-exporting module is not
+permitted to access, and does not create new nominal identity.
 
 ## Name Resolution Order
 Within a module, names are resolved in the following order:
@@ -3799,23 +4026,31 @@ The manifest is a JSON object with the following fields:
 | `name` | string | yes | Package name: `[a-z][a-z0-9_-]*`, 1–64 chars. Used as the import root for dependents. |
 | `version` | string | yes | Semantic version `MAJOR.MINOR.PATCH` (numeric components; optional `-prerelease` tag). |
 | `entry` | string | no | Package-root-relative path to the root source file. Default `src/main.stark`. MUST exist and MUST be inside the package directory. |
-| `dependencies` | object | no | Map from package name to a *version constraint string* or a *dependency object*. |
+| `dependencies` | object | no | Map from local import alias to a *version constraint string* or a *dependency object*. |
 
-A dependency object has exactly one of:
-- `{ "version": "<constraint>" }` — resolved from a registry or cache, or
-- `{ "path": "<relative-path>" }` — a local package directory containing its
-  own `starkpkg.json`.
+A dependency object may set `"package"` when the local alias differs from the
+manifest package name, and has exactly one source form:
+- `{ "version": "<constraint>", "registry": "<identity>"? }`;
+- `{ "path": "<relative-path>" }`; or
+- `{ "git": "<origin>", "rev": "<immutable-revision>", "subdir": "<path>"? }`.
 
 Version constraint syntax:
 - `"1.2.3"` — exactly that version
 - `"^1.2.3"` — `>=1.2.3` and `<2.0.0` (compatible-with)
 - `">=1.2, <2.0"` — comma-separated comparator list (`>=`, `>`, `<=`, `<`, `=`),
-  all of which must hold
+  all of which must hold; omitted minor/patch components are zero
 
 Validation: unknown top-level fields are ignored (forward compatibility);
 a missing/invalid required field, a malformed constraint, a `path` escaping
 the workspace, or a dependency whose name violates the name rule is a
 manifest error and compilation MUST fail.
+
+**PKG-MANIFEST-001.** Manifest input is UTF-8 JSON with one object root.
+Duplicate keys are errors. `name`, `version`, `entry`, and `dependencies` are
+validated exactly by this section before source loading. Relative paths are
+resolved against the manifest directory and confined to the declared
+workspace after canonicalization. Unknown fields are retained for tooling but
+have no Core semantics. Core v1 has no conditional dependency features.
 
 Example:
 ```json
@@ -3847,7 +4082,56 @@ use TensorLib::tensor::Tensor;
 - Version strings follow semantic versioning.
 - If multiple versions satisfy a constraint, the highest version MUST be selected.
 - If no version satisfies a constraint, compilation MUST fail with an error.
-- The source of packages (registry, cache, or local path) is implementation-defined, but the chosen version MUST be reported in build output.
+- The selected source, exact version, and package token MUST be reported in build output.
+
+**PKG-RESOLVE-001.** A dependency map key is its local import alias. A string
+value names the same package and a registry version constraint. A dependency
+object may additionally set `"package"` to the canonical package name and
+must select exactly one source:
+
+- `"version"` with optional canonical `"registry"` identity;
+- `"path"` to a workspace package; or
+- `"git"` with an immutable `"rev"` and optional package-relative `"subdir"`.
+
+Resolution collects the complete graph before selecting versions. All
+constraints for one logical source, canonical package name, and major-version
+line are intersected; an empty intersection, source disagreement, alias
+collision, manifest-name mismatch, or dependency cycle rejects the graph.
+Aliases affect imports only and never package identity.
+
+**PKG-VERSION-001.** Semantic versions are ordered by SemVer precedence.
+Within one permitted major line, the highest available non-yanked version
+satisfying every constraint is selected; build metadata does not affect
+precedence and a tie is broken by exact version string then locked content
+hash. Prereleases are considered only when a constraint explicitly names a
+prerelease. With a valid lockfile, its still-compatible exact selection wins
+without re-resolution.
+
+**PKG-IDENTITY-001.** A resolved package-instance token is relocation-stable:
+
+- registry: canonical registry identity, package name, exact version, locked
+  content hash;
+- git: canonical origin, immutable revision, subdirectory, manifest package
+  name/version, locked content hash;
+- workspace path: workspace dependency identity, manifest package
+  name/version, locked content hash—never an absolute checkout path.
+
+A public item identity appends its canonical module path, item name, item kind,
+and normalized generic arguments. Aliases and re-exports preserve it.
+
+**PKG-MULTIVER-001.** At most one exact version may be selected for each
+`(logical source identity, package name, major-version line)`. Different major
+lines may coexist and have distinct identities, but must be imported through
+distinct local aliases. The same exact package instance reached by multiple
+paths is shared.
+
+**PKG-LOCK-001.** A reproducible build uses `stark.lock`, generated
+deterministically from the resolved graph. It records schema version, every
+package-instance token component, exact dependency edges and aliases, and a
+cryptographic content hash. Entries are sorted by package token and edges by
+alias. A missing lockfile may be generated; a stale, incompatible, ambiguous,
+or hash-mismatching lockfile rejects locked/frozen operation and must never be
+silently rewritten there.
 
 ## Standard Library
 The standard library is available under the `std` package name:
@@ -3865,6 +4149,68 @@ use std::collections::Vec;
 - **`use` imports** between modules of the same package MAY be mutually
   recursive (module A may `use` items from B and vice versa); this is not a
   cycle error.
+
+**MOD-CYCLE-001.** Module declarations form a finite tree and duplicate
+canonical files or ancestor re-entry are rejected. Import cycles are legal
+because item declarations are collected before import resolution, but a
+cycle consisting only of unresolved re-export aliases is rejected with a
+deterministically ordered cycle. Package cycles are always rejected.
+
+## Executable and target contract
+
+**PROC-MAIN-001.** An executable package must expose exactly one non-generic
+private-or-public root item named `main` with no parameters and one of these
+return types: `Unit`, `Int32`, `Result<Unit, String>`, or
+`Result<Int32, String>`. Async, overloaded, imported, and dependency `main`
+items do not qualify. A library need not define `main`.
+
+**PROC-EXIT-001.** Normal `Unit` and `Ok(Unit)` return status 0. `Int32` and
+`Ok(Int32)` must be in `0..=255` and return that status; an out-of-range value
+traps as `invalid-exit-status`. `Err(message)` writes `message` plus LF to
+stderr and returns status 1. A language trap returns status 101 after its
+specified diagnostic. Host/process failure has target-defined status and is
+not a STARK trap. Normal nonzero statuses are normal termination, not traps.
+
+**PROC-STREAM-001.** At startup stdin is the host-provided byte stream and
+stdout/stderr are distinct ordered byte streams; Core v1 exposes no stdin read
+API. Standard output operations obey `STD-FORMAT-001`. All successfully
+submitted bytes are flushed before normal or language-trap termination.
+Startup or flush failure is host/process failure. Core adds no terminal
+encoding, color, carriage return, or platform newline conversion.
+
+**LAYOUT-QUERY-001.** `size_of<T>` and `align_of<T>` are the only Core layout
+observations. For every `Sized` `T` they return positive target-contract
+values (except a target may report size zero for a zero-sized type), are
+compile-time/runtime consistent, and satisfy array/field placement needed by
+safe execution. Discriminant representation, field offsets, niches, pointer
+values, stack/heap choice, and physical addresses are unobservable.
+
+**LAYOUT-ABI-001.** Core v1 promises no stable data layout, calling convention,
+symbol mangling, object format, or cross-package native ABI. Layout-query
+values may differ between named targets and compiler versions. Interoperation
+requires a future explicitly versioned native-provider ABI and cannot infer
+compatibility from equal `size_of`/`align_of` results.
+
+**NUM-FLOAT-REPRO-001.** Primitive numeric behavior is target-independent as
+defined by the abstract machine. The named target contract may affect only
+standard-math last-bit latitude, layout queries, host/process failures, and
+external I/O—not primitive arithmetic, casts, NaN comparisons, or signed
+zero.
+
+**LIMIT-RESOURCE-001.** Allocation, address-space, stack, call-depth, file-
+descriptor, stream, and other host-resource exhaustion are host/process
+failures unless an API returns a specified `Result`. Implementations must
+prevent host undefined behavior and report the classified failure when the
+host permits; exact capacities are implementation/target-defined.
+
+**LIMIT-COMPILER-001.** Beyond semantic limits explicitly stated by Core
+(including 255-byte identifiers, tuple arity 16, and `UInt64` array lengths),
+an implementation may impose documented finite limits on source size,
+nesting, items, constant-evaluation work, object size, modules, packages, and
+dependency solving. Exceeding one rejects compilation with a deterministic
+limit category and must not masquerade as a syntax/type error, crash, hang,
+or change a semantic result. A conformance run declares these limits as part
+of its implementation/target contract.
 
 ## Errors
 - Importing an unknown module or item is a compile-time error.

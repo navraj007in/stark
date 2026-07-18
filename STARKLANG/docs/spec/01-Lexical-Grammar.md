@@ -43,6 +43,11 @@ Rules:
 - Cannot be keywords
 - Maximum length: 255 characters
 
+**LEX-IDENT-002.** Identifier length is measured in ASCII bytes. Core
+identifiers are ASCII-only and may contain at most 255 bytes. The lexer must
+reject an overlength identifier as one token and continue at its end; it may
+not truncate, split, or intern a colliding prefix.
+
 ### 3. Literals
 
 #### Integer Literals
@@ -106,6 +111,13 @@ RAW_STRING := 'r"' .*? '"'
 
 ESCAPE_SEQUENCE := '\' (n|t|r|0|\\|'|"|x[0-9a-fA-F]{2}|u{[0-9a-fA-F]{1,6}})
 ```
+
+**LEX-ESCAPE-001.** `\xNN` contributes exactly one byte and is legal in a
+string only when the complete decoded string is valid UTF-8; in a character
+literal it must denote one ASCII scalar. `\u{H...}` must contain one through
+six hexadecimal digits and denote a Unicode scalar value, excluding surrogate
+code points and values above U+10FFFF. An invalid escape rejects the literal;
+no replacement character is inserted.
 
 Examples:
 ```stark
@@ -220,6 +232,13 @@ and, or, not, is, dyn
 1. **Maximal Munch**: Always match the longest possible token
 2. **Whitespace**: Ignored except for token separation
 3. **Encoding**: Source files must be valid UTF-8
+
+**LEX-SOURCE-001.** A Core source is a sequence of UTF-8 bytes. A byte-order
+mark at the start is not source whitespace and is rejected. Any invalid UTF-8
+sequence rejects the source before tokenization at the first invalid byte
+offset. Tools may transcode input before presenting it as Core source, but
+that transport conversion is outside the language and cannot affect source
+identity or diagnostics for the resulting bytes.
 
 ## Error Handling
 

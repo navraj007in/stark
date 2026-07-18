@@ -24,6 +24,24 @@ C2_8_RULE_IDS = {
     'CONST-DECL-001', 'CONST-SUBSET-001', 'CONST-FAIL-001',
     'STD-HOOK-001', 'STD-TRAIT-001',
 }
+C2_9_RULE_IDS = {
+    'LEX-SOURCE-001', 'LEX-IDENT-002', 'LEX-ESCAPE-001', 'SYN-RECOVERY-001',
+    'TYPE-CAST-001', 'FLOW-BOUNDS-001',
+    'NUM-INT-ARITH-001', 'NUM-INT-DIV-001', 'NUM-SHIFT-001', 'NUM-CAST-001',
+    'NUM-FLOAT-FORMAT-001', 'NUM-FLOAT-OP-001', 'NUM-FLOAT-TRAIT-001',
+    'NUM-FLOAT-REPRO-001',
+    'TEXT-UTF8-001', 'TEXT-INDEX-001', 'TEXT-BOUNDARY-001', 'TEXT-ITER-001',
+    'TEXT-CASE-001',
+    'MOD-FILE-001', 'MOD-PATH-001', 'MOD-USE-001', 'MOD-VIS-001',
+    'MOD-REEXPORT-001', 'MOD-CYCLE-001',
+    'PKG-MANIFEST-001', 'PKG-RESOLVE-001', 'PKG-VERSION-001',
+    'PKG-IDENTITY-001', 'PKG-MULTIVER-001', 'PKG-LOCK-001',
+    'PROC-MAIN-001', 'PROC-EXIT-001', 'PROC-STREAM-001',
+    'STD-FORMAT-001', 'STD-PROFILE-001', 'STD-HASH-001', 'STD-IO-001',
+    'STD-CONVERT-001', 'STD-MATH-001', 'STD-RANDOM-001',
+    'LAYOUT-QUERY-001', 'LAYOUT-ABI-001', 'TRAP-CATEGORY-001',
+    'LIMIT-RESOURCE-001', 'LIMIT-COMPILER-001',
+}
 
 
 def validate_evidence_entry(entry, conformance_dir, rule_id, field_name, errors):
@@ -153,6 +171,20 @@ def main():
             if row_match is None:
                 errors.append(
                     f"C2.8 rule {rule_id} is not marked complete in the completeness inventory."
+                )
+
+        for rule_id in sorted(C2_9_RULE_IDS):
+            count = normative_id_counts.get(rule_id, 0)
+            if count != 1:
+                errors.append(
+                    f"C2.9 rule {rule_id} occurs {count} times in normative sources; expected 1."
+                )
+            row_match = re.search(
+                rf'^\| {re.escape(rule_id)} \|.*\| complete/', inventory_content, re.MULTILINE
+            )
+            if row_match is None:
+                errors.append(
+                    f"C2.9 rule {rule_id} is not marked complete in the completeness inventory."
                 )
 
         legacy_entries = split_map.get('legacy', [])

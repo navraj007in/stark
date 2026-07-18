@@ -346,6 +346,14 @@ let x = 44;               // Error: redeclaration in same scope
 ### 8. Array Bounds Analysis
 
 #### Static Bounds Checking
+**FLOW-BOUNDS-001.** Indexing an array by a compile-time constant is rejected
+when the value is outside `0 <= index < N`. A constant range is rejected when
+either endpoint is outside `0..=N`, when start exceeds end, or when an
+inclusive end would require an element at `N`. The same proof is required for
+constant `Vec`/slice lengths only when their length is itself statically
+known. Failure to prove an error preserves the abstract-machine runtime check;
+it is never permission to omit that check.
+
 ```stark
 let arr: [Int32; 3] = [1, 2, 3];
 let x = arr[2];           // OK: index in bounds

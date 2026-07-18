@@ -531,6 +531,58 @@ let live = Loud { label: String::from("not dropped") };
 panic("abort");
 ```
 
+## Numeric operations and conversions
+
+**NUM-INT-ARITH-001.** Signed integers are fixed-width two's-complement values and unsigned
+integers are fixed-width binary values of the width in their type name. Integer addition,
+subtraction, multiplication, exponentiation, and unary negation compute the mathematical result
+and trap when it is not representable in the result type. This checked behavior is identical in
+all build modes and targets. Negating an unsigned value is ill-typed; negating the minimum
+signed value traps. Integer exponentiation requires a nonnegative exponent and traps otherwise;
+each intermediate multiply is checked.
+
+**NUM-INT-DIV-001.** Integer division by zero and remainder by zero trap. Signed division
+truncates toward zero; the remainder satisfies `a == (a / b) * b + (a % b)` and has the sign of
+`a` or is zero. Dividing the minimum signed value by `-1`, and taking its remainder by `-1`,
+trap because the intermediate quotient is not representable. Unsigned division and remainder
+use ordinary Euclidean nonnegative quotient/remainder.
+
+**NUM-SHIFT-001.** A shift count may have any integer type, but its mathematical value must be
+nonnegative and strictly less than the bit width of the left operand; otherwise the operation
+traps. Left shift traps when the mathematical result is not representable. Unsigned right shift
+fills with zero; signed right shift is arithmetic and rounds toward negative infinity. No shift
+count is masked or reduced modulo the width.
+
+**NUM-CAST-001.** Numeric conversion is checked as follows:
+
+- integer to integer preserves the mathematical value and traps if the target cannot represent
+  it;
+- `Float32` to `Float64` is exact; `Float64` to `Float32` rounds once using
+  round-to-nearest, ties-to-even and may produce signed infinity;
+- integer to float rounds once using round-to-nearest, ties-to-even;
+- finite float to integer first truncates toward zero and then traps unless the result is
+  representable; NaN and either infinity always trap.
+
+Conversion preserves a floating zero's sign and infinity's sign. A statically evaluated failing
+conversion is a compile-time error instead of a runtime trap.
+
+**NUM-FLOAT-OP-001.** Each primitive floating `+`, `-`, `*`, `/`, unary `-`, and comparison
+uses IEEE 754 binary32/binary64 with round-to-nearest, ties-to-even. Floating division by zero
+does not trap: it produces the IEEE infinity or NaN result. Floating `%` is the correctly
+rounded value of `x - trunc(x / y) * y` using the exact mathematical quotient, with the sign of
+a nonzero result matching `x`; zero divisor, infinite dividend, or NaN operand produces NaN.
+NaN propagates as a quiet NaN; operations that create a NaN produce the canonical quiet NaN
+with sign zero and all payload bits other than the quiet bit zero. Negation flips the sign
+bit, including for zero and NaN. Implementations may not reassociate operations, contract
+multiply-add, flush subnormals, or use a different rounding mode.
+
+For the same declared float type, inputs, and sequence of primitive operations/casts, the
+result bits are backend- and target-independent under `NUM-FLOAT-REPRO-001`. Decimal literals
+are converted directly to the destination format using
+round-to-nearest, ties-to-even, independent of host parsing. Transcendental and other
+standard-library math functions follow `STD-MATH-001`; they are not primitive operations and
+need not be bit-identical across targets.
+
 ## Trap categories
 
 **TRAP-CATEGORY-001.** A *language trap* is a failure explicitly required by a normative Core
@@ -539,10 +591,12 @@ checked arithmetic failure, and failing checked conversion where the owning nume
 requires a trap. It records a stable category and the source location of the operation that
 failed.
 
-Allocation exhaustion, stack exhaustion, host I/O failure, OS termination, compiler limits,
-and target failures are not silently reclassified as language traps. C2.9 classifies those
-conditions under CORE-Q-017. A conforming implementation must not report an internal host panic
-as though it were a specified STARK trap.
+Allocation exhaustion, stack exhaustion, recursion/call-depth exhaustion, unavailable host
+services, host I/O failure outside an API's `Result`, target failure, and OS termination are
+`host/process failure`, not language traps. Ordinary file/stream failures handled by the
+standard-library contract produce `Result` and do not terminate execution. Compiler limits
+reject compilation with a classified diagnostic. An implementation must never report an
+internal host panic as a specified STARK trap.
 
 ## Observable execution and differential comparison
 
@@ -552,7 +606,7 @@ applicable observations match:
 
 - stdout bytes in order;
 - stderr bytes in order;
-- abstract exit category (`success`, `language trap`, `host/process failure`);
+- abstract exit category (`normal(status)`, `language trap`, `host/process failure`);
 - returned Core value for a harnessed function, compared by its Core value semantics;
 - language-trap category;
 - language-trap source identity and span;

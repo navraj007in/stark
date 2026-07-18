@@ -353,6 +353,16 @@ iteration order for the same sequence of insertions/removals, regardless of
 internal storage strategy (see "Performance Notes" below, which describes
 storage, not iteration order).
 
+**STD-HASH-001.** `HashMap` and `HashSet` determine key identity exclusively
+with lawful `Eq` and use `Hash::hash` only to select candidate buckets.
+Collisions must be resolved by `Eq`; unequal keys with equal hashes remain
+distinct. Replacing an equal key retains the first stored key and its
+insertion position. Their observable iteration order is the first-insertion
+order above and is independent of hash values, collision strategy, capacity,
+target, and process. Primitive/standard-type hash implementations must be
+stable for one Core version and target contract; user hash law violations
+have the behavior in `TRAIT-LAW-001`.
+
 ## String Module (std::string)
 
 ### String Type
@@ -396,6 +406,32 @@ impl str {
     // ... similar methods to String
 }
 ```
+
+**TEXT-UTF8-001.** Every `String` and `str` value contains valid UTF-8.
+Literals, file reads, conversions, mutation, concatenation, and native
+providers must validate before a value becomes observable. Invalid external
+bytes produce the API's error result; no operation creates a partially valid
+string or silently substitutes U+FFFD.
+
+**TEXT-INDEX-001.** String offsets and lengths are unsigned UTF-8 byte offsets.
+`len`, `find`, `substring`, and split/view boundaries use bytes. Core provides
+no `string[index]` element operator. `bytes` yields encoded bytes in order;
+`chars` is the scalar-value API.
+
+**TEXT-BOUNDARY-001.** A byte offset used as a string boundary must be at zero,
+at the byte length, or at the first byte of a UTF-8 scalar. `substring` traps
+when either offset is not a scalar boundary, either is out of range, or start
+exceeds end. Search/split operations return only valid boundaries.
+
+**TEXT-ITER-001.** `chars` yields Unicode scalar values in source order;
+`bytes` yields each UTF-8 byte in source order. Neither normalizes text or
+combines grapheme clusters. `pop` removes and returns the last scalar, and
+`push` appends the scalar's UTF-8 encoding.
+
+**TEXT-CASE-001.** Character classification and `to_lowercase`/
+`to_uppercase` use Unicode 15.1 Default Case Conversion, independent of
+locale. A mapping may expand one scalar to several and preserves their
+specified order. Core performs no normalization before or after mapping.
 
 ## Math Module (std::math)
 
@@ -446,6 +482,23 @@ impl Random {
 }
 ```
 
+**STD-MATH-001.** Integer `abs` follows checked integer arithmetic; floating
+`abs` clears the sign bit. `min`, `max`, and `clamp` dispatch through lawful
+`Ord` and evaluate arguments once. `floor`, `ceil`, `round` (nearest integer,
+ties away from zero), and `trunc` produce the exact IEEE result and preserve
+an already-integral signed zero. Transcendental functions return the IEEE
+special-case result and a finite result within one ulp of the exact real
+result (`pow` within two ulp); their last bit may be target-defined. Domain
+errors produce NaN rather than a language trap.
+
+**STD-RANDOM-001.** `Random` is the reproducible 64-bit LCG
+`state = state * 6364136223846793005 + 1442695040888963407 (mod 2^64)`.
+`new(seed)` installs `seed`; `next_int` advances once and returns the state.
+`next_float` advances once and returns the correctly rounded `Float64` value
+`state / 2^64` in `[0,1)`. `range(min,max)` requires `min < max`, advances
+once, and returns `min + state % (max-min)`, hence `min` is inclusive and
+`max` exclusive; an invalid range traps without advancing.
+
 ## IO Module (std::io)
 
 ### Basic IO Operations
@@ -481,6 +534,22 @@ enum IOError {
 fn read_file(path: &str) -> Result<String, IOError>
 fn write_file(path: &str, content: &str) -> Result<Unit, IOError>
 ```
+
+**STD-IO-001.** The `std-full` profile provides the APIs above and a
+first-class, non-`Copy` `File` resource whose ownership may be moved but not
+cloned. Ordinary open/create/read/write/close failures return `IOError`;
+`NotFound`, `PermissionDenied`, `AlreadyExists`, and `InvalidInput` are used
+when the host exposes that distinction, otherwise `Other` carries stable
+human-readable context. Reads validate UTF-8. A successful write reports the
+number of bytes accepted; callers must handle a short write. Dropping an open
+file attempts close but cannot surface a new language trap.
+
+**STD-FORMAT-001.** `Display::fmt` returns valid UTF-8 and is ordinary trait
+dispatch. `print`/`eprint` append exactly the argument bytes; `println`/
+`eprintln` append those bytes followed by byte `0x0A`, independent of host
+newline convention. Successful calls preserve program order. The process
+contract flushes submitted stdout/stderr before reporting normal return or a
+language trap; a stream write/flush failure is a host/process failure.
 
 ## Error Module (std::error)
 
@@ -587,6 +656,14 @@ trait FromStr {
 }
 ```
 
+**STD-CONVERT-001.** Numeric `From` exists only for conversions that preserve
+every source value. Potentially failing numeric conversions use `TryFrom` and
+the exact `NUM-CAST-001` value/range rules. `FromStr` accepts the corresponding
+Core literal body without a type suffix or surrounding whitespace and returns
+`Err` for malformed, non-finite textual forms, overflow, or underflow; it
+never silently clamps or wraps. `as` remains the only trapping numeric
+conversion syntax.
+
 ## Essential Trait Implementations
 
 ### Default Implementations
@@ -631,10 +708,18 @@ impl Ord for Int32 {
 Two standard-library conformance profiles are defined. A conforming
 implementation MUST state which profile it implements.
 
+**STD-PROFILE-001.** `core-min` is required for every Core v1 implementation.
+`std-full` is an optional, indivisible advertised capability: claiming it
+requires every API and behavioral rule assigned below, including file I/O and
+`Random`. A missing host facility prevents the `std-full` claim rather than
+changing an API's meaning. Extensions may add profiles but may not call them
+Core v1 or weaken these profiles.
+
 ### Profile: `core-min` (MVP)
 The minimum standard library for Core v1 conformance:
 - Prelude: primitive types, `Option`, `Result`, `Ordering`, essential traits
-  (`Copy`, `Clone`, `Drop`, `Eq`, `Ord`, `Num`), `print`, `println`, `panic`
+  (`Copy`, `Clone`, `Drop`, `Eq`, `Ord`, `Hash`, `Default`, `Display`,
+  `Iterator`, `Index`, `IndexMut`, `Num`), `print`, `println`, `panic`
 - `String` and `str` (construction, `len`, `push`/`push_str`, `as_str`,
   `chars`)
 - `Vec<T>` (construction, `push`, `pop`, `len`, `get`/`get_mut`, indexing)
@@ -646,7 +731,7 @@ The minimum standard library for Core v1 conformance:
 Everything in this document: `core-min` plus `HashMap`, `HashSet`, the
 `Iterator` trait with combinators and all iterator/view types, the full
 `String` API, the math module, file IO, `std::mem` utilities, the conversion
-traits, and `Hash`/`Default`/`Display`/`Index`/`IndexMut`.
+traits, and the full required-trait implementations for standard types.
 
 Items in *neither* profile (informative future work, not required for any
 Core v1 conformance claim): buffered IO, regular expressions, time/date,

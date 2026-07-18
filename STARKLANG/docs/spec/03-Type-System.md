@@ -500,6 +500,12 @@ Cast semantics (`as`):
 - Integer to float and float to integer: float-to-int truncates toward zero and
   MUST trap if the result does not fit the target type (including NaN/Inf).
 
+**TYPE-CAST-001.** `as` is legal only between numeric primitive types.
+Its exact checked conversion result is `NUM-CAST-001`. A cast never invokes a
+trait, allocates, changes ownership, or silently wraps. A statically known
+failing cast is a compile-time error; otherwise the required failure is a
+language trap at the cast expression.
+
 ### Reference Coercions
 ```stark
 &mut T -> &T        // Mutable reference to immutable reference
@@ -939,11 +945,23 @@ one must produce its classified diagnostic and must never be cached as a
 semantic constant value.
 
 ## Numeric Semantics (Core v1)
-- Integer overflow and underflow are runtime errors and MUST trap. This applies
-  in every build configuration; there is no mode in which overflow wraps
-  silently.
-- Division or modulo by zero is a runtime error and MUST trap.
-- Floating-point operations follow IEEE-754 semantics (NaN, +/-Inf).
+
+**NUM-FLOAT-FORMAT-001.** `Float32` is IEEE 754 binary32 and `Float64` is
+IEEE 754 binary64. All value observations use those formats; an implementation
+may use wider intermediates only when it rounds to the declared format at
+every operation boundary and produces the same result.
+
+**NUM-FLOAT-TRAIT-001.** `Float32` and `Float64` implement `Copy`, `Clone`,
+`Default`, and `Display`, but not `Eq`, `Ord`, or `Hash`. Primitive `==` and
+ordering comparisons remain IEEE comparisons: NaN compares unequal to every
+value including itself, every ordered comparison with NaN is false, and
+`-0.0 == +0.0` is true. Generic APIs requiring `Eq`, `Ord`, or `Hash` reject
+floating arguments. Explicit future wrapper types may provide total or
+bitwise contracts without changing the primitive types.
+
+Integer, floating-operation, conversion, and reproducibility rules are
+defined by the corresponding `NUM-*` rules in
+`CORE-V1-ABSTRACT-MACHINE.md`.
 
 ## Type Safety Guarantees
 
