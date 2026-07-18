@@ -1,15 +1,15 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.2 correction pass
+Updated: 2026-07-18 after WP-C2.4 (position and symbol query infrastructure)
 
 ## Position
-Gate: C2  Next: WP-C2.4  Blocked: none
+Gate: C2  Next: WP-C2.5  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head before this uncommitted correction pass: `f419b5c` (`complete WP-C2.3 shared project
-  analysis`). Commit only on explicit user request, per standing workflow.
+- Head before this uncommitted WP: `a3f8b5e` (`correct WP-C2.2 runtime semantics`). Commit only
+  on explicit user request, per standing workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -17,7 +17,7 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **467 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  **469 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 29 integration-test files**
   (`ls starkc/tests/*.rs | wc -l`, re-counted directly during WP-C1.6's consistency sweep — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
@@ -985,7 +985,7 @@ involving nested modules and private items should assume this stricter model.
 - [x] WP-C1.6: DEV-017 partially closed (schema + tooling built, 20 of 59 rules re-cited at
       function-level precision) — see session record below. 39 rules remain unclassified,
       unscheduled.
-- [ ] WP-C2.4: DEV-018 (build the full generic AST position-indexed walker; WP-C1.1's
+- [x] WP-C2.4: DEV-018 (build the full generic AST position-indexed walker; WP-C1.1's
       Expr/Block-only span_integrity.rs check is interim evidence, extend rather than redo).
 - [ ] WP-C1.1 follow-up (not blocking, noted in span_integrity.rs's own scope comment):
       underscore-placement rules for binary/octal literals still untested (decimal/hex only);
@@ -1953,3 +1953,32 @@ implemented or partially evidenced rules, unchanged by this runtime correction.
 FOLLOW-UP: DEV-036 is owned by WP-C2.6. Optional DEV-009/023/024 remain open under their prior
 dispositions. C2.3 remains complete and unchanged by this correction.
 NEXT: WP-C2.4 (position and symbol query infrastructure)
+
+### WP-C2.4 — 2026-07-18
+DONE: Added compiler-owned position and symbol query infrastructure to `ProjectAnalysis`.
+Consumers can retrieve the innermost syntax or HIR node at a source byte position, resolve the
+item/local symbol at definitions and resolved uses, navigate to definitions and deterministic
+reference lists, obtain inferred expression/local types and source-like item/type rendering,
+inspect enclosing item/module/source/package provenance, and enumerate public, document, or
+workspace symbols. Query identities remain opaque and session-scoped; syntax and HIR domains
+are explicit, arena slots remain private, and foreign-session handles are rejected.
+The index walks the owned AST and HIR graphs with source identity propagated through external
+modules. Compiler-provided prelude entities without physical source locations and member
+expressions without a resolved HIR member identity deliberately return no definition/symbol
+rather than guessing from text.
+FILES: starkc/src/analysis.rs, starkc/src/analysis/query.rs,
+STARKLANG/docs/compiler/work-packages/WP-C2.4.md, COMPILER-STATE.md.
+RULES: none — compiler service/query architecture only; no conformance rule citations changed.
+DECISIONS: none. Public protocol identities do not expose AST/HIR arena indexes, and no
+consumer-side semantic reconstruction was introduced.
+EVIDENCE: REG + FULL — focused tests cover stable syntax/HIR handles, item and local
+definitions/uses, expression/local/item types, signatures, enclosing context, symbol
+enumeration, foreign-file module provenance, and cross-file definition/reference navigation.
+`cargo test --workspace --all-targets --all-features`: 469 passed/0 failed/2 ignored (up from
+467/0/2). `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D
+warnings`, and `git diff --check` are clean; `python3 scripts/check-conformance.py` exits 0 at
+53/59 implemented or partially evidenced rules, unchanged by this architecture-only WP.
+FOLLOW-UP: WP-C2.5 should transport diagnostics in one structured, source-versioned form.
+Resolved member identities can be indexed when the HIR begins carrying them; C2.4 does not
+invent identities that semantic analysis does not provide.
+NEXT: WP-C2.5 (diagnostics transport contract)

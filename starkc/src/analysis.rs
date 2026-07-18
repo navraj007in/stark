@@ -16,6 +16,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+mod query;
+pub use query::{EnclosingContext, SourceLocation};
+
 static NEXT_ANALYSIS_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Input accepted by the shared compiler pipeline.
@@ -97,15 +100,26 @@ pub enum QueryKind {
     Local,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum QueryDomain {
+    Syntax,
+    Hir,
+}
+
 /// Opaque identity stable for the lifetime of its [`ProjectAnalysis`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct QueryHandle {
-    analysis: u64,
-    kind: QueryKind,
-    slot: u32,
+    pub(crate) analysis: u64,
+    pub(crate) domain: QueryDomain,
+    pub(crate) kind: QueryKind,
+    pub(crate) slot: u32,
 }
 
 impl QueryHandle {
+    pub fn domain(self) -> QueryDomain {
+        self.domain
+    }
+
     pub fn kind(self) -> QueryKind {
         self.kind
     }
@@ -172,6 +186,7 @@ pub struct ProjectAnalysis {
     pub type_tables: Option<TypeTables>,
     pub diagnostics: Vec<Diagnostic>,
     pub symbols: SymbolIndex,
+    queries: query::QueryIndex,
 }
 
 impl ProjectAnalysis {
@@ -181,28 +196,87 @@ impl ProjectAnalysis {
             .any(|diag| diag.severity == Severity::Error)
     }
 
-    pub(crate) fn handle(&self, kind: QueryKind, slot: u32) -> Option<QueryHandle> {
-        let len = match kind {
-            QueryKind::Item => self.hir.as_ref()?.items.len(),
-            QueryKind::Expression => self.hir.as_ref()?.exprs.len(),
-            QueryKind::Type => self.hir.as_ref()?.types.len(),
-            QueryKind::Statement => self.hir.as_ref()?.stmts.len(),
-            QueryKind::Pattern => self.hir.as_ref()?.pats.len(),
-            QueryKind::Block => self.hir.as_ref()?.blocks.len(),
-            QueryKind::Local => self
-                .type_tables
-                .as_ref()
-                .map_or(0, |tables| tables.local_types.len()),
-        };
-        ((slot as usize) < len).then_some(QueryHandle {
-            analysis: self.id,
-            kind,
-            slot,
-        })
+    pub fn owns_handle(&self, handle: QueryHandle) -> bool {
+        handle.analysis == self.id && self.queries.contains(handle)
     }
 
-    pub fn owns_handle(&self, handle: QueryHandle) -> bool {
-        handle.analysis == self.id && self.handle(handle.kind, handle.slot) == Some(handle)
+    pub fn syntax_at(&self, source: SourceId, offset: u32) -> Option<QueryHandle> {
+        self.queries.node_at(QueryDomain::Syntax, source, offset)
+    }
+
+    pub fn hir_at(&self, source: SourceId, offset: u32) -> Option<QueryHandle> {
+        self.queries.node_at(QueryDomain::Hir, source, offset)
+    }
+
+    pub fn symbol_at(&self, source: SourceId, offset: u32) -> Option<QueryHandle> {
+        self.queries.symbol_at(source, offset)
+    }
+
+    pub fn definition(&self, symbol: QueryHandle) -> Option<SourceLocation> {
+        self.owns_handle(symbol)
+            .then(|| self.queries.definition(symbol))
+            .flatten()
+    }
+
+    pub fn references(&self, symbol: QueryHandle) -> Vec<SourceLocation> {
+        if self.owns_handle(symbol) {
+            self.queries.references(symbol)
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn type_of(&self, handle: QueryHandle) -> Option<String> {
+        self.owns_handle(handle)
+            .then(|| self.queries.type_of(self, handle))
+            .flatten()
+    }
+
+    pub fn signature(&self, handle: QueryHandle) -> Option<String> {
+        self.owns_handle(handle)
+            .then(|| self.queries.signature(self, handle))
+            .flatten()
+    }
+
+    pub fn enclosing(&self, handle: QueryHandle) -> Option<EnclosingContext> {
+        self.owns_handle(handle)
+            .then(|| self.queries.enclosing(self, handle))
+            .flatten()
+    }
+
+    pub fn public_items(&self) -> Vec<&Symbol> {
+        let Some(hir) = self.hir.as_ref() else {
+            return Vec::new();
+        };
+        self.symbols
+            .symbols()
+            .iter()
+            .filter(|symbol| {
+                symbol.definition.domain == QueryDomain::Hir
+                    && symbol.definition.kind == QueryKind::Item
+                    && matches!(
+                        hir.items[symbol.definition.slot as usize].vis,
+                        Some(crate::ast::Vis::Pub)
+                    )
+            })
+            .collect()
+    }
+
+    pub fn document_symbols(&self, source: SourceId) -> Vec<&Symbol> {
+        self.symbols
+            .symbols()
+            .iter()
+            .filter(|symbol| symbol.source == source)
+            .collect()
+    }
+
+    pub fn workspace_symbols(&self, query: &str) -> Vec<&Symbol> {
+        let query = query.to_ascii_lowercase();
+        self.symbols
+            .symbols()
+            .iter()
+            .filter(|symbol| symbol.name.to_ascii_lowercase().contains(&query))
+            .collect()
     }
 }
 
@@ -264,6 +338,7 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
         .as_ref()
         .map(|hir| build_symbols(id, hir, &ast, &source_map))
         .unwrap_or_default();
+    let queries = query::QueryIndex::build(id, &ast, hir.as_ref(), &source_map, &symbols);
 
     ProjectAnalysis {
         id,
@@ -278,6 +353,7 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
         type_tables,
         diagnostics,
         symbols,
+        queries,
     }
 }
 
@@ -337,6 +413,7 @@ fn build_source_map(
 fn handle(analysis: u64, kind: QueryKind, slot: usize) -> QueryHandle {
     QueryHandle {
         analysis,
+        domain: QueryDomain::Hir,
         kind,
         slot: slot as u32,
     }
@@ -416,7 +493,7 @@ mod tests {
         assert!(analysis.hir.is_some());
         assert!(analysis.type_tables.is_some());
         assert_eq!(analysis.source_map.files().len(), 1);
-        let item = analysis.handle(QueryKind::Item, 0).unwrap();
+        let item = analysis.symbols.named("main").next().unwrap().definition;
         assert!(analysis.owns_handle(item));
         assert_eq!(analysis.symbols.named("main").count(), 1);
     }
@@ -426,7 +503,8 @@ mod tests {
         let file = Arc::new(SourceFile::new("main.stark", "fn main() {}"));
         let first = analyze_project(ProjectInput::program(file.clone()), LanguageOptions::CORE);
         let second = analyze_project(ProjectInput::program(file), LanguageOptions::CORE);
-        assert!(!second.owns_handle(first.handle(QueryKind::Item, 0).unwrap()));
+        let first_item = first.symbols.named("main").next().unwrap().definition;
+        assert!(!second.owns_handle(first_item));
     }
 
     #[test]
@@ -437,5 +515,122 @@ mod tests {
         assert!(analysis.hir.is_none());
         assert!(analysis.type_tables.is_none());
         assert_eq!(analysis.source_map.files().len(), 1);
+    }
+
+    #[test]
+    fn position_symbol_type_and_enclosing_queries_share_stable_handles() {
+        let source = "pub struct User { id: Int32 }\n\
+                      fn helper(x: Int32) -> Int32 { x }\n\
+                      pub fn main() { let value = helper(1); println(value); }\n";
+        let file = Arc::new(SourceFile::new("main.stark", source));
+        let analysis = analyze_project(ProjectInput::program(file), LanguageOptions::CORE);
+        assert!(!analysis.has_errors(), "{:?}", analysis.diagnostics);
+        let source_id = analysis.source_map.id_for_name("main.stark").unwrap();
+
+        let helper_call = source.rfind("helper").unwrap() as u32;
+        let syntax = analysis.syntax_at(source_id, helper_call).unwrap();
+        let hir = analysis.hir_at(source_id, helper_call).unwrap();
+        assert_eq!(syntax.domain(), QueryDomain::Syntax);
+        assert_eq!(hir.domain(), QueryDomain::Hir);
+
+        let helper = analysis.symbol_at(source_id, helper_call).unwrap();
+        assert_eq!(
+            analysis.signature(helper).as_deref(),
+            Some("fn helper(x: Int32) -> Int32")
+        );
+        let definition = analysis.definition(helper).unwrap();
+        assert_eq!(
+            &source[definition.span.lo as usize..definition.span.hi as usize],
+            "helper"
+        );
+        assert_eq!(analysis.references(helper).len(), 1);
+
+        let value_reference = source.rfind("value").unwrap() as u32;
+        let value = analysis.symbol_at(source_id, value_reference).unwrap();
+        assert_eq!(value.kind(), QueryKind::Local);
+        assert_eq!(analysis.type_of(value).as_deref(), Some("Int32"));
+        let literal = source.find("helper(1)").unwrap() as u32 + "helper(".len() as u32;
+        let literal_expr = analysis.hir_at(source_id, literal).unwrap();
+        assert_eq!(analysis.type_of(literal_expr).as_deref(), Some("Int32"));
+        assert_eq!(
+            analysis.type_of(helper),
+            analysis.signature(helper),
+            "item type rendering uses its source-like signature"
+        );
+        let enclosing = analysis.enclosing(value).unwrap();
+        let main = analysis.symbols.named("main").next().unwrap().definition;
+        assert_eq!(enclosing.item, Some(main));
+
+        let public = analysis
+            .public_items()
+            .into_iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(public, vec!["User", "main"]);
+        assert_eq!(analysis.document_symbols(source_id).len(), 3);
+        assert_eq!(analysis.workspace_symbols("help").len(), 1);
+    }
+
+    #[test]
+    fn definitions_and_references_preserve_cross_file_provenance() {
+        let unique = format!(
+            "stark-c24-{}-{}",
+            std::process::id(),
+            NEXT_ANALYSIS_ID.load(Ordering::Relaxed)
+        );
+        let directory = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&directory).unwrap();
+        let root_path = directory.join("main.stark");
+        let child_path = directory.join("child.stark");
+        let root_source = "mod child;\nfn main() { println(child::answer()); }\n";
+        std::fs::write(&root_path, root_source).unwrap();
+        std::fs::write(&child_path, "pub fn answer() -> Int32 { 42 }\n").unwrap();
+
+        let file = Arc::new(SourceFile::new(
+            root_path.to_string_lossy().into_owned(),
+            root_source,
+        ));
+        let analysis = analyze_project(ProjectInput::program(file), LanguageOptions::CORE);
+        assert!(!analysis.has_errors(), "{:?}", analysis.diagnostics);
+        let root_id = analysis
+            .source_map
+            .id_for_name(&root_path.to_string_lossy())
+            .unwrap();
+        let child_id = analysis
+            .source_map
+            .id_for_name(&child_path.to_string_lossy())
+            .unwrap();
+        let call = root_source.find("answer").unwrap() as u32;
+        let symbol = analysis.symbol_at(root_id, call).unwrap();
+        let child_definition_offset = "pub fn ".len() as u32;
+        assert_eq!(
+            analysis
+                .syntax_at(child_id, child_definition_offset)
+                .unwrap()
+                .domain(),
+            QueryDomain::Syntax
+        );
+        assert_eq!(
+            analysis
+                .hir_at(child_id, child_definition_offset)
+                .unwrap()
+                .domain(),
+            QueryDomain::Hir
+        );
+        assert_eq!(analysis.definition(symbol).unwrap().source, child_id);
+        assert_eq!(
+            analysis.references(symbol),
+            vec![SourceLocation {
+                source: root_id,
+                span: Span {
+                    lo: root_source.find("child::answer").unwrap() as u32,
+                    hi: (root_source.find("child::answer").unwrap() + "child::answer".len()) as u32,
+                },
+            }]
+        );
+        assert!(analysis.enclosing(symbol).unwrap().module.is_some());
+        assert_eq!(analysis.document_symbols(child_id).len(), 1);
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
