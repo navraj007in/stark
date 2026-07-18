@@ -576,6 +576,10 @@ with sign zero and all payload bits other than the quiet bit zero. Negation flip
 bit, including for zero and NaN. Implementations may not reassociate operations, contract
 multiply-add, flush subnormals, or use a different rounding mode.
 
+Core v1 has no floating `**` operator. Floating exponentiation is the
+`std::math::pow(Float64, Float64)` library operation governed by
+`STD-MATH-001`; use of `**` with either floating operand is a type error.
+
 For the same declared float type, inputs, and sequence of primitive operations/casts, the
 result bits are backend- and target-independent under `NUM-FLOAT-REPRO-001`. Decimal literals
 are converted directly to the destination format using

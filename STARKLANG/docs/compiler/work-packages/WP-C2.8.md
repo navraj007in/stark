@@ -56,3 +56,15 @@ This work package defines static semantics and governance. It does not change th
 compiler/interpreter, allocate final diagnostic codes, or claim executable positive/negative
 evidence for the new granular rules. WP-C2.11 owns implementation alignment, deviation closure,
 and adversarial evidence after C2.9 and C2.10 complete.
+
+## Post-C2.10 correction
+
+External review found three ambiguities that were corrected before C2.11:
+
+- generic instantiation may place a reference in a generic field; the entire recursively
+  enclosing value becomes borrow-carrying, while declarations still cannot write reference
+  field types;
+- constant patterns are limited to primitive scalar values and unit variants and never invoke
+  arbitrary user `Eq`;
+- unifying trait implementation heads overlap regardless of positive bounds; only incompatible
+  concrete/nominal constructors or arguments prove disjointness.

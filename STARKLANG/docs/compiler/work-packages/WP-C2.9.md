@@ -49,3 +49,17 @@ Rust regression gates are used as transition evidence.
 This package freezes contracts only. It does not align the current resolver, package manager,
 type checker, interpreter, standard library, CLI, or backend, and it does not claim granular
 positive/negative executable evidence. WP-C2.11 owns those corrections after C2.10 completes.
+
+## Post-C2.10 correction
+
+External review corrections before C2.11:
+
+- separated hyphen-capable canonical package names from identifier-valid source aliases and
+  prohibited automatic spelling conversion;
+- restricted each dependency alias/constraint to one major line;
+- made every package library-importable and executable selection a root build/run mode;
+- restricted `**` to integers and routed floating exponentiation through `std::math::pow`;
+- specified exact standard FNV-1a hashing and canonical primitive `Display` bytes;
+- clarified representative String, Vec, collection-capacity, and numeric parsing edge cases;
+- narrowed `std-full` to an API-availability plus explicitly stated behavior claim, not an
+  assertion that unstated per-method edge cases are already independently specified.

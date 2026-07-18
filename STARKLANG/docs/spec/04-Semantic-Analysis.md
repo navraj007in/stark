@@ -267,8 +267,10 @@ Pattern legality:
   every named field must exist and occur once, and omitted fields remain
   unbound;
 - literal and constant patterns must have the scrutinee type after expected-
-  type literal inference; scalar value tests use built-in equality, while a
-  non-primitive constant pattern requires a lawful `Eq` implementation;
+  type literal inference and are restricted to primitive scalar values and
+  unit enum variants. Equality is the compiler-known primitive/variant
+  operation. Struct, tuple, array, payload-enum, and other nonprimitive
+  constants are rejected as patterns even if their type implements `Eq`;
 - every binding name occurs at most once in one pattern.
 
 For an owned scrutinee, a `Copy` component gives its binding the component
@@ -283,9 +285,9 @@ creation and destruction order is `PAT-OWN-001`/`PAT-DROP-001`.
 matrix algorithm. An arm is useful only if it covers at least one value not
 covered by earlier arms. A wholly subsumed arm is a compile-time error.
 Duplicate scalar constants, a constructor after a covering wildcard/binding,
-and structurally subsumed nested patterns are therefore rejected. Pattern
-tests that invoke lawful `Eq` follow source arm order; a trap aborts according
-to the abstract machine.
+and structurally subsumed nested patterns are therefore rejected. Because
+constant-pattern equality never invokes user code, usefulness is decidable
+and pattern tests have no user-defined side effects or traps.
 
 ### 6. Mutability Analysis
 

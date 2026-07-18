@@ -1,5 +1,5 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.10
+Updated: 2026-07-18 after C2.8/C2.9 post-C2.10 correction
 
 ## Position
 Gate: C2  Next: WP-C2.11  Blocked: none
@@ -8,9 +8,9 @@ starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=bloc
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: WP-C2.10 future-extension compatibility boundaries.
-- Transition base commit: `b702a31` (`complete WP-C2.9 platform contracts`).
-- Current committed head at the start of WP-C2.10: `b702a31`. This event-style provenance avoids trying to
+- Last completed transition: bounded C2.8/C2.9 correction after WP-C2.10 review.
+- Transition base commit: `a3c0afe` (`complete WP-C2.10 future boundaries`).
+- Current committed head at the start of the correction: `a3c0afe`. This event-style provenance avoids trying to
   embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -317,6 +317,14 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   target, provenance, capability, and verification. Extensions require explicit stable
   identity/version enablement and cannot change Core-only behavior. No future feature is
   implemented by this decision; C2.11 owns exclusion/isolation enforcement evidence.
+- CD-017 [2026-07-18, C2.8/C2.9 correction] Clarified nine pre-C2.11 freeze points.
+  Generic fields may instantiate with references and recursively propagate borrow provenance;
+  constant patterns never invoke user `Eq`; positive bounds never prove unifying impl heads
+  disjoint. Canonical package names are distinct from identifier-valid aliases, each alias
+  selects exactly one major line, and all packages remain library-importable while executable
+  mode selects the root `main`. Floating `**` is rejected. Standard hash values use canonical
+  FNV-1a encodings and primitive Display bytes are exact. `std-full` freezes availability and
+  explicitly stated behavior only; unstated method edge cases are not conformance claims.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -2367,4 +2375,37 @@ validation/report generation, Python compilation, governance-document parsing, f
 synchronization, and whitespace checks pass. No Rust compiler/interpreter behavior changed.
 FOLLOW-UP: WP-C2.11 must align every approved C2.7–C2.10 decision atomically with diagnostics,
 positive/negative evidence, granular conformance status, and deviation closure.
+NEXT: WP-C2.11 (Implementation alignment and adversarial conformance)
+
+### C2.8/C2.9 post-C2.10 correction — 2026-07-18
+DONE: Applied the external review correction pass before C2.11. Removed the contradiction
+between generic reference arguments and borrow-carrying aggregate storage; restricted constant
+patterns to compiler-known primitive/unit equality; made trait overlap finite and conservative
+by ignoring positive bounds for disjointness; separated canonical package names from source
+aliases; required one major line per alias; defined all packages as libraries with root-selected
+executable mode; prohibited floating `**`; specified exact standard FNV-1a hashing and canonical
+Display output; clarified representative String/Vec/capacity/FromStr edges; and narrowed
+`std-full` to listed APIs plus explicitly stated behavior.
+FILES: STARKLANG/docs/spec/03-Type-System.md,
+STARKLANG/docs/spec/04-Semantic-Analysis.md,
+STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md,
+STARKLANG/docs/spec/06-Standard-Library.md,
+STARKLANG/docs/spec/07-Modules-and-Packages.md and regenerated combined Markdown/HTML/PDF;
+STARKLANG/docs/compiler/work-packages/WP-C2.8.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.9.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md, COMPILER-STATE.md.
+RULES: clarified `OWN-CARRY-001`, `PAT-EXHAUST-001`, `PAT-USEFUL-001`,
+`TRAIT-COHERENCE-002`, `NUM-FLOAT-OP-001`, `PKG-MANIFEST-001`, `PKG-RESOLVE-001`,
+`PKG-VERSION-001`, `PKG-MULTIVER-001`, `PROC-MAIN-001`, `STD-HASH-001`,
+`STD-FORMAT-001`, `STD-CONVERT-001`, and `STD-PROFILE-001`; no new IDs.
+DECISIONS: CD-017 refines approved C2.8/C2.9 rules without reopening C2.10 or introducing
+implementation changes.
+EVIDENCE: DOC + fixture conformance + full regression. Combined Markdown/HTML/PDF regeneration
+succeeds (PDF: 91 A4 pages); the manifest-synchronized corpus remains 112 fixtures without
+renumbering. `cargo test --workspace --all-targets --all-features` passes 489 tests with 0
+failures and 2 intentional opt-in tests ignored. Rust formatting, Clippy with warnings denied,
+conformance validation/reporting, Python compilation, governance parsing, extraction sync, and
+whitespace checks pass.
+FOLLOW-UP: C2.11 must implement the corrected rules, and must not claim conformance for
+standard-library behavior that remains explicitly unstated.
 NEXT: WP-C2.11 (Implementation alignment and adversarial conformance)

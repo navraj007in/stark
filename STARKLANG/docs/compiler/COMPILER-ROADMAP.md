@@ -538,6 +538,12 @@ Completed on 2026-07-18. Forty-six granular rules now freeze the C2.9 contracts 
 implementation alignment, diagnostics, deviation closure, and adversarial evidence remain
 WP-C2.11.
 
+Corrected after C2.10 external review: package aliases are source identifiers distinct from
+canonical names; aliases select one major line; packages are always library-importable;
+floating `**` is prohibited; standard hash/display outputs are exact; and `std-full` claims only
+listed APIs and explicitly specified behavior. The same pass clarified generic borrow-carrying
+aggregates, constant-pattern equality, and conservative trait overlap from C2.8.
+
 ### WP-C2.10 — Future-extension compatibility boundaries
 
 Create `STARKLANG/docs/spec/CORE-V1-FUTURE-BOUNDARIES.md`. Protect future ownership-aware

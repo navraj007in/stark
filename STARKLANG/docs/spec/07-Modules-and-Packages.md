@@ -119,7 +119,7 @@ The manifest is a JSON object with the following fields:
 
 | Field | Type | Required | Rules |
 | --- | --- | --- | --- |
-| `name` | string | yes | Package name: `[a-z][a-z0-9_-]*`, 1–64 chars. Used as the import root for dependents. |
+| `name` | string | yes | Canonical package identity: `[a-z][a-z0-9_-]*`, 1–64 chars. It is not automatically a source identifier. |
 | `version` | string | yes | Semantic version `MAJOR.MINOR.PATCH` (numeric components; optional `-prerelease` tag). |
 | `entry` | string | no | Package-root-relative path to the root source file. Default `src/main.stark`. MUST exist and MUST be inside the package directory. |
 | `dependencies` | object | no | Map from local import alias to a *version constraint string* or a *dependency object*. |
@@ -138,8 +138,10 @@ Version constraint syntax:
 
 Validation: unknown top-level fields are ignored (forward compatibility);
 a missing/invalid required field, a malformed constraint, a `path` escaping
-the workspace, or a dependency whose name violates the name rule is a
-manifest error and compilation MUST fail.
+the workspace, an invalid canonical package name, or a dependency alias that
+is not a non-keyword STARK `IDENTIFIER` is a manifest error and compilation
+MUST fail. No case or punctuation conversion exists between package names and
+aliases.
 
 **PKG-MANIFEST-001.** Manifest input is UTF-8 JSON with one object root.
 Duplicate keys are errors. `name`, `version`, `entry`, and `dependencies` are
@@ -155,8 +157,8 @@ Example:
   "version": "0.1.0",
   "entry": "src/main.stark",
   "dependencies": {
-    "tensor-lib": "^2.1.0",
-    "utils": { "path": "../utils" }
+    "TensorLib": { "package": "tensor-lib", "version": "^2.1.0" },
+    "Utils": { "package": "utils", "path": "../utils" }
   }
 }
 ```
@@ -169,7 +171,7 @@ Resolution order for external packages:
 2. Direct dependencies from `starkpkg.json`
 3. Standard library package `std`
 
-Dependency modules are accessed via their package name:
+Dependency modules are accessed via their manifest alias:
 ```stark
 use TensorLib::tensor::Tensor;
 ```
@@ -181,9 +183,10 @@ use TensorLib::tensor::Tensor;
 - The selected source, exact version, and package token MUST be reported in build output.
 
 **PKG-RESOLVE-001.** A dependency map key is its local import alias. A string
-value names the same package and a registry version constraint. A dependency
-object may additionally set `"package"` to the canonical package name and
-must select exactly one source:
+value is permitted only when that alias is also a valid canonical package name
+and names that same package with a registry version constraint. Otherwise a
+dependency object sets `"package"` to the canonical package name and selects
+exactly one source:
 
 - `"version"` with optional canonical `"registry"` identity;
 - `"path"` to a workspace package; or
@@ -196,7 +199,10 @@ collision, manifest-name mismatch, or dependency cycle rejects the graph.
 Aliases affect imports only and never package identity.
 
 **PKG-VERSION-001.** Semantic versions are ordered by SemVer precedence.
-Within one permitted major line, the highest available non-yanked version
+Each dependency alias and its constraint must identify exactly one major
+version line; a constraint spanning two or more majors (for example
+`>=1.2,<3.0`) is rejected rather than creating multiple instances or choosing
+one implicitly. Within the identified line, the highest available non-yanked version
 satisfying every constraint is selected; build metadata does not affect
 precedence and a tie is broken by exact version string then locked content
 hash. Prereleases are considered only when a constraint explicitly names a
@@ -218,8 +224,9 @@ and normalized generic arguments. Aliases and re-exports preserve it.
 **PKG-MULTIVER-001.** At most one exact version may be selected for each
 `(logical source identity, package name, major-version line)`. Different major
 lines may coexist and have distinct identities, but must be imported through
-distinct local aliases. The same exact package instance reached by multiple
-paths is shared.
+distinct local aliases whose constraints each identify their one major line.
+Every alias resolves to exactly one package instance. The same exact package
+instance reached by multiple paths is shared.
 
 **PKG-LOCK-001.** A reproducible build uses `stark.lock`, generated
 deterministically from the resolved graph. It records schema version, every
@@ -254,11 +261,14 @@ deterministically ordered cycle. Package cycles are always rejected.
 
 ## Executable and target contract
 
-**PROC-MAIN-001.** An executable package must expose exactly one non-generic
-private-or-public root item named `main` with no parameters and one of these
-return types: `Unit`, `Int32`, `Result<Unit, String>`, or
+**PROC-MAIN-001.** Every package is importable as a library. A build or run
+request for an executable target uses only the root package and requires
+exactly one non-generic root item named `main` with no parameters and one of
+these return types: `Unit`, `Int32`, `Result<Unit, String>`, or
 `Result<Int32, String>`. Async, overloaded, imported, and dependency `main`
-items do not qualify. A library need not define `main`.
+items do not qualify. Dependency packages are compiled as libraries even when
+they declare a function named `main`; a root package containing `main` remains
+importable as a library. Core v1 has no manifest package-kind or target table.
 
 **PROC-EXIT-001.** Normal `Unit` and `Ok(Unit)` return status 0. `Int32` and
 `Ok(Int32)` must be in `0..=255` and return that status; an out-of-range value

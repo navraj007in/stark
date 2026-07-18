@@ -389,8 +389,13 @@ in this section:
 - It counts as a live borrow of the value(s) it was derived from — shared for
   `&`-derived values, exclusive for `&mut`-derived values — for the borrow
   region defined by rule 4.
-- It MUST NOT be stored in a user-declared struct or enum field, returned
-  except under rules 2–3, or otherwise escape the lifetime of its source.
+- It may instantiate a generic user-declared field (for example
+  `Holder<&Int32>` where the declaration writes `value: T`). The complete
+  instantiated aggregate becomes borrow-carrying with the same sources and
+  capability. This does not permit a declaration to write `&T` directly.
+- It may be nested in other generic aggregates without a depth restriction,
+  but every enclosing value remains borrow-carrying and may be returned only
+  under rules 2–3 or otherwise used only within the lifetime of every source.
 - Binding it with `let` is permitted; the binding is subject to rule 4.
 
 This is a taint rule: borrow-carrying-ness propagates through generic
@@ -714,13 +719,16 @@ after monomorphization:
 | --- | --- | --- |
 | `==`, `!=` | `T: Eq` | `Eq::eq(&a, &b)` (negated for `!=`) |
 | `<`, `<=`, `>`, `>=` | `T: Ord` | `Ord::cmp(&a, &b)` compared to `Ordering` |
-| `+ - * / % **`, bitwise, shifts | generic `T: Num` | primitive operation after monomorphization |
+| `+ - * / %`, bitwise, shifts | generic `T: Num` | primitive operation after monomorphization |
+| `**` | integer primitive type only | checked integer exponentiation |
 
 `Num` is a compiler-known marker trait implemented by exactly the built-in
 numeric types (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`); user
-types cannot implement it in Core v1. Operator overloading for user-defined
-types (Add/Sub/... traits) is a future extension. `&&`, `||`, and `!` (on
-`Bool`) are built-in, short-circuiting, and not overloadable.
+types cannot implement it in Core v1. `Num` does not by itself authorize
+`**`: floating exponentiation uses `std::math::pow`, while the operator is
+integer-only. Operator overloading for user-defined types (Add/Sub/... traits)
+is a future extension. `&&`, `||`, and `!` (on `Bool`) are built-in,
+short-circuiting, and not overloadable.
 
 ```stark
 fn max<T: Ord>(a: T, b: T) -> T {
@@ -853,11 +861,13 @@ package.
 
 **TRAIT-COHERENCE-002.** Coherence is checked over the complete resolved
 package graph, independent of source order and whether an implementation is
-used. Two implementations overlap when there exists a substitution that
-unifies their trait and self-type heads and whose declared positive bounds
-can simultaneously hold. Bounds are not assumed disjoint merely because no
-current type is known to satisfy both. Duplicate and overlapping
-implementations are rejected.
+used. Two implementations overlap whenever a substitution unifies their
+trait and self-type heads. Positive trait bounds never make unifying heads
+disjoint: without negative bounds or sealed-world traits, they may
+simultaneously hold. Disjointness is proved only by incompatible nominal type
+constructors, unequal concrete types/constant generic arguments, different
+trait identities, or recursively disjoint type arguments. Duplicate and
+overlapping implementations are rejected before obligation selection.
 
 Selection for a concrete obligation:
 

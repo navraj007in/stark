@@ -1294,8 +1294,13 @@ in this section:
 - It counts as a live borrow of the value(s) it was derived from — shared for
   `&`-derived values, exclusive for `&mut`-derived values — for the borrow
   region defined by rule 4.
-- It MUST NOT be stored in a user-declared struct or enum field, returned
-  except under rules 2–3, or otherwise escape the lifetime of its source.
+- It may instantiate a generic user-declared field (for example
+  `Holder<&Int32>` where the declaration writes `value: T`). The complete
+  instantiated aggregate becomes borrow-carrying with the same sources and
+  capability. This does not permit a declaration to write `&T` directly.
+- It may be nested in other generic aggregates without a depth restriction,
+  but every enclosing value remains borrow-carrying and may be returned only
+  under rules 2–3 or otherwise used only within the lifetime of every source.
 - Binding it with `let` is permitted; the binding is subject to rule 4.
 
 This is a taint rule: borrow-carrying-ness propagates through generic
@@ -1619,13 +1624,16 @@ after monomorphization:
 | --- | --- | --- |
 | `==`, `!=` | `T: Eq` | `Eq::eq(&a, &b)` (negated for `!=`) |
 | `<`, `<=`, `>`, `>=` | `T: Ord` | `Ord::cmp(&a, &b)` compared to `Ordering` |
-| `+ - * / % **`, bitwise, shifts | generic `T: Num` | primitive operation after monomorphization |
+| `+ - * / %`, bitwise, shifts | generic `T: Num` | primitive operation after monomorphization |
+| `**` | integer primitive type only | checked integer exponentiation |
 
 `Num` is a compiler-known marker trait implemented by exactly the built-in
 numeric types (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`); user
-types cannot implement it in Core v1. Operator overloading for user-defined
-types (Add/Sub/... traits) is a future extension. `&&`, `||`, and `!` (on
-`Bool`) are built-in, short-circuiting, and not overloadable.
+types cannot implement it in Core v1. `Num` does not by itself authorize
+`**`: floating exponentiation uses `std::math::pow`, while the operator is
+integer-only. Operator overloading for user-defined types (Add/Sub/... traits)
+is a future extension. `&&`, `||`, and `!` (on `Bool`) are built-in,
+short-circuiting, and not overloadable.
 
 ```stark
 fn max<T: Ord>(a: T, b: T) -> T {
@@ -1758,11 +1766,13 @@ package.
 
 **TRAIT-COHERENCE-002.** Coherence is checked over the complete resolved
 package graph, independent of source order and whether an implementation is
-used. Two implementations overlap when there exists a substitution that
-unifies their trait and self-type heads and whose declared positive bounds
-can simultaneously hold. Bounds are not assumed disjoint merely because no
-current type is known to satisfy both. Duplicate and overlapping
-implementations are rejected.
+used. Two implementations overlap whenever a substitution unifies their
+trait and self-type heads. Positive trait bounds never make unifying heads
+disjoint: without negative bounds or sealed-world traits, they may
+simultaneously hold. Disjointness is proved only by incompatible nominal type
+constructors, unequal concrete types/constant generic arguments, different
+trait identities, or recursively disjoint type arguments. Duplicate and
+overlapping implementations are rejected before obligation selection.
 
 Selection for a concrete obligation:
 
@@ -2207,8 +2217,10 @@ Pattern legality:
   every named field must exist and occur once, and omitted fields remain
   unbound;
 - literal and constant patterns must have the scrutinee type after expected-
-  type literal inference; scalar value tests use built-in equality, while a
-  non-primitive constant pattern requires a lawful `Eq` implementation;
+  type literal inference and are restricted to primitive scalar values and
+  unit enum variants. Equality is the compiler-known primitive/variant
+  operation. Struct, tuple, array, payload-enum, and other nonprimitive
+  constants are rejected as patterns even if their type implements `Eq`;
 - every binding name occurs at most once in one pattern.
 
 For an owned scrutinee, a `Copy` component gives its binding the component
@@ -2223,9 +2235,9 @@ creation and destruction order is `PAT-OWN-001`/`PAT-DROP-001`.
 matrix algorithm. An arm is useful only if it covers at least one value not
 covered by earlier arms. A wholly subsumed arm is a compile-time error.
 Duplicate scalar constants, a constructor after a covering wildcard/binding,
-and structurally subsumed nested patterns are therefore rejected. Pattern
-tests that invoke lawful `Eq` follow source arm order; a trap aborts according
-to the abstract machine.
+and structurally subsumed nested patterns are therefore rejected. Because
+constant-pattern equality never invokes user code, usefulness is decidable
+and pattern tests have no user-defined side effects or traps.
 
 ### 6. Mutability Analysis
 
@@ -3005,6 +3017,10 @@ with sign zero and all payload bits other than the quiet bit zero. Negation flip
 bit, including for zero and NaN. Implementations may not reassociate operations, contract
 multiply-add, flush subnormals, or use a different rounding mode.
 
+Core v1 has no floating `**` operator. Floating exponentiation is the
+`std::math::pow(Float64, Float64)` library operation governed by
+`STD-MATH-001`; use of `**` with either floating operand is a type error.
+
 For the same declared float type, inputs, and sequence of primitive operations/casts, the
 result bits are backend- and target-independent under `NUM-FLOAT-REPRO-001`. Decimal literals
 are converted directly to the destination format using
@@ -3192,8 +3208,8 @@ Each implements `Iterator` with the obvious `Item`:
 Iterators whose `Item` is a reference (and `CharsIter`/`SplitIter`, which
 borrow their source) are **borrow-carrying types** in the sense of
 03-Type-System.md: they hold a live borrow of the collection they iterate and
-obey all reference rules (no storage in user structs, lexically scoped, cannot
-outlive their source).
+obey all reference rules (generic wrapper storage propagates the borrow,
+regions are lexical, and no wrapper may outlive its source).
 
 ## Core Module Structure
 ```
@@ -3453,6 +3469,15 @@ impl<T> IndexMut<UInt64> for Vec<T> {
 }
 ```
 
+`Vec::insert` accepts `0..=len`, shifting later elements right, and traps
+above `len`; `remove` accepts `0..len`, shifts later elements left, and traps
+otherwise. `append` moves all elements in order and leaves `other` empty; the
+borrow rules reject passing the same vector as both receiver and argument.
+`with_capacity(n)` creates an empty collection with capacity at least `n`;
+capacity may grow but never affects equality or iteration. Because this
+constructor has no `Result`, inability to reserve is a classified
+host/resource failure, not a language trap.
+
 ### HashMap<K, V> - Hash Table
 ```stark
 // Implementation-provided; internals opaque
@@ -3492,6 +3517,11 @@ impl<T: Hash + Eq> HashSet<T> {
 }
 ```
 
+Collection `with_capacity(n)` requests room for at least `n` entries but
+exposes no exact bucket count, load factor, seed, or growth schedule. Failure
+to reserve is a classified host/resource failure. Capacity and collision
+strategy never affect equality, insertion order, returned values, or Drop.
+
 ### Iteration Order (Core v1)
 `HashMap::keys`/`values`/`iter` and `HashSet::iter` (and any `for` loop over a
 `HashMap`/`HashSet`) MUST visit entries in **first-insertion order**:
@@ -3513,8 +3543,24 @@ distinct. Replacing an equal key retains the first stored key and its
 insertion position. Their observable iteration order is the first-insertion
 order above and is independent of hash values, collision strategy, capacity,
 target, and process. Primitive/standard-type hash implementations must be
-stable for one Core version and target contract; user hash law violations
-have the behavior in `TRAIT-LAW-001`.
+the 64-bit FNV-1a result with offset basis `14695981039346656037` and prime
+`1099511628211` over this canonical byte encoding:
+
+- integers use their fixed-width little-endian two's-complement/unsigned bits;
+- `Bool` is byte 0 or 1; `Char` is its `UInt32` scalar encoding; `Unit` is
+  empty; `String`/`str` are their UTF-8 bytes;
+- arrays, tuples, `Vec`, `Option`, and `Result` use domain tags `0x01`,
+  `0x02`, `0x03`, `0x04`, and `0x05` respectively; sequences then encode
+  element count as `UInt64` little-endian; `Option` encodes `None` as variant
+  byte 0 and `Some` as 1, while `Result` encodes `Ok` as variant byte 0 and
+  `Err` as 1; every present component is framed by its encoded byte length as
+  `UInt64` little-endian followed by those bytes.
+
+Floats do not implement `Hash`; maps, sets, resources, references, and
+borrowed views have no standard `Hash` implementation. These rules make a
+direct standard `Hash::hash` result backend- and target-independent. User
+implementations return their body result normally; law violations have the
+behavior in `TRAIT-LAW-001`.
 
 ## String Module (std::string)
 
@@ -3585,6 +3631,14 @@ combines grapheme clusters. `pop` removes and returns the last scalar, and
 `to_uppercase` use Unicode 15.1 Default Case Conversion, independent of
 locale. A mapping may expand one scalar to several and preserves their
 specified order. Core performs no normalization before or after mapping.
+
+`replace(from,to)` scans left-to-right and replaces non-overlapping matches;
+an empty `from` inserts `to` at every scalar boundary including both ends.
+`split(delimiter)` preserves trailing empty components for a nonempty
+delimiter. An empty delimiter yields one component per Unicode scalar and no
+leading or trailing empty component; splitting an empty string yields no
+components. `trim` removes the Unicode 15.1 `White_Space` property from both
+ends only. These operations never normalize or use locale-sensitive matching.
 
 ## Math Module (std::math)
 
@@ -3704,6 +3758,25 @@ newline convention. Successful calls preserve program order. The process
 contract flushes submitted stdout/stderr before reporting normal return or a
 language trap; a stream write/flush failure is a host/process failure.
 
+Canonical standard `Display` implementations are byte-exact:
+
+- signed/unsigned integers are base-10 ASCII with no leading zeroes and a
+  minus sign only for negative values;
+- `Bool` is `true` or `false`; `Char`, `String`, and `str` emit their UTF-8
+  content; `Unit` is `()`; `Ordering` is `Less`, `Equal`, or `Greater`;
+- finite floats use the fewest significant decimal digits that parse back to
+  the same declared IEEE value; among equal-length candidates choose the
+  numerically closest, then the one with an even final digit. Fixed form is
+  used for decimal exponents in `[-4,15]`, otherwise scientific form with one
+  leading digit, lowercase `e`, no exponent `+` or leading zeroes, and at
+  least `.0` or an exponent. Negative zero is `-0.0`; infinities are
+  `inf`/`-inf`; every NaN is `NaN`;
+- `IOError` is `NotFound`, `PermissionDenied`, `AlreadyExists`,
+  `InvalidInput`, or `Other(<message>)`; `GenericError` emits its message.
+
+No standard formatting is locale-sensitive or contains padding, grouping,
+color, debug syntax, or a trailing newline.
+
 ## Error Module (std::error)
 
 ### Error Trait
@@ -3814,8 +3887,9 @@ every source value. Potentially failing numeric conversions use `TryFrom` and
 the exact `NUM-CAST-001` value/range rules. `FromStr` accepts the corresponding
 Core literal body without a type suffix or surrounding whitespace and returns
 `Err` for malformed, non-finite textual forms, overflow, or underflow; it
-never silently clamps or wraps. `as` remains the only trapping numeric
-conversion syntax.
+never silently clamps or wraps. Float underflow means a nonzero mathematical
+input whose correctly rounded result would be zero; subnormal nonzero results
+are accepted. `as` remains the only trapping numeric conversion syntax.
 
 ## Essential Trait Implementations
 
@@ -3863,10 +3937,15 @@ implementation MUST state which profile it implements.
 
 **STD-PROFILE-001.** `core-min` is required for every Core v1 implementation.
 `std-full` is an optional, indivisible advertised capability: claiming it
-requires every API and behavioral rule assigned below, including file I/O and
-`Random`. A missing host facility prevents the `std-full` claim rather than
-changing an API's meaning. Extensions may add profiles but may not call them
-Core v1 or weaken these profiles.
+requires every listed API plus every behavior explicitly stated in this
+chapter, including file I/O and `Random`. C2.9 freezes language-relevant
+contracts and the API-availability profile; it does not imply semantics for
+an edge case this chapter does not state. Such an unstated result is
+implementation-defined and cannot be used as cross-backend conformance
+evidence until a later standard-library specification assigns it. A missing
+host facility prevents the `std-full` claim rather than changing an API's
+meaning. Extensions may add profiles but may not call them Core v1 or weaken
+these profiles.
 
 ### Profile: `core-min` (MVP)
 The minimum standard library for Core v1 conformance:
@@ -4034,7 +4113,7 @@ The manifest is a JSON object with the following fields:
 
 | Field | Type | Required | Rules |
 | --- | --- | --- | --- |
-| `name` | string | yes | Package name: `[a-z][a-z0-9_-]*`, 1–64 chars. Used as the import root for dependents. |
+| `name` | string | yes | Canonical package identity: `[a-z][a-z0-9_-]*`, 1–64 chars. It is not automatically a source identifier. |
 | `version` | string | yes | Semantic version `MAJOR.MINOR.PATCH` (numeric components; optional `-prerelease` tag). |
 | `entry` | string | no | Package-root-relative path to the root source file. Default `src/main.stark`. MUST exist and MUST be inside the package directory. |
 | `dependencies` | object | no | Map from local import alias to a *version constraint string* or a *dependency object*. |
@@ -4053,8 +4132,10 @@ Version constraint syntax:
 
 Validation: unknown top-level fields are ignored (forward compatibility);
 a missing/invalid required field, a malformed constraint, a `path` escaping
-the workspace, or a dependency whose name violates the name rule is a
-manifest error and compilation MUST fail.
+the workspace, an invalid canonical package name, or a dependency alias that
+is not a non-keyword STARK `IDENTIFIER` is a manifest error and compilation
+MUST fail. No case or punctuation conversion exists between package names and
+aliases.
 
 **PKG-MANIFEST-001.** Manifest input is UTF-8 JSON with one object root.
 Duplicate keys are errors. `name`, `version`, `entry`, and `dependencies` are
@@ -4070,8 +4151,8 @@ Example:
   "version": "0.1.0",
   "entry": "src/main.stark",
   "dependencies": {
-    "tensor-lib": "^2.1.0",
-    "utils": { "path": "../utils" }
+    "TensorLib": { "package": "tensor-lib", "version": "^2.1.0" },
+    "Utils": { "package": "utils", "path": "../utils" }
   }
 }
 ```
@@ -4084,7 +4165,7 @@ Resolution order for external packages:
 2. Direct dependencies from `starkpkg.json`
 3. Standard library package `std`
 
-Dependency modules are accessed via their package name:
+Dependency modules are accessed via their manifest alias:
 ```stark
 use TensorLib::tensor::Tensor;
 ```
@@ -4096,9 +4177,10 @@ use TensorLib::tensor::Tensor;
 - The selected source, exact version, and package token MUST be reported in build output.
 
 **PKG-RESOLVE-001.** A dependency map key is its local import alias. A string
-value names the same package and a registry version constraint. A dependency
-object may additionally set `"package"` to the canonical package name and
-must select exactly one source:
+value is permitted only when that alias is also a valid canonical package name
+and names that same package with a registry version constraint. Otherwise a
+dependency object sets `"package"` to the canonical package name and selects
+exactly one source:
 
 - `"version"` with optional canonical `"registry"` identity;
 - `"path"` to a workspace package; or
@@ -4111,7 +4193,10 @@ collision, manifest-name mismatch, or dependency cycle rejects the graph.
 Aliases affect imports only and never package identity.
 
 **PKG-VERSION-001.** Semantic versions are ordered by SemVer precedence.
-Within one permitted major line, the highest available non-yanked version
+Each dependency alias and its constraint must identify exactly one major
+version line; a constraint spanning two or more majors (for example
+`>=1.2,<3.0`) is rejected rather than creating multiple instances or choosing
+one implicitly. Within the identified line, the highest available non-yanked version
 satisfying every constraint is selected; build metadata does not affect
 precedence and a tie is broken by exact version string then locked content
 hash. Prereleases are considered only when a constraint explicitly names a
@@ -4133,8 +4218,9 @@ and normalized generic arguments. Aliases and re-exports preserve it.
 **PKG-MULTIVER-001.** At most one exact version may be selected for each
 `(logical source identity, package name, major-version line)`. Different major
 lines may coexist and have distinct identities, but must be imported through
-distinct local aliases. The same exact package instance reached by multiple
-paths is shared.
+distinct local aliases whose constraints each identify their one major line.
+Every alias resolves to exactly one package instance. The same exact package
+instance reached by multiple paths is shared.
 
 **PKG-LOCK-001.** A reproducible build uses `stark.lock`, generated
 deterministically from the resolved graph. It records schema version, every
@@ -4169,11 +4255,14 @@ deterministically ordered cycle. Package cycles are always rejected.
 
 ## Executable and target contract
 
-**PROC-MAIN-001.** An executable package must expose exactly one non-generic
-private-or-public root item named `main` with no parameters and one of these
-return types: `Unit`, `Int32`, `Result<Unit, String>`, or
+**PROC-MAIN-001.** Every package is importable as a library. A build or run
+request for an executable target uses only the root package and requires
+exactly one non-generic root item named `main` with no parameters and one of
+these return types: `Unit`, `Int32`, `Result<Unit, String>`, or
 `Result<Int32, String>`. Async, overloaded, imported, and dependency `main`
-items do not qualify. A library need not define `main`.
+items do not qualify. Dependency packages are compiled as libraries even when
+they declare a function named `main`; a root package containing `main` remains
+importable as a library. Core v1 has no manifest package-kind or target table.
 
 **PROC-EXIT-001.** Normal `Unit` and `Ok(Unit)` return status 0. `Int32` and
 `Ok(Int32)` must be in `0..=255` and return that status; an out-of-range value

@@ -39,8 +39,8 @@ Each implements `Iterator` with the obvious `Item`:
 Iterators whose `Item` is a reference (and `CharsIter`/`SplitIter`, which
 borrow their source) are **borrow-carrying types** in the sense of
 03-Type-System.md: they hold a live borrow of the collection they iterate and
-obey all reference rules (no storage in user structs, lexically scoped, cannot
-outlive their source).
+obey all reference rules (generic wrapper storage propagates the borrow,
+regions are lexical, and no wrapper may outlive its source).
 
 ## Core Module Structure
 ```
@@ -300,6 +300,15 @@ impl<T> IndexMut<UInt64> for Vec<T> {
 }
 ```
 
+`Vec::insert` accepts `0..=len`, shifting later elements right, and traps
+above `len`; `remove` accepts `0..len`, shifts later elements left, and traps
+otherwise. `append` moves all elements in order and leaves `other` empty; the
+borrow rules reject passing the same vector as both receiver and argument.
+`with_capacity(n)` creates an empty collection with capacity at least `n`;
+capacity may grow but never affects equality or iteration. Because this
+constructor has no `Result`, inability to reserve is a classified
+host/resource failure, not a language trap.
+
 ### HashMap<K, V> - Hash Table
 ```stark
 // Implementation-provided; internals opaque
@@ -339,6 +348,11 @@ impl<T: Hash + Eq> HashSet<T> {
 }
 ```
 
+Collection `with_capacity(n)` requests room for at least `n` entries but
+exposes no exact bucket count, load factor, seed, or growth schedule. Failure
+to reserve is a classified host/resource failure. Capacity and collision
+strategy never affect equality, insertion order, returned values, or Drop.
+
 ### Iteration Order (Core v1)
 `HashMap::keys`/`values`/`iter` and `HashSet::iter` (and any `for` loop over a
 `HashMap`/`HashSet`) MUST visit entries in **first-insertion order**:
@@ -360,8 +374,24 @@ distinct. Replacing an equal key retains the first stored key and its
 insertion position. Their observable iteration order is the first-insertion
 order above and is independent of hash values, collision strategy, capacity,
 target, and process. Primitive/standard-type hash implementations must be
-stable for one Core version and target contract; user hash law violations
-have the behavior in `TRAIT-LAW-001`.
+the 64-bit FNV-1a result with offset basis `14695981039346656037` and prime
+`1099511628211` over this canonical byte encoding:
+
+- integers use their fixed-width little-endian two's-complement/unsigned bits;
+- `Bool` is byte 0 or 1; `Char` is its `UInt32` scalar encoding; `Unit` is
+  empty; `String`/`str` are their UTF-8 bytes;
+- arrays, tuples, `Vec`, `Option`, and `Result` use domain tags `0x01`,
+  `0x02`, `0x03`, `0x04`, and `0x05` respectively; sequences then encode
+  element count as `UInt64` little-endian; `Option` encodes `None` as variant
+  byte 0 and `Some` as 1, while `Result` encodes `Ok` as variant byte 0 and
+  `Err` as 1; every present component is framed by its encoded byte length as
+  `UInt64` little-endian followed by those bytes.
+
+Floats do not implement `Hash`; maps, sets, resources, references, and
+borrowed views have no standard `Hash` implementation. These rules make a
+direct standard `Hash::hash` result backend- and target-independent. User
+implementations return their body result normally; law violations have the
+behavior in `TRAIT-LAW-001`.
 
 ## String Module (std::string)
 
@@ -432,6 +462,14 @@ combines grapheme clusters. `pop` removes and returns the last scalar, and
 `to_uppercase` use Unicode 15.1 Default Case Conversion, independent of
 locale. A mapping may expand one scalar to several and preserves their
 specified order. Core performs no normalization before or after mapping.
+
+`replace(from,to)` scans left-to-right and replaces non-overlapping matches;
+an empty `from` inserts `to` at every scalar boundary including both ends.
+`split(delimiter)` preserves trailing empty components for a nonempty
+delimiter. An empty delimiter yields one component per Unicode scalar and no
+leading or trailing empty component; splitting an empty string yields no
+components. `trim` removes the Unicode 15.1 `White_Space` property from both
+ends only. These operations never normalize or use locale-sensitive matching.
 
 ## Math Module (std::math)
 
@@ -551,6 +589,25 @@ newline convention. Successful calls preserve program order. The process
 contract flushes submitted stdout/stderr before reporting normal return or a
 language trap; a stream write/flush failure is a host/process failure.
 
+Canonical standard `Display` implementations are byte-exact:
+
+- signed/unsigned integers are base-10 ASCII with no leading zeroes and a
+  minus sign only for negative values;
+- `Bool` is `true` or `false`; `Char`, `String`, and `str` emit their UTF-8
+  content; `Unit` is `()`; `Ordering` is `Less`, `Equal`, or `Greater`;
+- finite floats use the fewest significant decimal digits that parse back to
+  the same declared IEEE value; among equal-length candidates choose the
+  numerically closest, then the one with an even final digit. Fixed form is
+  used for decimal exponents in `[-4,15]`, otherwise scientific form with one
+  leading digit, lowercase `e`, no exponent `+` or leading zeroes, and at
+  least `.0` or an exponent. Negative zero is `-0.0`; infinities are
+  `inf`/`-inf`; every NaN is `NaN`;
+- `IOError` is `NotFound`, `PermissionDenied`, `AlreadyExists`,
+  `InvalidInput`, or `Other(<message>)`; `GenericError` emits its message.
+
+No standard formatting is locale-sensitive or contains padding, grouping,
+color, debug syntax, or a trailing newline.
+
 ## Error Module (std::error)
 
 ### Error Trait
@@ -661,8 +718,9 @@ every source value. Potentially failing numeric conversions use `TryFrom` and
 the exact `NUM-CAST-001` value/range rules. `FromStr` accepts the corresponding
 Core literal body without a type suffix or surrounding whitespace and returns
 `Err` for malformed, non-finite textual forms, overflow, or underflow; it
-never silently clamps or wraps. `as` remains the only trapping numeric
-conversion syntax.
+never silently clamps or wraps. Float underflow means a nonzero mathematical
+input whose correctly rounded result would be zero; subnormal nonzero results
+are accepted. `as` remains the only trapping numeric conversion syntax.
 
 ## Essential Trait Implementations
 
@@ -710,10 +768,15 @@ implementation MUST state which profile it implements.
 
 **STD-PROFILE-001.** `core-min` is required for every Core v1 implementation.
 `std-full` is an optional, indivisible advertised capability: claiming it
-requires every API and behavioral rule assigned below, including file I/O and
-`Random`. A missing host facility prevents the `std-full` claim rather than
-changing an API's meaning. Extensions may add profiles but may not call them
-Core v1 or weaken these profiles.
+requires every listed API plus every behavior explicitly stated in this
+chapter, including file I/O and `Random`. C2.9 freezes language-relevant
+contracts and the API-availability profile; it does not imply semantics for
+an edge case this chapter does not state. Such an unstated result is
+implementation-defined and cannot be used as cross-backend conformance
+evidence until a later standard-library specification assigns it. A missing
+host facility prevents the `std-full` claim rather than changing an API's
+meaning. Extensions may add profiles but may not call them Core v1 or weaken
+these profiles.
 
 ### Profile: `core-min` (MVP)
 The minimum standard library for Core v1 conformance:

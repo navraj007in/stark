@@ -1378,10 +1378,17 @@ references).</p>
 for all rules in this section: - It counts as a live borrow of the
 value(s) it was derived from — shared for <code>&amp;</code>-derived
 values, exclusive for <code>&amp;mut</code>-derived values — for the
-borrow region defined by rule 4. - It MUST NOT be stored in a
-user-declared struct or enum field, returned except under rules 2–3, or
-otherwise escape the lifetime of its source. - Binding it with
-<code>let</code> is permitted; the binding is subject to rule 4.</p>
+borrow region defined by rule 4. - It may instantiate a generic
+user-declared field (for example <code>Holder&lt;&amp;Int32&gt;</code>
+where the declaration writes <code>value: T</code>). The complete
+instantiated aggregate becomes borrow-carrying with the same sources and
+capability. This does not permit a declaration to write
+<code>&amp;T</code> directly. - It may be nested in other generic
+aggregates without a depth restriction, but every enclosing value
+remains borrow-carrying and may be returned only under rules 2–3 or
+otherwise used only within the lifetime of every source. - Binding it
+with <code>let</code> is permitted; the binding is subject to rule
+4.</p>
 <p>This is a taint rule: borrow-carrying-ness propagates through generic
 instantiation and function returns, and the checker tracks the source
 variables each borrow-carrying value may borrow from. It is what makes
@@ -1695,9 +1702,14 @@ primitive operation after monomorphization:</p>
 <code>Ordering</code></td>
 </tr>
 <tr>
-<td><code>+ - * / % **</code>, bitwise, shifts</td>
+<td><code>+ - * / %</code>, bitwise, shifts</td>
 <td>generic <code>T: Num</code></td>
 <td>primitive operation after monomorphization</td>
+</tr>
+<tr>
+<td><code>**</code></td>
+<td>integer primitive type only</td>
+<td>checked integer exponentiation</td>
 </tr>
 </tbody>
 </table>
@@ -1706,10 +1718,12 @@ exactly the built-in numeric types
 (<code>Int8</code>–<code>Int64</code>,
 <code>UInt8</code>–<code>UInt64</code>, <code>Float32</code>,
 <code>Float64</code>); user types cannot implement it in Core v1.
-Operator overloading for user-defined types (Add/Sub/… traits) is a
-future extension. <code>&amp;&amp;</code>, <code>||</code>, and
-<code>!</code> (on <code>Bool</code>) are built-in, short-circuiting,
-and not overloadable.</p>
+<code>Num</code> does not by itself authorize <code>**</code>: floating
+exponentiation uses <code>std::math::pow</code>, while the operator is
+integer-only. Operator overloading for user-defined types (Add/Sub/…
+traits) is a future extension. <code>&amp;&amp;</code>, <code>||</code>,
+and <code>!</code> (on <code>Bool</code>) are built-in,
+short-circuiting, and not overloadable.</p>
 <pre class="stark"><code>fn max&lt;T: Ord&gt;(a: T, b: T) -&gt; T {
     if a &gt; b { a } else { b }   // a &gt; b desugars to Ord::cmp(&amp;a, &amp;b)
 }</code></pre>
@@ -1833,11 +1847,14 @@ do not make a trait or type local. Inherent implementations are
 permitted only for a nominal type defined by the current package.</p>
 <p><strong>TRAIT-COHERENCE-002.</strong> Coherence is checked over the
 complete resolved package graph, independent of source order and whether
-an implementation is used. Two implementations overlap when there exists
-a substitution that unifies their trait and self-type heads and whose
-declared positive bounds can simultaneously hold. Bounds are not assumed
-disjoint merely because no current type is known to satisfy both.
-Duplicate and overlapping implementations are rejected.</p>
+an implementation is used. Two implementations overlap whenever a
+substitution unifies their trait and self-type heads. Positive trait
+bounds never make unifying heads disjoint: without negative bounds or
+sealed-world traits, they may simultaneously hold. Disjointness is
+proved only by incompatible nominal type constructors, unequal concrete
+types/constant generic arguments, different trait identities, or
+recursively disjoint type arguments. Duplicate and overlapping
+implementations are rejected before obligation selection.</p>
 <p>Selection for a concrete obligation:</p>
 <ol type="1">
 <li>expand aliases and normalize already-resolved projections;</li>
@@ -2223,9 +2240,11 @@ a constant or unit variant is a value test;</li>
 type, every named field must exist and occur once, and omitted fields
 remain unbound;</li>
 <li>literal and constant patterns must have the scrutinee type after
-expected- type literal inference; scalar value tests use built-in
-equality, while a non-primitive constant pattern requires a lawful
-<code>Eq</code> implementation;</li>
+expected- type literal inference and are restricted to primitive scalar
+values and unit enum variants. Equality is the compiler-known
+primitive/variant operation. Struct, tuple, array, payload-enum, and
+other nonprimitive constants are rejected as patterns even if their type
+implements <code>Eq</code>;</li>
 <li>every binding name occurs at most once in one pattern.</li>
 </ul>
 <p>For an owned scrutinee, a <code>Copy</code> component gives its
@@ -2242,9 +2261,9 @@ with the same pattern- matrix algorithm. An arm is useful only if it
 covers at least one value not covered by earlier arms. A wholly subsumed
 arm is a compile-time error. Duplicate scalar constants, a constructor
 after a covering wildcard/binding, and structurally subsumed nested
-patterns are therefore rejected. Pattern tests that invoke lawful
-<code>Eq</code> follow source arm order; a trap aborts according to the
-abstract machine.</p>
+patterns are therefore rejected. Because constant-pattern equality never
+invokes user code, usefulness is decidable and pattern tests have no
+user-defined side effects or traps.</p>
 <h3 id="mutability-analysis">6. Mutability Analysis</h3>
 <h4 id="mutable-access-validation">Mutable Access Validation</h4>
 <p>Assignment to an initialized immutable variable is an error.
@@ -3129,6 +3148,10 @@ other than the quiet bit zero. Negation flips the sign bit, including
 for zero and NaN. Implementations may not reassociate operations,
 contract multiply-add, flush subnormals, or use a different rounding
 mode.</p>
+<p>Core v1 has no floating <code>**</code> operator. Floating
+exponentiation is the <code>std::math::pow(Float64, Float64)</code>
+library operation governed by <code>STD-MATH-001</code>; use of
+<code>**</code> with either floating operand is a type error.</p>
 <p>For the same declared float type, inputs, and sequence of primitive
 operations/casts, the result bits are backend- and target-independent
 under <code>NUM-FLOAT-REPRO-001</code>. Decimal literals are converted
@@ -3372,8 +3395,9 @@ structs. Each implements <code>Iterator</code> with the obvious
 <code>CharsIter</code>/<code>SplitIter</code>, which borrow their
 source) are <strong>borrow-carrying types</strong> in the sense of
 03-Type-System.md: they hold a live borrow of the collection they
-iterate and obey all reference rules (no storage in user structs,
-lexically scoped, cannot outlive their source).</p>
+iterate and obey all reference rules (generic wrapper storage propagates
+the borrow, regions are lexical, and no wrapper may outlive its
+source).</p>
 <h2 id="core-module-structure">Core Module Structure</h2>
 <pre><code>std/
 ├── core/           // Core language items
@@ -3642,6 +3666,16 @@ impl&lt;T&gt; Index&lt;UInt64&gt; for Vec&lt;T&gt; {
 impl&lt;T&gt; IndexMut&lt;UInt64&gt; for Vec&lt;T&gt; {
     fn index_mut(&amp;mut self, index: UInt64) -&gt; &amp;mut T;
 }</code></pre>
+<p><code>Vec::insert</code> accepts <code>0..=len</code>, shifting later
+elements right, and traps above <code>len</code>; <code>remove</code>
+accepts <code>0..len</code>, shifts later elements left, and traps
+otherwise. <code>append</code> moves all elements in order and leaves
+<code>other</code> empty; the borrow rules reject passing the same
+vector as both receiver and argument. <code>with_capacity(n)</code>
+creates an empty collection with capacity at least <code>n</code>;
+capacity may grow but never affects equality or iteration. Because this
+constructor has no <code>Result</code>, inability to reserve is a
+classified host/resource failure, not a language trap.</p>
 <h3 id="hashmapk-v---hash-table">HashMap&lt;K, V&gt; - Hash Table</h3>
 <pre class="stark"><code>// Implementation-provided; internals opaque
 struct HashMap&lt;K, V&gt; { /* implementation-defined */ }
@@ -3675,6 +3709,11 @@ impl&lt;T: Hash + Eq&gt; HashSet&lt;T&gt; {
     fn clear(&amp;mut self);
     fn iter(&amp;self) -&gt; Iter&lt;T&gt;;
 }</code></pre>
+<p>Collection <code>with_capacity(n)</code> requests room for at least
+<code>n</code> entries but exposes no exact bucket count, load factor,
+seed, or growth schedule. Failure to reserve is a classified
+host/resource failure. Capacity and collision strategy never affect
+equality, insertion order, returned values, or Drop.</p>
 <h3 id="iteration-order-core-v1">Iteration Order (Core v1)</h3>
 <p><code>HashMap::keys</code>/<code>values</code>/<code>iter</code> and
 <code>HashSet::iter</code> (and any <code>for</code> loop over a
@@ -3699,9 +3738,32 @@ with equal hashes remain distinct. Replacing an equal key retains the
 first stored key and its insertion position. Their observable iteration
 order is the first-insertion order above and is independent of hash
 values, collision strategy, capacity, target, and process.
-Primitive/standard-type hash implementations must be stable for one Core
-version and target contract; user hash law violations have the behavior
-in <code>TRAIT-LAW-001</code>.</p>
+Primitive/standard-type hash implementations must be the 64-bit FNV-1a
+result with offset basis <code>14695981039346656037</code> and prime
+<code>1099511628211</code> over this canonical byte encoding:</p>
+<ul>
+<li>integers use their fixed-width little-endian
+two’s-complement/unsigned bits;</li>
+<li><code>Bool</code> is byte 0 or 1; <code>Char</code> is its
+<code>UInt32</code> scalar encoding; <code>Unit</code> is empty;
+<code>String</code>/<code>str</code> are their UTF-8 bytes;</li>
+<li>arrays, tuples, <code>Vec</code>, <code>Option</code>, and
+<code>Result</code> use domain tags <code>0x01</code>,
+<code>0x02</code>, <code>0x03</code>, <code>0x04</code>, and
+<code>0x05</code> respectively; sequences then encode element count as
+<code>UInt64</code> little-endian; <code>Option</code> encodes
+<code>None</code> as variant byte 0 and <code>Some</code> as 1, while
+<code>Result</code> encodes <code>Ok</code> as variant byte 0 and
+<code>Err</code> as 1; every present component is framed by its encoded
+byte length as <code>UInt64</code> little-endian followed by those
+bytes.</li>
+</ul>
+<p>Floats do not implement <code>Hash</code>; maps, sets, resources,
+references, and borrowed views have no standard <code>Hash</code>
+implementation. These rules make a direct standard
+<code>Hash::hash</code> result backend- and target-independent. User
+implementations return their body result normally; law violations have
+the behavior in <code>TRAIT-LAW-001</code>.</p>
 <h2 id="string-module-stdstring">String Module (std::string)</h2>
 <h3 id="string-type-1">String Type</h3>
 <pre class="stark"><code>// Implementation-provided; internals opaque (UTF-8 byte buffer)
@@ -3769,6 +3831,15 @@ in source order. Neither normalizes text or combines grapheme clusters.
 Default Case Conversion, independent of locale. A mapping may expand one
 scalar to several and preserves their specified order. Core performs no
 normalization before or after mapping.</p>
+<p><code>replace(from,to)</code> scans left-to-right and replaces
+non-overlapping matches; an empty <code>from</code> inserts
+<code>to</code> at every scalar boundary including both ends.
+<code>split(delimiter)</code> preserves trailing empty components for a
+nonempty delimiter. An empty delimiter yields one component per Unicode
+scalar and no leading or trailing empty component; splitting an empty
+string yields no components. <code>trim</code> removes the Unicode 15.1
+<code>White_Space</code> property from both ends only. These operations
+never normalize or use locale-sensitive matching.</p>
 <h2 id="math-module-stdmath">Math Module (std::math)</h2>
 <h3 id="basic-operations">Basic Operations</h3>
 <pre class="stark"><code>// Constants
@@ -3888,6 +3959,32 @@ convention. Successful calls preserve program order. The process
 contract flushes submitted stdout/stderr before reporting normal return
 or a language trap; a stream write/flush failure is a host/process
 failure.</p>
+<p>Canonical standard <code>Display</code> implementations are
+byte-exact:</p>
+<ul>
+<li>signed/unsigned integers are base-10 ASCII with no leading zeroes
+and a minus sign only for negative values;</li>
+<li><code>Bool</code> is <code>true</code> or <code>false</code>;
+<code>Char</code>, <code>String</code>, and <code>str</code> emit their
+UTF-8 content; <code>Unit</code> is <code>()</code>;
+<code>Ordering</code> is <code>Less</code>, <code>Equal</code>, or
+<code>Greater</code>;</li>
+<li>finite floats use the fewest significant decimal digits that parse
+back to the same declared IEEE value; among equal-length candidates
+choose the numerically closest, then the one with an even final digit.
+Fixed form is used for decimal exponents in <code>[-4,15]</code>,
+otherwise scientific form with one leading digit, lowercase
+<code>e</code>, no exponent <code>+</code> or leading zeroes, and at
+least <code>.0</code> or an exponent. Negative zero is
+<code>-0.0</code>; infinities are <code>inf</code>/<code>-inf</code>;
+every NaN is <code>NaN</code>;</li>
+<li><code>IOError</code> is <code>NotFound</code>,
+<code>PermissionDenied</code>, <code>AlreadyExists</code>,
+<code>InvalidInput</code>, or <code>Other(&lt;message&gt;)</code>;
+<code>GenericError</code> emits its message.</li>
+</ul>
+<p>No standard formatting is locale-sensitive or contains padding,
+grouping, color, debug syntax, or a trailing newline.</p>
 <h2 id="error-module-stderror">Error Module (std::error)</h2>
 <h3 id="error-trait">Error Trait</h3>
 <pre class="stark"><code>trait Error {
@@ -3983,7 +4080,9 @@ failing numeric conversions use <code>TryFrom</code> and the exact
 accepts the corresponding Core literal body without a type suffix or
 surrounding whitespace and returns <code>Err</code> for malformed,
 non-finite textual forms, overflow, or underflow; it never silently
-clamps or wraps. <code>as</code> remains the only trapping numeric
+clamps or wraps. Float underflow means a nonzero mathematical input
+whose correctly rounded result would be zero; subnormal nonzero results
+are accepted. <code>as</code> remains the only trapping numeric
 conversion syntax.</p>
 <h2 id="essential-trait-implementations">Essential Trait
 Implementations</h2>
@@ -4027,12 +4126,16 @@ impl Ord for Int32 {
 implementation MUST state which profile it implements.</p>
 <p><strong>STD-PROFILE-001.</strong> <code>core-min</code> is required
 for every Core v1 implementation. <code>std-full</code> is an optional,
-indivisible advertised capability: claiming it requires every API and
-behavioral rule assigned below, including file I/O and
-<code>Random</code>. A missing host facility prevents the
-<code>std-full</code> claim rather than changing an API’s meaning.
-Extensions may add profiles but may not call them Core v1 or weaken
-these profiles.</p>
+indivisible advertised capability: claiming it requires every listed API
+plus every behavior explicitly stated in this chapter, including file
+I/O and <code>Random</code>. C2.9 freezes language-relevant contracts
+and the API-availability profile; it does not imply semantics for an
+edge case this chapter does not state. Such an unstated result is
+implementation-defined and cannot be used as cross-backend conformance
+evidence until a later standard-library specification assigns it. A
+missing host facility prevents the <code>std-full</code> claim rather
+than changing an API’s meaning. Extensions may add profiles but may not
+call them Core v1 or weaken these profiles.</p>
 <h3 id="profile-core-min-mvp">Profile: <code>core-min</code> (MVP)</h3>
 <p>The minimum standard library for Core v1 conformance: - Prelude:
 primitive types, <code>Option</code>, <code>Result</code>,
@@ -4219,8 +4322,8 @@ Items in parent modules or the crate root require explicit
 <td><code>name</code></td>
 <td>string</td>
 <td>yes</td>
-<td>Package name: <code>[a-z][a-z0-9_-]*</code>, 1–64 chars. Used as the
-import root for dependents.</td>
+<td>Canonical package identity: <code>[a-z][a-z0-9_-]*</code>, 1–64
+chars. It is not automatically a source identifier.</td>
 </tr>
 <tr>
 <td><code>version</code></td>
@@ -4261,9 +4364,11 @@ version - <code>"^1.2.3"</code> — <code>&gt;=1.2.3</code> and
 minor/patch components are zero</p>
 <p>Validation: unknown top-level fields are ignored (forward
 compatibility); a missing/invalid required field, a malformed
-constraint, a <code>path</code> escaping the workspace, or a dependency
-whose name violates the name rule is a manifest error and compilation
-MUST fail.</p>
+constraint, a <code>path</code> escaping the workspace, an invalid
+canonical package name, or a dependency alias that is not a non-keyword
+STARK <code>IDENTIFIER</code> is a manifest error and compilation MUST
+fail. No case or punctuation conversion exists between package names and
+aliases.</p>
 <p><strong>PKG-MANIFEST-001.</strong> Manifest input is UTF-8 JSON with
 one object root. Duplicate keys are errors. <code>name</code>,
 <code>version</code>, <code>entry</code>, and <code>dependencies</code>
@@ -4279,8 +4384,8 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb148-1"><a href
 <span id="cb148-3"><a href="#cb148-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
 <span id="cb148-4"><a href="#cb148-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
 <span id="cb148-5"><a href="#cb148-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
-<span id="cb148-6"><a href="#cb148-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb148-7"><a href="#cb148-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
+<span id="cb148-6"><a href="#cb148-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;TensorLib&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;package&quot;</span><span class="fu">:</span> <span class="st">&quot;tensor-lib&quot;</span><span class="fu">,</span> <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span> <span class="fu">},</span></span>
+<span id="cb148-7"><a href="#cb148-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;Utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;package&quot;</span><span class="fu">:</span> <span class="st">&quot;utils&quot;</span><span class="fu">,</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
 <span id="cb148-8"><a href="#cb148-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
 <span id="cb148-9"><a href="#cb148-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <h2 id="packages-and-dependencies">Packages and Dependencies</h2>
@@ -4289,7 +4394,7 @@ class="sourceCode json"><code class="sourceCode json"><span id="cb148-1"><a href
 <p>Resolution order for external packages: 1. Local package source (the
 current package) 2. Direct dependencies from <code>starkpkg.json</code>
 3. Standard library package <code>std</code></p>
-<p>Dependency modules are accessed via their package name:</p>
+<p>Dependency modules are accessed via their manifest alias:</p>
 <pre class="stark"><code>use TensorLib::tensor::Tensor;</code></pre>
 <h3 id="dependency-version-resolution-core-v1">Dependency Version
 Resolution (Core v1)</h3>
@@ -4303,10 +4408,11 @@ error.</li>
 reported in build output.</li>
 </ul>
 <p><strong>PKG-RESOLVE-001.</strong> A dependency map key is its local
-import alias. A string value names the same package and a registry
-version constraint. A dependency object may additionally set
-<code>"package"</code> to the canonical package name and must select
-exactly one source:</p>
+import alias. A string value is permitted only when that alias is also a
+valid canonical package name and names that same package with a registry
+version constraint. Otherwise a dependency object sets
+<code>"package"</code> to the canonical package name and selects exactly
+one source:</p>
 <ul>
 <li><code>"version"</code> with optional canonical
 <code>"registry"</code> identity;</li>
@@ -4321,12 +4427,16 @@ disagreement, alias collision, manifest-name mismatch, or dependency
 cycle rejects the graph. Aliases affect imports only and never package
 identity.</p>
 <p><strong>PKG-VERSION-001.</strong> Semantic versions are ordered by
-SemVer precedence. Within one permitted major line, the highest
-available non-yanked version satisfying every constraint is selected;
-build metadata does not affect precedence and a tie is broken by exact
-version string then locked content hash. Prereleases are considered only
-when a constraint explicitly names a prerelease. With a valid lockfile,
-its still-compatible exact selection wins without re-resolution.</p>
+SemVer precedence. Each dependency alias and its constraint must
+identify exactly one major version line; a constraint spanning two or
+more majors (for example <code>&gt;=1.2,&lt;3.0</code>) is rejected
+rather than creating multiple instances or choosing one implicitly.
+Within the identified line, the highest available non-yanked version
+satisfying every constraint is selected; build metadata does not affect
+precedence and a tie is broken by exact version string then locked
+content hash. Prereleases are considered only when a constraint
+explicitly names a prerelease. With a valid lockfile, its
+still-compatible exact selection wins without re-resolution.</p>
 <p><strong>PKG-IDENTITY-001.</strong> A resolved package-instance token
 is relocation-stable:</p>
 <ul>
@@ -4344,8 +4454,10 @@ preserve it.</p>
 selected for each
 <code>(logical source identity, package name, major-version line)</code>.
 Different major lines may coexist and have distinct identities, but must
-be imported through distinct local aliases. The same exact package
-instance reached by multiple paths is shared.</p>
+be imported through distinct local aliases whose constraints each
+identify their one major line. Every alias resolves to exactly one
+package instance. The same exact package instance reached by multiple
+paths is shared.</p>
 <p><strong>PKG-LOCK-001.</strong> A reproducible build uses
 <code>stark.lock</code>, generated deterministically from the resolved
 graph. It records schema version, every package-instance token
@@ -4379,14 +4491,18 @@ aliases is rejected with a deterministically ordered cycle. Package
 cycles are always rejected.</p>
 <h2 id="executable-and-target-contract">Executable and target
 contract</h2>
-<p><strong>PROC-MAIN-001.</strong> An executable package must expose
-exactly one non-generic private-or-public root item named
+<p><strong>PROC-MAIN-001.</strong> Every package is importable as a
+library. A build or run request for an executable target uses only the
+root package and requires exactly one non-generic root item named
 <code>main</code> with no parameters and one of these return types:
 <code>Unit</code>, <code>Int32</code>,
 <code>Result&lt;Unit, String&gt;</code>, or
 <code>Result&lt;Int32, String&gt;</code>. Async, overloaded, imported,
-and dependency <code>main</code> items do not qualify. A library need
-not define <code>main</code>.</p>
+and dependency <code>main</code> items do not qualify. Dependency
+packages are compiled as libraries even when they declare a function
+named <code>main</code>; a root package containing <code>main</code>
+remains importable as a library. Core v1 has no manifest package-kind or
+target table.</p>
 <p><strong>PROC-EXIT-001.</strong> Normal <code>Unit</code> and
 <code>Ok(Unit)</code> return status 0. <code>Int32</code> and
 <code>Ok(Int32)</code> must be in <code>0..=255</code> and return that
