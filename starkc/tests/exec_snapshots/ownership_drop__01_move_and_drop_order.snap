@@ -1,0 +1,7 @@
+STATUS: 0
+--- stdout ---
+consuming
+first
+after consume
+second
+--- stderr ---

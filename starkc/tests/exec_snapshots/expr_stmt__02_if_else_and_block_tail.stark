@@ -1,0 +1,22 @@
+fn classify(n: Int32) -> String {
+    if n < 0 {
+        String::from("negative")
+    } else if n == 0 {
+        String::from("zero")
+    } else {
+        String::from("positive")
+    }
+}
+
+fn main() {
+    println(classify(-3).as_str());
+    println(classify(0).as_str());
+    println(classify(7).as_str());
+
+    let value = {
+        let a = 3;
+        let b = 4;
+        a * a + b * b
+    };
+    println(value);
+}

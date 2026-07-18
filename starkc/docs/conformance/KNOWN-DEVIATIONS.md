@@ -917,7 +917,7 @@ WP-C1.5)
   `&self`, `&mut self`, nested method chains, and preserved write-through semantics.
 - **Owning gate:** closed, WP-C2.2.
 
-## DEV-036 — Parser's filename-based module-bypass heuristic remains a residual risk for real user projects
+## DEV-036 — Parser's filename-based module-bypass heuristic remains a residual risk for real user projects (RESOLVED in WP-C2.12)
 
 - **Normative expectation:** a genuinely missing `mod foo;` backing file must always produce
   E0202, in every real invocation, per `07-Modules-and-Packages.md`'s multi-file layout rules —
@@ -949,6 +949,43 @@ WP-C1.5)
   new bug (present since WP-C1.1's DEV-014 fix), but its residual risk to real user projects was
   not previously flagged or recorded as its own deviation. Scheduled by the WP-C2.2 correction
   pass alongside the differential corpus's multi-file hardening coverage.
+- **Resolution:** implemented exactly the proposed disposition. `parser.rs`'s
+  `load_submodules_recursive` no longer string-matches the compiled file's name/path at all —
+  the `is_conformance` check (and the three conditions it tested) is removed outright. A new
+  `allow_missing_modules: bool` parameter (threaded through the function and its recursive
+  self-call) controls whether a missing backing file is reported; every existing public entry
+  point (`parse`, `parse_with_options`, `parse_project`, `parse_package_graph`) defaults it to
+  `false` and is otherwise unchanged. A new, explicitly-named public function,
+  `parse_project_allowing_missing_modules`, sets it to `true`; only
+  `starkc/tests/conformance.rs` calls it, gated by a small `const ALLOW_MISSING_MODULE_FILES: &[&str]`
+  naming the exact fixture by filename (currently just
+  `"07-Modules-and-Packages__01.stark"`) — an explicit, harness-side opt-in rather than a runtime
+  path heuristic, matching the disposition's "route the exemption through [structured] data"
+  request as closely as the manifest's existing flat-TOML schema allows without a schema change.
+  **Correction to this entry's own prior text:** `07-Modules-and-Packages__01.stark`'s manifest
+  verdict is `parse-pass`/`mode = "program"`, not `notation` as originally written above (checked
+  directly against `STARKLANG/tests/spec-fixtures/manifest.toml:512-514` while implementing the
+  fix) — it *is* exercised by `conformance.rs`'s `spec_conformance` enforcement loop, which is
+  exactly why the exemption was needed there. The diagnostic code is `E0208` ("file not found for
+  module"), not `E0202` as this entry's "Normative expectation" line stated; `E0208` is what
+  `parser.rs` actually allocates for every branch of this function (missing file, conflicting
+  files, unreadable file) — the `E0202` figure was a typo in the original finding, not a second,
+  separate collision (DEV-019 already tracks real E-code collisions elsewhere and is unaffected
+  by this correction).
+- **Regressions:** one pre-existing test incidentally depended on the removed bypass
+  (`parser::tests::item_kinds`'s `"mod math;"` syntax-shape check, via its shared `parse_ok`
+  helper's bare `SourceFile` happening to be named `"test.stark"`) and was fixed to call
+  `parse_project_allowing_missing_modules` directly, matching its actual intent (syntax
+  acceptance, not module-resolution semantics). New regressions, each building a real project on
+  disk at a path that collides with one of the three removed conditions and asserting E0208 is
+  still reported: `gate2_valid.rs::test_missing_module_file_is_reported_even_when_path_contains_spec_fixtures`,
+  `::test_missing_module_file_is_reported_even_when_path_contains_starklang`,
+  `::test_missing_module_file_is_reported_even_when_entry_file_is_named_test_stark`. Plus two
+  direct unit tests in `parser.rs` pinning down both the negative case (ordinary `parse` still
+  reports the diagnostic for a bare in-memory `SourceFile` literally named `"test.stark"`) and
+  the positive case (the explicit opt-in still suppresses it), independent of the fixture corpus:
+  `parser::tests::ordinary_parse_reports_missing_module_even_for_bare_test_stark_name`,
+  `::allowing_missing_modules_suppresses_the_diagnostic_when_explicitly_requested`.
 
 ## DEV-037 — Runtime field/index projection did not auto-dereference references (RESOLVED in WP-C2.2)
 
@@ -1184,6 +1221,160 @@ WP-C1.5)
   compiler already rejects this at name resolution (`E0204` duplicate definition) before
   entrypoint selection runs; no corresponding deviation was opened.
 
+## DEV-051 — Trait default methods cannot call another trait method on `self`
+
+- **Normative expectation:** a trait default method body may call other methods of the same
+  trait through `self`, exactly as an ordinary method body can call sibling methods.
+- **Current behaviour:** confirmed with a minimal repro (a `Greet` trait with a required
+  `fn name(&self) -> String` and a default `fn greeting(&self) -> String { self.name() }`,
+  implemented for a struct that only overrides `name`): calling `self.name()` from inside the
+  default `greeting()` body fails to type-check with `E0302 method 'name' not found for type
+  '&Self'`. Ordinary (non-default) method-to-method calls on `self` are unaffected; this is
+  specific to a default method body calling a sibling trait method.
+- **User impact:** a common, idiomatic trait-default pattern (a default method built out of
+  calls to other trait methods) does not work at all.
+- **Security/soundness impact:** none identified — a rejection of legal code (availability), not
+  an acceptance of illegal code.
+- **Workaround:** implement the calling method directly per-impl instead of as a trait default,
+  or require every implementor to override it.
+- **Owning gate:** found while building the WP-C2.12 differential corpus (`starkc/tests/
+  exec_snapshots/struct_enum_trait__04_trait_default_and_override.stark` was redesigned to avoid
+  this construct rather than fixed). Not investigated further; root cause not isolated. —
+  unscheduled.
+
+## DEV-052 — `Trait::method(...)` qualified-call syntax fails to resolve for compiler CoreTraits
+
+- **Normative expectation:** `03-Type-System.md`:670 documents `Trait::method(receiver, ...)` as
+  normal fully-qualified call syntax, with no carve-out for compiler-recognized traits
+  (`Eq`, `Ord`, `Hash`, `Display`, `Clone`, etc. — `hir::CoreTrait`).
+  `resolve.rs`/`eval_call`'s `Res::TraitMember(trait_id, member)` path (confirmed present and
+  working via `call_qualified_trait`) demonstrates the mechanism is implemented in general.
+- **Current behaviour:** confirmed with a minimal repro: `Describe::describe(&m)` for a
+  user-defined `trait Describe` resolves and executes correctly, but `Eq::eq(&a, &b)` for a
+  struct with a real `impl Eq for P { fn eq(&self, other: &P) -> Bool { ... } }` fails at
+  resolve time with `E0200 undefined variable 'Eq::eq'`. The same qualified-call syntax works
+  for a user-declared trait and fails for a compiler CoreTrait name.
+- **User impact:** narrow — fully-qualified calls to `Eq`/`Ord`/etc. (needed only to disambiguate
+  when a type also has an inherent method of the same name) do not work; the operator sugar
+  (`==`, `<`, etc.) is unaffected and is how these traits are normally invoked.
+- **Security/soundness impact:** none identified — a rejection of legal code, not an acceptance
+  of illegal code.
+- **Workaround:** use the operator form instead of the fully-qualified form for CoreTraits.
+- **Owning gate:** found while building the WP-C2.12 differential corpus (the "trait-qualified
+  calls" metamorphic pair was redesigned around a user-defined trait instead of `Eq`, rather than
+  fixed). Root cause not isolated — likely `resolve.rs`'s path-resolution for a leading
+  `TraitName::` segment special-cases user-declared trait items and never checks the
+  `CoreTrait` table the same way ordinary `==`/`<` dispatch does. — unscheduled.
+
+## DEV-053 — A bare `None` (or any other builtin-resolved) pattern never matched by value; it silently acted as an unconditional wildcard (RESOLVED, root cause corrected from the original finding)
+
+- **Normative expectation:** `02-Syntax-Grammar.md`'s `SYN-PATTERN-001` note: "a single
+  `IDENTIFIER` pattern that resolves to a unit enum variant or a constant in scope matches by
+  value; otherwise it introduces a new binding." `None` (`Res::Builtin(Builtin::None)`) must
+  match only `Option::None`.
+- **Original finding (superseded by the investigation below):** this entry originally described
+  two "tuple-pattern usefulness/exhaustiveness" false positives -- a spurious `W0006`
+  "unreachable arm" for `match (opt, n) { (None, x) => x, (Some(a), _) => a }`, and a spurious
+  `E0303` "non-exhaustive" for a fully-covered three-variant-enum-times-wildcarded-Int32 tuple
+  match -- and flagged the usefulness *algorithm* as the suspected root cause.
+- **Actual root cause, found on investigation: not an exhaustiveness-algorithm bug at all.**
+  `resolve.rs`'s `lower_pattern` (`ast::PatKind::Binding` arm) disambiguates every bare
+  identifier pattern by checking only `self.modules[current_module].items` for
+  `Res::Variant`/`Res::Item` -- it never checked `Res::Builtin`, which is how `None` is
+  classified (`resolve_builtin("None") == Some(Builtin::None)`, a lookup only ever called from
+  *expression*-position resolution, never from pattern lowering). Every bare `None` pattern
+  therefore fell through to "fresh local binding" unconditionally, in every position, not just
+  when nested in a tuple.
+- **Actual severity: silently WRONG program output, confirmed empirically -- not merely a
+  spurious diagnostic.** `fn main() { let value: Option<Int32> = Some(5); let r = match value {
+  None => 999, Some(a) => a }; println(r); }` printed **`999`**: the `None` arm silently matched
+  `Some(5)` with no diagnostic of any kind, because it was never actually checking the variant.
+  This reproduces with a completely flat, non-nested, non-tuple scrutinee -- the original
+  finding's framing around "tuple-pattern coverage" was itself an artifact of the same root
+  cause (a tuple pattern containing a misclassified `None` was wrongly judged *irrefutable* by
+  `is_irrefutable`, which treats `Wild`/`Binding` components as always-matching, letting it
+  bypass the exhaustiveness check entirely -- which is also why the original "spurious
+  unreachable arm" symptom occurred: `(None, x)` really was behaving like `(_, x)`, so the
+  redundancy warning against `(Some(a), _)` was internally consistent with the compiler's wrong
+  interpretation, not a bug in the redundancy check itself).
+- **The "spurious non-exhaustive" half of the original finding is not a bug and is not part of
+  this entry.** Re-reading `typecheck.rs`'s exhaustiveness check (`check_expr`'s `Match` arm)
+  confirms it is a deliberate, self-documented, sound-by-construction design choice: any
+  scrutinee type outside a small set of exactly-enumerable domains (bool/enum/Option/Result)
+  requires at least one *individually* irrefutable arm rather than attempting real cross-arm
+  tuple-component usefulness tracking, exactly as its own code comment states ("sound -- never
+  accepts a genuinely non-exhaustive match... matches this codebase's existing 'reject some safe
+  programs is intentional' philosophy"). This is a known, accepted precision limitation, not a
+  correctness defect, and needed no fix.
+- **Checked for the dangerous direction and did not find it:** before fixing, `match (color, n) {
+  (Color::Red, x) => x, (Color::Green, _) => 2 }` (a `Color`/`Int32` tuple genuinely missing the
+  `Blue` case) was confirmed still correctly rejected as non-exhaustive, both before and after
+  the fix -- the confirmed defect was over-permissive matching of one misclassified pattern
+  value, not an under-strict exhaustiveness gap.
+- **Resolution:** `lower_pattern`'s `Binding` arm now also checks `resolve_builtin(name)` (gated
+  by the tensor extension exactly as `resolve_unqualified` already gates ordinary bare-identifier
+  builtin resolution, per DEV-004) before falling back to "fresh binding," producing a real
+  `PatKind::Path { res: Res::Builtin(builtin), .. }` value pattern. `typecheck.rs`'s
+  `check_pat` gained a matching `Res::Builtin(Builtin::None) => self.resolve(&expected)` arm
+  (mirroring the existing `Res::Builtin(Builtin::Some | ..)` handling already present for the
+  `TupleVariant` case). Regressions: `resolve::tests::
+  repeated_none_in_one_tuple_pattern_does_not_collide_as_duplicate_bindings`;
+  `interp::tests::bare_none_pattern_matches_by_value_not_as_a_wildcard`,
+  `::nested_none_pattern_in_a_tuple_matches_by_value_not_as_a_wildcard`,
+  `::repeated_none_within_one_tuple_pattern_no_longer_collides`,
+  `::ordinary_binding_and_payload_patterns_are_unaffected_by_the_none_fix`.
+- **Owning gate:** found while building the WP-C2.12 differential corpus; investigated and
+  closed as a dedicated follow-up in the same session. See DEV-055 for a related, narrower,
+  *not* fixed finding surfaced during this investigation.
+
+## DEV-054 — A tuple pattern with the same by-value identifier repeated across components was rejected as a duplicate binding (RESOLVED, same root cause and fix as DEV-053)
+
+- **Normative expectation:** `02-Syntax-Grammar.md`'s `SYN-PATTERN-001` note states "a single
+  `IDENTIFIER` pattern that resolves to a unit enum variant or a constant in scope matches by
+  value; otherwise it introduces a new binding" — a by-value identifier pattern does not
+  introduce any binding at all, so it cannot collide with another occurrence of itself.
+- **Original behaviour:** `match pair { (None, None) => 0, _ => 1 }` for `pair:
+  (Option<Int32>, Option<Int32>)` failed to resolve with `E0204 duplicate definition of variable
+  'None' in the same scope` — both `None`s were independently misclassified as introducing a
+  fresh local named "None" (DEV-053's exact root cause), so the second collided with the first.
+- **Resolution:** identical fix to DEV-053 (`lower_pattern` now recognizes `None` as a
+  `Res::Builtin` value pattern, which introduces no binding at all, so there is nothing left to
+  collide). Regression: `interp::tests::repeated_none_within_one_tuple_pattern_no_longer_collides`
+  (`resolve::tests::repeated_none_in_one_tuple_pattern_does_not_collide_as_duplicate_bindings`
+  covers the same case at the resolve stage).
+- **Owning gate:** found while building the WP-C2.12 differential corpus; closed by the same fix
+  as DEV-053, same session.
+
+## DEV-055 — A bare, glob-imported unit enum variant name does not resolve at all (as an expression or a pattern)
+
+- **Normative expectation:** `use Color::*;` should make `Color`'s variants usable unqualified,
+  as both values and patterns, the same as any other glob-imported name.
+- **Current behaviour:** confirmed with a minimal repro: after `enum Color { Red, Green, Blue }
+  use Color::*;`, a bare `Red` used as an *expression* (`let c: Color = Red;`) fails with `E0200
+  undefined variable 'Red'`. Used bare in *pattern* position (`match c { Red => 1, Green => 2,
+  Blue => 3 }`, with `c` constructed via the qualified `Color::Blue`), all three arms are
+  accepted syntactically but exhibit DEV-053's exact wildcard-collapse symptom: the first arm
+  matches unconditionally and the other two are flagged unreachable, printing `1` regardless of
+  `c`'s real value. **Not fixed by the DEV-053 fix** — confirmed still present afterward — because
+  the root cause is different: `resolve.rs`'s `lower_pattern` (and, evidently, expression-position
+  bare-identifier resolution) checks `self.modules[current_module].items` for the name, and a
+  glob import apparently does not populate that map the way a direct `use Color::Red;` (or
+  presumably a locally-declared item) would; this is not the `Res::Builtin` gap DEV-053 fixed.
+- **User impact:** a glob-imported unit enum variant cannot be referred to unqualified at all,
+  either as a value or in a pattern — silently wrong pattern-match results if attempted, or a
+  compile error for the expression form.
+- **Security/soundness impact:** the pattern-position half is the same class of silent-wrong-
+  output defect as DEV-053 (a pattern that should discriminate on variant identity instead
+  matches unconditionally) — real, but narrower in practice, since it requires a glob import
+  specifically (`use Color::Red;`/`Color::Blue` qualified forms are unaffected).
+- **Workaround:** use the qualified form (`Color::Red`) in both expression and pattern position
+  instead of relying on the glob import to bring the bare name into scope.
+- **Owning gate:** found while investigating DEV-053 (confirmed as a deliberate differential
+  test — bare glob-imported names were used as a control case to scope DEV-053's fix precisely,
+  and turned out to have their own, separate defect). Root cause not isolated beyond "glob
+  imports don't populate the same module-items lookup a direct `use` does" — needs its own
+  investigation of the `use`-import population path in `resolve.rs`. — unscheduled.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1233,7 +1424,17 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 48 numbered deviations total (DEV-002 through DEV-050, DEV-001/DEV-003 retired).
+Current count: 53 numbered deviations total (DEV-002 through DEV-055, DEV-001/DEV-003 retired).
+DEV-051, DEV-052, and DEV-055 were found by WP-C2.12 while building the differential execution
+corpus; none fixed (corpus-building is not a semantic-repair WP). DEV-053 and DEV-054 were also
+found there, investigated as a dedicated follow-up in the same session, found to share one root
+cause (a bare `None` pattern never matched by value -- it silently acted as an unconditional
+wildcard, confirmed to produce **wrong runtime output**, not merely a spurious diagnostic --
+DEV-053's original "tuple-pattern usefulness/exhaustiveness" framing was itself a downstream
+artifact of this same misclassification, not a separate algorithm bug), and **closed** with a
+real fix in `resolve.rs`/`typecheck.rs`. DEV-055 (glob-imported unit variants not resolving at
+all, bare) was found as a control case while scoping that fix and is a separate, still-open
+defect.
 DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was found and repaired
 during that work. DEV-038 through DEV-043 were found by the post-WP-C2.2 review and closed in
 the correction pass. DEV-044 through DEV-050 were found by an external review of the committed
@@ -1243,10 +1444,10 @@ its actual `Rem`-only scope, one review claim (`main` entrypoint counting type-n
 independently refuted and not opened as a deviation -- and closed in a post-WP-C2.11 correction
 pass; DEV-049 records one known residual gap left open (Float32 values formatted only through
 the generic, static-type-free `Display for Value` path). DEV-017 remains partially closed
-(tooling built, 39 of 59 rules remain unclassified). DEV-036 remains open, now explicitly owned
-by WP-C2.12 as a parser-loader hardening regression in the differential corpus. DEV-009,
-DEV-022, DEV-023, and DEV-024 remain open with C2.8/C2.9 decision ownership and C2.11
-implementation/evidence ownership assigned by WP-C2.6.
+(tooling built, 39 of 59 rules remain unclassified). DEV-036 is closed (WP-C2.12): the
+filename/path-based module-loader bypass is replaced by an explicit, harness-only opt-in named
+by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 remain open with C2.8/C2.9 decision
+ownership and C2.11 implementation/evidence ownership assigned by WP-C2.6.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping

@@ -1,0 +1,10 @@
+STATUS: 0
+--- stdout ---
+14
+20
+5
+26
+-2
+false
+true
+--- stderr ---

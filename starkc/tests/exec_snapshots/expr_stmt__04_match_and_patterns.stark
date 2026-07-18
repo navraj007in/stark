@@ -1,0 +1,25 @@
+fn describe(n: Int32) -> String {
+    match n {
+        0 => String::from("zero"),
+        1 => String::from("small"),
+        2 => String::from("small"),
+        3 => String::from("small"),
+        _ => {
+            if n >= 4 && n <= 10 {
+                String::from("medium")
+            } else {
+                String::from("large")
+            }
+        }
+    }
+}
+
+fn main() {
+    println(describe(0).as_str());
+    println(describe(2).as_str());
+    println(describe(7).as_str());
+    println(describe(100).as_str());
+
+    let pair = (1, 2);
+    println(pair.0 + pair.1);
+}

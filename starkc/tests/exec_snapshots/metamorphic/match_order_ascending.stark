@@ -1,0 +1,15 @@
+fn label(n: Int32) -> String {
+    match n {
+        1 => String::from("one"),
+        2 => String::from("two"),
+        3 => String::from("three"),
+        _ => String::from("other"),
+    }
+}
+
+fn main() {
+    println(label(1).as_str());
+    println(label(2).as_str());
+    println(label(3).as_str());
+    println(label(9).as_str());
+}

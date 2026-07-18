@@ -1,0 +1,5 @@
+fn main() {
+    let a: Int8 = 120i8;
+    let b: Int8 = 100i8;
+    println(a + b);
+}

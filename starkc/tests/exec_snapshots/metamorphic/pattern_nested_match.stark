@@ -1,0 +1,15 @@
+fn combine(left: Option<Int32>, right: Option<Int32>) -> Int32 {
+    match (left, right) {
+        (Some(a), Some(b)) => a + b,
+        (Some(a), _) => a,
+        (_, Some(b)) => b,
+        (_, _) => 0,
+    }
+}
+
+fn main() {
+    println(combine(Some(3), Some(4)));
+    println(combine(Some(5), None));
+    println(combine(None, Some(6)));
+    println(combine(None, None));
+}

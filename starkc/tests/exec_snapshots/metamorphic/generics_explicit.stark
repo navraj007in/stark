@@ -1,0 +1,8 @@
+fn identity<T>(value: T) -> T {
+    value
+}
+
+fn main() {
+    let n = identity::<Int32>(42);
+    println(n);
+}

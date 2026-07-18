@@ -1,0 +1,12 @@
+fn main() {
+    let a: Int8 = 100i8;
+    let b: Int8 = 27i8;
+    println(a + b);
+    let x: UInt8 = 200u8;
+    let y: UInt8 = 55u8;
+    println(x + y);
+    println(10i32 / 3i32);
+    println(10i32 % 3i32);
+    println(-10i32 / 3i32);
+    println(-10i32 % 3i32);
+}

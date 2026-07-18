@@ -1160,19 +1160,33 @@ impl<'a> Resolver<'a> {
                     .items
                     .get(name_str)
                     .copied();
-                if let Some(Res::Variant(enum_id, variant_idx)) = module_res {
-                    let path = ast::Path {
-                        segments: vec![ast::PathSegment {
-                            kind: ast::SegmentKind::Ident,
-                            span: *name_span,
-                        }],
-                        span: *name_span,
-                    };
-                    hir::PatKind::Path {
-                        path,
-                        res: Res::Variant(enum_id, variant_idx),
-                    }
+                // A bare identifier that names a known value -- a module item/enum variant, or
+                // a compiler builtin -- must match by value (03-Type-System.md's pattern-name-
+                // resolution note; 02-Syntax-Grammar.md SYN-PATTERN-001 states the same rule).
+                // Previously only `Res::Variant`/`Res::Item` were checked here; `Res::Builtin`
+                // was not, so `None` (the only realistic bare, zero-argument Builtin pattern --
+                // `Some`/`Ok`/`Err` always take parens and parse as `TupleVariant` instead)
+                // unconditionally fell through to "fresh local binding": a `None` arm silently
+                // matched *any* value instead of only `Option::None`, with no diagnostic --
+                // confirmed to produce wrong runtime output, not merely a spurious rejection.
+                // Gated by the tensor extension exactly as `resolve_unqualified` already gates
+                // ordinary bare-identifier builtin resolution (DEV-004), so a Core-only-mode
+                // program can still use a tensor-only builtin name (e.g. `min`) as an ordinary
+                // pattern-binding identifier when the extension isn't enabled.
+                let value_res = if let Some(Res::Variant(enum_id, variant_idx)) = module_res {
+                    Some(Res::Variant(enum_id, variant_idx))
                 } else if let Some(Res::Item(item_id)) = module_res {
+                    Some(Res::Item(item_id))
+                } else if let Some(builtin) = resolve_builtin(name_str) {
+                    if !is_tensor_builtin(builtin) || self.options.tensor() {
+                        Some(Res::Builtin(builtin))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(res) = value_res {
                     let path = ast::Path {
                         segments: vec![ast::PathSegment {
                             kind: ast::SegmentKind::Ident,
@@ -1180,10 +1194,7 @@ impl<'a> Resolver<'a> {
                         }],
                         span: *name_span,
                     };
-                    hir::PatKind::Path {
-                        path,
-                        res: Res::Item(item_id),
-                    }
+                    hir::PatKind::Path { path, res }
                 } else {
                     let var_name = name_str.to_string();
                     if self.scopes.last().unwrap().contains_key(&var_name) {
@@ -2538,5 +2549,31 @@ mod tests {
         assert!(private
             .iter()
             .any(|diagnostic| diagnostic.code.as_deref() == Some("E0207")));
+    }
+
+    /// DEV-053/DEV-054 (found building the WP-C2.12 differential corpus): `lower_pattern`'s
+    /// `ast::PatKind::Binding` arm only recognized `Res::Variant`/`Res::Item` module items as
+    /// "known value" resolutions for a bare identifier -- never `Res::Builtin`, which is how
+    /// `None` is classified (`resolve_builtin("None") == Some(Builtin::None)`). Every bare
+    /// `None` pattern therefore fell through to "fresh local binding" unconditionally: two
+    /// `None`s within one tuple pattern collided as duplicate definitions of a local variable
+    /// literally named "None" (`E0204`), even though a by-value identifier pattern is supposed
+    /// to introduce no binding at all (`02-Syntax-Grammar.md` SYN-PATTERN-001's own note). This
+    /// is the resolve-stage regression pinning down that `(None, None)` no longer collides;
+    /// `interp.rs`'s `bare_none_pattern_matches_by_value_not_as_a_wildcard` and siblings cover
+    /// the full end-to-end runtime-semantics half of the same fix (the more serious half: this
+    /// bug did not just mis-diagnose valid code, it made `None` silently match *any* value).
+    #[test]
+    fn repeated_none_in_one_tuple_pattern_does_not_collide_as_duplicate_bindings() {
+        let (_, diags) = check_src(
+            "fn main() { \
+                 let pair: (Option<Int32>, Option<Int32>) = (None, None); \
+                 let _ = match pair { (None, None) => 0, _ => 1 }; \
+             }",
+        );
+        assert!(
+            diags.is_empty(),
+            "unexpected diagnostics for repeated by-value `None` in one tuple pattern: {diags:?}"
+        );
     }
 }

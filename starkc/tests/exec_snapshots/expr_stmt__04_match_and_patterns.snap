@@ -1,0 +1,8 @@
+STATUS: 0
+--- stdout ---
+zero
+small
+medium
+large
+3
+--- stderr ---

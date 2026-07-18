@@ -155,6 +155,63 @@ fn test_missing_module_file_is_reported_not_silently_accepted() {
     let _ = std::fs::remove_dir_all(&base_dir);
 }
 
+/// DEV-036 (WP-C2.12) regression: `load_submodules_recursive` used to suppress "file not found
+/// for module" whenever the compiled file's path contained the substring `"spec-fixtures"` or
+/// `"STARKLANG"`, or was named exactly `"test.stark"` -- a narrower heuristic DEV-014's WP-C1.1
+/// fix deliberately kept for one legitimate spec fixture, but which could silently swallow a
+/// genuinely missing module file for any real user project whose path happened to collide. The
+/// three tests below build real projects at colliding paths and assert the diagnostic is now
+/// reported regardless -- the exemption is a harness-side, exact-fixture-name opt-in
+/// (`parser::parse_project_allowing_missing_modules`, called only by
+/// `starkc/tests/conformance.rs` for `07-Modules-and-Packages__01.stark`), not a runtime
+/// path/filename heuristic that could ever match unrelated real projects again.
+fn assert_missing_module_reported_at(base_dir: &std::path::Path, entry_file_name: &str) {
+    if base_dir.exists() {
+        let _ = std::fs::remove_dir_all(base_dir);
+    }
+    std::fs::create_dir_all(base_dir).unwrap();
+
+    let main_src = "mod does_not_exist;\nfn main() {}";
+    let main_path = base_dir.join(entry_file_name);
+    std::fs::write(&main_path, main_src).unwrap();
+
+    let file = Arc::new(SourceFile::new(
+        main_path.to_string_lossy().into_owned(),
+        main_src.to_string(),
+    ));
+    let (_ast, diags) = parse(&file, ParseMode::Program);
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("E0208")),
+        "expected E0208 'file not found for module' for a real project at {}, got {:?} \
+         (a path/filename collision with the old bypass heuristic must not suppress this)",
+        main_path.display(),
+        diags
+    );
+
+    let _ = std::fs::remove_dir_all(base_dir);
+}
+
+#[test]
+fn test_missing_module_file_is_reported_even_when_path_contains_spec_fixtures() {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/temp_missing_module_spec-fixtures_collision");
+    assert_missing_module_reported_at(&base_dir, "main.stark");
+}
+
+#[test]
+fn test_missing_module_file_is_reported_even_when_path_contains_starklang() {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/temp_missing_module_STARKLANG_collision");
+    assert_missing_module_reported_at(&base_dir, "main.stark");
+}
+
+#[test]
+fn test_missing_module_file_is_reported_even_when_entry_file_is_named_test_stark() {
+    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/temp_missing_module_test_stark_collision");
+    assert_missing_module_reported_at(&base_dir, "test.stark");
+}
+
 /// WP-C1.1: duplicate `mod foo;` declarations in the same file (checklist item 8). Two `Mod`
 /// items with the same name are two separate item definitions in the same scope, so this is
 /// correctly caught by the resolver's ordinary duplicate-definition check (E0204) at parse+

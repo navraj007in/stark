@@ -1,0 +1,21 @@
+struct Point {
+    x: Int32,
+    y: Int32,
+}
+
+impl Point {
+    fn new(x: Int32, y: Int32) -> Point {
+        Point { x: x, y: y }
+    }
+
+    fn manhattan(&self) -> Int32 {
+        self.x + self.y
+    }
+}
+
+fn main() {
+    let p = Point::new(3, 4);
+    println(p.manhattan());
+    println(p.x);
+    println(p.y);
+}

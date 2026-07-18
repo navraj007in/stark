@@ -1,0 +1,18 @@
+struct Loud { label: String }
+
+impl Drop for Loud {
+    fn drop(&mut self) {
+        println(self.label.as_str());
+    }
+}
+
+fn consume(value: Loud) {
+    println("consuming");
+}
+
+fn main() {
+    let first = Loud { label: String::from("first") };
+    let second = Loud { label: String::from("second") };
+    consume(first);
+    println("after consume");
+}

@@ -1,0 +1,10 @@
+fn length(s: &String) -> Int32 {
+    s.len() as Int32
+}
+
+fn main() {
+    let text = String::from("hello");
+    let n = length(&text);
+    println(n);
+    println(text.as_str());
+}

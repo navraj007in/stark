@@ -1,33 +1,46 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after the post-WP-C2.11 correction pass (DEV-044 through DEV-050)
+Updated: 2026-07-18 after WP-C2.12 (in progress — DEV-036, DEV-053, DEV-054 closed; initial differential corpus built)
 
 ## Position
-Gate: C2  Next: WP-C2.12  Blocked: none
+Gate: C2  Next: WP-C2.12 (continues — see Follow-ups)  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: post-WP-C2.11 correction pass (external review of the committed
-  WP-C2.11 alignment work; six confirmed runtime-semantics defects independently reproduced and
-  fixed, one claim corrected to a narrower scope, one claim refuted). See the dated session
-  record below for detail.
-- Transition base commit: `c676875` (`complete WP-C2.11 implementation alignment`).
-- Current committed head at the start of this correction pass: `c676875`. This event-style
-  provenance avoids trying to embed a commit's own not-yet-known SHA in itself. Commit only on
-  explicit user request.
+- Last completed transition: WP-C2.12 started (differential interpreter corpus), plus a
+  same-session follow-up investigation and fix for DEV-053/DEV-054 (a real, previously-silent
+  wrong-runtime-output pattern-matching defect, not the exhaustiveness-algorithm bug originally
+  suspected). DEV-036 closed with a real code fix (not documentation-only). A new
+  execution-snapshot test harness was built and populated with an initial, representative (not
+  exhaustive) corpus across all seven named coverage categories, all seven named
+  metamorphic-transformation classes, and workspace relocation. Five new compiler gaps found and
+  recorded while building it (DEV-051 through DEV-055); two (DEV-053/054) investigated and
+  closed with a real fix, three remain open. WP-C2.12 itself remains open — see Follow-ups and
+  its own work-package file for exactly what's done vs. remaining. See the dated session records
+  below for full detail.
+- Transition base commit: `9e0b7a3` (`fix post-WP-C2.11 interpreter defects found by external
+  review (DEV-044..DEV-050)`).
+- Current committed head at the start of this WP: `9e0b7a3`. This event-style provenance avoids
+  trying to embed a commit's own not-yet-known SHA in itself. Commit only on explicit user
+  request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
   `rust-version = "1.85"` (crate MSRV). The Gate-5 *generated deployment host* (not `starkc`
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
-- Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **533 passed, 0 failed, 2 ignored** (up from 517/0/2 at WP-C2.11's close; +16 new regression
-  tests added by the post-WP-C2.11 correction pass, one per confirmed defect plus companion
-  non-regression cases) across **4 unittest binaries** (`src/lib.rs`,
-  `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 30 integration-test files**
-  (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`, re-counted against the
+- Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/, tracked
+  files only — an unrelated, untracked, pre-existing `tests/source_extensions.rs` file with its
+  own 5 tests also sits in the working tree; not part of this project's tracked codebase or this
+  count, see the DEV-053/DEV-054 session record's note on it):
+  **546 passed, 0 failed, 2 ignored** (up from 533/0/2 at the post-WP-C2.11 correction pass's
+  close; +5 DEV-036 closure regressions [3 in `gate2_valid.rs`, 2 in `parser.rs`] + 3 new
+  `exec_snapshots.rs` tests + 5 DEV-053/054 fix regressions [4 in `interp.rs`, 1 in
+  `resolve.rs`]) across **4 unittest binaries** (`src/lib.rs`,
+  `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 31 integration-test files**
+  (new: `tests/exec_snapshots.rs`; `find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`,
+  re-counted against the
   post-WP-C2.7 tree — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
   never actually verified against `ls`/`cargo test`'s own "Running ..." lines and had drifted;
@@ -879,6 +892,10 @@ involving nested modules and private items should assume this stricter model.
   legitimate fixture (`07-Modules-and-Packages__01.stark`) as exempt via the spec-fixture
   manifest's own triage data (already structured, machine-readable) rather than a runtime
   string-match against the compiled file's path.
+  **[CLOSED, WP-C2.12, 2026-07-18]** — implemented exactly the proposed disposition; see the
+  `### WP-C2.12` session record below and `starkc/docs/conformance/KNOWN-DEVIATIONS.md`'s DEV-036
+  entry for full detail. This entry's own `E0202` figure was also corrected there to `E0208`,
+  the code `parser.rs` actually allocates.
 
 ## Architecture decisions
 - AD-001 [pre-existing, old Gate 5] Native artifact-deployment backend is **ONNX Runtime via the
@@ -2506,3 +2523,198 @@ unscheduled. Nothing here changes WP-C2.12's own scope (DEV-036 closure plus the
 corpus) — this correction pass exists specifically so C2.12's corpus captures genuinely-correct
 interpreter behavior rather than snapshotting six additional undetected bugs into its baseline.
 NEXT: WP-C2.12 (Differential interpreter corpus and DEV-036 closure)
+
+---
+
+### WP-C2.12 — 2026-07-18 (started, not closed)
+DONE: Closed DEV-036 with a real fix. `parser.rs::load_submodules_recursive`'s
+`is_conformance` string-match against the compiled file's own name/path (`== "test.stark"`,
+`.contains("spec-fixtures")`, `.contains("STARKLANG")`) is removed outright. A new
+`allow_missing_modules: bool` parameter (threaded through the function and its recursive
+self-call) controls whether a missing backing file is reported; every existing public entry
+point defaults it to `false` and is otherwise unchanged. A new public function,
+`parse_project_allowing_missing_modules`, sets it to `true`; only
+`starkc/tests/conformance.rs` calls it, gated by an explicit `const
+ALLOW_MISSING_MODULE_FILES: &[&str]` naming the one legitimate fixture
+(`07-Modules-and-Packages__01.stark`) by exact filename. Corrected two inaccuracies in DEV-036's
+own prior text while implementing the fix (its verdict is `parse-pass`, not `notation`; the
+diagnostic code is `E0208`, not `E0202`). One pre-existing unit test
+(`parser::tests::item_kinds`'s `"mod math;"` syntax-shape check) incidentally depended on the
+removed bypass via its shared helper's bare `SourceFile` being named `"test.stark"`; fixed to
+call the new explicit function directly, matching its actual intent. Added six regression tests:
+three in `gate2_valid.rs` building real projects at paths that collide with each removed
+condition and asserting E0208 is still reported, two in `parser.rs` pinning down the negative
+(bare `"test.stark"` name, ordinary `parse` still reports) and positive (explicit opt-in still
+suppresses) cases independent of the fixture corpus.
+
+Built a new differential/execution-snapshot test harness, `starkc/tests/exec_snapshots.rs`,
+mirroring `tests/snapshots.rs`'s existing `UPDATE_SNAPSHOTS`-driven golden-file convention but
+for full-pipeline execution (parse/resolve/typecheck/run) instead of parse-only AST dumps.
+Populated an initial, representative -- not exhaustive -- corpus: 17 hand-written primary cases
+across all seven roadmap-named coverage categories (expressions/statements, primitive
+operations including an overflow-trap case, struct/enum/generic/trait/method, ownership/drop
+edges, `Option`/`Result`, collections/iterators; multi-file/package execution is covered by the
+relocation test below rather than a separate primary case), one worked pair for each of the
+seven named metamorphic-transformation classes (alpha-renaming, harmless scopes, equivalent
+explicit/inferred generics, trait-qualified calls, field shorthand/explicit initialization,
+equivalent pattern decompositions, equivalent non-overlapping match-arm order -- each pair
+asserted byte-identical rather than needing its own golden file), and one workspace-relocation
+test (a real two-package workspace built at one temp path, copied byte-for-byte to a second,
+differently-named temp path, and re-run, asserting identical execution output).
+
+While writing corpus cases, several planned constructs turned out not to be supported and were
+redesigned rather than treated as bugs to fix inline, per this WP's own corpus-vs-repair scope
+boundary -- but each was independently verified with a minimal repro and recorded as its own
+deviation, since finding exactly this class of gap is the corpus-building work's entire point:
+- **DEV-051**: a trait default method body cannot call another trait method on `self`
+  (`self.name()` from inside a default `greeting()` fails `E0302`, even though the same call
+  works fine from an ordinary non-default method body).
+- **DEV-052**: `Trait::method(...)` fully-qualified call syntax (documented, and confirmed
+  working for a user-declared trait) fails to resolve for compiler CoreTraits specifically
+  (`Eq::eq(&a, &b)` fails `E0200 undefined variable 'Eq::eq'` even with a real `impl Eq`).
+- **DEV-053 (HIGH PRIORITY, soundness-adjacent)**: tuple-pattern usefulness/exhaustiveness
+  checking is wrong in both directions when different arms cover a tuple's components
+  differently -- confirmed spurious "unreachable arm" (`(None, x) => x` before `(Some(a), _) =>
+  a` wrongly flags the second arm as covered) and spurious "non-exhaustive" (three arms that
+  jointly cover a 3-variant enum times a fully-wildcarded `Int32` are wrongly rejected).
+  Explicitly tested for the dangerous direction (a genuinely non-exhaustive tuple match being
+  wrongly *accepted*) with the same `Color`-missing-`Blue` shape and did **not** find it -- but
+  this is positive evidence from a few repros, not a systematic proof, so the finding is flagged
+  as the top-priority follow-up rather than downgraded.
+- **DEV-054**: a tuple pattern with the same by-value identifier repeated across components
+  (`(None, None) => 0`) is rejected as a duplicate binding (`E0204`) instead of matching by
+  value in both positions, contradicting `SYN-PATTERN-001`'s own by-value-identifier rule.
+
+None of DEV-051 through DEV-054 were fixed -- this WP builds the corpus and closes DEV-036; it
+does not do semantic repair (Charter §1.5 rule 4, and the general principle of not silently
+patching the interpreter to make a test case agree rather than recording a real divergence).
+FILES: `starkc/src/parser.rs` (DEV-036 fix, 2 new unit tests), `starkc/tests/conformance.rs`
+(explicit opt-in wiring), `starkc/tests/gate2_valid.rs` (3 new DEV-036 collision regressions),
+`starkc/tests/exec_snapshots.rs` (new), `starkc/tests/exec_snapshots/` (new: 17 primary `.stark`
+cases + `.snap` golden files, `metamorphic/` subdirectory with 14 `.stark` files forming 7
+pairs), `starkc/docs/conformance/KNOWN-DEVIATIONS.md` (DEV-036 closed with corrections; DEV-051
+through DEV-054 added), `STARKLANG/docs/compiler/work-packages/WP-C2.12.md` (new),
+COMPILER-STATE.md.
+RULES: none — this pass repairs a parser-loader mechanism and builds test infrastructure; it
+does not change any conformance-database rule citation or normative specification text.
+DECISIONS: none new as CD/AD records. The DEV-036 fix is a spec-consistent parser correction
+under Charter §2.2 Sonnet-level autonomy (it only makes rejection *more* correct — real missing
+modules are now always reported — never weakens an existing check). DEV-051 through DEV-054 are
+deviation records, not decisions; none were resolved, per this WP's own scope boundary.
+EVIDENCE: MANUAL + REG — DEV-036: every removed condition's collision scenario was independently
+built as a real project on disk and asserted to now report E0208; the positive case (explicit
+opt-in still suppresses) and negative case (bare `"test.stark"` name no longer suppresses) were
+each pinned down with a dedicated unit test. Corpus: every primary case, metamorphic pair, and
+the relocation test was run and inspected by hand before being accepted (golden snapshots for
+the overflow-trap, float-cast, drop-order, and HashMap-iteration-order cases were specifically
+eyeballed to confirm they reflect the post-WP-C2.11-correction-pass fixes correctly, not a
+regression). DEV-051 through DEV-054 were each independently reproduced with a minimal,
+purpose-built repro before being recorded, including the explicit dangerous-direction check for
+DEV-053. `cargo test --workspace --all-targets --all-features`: **541 passed / 0 failed / 2
+ignored** (up from 533/0/2). `cargo fmt --all -- --check` clean. `cargo clippy --workspace
+--all-targets --all-features -- -D warnings` clean.
+FOLLOW-UP: WP-C2.12 remains open. Not done in this pass: the roadmap's "generated" half of
+"generated and hand-written coverage" (a case generator, as opposed to this pass's hand-written
+cases); deeper per-category breadth (this pass is representative, not exhaustive, for any of the
+seven named categories); cross-backend replay against a MIR interpreter and native builds
+(explicitly named future work by the roadmap text itself, correctly blocked behind Gate C3).
+DEV-051/052/054 are unscheduled, low-priority (rejections of legal code, not soundness risks).
+**DEV-053 is the highest-priority follow-up from this WP** — recommend a dedicated, systematic
+sweep of the tuple-pattern usefulness/exhaustiveness algorithm for the dangerous (under-strict)
+direction before treating it as availability-only.
+NEXT: WP-C2.12 continues (generated coverage, deeper per-category breadth), then WP-C2.13 (Gate
+C2 exit and Core v1 semantic freeze) once the corpus is judged sufficient.
+**Correction note (see the dated entry immediately below):** the recommendation above to sweep
+the "tuple-pattern usefulness/exhaustiveness algorithm" was based on an imprecise root-cause
+guess. Investigation found the actual defect is in `resolve.rs`'s bare-identifier pattern
+resolution (`None` never matched by value), not the exhaustiveness algorithm itself, and it has
+been fixed. DEV-054 closed by the same fix. Left as-is here (append-only); see the
+`### WP-C2.12 — DEV-053/DEV-054 investigation and fix` record below for the current state.
+
+---
+
+### WP-C2.12 — DEV-053/DEV-054 investigation and fix — 2026-07-18
+DONE: Investigated DEV-053 at the user's explicit request. Read `typecheck.rs`'s `pat_subsumes`
+(redundancy checking) and its exhaustiveness computation (`check_expr`'s `Match` arm) in full,
+then traced the actual pattern-lowering path (`resolve.rs::lower_pattern`, `parser.rs`'s pattern
+grammar) rather than trusting the original "tuple-pattern usefulness algorithm" hypothesis.
+Found the real root cause: `lower_pattern`'s `ast::PatKind::Binding` arm (which every bare
+single-segment identifier pattern goes through, parser.rs never emits `PatKind::Path` for one)
+disambiguates "known value vs. fresh binding" by checking only
+`self.modules[current_module].items` for `Res::Variant`/`Res::Item` — it never checked
+`Res::Builtin`, the classification `None` receives (`resolve_builtin("None") ==
+Some(Builtin::None)`, a lookup only ever invoked from expression-position resolution). Every
+bare `None` pattern therefore fell through to "fresh local binding" unconditionally, in every
+position — not a tuple-nesting-specific bug. Verified this produces **wrong runtime output**,
+not merely a spurious diagnostic, with an escalating series of minimal repros culminating in a
+fully flat, non-tuple case: `match Some(5) { None => 999, Some(a) => a }` printed `999`. This
+also explained both original DEV-053 symptoms as downstream artifacts of the same misclassification
+(a tuple pattern containing a misclassified `None` was wrongly judged irrefutable by
+`is_irrefutable`, both bypassing the real exhaustiveness check and making the redundancy checker
+correctly-but-uselessly conclude `(None, x)` subsumes everything) — not a defect in the
+redundancy or exhaustiveness algorithms themselves. Separately confirmed the "spurious
+non-exhaustive" half of the original report is not a bug at all: the exhaustiveness check's
+own code comment already documents, as a deliberate sound-by-construction tradeoff, that any
+scrutinee type outside a small enumerable-domain set requires an individually irrefutable arm
+rather than real cross-arm tuple-component usefulness tracking.
+Explicitly re-tested the dangerous direction after fixing (not just before, as the original
+finding did): a genuinely non-exhaustive `Color`/`Int32` tuple match (missing the `Blue` case)
+is still correctly rejected, both before and after the fix, confirming the defect was
+over-permissive matching of one misclassified pattern, not an exhaustiveness under-strictness
+gap.
+Fixed `resolve.rs::lower_pattern`'s `Binding` arm to also check `resolve_builtin(name)` (gated
+by the tensor extension exactly as `resolve_unqualified` already gates ordinary bare-identifier
+builtin resolution, per DEV-004, so a Core-only-mode program can still use a tensor-only builtin
+name as an ordinary pattern-binding identifier) before falling back to a fresh binding, unifying
+the three "is this identifier a known value" checks (module items for Variant/Item, then
+builtins) into one `value_res` computation rather than the previous separate if-let chain with a
+duplicated fresh-binding fallback. Added the companion `typecheck.rs::check_pat` arm,
+`Res::Builtin(Builtin::None) => self.resolve(&expected)`, mirroring the existing
+`Res::Builtin(Builtin::Some | Ok | Err)` no-payload handling already present for the
+`TupleVariant` case (the same permissive convention: relies on the caller's `unify(scr_ty,
+pat_ty, ..)` to catch a genuine type mismatch, not a stricter check invented for this fix).
+While isolating the fix's exact scope, used a bare glob-imported user enum variant
+(`use Color::*; match c { Red => .., Green => .., Blue => .. }`) as an independent control case
+to confirm the defect was specifically about `Res::Builtin`, not glob-imported names generally —
+and found glob-imported unit variants have their own, separate, unrelated defect (they don't
+resolve at all, as either an expression or a pattern); recorded as new DEV-055, not fixed here
+(different root cause, not scoped to this investigation).
+FILES: `starkc/src/resolve.rs` (the fix; +1 new inline test),
+`starkc/src/typecheck.rs` (the companion `check_pat` arm),
+`starkc/src/interp.rs` (+4 new end-to-end regression tests),
+`starkc/docs/conformance/KNOWN-DEVIATIONS.md` (DEV-053 rewritten with the corrected root cause
+and marked resolved; DEV-054 marked resolved; new DEV-055), `STARKLANG/docs/compiler/
+work-packages/WP-C2.12.md` (execution log corrected), COMPILER-STATE.md.
+RULES: none — this is an interpreter/type-checker semantic-correctness fix against an existing,
+already-normative rule (`SYN-PATTERN-001`'s by-value-identifier note); it does not change any
+conformance-database rule citation or normative specification text.
+DECISIONS: none new as CD/AD records. The fix is a spec-consistent correction under Charter §2.2
+Sonnet-level autonomy: it makes the compiler match `SYN-PATTERN-001`'s already-normative text,
+does not weaken any existing check, and does not change the accepted/rejected program set in a
+permissive direction for any case that previously worked correctly (only the previously-broken
+`None`-as-value-pattern case changes behavior, and only to become correct).
+EVIDENCE: MANUAL + REG — every claim (the original bug, its non-tuple-specific scope, the
+"non-exhaustive" half being a deliberate non-bug, the dangerous-direction non-regression, and
+DEV-055's independence) was verified with a real `.stark` program run against the built
+`starkc` binary before and after the fix, not inferred from code reading alone. One test's own
+assertion needed no correction this time (unlike the WP-C2.11 correction pass's `sqrt(4.0)`
+slip) — all five new tests passed on first write. `cargo test --workspace --all-targets
+--all-features` (tracked files only): **546 passed / 0 failed / 2 ignored** (up from 541/0/2).
+`cargo fmt --all -- --check` clean. `cargo clippy --workspace --all-targets --all-features -- -D
+warnings` clean. Also encountered and resolved, as a pure side effect of running the full
+workspace suite, four spurious failures in an unrelated, **untracked** `tests/
+source_extensions.rs` file (someone's separate, uncommitted, in-progress `.st`-file-extension
+support work, also touching an uncommitted `src/main.rs` usage-text change neither created nor
+touched by this session) — confirmed via `git stash`/re-run that the failures pre-dated this
+session's changes and were caused by stale leftover temp directories from an earlier interrupted
+run (`tests/temp_source_extension_*_9722`/`_19305`), not by anything in this fix; cleaned up the
+stale directories (safe: they were leftover test artifacts, not source), left the untracked
+source/test files themselves untouched per standing practice ("don't commit their untracked side
+work").
+FOLLOW-UP: DEV-055 (bare glob-imported unit variants don't resolve at all) is a new, separate,
+unscheduled finding — needs its own investigation of how `use`-import population differs from
+direct module-item registration in `resolve.rs`. DEV-051/052 remain open and unscheduled,
+unaffected by this fix. WP-C2.12's own remaining scope (generated coverage, deeper per-category
+breadth, cross-backend replay behind Gate C3) is unchanged by this follow-up.
+NEXT: WP-C2.12 continues (generated coverage, deeper per-category breadth), then WP-C2.13 (Gate
+C2 exit and Core v1 semantic freeze) once the corpus is judged sufficient.

@@ -1,0 +1,18 @@
+trait Describe {
+    fn describe(&self) -> String;
+}
+
+struct Meters { value: Int32 }
+
+impl Describe for Meters {
+    fn describe(&self) -> String {
+        let mut s = String::from("meters:");
+        s.push_str(self.value.fmt().as_str());
+        s
+    }
+}
+
+fn main() {
+    let m = Meters { value: 5 };
+    println(m.describe().as_str());
+}

@@ -1,0 +1,11 @@
+fn calculate(p: Int32, q: Int32) -> Int32 {
+    let total = p + q;
+    let mult = p * q;
+    total + mult
+}
+
+fn main() {
+    let first = 3;
+    let second = 4;
+    println(calculate(first, second));
+}

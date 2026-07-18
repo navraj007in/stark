@@ -1,0 +1,25 @@
+trait Greet {
+    fn greeting(&self) -> String {
+        String::from("Hello there")
+    }
+}
+
+struct Formal { label: String }
+struct Casual { label: String }
+
+impl Greet for Formal {}
+
+impl Greet for Casual {
+    fn greeting(&self) -> String {
+        let mut result = String::from("Hey ");
+        result.push_str(self.label.as_str());
+        result
+    }
+}
+
+fn main() {
+    let formal = Formal { label: String::from("Dr. Smith") };
+    let casual = Casual { label: String::from("Sam") };
+    println(formal.greeting().as_str());
+    println(casual.greeting().as_str());
+}

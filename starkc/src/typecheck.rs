@@ -4504,6 +4504,14 @@ impl<'a> TypeChecker<'a> {
                     let args = self.nominal_use_args(*enum_id, None, pat.span);
                     Ty::Enum(*enum_id, args)
                 }
+                // Companion to resolve.rs's `lower_pattern` fix: a bare `None` pattern now
+                // reaches here as `PatKind::Path { res: Res::Builtin(Builtin::None), .. }`
+                // (previously unreachable -- `None` always fell through to a fresh binding).
+                // No payload to check; mirrors the `Res::Builtin(Builtin::Some)` no-payload-
+                // present arm of the `TupleVariant` case just below, which likewise returns the
+                // expected type unchecked against the specific builtin/type pairing (relying on
+                // the caller's `unify(scr_ty, pat_ty, ..)` to catch a genuine mismatch).
+                Res::Builtin(Builtin::None) => self.resolve(&expected),
                 _ => Ty::Error,
             },
             hir::PatKind::TupleVariant { res, pats, .. } => {

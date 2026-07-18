@@ -57,6 +57,32 @@ pub fn parse_with_options(
 }
 
 pub fn parse_project(root_file: &SourceFile, options: LanguageOptions) -> (Ast, Vec<Diagnostic>) {
+    parse_project_inner(root_file, options, false)
+}
+
+/// DEV-036: a test-harness-only entry point, identical to [`parse_project`] except that a
+/// genuinely missing `mod foo;` backing file is silently tolerated instead of producing
+/// "file not found for module" (E0208). Exists solely so the one spec fixture that legitimately
+/// omits a backing file (`07-Modules-and-Packages__01.stark`'s `mod math;`) can be parsed
+/// without the diagnostic, via an explicit opt-in the caller names by exact fixture, rather than
+/// the previous runtime string-match against the compiled file's own name/path (which could
+/// silently swallow a genuinely missing module file for any real user project whose path
+/// happened to contain `"spec-fixtures"`/`"STARKLANG"`, or whose entry file was named exactly
+/// `test.stark` -- see `starkc/docs/conformance/KNOWN-DEVIATIONS.md` DEV-036). No production
+/// caller (`starkc`/`stark` binaries, `stark::analysis`, the LSP) should ever call this; only
+/// `starkc/tests/conformance.rs`'s harness does, and only for that one named fixture.
+pub fn parse_project_allowing_missing_modules(
+    root_file: &SourceFile,
+    options: LanguageOptions,
+) -> (Ast, Vec<Diagnostic>) {
+    parse_project_inner(root_file, options, true)
+}
+
+fn parse_project_inner(
+    root_file: &SourceFile,
+    options: LanguageOptions,
+    allow_missing_modules: bool,
+) -> (Ast, Vec<Diagnostic>) {
     let mut ast = Ast::default();
     let mut diags = Vec::new();
 
@@ -81,6 +107,7 @@ pub fn parse_project(root_file: &SourceFile, options: LanguageOptions) -> (Ast, 
         options,
         &mut ast,
         &mut loaded_modules,
+        allow_missing_modules,
     ) {
         diags.append(&mut loader_diags);
     }
@@ -159,9 +186,14 @@ fn parse_package_rec(
 
     let mut loaded_modules = std::collections::HashSet::new();
     loaded_modules.insert(entry_file.name.clone());
-    if let Err(mut sub_diags) =
-        load_submodules_recursive(&entry_file, &root_items, options, ast, &mut loaded_modules)
-    {
+    if let Err(mut sub_diags) = load_submodules_recursive(
+        &entry_file,
+        &root_items,
+        options,
+        ast,
+        &mut loaded_modules,
+        false,
+    ) {
         diags.append(&mut sub_diags);
     }
 
@@ -199,6 +231,7 @@ fn load_submodules_recursive(
     options: LanguageOptions,
     ast: &mut Ast,
     loaded_modules: &mut std::collections::HashSet<String>,
+    allow_missing_modules: bool,
 ) -> Result<(), Vec<Diagnostic>> {
     let mut diags = Vec::new();
     let parent_dir = std::path::Path::new(&current_file.name)
@@ -217,17 +250,25 @@ fn load_submodules_recursive(
 
     for (mod_item_id, name_span) in mods_to_load {
         let mod_name = &current_file.src[name_span.lo as usize..name_span.hi as usize];
-        let p1 = parent_dir.join(format!("{}.stark", mod_name));
-        let p2 = parent_dir.join(mod_name).join("mod.stark");
+        let candidates = [
+            parent_dir.join(format!("{}.stark", mod_name)),
+            parent_dir.join(format!("{}.st", mod_name)),
+            parent_dir.join(mod_name).join("mod.stark"),
+            parent_dir.join(mod_name).join("mod.st"),
+        ];
+        let existing: Vec<_> = candidates.iter().filter(|path| path.exists()).collect();
 
-        if p1.exists() && p2.exists() {
+        if existing.len() > 1 {
+            let paths = existing
+                .iter()
+                .map(|path| format!("'{}'", path.display()))
+                .collect::<Vec<_>>()
+                .join(", ");
             diags.push(
                 Diagnostic::error(
                     format!(
-                        "conflicting module files for '{}': both '{}' and '{}' exist",
-                        mod_name,
-                        p1.display(),
-                        p2.display()
+                        "conflicting module files for '{}': {} exist",
+                        mod_name, paths
                     ),
                     name_span,
                 )
@@ -240,26 +281,12 @@ fn load_submodules_recursive(
             continue;
         }
 
-        let (path, src) = if p1.exists() {
-            if let Ok(src) = std::fs::read_to_string(&p1) {
-                (p1, src)
+        let (path, src) = if let Some(path) = existing.first() {
+            if let Ok(src) = std::fs::read_to_string(path) {
+                ((*path).clone(), src)
             } else {
                 diags.push(
-                    Diagnostic::error(format!("cannot read file '{}'", p1.display()), name_span)
-                        .with_code("E0208")
-                        .with_file(std::sync::Arc::new(SourceFile::new(
-                            current_file.name.clone(),
-                            current_file.src.clone(),
-                        ))),
-                );
-                continue;
-            }
-        } else if p2.exists() {
-            if let Ok(src) = std::fs::read_to_string(&p2) {
-                (p2, src)
-            } else {
-                diags.push(
-                    Diagnostic::error(format!("cannot read file '{}'", p2.display()), name_span)
+                    Diagnostic::error(format!("cannot read file '{}'", path.display()), name_span)
                         .with_code("E0208")
                         .with_file(std::sync::Arc::new(SourceFile::new(
                             current_file.name.clone(),
@@ -269,29 +296,29 @@ fn load_submodules_recursive(
                 continue;
             }
         } else {
-            // WP-C1.1 (2026-07-17): this used to also bypass whenever
-            // `std::env::args().any(|arg| arg.contains("test") || arg.contains("conformance"))`,
-            // which meant *any* process invocation whose argv happened to contain the substring
-            // "test" or "conformance" anywhere -- including every real `stark test` run (the
-            // subcommand name itself contains "test") and any `cargo test <filter>` invocation
-            // whose filter matched a `#[test] fn test_*` name -- silently suppressed this
-            // diagnostic instead of reporting a genuinely missing module file. Removed as an
-            // unsound runtime heuristic; see COMPILER-STATE.md DEV-014 and
-            // starkc/docs/conformance/KNOWN-DEVIATIONS.md. The three filename-based conditions
-            // below are kept: they cover the one known fixture that legitimately needs this
-            // (`STARKLANG/tests/spec-fixtures/07-Modules-and-Packages__01.stark`, a
-            // `parse-pass` notation example whose `mod math;` has no backing file on disk).
-            let is_conformance = current_file.name == "test.stark"
-                || current_file.name.contains("spec-fixtures")
-                || current_file.name.contains("STARKLANG");
-            if !is_conformance {
+            // WP-C1.1 (2026-07-17) removed a far more dangerous unconditional bypass keyed off
+            // `std::env::args()` (DEV-014). DEV-036 (WP-C2.12) removes what WP-C1.1 kept in its
+            // place: a runtime string-match against the compiled file's own name/path
+            // (`== "test.stark"`, `.contains("spec-fixtures")`, `.contains("STARKLANG")`), which
+            // could still silently swallow a genuinely missing module file for any real user
+            // project whose path happened to collide with those substrings. The one legitimate
+            // case that needs this suppressed (`STARKLANG/tests/spec-fixtures/
+            // 07-Modules-and-Packages__01.stark`'s `mod math;`, which has no backing file on
+            // disk by design) now goes through the explicit `allow_missing_modules` parameter,
+            // set only by `parse_project_allowing_missing_modules` and named as an exact,
+            // harness-side opt-in by `starkc/tests/conformance.rs` -- not inferred from the
+            // path at all.
+            if !allow_missing_modules {
+                let expected = candidates
+                    .iter()
+                    .map(|path| format!("'{}'", path.display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 diags.push(
                     Diagnostic::error(
                         format!(
-                            "file not found for module '{}': expected '{}' or '{}'",
-                            mod_name,
-                            p1.display(),
-                            p2.display()
+                            "file not found for module '{}': expected one of {}",
+                            mod_name, expected
                         ),
                         name_span,
                     )
@@ -302,7 +329,7 @@ fn load_submodules_recursive(
                     ))),
                 );
             }
-            (p1, String::new())
+            (candidates[0].clone(), String::new())
         };
 
         let path_str = path.to_string_lossy().into_owned();
@@ -324,9 +351,14 @@ fn load_submodules_recursive(
             *items = Some(child_items.clone());
         }
 
-        if let Err(mut sub_diags) =
-            load_submodules_recursive(&child_file, &child_items, options, ast, loaded_modules)
-        {
+        if let Err(mut sub_diags) = load_submodules_recursive(
+            &child_file,
+            &child_items,
+            options,
+            ast,
+            loaded_modules,
+            allow_missing_modules,
+        ) {
             diags.append(&mut sub_diags);
         }
     }
@@ -3424,7 +3456,22 @@ mod tests {
         parse_ok("const MAX: Int32 = 1000;", ParseMode::Program);
         parse_ok("type Age = Int32;", ParseMode::Program);
         parse_ok("type Pair<T> = (T, T);", ParseMode::Program);
-        parse_ok("mod math;", ParseMode::Program);
+        // DEV-036 (WP-C2.12): this line checks only that `mod math;` (an external,
+        // backing-file module declaration) parses as a syntactically valid item -- it has never
+        // cared whether a real `math.stark` exists. It used to pass incidentally because
+        // `parse_ok`'s bare `SourceFile` is named `"test.stark"`, one of the three filenames the
+        // (now-removed) module-loader bypass matched. Uses the explicit harness-only opt-in
+        // directly so this syntax-shape assertion no longer depends on that removed mechanism.
+        {
+            let file = SourceFile::new("test.stark", "mod math;".to_string());
+            let (_ast, diags) =
+                parse_project_allowing_missing_modules(&file, LanguageOptions::CORE);
+            assert!(
+                diags.is_empty(),
+                "unexpected diagnostics for \"mod math;\": {:?}",
+                diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            );
+        }
         parse_ok(
             "mod inline { pub fn add(a: Int32, b: Int32) -> Int32 { a + b } }",
             ParseMode::Program,
@@ -3593,5 +3640,42 @@ mod tests {
             panic!()
         };
         assert!(tail.is_some());
+    }
+
+    /// DEV-036 (WP-C2.12): ordinary `parse`/`parse_with_options`/`parse_project` must still
+    /// report a missing module file for a bare in-memory `SourceFile` regardless of its name --
+    /// there is no longer any filename/path string that suppresses this diagnostic on the
+    /// ordinary path. `"test.stark"` in particular used to be one of the three bypassing names.
+    #[test]
+    fn ordinary_parse_reports_missing_module_even_for_bare_test_stark_name() {
+        let file = SourceFile::new(
+            "test.stark",
+            "mod does_not_exist;\nfn main() {}".to_string(),
+        );
+        let (_ast, diags) = parse(&file, ParseMode::Program);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0208")),
+            "expected E0208 even for a bare SourceFile literally named \"test.stark\", got {:?}",
+            diags
+        );
+    }
+
+    /// DEV-036 (WP-C2.12): the explicit, harness-only opt-in
+    /// (`parse_project_allowing_missing_modules`) still suppresses the diagnostic when a caller
+    /// deliberately asks for it -- confirming the positive case survived removing the
+    /// path-string-match mechanism, independent of the spec-fixture corpus (which could be
+    /// re-triaged later).
+    #[test]
+    fn allowing_missing_modules_suppresses_the_diagnostic_when_explicitly_requested() {
+        let file = SourceFile::new(
+            "test.stark",
+            "mod does_not_exist;\nfn main() {}".to_string(),
+        );
+        let (_ast, diags) = parse_project_allowing_missing_modules(&file, LanguageOptions::CORE);
+        assert!(
+            !diags.iter().any(|d| d.code.as_deref() == Some("E0208")),
+            "explicit opt-in must suppress the missing-module diagnostic, got {:?}",
+            diags
+        );
     }
 }

@@ -210,20 +210,41 @@ fn lex_level_conformance() {
     );
 }
 
+/// DEV-036: fixtures whose manifest triage data marks them as legitimately omitting a backing
+/// module file, named explicitly by exact fixture name rather than inferred from any
+/// path/filename heuristic -- so the exemption can never silently apply to an unrelated fixture
+/// or collide with a real user project whose path happens to contain a matching substring (the
+/// failure mode of the previous, now-removed `parser.rs`-internal string-match). Currently
+/// exactly one: `07-Modules-and-Packages__01.stark`'s `mod math;` has no backing `math.stark` by
+/// design (it demonstrates a multi-file `mod` declaration in isolation).
+const ALLOW_MISSING_MODULE_FILES: &[&str] = &["07-Modules-and-Packages__01.stark"];
+
+fn parse_fixture_source(
+    name: &str,
+    file: &SourceFile,
+    parse_mode: ParseMode,
+) -> (starkc::ast::Ast, Vec<starkc::diag::Diagnostic>) {
+    if parse_mode == ParseMode::Program && ALLOW_MISSING_MODULE_FILES.contains(&name) {
+        starkc::parser::parse_project_allowing_missing_modules(
+            file,
+            starkc::options::LanguageOptions::CORE,
+        )
+    } else {
+        parse(file, parse_mode)
+    }
+}
+
 fn parse_fixture(name: &str, mode: Mode) -> usize {
     let src = std::fs::read_to_string(fixture_dir().join(name)).unwrap();
-    // WP-C1.1: use the full fixture path (not the bare filename) as the SourceFile name.
-    // parser.rs's `load_submodules_recursive` bypasses its "file not found for module"
-    // diagnostic for source files whose name contains "spec-fixtures"/"STARKLANG" -- this is
-    // what lets 07-Modules-and-Packages__01.stark's `mod math;` (no backing math.stark) stay a
-    // parse-pass notation fixture. That check only matches full paths; the bare filename never
-    // did. See COMPILER-STATE.md DEV-014.
+    // Full fixture path (not the bare filename) as the SourceFile name, so diagnostics attribute
+    // to a realistic path; the missing-module exemption above no longer depends on this path at
+    // all (DEV-036), unlike before WP-C2.12.
     let file = SourceFile::new(fixture_dir().join(name).to_string_lossy().into_owned(), src);
     let parse_mode = match mode {
         Mode::Program => ParseMode::Program,
         Mode::Snippet => ParseMode::Snippet,
     };
-    let (_ast, diags) = parse(&file, parse_mode);
+    let (_ast, diags) = parse_fixture_source(name, &file, parse_mode);
     diags.len()
 }
 
@@ -234,7 +255,7 @@ fn check_fixture(name: &str, mode: Mode) -> Vec<String> {
         Mode::Program => ParseMode::Program,
         Mode::Snippet => ParseMode::Snippet,
     };
-    let (tree, mut diags) = parse(&file, parse_mode);
+    let (tree, mut diags) = parse_fixture_source(name, &file, parse_mode);
     if diags.is_empty() {
         let file_arc = std::sync::Arc::new(file);
         let (hir, mut sem_diags) = starkc::resolve::resolve(&tree, file_arc.clone());

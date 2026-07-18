@@ -1,0 +1,14 @@
+fn main() {
+    let mut ages: HashMap<String, Int32> = HashMap::new();
+    ages.insert(String::from("alice"), 30);
+    ages.insert(String::from("bob"), 25);
+    ages.insert(String::from("carol"), 35);
+    println(ages.len());
+    match ages.get(&String::from("bob")) {
+        Some(age) => println(*age),
+        None => println("missing"),
+    }
+    for key in ages.keys() {
+        println(key.as_str());
+    }
+}

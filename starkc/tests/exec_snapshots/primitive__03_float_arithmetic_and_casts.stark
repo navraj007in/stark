@@ -1,0 +1,11 @@
+fn main() {
+    let x: Float64 = 1.5;
+    let y: Float64 = 2.5;
+    println(x + y);
+    println(x * y);
+    println(3.9f64 as Int32);
+    println((-3.9f64) as Int32);
+    println(7i32 as Float64);
+    let f32_value: Float32 = 0.1f32;
+    println(f32_value);
+}

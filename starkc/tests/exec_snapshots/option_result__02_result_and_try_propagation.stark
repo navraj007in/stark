@@ -1,0 +1,23 @@
+fn parse_positive(n: Int32) -> Result<Int32, String> {
+    if n > 0 {
+        Ok(n)
+    } else {
+        Err(String::from("not positive"))
+    }
+}
+
+fn double_positive(n: Int32) -> Result<Int32, String> {
+    let value = parse_positive(n)?;
+    Ok(value * 2)
+}
+
+fn main() {
+    match double_positive(5) {
+        Ok(value) => println(value),
+        Err(message) => println(message.as_str()),
+    }
+    match double_positive(-5) {
+        Ok(value) => println(value),
+        Err(message) => println(message.as_str()),
+    }
+}

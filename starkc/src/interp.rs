@@ -6594,4 +6594,97 @@ mod tests {
         let execution = execute("fn main() { println(sqrt(4.0f64)); }").unwrap();
         assert_eq!(execution.output, "2.0\n");
     }
+
+    /// DEV-053 (found building the WP-C2.12 differential corpus, fixed as a follow-up
+    /// investigation): a bare `None` pattern never matched by value -- `resolve.rs`'s
+    /// `lower_pattern` only recognized `Res::Variant`/`Res::Item` as "known value" resolutions
+    /// for a bare identifier, never `Res::Builtin` (which is how `None` is classified), so it
+    /// unconditionally fell through to "fresh local binding." A `None` arm therefore silently
+    /// matched *any* value with no diagnostic -- confirmed to produce **wrong runtime output**,
+    /// not merely a spurious rejection: `match Some(5) { None => 999, Some(a) => a }` printed
+    /// `999`. This is the decisive end-to-end regression for that fix; `resolve.rs`/
+    /// `typecheck.rs` carry the resolution/type-checking half.
+    #[test]
+    fn bare_none_pattern_matches_by_value_not_as_a_wildcard() {
+        let execution = execute(
+            "fn main() { \
+                 let value: Option<Int32> = Some(5); \
+                 let r = match value { \
+                     None => 999, \
+                     Some(a) => a, \
+                 }; \
+                 println(r); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "5\n",
+            "None must not silently match Some(5); expected the Some(a) arm to apply"
+        );
+    }
+
+    /// Companion: the same bug, nested inside a tuple pattern (the shape that originally
+    /// surfaced it while building the WP-C2.12 corpus). `(None, x)` must only match when the
+    /// first component is genuinely `None`, not unconditionally like `(_, x)`.
+    #[test]
+    fn nested_none_pattern_in_a_tuple_matches_by_value_not_as_a_wildcard() {
+        let execution = execute(
+            "fn main() { \
+                 let pair: (Option<Int32>, Int32) = (Some(5), 10); \
+                 let r = match pair { \
+                     (None, x) => x, \
+                     (Some(a), _) => a, \
+                     _ => -1, \
+                 }; \
+                 println(r); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output, "5\n",
+            "(None, x) must not match (Some(5), 10); expected the (Some(a), _) arm to apply"
+        );
+    }
+
+    /// DEV-054, closed by the same fix: two `None`s within one tuple pattern used to collide as
+    /// duplicate bindings (`E0204`) because each was independently misclassified as introducing
+    /// a fresh local named "None". Now that `None` correctly resolves to a value pattern (which
+    /// introduces no binding at all), both occurrences coexist without conflict.
+    #[test]
+    fn repeated_none_within_one_tuple_pattern_no_longer_collides() {
+        let execution = execute(
+            "fn main() { \
+                 let pair: (Option<Int32>, Option<Int32>) = (None, None); \
+                 let r = match pair { \
+                     (None, None) => 0, \
+                     _ => 1, \
+                 }; \
+                 println(r); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "0\n");
+    }
+
+    /// Companion regression guard: ordinary `Some(x)`/`Ok(x)`/`Err(x)` payload patterns, and
+    /// plain fresh-variable bindings, are unaffected by the `None`/builtin value-pattern fix.
+    #[test]
+    fn ordinary_binding_and_payload_patterns_are_unaffected_by_the_none_fix() {
+        let execution = execute(
+            "fn classify(value: Option<Int32>) -> Int32 { \
+                 match value { \
+                     Some(inner) => inner, \
+                     None => -1, \
+                 } \
+             } \
+             fn main() { \
+                 println(classify(Some(7))); \
+                 println(classify(None)); \
+                 let x = 42; \
+                 println(x); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "7\n-1\n42\n");
+    }
 }

@@ -1,0 +1,15 @@
+fn main() {
+    let mut values: Vec<Int32> = Vec::new();
+    values.push(10);
+    values.push(20);
+    values.push(30);
+    println(values.len());
+    println(values[0]);
+    println(values[1]);
+    println(values[2]);
+    let mut total = 0;
+    for value in values.iter() {
+        total = total + *value;
+    }
+    println(total);
+}

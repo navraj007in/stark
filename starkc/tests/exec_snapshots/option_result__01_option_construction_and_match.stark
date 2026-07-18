@@ -1,0 +1,20 @@
+fn half(n: Int32) -> Option<Int32> {
+    if n % 2 == 0 {
+        Some(n / 2)
+    } else {
+        None
+    }
+}
+
+fn main() {
+    match half(10) {
+        Some(value) => println(value),
+        None => println("no value"),
+    }
+    match half(7) {
+        Some(value) => println(value),
+        None => println("no value"),
+    }
+    println(half(10).is_some());
+    println(half(7).is_none());
+}

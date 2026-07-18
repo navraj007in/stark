@@ -1,0 +1,19 @@
+enum Shape {
+    Circle { radius: Float64 },
+    Rectangle { width: Float64, height: Float64 },
+    Point,
+}
+
+fn area(shape: Shape) -> Float64 {
+    match shape {
+        Shape::Circle { radius } => radius * radius * 3.0,
+        Shape::Rectangle { width, height } => width * height,
+        Shape::Point => 0.0,
+    }
+}
+
+fn main() {
+    println(area(Shape::Circle { radius: 2.0 }));
+    println(area(Shape::Rectangle { width: 3.0, height: 4.0 }));
+    println(area(Shape::Point));
+}
