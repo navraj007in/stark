@@ -1,6 +1,6 @@
 # Core v1 Open Questions
 
-Status: **Updated through WP-C2.7 — remaining recommendations are unapproved**
+Status: **Updated through WP-C2.7 correction — remaining recommendations are unapproved**
 Created by: Gate C2 semantic-freeze preflight, 2026-07-18
 
 This is a non-normative compiler-governance register. Pending recommendations have no effect on
@@ -13,7 +13,7 @@ default, alternatives, compatibility impact, owner, and approval state. Implemen
 may be cited as evidence, but it does not approve a language rule. An approved answer must be
 moved into its normative home and linked to stable completeness/conformance rule IDs.
 
-Approval states are `pending`, `approved`, `rejected`, and `superseded`.
+Approval states are `pending`, `partially approved`, `approved`, `rejected`, and `superseded`.
 
 ## Decision register
 
@@ -25,7 +25,7 @@ Approval states are `pending`, `approved`, `rejected`, and `superseded`.
 | CORE-Q-004 | What inference and normalization algorithm is normative? | Before a second frontend; implementation behavior otherwise becomes accidental law. | Deterministic local constraint solving with specified expected-type flow, defaulting, ambiguity rejection, and trait normalization. | Leave algorithm implementation-defined; global inference. | High source compatibility. | C2.8 | Pending |
 | CORE-Q-005 | How is trait coherence computed across packages and versions? | Before package identity and ecosystem growth. | Selection independent of implementation order; no specialization/negative impls; overlap uses canonical package/type identity. | Ordered selection; limited specialization. | Ecosystem-breaking. | C2.8/C2.9 | Pending |
 | CORE-Q-005A | What semantic laws must `Eq`, `Ord`, and `Hash` implementations obey, and what behavior is guaranteed when user code violates them? | Before generic collections and multiple backends freeze accidental behavior. | Require `Eq` to be reflexive, symmetric, and transitive; `Ord` to be total and consistent with `Eq`; and equal values to hash equally. Define hash stability scope and classify collection behavior under unlawful implementations rather than pretending the compiler can prove the laws. | Reject only demonstrably unlawful implementations; leave all laws advisory; define stronger runtime checking. | High correctness and collection-portability impact. | C2.8/C2.9 | Pending |
-| CORE-Q-006 | What is the language-level model for places, temporaries, references, and destruction? | Immediate prerequisite for MIR and differential comparison. | Implementation-independent abstract machine covering success, early exit, and partial failure. | Treat interpreter behavior as normative. | High soundness and portability risk. | C2.7 | Approved — `CORE-V1-ABSTRACT-MACHINE.md` |
+| CORE-Q-006 | What is the language-level model for places, temporaries, references, and destruction? | Immediate prerequisite for MIR and differential comparison. | Implementation-independent abstract machine covering success, early exit, and partial failure. | Treat interpreter behavior as normative. | High soundness and portability risk. | C2.7/C2.8 | Partially approved — C2.7 fixed runtime execution in `CORE-V1-ABSTRACT-MACHINE.md`; C2.8 retains static place legality, borrow coexistence/regions, temporary-reference escape, and returned-reference legality |
 | CORE-Q-007 | What expressions are allowed in constants? | Before type/layout lowering and package metadata. | Bounded deterministic side-effect-free subset with explicit cycles, overflow, traps, and cross-package rules. | General interpreter evaluation; literals only. | High source compatibility. | C2.8 | Pending |
 | CORE-Q-008 | What are the complete integer semantics? | Before optimizer/backend work. | Fixed-width two's-complement values with explicit checked arithmetic, division/remainder, shift, negation, and cast rules invariant across build modes. | Wrapping defaults; target/native behavior. | High correctness and security impact. | C2.9 | Pending |
 | CORE-Q-009 | Which equality, ordering, and hashing traits do floats implement? | Before collection and generic contracts freeze. | Do not imply total `Eq`/`Ord`/`Hash`; provide explicitly named partial or bitwise behavior where specified. | IEEE comparison plus total wrappers; canonicalized NaN hashing. | High generic/API compatibility. | C2.9 | Pending |

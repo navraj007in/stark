@@ -73,9 +73,11 @@ Evaluation of an expression produces exactly one of:
 - propagation from `?`, carrying `None` or `Err`;
 - a language trap.
 
-A *full expression* is an initializer, expression statement, return operand, break operand,
-condition, match scrutinee, loop iterable, function argument, aggregate field/element, assignment
-operand, or block tail evaluated as one enclosing operation.
+A *full expression* is the outermost expression of an initializer, expression statement,
+`return` operand, `break` operand, condition, match scrutinee, loop iterable, aggregate
+initializer, assignment operand, or block tail. Operands, call arguments, call receivers,
+callees, and aggregate fields/elements are subexpressions of that enclosing full expression,
+not independent temporary-destruction boundaries.
 
 **EXEC-ONCE-001.** Every evaluated expression and subexpression is evaluated exactly once.
 Static dispatch, method lookup, place resolution, auto-borrowing, and auto-dereferencing must
@@ -121,7 +123,8 @@ destruction, control transfer, or trap—before the next begins.
 | `a && b` | Evaluate `a`; evaluate `b` only when `a` is `true`. |
 | `a || b` | Evaluate `a`; evaluate `b` only when `a` is `false`. |
 | Range construction | Evaluate the lower bound, then upper bound, then construct the range. |
-| Free or associated call | Resolve the callee without evaluating arguments; evaluate arguments left to right; transfer them to parameters; execute the body. |
+| Free or associated call | Select the statically named function item without runtime callee evaluation; evaluate arguments left to right; transfer them to parameters; execute the body. |
+| Function-valued call | Evaluate the callee expression exactly once and verify that its result is callable; evaluate arguments left to right; transfer them to parameters; invoke the selected function. A callee trap prevents every argument; an argument trap prevents later arguments and body execution. |
 | Method call | Evaluate and resolve the receiver exactly once; evaluate arguments left to right; transfer/borrow the receiver and arguments; execute the selected body. |
 | Tuple, array, struct, enum payload | Evaluate fields/elements left to right in written order, transferring each completed value into the partial aggregate. |
 | Array repeat `[value; count]` | Evaluate `value` once; obtain the compile-time `count`; copy the value `count` times. The static rules require `Copy`. |
@@ -139,6 +142,10 @@ destruction, control transfer, or trap—before the next begins.
 An expression form not admitted by the Core grammar has no Core execution semantics. A legal
 Core expression form omitted from this table is a specification defect, not permission for
 implementation-defined evaluation.
+
+A temporary function value produced by a function-valued callee expression remains live
+through argument evaluation and the invoked body. Unless ownership transfers elsewhere, it is
+destroyed with the other temporaries at the end of the enclosing full expression.
 
 **EXEC-FOR-001.** Every value accepted by the static `for`-loop iterator rules is executed
 through its selected iterator protocol. The runtime may not narrow this to a privileged list of
@@ -246,16 +253,29 @@ Core v1. C2.8 remains authoritative for pattern typing, exhaustiveness, usefulne
 additional static restrictions.
 
 **PAT-OWN-001.** A `match` scrutinee in value context is evaluated once. A non-`Copy` place
-scrutinee moves into a hidden scrutinee owner; a `Copy` scrutinee is copied. Bindings in the
-selected pattern take ownership of their matched subobjects unless the scrutinee itself is a
-reference, in which case projections remain references to the referent. The wildcard `_` takes
-no binding but does not suppress destruction.
+scrutinee moves into a hidden scrutinee owner; a `Copy` scrutinee is copied. Pattern traversal
+follows written source order, recursively left to right. Tuple, array, and positional payload
+patterns therefore use index order; named struct and enum patterns use the written field order,
+even when it differs from declaration order.
+
+For each binding reached by that traversal:
+
+- a matched `Copy` component is copied into the binding and remains initialized in the hidden
+  scrutinee;
+- a matched non-`Copy` component moves into the binding and becomes moved-from in the hidden
+  scrutinee;
+- a reference scrutinee produces the reference projection required by the static pattern rules
+  and does not move or copy the referent.
+
+The wildcard `_` creates no binding and does not suppress destruction.
 
 **PAT-DROP-001.** The selected arm's bindings are arm-local owners. On every normal exit from
-the arm, binding locals are destroyed in reverse binding order after any arm result has moved
-out. Then every still-owned, unbound component of the hidden scrutinee is destroyed exactly
-once in reverse declaration/index order. A trap in pattern testing or the arm aborts without
-either cleanup.
+the arm, binding locals are destroyed in reverse creation order after any arm result has moved
+out. Then every still-owned, unbound component of the hidden scrutinee—including copied source
+components and wildcarded or omitted fields—is destroyed exactly once in reverse
+declaration/index order. For a named pattern, binding creation order is written pattern order,
+while residual field destruction is reverse source declaration order. A trap in pattern testing
+or the arm aborts without either cleanup.
 
 Failed arm tests create no user-visible bindings and transfer no ownership out of the hidden
 scrutinee. Core v1 has no match guards or alternative (`|`) patterns.
@@ -327,7 +347,11 @@ struct Numbers { items: Vec<Int32> }
 impl Numbers {
     fn middle(&self) -> &[Int32] { &self.items[1..3] }
 }
-let numbers = Numbers { items: Vec::new() };
+let mut items = Vec::new();
+items.push(10);
+items.push(20);
+items.push(30);
+let numbers = Numbers { items };
 let middle = numbers.middle();
 ```
 
@@ -378,10 +402,18 @@ address order, backend layout, or optimizer choice.
 ### Temporaries
 
 **EXEC-TEMP-001.** A temporary that is not transferred into another owner lives until the end
-of its full expression and is then destroyed in reverse creation order. A temporary borrowed
-by an unbound temporary reference lives through that statement; the static rules prevent the
-reference from escaping. A temporary moved into a local, aggregate, argument, return value, or
-other owner ceases to be a temporary and its destruction obligation transfers.
+of its enclosing full expression and is then destroyed in reverse creation order. An rvalue
+materialized so it can be borrowed as a call argument remains live through all later argument
+evaluation and through completion of the call. An rvalue materialized as a borrowed method
+receiver likewise remains live through argument evaluation and method completion. A temporary
+function value used as a callee follows the same call-completion rule.
+
+The abstract machine does not, by itself, extend an rvalue temporary merely because its
+reference is stored in a local or returned. C2.8's static borrow/escape rules decide whether
+such a reference is legal and must reject any accepted reference whose validity would outlast
+the referent storage assigned by those rules. A temporary moved into a local, aggregate,
+argument, return value, or other owner ceases to be a temporary and its destruction obligation
+transfers.
 
 A block tail value is moved or copied out before the block's locals and remaining temporaries
 are destroyed. Temporaries created while evaluating a condition, match scrutinee, loop
@@ -412,16 +444,75 @@ for item in values {
 **DROP-COLLECTION-001.** A collection owns its stored elements and entries. Destroying or
 clearing a sequence/set destroys elements in reverse defined iteration order. Destroying or
 clearing a map destroys entries in reverse defined iteration order, destroying each value
-before its key. Removing an entry transfers it to the caller when the API returns it; otherwise
-the operation destroys it. Replacing a map value installs the new value and then destroys the
-old value. Rejected duplicate inputs remain owned by the operation and are destroyed.
+before its key. Operations with component-wise return contracts transfer only the returned
+components and destroy the remaining removed or rejected components:
+
+- `HashMap::insert` with a new key transfers the supplied key and value into the map and returns
+  `None`;
+- `HashMap::insert` with an equal existing key retains the stored key and its iteration
+  position, installs the supplied new value, transfers the old stored value into
+  `Some(old_value)`, and destroys the supplied duplicate key before returning; the returned
+  `Option<V>` owns the old value;
+- `HashMap::remove(&key)` leaves the lookup reference and referent caller-owned, removes the
+  stored entry, destroys the stored key, and transfers the stored value into `Some(value)`;
+  absence returns `None` and destroys nothing;
+- `HashSet::insert` with a duplicate destroys the rejected supplied value and returns `false`;
+  a new value transfers into the set and returns `true`;
+- `HashSet::remove(&value)` leaves the lookup reference and referent caller-owned, destroys the
+  removed stored value, and returns `true`; absence returns `false`.
+
+For any other removal or replacement API, a component named in the return value transfers to
+that return owner; an owned component not returned is destroyed by the operation. Ignoring a
+returned owner does not move destruction into the collection operation: the expression-
+statement result is a temporary and is destroyed at its normal temporary boundary.
 
 ```stark
 let mut map: HashMap<String, Loud> = HashMap::new();
-map.insert(String::from("key"), Loud::new("value"));
-let removed = map.remove(&String::from("key"));
-map.clear();
+map.insert(String::from("key"), Loud::new("old"));
+let replaced = map.insert(String::from("key"), Loud::new("new"));
+match replaced {
+    Some(old_value) => consume(old_value),
+    None => {},
+}
 ```
+
+## Focused ordering examples
+
+The following examples isolate ordering rules that are easy for a backend to implement
+accidentally.
+
+```stark
+fn choose_function() -> fn(Int32) -> Int32 { selected }
+let result = choose_function()(make_argument());
+```
+
+Here `choose_function` completes before `make_argument`; if it traps, `make_argument` does not
+run.
+
+```stark
+struct Record { count: Int32, label: String }
+let record = Record { count: 3, label: String::from("owned") };
+match record {
+    Record { label: text, count: n } => consume(text, n),
+}
+```
+
+The written pattern creates `text` first by moving `label`, then creates `n` by copying
+`count`.
+
+```stark
+struct Inner { left: Loud, right: Loud }
+struct Outer { first: Loud, second: Inner }
+let value = make_outer();
+match value {
+    Outer {
+        second: Inner { right: b, left: a },
+        first: c,
+    } => consume(b, a, c),
+}
+```
+
+Binding creation order is `b`, `a`, `c`; normal binding destruction order is `c`, `a`, `b`.
 
 ### Trap termination
 

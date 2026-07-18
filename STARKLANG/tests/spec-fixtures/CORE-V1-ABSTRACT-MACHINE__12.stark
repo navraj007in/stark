@@ -1,0 +1,9 @@
+struct Inner { left: Loud, right: Loud }
+struct Outer { first: Loud, second: Inner }
+let value = make_outer();
+match value {
+    Outer {
+        second: Inner { right: b, left: a },
+        first: c,
+    } => consume(b, a, c),
+}

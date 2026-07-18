@@ -2027,10 +2027,13 @@ rvalue in a temporary place.</p>
 <code>Err</code>;</li>
 <li>a language trap.</li>
 </ul>
-<p>A <em>full expression</em> is an initializer, expression statement,
-return operand, break operand, condition, match scrutinee, loop
-iterable, function argument, aggregate field/element, assignment
-operand, or block tail evaluated as one enclosing operation.</p>
+<p>A <em>full expression</em> is the outermost expression of an
+initializer, expression statement, <code>return</code> operand,
+<code>break</code> operand, condition, match scrutinee, loop iterable,
+aggregate initializer, assignment operand, or block tail. Operands, call
+arguments, call receivers, callees, and aggregate fields/elements are
+subexpressions of that enclosing full expression, not independent
+temporary-destruction boundaries.</p>
 <p><strong>EXEC-ONCE-001.</strong> Every evaluated expression and
 subexpression is evaluated exactly once. Static dispatch, method lookup,
 place resolution, auto-borrowing, and auto-dereferencing must not
@@ -2140,8 +2143,17 @@ range.</td>
 </tr>
 <tr>
 <td>Free or associated call</td>
-<td>Resolve the callee without evaluating arguments; evaluate arguments
-left to right; transfer them to parameters; execute the body.</td>
+<td>Select the statically named function item without runtime callee
+evaluation; evaluate arguments left to right; transfer them to
+parameters; execute the body.</td>
+</tr>
+<tr>
+<td>Function-valued call</td>
+<td>Evaluate the callee expression exactly once and verify that its
+result is callable; evaluate arguments left to right; transfer them to
+parameters; invoke the selected function. A callee trap prevents every
+argument; an argument trap prevents later arguments and body
+execution.</td>
 </tr>
 <tr>
 <td>Method call</td>
@@ -2214,6 +2226,10 @@ right-before-left exception.</td>
 execution semantics. A legal Core expression form omitted from this
 table is a specification defect, not permission for
 implementation-defined evaluation.</p>
+<p>A temporary function value produced by a function-valued callee
+expression remains live through argument evaluation and the invoked
+body. Unless ownership transfers elsewhere, it is destroyed with the
+other temporaries at the end of the enclosing full expression.</p>
 <p><strong>EXEC-FOR-001.</strong> Every value accepted by the static
 <code>for</code>-loop iterator rules is executed through its selected
 iterator protocol. The runtime may not narrow this to a privileged list
@@ -2315,16 +2331,30 @@ restrictions.</p>
 <p><strong>PAT-OWN-001.</strong> A <code>match</code> scrutinee in value
 context is evaluated once. A non-<code>Copy</code> place scrutinee moves
 into a hidden scrutinee owner; a <code>Copy</code> scrutinee is copied.
-Bindings in the selected pattern take ownership of their matched
-subobjects unless the scrutinee itself is a reference, in which case
-projections remain references to the referent. The wildcard
-<code>_</code> takes no binding but does not suppress destruction.</p>
+Pattern traversal follows written source order, recursively left to
+right. Tuple, array, and positional payload patterns therefore use index
+order; named struct and enum patterns use the written field order, even
+when it differs from declaration order.</p>
+<p>For each binding reached by that traversal:</p>
+<ul>
+<li>a matched <code>Copy</code> component is copied into the binding and
+remains initialized in the hidden scrutinee;</li>
+<li>a matched non-<code>Copy</code> component moves into the binding and
+becomes moved-from in the hidden scrutinee;</li>
+<li>a reference scrutinee produces the reference projection required by
+the static pattern rules and does not move or copy the referent.</li>
+</ul>
+<p>The wildcard <code>_</code> creates no binding and does not suppress
+destruction.</p>
 <p><strong>PAT-DROP-001.</strong> The selected arm’s bindings are
 arm-local owners. On every normal exit from the arm, binding locals are
-destroyed in reverse binding order after any arm result has moved out.
-Then every still-owned, unbound component of the hidden scrutinee is
-destroyed exactly once in reverse declaration/index order. A trap in
-pattern testing or the arm aborts without either cleanup.</p>
+destroyed in reverse creation order after any arm result has moved out.
+Then every still-owned, unbound component of the hidden
+scrutinee—including copied source components and wildcarded or omitted
+fields—is destroyed exactly once in reverse declaration/index order. For
+a named pattern, binding creation order is written pattern order, while
+residual field destruction is reverse source declaration order. A trap
+in pattern testing or the arm aborts without either cleanup.</p>
 <p>Failed arm tests create no user-visible bindings and transfer no
 ownership out of the hidden scrutinee. Core v1 has no match guards or
 alternative (<code>|</code>) patterns.</p>
@@ -2391,7 +2421,11 @@ to satisfy reference semantics.</p>
 impl Numbers {
     fn middle(&amp;self) -&gt; &amp;[Int32] { &amp;self.items[1..3] }
 }
-let numbers = Numbers { items: Vec::new() };
+let mut items = Vec::new();
+items.push(10);
+items.push(20);
+items.push(30);
+let numbers = Numbers { items };
 let middle = numbers.middle();</code></pre>
 <h3 id="borrow-carrying-values">Borrow-carrying values</h3>
 <p><strong>REF-CARRY-001.</strong> A generic aggregate or library value
@@ -2443,10 +2477,18 @@ ownership, never a map order, address order, backend layout, or
 optimizer choice.</p>
 <h3 id="temporaries">Temporaries</h3>
 <p><strong>EXEC-TEMP-001.</strong> A temporary that is not transferred
-into another owner lives until the end of its full expression and is
-then destroyed in reverse creation order. A temporary borrowed by an
-unbound temporary reference lives through that statement; the static
-rules prevent the reference from escaping. A temporary moved into a
+into another owner lives until the end of its enclosing full expression
+and is then destroyed in reverse creation order. An rvalue materialized
+so it can be borrowed as a call argument remains live through all later
+argument evaluation and through completion of the call. An rvalue
+materialized as a borrowed method receiver likewise remains live through
+argument evaluation and method completion. A temporary function value
+used as a callee follows the same call-completion rule.</p>
+<p>The abstract machine does not, by itself, extend an rvalue temporary
+merely because its reference is stored in a local or returned. C2.8’s
+static borrow/escape rules decide whether such a reference is legal and
+must reject any accepted reference whose validity would outlast the
+referent storage assigned by those rules. A temporary moved into a
 local, aggregate, argument, return value, or other owner ceases to be a
 temporary and its destruction obligation transfers.</p>
 <p>A block tail value is moved or copied out before the block’s locals
@@ -2476,14 +2518,69 @@ ownership-discarding operations</h3>
 elements and entries. Destroying or clearing a sequence/set destroys
 elements in reverse defined iteration order. Destroying or clearing a
 map destroys entries in reverse defined iteration order, destroying each
-value before its key. Removing an entry transfers it to the caller when
-the API returns it; otherwise the operation destroys it. Replacing a map
-value installs the new value and then destroys the old value. Rejected
-duplicate inputs remain owned by the operation and are destroyed.</p>
+value before its key. Operations with component-wise return contracts
+transfer only the returned components and destroy the remaining removed
+or rejected components:</p>
+<ul>
+<li><code>HashMap::insert</code> with a new key transfers the supplied
+key and value into the map and returns <code>None</code>;</li>
+<li><code>HashMap::insert</code> with an equal existing key retains the
+stored key and its iteration position, installs the supplied new value,
+transfers the old stored value into <code>Some(old_value)</code>, and
+destroys the supplied duplicate key before returning; the returned
+<code>Option&lt;V&gt;</code> owns the old value;</li>
+<li><code>HashMap::remove(&amp;key)</code> leaves the lookup reference
+and referent caller-owned, removes the stored entry, destroys the stored
+key, and transfers the stored value into <code>Some(value)</code>;
+absence returns <code>None</code> and destroys nothing;</li>
+<li><code>HashSet::insert</code> with a duplicate destroys the rejected
+supplied value and returns <code>false</code>; a new value transfers
+into the set and returns <code>true</code>;</li>
+<li><code>HashSet::remove(&amp;value)</code> leaves the lookup reference
+and referent caller-owned, destroys the removed stored value, and
+returns <code>true</code>; absence returns <code>false</code>.</li>
+</ul>
+<p>For any other removal or replacement API, a component named in the
+return value transfers to that return owner; an owned component not
+returned is destroyed by the operation. Ignoring a returned owner does
+not move destruction into the collection operation: the expression-
+statement result is a temporary and is destroyed at its normal temporary
+boundary.</p>
 <pre class="stark"><code>let mut map: HashMap&lt;String, Loud&gt; = HashMap::new();
-map.insert(String::from(&quot;key&quot;), Loud::new(&quot;value&quot;));
-let removed = map.remove(&amp;String::from(&quot;key&quot;));
-map.clear();</code></pre>
+map.insert(String::from(&quot;key&quot;), Loud::new(&quot;old&quot;));
+let replaced = map.insert(String::from(&quot;key&quot;), Loud::new(&quot;new&quot;));
+match replaced {
+    Some(old_value) =&gt; consume(old_value),
+    None =&gt; {},
+}</code></pre>
+<h2 id="focused-ordering-examples">Focused ordering examples</h2>
+<p>The following examples isolate ordering rules that are easy for a
+backend to implement accidentally.</p>
+<pre class="stark"><code>fn choose_function() -&gt; fn(Int32) -&gt; Int32 { selected }
+let result = choose_function()(make_argument());</code></pre>
+<p>Here <code>choose_function</code> completes before
+<code>make_argument</code>; if it traps, <code>make_argument</code> does
+not run.</p>
+<pre class="stark"><code>struct Record { count: Int32, label: String }
+let record = Record { count: 3, label: String::from(&quot;owned&quot;) };
+match record {
+    Record { label: text, count: n } =&gt; consume(text, n),
+}</code></pre>
+<p>The written pattern creates <code>text</code> first by moving
+<code>label</code>, then creates <code>n</code> by copying
+<code>count</code>.</p>
+<pre class="stark"><code>struct Inner { left: Loud, right: Loud }
+struct Outer { first: Loud, second: Inner }
+let value = make_outer();
+match value {
+    Outer {
+        second: Inner { right: b, left: a },
+        first: c,
+    } =&gt; consume(b, a, c),
+}</code></pre>
+<p>Binding creation order is <code>b</code>, <code>a</code>,
+<code>c</code>; normal binding destruction order is <code>c</code>,
+<code>a</code>, <code>b</code>.</p>
 <h3 id="trap-termination">Trap termination</h3>
 <p><strong>DROP-ABORT-001.</strong> A language trap is aborting. It
 performs no stack unwinding, scope cleanup, temporary cleanup,
@@ -3411,16 +3508,16 @@ constraint, a <code>path</code> escaping the workspace, or a dependency
 whose name violates the name rule is a manifest error and compilation
 MUST fail.</p>
 <p>Example:</p>
-<div class="sourceCode" id="cb138"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb138-1"><a href="#cb138-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb138-2"><a href="#cb138-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
-<span id="cb138-3"><a href="#cb138-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb138-4"><a href="#cb138-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
-<span id="cb138-5"><a href="#cb138-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
-<span id="cb138-6"><a href="#cb138-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb138-7"><a href="#cb138-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
-<span id="cb138-8"><a href="#cb138-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
-<span id="cb138-9"><a href="#cb138-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb141"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb141-1"><a href="#cb141-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb141-2"><a href="#cb141-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
+<span id="cb141-3"><a href="#cb141-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb141-4"><a href="#cb141-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
+<span id="cb141-5"><a href="#cb141-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb141-6"><a href="#cb141-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb141-7"><a href="#cb141-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
+<span id="cb141-8"><a href="#cb141-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb141-9"><a href="#cb141-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <h2 id="packages-and-dependencies">Packages and Dependencies</h2>
 <p>Dependencies are declared in <code>starkpkg.json</code> under
 <code>dependencies</code>.</p>

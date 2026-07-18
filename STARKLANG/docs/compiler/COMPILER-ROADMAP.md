@@ -500,9 +500,11 @@ reference identity/projection/return/slice/receiver validity; and the observable
 (streams, exit/trap category and source, harnessed return, destruction order, and artifact
 verification result). Every legal Core expression must have language-level execution behaviour.
 
-Completed on 2026-07-18. `STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md` is the sole normative
-runtime authority. CORE-Q-006 is approved; the existing-pattern runtime portion of CORE-Q-020
-and the language-trap boundary of CORE-Q-017 are approved, with their C2.8/C2.9 portions still
+Completed on 2026-07-18 and corrected after review.
+`STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md` is the sole normative runtime authority.
+CORE-Q-006's runtime portion is approved; C2.8 retains static place, borrow-region, temporary-
+escape, and returned-reference legality. The existing-pattern runtime portion of CORE-Q-020 and
+the language-trap boundary of CORE-Q-017 are approved, with their C2.8/C2.9 portions still
 pending. No Rust implementation alignment or MIR work was performed.
 
 ### WP-C2.8 — Type, trait, pattern and constant semantics

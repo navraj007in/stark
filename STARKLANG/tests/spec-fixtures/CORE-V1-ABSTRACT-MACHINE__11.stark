@@ -1,0 +1,5 @@
+struct Record { count: Int32, label: String }
+let record = Record { count: 3, label: String::from("owned") };
+match record {
+    Record { label: text, count: n } => consume(text, n),
+}

@@ -1,6 +1,7 @@
 # Core v1 Completeness Inventory
 
-Status: **WP-C2.6 complete — governance inventory, not normative semantics**
+Status: **WP-C2.6 inventory complete; decisions updated through WP-C2.7 correction —
+governance inventory, not normative semantics**
 Updated: 2026-07-18
 
 This ledger is the authoritative inventory of Core v1 semantic questions. It routes each
@@ -80,7 +81,7 @@ cross-reference.
 | SYN-BLOCK-001 | How do statements and a trailing expression determine block syntax? | complete/specified | 02 §Blocks and Statements | SYN-004/U17; SYN-004/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-LET-001 | Which initialized and deferred `let` forms parse? | complete/specified | 02 §Let Statements | SYN-005/U17; SYN-005/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-EXPR-001 | What are expression precedence and associativity? | complete/specified | 02 §Expressions | SYN-006/U17; SYN-006/U17 | ecosystem-breaking/C2.11 | settled/DEV-017 |
-| SYN-PLACE-001 | Which syntactic forms may appear as assignment targets? | partial/specified | 02 §Place Expressions | SYN-006/U17; none | high/C2.7 | Q006 pending/DEV-017 |
+| SYN-PLACE-001 | Which syntactic forms may appear as assignment targets? | partial/specified | 02 §Place Expressions | SYN-006/U17; none | high/C2.8 | Q006 static pending/DEV-017 |
 | SYN-CONTROL-001 | Which `if`, `match`, loop, `break`, `continue`, and `return` forms parse? | complete/specified | 02 §Control Flow | SYN-007/U17; SYN-007/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-PATTERN-001 | Which wildcard, binding, literal, tuple, struct, enum, range, and alternative patterns parse? | partial/specified | 02 §Patterns | SYN-007/U17; none | high/C2.8 | Q020 pending/DEV-017 |
 | SYN-PATH-001 | Which paths, use trees, and explicit generic arguments parse? | complete/specified | 02 §Paths and Imports | SYN-008/U17; SYN-008/U17 | high/C2.11 | settled/DEV-017 |
@@ -112,7 +113,7 @@ cross-reference.
 | TYPE-CFLOW-001 | How do branches and `match` arms choose a common type? | complete/specified | 03 §Control-Flow Typing | TYP-004/U17; TYP-004/U17 | high/C2.11 | settled/DEV-017 |
 | TYPE-LOOP-001 | How do loop kind and reachable `break` values determine expression type? | partial/specified | 03 §Loop Typing | TYP-004/U17; none | high/C2.8 | Q004 pending/DEV-017 |
 | TYPE-METHOD-001 | How are inherent and trait method candidates collected and prioritized? | partial/pending-classification | 03 §Method Resolution | TYP-006/U17; none | ecosystem-breaking/C2.8 | Q004,Q005 pending/DEV-017 |
-| TYPE-METHOD-002 | Which automatic borrow/dereference adjustments are allowed? | partial/pending-classification | 03 §Method Resolution | TYP-006/U17; none | high/C2.8 | Q004,Q006 pending/DEV-017 |
+| TYPE-METHOD-002 | Which automatic borrow/dereference adjustments are allowed? | partial/pending-classification | 03 §Method Resolution | TYP-006/U17; none | high/C2.8 | Q004 pending; Q006 static pending/DEV-017 |
 | TRAIT-DEF-001 | What declarations, default bodies, and impl obligations are legal? | partial/specified | 03 §Traits and Implementations | TYP-005/U17; none | ecosystem-breaking/C2.8 | Q005 pending/DEV-017 |
 | TRAIT-ASSOC-001 | How are associated functions/types resolved and qualified? | partial/pending-classification | 03 §Associated Items | TYP-005/U17; none | high/C2.8 | Q005,Q015 pending/DEV-017 |
 | TRAIT-COHERENCE-001 | What orphan rule applies across package identities? | partial/pending-classification | 03 §Coherence | SEM-007; SEM-007 | ecosystem-breaking/C2.8 | Q005,Q013A pending/DEV-021 |
@@ -131,11 +132,11 @@ cross-reference.
 | FLOW-TRY-001 | Where is `?` legal and what enclosing result type is required? | complete/specified | 04 §Error Propagation Analysis | none; none | high/C2.11 | settled/none |
 | DIAG-CATALOG-001 | Which rejection categories and diagnostic codes are stable and collision-free? | partial/pending-classification | 04 §Diagnostics | SEM-006/U17; none | medium/C2.11 | Q022 pending/DEV-019 |
 | OWN-MOVE-001 | Which value uses move, copy, or borrow an operand? | complete/specified | Abstract Machine §Moves, Partial Moves, and Reinitialization | MEM-001/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
-| OWN-COPY-001 | Which types are implicitly copyable? | partial/pending-classification | 03 §Copy Types | MEM-002/U17; none | ecosystem-breaking/C2.8 | Q003,Q006 pending/DEV-017 |
-| OWN-BORROW-001 | When may shared and exclusive borrows coexist? | partial/specified | 03 §Borrow Legality | MEM-003/U17; none | ecosystem-breaking/C2.8 | Q006 pending/DEV-017 |
-| OWN-REGION-001 | When do local, argument-derived, and temporary borrows end? | partial/pending-classification | 03 §Borrow Regions | MEM-004/U17; none | ecosystem-breaking/C2.8 | Q006 pending/DEV-017 |
-| OWN-RETURN-001 | Which references may escape through return values? | partial/pending-classification | 03 §Returned References | MEM-005/U17; none | ecosystem-breaking/C2.8 | Q006 pending/DEV-017 |
-| OWN-CARRY-001 | How does reference provenance propagate through aggregates and calls? | partial/pending-classification | 03 §Reference Provenance | MEM-004/U17; none | ecosystem-breaking/C2.8 | Q006 pending/DEV-017 |
+| OWN-COPY-001 | Which types are implicitly copyable? | partial/pending-classification | 03 §Copy Types | MEM-002/U17; none | ecosystem-breaking/C2.8 | Q003 pending; Q006 static pending/DEV-017 |
+| OWN-BORROW-001 | When may shared and exclusive borrows coexist? | partial/specified | 03 §Borrow Legality | MEM-003/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
+| OWN-REGION-001 | When do local, argument-derived, and temporary borrows end? | partial/pending-classification | 03 §Borrow Regions | MEM-004/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
+| OWN-RETURN-001 | Which references may escape through return values? | partial/pending-classification | 03 §Returned References | MEM-005/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
+| OWN-CARRY-001 | How does reference provenance propagate through aggregates and calls? | partial/pending-classification | 03 §Reference Provenance | MEM-004/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
 | OWN-PARTIAL-001 | Which field moves are permitted before later aggregate use or destruction? | complete/specified | Abstract Machine §Moves, Partial Moves, and Reinitialization | none; none | ecosystem-breaking/C2.11 | Q006 approved/none |
 | OWN-REINIT-001 | When does assignment reinitialize a moved place? | complete/specified | Abstract Machine §Moves, Partial Moves, and Reinitialization | none; none | high/C2.11 | Q006 approved/none |
 | EXEC-EVAL-001 | What is the evaluation order of operands, calls, indexing, and aggregates? | complete/specified | Abstract Machine §Evaluation Order | none; none | ecosystem-breaking/C2.11 | Q006 approved/none |

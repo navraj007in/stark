@@ -1,5 +1,5 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.7
+Updated: 2026-07-18 after WP-C2.7 correction
 
 ## Position
 Gate: C2  Next: WP-C2.8  Blocked: none
@@ -8,9 +8,9 @@ starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=bloc
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: WP-C2.7 abstract machine and execution semantics.
-- Transition base commit: `8596c88` (`complete WP-C2.6 semantic inventory`).
-- Current committed head at the start of WP-C2.7: `8596c88`. This event-style provenance avoids trying to
+- Last completed transition: WP-C2.7 abstract-machine correction pass.
+- Transition base commit: `3d64dfc` (`complete WP-C2.7 abstract machine semantics`).
+- Current committed head at the start of the WP-C2.7 correction: `3d64dfc`. This event-style provenance avoids trying to
   embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -40,9 +40,10 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   C1.2/C1.3 deltas — see that file's own scope note).
 - Core spec revision: `STARKLANG/docs/spec/` files 00-07 plus
   `CORE-V1-ABSTRACT-MACHINE.md`, normative per `CLAUDE.md`. Spec fixture corpus:
-  `STARKLANG/tests/spec-fixtures/manifest.toml`, 104 entries (parse-pass 56,
+  `STARKLANG/tests/spec-fixtures/manifest.toml`, 107 entries (parse-pass 59,
   semantic-error 16, notation 27, lex-pass 4, parse-fail 1). WP-C2.7 removed 28 stale,
-  duplicative memory-model examples and added 10 abstract-machine adversarial examples.
+  duplicative memory-model examples and now contains 13 abstract-machine adversarial examples
+  after its correction pass.
 - Tensor spec revision: `STARKLANG/docs/extensions/Tensor-Model-Types.md` (extension `tensor`
   v0.1), `AI-Extensions.md` (non-normative sketches).
 - Conformance DB: `STARKLANG/conformance/core-v1-coverage.toml`, 59 `[[rule]]` entries.
@@ -282,6 +283,11 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   existing Core patterns, and CORE-Q-017 only for the language-trap boundary; C2.8/C2.9 retain
   their remaining portions. This decision defines semantics but deliberately defers compiler/
   interpreter alignment and adversarial rule evidence to C2.11.
+- CD-013 [2026-07-18, WP-C2.7 correction] Corrected CD-012's CORE-Q-006 approval scope.
+  CORE-Q-006 is approved for runtime abstract-machine semantics only; static place legality,
+  borrow coexistence/regions, temporary-reference escape, and returned-reference legality remain
+  pending under C2.8. This supersedes only CD-012's phrase "Approved CORE-Q-006", not its
+  runtime decisions or its C2.11 implementation-alignment deferral.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -2184,4 +2190,38 @@ pass. `cargo test --workspace --all-targets --all-features` passes 489 tests wit
 fixture-migration test infrastructure changed, and C2.11 retains implementation alignment.
 FOLLOW-UP: WP-C2.8 must settle type identity/well-formedness, inference, traits/coherence,
 remaining static pattern rules, and constant evaluation against this execution model.
+NEXT: WP-C2.8 (Type, trait, pattern and constant semantics)
+
+### WP-C2.7 correction pass — 2026-07-18
+DONE: Applied the post-`3d64dfc` external-review corrections before starting C2.8. Replaced the
+contradictory generic map-replacement sentence with component-wise `HashMap`/`HashSet`
+insert/remove ownership, including transfer of the old map value into the returned `Option<V>`.
+Added function-valued callee-first evaluation and callee-temporary lifetime through the call.
+Specified recursive written-order pattern traversal, per-component Copy/move/reference binding,
+reverse binding-creation destruction, and reverse declaration/index residual destruction.
+Clarified borrowed-rvalue argument and method-receiver lifetime through call completion and
+repaired the empty-vector slice example. Reconciled CORE-Q-006 as runtime-partially-approved
+with its static place/borrow/escape portion assigned to C2.8. Added focused map replacement,
+function-valued call, mixed Copy/non-Copy binding, and nested binding-order examples.
+FILES: STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md and regenerated combined Markdown/HTML/
+PDF, STARKLANG/tests/spec-fixtures/manifest.toml and generated abstract-machine fixtures,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.7.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md, CLAUDE.md, starkc/README.md,
+COMPILER-STATE.md.
+RULES: corrected `EXEC-EVAL-001`, `EXEC-TEMP-001`, `PAT-OWN-001`, `PAT-DROP-001`, and
+`DROP-COLLECTION-001`; no new rule IDs and no implementation-status claims.
+DECISIONS: CORE-Q-006 runtime abstract-machine portion remains approved; static place legality,
+borrow coexistence/regions, temporary-reference escape, and returned-reference legality remain
+pending under C2.8. CORE-Q-020's runtime/static split is unchanged.
+EVIDENCE: DOC + fixture conformance + full regression. The synchronized corpus contains 107
+fixtures (59 parse-pass, 16 semantic-error, 27 notation, 4 lex-pass, 1 parse-fail), including 13
+abstract-machine examples. Combined Markdown/HTML/PDF regeneration succeeds (PDF: 71 A4 pages).
+`cargo test --workspace --all-targets --all-features` passes 489 tests with 0 failures and 2
+intentional opt-in tests ignored. Rust formatting, Clippy with warnings denied, conformance
+validation/report generation, Python compilation, fixture synchronization, and whitespace
+checks pass. No Rust compiler/interpreter behavior changed; C2.11 retains executable alignment.
+FOLLOW-UP: C2.8 must close CORE-Q-006's static remainder together with type, trait, pattern, and
+constant semantics.
 NEXT: WP-C2.8 (Type, trait, pattern and constant semantics)

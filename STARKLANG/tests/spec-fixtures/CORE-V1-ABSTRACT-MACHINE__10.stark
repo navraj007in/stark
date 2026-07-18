@@ -1,4 +1,2 @@
-struct Loud { label: String }
-impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } }
-let live = Loud { label: String::from("not dropped") };
-panic("abort");
+fn choose_function() -> fn(Int32) -> Int32 { selected }
+let result = choose_function()(make_argument());

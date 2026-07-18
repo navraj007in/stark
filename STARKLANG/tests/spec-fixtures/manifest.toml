@@ -389,9 +389,24 @@ note = "Loud is an illustrative external item"
 ["CORE-V1-ABSTRACT-MACHINE__09.stark"]
 verdict = "parse-pass"
 mode = "snippet"
-note = "Loud::new is illustrative"
+note = "Loud::new and consume are illustrative external functions"
 
 ["CORE-V1-ABSTRACT-MACHINE__10.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "selected and make_argument are illustrative external functions"
+
+["CORE-V1-ABSTRACT-MACHINE__11.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "consume is an illustrative external function"
+
+["CORE-V1-ABSTRACT-MACHINE__12.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "Loud, make_outer, and consume are illustrative external items"
+
+["CORE-V1-ABSTRACT-MACHINE__13.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 

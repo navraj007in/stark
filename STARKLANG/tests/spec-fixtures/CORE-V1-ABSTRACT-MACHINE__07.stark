@@ -2,5 +2,9 @@ struct Numbers { items: Vec<Int32> }
 impl Numbers {
     fn middle(&self) -> &[Int32] { &self.items[1..3] }
 }
-let numbers = Numbers { items: Vec::new() };
+let mut items = Vec::new();
+items.push(10);
+items.push(20);
+items.push(30);
+let numbers = Numbers { items };
 let middle = numbers.middle();

@@ -1,4 +1,7 @@
 let mut map: HashMap<String, Loud> = HashMap::new();
-map.insert(String::from("key"), Loud::new("value"));
-let removed = map.remove(&String::from("key"));
-map.clear();
+map.insert(String::from("key"), Loud::new("old"));
+let replaced = map.insert(String::from("key"), Loud::new("new"));
+match replaced {
+    Some(old_value) => consume(old_value),
+    None => {},
+}
