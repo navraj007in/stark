@@ -1,8 +1,9 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after roadmap amendment — C3-entry transition inserted before WP-C3.1
+Updated: 2026-07-19 after systems-roadmap amendment
 
 ## Position
-Gate: C3-ENTRY  Next: Native Readiness and Carry-Forward Closure before WP-C3.1  Blocked: none
+Gate: C3-ENTRY  Next: complete native-readiness transition before WP-C3.1
+Blocked: six completeness-row approvals; DEV-060 disposition; versioned execution-corpus freeze; CI installation
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
@@ -16,24 +17,20 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   bookkeeping only, behavior already implemented/tested), 33 deviations closed this gate
   (seventeen WP-C2.2 runtime-semantics defects, six WP-C2.11 items, DEV-036, seven
   post-WP-C2.11 correction-pass items, DEV-053/054), 8 remain open and non-soundness-relevant.
-  Full report: `starkc/docs/compiler/C2-exit-report.md`. Gate C3 (Native Compiler Architecture
-  and Backend Selection Spike) now open.
-- Transition base commit: `e270575` (`add compiler support coverage for .st sources` — an
-  unrelated, user-authored commit that landed after WP-C2.12's own commit `2b005d8`; not Gate C2
-  work, noted only for head accuracy).
-- Current committed head at the start of this WP: `e270575`. This event-style provenance avoids
-  trying to embed a commit's own not-yet-known SHA in itself. Commit only on explicit user
-  request.
+  Full report: `starkc/docs/compiler/C2-exit-report.md`. C3-entry is the active transition
+  before WP-C3.1.
+- Transition base commit: `c268d7c` (`Add systems ecosystem roadmap`), after the post-Gate-C2
+  correction-brief commit that resolved DEV-051, DEV-052, and DEV-055 and opened DEV-060.
+- Current committed head: `c268d7c`. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
   `rust-version = "1.85"` (crate MSRV). The Gate-5 *generated deployment host* (not `starkc`
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
-- Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/, against
-  current head `e270575`, which now legitimately includes `tests/source_extensions.rs` — the
-  unrelated `.st`-extension commit — as committed, tracked code, no longer excluded):
-  **551 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+- Latest verified code baseline: `cargo test --workspace --all-targets --all-features`
+  (starkc/, against the post-DEV-051/052/055 correction baseline recorded below):
+  **594 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 32 integration-test files**
   (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`,
   re-counted against the
@@ -53,6 +50,9 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   a live-ORT-download inference test in `tests/gate5_codegen.rs`). Full per-file breakdown
   recorded in `starkc/docs/dev/compiler-map.md` (WP-C0.1; not re-regenerated for the WP-C1.1/
   C1.2/C1.3 deltas — see that file's own scope note).
+  Latest recorded validation also has `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and conformance
+  validation/reporting clean.
 - Core spec revision: `STARKLANG/docs/spec/` files 00-07 plus
   `CORE-V1-ABSTRACT-MACHINE.md` and `CORE-V1-FUTURE-BOUNDARIES.md`, normative per
   `CLAUDE.md`. Spec fixture corpus:
@@ -352,6 +352,16 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   `STARKLANG/docs/ecosystem/SYSTEMS-ROADMAP.md` with S0-S7 plus the post-C6 P1 Native Systems
   Baseline checkpoint. This is a sequencing and evidence-governance amendment; it does not
   reopen C2 or change Core v1 semantics.
+- CD-019 [2026-07-19, C3-entry follow-up amendment] Tightened the post-C2 roadmap amendment
+  before WP-C3.1. DEV-060 is now owned by C3-ENTRY and must be disposed before the workload
+  freeze. P1 now gates C7.5/C7.7 closure and is required for Native Systems Preview and
+  STARK v1 General-Purpose Stable claims, while Core v1 Compiler Stable may describe compiler
+  maturity without claiming systems-platform maturity. The C3 provider/resource experiment is
+  explicitly disposable and non-normative; C5.1 remains the first stable Native Provider ABI.
+  Systems S6 is split into joint concurrency tracks for language proposal, compiler
+  implementation, runtime/provider work, and ecosystem validation. `COMPILER-STATE.md`'s
+  load-bearing header now points at `c268d7c`, the 594/0/2 verified code baseline, and the
+  remaining C3-entry blockers.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

@@ -5,6 +5,21 @@ ecosystem product design, networking/TLS/HTTP package design, or concurrency sem
 compiler roadmap. It depends on the compiler track for native executables, runtime/provider ABI,
 resource semantics, and Core language parity.
 
+Before S0 implementation begins, expand this strategic outline into executable work-package
+documents with entry criteria, exit criteria, owning track, mandatory tests, target platforms,
+security limits, error contracts, and provider-versus-pure-STARK boundaries. Initial S0 work
+packages should include:
+
+```text
+WP-S0.1 Provider manifest and identity
+WP-S0.2 Provider linker integration
+WP-S0.3 Capability validation
+WP-S0.4 Opaque resource ownership and Drop
+WP-S0.5 Negative and portability corpus
+```
+
+Use the same work-package pattern later for networking and HTTP.
+
 ---
 
 ## S0 — Native Provider Contract Integration
@@ -80,17 +95,41 @@ This is the practical systems capability milestone.
 Opens only after the sequential HTTP server is complete and its throughput/blocking limitations
 are documented.
 
-Initial scope:
+The systems roadmap is the strategic owner for this milestone, but concurrency is joint
+compiler, runtime/provider, and ecosystem work. It requires a compiler/extension work package
+because `Send`/`Share`, ownership transfer, guards, failure semantics, MIR operations, native
+lowering, and diagnostics are language implementation concerns rather than ordinary package
+implementation.
 
-- compiler-known `Send` and `Share`;
-- named-function `spawn`;
-- explicit owned argument;
-- `JoinHandle`;
-- bounded channels;
-- `Shared<T>`;
-- `Mutex<T>` and guard;
-- structured worker group;
-- trap and shutdown rules.
+### S6A — Concurrency language proposal
+
+- `Send`/`Share` laws;
+- thread ownership;
+- shared-reference rules;
+- cross-thread Drop;
+- failure/shutdown semantics.
+
+### S6B — Compiler implementation
+
+- type checking;
+- borrow checking;
+- MIR operations and verifier;
+- native lowering;
+- diagnostics.
+
+### S6C — Runtime/provider
+
+- OS threads;
+- joins;
+- channels;
+- mutexes;
+- worker groups.
+
+### S6D — Ecosystem validation
+
+- worker-pool HTTP server;
+- shared application state;
+- shutdown and load tests.
 
 Excluded:
 

@@ -640,7 +640,8 @@ Required closure:
   `KNOWN-DEVIATIONS.md` and `COMPILER-STATE.md`'s dated `### Post-Gate-C2 correction brief —
   Issues 6-8` session record. One new, separate, narrower deviation (DEV-060: repeated call to
   an un-overridden trait default method wrongly flagged as a move) was found while writing
-  DEV-051's regression tests and remains open, unscheduled;
+  DEV-051's regression tests and remains open;
+- assign and dispose DEV-060 before the C3 workload freeze;
 - freeze a versioned execution corpus for C3/C4;
 - transfer unfinished WP-C2.12 generated-corpus work to C4.4 and C6.5 ownership;
 - transfer unfinished WP-C2.12 cross-backend replay work to C4.4, C5.6, and C6.5 ownership;
@@ -652,6 +653,7 @@ DEV ownership defaults unless superseded by owner decision:
 DEV-051 trait default sibling calls -> RESOLVED 2026-07-19
 DEV-052 qualified CoreTrait calls -> RESOLVED 2026-07-19
 DEV-055 glob-imported unit variants -> RESOLVED 2026-07-19
+DEV-060 repeated default-method call move error -> owner: C3-ENTRY; disposition required before C3 workload freeze
 ```
 
 CI baseline before native work expands:
@@ -721,6 +723,8 @@ The architecture comparator is not "no native compiler"; it is the strongest pra
 candidate implementation paths.
 C3 does not require full C6 generic and trait parity, but it must spike representative
 generics, trait dispatch, references, and resource Drop before selecting a backend.
+The C3 provider/resource experiment is disposable and non-normative. It tests host-integration
+feasibility only; C5.1 owns the first stable, versioned Native Provider ABI.
 
 ### WP-C3.2 — Generated Rust/C backend spike
 
@@ -1135,6 +1139,9 @@ Every optimisation needs differential tests against unoptimised MIR/native execu
 
 ### WP-C7.5 — Performance and complexity report
 
+This WP may start after C7.1-C7.4 have produced measurable builds, but it cannot close until P1
+is complete and its practical systems workloads are included where applicable.
+
 Measure frozen workloads for:
 
 - compile time;
@@ -1172,8 +1179,9 @@ Default outcome is DEFER.
 
 ### WP-C7.7 — Gate exit
 
-C7 closes when native builds are usable, reproducible to the documented degree, and performance
-claims are bounded by measured evidence.
+C7 closes when native builds are usable, reproducible to the documented degree, performance
+claims are bounded by measured evidence, and P1 has completed so the performance report includes
+the practical systems baseline.
 
 ---
 
@@ -1443,14 +1451,14 @@ May be published after C5 with:
 
 #### Native Systems Preview
 
-May be published after C6 plus P1 with:
+May be published after C6 plus completed P1 with:
 
 - native Core semantic parity for the listed scope;
 - filesystem/process/time/network providers;
 - sequential HTTP application;
 - listed targets and deviations.
 
-#### Core v1 Stable
+#### Core v1 Compiler Stable
 
 Requires C7, C8, and C10 with:
 
@@ -1459,6 +1467,14 @@ Requires C7, C8, and C10 with:
 - language services;
 - robustness/security qualification;
 - compatibility policy.
+
+This release class may describe compiler maturity independently, but must not claim practical
+systems-platform maturity unless P1 is complete.
+
+#### STARK v1 General-Purpose Stable
+
+Requires Core v1 Compiler Stable plus completed P1. This is the first release class allowed to
+claim general-purpose practical systems-platform maturity.
 
 ### WP-C10.1 — Full conformance dashboard
 
@@ -1589,7 +1605,10 @@ C0 Current-state truth
  -> C4 Verified MIR
  -> C5 Native MVP
  -> C6 Native semantic parity
- -> C7 Build profiles, reproducibility, and baseline optimisation
+ -> C7.1-C7.4 Build profiles, reproducibility, and baseline optimisation setup
+ -> P1 Native Systems Baseline
+ -> C7.5 Performance and complexity report
+ -> C7.7 C7 gate exit
 ```
 
 This entire path is mandatory.
@@ -1619,6 +1638,7 @@ Exit:
 ```
 
 P1 does not redefine Core conformance. It proves practical capability.
+C7.1-C7.4 may proceed before P1 is complete, but C7.5 and C7.7 may not close before P1 exists.
 
 ## 4.3 Language-service path
 
@@ -1646,7 +1666,7 @@ A compiler-track release qualification gate may open when:
 
 ```text
 C0–C8 are closed
-+ P1 status is explicit for Native Systems Preview or later
++ P1 is complete for Native Systems Preview or STARK v1 General-Purpose Stable
 + C9 status is explicit (done, blocked on second-artifact evidence, or not required for this release)
 + tensor capability/deviation status is explicit
 ```
