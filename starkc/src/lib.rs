@@ -9,6 +9,7 @@
 //! Gates 1–3 implement Source -> Tokens -> AST -> HIR -> typed HIR ->
 //! interpreter, including the `core-min` runtime.
 
+pub mod analysis;
 pub mod ast;
 pub mod ast_dump;
 pub mod borrowck;

@@ -554,32 +554,17 @@ fn cmd_check(
     options: LanguageOptions,
     message_format: &str,
 ) -> ExitCode {
-    let mut diags = Vec::new();
-    let (tree, parse_diags) = parse_with_options(&file, mode, options);
-    diags.extend(parse_diags);
-
     let file_arc = std::sync::Arc::new(file);
-    if diags
-        .iter()
-        .all(|d| d.severity != starkc::diag::Severity::Error)
-    {
-        let (hir, sem_diags) =
-            starkc::resolve::resolve_with_options(&tree, file_arc.clone(), options);
-        diags.extend(sem_diags);
-
-        if diags
-            .iter()
-            .all(|d| d.severity != starkc::diag::Severity::Error)
-        {
-            let type_diags = starkc::typecheck::check_with_options(&hir, file_arc.clone(), options);
-            diags.extend(type_diags);
-        }
-    }
+    let analysis = starkc::analysis::analyze_project(
+        starkc::analysis::ProjectInput::source(file_arc.clone(), mode),
+        options,
+    );
+    let diags = &analysis.diagnostics;
 
     if message_format == "json" {
-        print_json_diagnostics(&file_arc.name, &diags);
+        print_json_diagnostics(&file_arc.name, diags);
     } else {
-        for diag in &diags {
+        for diag in diags {
             eprint!("{}", diag.render(&file_arc));
         }
     }

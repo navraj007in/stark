@@ -67,37 +67,29 @@ pub fn validate_examples(
 /// examples from files that parsed successfully), so any error here
 /// originates in the appended example.
 fn validate_example_in_context(file_source: &str, example_code: &str) -> Result<(), String> {
+    use crate::analysis::{analyze_project, ProjectInput};
     use crate::diag::Severity;
     use crate::hir::ItemKind;
     use crate::options::LanguageOptions;
-    use crate::parser::{parse_with_options, ParseMode};
-    use crate::resolve::resolve_with_options;
     use crate::source::SourceFile as Src;
-    use crate::typecheck::analyze_with_options;
     use std::sync::Arc;
 
     let combined = format!("{file_source}\nfn __doc_example__() {{\n{example_code}\n}}\n");
-    let file = Src::new("doc-example.stark", combined);
+    let file = Arc::new(Src::new("doc-example.stark", combined));
     let options = LanguageOptions::CORE;
-    let (ast, diags) = parse_with_options(&file, ParseMode::Program, options);
-    if let Some(d) = diags.iter().find(|d| d.severity == Severity::Error) {
-        return Err(format!("parse error: {}", d.message));
-    }
-
-    let file = Arc::new(file);
-    let (hir, diags) = resolve_with_options(&ast, file.clone(), options);
-    if let Some(d) = diags.iter().find(|d| d.severity == Severity::Error) {
-        return Err(format!("resolve error: {}", d.message));
-    }
-
-    let result = analyze_with_options(&hir, file.clone(), options);
-    if let Some(d) = result
+    let analysis = analyze_project(ProjectInput::program(file.clone()), options);
+    if let Some(d) = analysis
         .diagnostics
         .iter()
         .find(|d| d.severity == Severity::Error)
     {
-        return Err(format!("typecheck error: {}", d.message));
+        return Err(format!("analysis error: {}", d.message));
     }
+    let hir = analysis.hir.as_ref().expect("successful analysis has HIR");
+    let tables = analysis
+        .type_tables
+        .as_ref()
+        .expect("successful analysis has type tables");
 
     let example_item = hir.items.iter().enumerate().find_map(|(index, item)| {
         let ItemKind::Fn(def) = &item.kind else {
@@ -112,7 +104,7 @@ fn validate_example_in_context(file_source: &str, example_code: &str) -> Result<
         );
     };
 
-    crate::interp::run_item(&hir, file, &result.tables, example_item)
+    crate::interp::run_item(hir, file, tables, example_item)
         .map(|_| ())
         .map_err(|e| format!("runtime error: {}", e.message))
 }

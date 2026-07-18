@@ -106,72 +106,44 @@ fn main() -> ExitCode {
         }
     };
 
+    let root_package_name = graph.root_package_name.clone();
     let options = LanguageOptions::CORE;
-    let (ast, mut diags) = parse_package_graph(&graph, options);
-
-    let root_pkg = graph.packages.get(&graph.root_package_name).unwrap();
-    let entry_src = match std::fs::read_to_string(&root_pkg.entry) {
-        Ok(src) => src,
-        Err(e) => {
-            eprintln!(
-                "Error: failed to read entry file '{}': {}",
-                root_pkg.entry.display(),
-                e
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let root_file = Arc::new(SourceFile::new(
-        root_pkg.entry.to_string_lossy().into_owned(),
-        entry_src,
-    ));
-
-    if diags.iter().all(|d| d.severity != Severity::Error) {
-        let (hir, mut resolution) = resolve(&ast, root_file.clone());
-        diags.append(&mut resolution);
-
-        if diags.iter().all(|d| d.severity != Severity::Error) {
-            let checked = typecheck::analyze_with_options(&hir, root_file.clone(), options);
-            diags.extend(checked.diagnostics);
-
-            for diag in &diags {
-                eprint!("{}", diag.render(&root_file));
-            }
-
-            let has_errors = diags.iter().any(|d| d.severity == Severity::Error);
-            if has_errors {
-                eprintln!("{}: package compilation failed", root_pkg.name);
-                return ExitCode::FAILURE;
-            }
-
-            if cmd == "check" || cmd == "build" {
-                println!("{}: OK", root_pkg.name);
-                return ExitCode::SUCCESS;
-            }
-
-            if cmd == "run" {
-                return match starkc::interp::run(&hir, root_file.clone(), &checked.tables) {
-                    Ok(execution) => {
-                        print!("{}", execution.output);
-                        ExitCode::SUCCESS
-                    }
-                    Err(error) => {
-                        let diagnostic = starkc::diag::Diagnostic::error(
-                            format!("runtime error: {}", error.message),
-                            error.span,
-                        );
-                        eprint!("{}", diagnostic.render(&root_file));
-                        ExitCode::FAILURE
-                    }
-                };
-            }
-        }
-    }
-
-    for diag in &diags {
+    let analysis =
+        starkc::analysis::analyze_project(starkc::analysis::ProjectInput::package(graph), options);
+    let root_file = analysis.root_file.clone();
+    for diag in &analysis.diagnostics {
         eprint!("{}", diag.render(&root_file));
     }
-    eprintln!("{}: package compilation failed", root_pkg.name);
+    if analysis.has_errors() {
+        eprintln!("{}: package compilation failed", root_package_name);
+        return ExitCode::FAILURE;
+    }
+    if cmd == "check" || cmd == "build" {
+        println!("{}: OK", root_package_name);
+        return ExitCode::SUCCESS;
+    }
+    if cmd == "run" {
+        let hir = analysis.hir.as_ref().expect("successful analysis has HIR");
+        let tables = analysis
+            .type_tables
+            .as_ref()
+            .expect("successful analysis has type tables");
+        return match starkc::interp::run(hir, root_file.clone(), tables) {
+            Ok(execution) => {
+                print!("{}", execution.output);
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                let diagnostic = starkc::diag::Diagnostic::error(
+                    format!("runtime error: {}", error.message),
+                    error.span,
+                );
+                eprint!("{}", diagnostic.render(&root_file));
+                ExitCode::FAILURE
+            }
+        };
+    }
+    eprintln!("{}: package compilation failed", root_package_name);
     ExitCode::FAILURE
 }
 

@@ -1,10 +1,7 @@
 //! LSP server state management.
 
-use crate::ast::Ast;
-use crate::diag::Diagnostic as StarkDiagnostic;
-use crate::hir::Hir;
+use crate::analysis::ProjectAnalysis;
 use crate::options::LanguageOptions;
-use crate::typecheck::TypeTables;
 use std::collections::HashMap;
 
 /// Server state with open documents and compilation cache.
@@ -33,10 +30,7 @@ pub struct OpenDocument {
 pub struct CompilationResult {
     pub uri: String,
     pub version: i32,
-    pub ast: Option<Ast>,
-    pub hir: Option<Hir>,
-    pub diagnostics: Vec<StarkDiagnostic>,
-    pub type_tables: Option<TypeTables>,
+    pub analysis: ProjectAnalysis,
     pub last_compiled_at: std::time::SystemTime,
 }
 

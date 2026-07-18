@@ -1,9 +1,7 @@
 //! LSP server implementation with message routing and document synchronization.
 
-use crate::parser::{parse_with_options, ParseMode};
-use crate::resolve::resolve_with_options;
+use crate::analysis::{analyze_project, ProjectInput};
 use crate::source::SourceFile;
-use crate::typecheck::analyze_with_options;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::sync::Arc;
@@ -258,41 +256,14 @@ impl Server {
     /// Compile a document and cache results
     fn compile_document(&mut self, uri: &str) {
         if let Some(doc) = self.state.get_document(uri).cloned() {
-            let source = SourceFile::new(uri, doc.text.clone());
+            let source = Arc::new(SourceFile::new(uri, doc.text.clone()));
             let options = self.state.options;
-
-            // Parse
-            let (ast, mut diagnostics) = parse_with_options(&source, ParseMode::Program, options);
-
-            let mut type_tables = None;
-
-            // Try to resolve names if no parse errors
-            if diagnostics
-                .iter()
-                .all(|d| d.severity != crate::diag::Severity::Error)
-            {
-                let source_arc = Arc::new(source);
-                let (hir, resolve_diags) = resolve_with_options(&ast, source_arc.clone(), options);
-                diagnostics.extend(resolve_diags);
-
-                // Try to typecheck if no resolve errors
-                if diagnostics
-                    .iter()
-                    .all(|d| d.severity != crate::diag::Severity::Error)
-                {
-                    let result = analyze_with_options(&hir, source_arc, options);
-                    diagnostics.extend(result.diagnostics);
-                    type_tables = Some(result.tables);
-                }
-            }
+            let analysis = analyze_project(ProjectInput::program(source), options);
 
             let result = CompilationResult {
                 uri: uri.to_string(),
                 version: doc.version,
-                ast: Some(ast),
-                hir: None,
-                diagnostics,
-                type_tables,
+                analysis,
                 last_compiled_at: std::time::SystemTime::now(),
             };
 
@@ -317,7 +288,7 @@ impl Server {
                 .and_then(|v| v.as_i64()),
         ) {
             if let Some(cached) = self.state.compilation_cache.get(uri) {
-                if let Some(_type_tables) = &cached.type_tables {
+                if let Some(_type_tables) = &cached.analysis.type_tables {
                     // Find identifiers at position (simplified: just check if any local matches)
                     // In a full implementation, we'd parse the token stream to find the exact identifier
                     let hover_text = format!(

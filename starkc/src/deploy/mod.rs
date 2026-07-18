@@ -19,9 +19,9 @@ pub use ir::{
     DeploymentProgram, ScalarLit, TensorShape, ValueId,
 };
 
+use crate::analysis::{analyze_project, ProjectInput};
 use crate::diag::Diagnostic;
 use crate::options::LanguageOptions;
-use crate::parser::{parse_with_options, ParseMode};
 use crate::source::SourceFile;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -97,79 +97,69 @@ pub fn lower_pipeline(
 
     // 1. Normal tensor-enabled front end. Any diagnostic aborts before lowering.
     let options = LanguageOptions::with_tensor();
-    let (tree, mut diagnostics) = parse_with_options(&file, ParseMode::Program, options);
-    if diagnostics.is_empty() {
-        let (hir, mut resolve_diags) =
-            crate::resolve::resolve_with_options(&tree, file.clone(), options);
-        diagnostics.append(&mut resolve_diags);
-
-        if diagnostics.is_empty() {
-            let checked = crate::typecheck::analyze_with_options(&hir, file.clone(), options);
-            let mut type_errors: Vec<Diagnostic> = checked
-                .diagnostics
-                .into_iter()
-                .filter(|d| d.severity == crate::diag::Severity::Error)
-                .collect();
-            if !type_errors.is_empty() {
-                diagnostics.append(&mut type_errors);
-                return Err(DeployError::Diagnostics { file, diagnostics });
-            }
-
-            // 2. Read + hash the live ONNX artifact.
-            let (signature, bytes) =
-                crate::onnx::read_signature(model).map_err(|e| DeployError::Onnx(e.to_string()))?;
-            let artifact_sha256 = sha256_hex(&bytes);
-
-            if signature.inputs.len() != 1 || signature.outputs.len() != 1 {
-                return Err(DeployError::Onnx(format!(
-                    "the deployment prototype supports single-input/single-output models; \
-                     `{}` has {} input(s) and {} output(s)",
-                    model.display(),
-                    signature.inputs.len(),
-                    signature.outputs.len()
-                )));
-            }
-
-            // 3. Lower the reachable call graph (also validates the entry ABI
-            //    and selects the single model declaration).
-            let graph = match lower::lower_reachable(&hir, &checked.tables, &file, entry) {
-                Ok(graph) => graph,
-                Err(diags) => {
-                    diagnostics.extend(diags);
-                    return Err(DeployError::Diagnostics { file, diagnostics });
-                }
-            };
-
-            // 4. Gate 4 live artifact/declaration verification, before we
-            //    commit the signature into the program (plan §4.4).
-            let report = crate::onnx::verify_declaration_source(
-                &signature,
-                &source,
-                &file.name,
-                Some(&graph.model_type_name),
-            )
-            .map_err(|e| DeployError::Onnx(e.to_string()))?;
-            if !report.is_match() {
-                let mut message =
-                    String::from("ONNX artifact does not match the model declaration:");
-                for difference in &report.differences {
-                    message.push_str(&format!("\n  - {difference}"));
-                }
-                return Err(DeployError::Onnx(message));
-            }
-
-            let model =
-                ir::model_from_signature(graph.model_type_name, &signature, artifact_sha256);
-
-            return Ok(DeploymentProgram {
-                compiler_version: env!("CARGO_PKG_VERSION").to_string(),
-                entry: entry.to_string(),
-                model,
-                functions: graph.functions,
-            });
-        }
+    let analysis = analyze_project(ProjectInput::program(file.clone()), options);
+    let mut diagnostics = analysis.diagnostics;
+    if diagnostics
+        .iter()
+        .any(|diag| diag.severity == crate::diag::Severity::Error)
+    {
+        return Err(DeployError::Diagnostics { file, diagnostics });
     }
-    Err(DeployError::Diagnostics { file, diagnostics })
+    let hir = analysis.hir.expect("successful analysis has HIR");
+    let tables = analysis
+        .type_tables
+        .expect("successful analysis has type tables");
+
+    // 2. Read + hash the live ONNX artifact.
+    let (signature, bytes) =
+        crate::onnx::read_signature(model).map_err(|e| DeployError::Onnx(e.to_string()))?;
+    let artifact_sha256 = sha256_hex(&bytes);
+
+    if signature.inputs.len() != 1 || signature.outputs.len() != 1 {
+        return Err(DeployError::Onnx(format!(
+            "the deployment prototype supports single-input/single-output models; \
+                     `{}` has {} input(s) and {} output(s)",
+            model.display(),
+            signature.inputs.len(),
+            signature.outputs.len()
+        )));
+    }
+
+    // 3. Lower the reachable call graph (also validates the entry ABI
+    //    and selects the single model declaration).
+    let graph = match lower::lower_reachable(&hir, &tables, &file, entry) {
+        Ok(graph) => graph,
+        Err(diags) => {
+            diagnostics.extend(diags);
+            return Err(DeployError::Diagnostics { file, diagnostics });
+        }
+    };
+
+    // 4. Gate 4 live artifact/declaration verification, before we
+    //    commit the signature into the program (plan §4.4).
+    let report = crate::onnx::verify_declaration_source(
+        &signature,
+        &source,
+        &file.name,
+        Some(&graph.model_type_name),
+    )
+    .map_err(|e| DeployError::Onnx(e.to_string()))?;
+    if !report.is_match() {
+        let mut message = String::from("ONNX artifact does not match the model declaration:");
+        for difference in &report.differences {
+            message.push_str(&format!("\n  - {difference}"));
+        }
+        return Err(DeployError::Onnx(message));
+    }
+
+    let model = ir::model_from_signature(graph.model_type_name, &signature, artifact_sha256);
+
+    Ok(DeploymentProgram {
+        compiler_version: env!("CARGO_PKG_VERSION").to_string(),
+        entry: entry.to_string(),
+        model,
+        functions: graph.functions,
+    })
 }
 
 /// Lowercase hex SHA-256, matching the importer's artifact-hash convention.

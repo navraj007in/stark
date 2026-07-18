@@ -1,19 +1,15 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.2 (interpreter semantic repair)
+Updated: 2026-07-18 after WP-C2.3 (shared project-analysis entry point)
 
 ## Position
-Gate: C2  Next: WP-C2.3  Blocked: none
+Gate: C2  Next: WP-C2.4  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head: 4f9ac141b84e0f527b102fc2d74a19003a4cd061 (`implement WP-C2.1: reference interpreter
-  contract`). This commit already includes WP-C1.6 and WP-C1.7 (Gate C1 close), which were
-  committed together in the prior commit (`fd5af7f`, `implement WP-C1.6 and WP-C1.7`) — this
-  line previously lagged by two commits, not caught until the WP-C2.1 correction pass (external
-  review). The current WP-C2.1 correction pass's own changes are uncommitted as of this session
-  record; commit only on explicit user request, per standing workflow.
+- Head before this uncommitted WP: `79177d3327a6` (`complete WP-C2.2 interpreter semantic
+  repair`). Commit only on explicit user request, per standing workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -21,7 +17,7 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **458 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  **461 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 29 integration-test files**
   (`ls starkc/tests/*.rs | wc -l`, re-counted directly during WP-C1.6's consistency sweep — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
@@ -1890,3 +1886,34 @@ WP charter scoped them only "as capacity allows," and none is part of the inheri
 DEV-026..035 closure claim. DEV-036 remains open/unscheduled and parser-owned, explicitly outside
 this WP. No other owned interpreter repair carries forward.
 NEXT: WP-C2.3 (shared project-analysis entry point)
+
+### WP-C2.3 — 2026-07-18
+DONE: Added the canonical
+`analysis::analyze_project(ProjectInput, LanguageOptions) -> ProjectAnalysis` compiler-service
+entry point. The owned result preserves the source map and file/module/package provenance,
+optional package graph, AST and partial failure state, HIR, resolution and type tables,
+diagnostics, extension set, symbol index, and opaque session-scoped query handles. Handles are
+validated against their owning analysis and cannot be reused across sessions; raw arena slots
+are not exposed as persistent protocol identities.
+Migrated equivalent semantic paths for single-file/snippet `starkc check`, package
+`stark check`/`build`/`run`, LSP compilation caching, documentation example validation, and
+deployment validation. The formatter and `starkc parse` remain explicitly documented
+syntax-only paths; isolated stage tests may continue calling stage APIs directly.
+FILES: starkc/src/analysis.rs, starkc/src/lib.rs, starkc/src/main.rs,
+starkc/src/bin/stark.rs, starkc/src/lsp/server.rs, starkc/src/lsp/state.rs,
+starkc/src/doc_gen/mod.rs, starkc/src/deploy/mod.rs,
+STARKLANG/docs/compiler/work-packages/WP-C2.3.md, COMPILER-STATE.md.
+RULES: none — compiler service architecture only; no conformance rule citations changed.
+DECISIONS: none. Query behavior remains in WP-C2.4 and diagnostic transport remains in WP-C2.5.
+The API deliberately owns partial results rather than treating parse/semantic errors as an API
+failure, so tools can consume coherent diagnostics and syntax state.
+EVIDENCE: REG + FULL — focused analysis tests cover successful semantic ownership, source and
+symbol indexing, stable same-session handles, cross-session rejection, and partial results after
+parse failure. `cargo test --workspace --all-targets --all-features`: 461 passed/0 failed/
+2 ignored (up from 458/0/2). `cargo fmt --all -- --check`, clippy with `-D warnings`, and
+`git diff --check` are clean; `scripts/check-conformance.py` exits 0 at 53/59 implemented or
+partially evidenced rules, unchanged by this architecture-only WP.
+FOLLOW-UP: WP-C2.4 should build position/definition/reference/type queries on `QueryHandle` and
+`SymbolIndex`; it must not persist or expose raw arena indexes. Rich multi-span diagnostic
+transport remains WP-C2.5.
+NEXT: WP-C2.4 (position and symbol query infrastructure)
