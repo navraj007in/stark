@@ -1,8 +1,8 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after CD-006 (float division-by-zero trap semantics, WP-C1.5)
+Updated: 2026-07-18 after CD-008 (HashMap/HashSet iteration order, WP-C2.1)
 
 ## Position
-Gate: C2  Next: WP-C2.1  Blocked: none
+Gate: C2  Next: WP-C2.2  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
@@ -185,6 +185,41 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   `+Inf`, not division by zero specifically, which STARK treats as an error condition like any
   other div-by-zero). No spec or code edits made under this decision; recorded so the question is
   not re-litigated in a future WP. `interp.rs`'s Float `BinOp::Div`/`Rem` arms are unchanged.
+- CD-007 [2026-07-18, WP-C2.1] Settled a spec-silent gap found while writing
+  `STARKLANG/docs/compiler/reference-execution.md` §1: the spec addressed almost no
+  subexpression evaluation order (binary operands, call arguments, method receiver-vs-arguments,
+  aggregate-literal fields, assignment lhs-vs-rhs, index base-vs-index). Flagged to the user
+  rather than resolved unilaterally (CE1/CE2-shaped, per WP-C2.1's own scope-control answer).
+  **User decision: adopt the interpreter's observed left-to-right order as normative.** Added a
+  new "Evaluation Order (Core v1)" subsection to `03-Type-System.md` (after "Operators and
+  Traits," before "Copy and Drop") stating: strict left-to-right evaluation for binary operands
+  (non-short-circuit), call arguments, struct/tuple/array literal fields, and index base-before-
+  index; short-circuit semantics for `&&`/`||` (already spec-derivable, now stated explicitly);
+  condition/scrutinee-before-branches for `if`/`match` (also already spec-derivable); receiver-
+  before-arguments for method calls; and right-hand-side-before-left-hand-side-place for
+  assignment (explicitly flagged as the most surprising rule, since many C-family languages
+  evaluate the LHS place first). `STARK-Core-v1.md`/`.html`/`.pdf` regenerated in the same change.
+  No interpreter code changes needed — `interp.rs` already implements exactly this order
+  throughout (confirmed during WP-C2.1's own drafting); this decision closes the spec-vs-
+  implementation gap from the spec side, not the code side.
+- CD-008 [2026-07-18, WP-C2.1] Settled a second spec-silent gap found in the same document, §10.3:
+  `HashMap`/`HashSet` iteration order was unaddressed by any normative spec text, while the only
+  related prose (`06-Standard-Library.md`'s non-normative "Performance Notes" — "HashMap<T> uses
+  open addressing with Robin Hood hashing") implied unordered iteration, in tension with the
+  interpreter's actual `BTreeMap`/`BTreeSet`-backed fully-sorted-deterministic behavior. Flagged
+  to the user rather than resolved unilaterally (CE1/CE2-shaped). **User decision: adopt
+  sorted-deterministic (ascending key order) as normative.** Added a new "Iteration Order (Core
+  v1)" subsection to `06-Standard-Library.md` immediately after the `HashSet<T>` API block,
+  stating `HashMap::keys`/`values`/`iter`, `HashSet::iter`, and `for`-loops over either MUST visit
+  entries in ascending key order per the key type's `Ord` impl, regardless of internal storage
+  strategy. Reworded the "Performance Notes" line to remove the implication of unordered
+  iteration (now frames storage strategy as implementation-defined but explicitly subordinate to
+  the iteration-order requirement — an open-addressing implementation would need to sort at
+  iteration time to conform). `STARK-Core-v1.md`/`.html`/`.pdf` regenerated in the same change
+  (shared with CD-007). No interpreter code changes needed — `interp.rs`'s `BTreeMap`/`BTreeSet`
+  representation already satisfies this rule exactly.
+
+## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
   nested-comment depth tested to 4 levels (was 2) with a matching unterminated-at-depth negative
@@ -650,6 +685,37 @@ involving nested modules and private items should assume this stricter model.
   essentially every real-world literal match with 2+ arms. Found while building `src/literal.rs`
   for DEV-015. Fixed: `pat_subsumes` now parses both literals' actual values via
   `literal::eval_lit_value` and compares those instead of the shape-only `Lit` tag.
+- DEV-026 [CONFIRMED, WP-C2.1] `find_method` resolves via source-order linear scan, not
+  "inherent shadows trait" (`03-Type-System.md` line 493–494) — confirmed empirically, a trait
+  default and an inherent method of the same name resolve to whichever `impl` block is textually
+  first, not unconditionally to the inherent one. Full detail:
+  `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
+- DEV-027 [CONFIRMED, WP-C2.1, independently re-verified] `Ordering` (normative prelude member,
+  `06-Standard-Library.md` line 585) does not resolve anywhere in the compiler — a conforming
+  `impl Ord` cannot be written at all — and `eval_binary` has no struct/enum dispatch arm for
+  `<`/`<=`/`>`/`>=` even independent of that. Full detail:
+  `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
+- DEV-028 [CONFIRMED, WP-C2.1] `&expr[range]`/`&mut expr[range]` (spec-mandated slice-place
+  syntax, `03-Type-System.md` lines 95–98) crash unconditionally at runtime; the one working
+  range-index path (`slice_value`) materializes a copy, not a spec-required view. Full detail:
+  `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
+- DEV-029 [CONFIRMED, WP-C2.1, independently re-verified] Struct/enum named-field drop order is
+  reverse-alphabetical-by-field-name (`BTreeMap` iteration artifact), not reverse-declaration
+  order — confirmed empirically invariant to actual declared field order. Full detail:
+  `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
+- DEV-030 [CONFIRMED, WP-C2.1, independently re-verified, HIGH PRIORITY] Pattern-match `_`/
+  unbound sub-values of an owned scrutinee are never dropped — a permanent, silent skip of a
+  user destructor (not a timing bug), violating Core v1's own stated "exactly once" Drop
+  invariant (`03-Type-System.md` line 548–550) with no diagnostic. Confirmed empirically: a
+  wildcard-matched `Drop`-implementing tuple element's destructor never runs, for the rest of the
+  program. The one deviation from this WP judged closer to soundness-relevant than the rest of
+  the open ledger, though not a host-memory-safety bug. Full detail:
+  `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2, recommended highest priority.
+- DEV-031 [CONFIRMED, WP-C2.1] `for` loops only accept `Range`/`Array`/`Vec` directly, not
+  general `Iterator`-typed expressions (`03-Type-System.md` lines 459–469 explicitly cites
+  `.iter()` as a normal case) — both `typecheck.rs` and `interp.rs` independently agree on the
+  narrower set, so this is a real feature gap, not a compile/runtime mismatch. Full detail:
+  `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
 
 ## Architecture decisions
 - AD-001 [pre-existing, old Gate 5] Native artifact-deployment backend is **ONNX Runtime via the
@@ -1529,3 +1595,60 @@ beyond exactly as enumerated in the exit report; no follow-up item was created t
 already one of those.
 NEXT: WP-C2.1 (reference interpreter contract) — Gate C2, "Reference Execution Semantics and
 Compiler Service Foundation," opens.
+
+### WP-C2.1 — 2026-07-18
+DONE: Reference interpreter contract. Wrote `STARKLANG/docs/compiler/reference-execution.md`
+covering all eleven roadmap-required topics (evaluation order, function/method dispatch, place
+evaluation, moves/copies/borrows/runtime representation, aggregate construction/destructuring,
+drop order/drop flags, panic/trap abort behaviour, numeric conversion/failure, stdlib builtin
+dispatch, deterministic output expectations, compile-time-only properties), every rule cited to
+the normative spec rather than describing `interp.rs`'s current behavior as if it were
+automatically correct. Research and drafting dispatched to a research agent given the scale (11
+topics × spec-citation + interp.rs-verification each); reviewed the full draft myself, fixed an
+HTML-entity-escaping artifact from the agent's transport, and independently re-verified the
+three highest-stakes findings via fresh empirical repros before trusting them (all three
+confirmed exactly as drafted): the `Ordering` prelude type is genuinely unresolvable anywhere in
+the compiler despite being explicitly listed as a normative prelude member
+(`06-Standard-Library.md` line 585); struct/enum field drop order is genuinely alphabetical by
+field name, invariant to actual declaration order; and a pattern-match wildcard/unbound
+sub-value's destructor genuinely never runs, for the rest of the program, with no diagnostic.
+The document found **six new interpreter-vs-spec divergences** (none previously in the deviation
+ledger) plus **two spec-silent gaps** (evaluation order is almost entirely unaddressed by the
+spec; `HashMap`/`HashSet` iteration order is spec-silent while the only related prose points the
+opposite direction from what the interpreter actually guarantees). Recorded all six new findings
+as DEV-026 through DEV-031 (all owned by WP-C2.2, none fixed here — this WP is
+documentation-only per its own scope-control answer), with DEV-030 (the never-dropped wildcard
+match values) flagged as the highest-priority of the six, being the only one judged closer to a
+silent soundness-invariant violation than a missing-feature/ordering gap. The two spec-silent
+gaps were surfaced to the user directly (not resolved unilaterally) per this WP's own
+CE-escalation-watch commitment; both were settled in the same session — see CD-007 and CD-008
+below (Decision log) and the DECISIONS line of this record for the outcome and the resulting
+spec edits.
+FILES: STARKLANG/docs/compiler/reference-execution.md (new), STARKLANG/docs/compiler/
+work-packages/WP-C2.1.md (new), starkc/docs/spec/03-Type-System.md (new "Evaluation Order (Core
+v1)" subsection, CD-007), STARKLANG/docs/spec/06-Standard-Library.md (new "Iteration Order (Core
+v1)" subsection + reworded Performance Notes line, CD-008), STARKLANG/docs/spec/STARK-Core-v1.md/
+.html/.pdf (regenerated), starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-026 through DEV-031,
+new), COMPILER-STATE.md (also fixed a self-inflicted bug found during this session: the "##
+Conformance summary" heading had gone missing from an earlier edit this session, referenced by
+name elsewhere in the file but not actually present — restored).
+RULES: none — this WP produces a reference-execution contract, not conformance-database
+rule-level citations (those remain WP-C1.6-tooling-driven, per DEV-017's disposition).
+DECISIONS: **CD-007** (evaluation order: adopt observed left-to-right order as normative,
+user-approved) and **CD-008** (HashMap/HashSet iteration order: adopt sorted-deterministic as
+normative, user-approved) — both spec-silent gaps this WP found, both escalated per this WP's own
+CE-escalation-watch commitment rather than resolved unilaterally, both settled by the user in the
+same session and written into the normative spec (no interpreter code changes needed for either
+— `interp.rs` already implements exactly what was codified).
+EVIDENCE: MANUAL + REG — every "Known deviation" block in the document states the exact repro and
+observed output; three of the six new findings (the ones judged highest-stakes) were
+independently re-run during this WP's own review pass, not just trusted from the drafting
+research. No source code was changed (`cargo test --workspace --all-targets --all-features`:
+454 passed/0 failed/2 ignored, unchanged from WP-C1.7's close — this WP touched no Rust files).
+`cargo fmt --check`/clippy: unaffected, still clean. Spec regeneration verified: fixture
+extraction (`extract-spec-examples.sh`) shows zero drift (no new/changed `stark` code blocks
+were added, only prose), `check-conformance.py` still exits 0.
+FOLLOW-UP: DEV-026 through DEV-031 all carry forward into WP-C2.2 (interpreter semantic repair),
+DEV-030 flagged as the priority item among them. CD-007/CD-008 are fully settled, nothing further
+needed before Gate C3.
+NEXT: WP-C2.2 (interpreter semantic repair)

@@ -1416,6 +1416,36 @@ fn max<T: Ord>(a: T, b: T) -> T {
 }
 ```
 
+### Evaluation Order (Core v1)
+Subexpressions evaluate **strictly left to right**, with each subexpression's
+side effects (including traps) fully complete before the next begins:
+
+- **Binary operators** (excluding `&&`/`||`): the left operand evaluates
+  fully before the right operand begins.
+- **`&&`/`||`**: short-circuiting — the left operand evaluates first, and the
+  right operand evaluates only if needed to determine the result (`&&`: only
+  if the left is `true`; `||`: only if the left is `false`).
+- **`if`/`match`**: the condition (`if`) or scrutinee (`match`) evaluates
+  before any branch/arm; `match` arms are tried in source order and the first
+  matching arm wins.
+- **Function calls**: arguments evaluate left to right, before the call
+  itself executes.
+- **Method calls**: the receiver evaluates before any argument; arguments
+  then evaluate left to right.
+- **Struct, tuple, and array literals**: fields/elements evaluate left to
+  right, in the order written.
+- **Assignment** (`lhs = rhs`, including compound assignment): the
+  right-hand side evaluates fully before the left-hand-side place is
+  resolved. This means side effects in a place expression's own
+  subexpressions (e.g. an index: `arr[f()] = g();`) run *after* the
+  right-hand side: `g()` before `f()`.
+- **Indexing** (`expr[index]`): the base expression resolves to a place
+  before the index expression evaluates.
+
+This evaluation order is normative for all Core v1 implementations: two
+conforming implementations must produce identical observable side-effect
+ordering for the same program.
+
 ### Copy and Drop (Soundness Rules)
 - `Copy` may be implemented for a type only if **all** of its fields are
   `Copy`. Violations are compile-time errors.
@@ -2789,6 +2819,14 @@ impl<T: Hash + Eq> HashSet<T> {
 }
 ```
 
+### Iteration Order (Core v1)
+`HashMap::keys`/`values`/`iter` and `HashSet::iter` (and any `for` loop over a
+`HashMap`/`HashSet`) MUST visit entries in ascending key order, per the key
+type's `Ord` implementation. This is normative and deterministic: two
+conforming implementations must produce identical iteration order for the
+same sequence of insertions, regardless of internal storage strategy (see
+"Performance Notes" below, which describes storage, not iteration order).
+
 ## String Module (std::string)
 
 ### String Type
@@ -3098,7 +3136,13 @@ threads and concurrency primitives, `Rc`/`Arc`/`RefCell`.
 
 ### Performance Notes
 - Vec<T> uses exponential growth strategy
-- HashMap<T> uses open addressing with Robin Hood hashing
+- HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with Robin
+  Hood hashing, or a sorted structure) is implementation-defined; whatever
+  strategy is chosen must still present entries in ascending key order when
+  iterated (see "Iteration Order" under the HashMap/HashSet section above,
+  normative) — a hash-table storage layout does not exempt an implementation
+  from that requirement, though it may need to sort at iteration time to
+  satisfy it.
 - String operations are UTF-8 aware
 - Iterator chains compile to efficient loops
 

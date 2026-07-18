@@ -302,6 +302,14 @@ impl<T: Hash + Eq> HashSet<T> {
 }
 ```
 
+### Iteration Order (Core v1)
+`HashMap::keys`/`values`/`iter` and `HashSet::iter` (and any `for` loop over a
+`HashMap`/`HashSet`) MUST visit entries in ascending key order, per the key
+type's `Ord` implementation. This is normative and deterministic: two
+conforming implementations must produce identical iteration order for the
+same sequence of insertions, regardless of internal storage strategy (see
+"Performance Notes" below, which describes storage, not iteration order).
+
 ## String Module (std::string)
 
 ### String Type
@@ -611,7 +619,13 @@ threads and concurrency primitives, `Rc`/`Arc`/`RefCell`.
 
 ### Performance Notes
 - Vec<T> uses exponential growth strategy
-- HashMap<T> uses open addressing with Robin Hood hashing
+- HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with Robin
+  Hood hashing, or a sorted structure) is implementation-defined; whatever
+  strategy is chosen must still present entries in ascending key order when
+  iterated (see "Iteration Order" under the HashMap/HashSet section above,
+  normative) — a hash-table storage layout does not exempt an implementation
+  from that requirement, though it may need to sort at iteration time to
+  satisfy it.
 - String operations are UTF-8 aware
 - Iterator chains compile to efficient loops
 

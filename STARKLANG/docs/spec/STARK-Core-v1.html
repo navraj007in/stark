@@ -1497,6 +1497,42 @@ and not overloadable.</p>
 <pre class="stark"><code>fn max&lt;T: Ord&gt;(a: T, b: T) -&gt; T {
     if a &gt; b { a } else { b }   // a &gt; b desugars to Ord::cmp(&amp;a, &amp;b)
 }</code></pre>
+<h3 id="evaluation-order-core-v1">Evaluation Order (Core v1)</h3>
+<p>Subexpressions evaluate <strong>strictly left to right</strong>, with
+each subexpression’s side effects (including traps) fully complete
+before the next begins:</p>
+<ul>
+<li><strong>Binary operators</strong> (excluding
+<code>&amp;&amp;</code>/<code>||</code>): the left operand evaluates
+fully before the right operand begins.</li>
+<li><strong><code>&amp;&amp;</code>/<code>||</code></strong>:
+short-circuiting — the left operand evaluates first, and the right
+operand evaluates only if needed to determine the result
+(<code>&amp;&amp;</code>: only if the left is <code>true</code>;
+<code>||</code>: only if the left is <code>false</code>).</li>
+<li><strong><code>if</code>/<code>match</code></strong>: the condition
+(<code>if</code>) or scrutinee (<code>match</code>) evaluates before any
+branch/arm; <code>match</code> arms are tried in source order and the
+first matching arm wins.</li>
+<li><strong>Function calls</strong>: arguments evaluate left to right,
+before the call itself executes.</li>
+<li><strong>Method calls</strong>: the receiver evaluates before any
+argument; arguments then evaluate left to right.</li>
+<li><strong>Struct, tuple, and array literals</strong>: fields/elements
+evaluate left to right, in the order written.</li>
+<li><strong>Assignment</strong> (<code>lhs = rhs</code>, including
+compound assignment): the right-hand side evaluates fully before the
+left-hand-side place is resolved. This means side effects in a place
+expression’s own subexpressions (e.g. an index:
+<code>arr[f()] = g();</code>) run <em>after</em> the right-hand side:
+<code>g()</code> before <code>f()</code>.</li>
+<li><strong>Indexing</strong> (<code>expr[index]</code>): the base
+expression resolves to a place before the index expression
+evaluates.</li>
+</ul>
+<p>This evaluation order is normative for all Core v1 implementations:
+two conforming implementations must produce identical observable
+side-effect ordering for the same program.</p>
 <h3 id="copy-and-drop-soundness-rules">Copy and Drop (Soundness
 Rules)</h3>
 <ul>
@@ -2750,6 +2786,15 @@ impl&lt;T: Hash + Eq&gt; HashSet&lt;T&gt; {
     fn clear(&amp;mut self);
     fn iter(&amp;self) -&gt; Iter&lt;T&gt;;
 }</code></pre>
+<h3 id="iteration-order-core-v1">Iteration Order (Core v1)</h3>
+<p><code>HashMap::keys</code>/<code>values</code>/<code>iter</code> and
+<code>HashSet::iter</code> (and any <code>for</code> loop over a
+<code>HashMap</code>/<code>HashSet</code>) MUST visit entries in
+ascending key order, per the key type’s <code>Ord</code> implementation.
+This is normative and deterministic: two conforming implementations must
+produce identical iteration order for the same sequence of insertions,
+regardless of internal storage strategy (see “Performance Notes” below,
+which describes storage, not iteration order).</p>
 <h2 id="string-module-stdstring">String Module (std::string)</h2>
 <h3 id="string-type-1">String Type</h3>
 <pre class="stark"><code>// Implementation-provided; internals opaque (UTF-8 byte buffer)
@@ -3033,7 +3078,13 @@ expressions, time/date, threads and concurrency primitives,
 <h3 id="performance-notes">Performance Notes</h3>
 <ul>
 <li>Vec<T> uses exponential growth strategy</li>
-<li>HashMap<T> uses open addressing with Robin Hood hashing</li>
+<li>HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with
+Robin Hood hashing, or a sorted structure) is implementation-defined;
+whatever strategy is chosen must still present entries in ascending key
+order when iterated (see “Iteration Order” under the HashMap/HashSet
+section above, normative) — a hash-table storage layout does not exempt
+an implementation from that requirement, though it may need to sort at
+iteration time to satisfy it.</li>
 <li>String operations are UTF-8 aware</li>
 <li>Iterator chains compile to efficient loops</li>
 </ul>

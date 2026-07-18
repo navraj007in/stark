@@ -560,6 +560,194 @@ WP-C1.5)
   shape-only `Lit` tag.
 - **Owning gate:** WP-C1.5 (closed).
 
+## DEV-026 — Method dispatch priority ignores "inherent shadows trait"
+
+- **Normative expectation:** `03-Type-System.md` "Method Calls and Auto-Borrowing" (line 493–494):
+  inherent methods shadow trait methods of the same name — this must hold unconditionally.
+- **Current behaviour:** `interp.rs::find_method` resolves a method call via a linear scan over
+  every HIR item in source/declaration order, returning the first matching `impl` block
+  (inherent or trait) it finds — there is no separate "check inherent first" pass. Confirmed
+  empirically: with a struct `Thing`, a trait `Speak` providing a default `fn say(&self) ->
+  String { "trait-default" }`, `impl Speak for Thing {}` (uses the default), and a separate
+  inherent `impl Thing { fn say(&self) -> String { "inherent" } }`, calling `t.say()` returns
+  whichever impl block appears first in the source file — `"trait-default"` if the trait impl is
+  textually first, `"inherent"` if the inherent impl is textually first. Per spec, inherent must
+  win unconditionally, regardless of source order.
+- **User impact:** a program relying on inherent-method-shadows-trait-default (a normal pattern:
+  "use the trait's default unless I override it inherently") gets silently wrong behavior
+  whenever the trait impl happens to be declared before the inherent impl in the file — no
+  diagnostic, no error, just the wrong method body runs.
+- **Security/soundness impact:** none identified — a correctness/predictability gap, not a
+  memory-safety or type-safety violation.
+- **Workaround:** declare inherent `impl` blocks before any trait `impl` block that could provide
+  a same-named default method, for any type where this matters.
+- **Proposed disposition:** `find_method` needs a two-pass search (inherent impls first,
+  unconditionally, then trait impls) rather than a single source-order scan.
+- **Owning gate:** WP-C2.2 (interpreter semantic repair). Found during WP-C2.1 (reference
+  execution contract, `STARKLANG/docs/compiler/reference-execution.md` §2.2).
+
+## DEV-027 — `Ordering` prelude type unresolvable; no runtime `Ord`/`cmp` dispatch for struct/enum
+
+- **Normative expectation:** `06-Standard-Library.md` line 585 lists `Ordering` as part of the
+  normative prelude ("Prelude: primitive types, `Option`, `Result`, `Ordering`, essential
+  traits"); lines 76–81 define `enum Ordering { Less, Equal, Greater }`; the `Ord` trait's
+  required signature (line 111–113) is `fn cmp(&self, other: &Self) -> Ordering`.
+  `03-Type-System.md` line 516–531's operator-desugaring table maps `<`/`<=`/`>`/`>=` to
+  `Ord::cmp` compared against `Ordering`.
+- **Current behaviour:** two-part finding. (a) `Ordering` does not exist as a resolvable name
+  anywhere in the compiler — no `hir::CoreType` entry, no prelude registration. A program
+  declaring `impl Ord for Point { fn cmp(&self, other: &Point) -> Ordering { ... } }` and
+  returning `Ordering::Less`/`Greater`/`Equal` fails to compile with `[E0202] undefined type
+  'Ordering'` plus `[E0200] undefined variable 'Ordering::...'` errors — a conforming `impl Ord`
+  per the spec's own trait signature cannot currently be written at all. (b) Independently,
+  `interp.rs::eval_binary`'s `<`/`<=`/`>`/`>=` handling has arms only for `(Int, Int)`,
+  `(Float, Float)`, and `(String|Str, String|Str)` — no struct/enum arm exists, unlike the
+  `Eq`/`eq` dispatch DEV-008 added. `typecheck.rs::ty_satisfies_operator_bound` already accepts
+  `Ty::Struct`/`Ty::Enum` for the `"Ord"` bound whenever a matching `impl Ord for T` exists, so if
+  (a) were fixed in isolation, a struct/enum `<` comparison would type-check and then crash at
+  runtime with `"invalid binary operation"` — the same compile-time/runtime mismatch class `==`/
+  `!=` had before DEV-008's fix.
+- **User impact:** the entire `Ord`/comparison-operator-overloading feature for user types is
+  currently non-functional, both at the "can I even write it" layer and the "does it dispatch at
+  runtime" layer.
+- **Security/soundness impact:** none identified — a missing-feature gap, not unsound.
+- **Workaround:** none; a user type cannot implement `Ord` and use `<`/`<=`/`>`/`>=` today.
+- **Proposed disposition:** register `Ordering` as a prelude type (mirroring how `Option`/
+  `Result` are registered) with its three unit variants, then add an `eval_binary` struct/enum
+  arm mirroring DEV-008's `Eq`/`eq` dispatch fix, calling the resolved `Ord::cmp` and comparing
+  the returned `Ordering` against `Less`/`Greater`/`Equal`.
+- **Owning gate:** WP-C2.2. Found during WP-C2.1
+  (`STARKLANG/docs/compiler/reference-execution.md` §2.4), independently re-verified.
+
+## DEV-028 — `&expr[range]`/`&mut expr[range]` crash at runtime; slice materialization copies instead of viewing
+
+- **Normative expectation:** `03-Type-System.md` lines 95–98 (Array Types): `expr[r]` for a
+  `Range` `r` denotes a place of unsized slice type `[T]`; `&expr[r]` has type `&[T]` and
+  `&mut expr[r]` has type `&mut [T]` — both spec-mandated. `05-Memory-Model.md` lines 51–54
+  describe `&[T]`/`&mut [T]` as pointer-plus-length views into existing storage (mutation through
+  a mutable slice must be observable in the source collection).
+- **Current behaviour:** `interp.rs::expr_place`'s `Index` arm unconditionally calls
+  `self.expect_int(*index)`, which fails whenever the index is a `Value::Range`. Both
+  `let s: &[Int32] = &arr[1..4];` and `let s: &mut [Int32] = &mut arr[1..4];` crash with
+  `runtime error: expected integer` at the range-index's span — the spec-mandated place form
+  simply does not work. Separately, the one code path that *does* produce a slice value
+  (`slice_value`, reached only in a value context, e.g. `let v = arr[1..4];`, never through
+  `&`/`&mut`) clones the underlying elements into a new `Value::Array` — a disconnected copy, not
+  a view, so even if the place-crash were fixed by routing through the same helper, mutations
+  through a resulting `&mut [T]` would silently fail to propagate back to the source collection.
+- **User impact:** taking a reference to a range-indexed place (the normative slice-place syntax)
+  is completely broken; the only working range-index path produces a copy, silently diverging
+  from view semantics if ever connected to the place path without further work.
+- **Security/soundness impact:** none identified for the crash (it's a hard runtime error, not
+  silent corruption); the copy-vs-view gap is a correctness issue for any future fix, not a
+  currently-observable soundness bug (since no working mutable-slice-through-range path exists at
+  all yet to observe the divergence).
+- **Workaround:** none for `&`/`&mut` of a range-indexed place; use `.iter()`/index-by-scalar
+  loops instead.
+- **Proposed disposition:** `expr_place`'s `Index` arm needs a `Value::Range` case producing a
+  genuine slice-place representation (not a value copy) so both the crash and the copy-vs-view
+  gap are fixed together, not just the crash in isolation.
+- **Owning gate:** WP-C2.2. Found during WP-C2.1
+  (`STARKLANG/docs/compiler/reference-execution.md` §3, §4.4).
+
+## DEV-029 — Struct/enum named-field drop order is alphabetical, not declaration order
+
+- **Normative expectation:** `05-Memory-Model.md` "Drop Order" (lines 283–291) establishes
+  reverse-declaration-order drop for sibling `let` bindings; the only coherent extension to
+  struct-internal fields (and the convention every Rust-family language uses) is reverse of the
+  fields' declaration order in the `struct`/`enum` item.
+- **Current behaviour:** `interp.rs::drop_value` drops a `Value::Struct`'s fields via
+  `fields.values_mut().rev()` where `fields: BTreeMap<String, Option<Value>>` — i.e.
+  reverse-**alphabetical-by-field-name** order, not reverse-declaration order (same for
+  `Value::Enum`'s struct-like-variant `named` map). Verified empirically: a struct with fields
+  declared `alpha` then `beta`, and the same struct with fields declared `beta` then `alpha`,
+  both drop in the identical order (`beta`, then `alpha`) regardless of which was actually
+  declared first — conclusively showing the order tracks alphabetical field-name sort, invariant
+  to real declaration order. Tuple/array/tuple-enum-variant fields (`Vec`-backed) are unaffected,
+  since a `Vec` preserves insertion order; only `BTreeMap`-backed named fields are affected.
+- **User impact:** a `Drop` impl relying on field drop order (e.g. dropping a lock-holder field
+  after the fields it protects) gets silently wrong, source-order-independent behavior.
+- **Security/soundness impact:** none identified directly, but drop-order-dependent resource
+  cleanup (the classic case Drop exists for) could misbehave in ways specific to whatever the
+  field names happen to alphabetize to, independent of the programmer's actual declared order.
+- **Workaround:** none within the language; be aware field drop order follows alphabetical field
+  name, not declaration order, until fixed.
+- **Proposed disposition:** either (a) switch the struct/enum-named-field runtime representation
+  from `BTreeMap` to an order-preserving map (e.g. an insertion-ordered map or a
+  `Vec<(String, Option<Value>)>`), or (b) keep `BTreeMap` for lookup but track declaration order
+  separately for drop purposes. Option (a) is likely simpler and also fixes the same underlying
+  order-loss for any other alphabetical-iteration-dependent behavior not yet found.
+- **Owning gate:** WP-C2.2. Found during WP-C2.1
+  (`STARKLANG/docs/compiler/reference-execution.md` §6.2), independently re-verified.
+
+## DEV-030 — Pattern-match wildcard/unbound sub-values of an owned scrutinee are never dropped
+
+- **Normative expectation:** `03-Type-System.md` line 548–550: "every owned value's destructor
+  runs exactly once: at end of scope, at explicit `drop`, or when its owner is consumed — never
+  twice" (and, by the same soundness logic that motivates drop-flag tracking for partial moves,
+  never *zero* times either for a value whose ownership was genuinely consumed).
+- **Current behaviour:** matching an owned (by-value) scrutinee and leaving part of it unbound
+  (`_`, an unmentioned struct field, a `Wild` sub-pattern) means that portion's `Drop::drop` is
+  **never invoked, for the remainder of the program** — not dropped late, not dropped at the
+  wrong time, but permanently skipped. Root cause: `match_pattern`'s handling of `Wild`/unmatched
+  fields only *reads* the relevant sub-value for pattern-testing purposes; the original scrutinee
+  `Value` (built once, moved from its source place) is a plain Rust-level local that goes out of
+  Rust scope at the end of the `Match` expression's evaluation without ever being passed to
+  `drop_value`. Verified conclusively: `match (Loud("first"), Loud("second")) { (a, _) => {
+  println("matched"); } }` followed by `println("after match")` prints `matched`, `first`, `after
+  match` — `"second"`'s destructor never runs, at any point, including after the program's `main`
+  returns normally (exit code 0).
+- **User impact:** any `Drop`-holding resource (e.g. anything analogous to a file handle, lock,
+  or connection, modeled as a struct with a `Drop` impl) that ends up in a wildcard/unmentioned
+  position of a by-value match silently leaks — no error, no diagnostic, no crash, the resource
+  is simply never released by the language's own cleanup mechanism for the rest of the program's
+  execution.
+- **Security/soundness impact:** the ledger's other open deviations are explicitly non-soundness-
+  relevant (see `C1-exit-report.md`'s "Why not plain CONFORMING" section); this one is closer to
+  the line — it is not a memory-safety violation in the Rust-host sense (no use-after-free at the
+  interpreter's own implementation level, since `Value` is just dropped as an ordinary Rust value
+  eventually), but it is a **violation of Core v1's own stated Drop-soundness invariant** at the
+  STARK-program level, silently and with no diagnostic. Recorded as high-priority for this reason
+  even though it is not (per this WP's own analysis) a host-memory-safety bug.
+- **Workaround:** avoid `_`/wildcard/unmentioned-field patterns when matching an owned scrutinee
+  whose unbound portion has a `Drop` impl anywhere in its type; bind every part explicitly (even
+  to an unused name) so it participates in normal `cleanup_locals` drop tracking instead.
+- **Proposed disposition:** `match_pattern` needs to route any sub-value it does *not* bind
+  (i.e., every value reachable from the scrutinee that no `Binding` pattern claims) through
+  `drop_value` before the match's Rust-level locals go out of scope — most naturally by having
+  the match-evaluation code walk the *unclaimed* portion of the scrutinee's value tree after
+  pattern testing completes and explicitly drop it, symmetric to how `cleanup_locals` already
+  handles ordinary `let` bindings.
+- **Owning gate:** WP-C2.2, recommended **highest priority** among this WP's findings given it is
+  the only one that is a silent, undiagnosed violation of a stated soundness invariant rather than
+  a missing-feature or wrong-order ergonomics gap. Found during WP-C2.1
+  (`STARKLANG/docs/compiler/reference-execution.md` §6.4), independently re-verified.
+
+## DEV-031 — `for` loops only accept `Range`/`Array`/`Vec` directly, not general `Iterator`-typed expressions
+
+- **Normative expectation:** `03-Type-System.md` "For Loops" (lines 459–469): `for x in expr`
+  requires `expr` to have a type implementing `Iterator`, explicitly citing `.iter()` methods on
+  slices/collections as a normal way to produce such an expression.
+- **Current behaviour:** `interp.rs::eval_expr`'s `ExprKind::For` calls `iter_values`, which only
+  accepts `Value::Range` (eagerly materialized) and `Value::Array`/`Value::Vec` (consumed by
+  value) — anything else, including the exact `.iter()` case the spec names, errors with "value
+  is not iterable." This is also caught at compile time: `typecheck.rs`'s `for`-loop type-checking
+  independently recognizes only the same Range/Array/Vec shapes, so `for x in v.iter() { ... }`
+  fails to compile with `[E0001] for-loop requires an iterable value, found 'VecIter<Int32>'`
+  (both layers agree with each other — this is a real feature gap, not a compile-succeeds/
+  runtime-crashes mismatch like DEV-027).
+- **User impact:** `HashMap::keys()`, `.iter()`, and any `MapIter`/`FilterIter` combinator chain,
+  or any user type implementing `Iterator`, cannot be used directly as a `for`-loop's iterable —
+  only manual `.next()` calls in a `while`/`loop` work for those.
+- **Security/soundness impact:** none identified — a missing-feature gap.
+- **Workaround:** use a `while let Some(x) = it.next() { ... }`-style manual loop instead of
+  `for x in it { ... }` for any iterator that isn't a bare `Range`/`Array`/`Vec`.
+- **Proposed disposition:** both `typecheck.rs`'s for-loop type check and `interp.rs::iter_values`
+  need to accept any `Iterator`-implementing type (the existing `MapIter`/`FilterIter`/etc.
+  `Value` variants and their `iterator_step` protocol), not just the three hardcoded shapes.
+- **Owning gate:** WP-C2.2. Found during WP-C2.1
+  (`STARKLANG/docs/compiler/reference-execution.md` §9.4).
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -609,8 +797,11 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 23 numbered deviations total (DEV-002 through DEV-025, DEV-001/DEV-003 retired),
+Current count: 29 numbered deviations total (DEV-002 through DEV-031, DEV-001/DEV-003 retired),
 of which DEV-002, DEV-006, DEV-008, DEV-013, DEV-014, DEV-015, DEV-016, DEV-020, DEV-021, and
 DEV-025 are closed/confirmed-correct (no fix owed); DEV-017 is partially closed (tooling built,
-39 of 59 rules remain unclassified); 2 informational not-owned items (DEV-SEED-008,
-DEV-SEED-014).
+39 of 59 rules remain unclassified); DEV-026 through DEV-031 are new findings from WP-C2.1
+(reference-execution contract), all owned by WP-C2.2 and unfixed as of this writing — DEV-030
+recommended highest priority among them, being the only one that is a silent violation of a
+stated soundness invariant rather than a missing-feature/ordering gap; 2 informational not-owned
+items (DEV-SEED-008, DEV-SEED-014).

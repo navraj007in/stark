@@ -536,6 +536,36 @@ fn max<T: Ord>(a: T, b: T) -> T {
 }
 ```
 
+### Evaluation Order (Core v1)
+Subexpressions evaluate **strictly left to right**, with each subexpression's
+side effects (including traps) fully complete before the next begins:
+
+- **Binary operators** (excluding `&&`/`||`): the left operand evaluates
+  fully before the right operand begins.
+- **`&&`/`||`**: short-circuiting — the left operand evaluates first, and the
+  right operand evaluates only if needed to determine the result (`&&`: only
+  if the left is `true`; `||`: only if the left is `false`).
+- **`if`/`match`**: the condition (`if`) or scrutinee (`match`) evaluates
+  before any branch/arm; `match` arms are tried in source order and the first
+  matching arm wins.
+- **Function calls**: arguments evaluate left to right, before the call
+  itself executes.
+- **Method calls**: the receiver evaluates before any argument; arguments
+  then evaluate left to right.
+- **Struct, tuple, and array literals**: fields/elements evaluate left to
+  right, in the order written.
+- **Assignment** (`lhs = rhs`, including compound assignment): the
+  right-hand side evaluates fully before the left-hand-side place is
+  resolved. This means side effects in a place expression's own
+  subexpressions (e.g. an index: `arr[f()] = g();`) run *after* the
+  right-hand side: `g()` before `f()`.
+- **Indexing** (`expr[index]`): the base expression resolves to a place
+  before the index expression evaluates.
+
+This evaluation order is normative for all Core v1 implementations: two
+conforming implementations must produce identical observable side-effect
+ordering for the same program.
+
 ### Copy and Drop (Soundness Rules)
 - `Copy` may be implemented for a type only if **all** of its fields are
   `Copy`. Violations are compile-time errors.
