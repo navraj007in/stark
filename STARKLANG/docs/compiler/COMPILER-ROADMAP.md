@@ -435,6 +435,26 @@ Define and implement a single structured diagnostic form supporting:
 
 CLI text output and LSP publication must derive from this form.
 
+### Gate C2 semantic-freeze preflight — required transition
+
+This is a mandatory, unnumbered transition rather than a semantic work package. It does not
+renumber C2.6–C2.13 or approve language behavior.
+
+Before WP-C2.6 begins, reconcile the owner-provided semantic-freeze execution plan against the
+post-C2.5 repository and produce:
+
+- a repository-to-plan gap audit covering every semantic-freeze domain;
+- a contradiction, stale-material, already-resolved-work, and deviation-ownership report;
+- an exact mapping from each confirmed gap to C2.6–C2.12;
+- an owner-decision register whose recommendations remain explicitly unapproved;
+- skeletons for `CORE-V1-COMPLETENESS.md` and `CORE-V1-OPEN-QUESTIONS.md`; and
+- a state update that records no compiler or semantic change.
+
+Completed on 2026-07-18 against `be43874`; see
+`STARKLANG/docs/compiler/audits/C2-SEMANTIC-FREEZE-PREFLIGHT.md`. The transition authorizes
+WP-C2.6 inventory work only. It does not authorize C2.7–C2.11 implementation corrections or
+C3/MIR/backend work.
+
 ### WP-C2.6 — Core completeness inventory and specification authority
 
 Create `STARKLANG/docs/spec/CORE-V1-COMPLETENESS.md`: one consistently structured row for every

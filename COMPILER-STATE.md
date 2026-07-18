@@ -1,5 +1,5 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.5 (structured diagnostics transport)
+Updated: 2026-07-18 after Gate C2 semantic-freeze preflight
 
 ## Position
 Gate: C2  Next: WP-C2.6  Blocked: none
@@ -8,7 +8,7 @@ starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=bloc
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head before this uncommitted WP: `27fb365` (`complete WP-C2.4 position queries`). Commit only
+- Head before this uncommitted transition: `be43874` (`complete WP-C2.5 diagnostic transport`). Commit only
   on explicit user request, per standing workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -2025,4 +2025,32 @@ warnings`, `git diff --check`, and `python3 scripts/check-conformance.py` are cl
 53/59 implemented or partially evidenced rules.
 FOLLOW-UP: C2.6 must produce `CORE-V1-COMPLETENESS.md`, the normative authority map, granular
 rule-ID plan, and `CORE-V1-OPEN-QUESTIONS.md` before semantic decisions are implemented.
+NEXT: WP-C2.6 (Core completeness inventory and specification authority)
+
+### Gate C2 semantic-freeze preflight — 2026-07-18
+DONE: Reconciled the owner-provided Core v1 semantic-freeze execution plan with the repository
+at the post-WP-C2.5 baseline. Added the mandatory unnumbered transition between C2.5 and C2.6,
+a repository-to-plan gap audit, an explicit contradiction/already-resolved/deviation map, and
+initial completeness and open-question skeletons. The audit covers source/lexing through
+extension boundaries, routes confirmed gaps to C2.6–C2.12, records high-cost owner decisions as
+pending, and prevents closed C2.1–C2.5 work from being reopened without new evidence.
+FILES: STARKLANG/docs/compiler/audits/C2-SEMANTIC-FREEZE-PREFLIGHT.md,
+STARKLANG/docs/spec/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/spec/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md, COMPILER-STATE.md.
+RULES: none — the `PF-*` entries are temporary audit IDs, not normative or conformance rule IDs.
+No normative specification, compiler behavior, public API, diagnostic allocation, or
+conformance status changed.
+DECISIONS: none. The `SF-OD-*`/`CORE-Q-*` defaults are recommendations pending owner approval.
+This transition is not WP-C2.6 and does not authorize C2.7–C2.11 implementation work.
+EVIDENCE: DOC — governing documents, Core chapters 00–07, generated/concise specifications,
+reference-execution contract, 59-rule conformance data/reporting, and the deviation ledger were
+cross-audited. The post-C2.5 baseline remains 473 passed/0 failed/2 ignored; no Rust source or
+test changed in this documentation-only transition. `git diff --check`,
+`python3 scripts/check-conformance.py`, and
+`python3 scripts/generate-conformance-report.py --format=json` are clean; the full Rust suite
+was not rerun because no executable or normative source changed.
+FOLLOW-UP: WP-C2.6 must expand the skeleton into every independently observable/rejectable
+question, assign stable granular rule IDs, resolve normative authority duplication, reconcile
+deviation statuses, and classify positive/negative evidence. C3 remains blocked through C2.13.
 NEXT: WP-C2.6 (Core completeness inventory and specification authority)
