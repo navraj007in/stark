@@ -1,5 +1,5 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after Gate C2 semantic-freeze preflight
+Updated: 2026-07-18 after Gate C2 semantic-freeze preflight correction
 
 ## Position
 Gate: C2  Next: WP-C2.6  Blocked: none
@@ -8,8 +8,12 @@ starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=bloc
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head before this uncommitted transition: `be43874` (`complete WP-C2.5 diagnostic transport`). Commit only
-  on explicit user request, per standing workflow.
+- Last completed transition: Gate C2 semantic-freeze preflight.
+- Transition commit: `b34d2d02e94aca442c27c99a0cd5bc9daac43268`
+  (`add Gate C2 semantic-freeze preflight`).
+- Current committed head at the start of the preflight correction:
+  `b34d2d02e94aca442c27c99a0cd5bc9daac43268`. This event-style provenance avoids trying to
+  embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -19,7 +23,8 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
   **473 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 30 integration-test files**
-  (`ls starkc/tests/*.rs | wc -l`, re-counted directly during WP-C1.6's consistency sweep — the
+  (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`, re-counted against the
+  post-WP-C2.5 tree — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
   never actually verified against `ls`/`cargo test`'s own "Running ..." lines and had drifted;
   not chasing down exactly which prior WP's arithmetic first went wrong, since that would need
@@ -36,7 +41,7 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   recorded in `starkc/docs/dev/compiler-map.md` (WP-C0.1; not re-regenerated for the WP-C1.1/
   C1.2/C1.3 deltas — see that file's own scope note).
 - Core spec revision: `STARKLANG/docs/spec/` files 00-07, normative per `CLAUDE.md`. Spec
-  fixture corpus: `STARKLANG/tests/spec-fixtures/manifest.toml`, 121 entries (parse-pass 67,
+  fixture corpus: `STARKLANG/tests/spec-fixtures/manifest.toml`, 122 entries (parse-pass 68,
   semantic-error 18, notation 30, lex-pass 4, parse-fail 2).
 - Tensor spec revision: `STARKLANG/docs/extensions/Tensor-Model-Types.md` (extension `tensor`
   v0.1), `AI-Extensions.md` (non-normative sketches).
@@ -2012,8 +2017,9 @@ STARKLANG/docs/compiler/COMPILER-ROADMAP.md, COMPILER-STATE.md.
 RULES: none — the transport and roadmap architecture do not alter Core semantic rules or
 conformance citations.
 DECISIONS: none. Transport stabilization explicitly does not freeze diagnostic-code allocation.
-The roadmap amendment follows the owner-provided semantic-freeze execution plan and does not
-start C2.6 decisions or any C3/MIR/backend work.
+The roadmap amendment follows
+`STARKLANG/docs/compiler/plans/CORE-V1-SEMANTIC-FREEZE-EXECUTION-PLAN.md` and does not start
+C2.6 decisions or any C3/MIR/backend work.
 EVIDENCE: REG + FULL — exact schema-v1 JSON golden; end-to-end deterministic CLI JSON; sorted
 LSP JSON objects; real `publishDiagnostics` with source version; and cross-file primary/related
 source, rendering, rule, deviation, source-kind, and extension-provenance transport.
@@ -2023,8 +2029,11 @@ source, rendering, rule, deviation, source-kind, and extension-provenance transp
 warnings`, `git diff --check`, and `python3 scripts/check-conformance.py` are clean;
 `python3 scripts/generate-conformance-report.py --format=json` exits 0. Conformance remains
 53/59 implemented or partially evidenced rules.
-FOLLOW-UP: C2.6 must produce `CORE-V1-COMPLETENESS.md`, the normative authority map, granular
-rule-ID plan, and `CORE-V1-OPEN-QUESTIONS.md` before semantic decisions are implemented.
+FOLLOW-UP: C2.6 must complete the non-normative
+`STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md`, the normative authority map,
+granular rule-ID plan, and
+`STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md` before semantic decisions
+are implemented.
 NEXT: WP-C2.6 (Core completeness inventory and specification authority)
 
 ### Gate C2 semantic-freeze preflight — 2026-07-18
@@ -2035,8 +2044,8 @@ initial completeness and open-question skeletons. The audit covers source/lexing
 extension boundaries, routes confirmed gaps to C2.6–C2.12, records high-cost owner decisions as
 pending, and prevents closed C2.1–C2.5 work from being reopened without new evidence.
 FILES: STARKLANG/docs/compiler/audits/C2-SEMANTIC-FREEZE-PREFLIGHT.md,
-STARKLANG/docs/spec/CORE-V1-COMPLETENESS.md,
-STARKLANG/docs/spec/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md,
 STARKLANG/docs/compiler/COMPILER-ROADMAP.md, COMPILER-STATE.md.
 RULES: none — the `PF-*` entries are temporary audit IDs, not normative or conformance rule IDs.
 No normative specification, compiler behavior, public API, diagnostic allocation, or
@@ -2053,4 +2062,34 @@ was not rerun because no executable or normative source changed.
 FOLLOW-UP: WP-C2.6 must expand the skeleton into every independently observable/rejectable
 question, assign stable granular rule IDs, resolve normative authority duplication, reconcile
 deviation statuses, and classify positive/negative evidence. C3 remains blocked through C2.13.
+NEXT: WP-C2.6 (Core completeness inventory and specification authority)
+
+### Gate C2 semantic-freeze preflight correction — 2026-07-18
+DONE: Applied the post-commit review corrections before WP-C2.6. Retained the exact
+owner-provided execution-plan provenance under compiler governance; moved temporary
+completeness/open-question ledgers out of the normative specification directory; made the
+normative/meta/generated authority split explicit; separated logical package-instance identity
+from version-coexistence policy; made workspace relocation identity independent of absolute
+paths; and added explicit trait-law and resource-limit/exhaustion questions.
+FILES: STARKLANG/docs/compiler/plans/CORE-V1-SEMANTIC-FREEZE-EXECUTION-PLAN.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/docs/compiler/audits/C2-SEMANTIC-FREEZE-PREFLIGHT.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md,
+STARKLANG/docs/compiler/COMPILER-CHARTER.md,
+STARKLANG/docs/spec/00-Core-Language-Overview.md, CLAUDE.md, starkc/README.md,
+COMPILER-STATE.md, and regenerated combined-spec artifacts.
+RULES: none — authority labeling and governance inventory changed, but no pending recommendation
+was approved and no language behavior changed.
+DECISIONS: none. CORE-Q-005A, CORE-Q-013A, CORE-Q-013B, and CORE-Q-017 remain pending owner
+questions. The proposed defaults are not normative.
+EVIDENCE: DOC — source-plan provenance is pinned by original SHA-256; integration-test file
+count is directly rechecked as 30 against the post-WP-C2.5 tree; the manifest-synchronized
+fixture corpus is directly rechecked as 122 (68 parse-pass, 18 semantic-error, 30 notation,
+4 lex-pass, 2 parse-fail). Combined Markdown/HTML/PDF regeneration succeeded (PDF: 69 A4 pages);
+fixture extraction reports the manifest in sync; both conformance commands, governance-document
+Pandoc parsing, and whitespace validation pass. No Rust source changed, so the inherited
+473 passed/0 failed/2 ignored result remains the executable baseline.
+FOLLOW-UP: WP-C2.6 may begin after this correction; it must not treat governance defaults as
+approved language semantics.
 NEXT: WP-C2.6 (Core completeness inventory and specification authority)

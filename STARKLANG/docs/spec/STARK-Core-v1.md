@@ -1,7 +1,12 @@
 # STARK Core Language Specification Overview
 
 ## Introduction
-This document provides an overview of the complete STARK core language specification. The documents in `docs/spec/` are normative for Core v1. The core language defines the general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and standard library). Non-core extensions are defined separately.
+This document provides an overview of the complete STARK core language specification. The
+numbered source documents 00–07 in `docs/spec/` are normative for Core v1. The concise summary
+and generated combined artifacts are non-normative views, and compiler-governance ledgers under
+`docs/compiler/semantic-freeze/` are non-normative. The core language defines the
+general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and
+standard library). Non-core extensions are defined separately.
 
 **Maturity: normative draft.** Core v1 is the authoritative definition of the
 language, but it has not yet been validated by a conforming implementation.

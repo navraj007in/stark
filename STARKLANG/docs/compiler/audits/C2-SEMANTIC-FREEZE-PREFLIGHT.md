@@ -2,6 +2,7 @@
 
 Status: completed 2026-07-18
 Implementation baseline: `be43874` (`complete WP-C2.5 diagnostic transport`)
+Preflight commit: `b34d2d02e94aca442c27c99a0cd5bc9daac43268`
 Next work package: WP-C2.6
 
 ## Purpose and boundary
@@ -14,8 +15,11 @@ by WP-C2.6.
 
 The audit read the compiler charter, roadmap and state; the Core v1 overview and chapters
 01–07; the concise and generated combined specifications; the reference-execution contract;
-the conformance database and generated coverage evidence; the known-deviation ledger; and the
-owner-provided semantic-freeze execution plan.
+the conformance database and generated coverage evidence; the known-deviation ledger; and
+`STARKLANG/docs/compiler/plans/CORE-V1-SEMANTIC-FREEZE-EXECUTION-PLAN.md`. The original
+owner-provided plan has SHA-256
+`145bc076c28020d5f48793390fda2c57a0241edaa2e777f90f222a3afc0203f8`; the repository copy
+records its preparation baseline and any correction made while importing it.
 
 ## Repository-to-plan gap map
 
@@ -30,7 +34,7 @@ external packages depend on it.
 | Names and scopes | `04-Semantic-Analysis.md`, `07-Modules-and-Packages.md` | Resolution rules are split between chapters; package-qualified identity is not complete. | High | C2.6, C2.8, C2.9 |
 | Type identity and well-formedness | `03-Type-System.md` | Alias transparency, recursive finite sizedness, unsized boundaries, and edge types are not settled. | High | C2.8 |
 | Inference and coercions | `03-Type-System.md` | Local inference is described, but constraint solving, expected types, ambiguity, normalization, and defaulting are incomplete. | High | C2.8 |
-| Traits and coherence | `03-Type-System.md`, `06-Standard-Library.md` | Orphan/overlap rules are broad; selection, normalization, package identity, and callable builtin obligations are incomplete. | High | C2.8, C2.9, C2.11 |
+| Traits and coherence | `03-Type-System.md`, `06-Standard-Library.md` | Orphan/overlap rules are broad; selection, normalization, package identity, callable builtin obligations, and the semantic laws of `Eq`/`Ord`/`Hash` are incomplete. | High | C2.8, C2.9, C2.11 |
 | Ownership and borrowing | `03-Type-System.md`, `05-Memory-Model.md` | Legality is duplicated; authority must be separated from execution and representation. | High | C2.6, C2.7, C2.8 |
 | Places, moves, and temporaries | reference-execution contract, interpreter regressions | Implementation behavior is evidenced, but no implementation-independent abstract machine defines all legal expressions and failure cleanup. | High | C2.7 |
 | Patterns and destruction | type/semantic/memory chapters, C1/C2.2 tests | Exhaustiveness exists; binding ownership, wildcard destruction, partial failure, and exact destruction categories are incomplete. | High | C2.7, C2.8 |
@@ -39,11 +43,12 @@ external packages depend on it.
 | Floating-point semantics | `03-Type-System.md`, math APIs | IEEE 754 is named, but rounding, NaN propagation, signed zero, reproducibility, conversions, and `Eq`/`Ord`/`Hash` are unsettled. | High | C2.9 |
 | Strings and Unicode | lexical, type, and standard-library chapters | UTF-8/String/Char basics exist; indexing units, invalid boundaries, case-data version, trim, and byte escapes need decisions. | High | C2.9 |
 | Modules | `07-Modules-and-Packages.md` | Module layout and resolution exist, but their boundary with package identity and public API identity needs one authority map. | Medium | C2.6, C2.9 |
-| Packages and package identity | `07-Modules-and-Packages.md` | Semver selection exists; canonical identity, source/content identity, lockfiles, aliases, major coexistence, and source substitution do not. | High | C2.9 |
+| Packages and package identity | `07-Modules-and-Packages.md` | Semver selection exists; relocation-stable logical source/package-instance identity, lockfiles, aliases, source substitution, and the separate one-version-per-major-line coexistence invariant are incomplete. | High | C2.9 |
 | Entry and process behavior | package entry-file rule and CLIs | No complete executable `main` signature, exit mapping, stream encoding, startup, shutdown, or trap contract exists. | High | C2.9 |
 | Standard-library language hooks | `06-Standard-Library.md`, interpreter builtins | Required APIs, language hooks, conformance profiles, and implementation/performance notes are mixed. DEV-009/023/024 remain relevant. | High | C2.6, C2.8, C2.9, C2.11 |
 | Layout observability | `03-Type-System.md`, `05-Memory-Model.md` | Pointer sizes, stack/heap claims, and tagged-union language improperly imply representation guarantees. | High | C2.9 |
 | Panic and trap termination | `04-Semantic-Analysis.md`, reference-execution contract | Abort behavior is partly specified; observable categories, source, cleanup boundary, and process mapping need one contract. | High | C2.7, C2.9 |
+| Resource exhaustion and limits | scattered implementation behavior | Allocation/stack exhaustion, recursion/call-depth and object/source/package limits, host I/O failure, OS termination, and failures outside defined STARK traps are not classified. | High | C2.7, C2.9 |
 | Target-defined behavior | scattered platform notes | There is no complete classification of specified, implementation-defined, target-defined, unspecified, and prohibited behavior. | High | C2.6, C2.9 |
 | Extension boundaries | overview, extension documents, language options | Core isolation exists in code and policy; future syntax/ownership/concurrency/native-provider boundaries need a coherent compatibility document. | High | C2.10 |
 
@@ -114,22 +119,27 @@ Recommendations below are audit defaults only. They are not approved semantic de
 | SF-OD-001 | Normative authority split | Type System owns legality; Abstract Machine owns execution; Memory Model summarizes guarantees; C2.9 owns observable layout. | C2.6/C2.7 | Pending |
 | SF-OD-002 | Type-alias identity | Core aliases are transparent and do not create nominal identity. | C2.8 | Pending |
 | SF-OD-003 | Recursive and unsized boundary | Require finite sizedness for values; admit only explicitly supported unsized pointees behind references/views. | C2.8 | Pending |
+| SF-OD-003A | General `Eq`/`Ord`/`Hash` laws | Require equivalence/total-order/hash-consistency laws, define hash stability scope, and explicitly classify behavior under unlawful user implementations. | C2.8/C2.9 | Pending |
 | SF-OD-004 | Float equality, ordering, and hashing | Do not imply total `Eq`/`Ord`/`Hash`; specify explicit partial/bitwise operations where provided. | C2.9 | Pending |
 | SF-OD-005 | Layout stability | Core v1 has no stable ABI; classify only observably required size/alignment behavior as target-defined. | C2.9 | Pending |
 | SF-OD-006 | String units and boundaries | Use UTF-8 byte offsets for low-level boundaries; operations requiring scalar boundaries trap or reject deterministically. | C2.9 | Pending |
 | SF-OD-007 | Executable entry contract | Accept a small explicit set of `main` signatures and define return-to-exit mapping. | C2.9 | Pending |
-| SF-OD-008 | Package identity | Include canonical package name, resolved version, and locked source/content identity; permit explicit aliases without changing identity. | C2.9 | Pending |
+| SF-OD-008A | Package-instance identity | Use relocation-stable logical source identity, canonical package name, exact selected version, and locked content; aliases do not change identity. | C2.9 | Pending |
+| SF-OD-008B | Version coexistence | Select at most one version per logical source/name/major line; allow different major lines to coexist visibly. | C2.9 | Pending |
 | SF-OD-009 | Constant evaluation | Freeze a bounded, deterministic, side-effect-free subset with explicit cycle and trap behavior. | C2.8 | Pending |
 | SF-OD-010 | Future execution boundary | Core v1 is safe and single-threaded; unsafe/FFI remain non-Core and host access requires declared native-provider capabilities. | C2.10 | Pending |
+| SF-OD-011 | Resource exhaustion and implementation limits | Classify each failure/limit separately; do not turn host panics into normative STARK traps. | C2.7/C2.9 | Pending |
 
 ## Transition artifacts and exit check
 
 This preflight is complete when all of the following exist together:
 
 - this repository-to-plan audit;
+- the retained source execution plan under `STARKLANG/docs/compiler/plans/`;
 - an explicit roadmap transition between C2.5 and C2.6;
-- a C2.6 completeness-ledger skeleton with fields and domain routing;
-- an open-question and owner-decision register skeleton;
+- a non-normative C2.6 completeness-ledger skeleton with fields and domain routing under
+  `STARKLANG/docs/compiler/semantic-freeze/`;
+- a non-normative open-question and owner-decision register skeleton in that same directory;
 - a state record naming WP-C2.6 as next and stating that no semantics were approved here.
 
 WP-C2.6 may now begin. It must expand the skeleton into a row for every independently

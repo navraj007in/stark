@@ -242,8 +242,13 @@ or native-backend problem.
 
 ### 1.8 Terminology
 
-- **normative specification** — the individual Core v1 documents under `STARKLANG/docs/spec/`
-  and approved extension specifications under `STARKLANG/docs/extensions/`.
+- **normative specification** — the numbered Core v1 source documents 00–07 under
+  `STARKLANG/docs/spec/` and approved extension specifications under
+  `STARKLANG/docs/extensions/`. Generated/concise summaries and compiler-governance ledgers are
+  not normative.
+- **semantic-freeze governance ledger** — non-normative inventories and pending decision
+  registers under `STARKLANG/docs/compiler/semantic-freeze/`; an entry affects language
+  behavior only after approval and transfer into its assigned normative home.
 - **generated specification** — combined Markdown/HTML/PDF outputs; regenerated artifacts, never
   the editing surface.
 - **AST** — syntax-preserving arena representation produced by the parser.

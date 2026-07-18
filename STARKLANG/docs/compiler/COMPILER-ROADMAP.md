@@ -440,14 +440,16 @@ CLI text output and LSP publication must derive from this form.
 This is a mandatory, unnumbered transition rather than a semantic work package. It does not
 renumber C2.6–C2.13 or approve language behavior.
 
-Before WP-C2.6 begins, reconcile the owner-provided semantic-freeze execution plan against the
-post-C2.5 repository and produce:
+Before WP-C2.6 begins, reconcile
+`STARKLANG/docs/compiler/plans/CORE-V1-SEMANTIC-FREEZE-EXECUTION-PLAN.md` against the post-C2.5
+repository and produce:
 
 - a repository-to-plan gap audit covering every semantic-freeze domain;
 - a contradiction, stale-material, already-resolved-work, and deviation-ownership report;
 - an exact mapping from each confirmed gap to C2.6–C2.12;
 - an owner-decision register whose recommendations remain explicitly unapproved;
-- skeletons for `CORE-V1-COMPLETENESS.md` and `CORE-V1-OPEN-QUESTIONS.md`; and
+- non-normative skeletons under `STARKLANG/docs/compiler/semantic-freeze/` for
+  `CORE-V1-COMPLETENESS.md` and `CORE-V1-OPEN-QUESTIONS.md`; and
 - a state update that records no compiler or semantic change.
 
 Completed on 2026-07-18 against `be43874`; see
@@ -457,10 +459,11 @@ C3/MIR/backend work.
 
 ### WP-C2.6 — Core completeness inventory and specification authority
 
-Create `STARKLANG/docs/spec/CORE-V1-COMPLETENESS.md`: one consistently structured row for every
-normative question, recording its domain, exact question, completeness status, behaviour class,
-normative home and rule ID, positive and negative implementation evidence, compatibility cost,
-owning WP (C2.7–C2.11), and decision state.
+Create `STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md`: one consistently
+structured, non-normative governance row for every normative question, recording its domain,
+exact question, completeness status, behaviour class, normative home and rule ID, positive and
+negative implementation evidence, compatibility cost, owning WP (C2.7–C2.11), and decision
+state.
 
 Audit lexing/source encoding, grammar, names/scopes, type identity and well-formedness,
 inference/coercions, traits/coherence, ownership/borrowing, places/moves/temporaries,
@@ -471,10 +474,12 @@ panic/trap termination, target-defined behaviour, and extension boundaries.
 Create an authoritative specification map assigning one normative home to each concept. Split
 the current broad conformance rules into stable granular IDs for independently observable or
 rejectable behaviours. Remove stale implementation-planning prose from generated normative
-specifications. Create `STARKLANG/docs/spec/CORE-V1-OPEN-QUESTIONS.md`, recording each unresolved
+specifications. Create
+`STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md`, recording each unresolved
 question, urgency, rationale, delay cost, recommended default, alternatives, compatibility
-impact, owner, and approval state. This WP inventories and assigns decisions; it does not make
-unrelated implementation changes.
+impact, owner, and approval state. Both compiler-governance documents remain non-normative;
+approved decisions must be transferred into their assigned normative homes. This WP inventories
+and assigns decisions; it does not make unrelated implementation changes.
 
 ### WP-C2.7 — Abstract machine and execution semantics
 
@@ -538,8 +543,9 @@ operation, struct/enum/generic/trait/method, ownership/drop edge, `Option`/`Resu
 and iterator, and multi-file/package execution case with deterministic output/failure snapshots.
 Metamorphic transformations include alpha-renaming, harmless scopes, equivalent explicit and
 inferred generics, trait-qualified calls, field shorthand/explicit initialization, equivalent
-pattern decompositions, equivalent non-overlapping match-arm order, and package relocation
-without identity change. The same snapshot must later run against the HIR interpreter, MIR
+pattern decompositions, equivalent non-overlapping match-arm order, and relocation of an entire
+workspace without changing manifests, lock data, or logical package sources. The same snapshot
+must later run against the HIR interpreter, MIR
 interpreter, and native debug/release builds.
 
 ### WP-C2.13 — Gate C2 exit and Core v1 semantic freeze

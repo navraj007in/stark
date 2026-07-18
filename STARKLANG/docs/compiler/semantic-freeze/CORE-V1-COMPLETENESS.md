@@ -3,12 +3,16 @@
 Status: **WP-C2.6 skeleton only — not a completed inventory**
 Created by: Gate C2 semantic-freeze preflight, 2026-07-18
 
+This is a non-normative compiler-governance ledger. It records coverage and routes decisions;
+it does not define Core behavior. Only approved decisions transferred into their assigned
+normative homes define the language.
+
 ## Purpose
 
-This will become the authoritative completeness ledger for Core v1. A chapter heading, a broad
-conformance rule, or an implementation test does not by itself prove completeness. WP-C2.6
-must create one row for every independently observable behavior and every independently
-rejectable program condition.
+This will become the authoritative governance ledger for Core v1 completeness. A chapter
+heading, a broad conformance rule, or an implementation test does not by itself prove
+completeness. WP-C2.6 must create one row for every independently observable behavior and every
+independently rejectable program condition.
 
 The temporary `PF-*` IDs in this skeleton are audit identifiers, not normative rule IDs.
 WP-C2.6 must replace them with stable granular rule IDs or explicitly classify the question as
@@ -72,6 +76,7 @@ This is routing input for WP-C2.6, not an approved rewrite.
 | Standard-library language hooks | Not started | C2.8/C2.9 |
 | Layout observability | Not started | C2.9 |
 | Panic and trap termination | Not started | C2.7/C2.9 |
+| Resource exhaustion and implementation limits | Not started | C2.7/C2.9 |
 | Target-defined behavior | Not started | C2.9 |
 | Extension boundaries | Not started | C2.10 |
 
@@ -86,6 +91,7 @@ chapter-by-chapter inventory.
 | PF-002 | Type well-formedness | Which recursive and unsized forms are legal and have finite value size? | Partial | High | C2.8 | Pending |
 | PF-003 | Inference | How are expected types, ambiguity, defaulting, and generic normalization resolved? | Partial | High | C2.8 | Pending |
 | PF-004 | Traits | How are candidates collected, normalized, selected, and checked for overlap across packages? | Partial | High | C2.8/C2.9 | Pending |
+| PF-004A | Trait laws | What laws govern `Eq`, `Ord`, and `Hash`, and what is guaranteed when user implementations violate them? | Absent | High | C2.8/C2.9 | Pending |
 | PF-005 | Abstract execution | What are the value/place contexts and lifetime of every temporary on success and early exit? | Absent | High | C2.7 | Pending |
 | PF-006 | Destruction | What is destroyed after partial aggregate, assignment, pattern, or call failure, and in what order? | Partial | High | C2.7 | Pending |
 | PF-007 | Constants | What deterministic expression subset is permitted, and how do cycles and traps behave? | Partial | High | C2.8 | Pending |
@@ -93,10 +99,12 @@ chapter-by-chapter inventory.
 | PF-009 | Floats | What are rounding, NaN, signed-zero, reproducibility, conversion, and trait semantics? | Partial/contradictory | High | C2.9 | Pending |
 | PF-010 | Text | Are indices bytes or scalar values, and what happens at invalid UTF-8 boundaries? | Partial | High | C2.9 | Pending |
 | PF-011 | Layout | Which size, alignment, discriminant, and address facts are observable? | Contradictory/implementation-leaking | High | C2.9 | Pending |
-| PF-012 | Packages | What forms canonical package/public-item identity across versions and sources? | Absent | High | C2.9 | Pending |
+| PF-012A | Package identity | What logical source, name, version, and locked-content facts form canonical package/public-item identity without depending on checkout location? | Absent | High | C2.9 | Pending |
+| PF-012B | Version coexistence | Which resolved versions may coexist in one graph, and what is the one-version-per-compatible-line invariant? | Partial | High | C2.9 | Pending |
 | PF-013 | Process | Which `main` signatures are executable and how do result, trap, and streams map to a process? | Absent | High | C2.9 | Pending |
 | PF-014 | Standard hooks | Which library names are compiler-recognized language hooks versus ordinary APIs? | Partial | High | C2.8/C2.9 | Pending |
 | PF-015 | Future boundary | What safe single-threaded, closure/lifetime, native-provider, capability, and FFI boundary must Core preserve? | Partial/scattered | High | C2.10 | Pending |
+| PF-016 | Resource limits | How are allocation/stack exhaustion, recursion and size limits, host I/O failure, OS termination, and failures outside STARK traps classified? | Absent | High | C2.7/C2.9 | Pending |
 
 ## C2.6 completion procedure
 
