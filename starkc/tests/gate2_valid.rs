@@ -110,12 +110,12 @@ fn test_multi_file_module_loading() {
     std::fs::write(&extra_file_path, "pub fn conflict() {}").unwrap();
 
     let (_ast_conflict, diags_conflict) = parse(&file, ParseMode::Program);
-    // E0202 conflict error should be reported
+    // E0208 module-file conflict error should be reported
     assert!(
         diags_conflict
             .iter()
-            .any(|d| d.code.as_deref() == Some("E0202")),
-        "expected E0202 conflict error, got {:?}",
+            .any(|d| d.code.as_deref() == Some("E0208")),
+        "expected E0208 conflict error, got {:?}",
         diags_conflict
     );
 
@@ -147,8 +147,8 @@ fn test_missing_module_file_is_reported_not_silently_accepted() {
     ));
     let (_ast, diags) = parse(&file, ParseMode::Program);
     assert!(
-        diags.iter().any(|d| d.code.as_deref() == Some("E0202")),
-        "expected E0202 'file not found for module', got {:?}",
+        diags.iter().any(|d| d.code.as_deref() == Some("E0208")),
+        "expected E0208 'file not found for module', got {:?}",
         diags
     );
 
@@ -610,7 +610,7 @@ fn test_distinct_integer_literal_patterns_are_not_flagged_unreachable() {
     assert!(
         !diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E0500")),
+            .any(|d| d.code.as_deref() == Some("W0006")),
         "distinct literal patterns must not be flagged unreachable, got {diagnostics:?}"
     );
 }
@@ -630,8 +630,8 @@ fn test_duplicate_integer_literal_pattern_is_still_flagged_unreachable() {
     assert!(
         diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E0500")),
-        "expected E0500 (unreachable match arm) for a genuinely duplicate literal, got \
+            .any(|d| d.code.as_deref() == Some("W0006")),
+        "expected W0006 (unreachable match arm) for a genuinely duplicate literal, got \
          {diagnostics:?}"
     );
 }
@@ -651,7 +651,7 @@ fn test_distinct_string_literal_patterns_are_not_flagged_unreachable() {
     assert!(
         !diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E0500")),
+            .any(|d| d.code.as_deref() == Some("W0006")),
         "distinct string literal patterns must not be flagged unreachable, got {diagnostics:?}"
     );
 }
@@ -1069,4 +1069,93 @@ fn test_single_enum_variant_struct_pattern_without_other_variants_is_rejected() 
             .any(|d| d.code.as_deref() == Some("E0303")),
         "expected E0303 (non-exhaustive pattern match), got {diagnostics:?}"
     );
+}
+
+#[test]
+fn constant_subset_is_evaluated_at_compile_time() {
+    let source = "\
+        const BASE: Int32 = 3;\n\
+        const TOTAL: Int32 = if true { BASE * 4 } else { 1 / 0 };\n\
+        const PAIR: (Int32, Int32) = (TOTAL, 2);\n\
+        fn main() { println(TOTAL); }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("constant_subset.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+#[test]
+fn constants_reject_runtime_forms_cycles_and_traps() {
+    let cases = [
+        (
+            "const BAD: Result<String, IOError> = read_file(\"missing\"); fn main() {}",
+            "not permitted",
+        ),
+        (
+            "const A: Int32 = B; const B: Int32 = A; fn main() {}",
+            "constant dependency cycle",
+        ),
+        ("const BAD: Int32 = 1 / 0; fn main() {}", "division by zero"),
+    ];
+    for (index, (source, expected)) in cases.iter().enumerate() {
+        let diagnostics = analyze(
+            &format!("invalid_constant_{index}.stark"),
+            source.to_string(),
+        );
+        assert!(
+            diagnostics.iter().any(|diagnostic| {
+                diagnostic.code.as_deref() == Some("E0215") && diagnostic.message.contains(expected)
+            }),
+            "expected E0215 containing {expected:?}, got {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn aliases_are_transparent_and_boxed_recursion_is_sized() {
+    let source = "\
+        type Number = Int32;\n\
+        type Pair<T> = (T, T);\n\
+        struct Node { value: Number, next: Option<Box<Node>> }\n\
+        struct Empty {}\n\
+        enum Never {}\n\
+        fn sum(pair: Pair<Number>) -> Number { pair.0 + pair.1 }\n\
+        fn main() { let pair: (Int32, Int32) = (2, 3); println(sum(pair)); }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("transparent_aliases.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+#[test]
+fn alias_cycles_direct_value_recursion_and_bare_unsized_types_are_rejected() {
+    let cases = [
+        (
+            "type A = B; type B = A; fn main() {}",
+            "recursive type-alias cycle",
+        ),
+        ("struct Node { next: Node } fn main() {}", "infinite size"),
+        (
+            "struct Left { right: Right } struct Right { left: Left } fn main() {}",
+            "infinite size",
+        ),
+        ("struct Text { value: str } fn main() {}", "unsized types"),
+    ];
+    for (index, (source, expected)) in cases.iter().enumerate() {
+        let diagnostics = analyze(&format!("invalid_type_{index}.stark"), source.to_string());
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(expected)),
+            "expected diagnostic containing {expected:?}, got {diagnostics:?}"
+        );
+    }
 }

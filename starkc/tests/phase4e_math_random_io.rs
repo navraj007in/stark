@@ -82,7 +82,7 @@ fn math_transcendental_functions() {
             println(trunc(3.9));
         }",
     );
-    assert_eq!(output, "1024\n2\n0\n1\n3\n4\n4\n3\n");
+    assert_eq!(output, "1024.0\n2.0\n0.0\n1.0\n3.0\n4.0\n4.0\n3.0\n");
 }
 
 #[test]

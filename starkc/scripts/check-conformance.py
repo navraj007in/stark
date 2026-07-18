@@ -117,6 +117,49 @@ def main():
             )
             errors.append(f"Duplicate granular inventory IDs: {', '.join(duplicates)}.")
 
+        c2_11_path = os.path.join(
+            conformance_dir, 'STARKLANG', 'conformance', 'core-v1-c2.11-evidence.toml'
+        )
+        if not os.path.exists(c2_11_path):
+            errors.append(f"WP-C2.11 granular evidence not found at {c2_11_path}.")
+        else:
+            with open(c2_11_path, 'rb') as f:
+                c2_11 = tomllib.load(f)
+            evidence_rules = c2_11.get('rule', [])
+            evidence_ids = [entry.get('id') for entry in evidence_rules]
+            duplicates = sorted(
+                rule_id for rule_id in set(evidence_ids) if evidence_ids.count(rule_id) > 1
+            )
+            if duplicates:
+                errors.append(
+                    "Duplicate WP-C2.11 granular evidence IDs: " + ', '.join(duplicates) + "."
+                )
+            for entry in evidence_rules:
+                rule_id = entry.get('id')
+                if rule_id not in inventory_id_set:
+                    errors.append(
+                        f"WP-C2.11 evidence cites unknown granular rule '{rule_id}'."
+                    )
+                if entry.get('status') != 'implemented':
+                    errors.append(
+                        f"WP-C2.11 evidence rule '{rule_id}' must be implemented."
+                    )
+                for source in entry.get('source', []):
+                    if not os.path.exists(os.path.join(conformance_dir, source)):
+                        errors.append(
+                            f"WP-C2.11 evidence rule '{rule_id}' source '{source}' does not exist."
+                        )
+                for field_name in ('positive_tests', 'negative_tests'):
+                    entries = entry.get(field_name, [])
+                    if not entries:
+                        errors.append(
+                            f"WP-C2.11 evidence rule '{rule_id}' has no {field_name}."
+                        )
+                    for citation in entries:
+                        validate_evidence_entry(
+                            citation, conformance_dir, rule_id, field_name, errors
+                        )
+
         abstract_machine_path = os.path.join(
             conformance_dir,
             'STARKLANG',

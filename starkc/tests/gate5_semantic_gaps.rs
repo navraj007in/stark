@@ -60,7 +60,7 @@ fn test_trait_default_method_body_checking() {
 
 #[test]
 fn test_re_export_visibility_and_unresolved() {
-    // 1. Unresolved import E0401
+    // 1. Unresolved import E0205
     let unresolved_source = "
         use non_existent::Something;
     ";
@@ -70,9 +70,9 @@ fn test_re_export_visibility_and_unresolved() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(!errors.is_empty(), "expected unresolved import to fail");
-    assert!(errors[0].code.as_deref() == Some("E0401"));
+    assert!(errors[0].code.as_deref() == Some("E0205"));
 
-    // 2. Multi-level private re-export visibility check E0203
+    // 2. Multi-level private re-export visibility check E0207
     let private_source = "
         mod a {
             struct PrivateStruct {}
@@ -92,7 +92,7 @@ fn test_re_export_visibility_and_unresolved() {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(!errors.is_empty(), "expected private import to fail");
-    assert!(errors.iter().any(|d| d.code.as_deref() == Some("E0203")));
+    assert!(errors.iter().any(|d| d.code.as_deref() == Some("E0207")));
 }
 
 #[test]

@@ -2403,11 +2403,26 @@ line | source code line
 - E0202: Undefined type
 - E0203: Ambiguous name
 - E0204: Duplicate definition in the same scope
+- E0205: Unresolved import
+- E0206: `super` used from a root module
+- E0207: Private item is not visible from the use site
+- E0208: Module file missing, unreadable, or ambiguous
+- E0209: Public API exposes a type that is not publicly nameable
+- E0210: Extension-only syntax used without enabling its extension
+- E0211: Invalid extension declaration or argument
+- E0212: Extension type, shape, device, or range mismatch
+- E0213: Missing, malformed, or invalid extension generic argument
+- E0214: Invalid executable entrypoint selection or signature
+- E0215: Constant expression is outside the Core subset or failed compile-time evaluation
+- E0216: Recursive transparent type-alias cycle
+- E0217: Unsized value position or infinite-size direct value cycle
 
 #### Control Flow Errors (E0300-E0399)
 - E0301: Missing return value
 - E0302: Break outside loop
 - E0303: Non-exhaustive match
+- E0304: Method receiver has a type on which methods cannot be called
+- E0305: Constant pattern is not a compiler-known primitive scalar
 
 (E0300 is intentionally unassigned: unreachable code is warning W0005, not an
 error — see "Unreachable Code Detection" above.)
@@ -2427,6 +2442,7 @@ error — see "Unreachable Code Detection" above.)
 - W0003: Unused import
 - W0004: Dead code
 - W0005: Unreachable code
+- W0006: Unreachable match arm
 
 #### Style Warnings (W0100-W0199)
 - W0100: Non-snake_case variable

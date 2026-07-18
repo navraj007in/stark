@@ -45,6 +45,8 @@ pub enum Builtin {
     BoxIntoInner,
     ReadFile,
     WriteFile,
+    FileOpen,
+    FileCreate,
     Some,
     None,
     Ok,
@@ -148,6 +150,7 @@ pub enum CoreType {
     FilterIter,
     Random,
     IOError,
+    File,
     /// WP-C2.2 (DEV-027): `Ordering` is a normative prelude member
     /// (`06-Standard-Library.md` line 585, `enum Ordering { Less, Equal, Greater }`) required
     /// by the `Ord` trait's `cmp` signature; previously unresolvable anywhere in the compiler.
@@ -222,6 +225,7 @@ pub struct Hir {
     pub blocks: Vec<BlockNode>,
     pub root: Root,
     pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
+    pub publicly_nameable_items: std::collections::HashSet<ItemId>,
 }
 
 pub enum Root {

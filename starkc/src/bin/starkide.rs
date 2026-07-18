@@ -1854,7 +1854,7 @@ mod tests {
         editor.lines = vec!["fn main() { println(42); }".into()];
         let mut app = App::new(editor);
         app.compile(true);
-        assert_eq!(app.status, "Run successful");
+        assert_eq!(app.status, "Run successful", "{:?}", app.output);
         assert!(app.output.iter().any(|line| line == "42"));
         assert!(app
             .output

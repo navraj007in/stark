@@ -111,6 +111,7 @@ pub struct TypeChecker<'a> {
     enum_variants: HashMap<ItemId, Vec<VariantTy>>,
     fn_sigs: HashMap<ItemId, FnSigTy>,
     const_types: HashMap<ItemId, Ty>,
+    alias_stack: Vec<ItemId>,
 
     // Scopes context
     current_self_ty: Option<Ty>,
@@ -147,6 +148,11 @@ pub struct TypeTables {
     pub expr_types: HashMap<ExprId, Ty>,
     pub local_types: HashMap<LocalId, Ty>,
     pub local_mutability: HashMap<LocalId, bool>,
+    /// Grounded signatures for top-level functions.  Executable-target
+    /// selection consumes this table after ordinary package analysis so a
+    /// package can remain library-importable without imposing a `main`
+    /// requirement during type checking.
+    pub fn_types: HashMap<ItemId, (Vec<Ty>, Ty)>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +197,7 @@ pub fn analyze_with_options(
         enum_variants: HashMap::new(),
         fn_sigs: HashMap::new(),
         const_types: HashMap::new(),
+        alias_stack: Vec::new(),
         current_self_ty: None,
         current_assoc_types: HashMap::new(),
         current_fn_ret: None,
@@ -218,16 +225,37 @@ pub fn analyze_with_options(
         .iter()
         .map(|(&id, ty)| (id, checker.ground(ty)))
         .collect();
+    let fn_types = checker
+        .fn_sigs
+        .iter()
+        .map(|(&id, sig)| {
+            (
+                id,
+                (
+                    sig.params.iter().map(|ty| checker.ground(ty)).collect(),
+                    checker.ground(&sig.ret),
+                ),
+            )
+        })
+        .collect();
     let mut diagnostics = checker.diags;
     diagnostics.extend(crate::flow::check(hir, file.clone(), &expr_types));
-    diagnostics.extend(crate::borrowck::check(hir, file, &expr_types, &local_types));
+    diagnostics.extend(crate::borrowck::check(
+        hir,
+        file.clone(),
+        &expr_types,
+        &local_types,
+    ));
+    let tables = TypeTables {
+        expr_types,
+        local_types,
+        local_mutability: checker.local_mutability,
+        fn_types,
+    };
+    diagnostics.extend(crate::interp::check_constants(hir, file, &tables));
     TypeCheckResult {
         diagnostics,
-        tables: TypeTables {
-            expr_types,
-            local_types,
-            local_mutability: checker.local_mutability,
-        },
+        tables,
     }
 }
 
@@ -368,19 +396,76 @@ impl<'a> TypeChecker<'a> {
     /// reference to a `const` item (recursing into its initializer) -- rather than a full
     /// general constant-folding pass, which is out of this WP's scope.
     fn const_eval_u64(&self, expr_id: ExprId) -> Option<u64> {
+        self.const_eval_i128(expr_id, &mut HashSet::new())
+            .and_then(|value| u64::try_from(value).ok())
+    }
+
+    fn const_eval_i128(&self, expr_id: ExprId, visiting: &mut HashSet<ItemId>) -> Option<i128> {
         let expr = self.hir.expr(expr_id);
         match &expr.kind {
             hir::ExprKind::Lit(Lit::Int { base, suffix }) => {
-                let value = literal::parse_int_literal(self.text(expr.span), *base, *suffix)?;
-                u64::try_from(value).ok()
+                literal::parse_int_literal(self.text(expr.span), *base, *suffix)
             }
             hir::ExprKind::Path {
                 res: Res::Item(item_id),
                 ..
             } => match &self.hir.item(*item_id).kind {
-                hir::ItemKind::Const { value, .. } => self.const_eval_u64(*value),
+                hir::ItemKind::Const { value, .. } => {
+                    if !visiting.insert(*item_id) {
+                        return None;
+                    }
+                    let result = self.const_eval_i128(*value, visiting);
+                    visiting.remove(item_id);
+                    result
+                }
                 _ => None,
             },
+            hir::ExprKind::Unary { op, operand } => {
+                let value = self.const_eval_i128(*operand, visiting)?;
+                match op {
+                    UnOp::Neg => value.checked_neg(),
+                    UnOp::BitNot => Some(!value),
+                    _ => None,
+                }
+            }
+            hir::ExprKind::Binary { op, lhs, rhs } => {
+                let lhs = self.const_eval_i128(*lhs, visiting)?;
+                let rhs = self.const_eval_i128(*rhs, visiting)?;
+                match op {
+                    BinOp::Add => lhs.checked_add(rhs),
+                    BinOp::Sub => lhs.checked_sub(rhs),
+                    BinOp::Mul => lhs.checked_mul(rhs),
+                    BinOp::Div => lhs.checked_div(rhs),
+                    BinOp::Rem => lhs.checked_rem(rhs),
+                    BinOp::Pow => u32::try_from(rhs).ok().and_then(|rhs| lhs.checked_pow(rhs)),
+                    BinOp::BitAnd => Some(lhs & rhs),
+                    BinOp::BitOr => Some(lhs | rhs),
+                    BinOp::BitXor => Some(lhs ^ rhs),
+                    BinOp::Shl => u32::try_from(rhs).ok().and_then(|rhs| lhs.checked_shl(rhs)),
+                    BinOp::Shr => u32::try_from(rhs).ok().and_then(|rhs| lhs.checked_shr(rhs)),
+                    _ => None,
+                }
+            }
+            hir::ExprKind::Cast { expr, .. } => self.const_eval_i128(*expr, visiting),
+            hir::ExprKind::Block(block) => {
+                let block = self.hir.block(*block);
+                if block.stmts.iter().any(|statement| {
+                    !matches!(
+                        &self.hir.stmt(*statement).kind,
+                        hir::StmtKind::Empty | hir::StmtKind::Expr { .. }
+                    )
+                }) {
+                    return None;
+                }
+                for statement in &block.stmts {
+                    if let hir::StmtKind::Expr { expr, .. } = &self.hir.stmt(*statement).kind {
+                        self.const_eval_i128(*expr, visiting)?;
+                    }
+                }
+                block
+                    .tail
+                    .and_then(|tail| self.const_eval_i128(tail, visiting))
+            }
             _ => None,
         }
     }
@@ -512,6 +597,19 @@ impl<'a> TypeChecker<'a> {
                     CoreType::Result,
                     vec![
                         Ty::Primitive(Primitive::Unit),
+                        Ty::Core(CoreType::IOError, Vec::new()),
+                    ],
+                )),
+            },
+            Builtin::FileOpen | Builtin::FileCreate => Ty::Fn {
+                params: vec![Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(Ty::Primitive(Primitive::Str)),
+                }],
+                ret: Box::new(Ty::Core(
+                    CoreType::Result,
+                    vec![
+                        Ty::Core(CoreType::File, Vec::new()),
                         Ty::Core(CoreType::IOError, Vec::new()),
                     ],
                 )),
@@ -1181,6 +1279,7 @@ impl<'a> TypeChecker<'a> {
                     CoreType::FilterIter => "FilterIter",
                     CoreType::Random => "Random",
                     CoreType::IOError => "IOError",
+                    CoreType::File => "File",
                     CoreType::Ordering => "Ordering",
                 };
                 if args.is_empty() {
@@ -1280,6 +1379,39 @@ impl<'a> TypeChecker<'a> {
                                 );
                                 Ty::Enum(*item_id, type_args)
                             }
+                            hir::ItemKind::TypeAlias {
+                                generics,
+                                ty: target,
+                                ..
+                            } => {
+                                let generics = generics.clone();
+                                let target = *target;
+                                let type_args = self.convert_generic_type_args(args.as_ref());
+                                self.validate_generic_arity(
+                                    generics.len(),
+                                    type_args.len(),
+                                    node.span,
+                                );
+                                if self.alias_stack.contains(item_id) {
+                                    self.diags.push(
+                                        Diagnostic::error("recursive type-alias cycle", node.span)
+                                            .with_code("E0216"),
+                                    );
+                                    Ty::Error
+                                } else {
+                                    self.alias_stack.push(*item_id);
+                                    let expanded = self.convert_hir_type(target);
+                                    self.alias_stack.pop();
+                                    let substitutions: HashMap<String, Ty> = generics
+                                        .iter()
+                                        .zip(type_args)
+                                        .map(|(parameter, argument)| {
+                                            (self.text(parameter.name).to_string(), argument)
+                                        })
+                                        .collect();
+                                    self.instantiate_ty(&expanded, &substitutions)
+                                }
+                            }
                             hir::ItemKind::Model(_def) => {
                                 if !self.options.tensor() {
                                     self.diags.push(Diagnostic::error(
@@ -1357,6 +1489,7 @@ impl<'a> TypeChecker<'a> {
                             | CoreType::SplitIter
                             | CoreType::Random
                             | CoreType::IOError
+                            | CoreType::File
                             | CoreType::Ordering => 0,
                             CoreType::Vec
                             | CoreType::Box
@@ -2082,6 +2215,11 @@ impl<'a> TypeChecker<'a> {
                     let const_ty = self.convert_hir_type(*ty);
                     self.const_types.insert(item_id, const_ty);
                 }
+                hir::ItemKind::TypeAlias { ty, .. } => {
+                    self.alias_stack.push(item_id);
+                    let _ = self.convert_hir_type(*ty);
+                    self.alias_stack.pop();
+                }
                 hir::ItemKind::Impl { self_ty, items, .. } => {
                     let impl_self_ty = self.convert_hir_type(*self_ty);
                     let previous_self = self.current_self_ty.replace(impl_self_ty);
@@ -2117,6 +2255,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        self.check_public_api_reachability();
+        self.check_type_well_formedness();
 
         let start_len = self.diags.len();
         self.validate_impl_rules();
@@ -2235,6 +2376,199 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
+        }
+    }
+
+    fn check_public_api_reachability(&mut self) {
+        let mut exposures = Vec::new();
+        for (index, item) in self.hir.items.iter().enumerate() {
+            if item.vis != Some(crate::ast::Vis::Pub) {
+                continue;
+            }
+            let item_id = ItemId(index as u32);
+            let mut types = Vec::new();
+            match &item.kind {
+                hir::ItemKind::Fn(def) => {
+                    types.extend(def.sig.params.iter().map(|param| param.ty));
+                    if let hir::RetTy::Ty(ty) = def.sig.ret {
+                        types.push(ty);
+                    }
+                }
+                hir::ItemKind::Struct { fields, .. } => {
+                    types.extend(
+                        fields
+                            .iter()
+                            .filter(|field| field.is_pub)
+                            .map(|field| field.ty),
+                    );
+                }
+                hir::ItemKind::Enum { variants, .. } => {
+                    for variant in variants {
+                        match &variant.kind {
+                            hir::VariantKind::Unit => {}
+                            hir::VariantKind::Tuple(fields) => types.extend(fields.iter().copied()),
+                            hir::VariantKind::Struct(fields) => {
+                                types.extend(fields.iter().map(|field| field.ty));
+                            }
+                        }
+                    }
+                }
+                hir::ItemKind::Trait { items, .. } => {
+                    for trait_item in items {
+                        if let hir::TraitItem::Method { sig, .. } = trait_item {
+                            types.extend(sig.params.iter().map(|param| param.ty));
+                            if let hir::RetTy::Ty(ty) = sig.ret {
+                                types.push(ty);
+                            }
+                        }
+                    }
+                }
+                hir::ItemKind::Const { ty, .. } | hir::ItemKind::TypeAlias { ty, .. } => {
+                    types.push(*ty);
+                }
+                _ => {}
+            }
+            for ty in types {
+                if let Some(private) = self.private_type_in(ty) {
+                    exposures.push((item_id, private, self.hir.ty(ty).span));
+                }
+            }
+        }
+
+        for (public_item, private_item, span) in exposures {
+            let private_name = self.item_name(private_item);
+            let public_name = self.item_name(public_item);
+            let mut diagnostic = Diagnostic::error(
+                format!("public item '{public_name}' exposes non-public type '{private_name}'"),
+                span,
+            )
+            .with_code("E0209")
+            .with_note("make the type publicly nameable or remove it from the public signature");
+            if let Some(file) = self.hir.item_files.get(&public_item) {
+                diagnostic.file = Some(file.clone());
+            }
+            self.diags.push(diagnostic);
+        }
+    }
+
+    fn check_type_well_formedness(&mut self) {
+        let mut reported_unsized = HashSet::new();
+        for (item, fields) in &self.struct_fields {
+            for ty in fields.values() {
+                if !type_is_sized(ty) && reported_unsized.insert(*item) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "unsized types may occur only immediately behind a reference",
+                            self.hir.item(*item).span,
+                        )
+                        .with_code("E0217"),
+                    );
+                }
+            }
+        }
+        for (item, variants) in &self.enum_variants {
+            for variant in variants {
+                let types: Vec<&Ty> = match &variant.fields {
+                    VariantFields::Unit => Vec::new(),
+                    VariantFields::Tuple(types) => types.iter().collect(),
+                    VariantFields::Struct(fields) => fields.values().collect(),
+                };
+                if types.iter().any(|ty| !type_is_sized(ty)) && reported_unsized.insert(*item) {
+                    self.diags.push(
+                        Diagnostic::error(
+                            "unsized types may occur only immediately behind a reference",
+                            self.hir.item(*item).span,
+                        )
+                        .with_code("E0217"),
+                    );
+                }
+            }
+        }
+
+        let mut edges: HashMap<ItemId, HashSet<ItemId>> = HashMap::new();
+        for (item, fields) in &self.struct_fields {
+            let entry = edges.entry(*item).or_default();
+            for ty in fields.values() {
+                collect_direct_value_edges(ty, entry);
+            }
+        }
+        for (item, variants) in &self.enum_variants {
+            let entry = edges.entry(*item).or_default();
+            for variant in variants {
+                match &variant.fields {
+                    VariantFields::Unit => {}
+                    VariantFields::Tuple(types) => {
+                        for ty in types {
+                            collect_direct_value_edges(ty, entry);
+                        }
+                    }
+                    VariantFields::Struct(fields) => {
+                        for ty in fields.values() {
+                            collect_direct_value_edges(ty, entry);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut reported = HashSet::new();
+        for &item in edges.keys() {
+            let mut active = HashSet::new();
+            if direct_value_cycle(item, item, &edges, &mut active) && reported.insert(item) {
+                self.diags.push(
+                    Diagnostic::error(
+                        "type has infinite size through a direct value cycle",
+                        self.hir.item(item).span,
+                    )
+                    .with_code("E0217"),
+                );
+            }
+        }
+    }
+
+    fn private_type_in(&self, ty: hir::TypeId) -> Option<ItemId> {
+        let node = self.hir.ty(ty);
+        match &node.kind {
+            hir::TypeKind::Path { res, args, .. } => {
+                if let Res::Item(item) = res {
+                    if self.hir.item(*item).vis != Some(crate::ast::Vis::Pub)
+                        && !self.hir.publicly_nameable_items.contains(item)
+                    {
+                        return Some(*item);
+                    }
+                }
+                args.as_ref().and_then(|args| {
+                    args.args.iter().find_map(|arg| match arg {
+                        hir::GenericArg::Type(ty) | hir::GenericArg::Binding { ty, .. } => {
+                            self.private_type_in(*ty)
+                        }
+                        _ => None,
+                    })
+                })
+            }
+            hir::TypeKind::Array { elem, .. }
+            | hir::TypeKind::Slice(elem)
+            | hir::TypeKind::Ref { inner: elem, .. } => self.private_type_in(*elem),
+            hir::TypeKind::Tuple(types) => types.iter().find_map(|ty| self.private_type_in(*ty)),
+            hir::TypeKind::Fn { params, ret } => params
+                .iter()
+                .find_map(|ty| self.private_type_in(*ty))
+                .or_else(|| ret.and_then(|ty| self.private_type_in(ty))),
+            _ => None,
+        }
+    }
+
+    fn item_name(&self, item: ItemId) -> String {
+        match &self.hir.item(item).kind {
+            hir::ItemKind::Fn(def) => self.text(def.sig.name).to_string(),
+            hir::ItemKind::Struct { name, .. }
+            | hir::ItemKind::Enum { name, .. }
+            | hir::ItemKind::Trait { name, .. }
+            | hir::ItemKind::Const { name, .. }
+            | hir::ItemKind::TypeAlias { name, .. }
+            | hir::ItemKind::Mod { name, .. } => self.text(*name).to_string(),
+            hir::ItemKind::Model(def) => self.text(def.name).to_string(),
+            hir::ItemKind::Impl { .. } | hir::ItemKind::Use(_) => format!("item#{}", item.0),
         }
     }
 
@@ -3295,9 +3629,27 @@ impl<'a> TypeChecker<'a> {
                 let rhs_ty = self.check_expr(*rhs);
 
                 match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Pow => {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                         let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
                         self.require_operator_bound(&lhs_ty, "Num", expr.span);
+                        lhs_ty
+                    }
+                    BinOp::Pow => {
+                        let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
+                        match self.resolve(&lhs_ty) {
+                            Ty::Primitive(p) if is_integer(p) => {}
+                            Ty::Infer(_) | Ty::Error => {}
+                            _ => self.diags.push(
+                                Diagnostic::error(
+                                    "`**` is defined only for integer primitive types",
+                                    expr.span,
+                                )
+                                .with_code("E0001")
+                                .with_note(
+                                    "use `std::math::pow` for floating-point exponentiation",
+                                ),
+                            ),
+                        }
                         lhs_ty
                     }
                     BinOp::Eq | BinOp::Ne => {
@@ -3333,6 +3685,23 @@ impl<'a> TypeChecker<'a> {
                 match op {
                     AssignOp::Assign => {
                         let _ = self.unify(lhs_ty, rhs_ty, expr.span);
+                    }
+                    AssignOp::PowAssign => {
+                        let _ = self.unify(lhs_ty.clone(), rhs_ty, expr.span);
+                        match self.resolve(&lhs_ty) {
+                            Ty::Primitive(p) if is_integer(p) => {}
+                            Ty::Infer(_) | Ty::Error => {}
+                            _ => self.diags.push(
+                                Diagnostic::error(
+                                    "`**=` is defined only for integer primitive types",
+                                    expr.span,
+                                )
+                                .with_code("E0001")
+                                .with_note(
+                                    "use `std::math::pow` for floating-point exponentiation",
+                                ),
+                            ),
+                        }
                     }
                     _ => {
                         let _ = self.unify(lhs_ty, rhs_ty, expr.span);
@@ -3882,7 +4251,7 @@ impl<'a> TypeChecker<'a> {
                     if is_unreachable {
                         self.diags.push(
                             Diagnostic::warning("unreachable match arm", arm.pat.span(self.hir))
-                                .with_code("E0500")
+                                .with_code("W0006")
                                 .with_label(
                                     "this pattern is redundant and covered by a preceding arm",
                                 ),
@@ -4095,7 +4464,38 @@ impl<'a> TypeChecker<'a> {
             hir::PatKind::Path { res, .. } => match res {
                 Res::Item(item_id) => {
                     if let Some(const_ty) = self.const_types.get(item_id) {
-                        const_ty.clone()
+                        let const_ty = const_ty.clone();
+                        if !matches!(
+                            self.resolve(&const_ty),
+                            Ty::Primitive(
+                                Primitive::Int8
+                                    | Primitive::Int16
+                                    | Primitive::Int32
+                                    | Primitive::Int64
+                                    | Primitive::UInt8
+                                    | Primitive::UInt16
+                                    | Primitive::UInt32
+                                    | Primitive::UInt64
+                                    | Primitive::Float32
+                                    | Primitive::Float64
+                                    | Primitive::Bool
+                                    | Primitive::Char
+                            )
+                        ) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    "constant patterns are restricted to primitive scalar values",
+                                    pat.span,
+                                )
+                                .with_code("E0305")
+                                .with_note(
+                                    "aggregate and other nonprimitive constants cannot be patterns",
+                                ),
+                            );
+                            Ty::Error
+                        } else {
+                            const_ty
+                        }
                     } else {
                         Ty::Error
                     }
@@ -4702,31 +5102,56 @@ impl<'a> TypeChecker<'a> {
         call_span: Span,
     ) -> Ty {
         let name = self.text(name_span).to_string();
-        let selected = self.hir.items.iter().find_map(|item| {
+        let mut inherent = Vec::new();
+        let mut trait_candidates = Vec::new();
+        for item in &self.hir.items {
             let hir::ItemKind::Impl {
-                trait_: None,
+                trait_,
                 self_ty,
                 items,
                 generics,
             } = &item.kind
             else {
-                return None;
+                continue;
             };
             if !matches!(
                 &self.hir.ty(*self_ty).kind,
                 hir::TypeKind::Path { res: Res::Item(item), .. } if *item == nominal
             ) {
-                return None;
+                continue;
             }
-            items.iter().find_map(|item| match item {
+            let candidate = items.iter().find_map(|item| match item {
                 hir::ImplItem::Fn { def, .. }
                     if def.sig.receiver.is_none() && self.text(def.sig.name) == name =>
                 {
                     Some((def.sig.clone(), *self_ty, generics.clone()))
                 }
                 _ => None,
-            })
-        });
+            });
+            if let Some(candidate) = candidate {
+                if trait_.is_none() {
+                    inherent.push(candidate);
+                } else {
+                    trait_candidates.push(candidate);
+                }
+            }
+        }
+        let candidates = if inherent.is_empty() {
+            trait_candidates
+        } else {
+            inherent
+        };
+        if candidates.len() > 1 {
+            self.diags.push(
+                Diagnostic::error(
+                    format!("associated function '{name}' is ambiguous"),
+                    name_span,
+                )
+                .with_code("E0204"),
+            );
+            return Ty::Error;
+        }
+        let selected = candidates.into_iter().next();
         let Some((sig, self_ty_id, impl_generics)) = selected else {
             self.diags.push(
                 Diagnostic::error(format!("associated function '{name}' not found"), name_span)
@@ -5124,7 +5549,7 @@ impl<'a> TypeChecker<'a> {
                         ),
                         call_span,
                     )
-                    .with_code("E0303"),
+                    .with_code("E0304"),
                 );
             } else {
                 self.diags.push(
@@ -5276,6 +5701,44 @@ impl<'a> TypeChecker<'a> {
             if clonable {
                 return Some((Vec::new(), receiver.clone(), false));
             }
+        }
+        if name == "fmt" && standard_display_type(receiver) {
+            return Some((Vec::new(), Ty::Primitive(Primitive::String), false));
+        }
+        if name == "hash" && standard_hash_type(receiver) {
+            return Some((Vec::new(), u64_ty, false));
+        }
+        if matches!(receiver, Ty::Core(CoreType::File, args) if args.is_empty()) {
+            let io_error = Ty::Core(CoreType::IOError, Vec::new());
+            return match name {
+                "read_to_string" => Some((
+                    Vec::new(),
+                    Ty::Core(
+                        CoreType::Result,
+                        vec![Ty::Primitive(Primitive::String), io_error],
+                    ),
+                    true,
+                )),
+                "write" => Some((
+                    vec![Ty::Ref {
+                        mutable: false,
+                        inner: Box::new(Ty::Slice(Box::new(Ty::Primitive(Primitive::UInt8)))),
+                    }],
+                    Ty::Core(CoreType::Result, vec![u64_ty, io_error]),
+                    true,
+                )),
+                "write_str" => Some((
+                    vec![str_ref.clone()],
+                    Ty::Core(CoreType::Result, vec![u64_ty, io_error]),
+                    true,
+                )),
+                "close" => Some((
+                    Vec::new(),
+                    Ty::Core(CoreType::Result, vec![unit.clone(), io_error]),
+                    false,
+                )),
+                _ => None,
+            };
         }
         if self.is_iterator_type(receiver) {
             let item_ty = self.iterator_item_type(receiver);
@@ -5954,13 +6417,12 @@ impl<'a> TypeChecker<'a> {
                     is_numeric(*p)
                 } else if bound_name == "Eq" || bound_name == "Ord" {
                     !matches!(p, Primitive::Unit)
-                } else if bound_name == "Clone"
-                    || bound_name == "Display"
-                    || bound_name == "Default"
-                {
+                } else if bound_name == "Display" {
+                    standard_display_type(&ty)
+                } else if bound_name == "Clone" || bound_name == "Default" {
                     true
                 } else if bound_name == "Hash" {
-                    !matches!(p, Primitive::Float32 | Primitive::Float64)
+                    standard_hash_type(&ty)
                 } else {
                     false
                 }
@@ -5968,11 +6430,11 @@ impl<'a> TypeChecker<'a> {
             Ty::Core(core_type, args) => {
                 if bound_name == "Clone" {
                     args.iter().all(|arg| self.satisfies_bound(arg, bound))
-                } else if bound_name == "Eq"
-                    || bound_name == "Ord"
-                    || bound_name == "Hash"
-                    || bound_name == "Display"
-                {
+                } else if bound_name == "Display" {
+                    standard_display_type(&ty)
+                } else if bound_name == "Hash" {
+                    standard_hash_type(&ty)
+                } else if bound_name == "Eq" || bound_name == "Ord" {
                     args.iter().all(|arg| self.satisfies_bound(arg, bound))
                 } else if bound_name == "Default" {
                     *core_type == CoreType::Vec
@@ -6110,6 +6572,110 @@ fn is_integer(p: Primitive) -> bool {
             | Primitive::UInt32
             | Primitive::UInt64
     )
+}
+
+fn type_is_sized(ty: &Ty) -> bool {
+    match ty {
+        Ty::Primitive(Primitive::Str) | Ty::Slice(_) => false,
+        Ty::Ref { .. } => true,
+        Ty::Tuple(types) => types.iter().all(type_is_sized),
+        Ty::Array(element, _) => type_is_sized(element),
+        Ty::Struct(_, arguments) | Ty::Enum(_, arguments) => arguments.iter().all(type_is_sized),
+        Ty::Core(CoreType::Box, arguments) => arguments.first().is_some_and(type_is_sized),
+        Ty::Core(_, arguments) => arguments.iter().all(type_is_sized),
+        Ty::Fn { params, ret } => params.iter().all(type_is_sized) && type_is_sized(ret),
+        Ty::Range(element) => type_is_sized(element),
+        Ty::Extension(_) | Ty::Primitive(_) | Ty::Never | Ty::Param(_) | Ty::Infer(_) => true,
+        Ty::Error => true,
+    }
+}
+
+fn collect_direct_value_edges(ty: &Ty, output: &mut HashSet<ItemId>) {
+    match ty {
+        Ty::Struct(item, arguments) | Ty::Enum(item, arguments) => {
+            output.insert(*item);
+            for argument in arguments {
+                collect_direct_value_edges(argument, output);
+            }
+        }
+        Ty::Ref { .. } | Ty::Core(CoreType::Box | CoreType::Vec, _) => {}
+        Ty::Tuple(types) | Ty::Core(_, types) => {
+            for ty in types {
+                collect_direct_value_edges(ty, output);
+            }
+        }
+        Ty::Array(element, _) | Ty::Slice(element) | Ty::Range(element) => {
+            collect_direct_value_edges(element, output);
+        }
+        Ty::Fn { params, ret } => {
+            for ty in params {
+                collect_direct_value_edges(ty, output);
+            }
+            collect_direct_value_edges(ret, output);
+        }
+        _ => {}
+    }
+}
+
+fn direct_value_cycle(
+    origin: ItemId,
+    current: ItemId,
+    edges: &HashMap<ItemId, HashSet<ItemId>>,
+    active: &mut HashSet<ItemId>,
+) -> bool {
+    if !active.insert(current) {
+        return false;
+    }
+    let found = edges.get(&current).is_some_and(|targets| {
+        targets
+            .iter()
+            .any(|target| *target == origin || direct_value_cycle(origin, *target, edges, active))
+    });
+    active.remove(&current);
+    found
+}
+
+fn standard_display_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Primitive(primitive) => matches!(
+            primitive,
+            Primitive::Int8
+                | Primitive::Int16
+                | Primitive::Int32
+                | Primitive::Int64
+                | Primitive::UInt8
+                | Primitive::UInt16
+                | Primitive::UInt32
+                | Primitive::UInt64
+                | Primitive::Float32
+                | Primitive::Float64
+                | Primitive::Bool
+                | Primitive::Char
+                | Primitive::Unit
+                | Primitive::String
+                | Primitive::Str
+        ),
+        Ty::Core(CoreType::Ordering | CoreType::IOError, args) => args.is_empty(),
+        Ty::Ref { inner, .. } => standard_display_type(inner),
+        _ => false,
+    }
+}
+
+fn standard_hash_type(ty: &Ty) -> bool {
+    match ty {
+        Ty::Primitive(primitive) => !matches!(
+            primitive,
+            Primitive::Float16 | Primitive::BFloat16 | Primitive::Float32 | Primitive::Float64
+        ),
+        Ty::Tuple(elements) => elements.iter().all(standard_hash_type),
+        Ty::Array(element, _) => standard_hash_type(element),
+        Ty::Core(CoreType::Vec | CoreType::Option, args) => {
+            args.len() == 1 && args.iter().all(standard_hash_type)
+        }
+        Ty::Core(CoreType::Result, args) => args.len() == 2 && args.iter().all(standard_hash_type),
+        Ty::Ref { inner, .. } => standard_hash_type(inner),
+        _ => false,
+    }
 }
 
 fn is_copy_primitive(primitive: Primitive) -> bool {
@@ -9156,6 +9722,137 @@ mod tests {
         assert!(diags
             .iter()
             .any(|diagnostic| diagnostic.code.as_deref() == Some("E0500")));
+    }
+
+    #[test]
+    fn positive_bounds_do_not_make_unifying_impl_heads_disjoint() {
+        let diagnostics = check_src(
+            "trait A {} trait B {} trait Marker {} \
+             struct Wrapper<T> { value: T } \
+             impl<T: A> Marker for Wrapper<T> {} \
+             impl<T: B> Marker for Wrapper<T> {}",
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("E0500")
+                && diagnostic.message.contains("overlapping implementation")
+        }));
+    }
+
+    #[test]
+    fn generic_reference_fields_propagate_borrows_without_becoming_illegal_fields() {
+        let diagnostics = check_src(
+            "struct Holder<T> { value: T } \
+             fn hold(value: &Int32) -> Holder<&Int32> { Holder { value: value } }",
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+
+        let escaping = check_src(
+            "struct Holder<T> { value: T } \
+             fn bad() -> Holder<&Int32> { let local = 1; Holder { value: &local } }",
+        );
+        assert!(escaping
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("E0103")));
+    }
+
+    #[test]
+    fn constant_patterns_reject_nonprimitive_values() {
+        let diagnostics = check_src(
+            "struct Key { value: Int32 } \
+             impl Eq for Key { fn eq(&self, other: &Key) -> Bool { self.value == other.value } } \
+             const FIRST: Key = Key { value: 1 }; \
+             fn classify(value: Key) -> Int32 { match value { FIRST => 1, _ => 0 } }",
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("E0305")));
+    }
+
+    #[test]
+    fn floating_exponent_operator_is_rejected() {
+        let diagnostics =
+            check_src("fn main() { let x: Float64 = 2.0; let y: Float64 = 3.0; let _z = x ** y; }");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("E0001")
+                && diagnostic.message.contains("integer primitive")
+        }));
+    }
+
+    #[test]
+    fn trait_associated_conversion_function_resolves() {
+        let diagnostics = check_src(
+            "struct Celsius { value: Int32 } \
+             struct Fahrenheit { value: Int32 } \
+             impl From<Celsius> for Fahrenheit { \
+                 fn from(value: Celsius) -> Fahrenheit { \
+                     Fahrenheit { value: value.value } \
+                 } \
+             } \
+             fn main() { \
+                 let c = Celsius { value: 10 }; \
+                 let _f: Fahrenheit = Fahrenheit::from(c); \
+             }",
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn ambiguous_trait_associated_functions_require_qualification() {
+        let diagnostics = check_src(
+            "struct Value { raw: Int32 } \
+             trait First { fn make() -> Value; } \
+             trait Second { fn make() -> Value; } \
+             impl First for Value { fn make() -> Value { Value { raw: 1 } } } \
+             impl Second for Value { fn make() -> Value { Value { raw: 2 } } } \
+             fn main() { let value = Value::make(); }",
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("E0204") && diagnostic.message.contains("ambiguous")
+        }));
+    }
+
+    #[test]
+    fn public_api_rejects_private_signature_types() {
+        let diagnostics = check_src(
+            "struct Secret { value: Int32 } \
+             pub fn reveal(value: Secret) -> Secret { value }",
+        );
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code.as_deref() == Some("E0209") && diagnostic.message.contains("Secret")
+        }));
+    }
+
+    #[test]
+    fn public_api_accepts_publicly_nameable_signature_types() {
+        let diagnostics = check_src(
+            "pub struct PublicValue { pub value: Int32 } \
+             pub fn identity(value: PublicValue) -> PublicValue { value }",
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn public_api_accepts_a_type_made_nameable_by_public_reexport() {
+        let diags = check_src(
+            "mod hidden { pub struct Token { pub value: Int32 } } \
+             pub use hidden::Token; \
+             pub fn make() -> Token { Token { value: 1 } }",
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|diagnostic| diagnostic.code.as_deref() != Some("E0209")),
+            "{diags:?}"
+        );
     }
 
     #[test]

@@ -110,7 +110,7 @@ pub fn parse_package_graph(
             ast.root = Root::Program(items);
         }
         Err(err_msg) => {
-            diags.push(Diagnostic::error(err_msg, Span { lo: 0, hi: 0 }).with_code("E0202"));
+            diags.push(Diagnostic::error(err_msg, Span { lo: 0, hi: 0 }).with_code("E0208"));
             ast.root = Root::Program(Vec::new());
         }
     }
@@ -231,7 +231,7 @@ fn load_submodules_recursive(
                     ),
                     name_span,
                 )
-                .with_code("E0202")
+                .with_code("E0208")
                 .with_file(std::sync::Arc::new(SourceFile::new(
                     current_file.name.clone(),
                     current_file.src.clone(),
@@ -246,7 +246,7 @@ fn load_submodules_recursive(
             } else {
                 diags.push(
                     Diagnostic::error(format!("cannot read file '{}'", p1.display()), name_span)
-                        .with_code("E0202")
+                        .with_code("E0208")
                         .with_file(std::sync::Arc::new(SourceFile::new(
                             current_file.name.clone(),
                             current_file.src.clone(),
@@ -260,7 +260,7 @@ fn load_submodules_recursive(
             } else {
                 diags.push(
                     Diagnostic::error(format!("cannot read file '{}'", p2.display()), name_span)
-                        .with_code("E0202")
+                        .with_code("E0208")
                         .with_file(std::sync::Arc::new(SourceFile::new(
                             current_file.name.clone(),
                             current_file.src.clone(),
@@ -295,7 +295,7 @@ fn load_submodules_recursive(
                         ),
                         name_span,
                     )
-                    .with_code("E0202")
+                    .with_code("E0208")
                     .with_file(std::sync::Arc::new(SourceFile::new(
                         current_file.name.clone(),
                         current_file.src.clone(),

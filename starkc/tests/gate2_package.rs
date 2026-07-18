@@ -128,6 +128,197 @@ fn test_three_package_workspace_compiles() {
 }
 
 #[test]
+fn test_dependency_alias_is_distinct_from_canonical_package_name() {
+    let workspace = setup_temp_workspace("canonical_alias");
+    let app_dir = workspace.join("app");
+    let tensor_dir = workspace.join("tensor-lib");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    std::fs::create_dir_all(tensor_dir.join("src")).unwrap();
+
+    std::fs::write(
+        tensor_dir.join("starkpkg.json"),
+        r#"{
+            "name": "tensor-lib",
+            "version": "2.1.0",
+            "entry": "src/main.stark"
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        tensor_dir.join("src/main.stark"),
+        "pub fn answer() -> Int32 { 42 }",
+    )
+    .unwrap();
+    std::fs::write(
+        app_dir.join("starkpkg.json"),
+        r#"{
+            "name": "app",
+            "version": "0.1.0",
+            "entry": "src/main.stark",
+            "dependencies": {
+                "TensorLib": {
+                    "package": "tensor-lib",
+                    "path": "../tensor-lib"
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app_dir.join("src/main.stark"),
+        "use TensorLib::answer; fn main() { let value: Int32 = answer(); }",
+    )
+    .unwrap();
+
+    let graph = PackageGraph::load_from_root(&app_dir.join("starkpkg.json")).unwrap();
+    assert_eq!(graph.packages.get("TensorLib").unwrap().name, "tensor-lib");
+    let (ast, mut diagnostics) = parse_package_graph(&graph, LanguageOptions::CORE);
+    let root_file = Arc::new(SourceFile::new(
+        app_dir
+            .join("src/main.stark")
+            .to_string_lossy()
+            .into_owned(),
+        std::fs::read_to_string(app_dir.join("src/main.stark")).unwrap(),
+    ));
+    let (hir, mut resolution) = resolve(&ast, root_file.clone());
+    diagnostics.append(&mut resolution);
+    diagnostics.append(&mut typecheck::check(&hir, root_file));
+    assert!(
+        diagnostics.is_empty(),
+        "alias-based package import failed: {diagnostics:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn test_manifest_rejects_aliases_that_are_not_source_identifiers() {
+    let workspace = setup_temp_workspace("invalid_alias");
+    let app_dir = workspace.join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    std::fs::write(app_dir.join("src/main.stark"), "fn main() {}").unwrap();
+    std::fs::write(
+        app_dir.join("starkpkg.json"),
+        r#"{
+            "name": "app",
+            "version": "0.1.0",
+            "dependencies": {
+                "tensor-lib": { "package": "tensor-lib", "version": "^2.1.0" }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let error = PackageGraph::load_from_root(&app_dir.join("starkpkg.json")).unwrap_err();
+    assert!(error.contains("non-keyword STARK identifier"), "{error}");
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn test_manifest_rejects_constraints_spanning_major_lines() {
+    let workspace = setup_temp_workspace("multi_major_constraint");
+    let app_dir = workspace.join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    std::fs::write(app_dir.join("src/main.stark"), "fn main() {}").unwrap();
+    std::fs::write(
+        app_dir.join("starkpkg.json"),
+        r#"{
+            "name": "app",
+            "version": "0.1.0",
+            "dependencies": {
+                "TensorLib": {
+                    "package": "tensor-lib",
+                    "version": ">=1.2.0, <3.0.0"
+                }
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let error = PackageGraph::load_from_root(&app_dir.join("starkpkg.json")).unwrap_err();
+    assert!(error.contains("exactly one major version line"), "{error}");
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
+fn test_distinct_aliases_allow_incompatible_major_lines_to_coexist() {
+    let workspace = setup_temp_workspace("major_coexistence");
+    let app_dir = workspace.join("app");
+    let v1_dir = workspace.join("tensor-v1");
+    let v2_dir = workspace.join("tensor-v2");
+    for directory in [&app_dir, &v1_dir, &v2_dir] {
+        std::fs::create_dir_all(directory.join("src")).unwrap();
+    }
+    for (directory, version, value) in [(&v1_dir, "1.9.0", 1), (&v2_dir, "2.3.0", 2)] {
+        std::fs::write(
+            directory.join("starkpkg.json"),
+            format!(
+                r#"{{
+                    "name": "tensor-lib",
+                    "version": "{version}",
+                    "entry": "src/main.stark"
+                }}"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("src/main.stark"),
+            format!("pub fn major() -> Int32 {{ {value} }}"),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        app_dir.join("starkpkg.json"),
+        r#"{
+            "name": "app",
+            "version": "0.1.0",
+            "entry": "src/main.stark",
+            "dependencies": {
+                "TensorV1": { "package": "tensor-lib", "path": "../tensor-v1" },
+                "TensorV2": { "package": "tensor-lib", "path": "../tensor-v2" }
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app_dir.join("src/main.stark"),
+        "fn main() { let one = TensorV1::major(); let two = TensorV2::major(); println(one + two); }",
+    )
+    .unwrap();
+
+    let graph = PackageGraph::load_from_root(&app_dir.join("starkpkg.json")).unwrap();
+    assert_eq!(
+        graph.packages.get("TensorV1").unwrap().version,
+        starkc::package::Version {
+            major: 1,
+            minor: 9,
+            patch: 0,
+        }
+    );
+    assert_eq!(
+        graph.packages.get("TensorV2").unwrap().version,
+        starkc::package::Version {
+            major: 2,
+            minor: 3,
+            patch: 0,
+        }
+    );
+    let (ast, mut diagnostics) = parse_package_graph(&graph, LanguageOptions::CORE);
+    let root_file = Arc::new(SourceFile::new(
+        app_dir
+            .join("src/main.stark")
+            .to_string_lossy()
+            .into_owned(),
+        std::fs::read_to_string(app_dir.join("src/main.stark")).unwrap(),
+    ));
+    let (hir, mut resolution) = resolve(&ast, root_file.clone());
+    diagnostics.append(&mut resolution);
+    diagnostics.append(&mut typecheck::check(&hir, root_file));
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let _ = std::fs::remove_dir_all(workspace);
+}
+
+#[test]
 fn test_missing_manifest_rejected() {
     let workspace = setup_temp_workspace("missing_manifest");
     let result = find_package_root(&workspace);

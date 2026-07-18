@@ -2407,6 +2407,23 @@ compile-time constant expression</li>
 <li>E0202: Undefined type</li>
 <li>E0203: Ambiguous name</li>
 <li>E0204: Duplicate definition in the same scope</li>
+<li>E0205: Unresolved import</li>
+<li>E0206: <code>super</code> used from a root module</li>
+<li>E0207: Private item is not visible from the use site</li>
+<li>E0208: Module file missing, unreadable, or ambiguous</li>
+<li>E0209: Public API exposes a type that is not publicly nameable</li>
+<li>E0210: Extension-only syntax used without enabling its
+extension</li>
+<li>E0211: Invalid extension declaration or argument</li>
+<li>E0212: Extension type, shape, device, or range mismatch</li>
+<li>E0213: Missing, malformed, or invalid extension generic
+argument</li>
+<li>E0214: Invalid executable entrypoint selection or signature</li>
+<li>E0215: Constant expression is outside the Core subset or failed
+compile-time evaluation</li>
+<li>E0216: Recursive transparent type-alias cycle</li>
+<li>E0217: Unsized value position or infinite-size direct value
+cycle</li>
 </ul>
 <h4 id="control-flow-errors-e0300-e0399">Control Flow Errors
 (E0300-E0399)</h4>
@@ -2414,6 +2431,10 @@ compile-time constant expression</li>
 <li>E0301: Missing return value</li>
 <li>E0302: Break outside loop</li>
 <li>E0303: Non-exhaustive match</li>
+<li>E0304: Method receiver has a type on which methods cannot be
+called</li>
+<li>E0305: Constant pattern is not a compiler-known primitive
+scalar</li>
 </ul>
 <p>(E0300 is intentionally unassigned: unreachable code is warning
 W0005, not an error — see “Unreachable Code Detection” above.)</p>
@@ -2435,6 +2456,7 @@ Initialization Errors (E0400-E0499)</h4>
 <li>W0003: Unused import</li>
 <li>W0004: Dead code</li>
 <li>W0005: Unreachable code</li>
+<li>W0006: Unreachable match arm</li>
 </ul>
 <h4 id="style-warnings-w0100-w0199">Style Warnings (W0100-W0199)</h4>
 <ul>

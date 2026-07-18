@@ -632,7 +632,12 @@ impl Lexer<'_> {
         }
         if !bad {
             let span = self.span_from(start);
-            self.push(TokenKind::Str { raw: false }, span);
+            let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("");
+            if crate::literal::cooked_string_is_valid(text) {
+                self.push(TokenKind::Str { raw: false }, span);
+            } else {
+                self.error("String literal escape bytes do not form valid UTF-8", span);
+            }
         }
     }
 
@@ -686,7 +691,15 @@ impl Lexer<'_> {
         if self.peek(0) == Some(b'\'') {
             self.pos += 1;
             let span = self.span_from(start);
-            self.push(TokenKind::CharLit, span);
+            let text = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("");
+            if crate::literal::parse_char(text).is_some() {
+                self.push(TokenKind::CharLit, span);
+            } else {
+                self.error(
+                    "Character escape must denote exactly one ASCII or Unicode scalar",
+                    span,
+                );
+            }
         } else {
             // Consume up to the closing quote or line end for one error span.
             while let Some(b) = self.peek(0) {

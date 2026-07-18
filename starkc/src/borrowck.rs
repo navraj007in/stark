@@ -538,10 +538,21 @@ impl<'a> BorrowChecker<'a> {
             return Some(
                 if matches!(
                     method_name,
-                    "push" | "push_str" | "pop" | "clear" | "insert" | "remove" | "append"
+                    "push"
+                        | "push_str"
+                        | "pop"
+                        | "clear"
+                        | "insert"
+                        | "remove"
+                        | "append"
+                        | "get_mut"
+                        | "next"
+                        | "read_to_string"
+                        | "write"
+                        | "write_str"
                 ) {
                     hir::Receiver::RefMut
-                } else if matches!(method_name, "unwrap" | "unwrap_or" | "into_inner") {
+                } else if matches!(method_name, "unwrap" | "unwrap_or" | "into_inner" | "close") {
                     hir::Receiver::Value
                 } else {
                     hir::Receiver::Ref

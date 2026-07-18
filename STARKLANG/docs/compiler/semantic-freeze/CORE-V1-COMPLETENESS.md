@@ -88,7 +88,7 @@ cross-reference.
 | SYN-LITERAL-001 | Which tuple, array, repeat-array, and struct literal forms parse? | complete/specified | 02 §Literal Expressions | SYN-009/U17; SYN-009/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-GUARD-001 | Where must struct literals be parenthesized to avoid control-flow ambiguity? | complete/prohibited | 02 §Struct Literal Restrictions | SYN-009/U17; SYN-009/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-TYPE-001 | Which primitive, path, tuple, array, reference, function, and never types parse? | complete/specified | 02 §Types | SYN-010/U17; SYN-010/U17 | high/C2.11 | settled/DEV-017 |
-| SYN-SPLIT-001 | How are generic-closing and tuple-field tokens reclassified after lexing? | complete/specified | 02 §Parsing Notes | SYN-013; SYN-013 | high/C2.11 | settled/DEV-018 |
+| SYN-SPLIT-001 | How are generic-closing and tuple-field tokens reclassified after lexing? | complete/specified | 02 §Parsing Notes | SYN-013; SYN-013 | high/C2.11 | settled/none |
 | SYN-RECOVERY-001 | Is parser recovery observable beyond required acceptance/rejection and diagnostics? | complete/specified | 02 §Syntax Errors | none; none | low/C2.11 | Q021 approved/none |
 
 ## Names, types, inference, and traits
@@ -109,7 +109,7 @@ cross-reference.
 | TYPE-COERCE-002 | When may mutable references coerce to shared references? | complete/specified | 03 §Reference Coercions | TYP-003/U17; TYP-003/U17 | high/C2.11 | settled/DEV-017 |
 | TYPE-COERCE-003 | When may an array reference coerce to a slice/view? | complete/specified | 03 §Array to Slice Coercion | TYP-003/U17; none | high/C2.11 | Q003 approved/DEV-017 |
 | TYPE-COERCE-004 | How does the never type coerce at control-flow joins? | complete/specified | 03 §Never Type Coercion | TYP-003/U17; TYP-003/U17 | high/C2.11 | settled/DEV-017 |
-| TYPE-CAST-001 | Which explicit numeric casts are legal and what values do they produce? | complete/specified | 03 §Explicit Casts | TYP-003/U17; none | high/C2.11 | Q008,Q010 approved/DEV-017,DEV-024 |
+| TYPE-CAST-001 | Which explicit numeric casts are legal and what values do they produce? | complete/specified | 03 §Explicit Casts | TYP-003/U17; C2.11 | high/C2.11 | Q008,Q010 approved/DEV-017 |
 | TYPE-CFLOW-001 | How do branches and `match` arms choose a common type? | complete/specified | 03 §Control-Flow Typing | TYP-004/U17; TYP-004/U17 | high/C2.11 | settled/DEV-017 |
 | TYPE-LOOP-001 | How do loop kind and reachable `break` values determine expression type? | complete/specified | 03 §Control Flow Typing | TYP-004/U17; none | high/C2.11 | Q004 approved/DEV-017 |
 | TYPE-METHOD-001 | How are inherent and trait method candidates collected and prioritized? | complete/specified | 03 §Method Calls and Auto-Borrowing | TYP-006/U17; none | ecosystem-breaking/C2.11 | Q004 approved; Q005 algorithm approved/DEV-017 |
@@ -130,7 +130,7 @@ cross-reference.
 | FLOW-MUT-001 | Which assignments require a mutable binding or mutable place? | complete/specified | 04 §Mutability Checking | none; none | high/C2.11 | settled/none |
 | FLOW-BOUNDS-001 | Which statically provable indexing errors must be rejected? | complete/specified | 04 §Static Bounds Analysis | none; none | medium/C2.11 | Q017 approved/none |
 | FLOW-TRY-001 | Where is `?` legal and what enclosing result type is required? | complete/specified | 04 §Error Propagation Analysis | none; none | high/C2.11 | settled/none |
-| DIAG-CATALOG-001 | Which rejection categories and diagnostic codes are stable and collision-free? | partial/pending-classification | 04 §Diagnostics | SEM-006/U17; none | medium/C2.11 | Q022 pending/DEV-019 |
+| DIAG-CATALOG-001 | Which rejection categories and diagnostic codes are stable and collision-free? | complete/specified | 04 §Diagnostics | SEM-006/U17; C2.11 | medium/C2.11 | Q022 approved/none |
 | OWN-MOVE-001 | Which value uses move, copy, or borrow an operand? | complete/specified | Abstract Machine §Moves, Partial Moves, and Reinitialization | MEM-001/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
 | OWN-COPY-001 | Which types are implicitly copyable? | complete/specified | 03 §Copy and Drop | MEM-002/U17; none | ecosystem-breaking/C2.11 | Q003,Q006 approved/DEV-017 |
 | OWN-BORROW-001 | When may shared and exclusive borrows coexist? | complete/specified | 03 §Borrowing Rules | MEM-003/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
@@ -153,7 +153,7 @@ cross-reference.
 | AM-LOCAL-001 | When is a local initialized or moved-from? | complete/specified | Abstract Machine §Values, Objects, Storage, and Ownership | none; none | high/C2.11 | Q006 approved/none |
 | AM-TEMP-001 | What is a temporary owner? | complete/specified | Abstract Machine §Values, Objects, Storage, and Ownership | none; none | high/C2.11 | Q006 approved/none |
 | EXEC-ONCE-001 | Must every evaluated source expression run exactly once? | complete/specified | Abstract Machine §Results and Full Expressions | none; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-034 |
-| EXEC-DISPATCH-001 | Must runtime execution invoke exactly the statically selected callable/protocol? | complete/specified | Abstract Machine §Results and Full Expressions | none; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-024,DEV-026,DEV-027,DEV-038,DEV-043 |
+| EXEC-DISPATCH-001 | Must runtime execution invoke exactly the statically selected callable/protocol? | complete/specified | Abstract Machine §Results and Full Expressions | C2.11; C2.11 | ecosystem-breaking/C2.11 | Q006 approved/DEV-026,DEV-027,DEV-038,DEV-043 |
 | EXEC-FOR-001 | Must every statically accepted iterator execute through the selected iterator protocol? | complete/specified | Abstract Machine §Evaluation Order | none; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-031 |
 | MOVE-READ-001 | When does a place read copy, move, or borrow? | complete/specified | Abstract Machine §Value and Place Contexts | none; none | ecosystem-breaking/C2.11 | Q006 approved/none |
 | EXEC-AGG-001 | When do completed aggregate fields acquire ownership and in what order? | complete/specified | Abstract Machine §Aggregate Construction | none; none | ecosystem-breaking/C2.11 | Q006 approved/none |
@@ -183,7 +183,7 @@ cross-reference.
 | NUM-INT-ARITH-001 | What happens on integer add/subtract/multiply/negate overflow? | complete/specified | Abstract Machine §Integer Operations | STD-001/U17; none | ecosystem-breaking/C2.11 | Q008 approved/DEV-017 |
 | NUM-INT-DIV-001 | What are signed division/remainder rounding, zero, and minimum/-1 results? | complete/specified | Abstract Machine §Integer Operations | none; none | ecosystem-breaking/C2.11 | Q008 approved/none |
 | NUM-SHIFT-001 | How are negative or out-of-width shift counts handled? | complete/specified | Abstract Machine §Integer Operations | none; none | ecosystem-breaking/C2.11 | Q008 approved/none |
-| NUM-CAST-001 | How do narrowing, sign-changing, and integer/float casts behave? | complete/specified | Abstract Machine §Numeric Conversion | STD-001/U17; none | ecosystem-breaking/C2.11 | Q008,Q010 approved/DEV-024 |
+| NUM-CAST-001 | How do narrowing, sign-changing, and integer/float casts behave? | complete/specified | Abstract Machine §Numeric Conversion | C2.11; C2.11 | ecosystem-breaking/C2.11 | Q008,Q010 approved/none |
 | NUM-FLOAT-FORMAT-001 | Which IEEE formats correspond to `f32` and `f64`? | complete/specified | 03 §Floating-Point Types | TYP-001/U17; none | ecosystem-breaking/C2.11 | Q010 approved/DEV-017 |
 | NUM-FLOAT-OP-001 | What rounding, NaN, infinity, signed-zero, and contraction rules apply? | complete/specified | Abstract Machine §Floating-Point Operations | none; none | ecosystem-breaking/C2.11 | Q010 approved/none |
 | NUM-FLOAT-TRAIT-001 | Which equality, ordering, and hashing contracts apply to floats? | complete/specified | 03 §Floating-Point Traits | TYP-005/U17; none | ecosystem-breaking/C2.11 | Q009 approved/none |
@@ -204,7 +204,7 @@ cross-reference.
 | MOD-PATH-001 | How do absolute, relative, `self`, `super`, and package paths resolve? | complete/specified | 07 §Path Resolution | PKG-002/U17; none | ecosystem-breaking/C2.11 | Q013A approved/DEV-017 |
 | MOD-USE-001 | How do aliases, nested imports, glob imports, and conflicts resolve? | complete/specified | 07 §Imports | PKG-003/U17; none | high/C2.11 | Q013A approved/DEV-017 |
 | MOD-VIS-001 | Which items are visible across module and package boundaries? | complete/specified | 07 §Visibility | PKG-004/U17; none | ecosystem-breaking/C2.11 | Q023 approved/DEV-017 |
-| MOD-REEXPORT-001 | May public APIs expose private or dependency-private types? | complete/specified | 07 §Public API Reachability | none; none | ecosystem-breaking/C2.11 | Q023 approved/DEV-022 |
+| MOD-REEXPORT-001 | May public APIs expose private or dependency-private types? | complete/specified | 07 §Public API Reachability | C2.11; C2.11 | ecosystem-breaking/C2.11 | Q023 approved/none |
 | MOD-CYCLE-001 | Which module/import cycles are permitted or rejected? | complete/specified | 07 §Module Cycles | PKG-005/U17; none | high/C2.11 | Q013A approved/DEV-017 |
 | PKG-MANIFEST-001 | Which manifest fields are required and how are they validated? | complete/specified | 07 §Package Manifest | PKG-006/U17; none | high/C2.11 | Q013A approved/DEV-017 |
 | PKG-RESOLVE-001 | How are dependency constraints, sources, aliases, and features resolved? | complete/specified | 07 §Dependency Resolution | PKG-006/U17; none | ecosystem-breaking/C2.11 | Q013A,Q013B approved/DEV-017 |
@@ -215,19 +215,19 @@ cross-reference.
 | PKG-LOCK-001 | What lockfile facts are reproducible and authoritative? | complete/specified | 07 §Lockfiles | none; none | ecosystem-breaking/C2.11 | Q013A,Q013B approved/none |
 | PROC-MAIN-001 | Which `main` signatures are executable? | complete/specified | 07 §Executable Entry | none; none | ecosystem-breaking/C2.11 | Q014 approved/none |
 | PROC-EXIT-001 | How do return values, `Result`, and traps map to exit status? | complete/specified | 07 §Process Termination | none; none | high/C2.11 | Q014,Q017 approved/none |
-| PROC-STREAM-001 | What are the observable stdin/stdout/stderr and flush contracts? | complete/specified | 07 §Process Streams | none; none | high/C2.11 | Q014 approved/DEV-009 |
+| PROC-STREAM-001 | What are the observable stdin/stdout/stderr and flush contracts? | complete/specified | 07 §Process Streams | C2.11; C2.11 | high/C2.11 | Q014 approved/none |
 | STD-PRELUDE-001 | Which names are implicitly available? | complete/specified | 06 §Prelude | STD-001; none | ecosystem-breaking/C2.11 | settled/none |
-| STD-FORMAT-001 | What output and argument behavior do the Core formatting/printing facilities expose? | complete/specified | 06 §Formatting | STD-002; none | high/C2.11 | Q014 approved/DEV-023 |
-| STD-PROFILE-001 | Which APIs are required in each Core profile? | complete/specified | 06 §Conformance Profiles | STD-002/U17; none | ecosystem-breaking/C2.11 | Q024 approved/DEV-009 |
-| STD-HOOK-001 | Which library items are compiler-recognized hooks rather than ordinary APIs? | complete/specified | 06 §Canonical Language Hooks | STD-004; none | ecosystem-breaking/C2.11 | Q015 approved; Q012 layout values pending/DEV-023 |
-| STD-TRAIT-001 | Which standard traits and required items belong to the Core profile? | complete/specified | 06 §Core Trait Profile | STD-004; STD-004 | ecosystem-breaking/C2.11 | Q005A,Q015 approved; Q009 float participation pending/DEV-023 |
+| STD-FORMAT-001 | What output and argument behavior do the Core formatting/printing facilities expose? | complete/specified | 06 §Formatting | C2.11; C2.11 | high/C2.11 | Q014 approved/none |
+| STD-PROFILE-001 | Which APIs are required in each Core profile? | complete/specified | 06 §Conformance Profiles | STD-002/U17; C2.11 | ecosystem-breaking/C2.11 | Q024 approved/none |
+| STD-HOOK-001 | Which library items are compiler-recognized hooks rather than ordinary APIs? | complete/specified | 06 §Canonical Language Hooks | STD-004; C2.11 | ecosystem-breaking/C2.11 | Q015 approved; Q012 layout values pending/none |
+| STD-TRAIT-001 | Which standard traits and required items belong to the Core profile? | complete/specified | 06 §Core Trait Profile | STD-004; C2.11 | ecosystem-breaking/C2.11 | Q005A,Q015 approved; Q009 approved/none |
 | STD-OPTION-001 | What are `Option` representation-independent behavior and APIs? | partial/specified | 06 §Option | none; none | high/C2.11 | pending-owner-approval/none |
 | STD-RESULT-001 | What are `Result`, propagation, and combinator behavior? | partial/specified | 06 §Result | none; none | high/C2.11 | pending-owner-approval/none |
 | STD-ITER-001 | What is the iterator protocol and termination behavior? | partial/specified | 06 §Iterator | STD-003; none | high/C2.11 | pending-owner-approval/none |
 | STD-VEC-001 | What are vector growth, indexing, bounds, and ownership contracts? | partial/specified | 06 §Vec | STD-003; none | high/C2.11 | pending-owner-approval/none |
 | STD-HASH-001 | What equality, hashing, collision, and iteration-order contracts govern maps/sets? | complete/specified | 06 §HashMap and HashSet | STD-003; none | ecosystem-breaking/C2.11 | Q005A approved/none |
-| STD-IO-001 | Which I/O APIs and error mappings are required? | complete/specified | 06 §I/O | none; none | high/C2.11 | Q014,Q017,Q024 approved/DEV-009 |
-| STD-CONVERT-001 | Which parsing/conversion APIs share language numeric semantics? | complete/specified | 06 §Conversion | none; none | ecosystem-breaking/C2.11 | Q008,Q010 approved/DEV-024 |
+| STD-IO-001 | Which I/O APIs and error mappings are required? | complete/specified | 06 §I/O | C2.11; C2.11 | high/C2.11 | Q014,Q017,Q024 approved/none |
+| STD-CONVERT-001 | Which parsing/conversion APIs share language numeric semantics? | complete/specified | 06 §Conversion | C2.11; C2.11 | ecosystem-breaking/C2.11 | Q008,Q010 approved/none |
 | STD-MATH-001 | Which mathematical operations, edge cases, and errors are required? | complete/specified | 06 §Math | STD-005; STD-005 | high/C2.11 | Q008,Q010 approved/none |
 | STD-RANDOM-001 | Which random APIs, seed determinism, and range contracts are required? | complete/specified | 06 §Random | STD-005; none | high/C2.11 | Q024 approved/none |
 | LAYOUT-QUERY-001 | Which size, alignment, discriminant, and address facts are observable? | complete/specified | 07 §Target-Defined Layout | MEM-006/U17; none | ecosystem-breaking/C2.11 | Q012 approved/DEV-017 |

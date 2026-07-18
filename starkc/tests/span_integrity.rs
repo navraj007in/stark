@@ -15,7 +15,7 @@
 //! not this WP; building it in full here would import a later-gate mechanism. See
 //! COMPILER-STATE.md Follow-ups.
 
-use starkc::ast::{Ast, ExprId, ExprKind};
+use starkc::ast::{Ast, ExprId, ExprKind, ItemKind, PatKind, TypeKind, VariantKind};
 use starkc::parser::{parse, ParseMode};
 use starkc::source::{SourceFile, Span};
 use std::path::PathBuf;
@@ -201,6 +201,114 @@ fn check_block_containment(ast: &Ast, block: starkc::ast::BlockId, failures: &mu
     }
 }
 
+fn check_type_containment(ast: &Ast, index: usize, failures: &mut Vec<String>) {
+    let node = &ast.types[index];
+    let children: Vec<_> = match &node.kind {
+        TypeKind::Array { elem, .. }
+        | TypeKind::Slice(elem)
+        | TypeKind::Ref { inner: elem, .. } => {
+            vec![*elem]
+        }
+        TypeKind::Tuple(types) => types.clone(),
+        TypeKind::Fn { params, ret } => params.iter().copied().chain(ret.iter().copied()).collect(),
+        _ => Vec::new(),
+    };
+    for child in children {
+        if !contains(node.span, ast.ty(child).span) {
+            failures.push(format!(
+                "type {index}: child span {:?} not contained in parent span {:?}",
+                ast.ty(child).span,
+                node.span
+            ));
+        }
+    }
+}
+
+fn check_pattern_containment(ast: &Ast, index: usize, failures: &mut Vec<String>) {
+    let node = &ast.pats[index];
+    let children: Vec<_> = match &node.kind {
+        PatKind::TupleVariant { pats, .. } | PatKind::Tuple(pats) | PatKind::Array(pats) => {
+            pats.clone()
+        }
+        PatKind::Struct { fields, .. } => fields.iter().filter_map(|field| field.pat).collect(),
+        _ => Vec::new(),
+    };
+    for child in children {
+        if !contains(node.span, ast.pat(child).span) {
+            failures.push(format!(
+                "pattern {index}: child span {:?} not contained in parent span {:?}",
+                ast.pat(child).span,
+                node.span
+            ));
+        }
+    }
+}
+
+fn check_item_containment(ast: &Ast, index: usize, failures: &mut Vec<String>) {
+    let node = &ast.items[index];
+    let mut type_children = Vec::new();
+    let mut block_children = Vec::new();
+    let mut item_children = Vec::new();
+    match &node.kind {
+        ItemKind::Fn(def) => {
+            type_children.extend(def.sig.params.iter().map(|parameter| parameter.ty));
+            if let starkc::ast::RetTy::Ty(ty) = def.sig.ret {
+                type_children.push(ty);
+            }
+            block_children.push(def.body);
+        }
+        ItemKind::Struct { fields, .. } => {
+            type_children.extend(fields.iter().map(|field| field.ty));
+        }
+        ItemKind::Enum { variants, .. } => {
+            for variant in variants {
+                match &variant.kind {
+                    VariantKind::Unit => {}
+                    VariantKind::Tuple(types) => type_children.extend(types.iter().copied()),
+                    VariantKind::Struct(fields) => {
+                        type_children.extend(fields.iter().map(|field| field.ty));
+                    }
+                }
+            }
+        }
+        ItemKind::Impl { self_ty, .. } => type_children.push(*self_ty),
+        ItemKind::Const { ty, .. } | ItemKind::TypeAlias { ty, .. } => {
+            type_children.push(*ty);
+        }
+        ItemKind::Mod {
+            items: Some(items), ..
+        } => item_children.extend(items.iter().copied()),
+        _ => {}
+    }
+    for child in type_children {
+        if !contains(node.span, ast.ty(child).span) {
+            failures.push(format!(
+                "item {index}: type span {:?} not contained in item span {:?}",
+                ast.ty(child).span,
+                node.span
+            ));
+        }
+    }
+    for child in block_children {
+        if !contains(node.span, ast.block(child).span) {
+            failures.push(format!(
+                "item {index}: block span {:?} not contained in item span {:?}",
+                ast.block(child).span,
+                node.span
+            ));
+        }
+    }
+    for child in item_children {
+        if !contains(node.span, ast.item(child).span) {
+            failures.push(format!(
+                "item {index}: nested item span {:?} not contained in item span {:?}",
+                ast.item(child).span,
+                node.span
+            ));
+        }
+    }
+}
+
 #[test]
 fn expr_and_block_spans_are_contained_across_the_fixture_corpus() {
     let mut paths: Vec<_> = std::fs::read_dir(fixture_dir())
@@ -235,6 +343,15 @@ fn expr_and_block_spans_are_contained_across_the_fixture_corpus() {
             }
             for i in 0..ast.blocks.len() {
                 check_block_containment(&ast, starkc::ast::BlockId(i as u32), &mut node_failures);
+            }
+            for i in 0..ast.types.len() {
+                check_type_containment(&ast, i, &mut node_failures);
+            }
+            for i in 0..ast.pats.len() {
+                check_pattern_containment(&ast, i, &mut node_failures);
+            }
+            for i in 0..ast.items.len() {
+                check_item_containment(&ast, i, &mut node_failures);
             }
             if !node_failures.is_empty() {
                 failures.push(format!(

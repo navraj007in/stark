@@ -295,6 +295,7 @@ fn render_ty(analysis: &ProjectAnalysis, ty: &Ty) -> String {
                 hir::CoreType::FilterIter => "FilterIter",
                 hir::CoreType::Random => "Random",
                 hir::CoreType::IOError => "IOError",
+                hir::CoreType::File => "File",
                 hir::CoreType::Ordering => "Ordering",
             };
             render_args(name, args, analysis)

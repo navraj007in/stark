@@ -147,3 +147,79 @@ fn trap_aborts_without_running_pending_destructors() {
         .unwrap()
         .contains("runtime error: division by zero"));
 }
+
+#[test]
+fn executable_entrypoint_status_and_stream_contract() {
+    let binary = env!("CARGO_BIN_EXE_starkc");
+    let cases = [
+        ("fn main() {}", 0, ""),
+        ("fn main() -> Int32 { 37 }", 37, ""),
+        (
+            "fn main() -> Result<Unit, String> { Err(String::from(\"failed\")) }",
+            1,
+            "failed\n",
+        ),
+        ("fn main() -> Result<Int32, String> { Ok(23) }", 23, ""),
+    ];
+
+    for (index, (source, expected_status, expected_stderr)) in cases.iter().enumerate() {
+        let path = std::env::temp_dir().join(format!(
+            "stark-entrypoint-{index}-{}.stark",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        let result = Command::new(binary)
+            .args(["run", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(path);
+        assert_eq!(result.status.code(), Some(*expected_status), "{source}");
+        assert_eq!(
+            String::from_utf8(result.stderr).unwrap(),
+            *expected_stderr,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn executable_entrypoint_rejects_invalid_forms_and_exit_values() {
+    let binary = env!("CARGO_BIN_EXE_starkc");
+    let cases = [
+        (
+            "fn main(value: Int32) {}",
+            1,
+            "'main' must be non-generic and have no parameters",
+        ),
+        (
+            "fn main() -> Bool { true }",
+            1,
+            "'main' must return Unit, Int32",
+        ),
+        (
+            "fn main() -> Int32 { 256 }",
+            101,
+            "runtime error: invalid-exit-status",
+        ),
+    ];
+
+    for (index, (source, expected_status, expected_message)) in cases.iter().enumerate() {
+        let path = std::env::temp_dir().join(format!(
+            "stark-invalid-entrypoint-{index}-{}.stark",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        let result = Command::new(binary)
+            .args(["run", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(path);
+        assert_eq!(result.status.code(), Some(*expected_status), "{source}");
+        assert!(
+            String::from_utf8(result.stderr)
+                .unwrap()
+                .contains(expected_message),
+            "{source}"
+        );
+    }
+}

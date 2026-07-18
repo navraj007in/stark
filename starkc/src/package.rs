@@ -322,6 +322,79 @@ impl VersionReq {
             VersionReq::Range(comparators) => comparators.iter().all(|c| c.matches(version)),
         }
     }
+
+    pub fn single_major_line(&self) -> Result<u64, String> {
+        match self {
+            VersionReq::Exact(version) | VersionReq::Caret(version) => Ok(version.major),
+            VersionReq::Any => {
+                Err("version requirement must identify exactly one major version line".to_string())
+            }
+            VersionReq::Range(comparators) => {
+                if let Some(version) = comparators.iter().find_map(|comparator| match comparator {
+                    Comparator::Eq(version) => Some(version),
+                    _ => None,
+                }) {
+                    if comparators
+                        .iter()
+                        .all(|comparator| comparator.matches(version))
+                    {
+                        return Ok(version.major);
+                    }
+                    return Err("version requirement has no satisfiable version".to_string());
+                }
+
+                let lower = comparators
+                    .iter()
+                    .filter_map(|comparator| match comparator {
+                        Comparator::Ge(version) | Comparator::Gt(version) => Some(version.major),
+                        _ => None,
+                    })
+                    .max();
+                let upper = comparators
+                    .iter()
+                    .filter_map(|comparator| match comparator {
+                        Comparator::Lt(version) if version.minor == 0 && version.patch == 0 => {
+                            version.major.checked_sub(1)
+                        }
+                        Comparator::Lt(version) | Comparator::Le(version) => Some(version.major),
+                        _ => None,
+                    })
+                    .min();
+                match (lower, upper) {
+                    (Some(lower), Some(upper)) if lower == upper => Ok(lower),
+                    _ => Err(
+                        "version requirement must identify exactly one major version line"
+                            .to_string(),
+                    ),
+                }
+            }
+        }
+    }
+}
+
+fn valid_package_name(name: &str) -> bool {
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
+fn valid_dependency_alias(alias: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "as", "break", "const", "continue", "else", "enum", "false", "fn", "for", "if", "impl",
+        "in", "let", "loop", "match", "mod", "mut", "pub", "return", "self", "Self", "struct",
+        "super", "trait", "true", "type", "use", "while",
+    ];
+    let mut bytes = alias.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        && !KEYWORDS.contains(&alias)
 }
 
 pub fn req_to_string(req: &VersionReq) -> String {
@@ -349,13 +422,19 @@ pub enum DependencySource {
     Registry(VersionReq),
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dependency {
+    pub package: String,
+    pub source: DependencySource,
+}
+
 #[derive(Clone, Debug)]
 pub struct Package {
     pub name: String,
     pub version: Version,
     pub entry: PathBuf,
     pub manifest_path: PathBuf,
-    pub dependencies: HashMap<String, DependencySource>,
+    pub dependencies: HashMap<String, Dependency>,
 }
 
 impl Package {
@@ -377,11 +456,7 @@ impl Package {
             .ok_or_else(|| format!("'name' in manifest '{}' must be a string", path.display()))?
             .to_string();
 
-        if name.is_empty()
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
+        if !valid_package_name(&name) {
             return Err(format!(
                 "invalid package name '{}' in manifest '{}'",
                 name,
@@ -430,53 +505,109 @@ impl Package {
                     path.display()
                 )
             })?;
-            for (dep_name, dep_config_val) in deps_obj {
-                let dep_config = dep_config_val.as_object().ok_or_else(|| {
-                    format!(
-                        "dependency config for '{}' in manifest '{}' must be a JSON object",
-                        dep_name,
-                        path.display()
-                    )
-                })?;
-
-                let source = if let Some(dep_path_val) = dep_config.get("path") {
-                    let dep_path_str = dep_path_val.as_str().ok_or_else(|| {
-                        format!(
-                            "'path' for dependency '{}' in manifest '{}' must be a string",
-                            dep_name,
-                            path.display()
-                        )
-                    })?;
-                    let dep_dir = parent_dir.join(dep_path_str);
-                    let dep_dir = dep_dir.canonicalize().map_err(|_| {
-                        format!(
-                            "dependency path '{}' for '{}' in manifest '{}' does not exist",
-                            dep_path_str,
-                            dep_name,
-                            path.display()
-                        )
-                    })?;
-                    DependencySource::Path(dep_dir)
-                } else if let Some(dep_ver_val) = dep_config.get("version") {
-                    let dep_ver_str = dep_ver_val.as_str().ok_or_else(|| {
-                        format!(
-                            "'version' for dependency '{}' in manifest '{}' must be a string",
-                            dep_name,
-                            path.display()
-                        )
-                    })?;
-                    let req = VersionReq::parse(dep_ver_str)
-                        .map_err(|e| format!("invalid version requirement '{}' for dependency '{}' in manifest '{}': {}", dep_ver_str, dep_name, path.display(), e))?;
-                    DependencySource::Registry(req)
-                } else {
+            for (alias, dep_config_val) in deps_obj {
+                if !valid_dependency_alias(alias) {
                     return Err(format!(
-                        "dependency '{}' in manifest '{}' must specify either 'path' or 'version'",
-                        dep_name,
+                        "dependency alias '{}' in manifest '{}' must be a non-keyword STARK identifier",
+                        alias,
                         path.display()
                     ));
+                }
+
+                let (package_name, source) = if let Some(version) = dep_config_val.as_str() {
+                    if alias.as_str() != alias.to_ascii_lowercase() || !valid_package_name(alias) {
+                        return Err(format!(
+                            "string dependency '{}' requires the alias to equal its canonical package name",
+                            alias
+                        ));
+                    }
+                    let req = VersionReq::parse(version).map_err(|error| {
+                        format!(
+                            "invalid version requirement '{}' for dependency '{}' in manifest '{}': {}",
+                            version,
+                            alias,
+                            path.display(),
+                            error
+                        )
+                    })?;
+                    req.single_major_line()?;
+                    (alias.clone(), DependencySource::Registry(req))
+                } else {
+                    let dep_config = dep_config_val.as_object().ok_or_else(|| {
+                        format!(
+                            "dependency config for '{}' in manifest '{}' must be a string or JSON object",
+                            alias,
+                            path.display()
+                        )
+                    })?;
+                    let package_name = dep_config
+                        .get("package")
+                        .map(|value| {
+                            value.as_str().ok_or_else(|| {
+                                format!(
+                                    "'package' for dependency '{}' in manifest '{}' must be a string",
+                                    alias,
+                                    path.display()
+                                )
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(alias)
+                        .to_string();
+                    if !valid_package_name(&package_name) {
+                        return Err(format!(
+                            "invalid canonical package name '{}' for dependency '{}'",
+                            package_name, alias
+                        ));
+                    }
+
+                    let source = if let Some(dep_path_val) = dep_config.get("path") {
+                        let dep_path_str = dep_path_val.as_str().ok_or_else(|| {
+                            format!(
+                                "'path' for dependency '{}' in manifest '{}' must be a string",
+                                alias,
+                                path.display()
+                            )
+                        })?;
+                        let dep_dir = parent_dir.join(dep_path_str);
+                        let dep_dir = dep_dir.canonicalize().map_err(|_| {
+                            format!(
+                                "dependency path '{}' for '{}' in manifest '{}' does not exist",
+                                dep_path_str,
+                                alias,
+                                path.display()
+                            )
+                        })?;
+                        DependencySource::Path(dep_dir)
+                    } else if let Some(dep_ver_val) = dep_config.get("version") {
+                        let dep_ver_str = dep_ver_val.as_str().ok_or_else(|| {
+                            format!(
+                                "'version' for dependency '{}' in manifest '{}' must be a string",
+                                alias,
+                                path.display()
+                            )
+                        })?;
+                        let req = VersionReq::parse(dep_ver_str)
+                        .map_err(|e| format!("invalid version requirement '{}' for dependency '{}' in manifest '{}': {}", dep_ver_str, alias, path.display(), e))?;
+                        req.single_major_line()?;
+                        DependencySource::Registry(req)
+                    } else {
+                        return Err(format!(
+                        "dependency '{}' in manifest '{}' must specify either 'path' or 'version'",
+                        alias,
+                        path.display()
+                    ));
+                    };
+                    (package_name, source)
                 };
 
-                dependencies.insert(dep_name.clone(), source);
+                dependencies.insert(
+                    alias.clone(),
+                    Dependency {
+                        package: package_name,
+                        source,
+                    },
+                );
             }
         }
 
@@ -853,8 +984,8 @@ impl PackageGraph {
                 };
 
                 let mut dependencies = HashMap::new();
-                for (d_name, d_src) in &pkg.dependencies {
-                    let d_ver = match d_src {
+                for (d_name, dependency) in &pkg.dependencies {
+                    let d_ver = match &dependency.source {
                         DependencySource::Path(p) => {
                             let p_manifest = p.join("starkpkg.json");
                             let p_pkg = Package::from_manifest(&p_manifest)?;
@@ -922,31 +1053,31 @@ impl PackageGraph {
         visit_stack.push(package_name.to_string());
 
         let package = self.packages.get(package_name).unwrap().clone();
-        for (dep_name, dep_source) in &package.dependencies {
-            if let Some(pos) = visit_stack.iter().position(|x| x == dep_name) {
+        for (dep_alias, dependency) in &package.dependencies {
+            if let Some(pos) = visit_stack.iter().position(|x| x == dep_alias) {
                 let cycle = visit_stack[pos..].to_vec();
                 return Err(format!(
                     "dependency cycle detected: {} -> {}",
                     cycle.join(" -> "),
-                    dep_name
+                    dep_alias
                 ));
             }
 
-            match dep_source {
+            match &dependency.source {
                 DependencySource::Path(dep_dir) => {
                     let dep_manifest = dep_dir.join("starkpkg.json");
                     if !is_within_workspace(&dep_manifest, &self.workspace_root) {
                         return Err(format!(
                             "dependency '{}' of package '{}' resolves to '{}' which is outside the permitted workspace '{}'",
-                            dep_name, package_name, dep_manifest.display(), self.workspace_root.display()
+                            dep_alias, package_name, dep_manifest.display(), self.workspace_root.display()
                         ));
                     }
 
-                    if let Some(existing) = self.packages.get(dep_name) {
+                    if let Some(existing) = self.packages.get(dep_alias) {
                         if existing.manifest_path != dep_manifest {
                             return Err(format!(
                                 "duplicate package name '{}': both '{}' and '{}' exist",
-                                dep_name,
+                                dep_alias,
                                 existing.manifest_path.display(),
                                 dep_manifest.display()
                             ));
@@ -957,21 +1088,21 @@ impl PackageGraph {
                     if !dep_manifest.exists() {
                         return Err(format!(
                             "missing manifest: dependency '{}' requires '{}' to exist",
-                            dep_name,
+                            dep_alias,
                             dep_manifest.display()
                         ));
                     }
                     let dep_pkg = Package::from_manifest(&dep_manifest)?;
-                    if dep_pkg.name != *dep_name {
+                    if dep_pkg.name != dependency.package {
                         return Err(format!(
                             "package name mismatch: dependency config expects '{}', but manifest defines '{}'",
-                            dep_name, dep_pkg.name
+                            dependency.package, dep_pkg.name
                         ));
                     }
 
-                    self.packages.insert(dep_name.clone(), dep_pkg);
+                    self.packages.insert(dep_alias.clone(), dep_pkg);
                     self.resolve_dependencies_for(
-                        dep_name,
+                        dep_alias,
                         visit_stack,
                         locked,
                         offline,
@@ -984,7 +1115,7 @@ impl PackageGraph {
                 DependencySource::Registry(req) => {
                     // Try to resolve version using existing lock file first
                     let resolved_version = if let Some(lock) = existing_lock {
-                        if let Some(lock_pkg) = lock.packages.get(dep_name) {
+                        if let Some(lock_pkg) = lock.packages.get(dep_alias) {
                             if req.matches(&lock_pkg.version) {
                                 Some((lock_pkg.version.clone(), lock_pkg.sha256.clone()))
                             } else {
@@ -1007,30 +1138,33 @@ impl PackageGraph {
                         (ver, Some(sha))
                     } else {
                         // Resolve from registry
-                        let (ver, _) =
-                            find_highest_compatible_version(registry_dir, dep_name, req)?;
+                        let (ver, _) = find_highest_compatible_version(
+                            registry_dir,
+                            &dependency.package,
+                            req,
+                        )?;
                         (ver, None)
                     };
 
                     let ver_str = format!("{}.{}.{}", version.major, version.minor, version.patch);
-                    let cached_pkg_dir = cache_dir.join(dep_name).join(&ver_str);
+                    let cached_pkg_dir = cache_dir.join(&dependency.package).join(&ver_str);
 
                     // If not in cache, copy from registry (or fail if offline)
                     if !cached_pkg_dir.exists() {
                         if offline {
                             return Err(format!(
                                 "offline mode: cached package '{} {}' is not available in '{}'",
-                                dep_name,
+                                dependency.package,
                                 ver_str,
                                 cached_pkg_dir.display()
                             ));
                         }
 
-                        let reg_pkg_dir = registry_dir.join(dep_name).join(&ver_str);
+                        let reg_pkg_dir = registry_dir.join(&dependency.package).join(&ver_str);
                         if !reg_pkg_dir.exists() {
                             return Err(format!(
                                 "package '{} {}' not found in registry '{}'",
-                                dep_name,
+                                dependency.package,
                                 ver_str,
                                 reg_pkg_dir.display()
                             ));
@@ -1045,34 +1179,40 @@ impl PackageGraph {
                         if sha256 != *exp_sha {
                             return Err(format!(
                                 "content hash mismatch for cached package '{} {}': expected '{}', found '{}'",
-                                dep_name, ver_str, exp_sha, sha256
+                                dependency.package, ver_str, exp_sha, sha256
                             ));
                         }
                     }
 
                     let dep_manifest = cached_pkg_dir.join("starkpkg.json");
-                    if let Some(existing) = self.packages.get(dep_name) {
+                    if let Some(existing) = self.packages.get(dep_alias) {
                         if existing.version != version {
                             return Err(format!(
                                 "duplicate package name '{}' with conflicting versions: resolved both '{}' and '{}'",
-                                dep_name, existing.version_str(), ver_str
+                                dep_alias, existing.version_str(), ver_str
                             ));
                         }
                         if existing.manifest_path != dep_manifest {
                             return Err(format!(
                                 "duplicate package name '{}' resolved to different paths",
-                                dep_name
+                                dep_alias
                             ));
                         }
                         continue;
                     }
 
                     let dep_pkg = Package::from_manifest(&dep_manifest)?;
-                    self.packages.insert(dep_name.clone(), dep_pkg);
-                    resolved_packages.insert(dep_name.clone(), ResolvedMeta { sha256 });
+                    if dep_pkg.name != dependency.package {
+                        return Err(format!(
+                            "package name mismatch: dependency config expects '{}', but manifest defines '{}'",
+                            dependency.package, dep_pkg.name
+                        ));
+                    }
+                    self.packages.insert(dep_alias.clone(), dep_pkg);
+                    resolved_packages.insert(dep_alias.clone(), ResolvedMeta { sha256 });
 
                     self.resolve_dependencies_for(
-                        dep_name,
+                        dep_alias,
                         visit_stack,
                         locked,
                         offline,

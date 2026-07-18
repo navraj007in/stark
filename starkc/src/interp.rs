@@ -1,18 +1,27 @@
 //! Gate 3 tree-walking interpreter for typed STARK HIR.
 
 use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
-use crate::hir::{self, BlockId, Builtin, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId};
+use crate::diag::Diagnostic;
+use crate::hir::{
+    self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, PatId, Res, StmtId,
+};
 use crate::literal::{self, LitValue};
 use crate::source::{SourceFile, Span};
 use crate::typecheck::{Ty, TypeTables};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
+use std::io::{Read, Write};
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeError {
     pub message: String,
     pub span: Span,
+    /// False for executable-target selection failures detected before the
+    /// entrypoint starts. Those are compiler errors, not language traps.
+    pub is_trap: bool,
 }
 
 impl RuntimeError {
@@ -20,6 +29,15 @@ impl RuntimeError {
         Self {
             message: message.into(),
             span,
+            is_trap: true,
+        }
+    }
+
+    fn entry(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            is_trap: false,
         }
     }
 }
@@ -27,6 +45,165 @@ impl RuntimeError {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Execution {
     pub output: String,
+    /// Core process status produced by normal entrypoint completion.
+    pub status: u8,
+    /// Bytes destined for the Core stderr stream on normal `Err` completion.
+    pub stderr: String,
+}
+
+/// Evaluate every declared constant before execution. This uses the same
+/// abstract-machine operations as the interpreter, but only after a closed
+/// syntactic-subset check has excluded runtime state and side effects.
+pub fn check_constants(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) -> Vec<Diagnostic> {
+    let mut interpreter = Interpreter::new(hir, file.clone(), tables);
+    interpreter.frames.push(Frame::default());
+    let mut diagnostics = Vec::new();
+    for (index, item) in hir.items.iter().enumerate() {
+        let item_id = ItemId(index as u32);
+        let hir::ItemKind::Const { value, .. } = &item.kind else {
+            continue;
+        };
+        let item_file = hir
+            .item_files
+            .get(&item_id)
+            .cloned()
+            .unwrap_or_else(|| file.clone());
+        if let Err((span, message)) = constant_expr_allowed(hir, *value) {
+            diagnostics.push(
+                Diagnostic::error(message, span)
+                    .with_code("E0215")
+                    .with_file(item_file),
+            );
+            continue;
+        }
+        if let Err(error) = interpreter.eval_const_item(item_id) {
+            diagnostics.push(
+                Diagnostic::error(
+                    format!("constant evaluation failed: {}", error.message),
+                    error.span,
+                )
+                .with_code("E0215")
+                .with_file(item_file),
+            );
+        }
+    }
+    diagnostics
+}
+
+fn constant_block_allowed(hir: &Hir, block: BlockId) -> Result<(), (Span, &'static str)> {
+    let block = hir.block(block);
+    for statement in &block.stmts {
+        let statement = hir.stmt(*statement);
+        match &statement.kind {
+            hir::StmtKind::Empty => {}
+            hir::StmtKind::Expr { expr, .. } => constant_expr_allowed(hir, *expr)?,
+            _ => {
+                return Err((
+                    statement.span,
+                    "statement is not permitted in a Core constant expression",
+                ));
+            }
+        }
+    }
+    if let Some(tail) = block.tail {
+        constant_expr_allowed(hir, tail)?;
+    }
+    Ok(())
+}
+
+fn constant_expr_allowed(hir: &Hir, expr: ExprId) -> Result<(), (Span, &'static str)> {
+    let node = hir.expr(expr);
+    match &node.kind {
+        hir::ExprKind::Lit(_) => Ok(()),
+        hir::ExprKind::Path { res, .. }
+            if matches!(
+                res,
+                Res::Item(item) if matches!(&hir.item(*item).kind, hir::ItemKind::Const { .. })
+            ) || matches!(
+                res,
+                Res::Variant(..)
+                    | Res::Builtin(
+                        Builtin::None
+                            | Builtin::OrderingLess
+                            | Builtin::OrderingEqual
+                            | Builtin::OrderingGreater
+                            | Builtin::IOErrorNotFound
+                            | Builtin::IOErrorPermissionDenied
+                            | Builtin::IOErrorAlreadyExists
+                            | Builtin::IOErrorInvalidInput
+                            | Builtin::IOErrorOther
+                    )
+            ) =>
+        {
+            Ok(())
+        }
+        hir::ExprKind::Unary { op, operand } if !matches!(op, UnOp::Ref { .. } | UnOp::Deref) => {
+            constant_expr_allowed(hir, *operand)
+        }
+        hir::ExprKind::Binary { lhs, rhs, .. } => {
+            constant_expr_allowed(hir, *lhs)?;
+            constant_expr_allowed(hir, *rhs)
+        }
+        hir::ExprKind::Range { lo, hi, .. } => {
+            constant_expr_allowed(hir, *lo)?;
+            constant_expr_allowed(hir, *hi)
+        }
+        hir::ExprKind::Cast { expr, .. } => constant_expr_allowed(hir, *expr),
+        hir::ExprKind::Call { callee, args }
+            if matches!(
+                &hir.expr(*callee).kind,
+                hir::ExprKind::Path {
+                    res: Res::Variant(..)
+                        | Res::Builtin(Builtin::Some | Builtin::Ok | Builtin::Err),
+                    ..
+                }
+            ) =>
+        {
+            for arg in args {
+                constant_expr_allowed(hir, *arg)?;
+            }
+            Ok(())
+        }
+        hir::ExprKind::Tuple(values) | hir::ExprKind::Array(values) => {
+            for value in values {
+                constant_expr_allowed(hir, *value)?;
+            }
+            Ok(())
+        }
+        hir::ExprKind::Repeat { value, count } => {
+            constant_expr_allowed(hir, *value)?;
+            constant_expr_allowed(hir, *count)
+        }
+        hir::ExprKind::StructLit { fields, .. } => {
+            for field in fields {
+                let Some(value) = field.expr else {
+                    return Err((
+                        field.name,
+                        "field shorthand is not permitted in a Core constant expression",
+                    ));
+                };
+                constant_expr_allowed(hir, value)?;
+            }
+            Ok(())
+        }
+        hir::ExprKind::If {
+            cond,
+            then_block,
+            else_,
+        } => {
+            constant_expr_allowed(hir, *cond)?;
+            constant_block_allowed(hir, *then_block)?;
+            if let Some(else_) = else_ {
+                constant_expr_allowed(hir, *else_)?;
+            }
+            Ok(())
+        }
+        hir::ExprKind::Block(block) => constant_block_allowed(hir, *block),
+        _ => Err((
+            node.span,
+            "expression is not permitted in the Core constant subset",
+        )),
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -79,9 +256,29 @@ enum Value {
     /// mutable state is the seed itself, updated in place by `next_int`.
     Random(u64),
     IOError(IOErrorKind),
+    File(FileResource),
     /// WP-C2.2 (DEV-027): runtime representation of the prelude `Ordering` enum, mirroring
     /// `IOError`'s builtin-backed pattern (no HIR item; variants resolve to `Builtin`s).
     Ordering(std::cmp::Ordering),
+}
+
+#[derive(Clone)]
+struct FileResource(Rc<RefCell<Option<std::fs::File>>>);
+
+impl FileResource {
+    fn new(file: std::fs::File) -> Self {
+        Self(Rc::new(RefCell::new(Some(file))))
+    }
+
+    fn identity(&self) -> usize {
+        Rc::as_ptr(&self.0) as usize
+    }
+}
+
+impl PartialEq for FileResource {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// WP-C2.2 (DEV-032): insertion-ordered map backing `Value::HashMap`, per the normative
@@ -270,7 +467,7 @@ impl fmt::Display for Value {
             Value::Unit => write!(f, "()"),
             Value::Bool(value) => write!(f, "{value}"),
             Value::Int(value) => write!(f, "{value}"),
-            Value::Float(value) => write!(f, "{value}"),
+            Value::Float(value) => write!(f, "{}", canonical_float(*value)),
             Value::Char(value) => write!(f, "{value}"),
             Value::Str(value) | Value::String(value) => write!(f, "{value}"),
             Value::Tuple(values) => write_sequence(f, "(", ")", values),
@@ -339,14 +536,15 @@ impl fmt::Display for Value {
             Value::Random(_) => write!(f, "<Random>"),
             Value::Ordering(ordering) => write!(
                 f,
-                "Ordering::{}",
+                "{}",
                 match ordering {
                     std::cmp::Ordering::Less => "Less",
                     std::cmp::Ordering::Equal => "Equal",
                     std::cmp::Ordering::Greater => "Greater",
                 }
             ),
-            Value::IOError(kind) => write!(f, "IOError::{kind}"),
+            Value::IOError(kind) => write!(f, "{kind}"),
+            Value::File(_) => write!(f, "<File>"),
         }
     }
 }
@@ -390,6 +588,7 @@ impl Ord for Value {
                 Value::Random(_) => 30,
                 Value::Ordering(_) => 31,
                 Value::IOError(_) => 32,
+                Value::File(_) => 33,
             }
         }
 
@@ -478,6 +677,7 @@ impl Ord for Value {
             (Value::Random(a), Value::Random(b)) => a.cmp(b),
             (Value::Ordering(a), Value::Ordering(b)) => a.cmp(b),
             (Value::IOError(a), Value::IOError(b)) => a.cmp(b),
+            (Value::File(a), Value::File(b)) => a.identity().cmp(&b.identity()),
             _ => std::cmp::Ordering::Equal,
         }
     }
@@ -559,15 +759,56 @@ struct Callable {
     body: BlockId,
 }
 
+fn is_valid_main_return(ty: &Ty) -> bool {
+    let unit = Ty::Primitive(Primitive::Unit);
+    let int32 = Ty::Primitive(Primitive::Int32);
+    let string = Ty::Primitive(Primitive::String);
+    ty == &unit
+        || ty == &int32
+        || matches!(
+            ty,
+            Ty::Core(CoreType::Result, args)
+                if args.len() == 2
+                    && (args[0] == unit || args[0] == int32)
+                    && args[1] == string
+        )
+}
+
+fn main_result_to_status(value: Value, span: Span) -> Result<(u8, String), RuntimeError> {
+    fn checked_status(value: Value, span: Span) -> Result<u8, RuntimeError> {
+        match value {
+            Value::Unit => Ok(0),
+            Value::Int(value) => {
+                u8::try_from(value).map_err(|_| RuntimeError::new("invalid-exit-status", span))
+            }
+            _ => Err(RuntimeError::new(
+                "entrypoint returned a value inconsistent with its checked signature",
+                span,
+            )),
+        }
+    }
+
+    match value {
+        Value::Result(Ok(value)) => Ok((checked_status(*value, span)?, String::new())),
+        Value::Result(Err(message)) => match *message {
+            Value::String(message) | Value::Str(message) => Ok((1, format!("{message}\n"))),
+            _ => Err(RuntimeError::new("entrypoint error is not a String", span)),
+        },
+        value => Ok((checked_status(value, span)?, String::new())),
+    }
+}
+
 pub fn run(
     hir: &Hir,
     file: Arc<SourceFile>,
     tables: &TypeTables,
 ) -> Result<Execution, RuntimeError> {
     let mut interpreter = Interpreter::new(hir, file, tables);
-    interpreter.run_main()?;
+    let (status, stderr) = interpreter.run_main()?;
     Ok(Execution {
         output: interpreter.output,
+        status,
+        stderr,
     })
 }
 
@@ -588,6 +829,8 @@ pub fn run_item(
     interpreter.call_callable(callable, None, Vec::new(), span)?;
     Ok(Execution {
         output: interpreter.output,
+        status: 0,
+        stderr: String::new(),
     })
 }
 
@@ -599,6 +842,8 @@ struct Interpreter<'a> {
     output: String,
     copy_items: HashSet<ItemId>,
     pending_propagation: Option<Value>,
+    const_cache: HashMap<ItemId, Value>,
+    const_stack: Vec<ItemId>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -697,6 +942,7 @@ impl<'a> Interpreter<'a> {
             Value::Random(_) => Value::Random(0),
             Value::Ordering(_) => Value::Ordering(std::cmp::Ordering::Equal),
             Value::IOError(_) => Value::IOError(IOErrorKind::NotFound),
+            Value::File(resource) => Value::File(resource.clone()),
         }
     }
 
@@ -731,6 +977,48 @@ impl<'a> Interpreter<'a> {
             output: String::new(),
             copy_items,
             pending_propagation: None,
+            const_cache: HashMap::new(),
+            const_stack: Vec::new(),
+        }
+    }
+
+    fn eval_const_item(&mut self, item: ItemId) -> Result<Value, RuntimeError> {
+        if let Some(value) = self.const_cache.get(&item) {
+            return Ok(value.clone());
+        }
+        if let Some(start) = self
+            .const_stack
+            .iter()
+            .position(|candidate| *candidate == item)
+        {
+            let mut names: Vec<String> = self.const_stack[start..]
+                .iter()
+                .map(|item| self.item_name(*item))
+                .collect();
+            names.push(self.item_name(item));
+            return Err(RuntimeError::new(
+                format!("constant dependency cycle: {}", names.join(" -> ")),
+                self.hir.item(item).span,
+            ));
+        }
+        let hir::ItemKind::Const { value, .. } = &self.hir.item(item).kind else {
+            return Err(RuntimeError::new(
+                "item is not a constant",
+                self.hir.item(item).span,
+            ));
+        };
+        self.const_stack.push(item);
+        let result = self.expect_value(*value);
+        self.const_stack.pop();
+        let value = result?;
+        self.const_cache.insert(item, value.clone());
+        Ok(value)
+    }
+
+    fn item_name(&self, item: ItemId) -> String {
+        match &self.hir.item(item).kind {
+            hir::ItemKind::Const { name, .. } => self.text(*name).to_string(),
+            _ => format!("#{}", item.0),
         }
     }
 
@@ -738,24 +1026,73 @@ impl<'a> Interpreter<'a> {
         &self.file.src[span.lo as usize..span.hi as usize]
     }
 
-    fn run_main(&mut self) -> Result<(), RuntimeError> {
-        let main = self.hir.items.iter().enumerate().find_map(|(index, item)| {
-            let hir::ItemKind::Fn(def) = &item.kind else {
-                return None;
-            };
-            (self.text(def.sig.name) == "main").then_some(ItemId(index as u32))
-        });
-        let Some(main) = main else {
-            return Err(RuntimeError::new(
+    fn run_main(&mut self) -> Result<(u8, String), RuntimeError> {
+        let snippet_items;
+        let root_items = match &self.hir.root {
+            hir::Root::Program(items) => items.as_slice(),
+            hir::Root::Snippet { .. } => {
+                snippet_items = (0..self.hir.items.len())
+                    .map(|index| ItemId(index as u32))
+                    .collect::<Vec<_>>();
+                snippet_items.as_slice()
+            }
+        };
+        let mains: Vec<ItemId> = root_items
+            .iter()
+            .copied()
+            .filter(|item| match &self.hir.item(*item).kind {
+                hir::ItemKind::Fn(def) => self.text(def.sig.name) == "main",
+                hir::ItemKind::Const { name, .. }
+                | hir::ItemKind::TypeAlias { name, .. }
+                | hir::ItemKind::Struct { name, .. }
+                | hir::ItemKind::Enum { name, .. }
+                | hir::ItemKind::Trait { name, .. }
+                | hir::ItemKind::Model(hir::ModelDef { name, .. }) => self.text(*name) == "main",
+                _ => false,
+            })
+            .collect();
+        let Some(&main) = mains.first() else {
+            return Err(RuntimeError::entry(
                 "program has no 'main' function",
                 Span::point(0),
             ));
         };
+        if mains.len() != 1 {
+            return Err(RuntimeError::entry(
+                "program must have exactly one root 'main' function",
+                self.hir.item(main).span,
+            ));
+        }
+        let hir::ItemKind::Fn(def) = &self.hir.item(main).kind else {
+            return Err(RuntimeError::entry(
+                "root item 'main' is not a function",
+                self.hir.item(main).span,
+            ));
+        };
+        if !def.sig.generics.is_empty() || !def.sig.params.is_empty() || def.sig.receiver.is_some()
+        {
+            return Err(RuntimeError::entry(
+                "'main' must be non-generic and have no parameters",
+                def.sig.span,
+            ));
+        }
+        let Some((params, ret_ty)) = self.tables.fn_types.get(&main) else {
+            return Err(RuntimeError::entry(
+                "missing checked signature for 'main'",
+                def.sig.span,
+            ));
+        };
+        if !params.is_empty() || !is_valid_main_return(ret_ty) {
+            return Err(RuntimeError::entry(
+                "'main' must return Unit, Int32, Result<Unit, String>, or Result<Int32, String>",
+                def.sig.span,
+            ));
+        }
         let callable = self.item_callable(main).ok_or_else(|| {
             RuntimeError::new("'main' is not executable", self.hir.item(main).span)
         })?;
-        self.call_callable(callable, None, Vec::new(), self.hir.item(main).span)?;
-        Ok(())
+        let result = self.call_callable(callable, None, Vec::new(), self.hir.item(main).span)?;
+        main_result_to_status(result, self.hir.item(main).span)
     }
 
     fn item_callable(&self, item: ItemId) -> Option<Callable> {
@@ -874,7 +1211,12 @@ impl<'a> Interpreter<'a> {
     fn eval_expr(&mut self, expr_id: ExprId) -> Result<Flow, RuntimeError> {
         let expr = self.hir.expr(expr_id);
         match &expr.kind {
-            hir::ExprKind::Lit(lit) => Ok(Flow::Value(self.eval_lit(*lit, expr.span)?)),
+            hir::ExprKind::Lit(lit) => {
+                let value = self.eval_lit(*lit, expr.span)?;
+                Ok(Flow::Value(
+                    self.normalize_numeric(value, expr_id, expr.span)?,
+                ))
+            }
             hir::ExprKind::Path { res, .. } => Ok(Flow::Value(self.eval_path(*res, expr_id)?)),
             hir::ExprKind::Unary { op, operand } => {
                 let value = match op {
@@ -900,7 +1242,9 @@ impl<'a> Interpreter<'a> {
                     }
                     _ => self.expect_value(*operand)?,
                 };
-                Ok(Flow::Value(self.eval_unary(*op, value, expr.span)?))
+                Ok(Flow::Value(
+                    self.eval_unary(*op, value, expr_id, expr.span)?,
+                ))
             }
             hir::ExprKind::Binary { op, lhs, rhs } => {
                 if *op == BinOp::And {
@@ -1177,7 +1521,7 @@ impl<'a> Interpreter<'a> {
             }
             Res::Item(item) => match &self.hir.item(item).kind {
                 hir::ItemKind::Fn(_) => Ok(Value::Function(item)),
-                hir::ItemKind::Const { value, .. } => self.expect_value(*value),
+                hir::ItemKind::Const { .. } => self.eval_const_item(item),
                 _ => Err(RuntimeError::new(
                     "item is not a runtime value",
                     self.hir.expr(expr).span,
@@ -1214,15 +1558,38 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn eval_unary(&self, op: UnOp, value: Value, span: Span) -> Result<Value, RuntimeError> {
+    fn eval_unary(
+        &self,
+        op: UnOp,
+        value: Value,
+        expr: ExprId,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
         match (op, value) {
             (UnOp::Neg, Value::Int(value)) => value
                 .checked_neg()
                 .map(Value::Int)
-                .ok_or_else(|| RuntimeError::new("integer overflow", span)),
-            (UnOp::Neg, Value::Float(value)) => Ok(Value::Float(-value)),
+                .ok_or_else(|| RuntimeError::new("integer overflow", span))
+                .and_then(|value| self.normalize_numeric(value, expr, span)),
+            (UnOp::Neg, Value::Float(value)) => {
+                self.normalize_numeric(Value::Float(-value), expr, span)
+            }
             (UnOp::Not, Value::Bool(value)) => Ok(Value::Bool(!value)),
-            (UnOp::BitNot, Value::Int(value)) => Ok(Value::Int(!value)),
+            (UnOp::BitNot, Value::Int(value)) => {
+                let value = match self.tables.expr_types.get(&expr) {
+                    Some(Ty::Primitive(
+                        Primitive::UInt8
+                        | Primitive::UInt16
+                        | Primitive::UInt32
+                        | Primitive::UInt64,
+                    )) => {
+                        let width = integer_width(self.tables.expr_types.get(&expr)).unwrap();
+                        (!value) & ((1_i128 << width) - 1)
+                    }
+                    _ => !value,
+                };
+                self.normalize_numeric(Value::Int(value), expr, span)
+            }
             (UnOp::Ref { .. } | UnOp::Deref, value) => Ok(value),
             _ => Err(RuntimeError::new("invalid unary operation", span)),
         }
@@ -1309,6 +1676,12 @@ impl<'a> Interpreter<'a> {
         }
         match (left, right) {
             (Value::Int(left), Value::Int(right)) => {
+                if matches!(op, BinOp::Shl | BinOp::Shr) {
+                    let width = integer_width(self.tables.expr_types.get(&expr)).unwrap_or(128);
+                    if right < 0 || right >= i128::from(width) {
+                        return Err(RuntimeError::new("invalid shift count", span));
+                    }
+                }
                 let value = match op {
                     BinOp::Add => left.checked_add(right),
                     BinOp::Sub => left.checked_sub(right),
@@ -1346,12 +1719,15 @@ impl<'a> Interpreter<'a> {
                 self.check_integer_range(value, expr, span).map(Value::Int)
             }
             (Value::Float(left), Value::Float(right)) => match op {
-                BinOp::Add => Ok(Value::Float(left + right)),
-                BinOp::Sub => Ok(Value::Float(left - right)),
-                BinOp::Mul => Ok(Value::Float(left * right)),
-                BinOp::Div if right != 0.0 => Ok(Value::Float(left / right)),
-                BinOp::Rem if right != 0.0 => Ok(Value::Float(left % right)),
-                BinOp::Pow => Ok(Value::Float(left.powf(right))),
+                BinOp::Add => self.normalize_numeric(Value::Float(left + right), expr, span),
+                BinOp::Sub => self.normalize_numeric(Value::Float(left - right), expr, span),
+                BinOp::Mul => self.normalize_numeric(Value::Float(left * right), expr, span),
+                BinOp::Div => self.normalize_numeric(Value::Float(left / right), expr, span),
+                BinOp::Rem => self.normalize_numeric(Value::Float(left % right), expr, span),
+                BinOp::Pow => Err(RuntimeError::new(
+                    "floating-point `**` is not a Core v1 operation",
+                    span,
+                )),
                 BinOp::Lt => Ok(Value::Bool(left < right)),
                 BinOp::Le => Ok(Value::Bool(left <= right)),
                 BinOp::Gt => Ok(Value::Bool(left > right)),
@@ -1387,10 +1763,10 @@ impl<'a> Interpreter<'a> {
                 self.check_integer_range(value, expr, span).map(Value::Int)
             }
             Value::Int(value) if matches!(target, Ty::Primitive(p) if is_float(p)) => {
-                Ok(Value::Float(value as f64))
+                self.normalize_numeric(Value::Float(value as f64), expr, span)
             }
             Value::Float(value) if matches!(target, Ty::Primitive(p) if is_float(p)) => {
-                Ok(Value::Float(value))
+                self.normalize_numeric(Value::Float(value), expr, span)
             }
             Value::Float(value) if matches!(target, Ty::Primitive(p) if is_integer(p)) => {
                 if !value.is_finite() || value.fract() != 0.0 {
@@ -1425,6 +1801,26 @@ impl<'a> Interpreter<'a> {
             Ok(value)
         } else {
             Err(RuntimeError::new("integer overflow", span))
+        }
+    }
+
+    fn normalize_numeric(
+        &self,
+        value: Value,
+        expr: ExprId,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        match value {
+            Value::Int(value) => self.check_integer_range(value, expr, span).map(Value::Int),
+            Value::Float(value)
+                if matches!(
+                    self.tables.expr_types.get(&expr),
+                    Some(Ty::Primitive(Primitive::Float32))
+                ) =>
+            {
+                Ok(Value::Float((value as f32) as f64))
+            }
+            value => Ok(value),
         }
     }
 
@@ -1680,6 +2076,20 @@ impl<'a> Interpreter<'a> {
                 let path = string_arg(args.pop(), span)?;
                 Ok(match std::fs::write(path, content) {
                     Ok(()) => Value::Result(Ok(Box::new(Value::Unit))),
+                    Err(error) => Value::Result(Err(Box::new(Value::IOError(
+                        IOErrorKind::from_io_error(&error),
+                    )))),
+                })
+            }
+            Builtin::FileOpen | Builtin::FileCreate => {
+                let path = string_arg(args.pop(), span)?;
+                let result = if builtin == Builtin::FileOpen {
+                    std::fs::File::open(path)
+                } else {
+                    std::fs::File::create(path)
+                };
+                Ok(match result {
+                    Ok(file) => Value::Result(Ok(Box::new(Value::File(FileResource::new(file))))),
                     Err(error) => Value::Result(Err(Box::new(Value::IOError(
                         IOErrorKind::from_io_error(&error),
                     )))),
@@ -1975,23 +2385,25 @@ impl<'a> Interpreter<'a> {
     }
 
     fn find_associated_fn(&self, nominal: ItemId, name: &str) -> Option<Callable> {
-        self.hir.items.iter().find_map(|item| {
+        let mut inherent = Vec::new();
+        let mut trait_candidates = Vec::new();
+        for item in &self.hir.items {
             let hir::ItemKind::Impl {
-                trait_: None,
+                trait_,
                 self_ty,
                 items,
                 ..
             } = &item.kind
             else {
-                return None;
+                continue;
             };
             if !matches!(
                 &self.hir.ty(*self_ty).kind,
                 hir::TypeKind::Path { res: Res::Item(item), .. } if *item == nominal
             ) {
-                return None;
+                continue;
             }
-            items.iter().find_map(|item| match item {
+            let candidate = items.iter().find_map(|item| match item {
                 hir::ImplItem::Fn { def, .. }
                     if def.sig.receiver.is_none() && self.text(def.sig.name) == name =>
                 {
@@ -2002,8 +2414,22 @@ impl<'a> Interpreter<'a> {
                     })
                 }
                 _ => None,
-            })
-        })
+            });
+            if let Some(candidate) = candidate {
+                if trait_.is_none() {
+                    inherent.push(candidate);
+                } else {
+                    trait_candidates.push(candidate);
+                }
+            }
+        }
+        if inherent.len() == 1 {
+            inherent.pop()
+        } else if inherent.is_empty() && trait_candidates.len() == 1 {
+            trait_candidates.pop()
+        } else {
+            None
+        }
     }
 
     fn call_user_method(
@@ -2094,12 +2520,7 @@ impl<'a> Interpreter<'a> {
         }
         matches!(
             ty,
-            Some(
-                Ty::Primitive(Primitive::String | Primitive::Str)
-                    | Ty::Core(..)
-                    | Ty::Array(..)
-                    | Ty::Slice(..)
-            )
+            Some(Ty::Primitive(..) | Ty::Core(..) | Ty::Array(..) | Ty::Slice(..) | Ty::Tuple(..))
         )
     }
 
@@ -2309,6 +2730,12 @@ impl<'a> Interpreter<'a> {
         // arguments first and resolved the receiver lazily inside each method-name branch
         // (also re-resolving it — and re-running index subexpressions — once per use).
         let receiver_place = self.core_receiver_place(base, span)?;
+        let receiver_ty = self
+            .tables
+            .expr_types
+            .get(&base)
+            .cloned()
+            .unwrap_or(Ty::Error);
         let mut arguments = args
             .iter()
             .map(|arg| self.expect_value(*arg))
@@ -2348,7 +2775,77 @@ impl<'a> Interpreter<'a> {
                 | "next_int"
                 | "next_float"
                 | "range"
+                | "read_to_string"
+                | "write"
+                | "write_str"
         );
+        if name == "close" {
+            let value = self.take_place(&receiver_place, span)?;
+            let Value::File(resource) = value else {
+                return Err(RuntimeError::new("File::close expects File", span));
+            };
+            resource.0.borrow_mut().take();
+            return Ok(Value::Result(Ok(Box::new(Value::Unit))));
+        }
+        if name == "fmt" {
+            let receiver = self.place_value(&receiver_place, span)?;
+            return Ok(Value::String(receiver.to_string()));
+        }
+        if name == "hash" {
+            let receiver = self.place_value(&receiver_place, span)?;
+            return Ok(Value::Int(standard_hash(receiver, &receiver_ty)? as i128));
+        }
+        if matches!(name, "read_to_string" | "write" | "write_str") {
+            let Value::File(resource) = self.place_value(&receiver_place, span)? else {
+                return Err(RuntimeError::new("file method expects File", span));
+            };
+            let resource = resource.clone();
+            let mut file = resource.0.borrow_mut();
+            let Some(file) = file.as_mut() else {
+                return Ok(Value::Result(Err(Box::new(Value::IOError(
+                    IOErrorKind::InvalidInput,
+                )))));
+            };
+            let io_result: Result<(), std::io::Error> = match name {
+                "read_to_string" => {
+                    let mut bytes = Vec::new();
+                    match file.read_to_end(&mut bytes) {
+                        Ok(_) => match String::from_utf8(bytes) {
+                            Ok(text) => {
+                                return Ok(Value::Result(Ok(Box::new(Value::String(text)))))
+                            }
+                            Err(_) => Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "file content is not valid UTF-8",
+                            )),
+                        },
+                        Err(error) => Err(error),
+                    }
+                }
+                "write_str" => {
+                    let text = string_arg(values.next(), span)?;
+                    match file.write(text.as_bytes()) {
+                        Ok(count) => {
+                            return Ok(Value::Result(Ok(Box::new(Value::Int(count as i128)))))
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                "write" => {
+                    let bytes = self.file_bytes_arg(values.next(), span)?;
+                    match file.write(&bytes) {
+                        Ok(count) => {
+                            return Ok(Value::Result(Ok(Box::new(Value::Int(count as i128)))))
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                _ => unreachable!(),
+            };
+            return Ok(Value::Result(Err(Box::new(Value::IOError(
+                IOErrorKind::from_io_error(&io_result.unwrap_err()),
+            )))));
+        }
         // WP-C1.3 (2026-07-17): generic `.clone()` for every core-type value. `Value` already
         // derives Rust `Clone` (a deep/structural copy, which is exactly STARK's Clone semantics
         // for these built-in collection/string/option/result types -- none of them are
@@ -2762,7 +3259,7 @@ impl<'a> Interpreter<'a> {
             *iter_mut = iter_val;
             return Ok(Value::Bool(all_true));
         }
-        if name == "find" {
+        if name == "find" && is_iterator_ty(&receiver_ty) {
             let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let f = values
@@ -2815,6 +3312,28 @@ impl<'a> Interpreter<'a> {
             let iter_mut = self.place_value_mut(&place, span)?;
             *iter_mut = Value::FilterIter(Box::new(iter_val), pred_item);
             return Ok(self.place_value(&place, span)?.clone());
+        }
+        if name == "append" {
+            let Some(Value::Ref(other_place)) = values.next() else {
+                return Err(RuntimeError::new(
+                    "Vec::append expects a mutable Vec reference",
+                    span,
+                ));
+            };
+            let mut other = match self.place_value_mut(&other_place, span)? {
+                Value::Vec(other) => std::mem::take(other),
+                _ => {
+                    return Err(RuntimeError::new(
+                        "Vec::append expects a mutable Vec reference",
+                        span,
+                    ));
+                }
+            };
+            let Value::Vec(receiver) = self.place_value_mut(&receiver_place, span)? else {
+                return Err(RuntimeError::new("Vec::append expects Vec receiver", span));
+            };
+            receiver.append(&mut other);
+            return Ok(Value::Unit);
         }
         let mut owned;
         let target = if mutating {
@@ -2894,7 +3413,13 @@ impl<'a> Interpreter<'a> {
                 }
                 "split" => {
                     let delimiter = string_arg(values.next(), span)?;
-                    let parts = string.split(&delimiter).map(|s| s.to_string()).collect();
+                    let parts = if string.is_empty() {
+                        Vec::new()
+                    } else if delimiter.is_empty() {
+                        string.chars().map(|scalar| scalar.to_string()).collect()
+                    } else {
+                        string.split(&delimiter).map(str::to_string).collect()
+                    };
                     Ok(Value::SplitIter(parts, 0))
                 }
                 "to_string" => Ok(Value::String(string.clone())),
@@ -3094,6 +3619,40 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn file_bytes_arg(&self, value: Option<Value>, span: Span) -> Result<Vec<u8>, RuntimeError> {
+        fn slots_to_bytes(slots: &[Option<Value>], span: Span) -> Result<Vec<u8>, RuntimeError> {
+            slots
+                .iter()
+                .map(|slot| match slot {
+                    Some(Value::Int(value)) => u8::try_from(*value)
+                        .map_err(|_| RuntimeError::new("file byte is outside UInt8", span)),
+                    _ => Err(RuntimeError::new("File::write expects &[UInt8]", span)),
+                })
+                .collect()
+        }
+
+        match value {
+            Some(Value::Array(values)) | Some(Value::Vec(values)) => slots_to_bytes(&values, span),
+            Some(Value::Slice(place, start, end)) => {
+                let source = self.place_value(&place, span)?;
+                match source {
+                    Value::Array(values) | Value::Vec(values) => {
+                        let range = values
+                            .get(start..end)
+                            .ok_or_else(|| RuntimeError::new("slice out of bounds", span))?;
+                        slots_to_bytes(range, span)
+                    }
+                    _ => Err(RuntimeError::new("File::write expects &[UInt8]", span)),
+                }
+            }
+            Some(Value::Ref(place)) => match self.place_value(&place, span)? {
+                Value::Array(values) | Value::Vec(values) => slots_to_bytes(values, span),
+                _ => Err(RuntimeError::new("File::write expects &[UInt8]", span)),
+            },
+            _ => Err(RuntimeError::new("File::write expects &[UInt8]", span)),
+        }
+    }
+
     fn eval_struct_lit(
         &mut self,
         res: Res,
@@ -3136,7 +3695,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn match_pattern(
-        &self,
+        &mut self,
         pat: PatId,
         value: &Value,
         bindings: &mut Vec<(LocalId, Value)>,
@@ -3150,6 +3709,12 @@ impl<'a> Interpreter<'a> {
             }
             hir::PatKind::Lit(lit) => Ok(self.eval_lit(*lit, pattern.span)? == *value),
             hir::PatKind::Path { res, .. } => match (res, value) {
+                (Res::Item(item), actual) => match &self.hir.item(*item).kind {
+                    hir::ItemKind::Const {
+                        value: initializer, ..
+                    } => Ok(self.expect_value(*initializer)? == *actual),
+                    _ => Ok(false),
+                },
                 (
                     Res::Variant(item, variant),
                     Value::Enum {
@@ -3268,7 +3833,7 @@ impl<'a> Interpreter<'a> {
     }
 
     fn match_sequence(
-        &self,
+        &mut self,
         patterns: &[PatId],
         values: &[Option<Value>],
         bindings: &mut Vec<(LocalId, Value)>,
@@ -3965,7 +4530,8 @@ impl<'a> Interpreter<'a> {
             | Value::FilterIter(..)
             | Value::Random(_)
             | Value::Ordering(_)
-            | Value::IOError(_) => false,
+            | Value::IOError(_)
+            | Value::File(_) => false,
         }
     }
 
@@ -4287,8 +4853,198 @@ fn is_integer(primitive: Primitive) -> bool {
     )
 }
 
+fn integer_width(ty: Option<&Ty>) -> Option<u32> {
+    match ty {
+        Some(Ty::Primitive(Primitive::Int8 | Primitive::UInt8)) => Some(8),
+        Some(Ty::Primitive(Primitive::Int16 | Primitive::UInt16)) => Some(16),
+        Some(Ty::Primitive(Primitive::Int32 | Primitive::UInt32)) => Some(32),
+        Some(Ty::Primitive(Primitive::Int64 | Primitive::UInt64)) => Some(64),
+        _ => None,
+    }
+}
+
+fn is_iterator_ty(ty: &Ty) -> bool {
+    match ty {
+        Ty::Ref { inner, .. } => is_iterator_ty(inner),
+        Ty::Core(
+            CoreType::CharsIter
+            | CoreType::SplitIter
+            | CoreType::VecIter
+            | CoreType::KeysIter
+            | CoreType::ValuesIter
+            | CoreType::Iter
+            | CoreType::MapIter
+            | CoreType::FilterIter,
+            _,
+        ) => true,
+        _ => false,
+    }
+}
+
 fn is_float(primitive: Primitive) -> bool {
     matches!(primitive, Primitive::Float32 | Primitive::Float64)
+}
+
+fn canonical_float(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value == f64::INFINITY {
+        return "inf".to_string();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-inf".to_string();
+    }
+    if value == 0.0 {
+        return if value.is_sign_negative() {
+            "-0.0".to_string()
+        } else {
+            "0.0".to_string()
+        };
+    }
+    let shortest = value.to_string();
+    let (sign, unsigned) = shortest
+        .strip_prefix('-')
+        .map_or(("", shortest.as_str()), |rest| ("-", rest));
+    let (mantissa, explicit_exponent) = unsigned
+        .split_once(['e', 'E'])
+        .map_or((unsigned, 0_i32), |(mantissa, exponent)| {
+            (mantissa, exponent.parse::<i32>().unwrap())
+        });
+    let decimal_position = mantissa
+        .find('.')
+        .map_or(mantissa.len() as i32, |position| position as i32)
+        + explicit_exponent;
+    let raw_digits: String = mantissa
+        .chars()
+        .filter(|character| *character != '.')
+        .collect();
+    let leading_zeroes = raw_digits
+        .bytes()
+        .take_while(|digit| *digit == b'0')
+        .count() as i32;
+    let scientific_exponent = decimal_position - leading_zeroes - 1;
+    let significant = raw_digits.trim_start_matches('0').trim_end_matches('0');
+    let significant = if significant.is_empty() {
+        "0"
+    } else {
+        significant
+    };
+
+    if (-4..=15).contains(&scientific_exponent) {
+        let point = scientific_exponent + 1;
+        let mut rendered = String::from(sign);
+        if point <= 0 {
+            rendered.push_str("0.");
+            rendered.extend(std::iter::repeat_n('0', (-point) as usize));
+            rendered.push_str(significant);
+        } else if point as usize >= significant.len() {
+            rendered.push_str(significant);
+            rendered.extend(std::iter::repeat_n('0', point as usize - significant.len()));
+            rendered.push_str(".0");
+        } else {
+            rendered.push_str(&significant[..point as usize]);
+            rendered.push('.');
+            rendered.push_str(&significant[point as usize..]);
+        }
+        rendered
+    } else {
+        let mut rendered = String::from(sign);
+        rendered.push_str(&significant[..1]);
+        if significant.len() > 1 {
+            rendered.push('.');
+            rendered.push_str(&significant[1..]);
+        }
+        rendered.push('e');
+        rendered.push_str(&scientific_exponent.to_string());
+        rendered
+    }
+}
+
+fn standard_hash(value: &Value, ty: &Ty) -> Result<u64, RuntimeError> {
+    fn push_u64(bytes: &mut Vec<u8>, value: u64) {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    fn frame(bytes: &mut Vec<u8>, component: Vec<u8>) {
+        push_u64(bytes, component.len() as u64);
+        bytes.extend(component);
+    }
+    fn encode(value: &Value, ty: &Ty) -> Option<Vec<u8>> {
+        if let Ty::Ref { inner, .. } = ty {
+            return encode(value, inner);
+        }
+        match (value, ty) {
+            (Value::Unit, Ty::Primitive(Primitive::Unit)) => Some(Vec::new()),
+            (Value::Bool(value), Ty::Primitive(Primitive::Bool)) => Some(vec![u8::from(*value)]),
+            (Value::Char(value), Ty::Primitive(Primitive::Char)) => {
+                Some((*value as u32).to_le_bytes().to_vec())
+            }
+            (
+                Value::String(value) | Value::Str(value),
+                Ty::Primitive(Primitive::String | Primitive::Str),
+            ) => Some(value.as_bytes().to_vec()),
+            (Value::Int(value), Ty::Primitive(primitive)) => {
+                let bytes = match primitive {
+                    Primitive::Int8 | Primitive::UInt8 => vec![*value as u8],
+                    Primitive::Int16 | Primitive::UInt16 => (*value as u16).to_le_bytes().to_vec(),
+                    Primitive::Int32 | Primitive::UInt32 => (*value as u32).to_le_bytes().to_vec(),
+                    Primitive::Int64 | Primitive::UInt64 => (*value as u64).to_le_bytes().to_vec(),
+                    _ => return None,
+                };
+                Some(bytes)
+            }
+            (Value::Tuple(values), Ty::Tuple(types)) if values.len() == types.len() => {
+                let mut bytes = vec![0x02];
+                push_u64(&mut bytes, values.len() as u64);
+                for (slot, ty) in values.iter().zip(types) {
+                    frame(&mut bytes, encode(slot.as_ref()?, ty)?);
+                }
+                Some(bytes)
+            }
+            (Value::Array(values), Ty::Array(element, _)) => {
+                let mut bytes = vec![0x01];
+                push_u64(&mut bytes, values.len() as u64);
+                for slot in values {
+                    frame(&mut bytes, encode(slot.as_ref()?, element)?);
+                }
+                Some(bytes)
+            }
+            (Value::Vec(values), Ty::Core(hir::CoreType::Vec, types)) if types.len() == 1 => {
+                let mut bytes = vec![0x03];
+                push_u64(&mut bytes, values.len() as u64);
+                for slot in values {
+                    frame(&mut bytes, encode(slot.as_ref()?, &types[0])?);
+                }
+                Some(bytes)
+            }
+            (Value::Option(value), Ty::Core(hir::CoreType::Option, types)) if types.len() == 1 => {
+                let mut bytes = vec![0x04, u8::from(value.is_some())];
+                if let Some(value) = value {
+                    frame(&mut bytes, encode(value, &types[0])?);
+                }
+                Some(bytes)
+            }
+            (Value::Result(value), Ty::Core(hir::CoreType::Result, types)) if types.len() == 2 => {
+                let mut bytes = vec![0x05, u8::from(value.is_err())];
+                match value {
+                    Ok(value) => frame(&mut bytes, encode(value, &types[0])?),
+                    Err(value) => frame(&mut bytes, encode(value, &types[1])?),
+                }
+                Some(bytes)
+            }
+            _ => None,
+        }
+    }
+
+    let bytes = encode(value, ty).ok_or_else(|| {
+        RuntimeError::new("type has no standard Hash implementation", Span::new(0, 0))
+    })?;
+    let mut hash = 14_695_981_039_346_656_037u64;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    Ok(hash)
 }
 
 fn usize_arg(value: Option<Value>, span: Span) -> Result<usize, RuntimeError> {
@@ -5145,5 +5901,178 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "4\n6\n7\n");
+    }
+
+    #[test]
+    fn executes_trait_associated_conversion_functions() {
+        let execution = execute(
+            "struct Celsius { value: Int32 } \
+             struct Fahrenheit { value: Int32 } \
+             impl From<Celsius> for Fahrenheit { \
+                 fn from(value: Celsius) -> Fahrenheit { \
+                     Fahrenheit { value: value.value * 2 } \
+                 } \
+             } \
+             fn main() { \
+                 let c = Celsius { value: 10 }; \
+                 let f: Fahrenheit = Fahrenheit::from(c); \
+                 println(f.value); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "20\n");
+    }
+
+    #[test]
+    fn builtin_display_and_hash_are_directly_callable() {
+        let execution = execute(
+            "fn main() { \
+                 println((12i32).fmt()); \
+                 println((-0.0f64).fmt()); \
+                 println((1.0f64 / 0.0f64).fmt()); \
+                 println(\"a\".hash()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "12\n-0.0\ninf\n12638187200555641996\n");
+    }
+
+    #[test]
+    fn file_is_a_first_class_noncopy_resource() {
+        let path = std::env::temp_dir().join(format!(
+            "stark-c2-11-file-{}-{}.txt",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let source = format!(
+            "fn main() {{ \
+                 let mut output: File = File::create(\"{}\").unwrap(); \
+                 println(output.write_str(\"hello\").unwrap()); \
+                 output.close().unwrap(); \
+                 let mut input: File = File::open(\"{}\").unwrap(); \
+                 println(input.read_to_string().unwrap()); \
+                 input.close().unwrap(); \
+             }}",
+            path.display(),
+            path.display()
+        );
+        let execution = execute(&source).unwrap();
+        assert_eq!(execution.output, "5\nhello\n");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn primitive_constant_patterns_compare_by_compiler_known_value() {
+        let execution = execute(
+            "const ONE: Int32 = 1; \
+             fn classify(value: Int32) -> Int32 { \
+                 match value { ONE => 10, _ => 20 } \
+             } \
+             fn main() { println(classify(1)); println(classify(2)); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "10\n20\n");
+    }
+
+    #[test]
+    fn fixed_width_numeric_boundaries_and_float_rounding_are_observable() {
+        let execution = execute(
+            "fn main() { \
+                 println(127i8); println(-127i8 - 1i8); \
+                 println(32767i16); println(-32767i16 - 1i16); \
+                 println(2147483647i32); println(-2147483647i32 - 1i32); \
+                 println(9223372036854775807i64); \
+                 println(255u8); println(65535u16); println(4294967295u32); \
+                 println(18446744073709551615u64); \
+                 println(~0u8); println(7i32 / -3i32); println(7i32 % -3i32); \
+                 println(2i32 ** 10i32); \
+                 println(16777216.0f32 + 1.0f32 == 16777216.0f32); \
+                 println((-0.0f64).fmt()); \
+                 let inf = 1.0f64 / 0.0f64; let nan = 0.0f64 / 0.0f64; \
+                 println(inf.fmt()); println(nan.fmt()); \
+                 println(nan == nan); println(nan < 1.0f64); \
+                 println((0.0001f64).fmt()); println((0.00001f64).fmt()); \
+                 println((1000000000000000.0f64).fmt()); \
+                 println((10000000000000000.0f64).fmt()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(
+            execution.output,
+            "127\n-128\n32767\n-32768\n2147483647\n-2147483648\n\
+             9223372036854775807\n255\n65535\n4294967295\n18446744073709551615\n\
+             255\n-2\n1\n1024\ntrue\n-0.0\ninf\nNaN\nfalse\nfalse\n\
+             0.0001\n1e-5\n1000000000000000.0\n1e16\n"
+        );
+    }
+
+    #[test]
+    fn every_integer_width_traps_on_overflow_and_invalid_operations() {
+        let cases = [
+            "fn main() { println(127i8 + 1i8); }",
+            "fn main() { println(32767i16 + 1i16); }",
+            "fn main() { println(2147483647i32 + 1i32); }",
+            "fn main() { println(9223372036854775807i64 + 1i64); }",
+            "fn main() { println(255u8 + 1u8); }",
+            "fn main() { println(65535u16 + 1u16); }",
+            "fn main() { println(4294967295u32 + 1u32); }",
+            "fn main() { println(18446744073709551615u64 + 1u64); }",
+            "fn main() { let min = -127i8 - 1i8; println(-min); }",
+            "fn main() { println(1i32 / 0i32); }",
+            "fn main() { println(1i32 % 0i32); }",
+            "fn main() { println(1u8 << 8u8); }",
+            "fn main() { println(2i8 ** 7i8); }",
+            "fn main() { println(256i32 as UInt8); }",
+        ];
+        for source in cases {
+            let error = execute(source).unwrap_err();
+            assert!(
+                error.message.contains("overflow")
+                    || error.message.contains("zero")
+                    || error.message.contains("shift")
+                    || error.message.contains("range"),
+                "{source}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract() {
+        let execution = execute(
+            "fn main() { \
+                 let text = String::from(\"Aé中😀\"); \
+                 println(text.len()); println(text.find(\"中\").unwrap()); \
+                 println(text.substring(1u64, 3u64)); \
+                 let mut scalars = text.split(\"\"); \
+                 println(scalars.count()); \
+                 let mut empty_parts = String::from(\"\").split(\",\"); \
+                 let mut trailing_parts = String::from(\"a,\").split(\",\"); \
+                 println(empty_parts.count()); println(trailing_parts.count()); \
+                 println(String::from(\"ab\").replace(\"\", \"-\")); \
+                 println(String::from(\"\\u{2003}ok\\u{3000}\").trim()); \
+                 println(String::from(\"ß\").to_uppercase()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "10\n3\né\n4\n0\n2\n-a-b-\nok\nSS\n");
+
+        let error = execute("fn main() { println(String::from(\"é\").substring(1u64, 2u64)); }")
+            .unwrap_err();
+        assert!(error.message.contains("UTF-8 boundaries"), "{error:?}");
+    }
+
+    #[test]
+    fn vec_append_drains_the_source_and_preserves_order() {
+        let execution = execute(
+            "fn main() { \
+                 let mut left: Vec<Int32> = Vec::new(); left.push(1); \
+                 let mut right: Vec<Int32> = Vec::new(); right.push(2); right.push(3); \
+                 left.append(&mut right); \
+                 println(left.len()); println(right.len()); \
+                 println(left[0]); println(left[1]); println(left[2]); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "3\n0\n1\n2\n3\n");
     }
 }

@@ -152,6 +152,13 @@ pub fn resolve_with_options(
 
     // Run final unresolved imports check
     resolver.check_imports_resolved(&root_items);
+    for ((module, name), visibility) in &resolver.reexport_vis {
+        if matches!(visibility, Some(ast::Vis::Pub)) {
+            if let Some(Res::Item(item)) = resolver.modules[module.0 as usize].items.get(name) {
+                resolver.hir.publicly_nameable_items.insert(*item);
+            }
+        }
+    }
 
     // Pass 3: Lower AST to HIR & perform lexical/local name resolution
     resolver.lower_crate();
@@ -395,7 +402,7 @@ impl<'a> Resolver<'a> {
                             format!("unresolved import '{}'", self.path_to_string(path)),
                             path.span,
                         )
-                        .with_code("E0401"),
+                        .with_code("E0205"),
                     );
                 }
             }
@@ -407,7 +414,7 @@ impl<'a> Resolver<'a> {
                             format!("unresolved import '{}'", self.path_to_string(prefix)),
                             prefix.span,
                         )
-                        .with_code("E0401"),
+                        .with_code("E0205"),
                     );
                 }
             }
@@ -419,7 +426,7 @@ impl<'a> Resolver<'a> {
                             format!("unresolved import '{}'", self.path_to_string(prefix)),
                             prefix.span,
                         )
-                        .with_code("E0401"),
+                        .with_code("E0205"),
                     );
                 }
             }
@@ -431,7 +438,7 @@ impl<'a> Resolver<'a> {
                             format!("unresolved import '{}'", self.path_to_string(prefix)),
                             prefix.span,
                         )
-                        .with_code("E0401"),
+                        .with_code("E0205"),
                     );
                 } else {
                     for item in items {
@@ -649,6 +656,8 @@ impl<'a> Resolver<'a> {
             "Box::into_inner" => return Res::Builtin(Builtin::BoxIntoInner),
             "std::fs::read_file" => return Res::Builtin(Builtin::ReadFile),
             "std::fs::write_file" => return Res::Builtin(Builtin::WriteFile),
+            "File::open" => return Res::Builtin(Builtin::FileOpen),
+            "File::create" => return Res::Builtin(Builtin::FileCreate),
             "HashMap::new" => return Res::Builtin(Builtin::HashMapNew),
             "HashMap::with_capacity" => return Res::Builtin(Builtin::HashMapWithCapacity),
             "HashSet::new" => return Res::Builtin(Builtin::HashSetNew),
@@ -690,7 +699,7 @@ impl<'a> Resolver<'a> {
                         } else {
                             self.push_diag(
                                 Diagnostic::error("no parent module for 'super'", segment.span)
-                                    .with_code("E0203"),
+                                    .with_code("E0206"),
                             );
                             return Res::Err;
                         }
@@ -749,7 +758,7 @@ impl<'a> Resolver<'a> {
                 if !self.name_is_visible_from(current_mod, name_str, start_mod) {
                     self.push_diag(
                         Diagnostic::error(format!("item '{name_str}' is private"), segment.span)
-                            .with_code("E0203"),
+                            .with_code("E0207"),
                     );
                     return Res::Err;
                 }
@@ -2065,6 +2074,7 @@ fn resolve_core_type(name: &str) -> Option<CoreType> {
         "FilterIter" => Some(CoreType::FilterIter),
         "Random" => Some(CoreType::Random),
         "IOError" => Some(CoreType::IOError),
+        "File" => Some(CoreType::File),
         "Ordering" => Some(CoreType::Ordering),
         _ => None,
     }
@@ -2275,7 +2285,7 @@ mod tests {
     }
 
     /// WP-C1.2 (checklist item 2): `super::` from the root module has no parent -- confirms the
-    /// E0203 diagnostic (resolve.rs ~688-691) actually fires rather than panicking or silently
+    /// E0206 diagnostic (resolve.rs ~688-691) actually fires rather than panicking or silently
     /// resolving to something else. This code path had zero test evidence before this WP despite
     /// producing a real diagnostic.
     #[test]
@@ -2287,8 +2297,8 @@ mod tests {
         assert!(
             diags
                 .iter()
-                .any(|d| d.code.as_deref() == Some("E0203") && d.message.contains("super")),
-            "expected E0203 'no parent module for super', got {:?}",
+                .any(|d| d.code.as_deref() == Some("E0206") && d.message.contains("super")),
+            "expected E0206 'no parent module for super', got {:?}",
             diags
                 .iter()
                 .map(|d| (&d.code, &d.message))
@@ -2527,6 +2537,6 @@ mod tests {
         );
         assert!(private
             .iter()
-            .any(|diagnostic| diagnostic.code.as_deref() == Some("E0203")));
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("E0207")));
     }
 }

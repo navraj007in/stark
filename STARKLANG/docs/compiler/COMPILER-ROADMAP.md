@@ -569,6 +569,13 @@ package/version/public identity; and every accepted/rejected executable entry si
 DEV-019's diagnostic-code collisions here unless an earlier bounded correction updates the same
 complete evidence set.
 
+Completed on 2026-07-18. The reference implementation now enforces the frozen numeric,
+type/alias/sizedness, constant, trait-selection, borrow-carrying, Unicode, package/public API,
+standard formatting/hash/I/O, and executable-process contracts. Collision-free diagnostics and
+function-level positive/negative granular evidence travel with the implementation. DEV-009,
+DEV-018, DEV-019, DEV-022, DEV-023, and DEV-024 are resolved; DEV-036 remains owned by C2.12.
+See `work-packages/WP-C2.11.md`.
+
 ### WP-C2.12 — Differential interpreter corpus
 
 Close DEV-036 by replacing filename-based missing-module suppression with an explicit

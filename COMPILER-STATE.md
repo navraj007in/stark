@@ -1,16 +1,16 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after C2.8/C2.9 post-C2.10 correction
+Updated: 2026-07-18 after WP-C2.11
 
 ## Position
-Gate: C2  Next: WP-C2.11  Blocked: none
+Gate: C2  Next: WP-C2.12  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: bounded C2.8/C2.9 correction after WP-C2.10 review.
-- Transition base commit: `a3c0afe` (`complete WP-C2.10 future boundaries`).
-- Current committed head at the start of the correction: `a3c0afe`. This event-style provenance avoids trying to
+- Last completed transition: WP-C2.11 implementation alignment and adversarial conformance.
+- Transition base commit: `88b509e` (`correct C2.8 and C2.9 semantic freeze`).
+- Current committed head at the start of WP-C2.11: `88b509e`. This event-style provenance avoids trying to
   embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -19,7 +19,7 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **489 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  **517 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 30 integration-test files**
   (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`, re-counted against the
   post-WP-C2.7 tree — the
@@ -2409,3 +2409,33 @@ whitespace checks pass.
 FOLLOW-UP: C2.11 must implement the corrected rules, and must not claim conformance for
 standard-library behavior that remains explicitly unstated.
 NEXT: WP-C2.11 (Implementation alignment and adversarial conformance)
+
+### WP-C2.11 — 2026-07-18
+DONE: Aligned the reference compiler and interpreter with the semantic decisions frozen by
+C2.7–C2.10. Implemented fixed-width numeric/Float32 boundaries, transparent aliases and
+sizedness, compile-time constants, conservative trait/associated selection, generic
+borrow-carrying aggregates, callable Display/Hash, first-class File resources, Unicode escape
+and string edge behavior, explicit package aliases and incompatible-major coexistence,
+public-signature reachability, and the complete executable entry/status/stream contract.
+Reallocated every confirmed diagnostic collision and expanded AST span containment through
+Type/Pattern/Item nodes.
+FILES: `starkc/src/{borrowck,hir,interp,lexer,literal,package,parser,resolve,typecheck}.rs`,
+both CLI runners and IDE consumer, C2.11 adversarial tests, normative diagnostic catalogue and
+regenerated combined specification, `STARKLANG/conformance/core-v1-c2.11-evidence.toml`,
+conformance validator, completeness/open-question registers, deviation ledger, roadmap, and
+`STARKLANG/docs/compiler/work-packages/WP-C2.11.md`.
+RULES: executable function-level positive/negative evidence is recorded for 34 high-cost
+granular rules spanning aliases/sizedness, traits/borrows/patterns/constants, numeric and Unicode
+semantics, public/package identity, process behavior, formatting/hash/I/O/conversion, and trap
+classification.
+DECISIONS: CORE-Q-022 approved with collision-free category identifiers; diagnostic wording and
+secondary labels remain non-normative. No C2.12 differential-corpus or DEV-036 closure is
+claimed.
+EVIDENCE: Rust formatting, warnings-denied Clippy, full workspace/all-targets/all-features
+regression, fixture and granular conformance validation, generated-spec agreement, governance
+parsing, Python compilation, and whitespace checks. Final regression count is 517 passed,
+0 failed, 2 intentional opt-in tests ignored.
+DEVIATIONS: DEV-009, DEV-018, DEV-019, DEV-022, DEV-023, and DEV-024 resolved. DEV-017's
+high-cost granular slice is closed; legacy broad entries remain transition history. DEV-036
+remains owned by C2.12.
+NEXT: WP-C2.12 (Differential interpreter corpus and DEV-036 closure)

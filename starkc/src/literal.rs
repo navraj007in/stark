@@ -69,44 +69,69 @@ pub fn parse_string(text: &str, raw: bool) -> String {
     if raw {
         return content.to_string();
     }
-    let mut result = String::new();
+    decode_cooked(content).unwrap_or_default()
+}
+
+pub fn cooked_string_is_valid(text: &str) -> bool {
+    let Some(content) = text
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+    else {
+        return false;
+    };
+    decode_cooked(content).is_some()
+}
+
+fn decode_cooked(content: &str) -> Option<String> {
+    let mut result = Vec::new();
     let mut chars = content.chars();
     while let Some(ch) = chars.next() {
         if ch != '\\' {
-            result.push(ch);
+            let mut encoded = [0; 4];
+            result.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
             continue;
         }
         match chars.next() {
-            Some('n') => result.push('\n'),
-            Some('r') => result.push('\r'),
-            Some('t') => result.push('\t'),
-            Some('0') => result.push('\0'),
-            Some('\\') => result.push('\\'),
-            Some('"') => result.push('"'),
-            Some(other) => result.push(other),
-            None => {}
+            Some('n') => result.push(b'\n'),
+            Some('r') => result.push(b'\r'),
+            Some('t') => result.push(b'\t'),
+            Some('0') => result.push(0),
+            Some('\\') => result.push(b'\\'),
+            Some('"') => result.push(b'"'),
+            Some('\'') => result.push(b'\''),
+            Some('x') => {
+                let high = chars.next()?.to_digit(16)?;
+                let low = chars.next()?.to_digit(16)?;
+                result.push(((high << 4) | low) as u8);
+            }
+            Some('u') => {
+                if chars.next()? != '{' {
+                    return None;
+                }
+                let mut digits = String::new();
+                loop {
+                    let next = chars.next()?;
+                    if next == '}' {
+                        break;
+                    }
+                    digits.push(next);
+                }
+                let scalar = char::from_u32(u32::from_str_radix(&digits, 16).ok()?)?;
+                let mut encoded = [0; 4];
+                result.extend_from_slice(scalar.encode_utf8(&mut encoded).as_bytes());
+            }
+            _ => return None,
         }
     }
-    result
+    String::from_utf8(result).ok()
 }
 
 pub fn parse_char(text: &str) -> Option<char> {
     let content = text.strip_prefix('\'')?.strip_suffix('\'')?;
-    if let Some(escaped) = content.strip_prefix('\\') {
-        match escaped {
-            "n" => Some('\n'),
-            "r" => Some('\r'),
-            "t" => Some('\t'),
-            "0" => Some('\0'),
-            "\\" => Some('\\'),
-            "'" => Some('\''),
-            _ => None,
-        }
-    } else {
-        let mut chars = content.chars();
-        let value = chars.next()?;
-        chars.next().is_none().then_some(value)
-    }
+    let decoded = decode_cooked(content)?;
+    let mut chars = decoded.chars();
+    let value = chars.next()?;
+    chars.next().is_none().then_some(value)
 }
 
 /// Whether an already-parsed integer value fits in the given suffix's representable range.
@@ -120,5 +145,18 @@ pub fn int_suffix_range_contains(suffix: IntSuffix, value: i128) -> bool {
         IntSuffix::U16 => u16::try_from(value).is_ok(),
         IntSuffix::U32 => u32::try_from(value).is_ok(),
         IntSuffix::U64 => u64::try_from(value).is_ok(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cooked_escapes_decode_bytes_and_unicode_scalars() {
+        assert_eq!(parse_string(r#""\x41\xC3\xA9\u{1F600}""#, false), "Aé😀");
+        assert_eq!(parse_char(r"'\x41'"), Some('A'));
+        assert_eq!(parse_char(r"'\u{1F600}'"), Some('😀'));
+        assert!(!cooked_string_is_valid(r#""\xFF""#));
     }
 }

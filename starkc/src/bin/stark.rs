@@ -131,15 +131,23 @@ fn main() -> ExitCode {
         return match starkc::interp::run(hir, root_file.clone(), tables) {
             Ok(execution) => {
                 print!("{}", execution.output);
-                ExitCode::SUCCESS
+                eprint!("{}", execution.stderr);
+                ExitCode::from(execution.status)
             }
             Err(error) => {
-                let diagnostic = starkc::diag::Diagnostic::error(
-                    format!("runtime error: {}", error.message),
+                let mut diagnostic = starkc::diag::Diagnostic::error(
+                    if error.is_trap {
+                        format!("runtime error: {}", error.message)
+                    } else {
+                        format!("executable target error: {}", error.message)
+                    },
                     error.span,
                 );
+                if !error.is_trap {
+                    diagnostic.code = Some("E0214".to_string());
+                }
                 eprint!("{}", diagnostic.render(&root_file));
-                ExitCode::FAILURE
+                ExitCode::from(if error.is_trap { 101 } else { 1 })
             }
         };
     }

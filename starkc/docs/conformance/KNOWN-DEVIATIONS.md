@@ -157,7 +157,7 @@ impact, workaround, proposed disposition, owning future gate.
   `::option_of_non_eq_type_is_rejected`.
 - **Owning gate:** closed, WP-C1.3.
 
-## DEV-009 — `File` has no first-class runtime representation
+## DEV-009 — `File` has no first-class runtime representation (RESOLVED in WP-C2.11)
 
 - **Normative expectation:** `06-Standard-Library.md`'s IO module specifies `File::open` +
   `read_to_string` / `File::create` + `write_str`.
@@ -173,8 +173,11 @@ impact, workaround, proposed disposition, owning future gate.
   non-`Copy`, non-`Clone` runtime resource type (`File` would be the first of its kind — `Vec`/
   `String`/`HashMap`/`HashSet` are all currently `Clone`-able Rust types wrapped as `Value`
   variants). This is a real interpreter-value-model design question, not a small patch.
-- **Owning gate:** WP-C2.11 implements and evidences C2.9's approved `STD-IO-001`,
-  `STD-PROFILE-001`, and process contract.
+- **Resolution:** `FileResource` is a first-class, non-`Copy` interpreter value with
+  open/create/read/write/close behavior, consuming close, UTF-8 validation, stable `IOError`
+  mapping, and destructor-backed best-effort close. Positive and failure evidence is recorded
+  under `STD-IO-001`.
+- **Owning gate:** WP-C2.11 (closed).
 
 ## DEV-010 — LSP hover/definition/references are protocol stubs
 
@@ -380,9 +383,14 @@ in WP-C1.6)
   vague "some rules" note existed anywhere).
 - **Proposed disposition:** the C2.6 granular split map prevents broad legacy status from being
   copied forward. C2.11 re-cites and classifies positive/negative evidence per granular rule.
-- **Owning gate:** WP-C1.6 tooling is closed; the remaining evidence gap is WP-C2.11.
+- **C2.11 update:** `core-v1-c2.11-evidence.toml` now provides mechanically validated,
+  function-level positive and negative citations for the high-cost alignment surface. The 59
+  broad entries remain historical transition records rather than being falsely promoted into
+  granular claims; C2.12 expands differential evidence across the rest of the executable corpus.
+- **Owning gate:** WP-C1.6 tooling and the C2.11 high-cost evidence slice are closed; exhaustive
+  differential expansion is WP-C2.12.
 
-## DEV-018 — AST span-integrity checking was entirely absent (partially closed)
+## DEV-018 — AST span-integrity checking was entirely absent (RESOLVED in WP-C2.11)
 
 - **Normative expectation:** Charter rule 17 — source identity (spans) must survive the
   pipeline; child nodes' spans should be contained within their parent's.
@@ -402,9 +410,11 @@ in WP-C1.6)
 - **Proposed disposition:** WP-C2.4 supplied compiler-owned position queries, but did not turn
   Type/Pat/Item containment into exhaustive conformance evidence. C2.11 must either add that
   adversarial evidence or narrow the invariant explicitly.
-- **Owning gate:** WP-C2.4 query infrastructure is closed; residual verification is WP-C2.11.
+- **Resolution:** the fixture-corpus containment walk now covers Type, Pattern, and Item arenas
+  in addition to Expression, Statement, and Block nodes, including nested item/type/body edges.
+- **Owning gate:** WP-C2.11 (closed).
 
-## DEV-019 — Diagnostic-code collisions with the normative E-code table
+## DEV-019 — Diagnostic-code collisions with the normative E-code table (RESOLVED in WP-C2.11)
 
 - **Normative expectation:** `04-Semantic-Analysis.md`'s E-code table is the single source of
   truth for what each code means; Charter rule 16 requires diagnostics (including codes) remain
@@ -434,12 +444,11 @@ in WP-C1.6)
   for "method call on non-struct/enum type." Not done here: reassignment is a public contract
   change touching multiple test files' exact assertions, deserving its own bounded,
   evidence-backed change.
-- **Owning gate:** WP-C2.11. (WP-C1.6's conformance evidence generator, closed 2026-07-18,
-  reports per-rule test evidence but does not cross-reference diagnostic codes against the spec's
-  E-code catalog — that would be a distinct, not-yet-built check; this deviation's earlier "WP-C1.6
-  to catch systematically" note assumed more overlap with that WP's actual scope than it turned
-  out to have.) WP-C2.5 stabilizes the transport without freezing this pre-alpha catalogue;
-  WP-C2.11 owns the evidence-complete reallocation.
+- **Resolution:** module/import/private/public-API failures now use distinct `E0205`–`E0209`;
+  executable, constant, alias, and sizedness failures use `E0214`–`E0217`; invalid receiver and
+  constant-pattern categories use `E0304`/`E0305`; unreachable arms use warning `W0006`.
+  Exact-code regression assertions were updated with the catalogue.
+- **Owning gate:** WP-C2.11 (closed).
 
 ## DEV-020 — `pub use` of a private item leaks it (confirmed design, not a defect)
 
@@ -475,7 +484,7 @@ in WP-C1.6)
   reclassify granular evidence against both C2.8 coherence rules after C2.9 fixes package
   identity; this does not reopen DEV-021 as a known compiler defect.
 
-## DEV-022 — Private-item leakage through public signatures: unimplemented
+## DEV-022 — Private-item leakage through public signatures (RESOLVED in WP-C2.11)
 
 - **Normative expectation:** `MOD-REEXPORT-001` requires every transitive item in a public
   signature to be publicly nameable by consumers.
@@ -491,11 +500,13 @@ in WP-C1.6)
   boundaries.
 - **Proposed disposition:** implement the C2.9-approved public-reachability check with positive
   and negative cross-package evidence.
-- **Owning gate:** WP-C2.11 implementation/evidence (`CORE-Q-023` approved).
+- **Resolution:** type checking walks every exported signature recursively and reports E0209 for
+  unnameable types while accepting types made nameable by a public re-export.
+- **Owning gate:** WP-C2.11 (closed).
 
 ---
 
-## DEV-023 — `Display`/`.fmt()` and `Hash`/`.hash()` missing as callable methods on builtin types
+## DEV-023 — builtin `Display`/`Hash` methods (RESOLVED in WP-C2.11)
 
 - **Normative expectation:** `TYPE-METHOD-001` and `TYPE-METHOD-002` require ordinary,
   source-order-independent trait-method selection for any receiver satisfying the bound.
@@ -518,9 +529,11 @@ in WP-C1.6)
   exactly these types) as a generic dispatch point. `.hash()` needs its own investigation —
   unverified whether the internal hash used for `HashMap`/`HashSet` keys is exposed in a form
   reusable for a user-callable `.hash()` returning `UInt64`.
-- **Owning gate:** WP-C2.11 implements and evidences the C2.8-approved contract.
+- **Resolution:** builtin receivers expose callable `.fmt()` and `.hash()` with the frozen
+  canonical display bytes and standard FNV-1a encoding; float Hash bounds remain rejected.
+- **Owning gate:** WP-C2.11 (closed).
 
-## DEV-024 — `From` trait associated-function calls fail to resolve
+## DEV-024 — `From` trait associated-function calls fail to resolve (RESOLVED in WP-C2.11)
 
 - **Normative expectation:** `impl From<A> for B { fn from(a: A) -> B {...} }` followed by
   `B::from(a)` should resolve and execute the impl.
@@ -540,8 +553,9 @@ in WP-C1.6)
   generic trait parameter confusing the self-type match. Needs its own investigation before a
   fix is attempted, not assumed to be the same pattern as DEV-013's fixes. `Into`/`TryFrom` not
   independently tested but plausibly share the same gap.
-- **Owning gate:** WP-C2.11 performs the root-cause correction and evidence update against
-  C2.8 associated-item selection and C2.9 `STD-CONVERT-001`.
+- **Resolution:** static associated lookup searches matching trait impls after inherent
+  candidates, executes the selected body, and reports E0204 for ambiguous trait candidates.
+- **Owning gate:** WP-C2.11 (closed).
 
 ## DEV-025 — `pat_subsumes` compared literal patterns by shape only, not value (RESOLVED in
 WP-C1.5)

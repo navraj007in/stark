@@ -1,0 +1,246 @@
+# WP-C2.11 executable evidence for the high-cost frozen semantic surface.
+# Unlike the legacy broad coverage database, every citation names a concrete
+# test function and positive/negative evidence is classified independently.
+
+[meta]
+schema = 1
+owner = "WP-C2.11"
+inventory = "STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md"
+
+[[rule]]
+id = "LEX-ESCAPE-001"
+status = "implemented"
+source = ["starkc/src/lexer.rs", "starkc/src/literal.rs"]
+positive_tests = ["starkc/src/literal.rs::cooked_escapes_decode_bytes_and_unicode_scalars"]
+negative_tests = ["starkc/src/lexer.rs::string_errors"]
+
+[[rule]]
+id = "TYPE-ALIAS-001"
+status = "implemented"
+source = ["starkc/src/typecheck.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::aliases_are_transparent_and_boxed_recursion_is_sized"]
+negative_tests = ["starkc/tests/gate2_valid.rs::alias_cycles_direct_value_recursion_and_bare_unsized_types_are_rejected"]
+
+[[rule]]
+id = "TYPE-WF-001"
+status = "implemented"
+source = ["starkc/src/typecheck.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::aliases_are_transparent_and_boxed_recursion_is_sized"]
+negative_tests = ["starkc/tests/gate2_valid.rs::alias_cycles_direct_value_recursion_and_bare_unsized_types_are_rejected"]
+
+[[rule]]
+id = "TRAIT-ASSOC-001"
+status = "implemented"
+source = ["starkc/src/typecheck.rs", "starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::executes_trait_associated_conversion_functions"]
+negative_tests = ["starkc/src/typecheck.rs::ambiguous_trait_associated_functions_require_qualification"]
+
+[[rule]]
+id = "TRAIT-COHERENCE-002"
+status = "implemented"
+source = ["starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/typecheck.rs::trait_associated_conversion_function_resolves"]
+negative_tests = ["starkc/src/typecheck.rs::positive_bounds_do_not_make_unifying_impl_heads_disjoint"]
+
+[[rule]]
+id = "OWN-CARRY-001"
+status = "implemented"
+source = ["starkc/src/borrowck.rs", "starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/typecheck.rs::generic_reference_fields_propagate_borrows_without_becoming_illegal_fields"]
+negative_tests = ["starkc/src/typecheck.rs::returning_nested_reference_to_local_is_rejected"]
+
+[[rule]]
+id = "PAT-USEFUL-001"
+status = "implemented"
+source = ["starkc/src/typecheck.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::test_distinct_integer_literal_patterns_are_not_flagged_unreachable"]
+negative_tests = ["starkc/tests/gate2_valid.rs::test_duplicate_integer_literal_pattern_is_still_flagged_unreachable"]
+
+[[rule]]
+id = "CONST-DECL-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::constant_subset_is_evaluated_at_compile_time"]
+negative_tests = ["starkc/tests/gate2_valid.rs::constants_reject_runtime_forms_cycles_and_traps"]
+
+[[rule]]
+id = "CONST-SUBSET-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::constant_subset_is_evaluated_at_compile_time"]
+negative_tests = ["starkc/tests/gate2_valid.rs::constants_reject_runtime_forms_cycles_and_traps"]
+
+[[rule]]
+id = "CONST-FAIL-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/tests/gate2_valid.rs::constant_subset_is_evaluated_at_compile_time"]
+negative_tests = ["starkc/tests/gate2_valid.rs::constants_reject_runtime_forms_cycles_and_traps"]
+
+[[rule]]
+id = "NUM-INT-ARITH-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
+negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_and_invalid_operations"]
+
+[[rule]]
+id = "NUM-INT-DIV-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
+negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_and_invalid_operations"]
+
+[[rule]]
+id = "NUM-SHIFT-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
+negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_and_invalid_operations"]
+
+[[rule]]
+id = "NUM-CAST-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
+negative_tests = ["starkc/src/interp.rs::every_integer_width_traps_on_overflow_and_invalid_operations"]
+
+[[rule]]
+id = "NUM-FLOAT-FORMAT-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
+negative_tests = ["starkc/src/typecheck.rs::floating_exponent_operator_is_rejected"]
+
+[[rule]]
+id = "NUM-FLOAT-OP-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
+negative_tests = ["starkc/src/typecheck.rs::floating_exponent_operator_is_rejected"]
+
+[[rule]]
+id = "NUM-FLOAT-TRAIT-001"
+status = "implemented"
+source = ["starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/interp.rs::fixed_width_numeric_boundaries_and_float_rounding_are_observable"]
+negative_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_float_hash_bound_rejected"]
+
+[[rule]]
+id = "TEXT-UTF8-001"
+status = "implemented"
+source = ["starkc/src/lexer.rs", "starkc/src/literal.rs", "starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+negative_tests = ["starkc/src/lexer.rs::string_errors"]
+
+[[rule]]
+id = "TEXT-INDEX-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+negative_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+
+[[rule]]
+id = "TEXT-BOUNDARY-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+negative_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+
+[[rule]]
+id = "TEXT-ITER-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+negative_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+
+[[rule]]
+id = "TEXT-CASE-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+negative_tests = ["starkc/src/interp.rs::unicode_boundaries_split_replace_trim_and_case_expansion_follow_core_contract"]
+
+[[rule]]
+id = "MOD-REEXPORT-001"
+status = "implemented"
+source = ["starkc/src/resolve.rs", "starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/typecheck.rs::public_api_accepts_a_type_made_nameable_by_public_reexport"]
+negative_tests = ["starkc/src/typecheck.rs::public_api_rejects_private_signature_types"]
+
+[[rule]]
+id = "PKG-MANIFEST-001"
+status = "implemented"
+source = ["starkc/src/package.rs"]
+positive_tests = ["starkc/tests/gate2_package.rs::test_dependency_alias_is_distinct_from_canonical_package_name"]
+negative_tests = ["starkc/tests/gate2_package.rs::test_manifest_rejects_aliases_that_are_not_source_identifiers"]
+
+[[rule]]
+id = "PKG-RESOLVE-001"
+status = "implemented"
+source = ["starkc/src/package.rs"]
+positive_tests = ["starkc/tests/gate2_package.rs::test_distinct_aliases_allow_incompatible_major_lines_to_coexist"]
+negative_tests = ["starkc/tests/gate2_package.rs::test_manifest_rejects_constraints_spanning_major_lines"]
+
+[[rule]]
+id = "PKG-VERSION-001"
+status = "implemented"
+source = ["starkc/src/package.rs"]
+positive_tests = ["starkc/tests/gate3_package_resolution.rs::test_version_req_parsing_and_matching"]
+negative_tests = ["starkc/tests/gate3_package_resolution.rs::test_conflicting_constraints_rejected"]
+
+[[rule]]
+id = "PKG-MULTIVER-001"
+status = "implemented"
+source = ["starkc/src/package.rs"]
+positive_tests = ["starkc/tests/gate2_package.rs::test_distinct_aliases_allow_incompatible_major_lines_to_coexist"]
+negative_tests = ["starkc/tests/gate2_package.rs::test_manifest_rejects_constraints_spanning_major_lines"]
+
+[[rule]]
+id = "PROC-MAIN-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/main.rs", "starkc/src/bin/stark.rs"]
+positive_tests = ["starkc/tests/gate3_execution.rs::executable_entrypoint_status_and_stream_contract"]
+negative_tests = ["starkc/tests/gate3_execution.rs::executable_entrypoint_rejects_invalid_forms_and_exit_values"]
+
+[[rule]]
+id = "PROC-EXIT-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/main.rs", "starkc/src/bin/stark.rs"]
+positive_tests = ["starkc/tests/gate3_execution.rs::executable_entrypoint_status_and_stream_contract"]
+negative_tests = ["starkc/tests/gate3_execution.rs::executable_entrypoint_rejects_invalid_forms_and_exit_values"]
+
+[[rule]]
+id = "STD-FORMAT-001"
+status = "implemented"
+source = ["starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::builtin_display_and_hash_are_directly_callable"]
+negative_tests = ["starkc/src/typecheck.rs::floating_exponent_operator_is_rejected"]
+
+[[rule]]
+id = "STD-HASH-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/interp.rs::builtin_display_and_hash_are_directly_callable"]
+negative_tests = ["starkc/tests/gate4a_prelude_traits.rs::test_float_hash_bound_rejected"]
+
+[[rule]]
+id = "STD-IO-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/typecheck.rs"]
+positive_tests = ["starkc/src/interp.rs::file_is_a_first_class_noncopy_resource"]
+negative_tests = ["starkc/tests/gate3_execution.rs::file_io_returns_results_instead_of_silently_failing"]
+
+[[rule]]
+id = "STD-CONVERT-001"
+status = "implemented"
+source = ["starkc/src/typecheck.rs", "starkc/src/interp.rs"]
+positive_tests = ["starkc/src/interp.rs::executes_trait_associated_conversion_functions"]
+negative_tests = ["starkc/src/typecheck.rs::ambiguous_trait_associated_functions_require_qualification"]
+
+[[rule]]
+id = "TRAP-CATEGORY-001"
+status = "implemented"
+source = ["starkc/src/interp.rs", "starkc/src/main.rs", "starkc/src/bin/stark.rs"]
+positive_tests = ["starkc/tests/gate3_execution.rs::executable_entrypoint_status_and_stream_contract"]
+negative_tests = ["starkc/tests/gate3_execution.rs::trap_aborts_without_running_pending_destructors"]
