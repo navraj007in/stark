@@ -266,6 +266,12 @@ track: a bare `None` pattern silently matching any value).
 | DEV-052 | `Trait::method(...)` qualified calls fail to resolve for compiler CoreTraits | Open, unscheduled |
 | DEV-055 | Bare glob-imported unit enum variants do not resolve at all | Open, unscheduled |
 
+> **Post-gate update (2026-07-19, CD-020):** the table above is the accurate record as of gate
+> close and is not rewritten. Since then, DEV-051/052/055 were all closed with real fixes and
+> regression tests in the post-Gate-C2 correction-brief session (which also opened DEV-060,
+> now a C3-ENTRY blocker). Current open-set authority: `COMPILER-STATE.md`'s open-deviation
+> index and `starkc/docs/conformance/KNOWN-DEVIATIONS.md`.
+
 **Net for this gate: 33 deviations closed** (the seventeen WP-C2.2 defects, six WP-C2.11 items,
 DEV-036, the seven post-WP-C2.11 correction-pass items, DEV-053/054), **1 remains partially
 closed** (DEV-017, narrowed but not eliminated), **8 remain fully open** (DEV-005, DEV-010,

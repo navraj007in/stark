@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Regenerate the non-normative combined Core v1 Markdown, HTML, and PDF views."""
+"""Regenerate the non-normative combined Core v1 Markdown, HTML, and PDF views.
+
+`--check` verifies the combined Markdown on disk matches what the normative sources
+would regenerate, without writing anything or invoking pandoc/weasyprint (exit 1 on
+drift). CI uses this for the C3-ENTRY "spec regeneration consistency" baseline check;
+the HTML/PDF views are excluded because their toolchain output is not byte-reproducible.
+"""
 
 from pathlib import Path
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +35,17 @@ def main() -> None:
         raise SystemExit("missing Core source(s): " + ", ".join(missing))
 
     combined = "\n\n\n---\n\n".join(path.read_text(encoding="utf-8").rstrip() for path in SOURCES)
+
+    if "--check" in sys.argv[1:]:
+        on_disk = COMBINED.read_text(encoding="utf-8") if COMBINED.is_file() else ""
+        if on_disk != combined + "\n":
+            raise SystemExit(
+                f"{COMBINED} is out of sync with the normative sources; "
+                "rerun STARKLANG/tools/build-core-spec.py"
+            )
+        print(f"{COMBINED} is in sync with the normative sources")
+        return
+
     COMBINED.write_text(combined + "\n", encoding="utf-8")
 
     subprocess.run(

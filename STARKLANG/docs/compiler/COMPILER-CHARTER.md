@@ -159,7 +159,7 @@ Therefore:
 > methodology, and risk (e.g. how to structure a defect corpus, what a credible comparator looks
 > like), not as license to defer or skip general native compilation. Do not cite those old
 > verdicts as a reason to propose DEFER/STOP for Gate C3 — that outcome no longer exists in the
-> current gate-decision vocabulary (§5.3 of the roadmap).
+> current gate-decision vocabulary (§5.3 of this charter).
 
 ### 1.6 Governing rules — violating any is a wrong implementation
 
@@ -318,7 +318,9 @@ Gate C0 must identify stale documents and either update them or label them histo
 8. Update conformance records for every normative rule whose status changed.
 9. Update `COMPILER-STATE.md` with files, decisions, deviations, evidence, follow-ups, and the
    next WP.
-10. Commit with message `[WP-Cx.y] <summary>`.
+10. Commit with message `[WP-Cx.y] <summary>` — **only on explicit owner request** (owner
+    working convention, recorded in `COMPILER-STATE.md`'s repository baseline; it overrides
+    this step's default of committing every session).
 
 At a gate exit:
 
@@ -401,7 +403,7 @@ Status: not evaluated | SPIKING | SELECTED | REVISE | BLOCKED
 Selected strategy: <generated Rust/C | Cranelift | other approved option | none yet>
 ```
 
-(`GO`/`DEFER`/`STOP` are retired for this section — see §1.2 and roadmap §5.3.)
+(`GO`/`DEFER`/`STOP` are retired for this section — see §1.2 and §5.3 of this charter.)
 
 ### 2.5 Definition-of-done defaults
 

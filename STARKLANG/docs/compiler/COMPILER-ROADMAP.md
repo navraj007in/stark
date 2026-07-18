@@ -632,6 +632,11 @@ below; next C3-ENTRY.
 *Mandatory transition before WP-C3.1. This does not reopen C2; it makes C2 carry-forward
 ownership explicit before native architecture work begins.*
 
+Executable transition work package: `work-packages/WP-C3-ENTRY.md` (created 2026-07-19,
+CD-020) — it carries the named exit artifact (`starkc/docs/compiler/C3-entry-exit.md`), the
+mechanical corpus-freeze definition, per-blocker owners, and "Done when" criteria for the
+closure list below.
+
 Required closure:
 
 - formally approve the six completeness rows still marked `pending-owner-approval`;
@@ -855,6 +860,12 @@ HIR interpreter output/failure
 == MIR interpreter output/failure
 ```
 
+**Carried forward from WP-C2.12 (per C3-ENTRY, CD-018):** this WP co-owns the unfinished
+generated-corpus work (a case generator complementing the hand-written
+`starkc/tests/exec_snapshots/` corpus) with C6.5, and co-owns cross-backend snapshot replay
+with C5.6 and C6.5 — the MIR interpreter must run the frozen execution-snapshot corpus through
+the same harness format, not a parallel one.
+
 ### WP-C4.5 — Complete Core lowering
 
 Add:
@@ -980,6 +991,11 @@ with:
 The frozen C3 application workload must build and run natively.
 The HIR interpreter, MIR interpreter, and native output must agree for every supported case.
 
+**Carried forward from WP-C2.12 (per C3-ENTRY, CD-018):** this WP co-owns cross-backend
+snapshot replay with C4.4 and C6.5 — the native debug build must replay the frozen
+execution-snapshot corpus (supported subset) through the WP-C2.12 harness format before this
+gate closes.
+
 ---
 
 ## GATE C6 — Native Semantic Parity and Cross-Platform Runtime
@@ -1039,7 +1055,7 @@ Tier 1 — required for Native Systems Preview
 - linux-x64
 - macos-arm64
 
-Tier 2 — required for Core v1 Stable
+Tier 2 — required for Core v1 Compiler Stable
 - windows-x64
 
 Tier 3 — supported when CI/toolchain availability justifies it
@@ -1067,6 +1083,11 @@ Compare:
 - returned values where harnessed;
 - trap category and source location;
 - observable drop order in instrumented fixtures.
+
+**Carried forward from WP-C2.12 (per C3-ENTRY, CD-018):** this WP is the final owner of the
+unfinished WP-C2.12 scope — the generated-corpus half (co-owned with C4.4) and full
+cross-backend replay (co-owned with C4.4 and C5.6). C6.5 may not close while either remains
+open or unowned.
 
 ### WP-C6.6 — Gate exit
 

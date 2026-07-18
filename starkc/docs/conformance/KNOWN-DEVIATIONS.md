@@ -1739,8 +1739,13 @@ only through the generic, static-type-free `Display for Value` path), closed by 
 later correction-brief session. DEV-017 remains partially closed
 (tooling built, 39 of 59 rules remain unclassified). DEV-036 is closed (WP-C2.12): the
 filename/path-based module-loader bypass is replaced by an explicit, harness-only opt-in named
-by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 remain open with C2.8/C2.9 decision
-ownership and C2.11 implementation/evidence ownership assigned by WP-C2.6.
+by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 — which WP-C2.6 had assigned C2.8/C2.9
+decision ownership and C2.11 implementation ownership — were all **resolved by WP-C2.11**; see
+their individual entries. (A prior revision of this paragraph, written at WP-C2.6 time, still
+described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
+**Currently open (2026-07-19):** DEV-005 (unowned), DEV-010 (WP-C8.2/C8.3), DEV-011
+(unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled remainder), DEV-060 (C3-ENTRY,
+disposition required before the C3 workload freeze).
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping

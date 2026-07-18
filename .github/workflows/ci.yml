@@ -23,12 +23,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: starkc
+      # Commands match the C3-ENTRY mandatory CI baseline (COMPILER-ROADMAP.md, C3-ENTRY
+      # section) — the full-featured forms, not the narrower charter §2.5 defaults.
       - name: Format
-        run: cargo fmt --check
+        run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
-        run: cargo test
+        run: cargo test --workspace --all-targets --all-features
+      - name: Execution snapshot verification (C3-ENTRY baseline)
+        run: cargo test --test exec_snapshots
 
   fixture-conformance:
     name: spec fixture conformance
@@ -45,6 +49,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: starkc
+      - name: Spec regeneration is in sync with the normative sources (C3-ENTRY baseline)
+        # Markdown only — HTML/PDF regeneration via pandoc/weasyprint is not byte-reproducible.
+        run: python3 STARKLANG/tools/build-core-spec.py --check
       - name: Fixture extraction is in sync with the spec
         run: |
           STARKLANG/tools/extract-spec-examples.sh /tmp/fixtures-check > /dev/null

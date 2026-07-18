@@ -20,6 +20,16 @@ WP-S0.5 Negative and portability corpus
 
 Use the same work-package pattern later for networking and HTTP.
 
+## Relationship to the compiler roadmap's P1 checkpoint
+
+The compiler roadmap (`STARKLANG/docs/compiler/COMPILER-ROADMAP.md` §4.2) defines **P1 — Native
+Systems Baseline**, the mandatory post-C6 checkpoint that gates WP-C7.5/C7.7 closure and the
+Native Systems Preview / STARK v1 General-Purpose Stable release classes. P1's exit criteria
+are delivered by this roadmap: S0–S4 supply the provider contract, process/filesystem/time/
+network capability, and the pure-STARK JSON/HTTP packages, and **S5's standalone server is the
+work that completes P1** — P1 is evaluated against the compiler roadmap's §4.2 exit list, S5 is
+the stage that produces the evidence. S6/S7 are beyond P1's scope.
+
 ---
 
 ## S0 — Native Provider Contract Integration
