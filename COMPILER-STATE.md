@@ -1,17 +1,19 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after CD-008 (HashMap/HashSet iteration order, WP-C2.1)
+Updated: 2026-07-18 after WP-C2.2 (interpreter semantic repair)
 
 ## Position
-Gate: C2  Next: WP-C2.2  Blocked: none
+Gate: C2  Next: WP-C2.3  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Head: 785c1befa5645dfc90652ef72feb7e812502365b (`implement WP-C1.5: control flow, patterns,
-  constants, and numeric semantics`). WP-C1.6's and WP-C1.7's own changes (Gate C1 close) are
-  uncommitted as of this session record; commit only on explicit user request, per standing
-  workflow.
+- Head: 4f9ac141b84e0f527b102fc2d74a19003a4cd061 (`implement WP-C2.1: reference interpreter
+  contract`). This commit already includes WP-C1.6 and WP-C1.7 (Gate C1 close), which were
+  committed together in the prior commit (`fd5af7f`, `implement WP-C1.6 and WP-C1.7`) — this
+  line previously lagged by two commits, not caught until the WP-C2.1 correction pass (external
+  review). The current WP-C2.1 correction pass's own changes are uncommitted as of this session
+  record; commit only on explicit user request, per standing workflow.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
   (083ac5135 2025-12-15)`, `rustc 1.93.0 (254b59607 2026-01-19)`. `starkc/Cargo.toml` declares
@@ -19,7 +21,7 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Test count / suites: `cargo test --workspace --all-targets --all-features` (starkc/):
-  **454 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  **458 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 29 integration-test files**
   (`ls starkc/tests/*.rs | wc -l`, re-counted directly during WP-C1.6's consistency sweep — the
   "3 unittest binaries + 31/32 files" figure quoted in several prior session records below was
@@ -218,6 +220,52 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   iteration time to conform). `STARK-Core-v1.md`/`.html`/`.pdf` regenerated in the same change
   (shared with CD-007). No interpreter code changes needed — `interp.rs`'s `BTreeMap`/`BTreeSet`
   representation already satisfies this rule exactly.
+  **Correction (CD-009, same day, external review):** CD-008 as originally written is broken —
+  `HashMap<K, V>`/`HashSet<T>` only bound `K`/`T: Hash + Eq` (confirmed:
+  `06-Standard-Library.md` lines 271, 293), never `Ord`, so "ascending key order per the key
+  type's `Ord` impl" can require an implementation that isn't guaranteed to exist. It is also
+  inaccurate to describe the interpreter as already satisfying this rule: `interp.rs`'s
+  `BTreeMap`/`BTreeSet` sort by `Value`'s own internal structural `Ord` (a Rust-level total order
+  over the runtime representation), not by dispatching to the STARK key type's own `Ord`
+  implementation (which, per DEV-027 found in this same WP, cannot even be written today). CD-008
+  is left as-is above (append-only — a record of what was decided, even though wrong), superseded
+  by CD-009.
+- CD-009 [2026-07-18, WP-C2.1 correction pass, external review] Corrects CD-008. **User decision:
+  `HashMap`/`HashSet` iterate in first-insertion order**, not sorted-by-key order — no `Ord` bound
+  needed (matches the actual `Hash + Eq` bound), still fully deterministic. Reworded
+  `06-Standard-Library.md`'s "Iteration Order (Core v1)" subsection accordingly (insert appends to
+  iteration order; re-inserting an existing key keeps its position; remove-then-reinsert moves it
+  to the end) and reworded "Performance Notes" to match. `STARK-Core-v1.md`/`.html`/`.pdf`
+  regenerated. **This is now a real, confirmed WP-C2.2 deviation, not a no-op**: `interp.rs`'s
+  `BTreeMap`/`BTreeSet` representation does not track insertion order at all (it sorts by
+  structural `Value::Ord`), so it does not satisfy the corrected rule — recorded as DEV-032.
+- CD-010 [2026-07-18, WP-C2.1 correction pass, external review] Refines CD-007. **User decision:
+  keep "the method receiver evaluates before any argument" as normative** (matching user-defined
+  method dispatch and common OOP convention), rather than changing the rule to match a narrower
+  implementation detail. However, re-reading `interp.rs::call_core_method` (the dispatch path for
+  builtin/stdlib-type methods — `Vec`, `String`, `HashMap`, etc., as opposed to user-defined
+  nominal types) during the same review found it evaluates argument expressions *before*
+  resolving the receiver — the exact opposite of `call_method`/`call_user_method`'s order for
+  user-defined types. CD-007's original claim "no interpreter changes are needed... `interp.rs`
+  already implements exactly this order throughout" is therefore **incorrect** for this one path;
+  left as-is above (append-only), corrected here. Recorded as a new WP-C2.2 deviation, DEV-033 —
+  `call_core_method` needs to resolve the receiver before evaluating arguments, to match the now-
+  confirmed-normative rule and `call_method`'s own behavior for user-defined types.
+- CD-011 [2026-07-18, WP-C2.1 correction pass, external review] DEV-029 (struct/enum field drop
+  order is alphabetical-by-field-name, not declaration order) was recorded as a confirmed
+  deviation, but `05-Memory-Model.md`'s Drop Order section only ever demonstrated reverse-
+  declaration-order for sibling `let` bindings — it never actually stated a rule for a struct's
+  own field-internal drop order; DEV-029's framing called reverse-declaration-order "the only
+  coherent extension" (an inference, not a citation). Flagged to the user rather than left as an
+  inferred deviation (CE1/CE2-shaped). **User decision: amend the spec to state it explicitly.**
+  Added two sentences plus a short example to `05-Memory-Model.md`'s Drop Order section extending
+  the existing rule to struct/enum-variant fields (reverse declaration order). `STARK-Core-v1.md`/
+  `.html`/`.pdf` regenerated (this addition included a new `stark` code block, requiring a spec-
+  fixture re-triage: `05-Memory-Model__22.stark` through `__27.stark` renumbered to `__23`
+  through `__28`, new `__22.stark` triaged `parse-pass`/`program`; verdict census updated to 68/
+  122; `extract-spec-examples.sh` confirms the manifest is back in sync). DEV-029 is now a
+  confirmed, spec-backed deviation rather than an inferred one — its ledger entry updated to cite
+  the new normative text instead of describing the rule as inferred.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -699,9 +747,12 @@ involving nested modules and private items should assume this stricter model.
   syntax, `03-Type-System.md` lines 95–98) crash unconditionally at runtime; the one working
   range-index path (`slice_value`) materializes a copy, not a spec-required view. Full detail:
   `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
-- DEV-029 [CONFIRMED, WP-C2.1, independently re-verified] Struct/enum named-field drop order is
-  reverse-alphabetical-by-field-name (`BTreeMap` iteration artifact), not reverse-declaration
-  order — confirmed empirically invariant to actual declared field order. Full detail:
+- DEV-029 [CONFIRMED, WP-C2.1, independently re-verified, spec citation added under CD-011]
+  Struct/enum named-field drop order is reverse-alphabetical-by-field-name (`BTreeMap` iteration
+  artifact), not reverse-declaration order — confirmed empirically invariant to actual declared
+  field order. Originally recorded against an inferred (not literally cited) extension of the
+  spec's let-binding drop-order rule; CD-011 amended `05-Memory-Model.md` to state the
+  field-order rule explicitly, so this is now a confirmed, spec-backed deviation. Full detail:
   `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
 - DEV-030 [CONFIRMED, WP-C2.1, independently re-verified, HIGH PRIORITY] Pattern-match `_`/
   unbound sub-values of an owned scrutinee are never dropped — a permanent, silent skip of a
@@ -716,6 +767,53 @@ involving nested modules and private items should assume this stricter model.
   `.iter()` as a normal case) — both `typecheck.rs` and `interp.rs` independently agree on the
   narrower set, so this is a real feature gap, not a compile/runtime mismatch. Full detail:
   `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
+- DEV-032 [CONFIRMED, WP-C2.1 correction pass, external review] `HashMap`/`HashSet` iterate in
+  sorted order by `Value`'s internal structural `Ord` (`BTreeMap`/`BTreeSet` representation), not
+  first-insertion order as CD-009 now requires. Found while correcting CD-008 (see CD-009). Full
+  detail: `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
+- DEV-033 [CONFIRMED, WP-C2.1 correction pass, external review] `interp.rs::call_core_method`
+  (builtin/stdlib-type method dispatch — `Vec`, `String`, `HashMap`, etc.) evaluates argument
+  expressions before resolving the receiver, the opposite of `call_method`/`call_user_method`'s
+  order for user-defined types and of CD-007/CD-010's now-confirmed-normative "receiver before
+  arguments" rule. Full detail: `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2.
+- DEV-034 [CONFIRMED, WP-C2.1 correction pass, external review, HIGH SEVERITY] Calling a by-value
+  (`self`, not `&self`/`&mut self`) method on a non-place receiver expression (e.g. a function
+  call: `make_value().consume(...)`) evaluates the receiver expression **twice** — once to select
+  which method to dispatch to (`call_method`'s `clone_expr_place`), once again as the actual bound
+  `self` (`call_user_method`'s `hir::Receiver::Value` arm calling `expect_value(base)` on the
+  original expression). Confirmed empirically: a receiver-constructing function with a `println`
+  side effect printed twice for one logical call. Duplicates any observable side effects in the
+  receiver expression, not just an ordering issue. Full detail:
+  `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2, recommended alongside DEV-030
+  as highest priority (confirmed, unconditional duplication of side effects for a common call
+  shape, not an edge case).
+- DEV-035 [CONFIRMED, WP-C2.1 correction pass, external review, HIGHEST SEVERITY] A `&self`
+  method returning a reference derived from `self` (e.g. `fn value_ref(&self) -> &Int32 { &self.
+  value }`) — a completely ordinary, spec-legal pattern the borrow checker correctly accepts per
+  the shortest-input-lifetime rule (WP-C1.4) — crashes at runtime with `"dangling reference"`
+  whenever the caller actually dereferences the result. Root cause: the returned `Value::Ref`
+  points into the method's own call frame (where `self` was stored), which is popped before the
+  return value reaches the caller. Confirmed empirically with the minimal case from the roadmap
+  text's own worked example shape (a getter returning `&self.field`). This affects essentially
+  every idiomatic accessor/getter method returning a reference, unconditionally — not a rare
+  edge case. Full detail: `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. — owner: WP-C2.2,
+  recommended **the** highest-priority item in the entire ledger: it is a compile-accepts/
+  runtime-always-crashes gap for a large, common, spec-legal program shape, more severe in
+  practical impact than DEV-030/DEV-034 despite none of the three being a host-memory-safety bug.
+- DEV-036 [CONFIRMED, WP-C2.1 correction pass, external review] `parser.rs::
+  load_submodules_recursive` still suppresses "file not found for module" (E0202) whenever the
+  current file's name is exactly `"test.stark"`, or contains the substring `"spec-fixtures"` or
+  `"STARKLANG"` — a narrower, deliberately-kept residual of the heuristic DEV-014 mostly removed
+  (WP-C1.1 removed the far more dangerous `env::args()`-based bypass but kept this filename-based
+  one for one legitimate fixture). A real user project whose path happens to contain any of these
+  substrings (e.g. a directory literally named `STARKLANGClone`, or an entry file named exactly
+  `test.stark`) would silently accept a genuinely missing module file instead of reporting E0202
+  — the same class of silent failure DEV-014 was originally about, at lower but non-zero
+  likelihood. Not previously flagged as a residual risk when DEV-014 closed. — owner: unscheduled;
+  proposed disposition is to stop keying off the file name entirely and instead mark the one
+  legitimate fixture (`07-Modules-and-Packages__01.stark`) as exempt via the spec-fixture
+  manifest's own triage data (already structured, machine-readable) rather than a runtime
+  string-match against the compiled file's path.
 
 ## Architecture decisions
 - AD-001 [pre-existing, old Gate 5] Native artifact-deployment backend is **ONNX Runtime via the
@@ -1625,7 +1723,7 @@ CE-escalation-watch commitment; both were settled in the same session — see CD
 below (Decision log) and the DECISIONS line of this record for the outcome and the resulting
 spec edits.
 FILES: STARKLANG/docs/compiler/reference-execution.md (new), STARKLANG/docs/compiler/
-work-packages/WP-C2.1.md (new), starkc/docs/spec/03-Type-System.md (new "Evaluation Order (Core
+work-packages/WP-C2.1.md (new), STARKLANG/docs/spec/03-Type-System.md (new "Evaluation Order (Core
 v1)" subsection, CD-007), STARKLANG/docs/spec/06-Standard-Library.md (new "Iteration Order (Core
 v1)" subsection + reworded Performance Notes line, CD-008), STARKLANG/docs/spec/STARK-Core-v1.md/
 .html/.pdf (regenerated), starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-026 through DEV-031,
@@ -1651,4 +1749,144 @@ were added, only prose), `check-conformance.py` still exits 0.
 FOLLOW-UP: DEV-026 through DEV-031 all carry forward into WP-C2.2 (interpreter semantic repair),
 DEV-030 flagged as the priority item among them. CD-007/CD-008 are fully settled, nothing further
 needed before Gate C3.
+**Correction pass note (see the dated entry immediately below):** this FOLLOW-UP line and the
+"fully settled" claim above are superseded — CD-008 was found broken the same day and corrected
+under CD-009, and CD-007 was refined under CD-010 after finding a real gap it didn't account for.
+Left as-is here (append-only); see the WP-C2.1 correction-pass record for the current state.
+
+### WP-C2.1 correction pass — 2026-07-18 (external review)
+DONE: A detailed external review of the `4f9ac14` commit found three blocking semantic problems
+and several documentation inconsistencies. Every factual claim in the review was independently
+verified against real source/spec text before acting on it (not trusted blindly) — all checked
+out:
+- **CD-008 (HashMap/HashSet iteration order) was broken as written.** `HashMap<K, V>`/
+  `HashSet<T>` only bind `K`/`T: Hash + Eq`, never `Ord` (confirmed:
+  `06-Standard-Library.md` lines 271, 293) — "ascending key order per the key type's `Ord`
+  implementation" can require an impl that isn't guaranteed to exist. Also confirmed the
+  "interpreter already satisfies this" claim was itself wrong: `interp.rs`'s `BTreeMap`/
+  `BTreeSet` sort by `Value`'s internal structural `Ord`, not by dispatching to the STARK key
+  type's own `Ord` (which independently doesn't work at all — DEV-027). Flagged back to the user;
+  **decision: first-insertion order**, no `Ord` bound needed. Corrected under **CD-009**; DEV-032
+  recorded (interpreter doesn't implement insertion order either).
+- **CD-007 (method receiver evaluates before arguments) wasn't uniformly true.** Re-reading
+  `interp.rs::call_core_method` (builtin/stdlib-type method dispatch) confirmed it evaluates
+  arguments *before* resolving the receiver — the opposite of `call_method`'s order for
+  user-defined types, and the review's claim "not assigned a DEV number" was correct: it wasn't.
+  Flagged back to the user; **decision: keep receiver-first as normative**, matching user-defined
+  dispatch and OOP convention. Corrected under **CD-010**; DEV-033 recorded (`call_core_method`
+  needs a fix).
+- **A genuine double-evaluation bug**, not previously found: for a by-value (`self`, not
+  `&self`/`&mut self`) method call on a non-place receiver expression, the receiver expression
+  evaluates twice (once for dispatch, once again as the actual bound `self`). Verified with the
+  review's exact repro shape — a `println` inside the receiver-constructing function printed
+  twice for one logical call. Recorded as **DEV-034**.
+- **A genuine dangling-reference crash**, not previously found: a `&self` method returning a
+  reference derived from `self` (an entirely ordinary, spec-legal, borrow-checker-approved
+  pattern) crashes at runtime with `"dangling reference"`, unconditionally, because the returned
+  `Value::Ref` points into the method's own call frame, which is popped before the return value
+  reaches the caller. Verified with the review's exact repro (a getter returning `&self.field`).
+  This affects essentially every idiomatic accessor returning a reference. Recorded as
+  **DEV-035**, the highest-priority item in the entire ledger — more severe in practical impact
+  than DEV-030/DEV-034 despite none of the three being a host-memory-safety bug.
+- **DEV-029 (field drop order) was recorded with more certainty than the spec actually
+  supported** — its "the only coherent extension" framing was an inference, not a citation.
+  Flagged back to the user; **decision: amend the spec.** `05-Memory-Model.md`'s Drop Order
+  section now states the field-order rule explicitly (**CD-011**). This required a spec-fixture
+  re-triage (a new `stark` code block shifted `05-Memory-Model__22.stark` through `__27.stark` up
+  by one; new `__22.stark` triaged `parse-pass`/`program`; verdict census 68/122;
+  `extract-spec-examples.sh` confirms the manifest is back in sync).
+- **`reference-execution.md` was stale within its own commit** — it still used "spec-silent"/
+  "NEW — not yet in the ledger"/CE1/CE2-flag language for things the same commit had already
+  resolved (CD-007/CD-008, DEV-026 through DEV-031). Full pass: replaced with post-decision
+  language throughout, attached real DEV-NNN numbers everywhere a placeholder existed, added new
+  §2.6 (DEV-034) and §4.3a (DEV-035), rewrote §1's evaluation-order status and §10.3's HashMap
+  section end to end, rewrote the "Summary of findings" table.
+- **The "strictly left to right" opening line of `03-Type-System.md`'s new Evaluation Order
+  section contradicted its own assignment rule** (RHS evaluates before the LHS place, even
+  though the place is written first). Reworded to "evaluation order is defined construct by
+  construct below," with the assignment exception called out explicitly.
+- **`COMPILER-STATE.md`'s own Repository baseline was stale** — the `Head` field still cited
+  `785c1be` (two commits behind `4f9ac14`) and described WP-C1.6/C1.7 as uncommitted, when they
+  had already landed in `fd5af7f`. Corrected.
+- **A path typo**: `starkc/docs/spec/03-Type-System.md` should have read
+  `STARKLANG/docs/spec/03-Type-System.md` in the WP-C2.1 FILES line. Corrected.
+- **A real, previously-unflagged residual risk**: `parser.rs`'s filename-based module-file-lookup
+  bypass (kept narrower after DEV-014's WP-C1.1 fix, for one legitimate spec fixture) can still
+  silently suppress a genuinely missing module file's error for a real user project whose path
+  happens to contain `"spec-fixtures"`/`"STARKLANG"`, or whose entry file is named exactly
+  `test.stark`. Not a new bug (present since WP-C1.1), but never recorded as its own deviation.
+  Recorded as **DEV-036**, unscheduled.
+FILES: STARKLANG/docs/spec/03-Type-System.md (Evaluation Order wording fix), STARKLANG/docs/spec/
+06-Standard-Library.md (Iteration Order section rewritten, Performance Notes reworded),
+STARKLANG/docs/spec/05-Memory-Model.md (new field-drop-order paragraph + example, CD-011),
+STARKLANG/docs/spec/STARK-Core-v1.md/.html/.pdf (regenerated), STARKLANG/tests/spec-fixtures/
+manifest.toml + 05-Memory-Model__22.stark through __28.stark (re-triaged after the new code
+block), STARKLANG/docs/compiler/reference-execution.md (extensive corrections, see above),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-029 updated, DEV-032 through DEV-036 new),
+COMPILER-STATE.md.
+RULES: none — no conformance-database rule-level citations touched.
+DECISIONS: **CD-009** (HashMap/HashSet iteration order corrected to first-insertion, superseding
+CD-008), **CD-010** (CD-007 refined: receiver-first stays normative, `call_core_method`'s
+divergence recorded as DEV-033), **CD-011** (struct/enum field drop order added to
+`05-Memory-Model.md` as normative, confirming DEV-029). All three were flagged to the user as
+CE1/CE2-shaped decisions before being resolved, per standing practice, and all three were
+resolved in the same session.
+EVIDENCE: MANUAL + REG — every claim in the external review was independently re-verified against
+real source/spec text or a fresh empirical repro before being acted on (the double-evaluation and
+dangling-reference bugs were reproduced from scratch, not assumed correct from the review's
+description alone). `cargo test --workspace --all-targets --all-features`: 454 passed/0 failed/2
+ignored, unchanged (still no interpreter source touched — this remains a documentation/spec-only
+correction pass; DEV-034/035/036 describe interpreter/parser bugs but WP-C2.2 owns fixing them,
+not this pass). `cargo fmt --check`/clippy: unaffected. Spec regeneration verified: fixture
+extraction now correctly reports 122 fixtures (was 121) and the manifest is in sync;
+`check-conformance.py` still exits 0; `cargo test --test conformance` still passes with the
+re-triaged 05-Memory-Model fixtures.
+FOLLOW-UP: DEV-032 through DEV-036 join DEV-026 through DEV-031 as WP-C2.2's repair list.
+Updated severity ranking for WP-C2.2 to consult: DEV-035 (highest), then DEV-034, then DEV-030,
+then the remaining findings. DEV-036 (parser bypass) is unscheduled, not owned by WP-C2.2 (it's a
+parser fix, not an interpreter semantic-repair fix) — needs its own triage.
 NEXT: WP-C2.2 (interpreter semantic repair)
+
+### WP-C2.2 — 2026-07-18
+DONE: Interpreter semantic repair. Closed all ten inherited, owned execution deviations
+(DEV-026 through DEV-035) against the decision-complete reference contract and converted each
+establishing repro into permanent regression coverage. Method dispatch is inherent-first
+(DEV-026); `Ordering` is a resolvable/runtime prelude type and nominal comparisons dispatch
+through `Ord::cmp` (DEV-027); range indexing now produces real slice views whose scalar
+projections read/write the original aggregate (DEV-028); named fields drop in reverse
+declaration order, including partial-pattern cleanup (DEV-029); owned match scrutinee subtrees
+not transferred to bindings are dropped exactly once while borrowed scrutinees remain borrowed
+(DEV-030); `for` accepts standard adapters and nominal `Iterator` implementations using their
+`Item` type/`next` protocol (DEV-031); `HashMap`/`HashSet` preserve first-insertion order with
+replacement and remove/reinsert semantics (DEV-032); core method receivers resolve once before
+arguments (DEV-033); by-value receiver expressions evaluate once (DEV-034); and references
+derived from `&self`/`&mut self` are rebased from the popped method frame to the caller receiver
+place (DEV-035).
+Found one adjacent, pre-existing runtime mismatch while exercising DEV-035: field/tuple/index
+projection through a reference type-checked but projected directly on the `Value::Ref` wrapper
+at runtime. Recorded and closed as DEV-037 by normalizing projection bases through reference
+chains, with a focused regression. No normative text change was required; the fix is mechanical
+against existing auto-dereference rules.
+FILES: starkc/src/hir.rs, starkc/src/resolve.rs, starkc/src/typecheck.rs, starkc/src/interp.rs,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md, and the already-created
+STARKLANG/docs/compiler/work-packages/WP-C2.2.md. The WP-C2.1 correction-pass spec/reference
+documents and regenerated artifacts remain part of the same uncommitted worktree but were not
+re-authored by this completion pass.
+RULES: none — this WP repairs interpreter behavior against the already-cited reference contract;
+it does not change the conformance coverage database.
+DECISIONS: none. DEV-028 was implemented with a local runtime slice-view value (base place plus
+half-open bounds), avoiding the CE3-shaped expansion of the general `Projection` model warned
+about in the WP charter. No compile-time check was weakened and no public API beyond the
+normatively required `Ordering` prelude type was introduced.
+EVIDENCE: REG + FULL — focused regressions cover every closed deviation and the adjacent
+DEV-037 finding. `cargo test --workspace --all-targets --all-features`: 458 passed/0 failed/
+2 ignored (up from 454/0/2; four net new tests after consolidating related cases).
+`cargo fmt --all -- --check` clean; `cargo clippy --all-targets --all-features -- -D warnings`
+clean; `git diff --check` clean; `scripts/check-conformance.py` exits 0 (53/59 rules implemented
+or partially evidenced, unchanged by this runtime-only WP).
+FOLLOW-UP: DEV-009 (`File` runtime representation), DEV-023 (builtin `Display`/`Hash` callable
+methods), and DEV-024 (`From::from` associated resolution) remain open optional candidates; the
+WP charter scoped them only "as capacity allows," and none is part of the inherited owned
+DEV-026..035 closure claim. DEV-036 remains open/unscheduled and parser-owned, explicitly outside
+this WP. No other owned interpreter repair carries forward.
+NEXT: WP-C2.3 (shared project-analysis entry point)

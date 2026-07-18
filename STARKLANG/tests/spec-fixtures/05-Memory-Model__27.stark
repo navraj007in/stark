@@ -1,6 +1,4 @@
-let data = RefCell::new(42);
-{
-    let mut borrowed = data.borrow_mut();  // Runtime borrow check
-    *borrowed = 43;
-}
-// data.borrow() now yields 43
+let data = Rc::new(some_value);
+let reference1 = data.clone();   // Increment reference count
+let reference2 = data.clone();   // Increment reference count
+// Data deallocated when all references dropped

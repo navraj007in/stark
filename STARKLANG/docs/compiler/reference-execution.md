@@ -19,27 +19,35 @@ observed.
 
 Function/line references to `interp.rs` are to `starkc/src/interp.rs` at the working-tree state
 used for this WP (post–WP-C1.7, pre–WP-C2.2; see `COMPILER-STATE.md`'s Position line, Gate C2,
-next WP-C2.1). Deviation IDs already present in the ledger (`starkc/docs/conformance/
-KNOWN-DEVIATIONS.md`, summarized in `starkc/docs/compiler/C1-exit-report.md`) are cited by
-DEV-NNN. Deviations newly found while writing this document are marked **NEW — not yet in the
-ledger**; three of the six (the ones judged highest-stakes) were independently re-verified via a
-fresh empirical repro during this WP's own review pass, not just trusted from the drafting
-research (see the "Findings requiring a decision" section at the end of this document for which
-three, and why).
+next WP-C2.1). All findings below are recorded in the deviation ledger
+(`starkc/docs/conformance/KNOWN-DEVIATIONS.md`) as DEV-026 through DEV-036, cited by number
+throughout. **Two rounds of findings are folded into this document.** The initial drafting pass
+found six deviations (DEV-026–031) and two spec-silent gaps (evaluation order, `HashMap`/
+`HashSet` iteration order); three of the six were independently re-verified via a fresh empirical
+repro during the drafting WP's own review pass before the document was finalized. An external
+review of that finalized document then caught that the drafting pass's proposed resolutions for
+both spec-silent gaps had real problems (see §2.4 and §10.3 below for what changed and why), and
+independently found two further, more severe deviations the drafting pass missed entirely
+(DEV-034, a confirmed double-evaluation bug; DEV-035, a confirmed dangling-reference crash on an
+ordinary `&self` accessor pattern — see §2.6 and §4.3a). Both spec-silent gaps are now settled
+(CD-007/CD-009/CD-010/CD-011); every deviation below is a confirmed, ledgered finding, not a
+provisional one.
 
 ---
 
 ## 1. Evaluation order
 
-**Spec status: largely silent.** A full-text search of `STARKLANG/docs/spec/*.md` for
-"evaluat[e/ion]" and "order" turns up no section addressing subexpression evaluation order for
-binary operators, call arguments, method-call receiver-vs-arguments, aggregate-literal fields, or
-assignment left/right-hand sides. This is a **named spec gap** for this document to disclose, not
-a rule to invent — spec silence on a required topic is CE1/CE2-shaped and is flagged here for
-user disposition rather than resolved unilaterally. The subsections below state what `interp.rs`
-**currently, observably** does; that is evidence about the reference implementation's behavior,
-not a normative claim, until the spec is amended (or a CD/AD record affirmatively adopts one of
-these orders as the rule).
+**Status: settled, CD-007/CD-010.** This section originally found the spec almost entirely
+silent on subexpression evaluation order and flagged it for a decision rather than asserting a
+rule unilaterally. The user settled it the same day: `03-Type-System.md`'s new "Evaluation
+Order (Core v1)" section (added under CD-007) adopts the interpreter's observed left-to-right
+order as normative for every construct below. A same-day external review then caught that the
+section's opening line ("strictly left to right") was itself in tension with the assignment
+rule (right-hand side before the left-hand-side place, even though the place is written first)
+— corrected in the spec to "evaluation order is defined construct by construct below," with the
+assignment exception called out explicitly. The subsections below now state the **normative**
+rule for each construct (cited to the corrected spec section) alongside the confirming
+`interp.rs` evidence, rather than "observed, not yet normative" language.
 
 Two sub-cases *are* spec-derivable, not silent, and are marked as such below: short-circuit
 `&&`/`||`, and `if`/`match` condition-before-branch. Both follow necessarily from how those
@@ -69,15 +77,16 @@ also spec-implied (an earlier arm that would match must win, since exhaustivenes
 matching in `04-Semantic-Analysis.md` §5 treat arms as an ordered sequence of guards, e.g. a
 wildcard arm placed last is not treated as ambiguous with earlier specific arms).
 
-### 1.3 Binary operator operands (non-short-circuit) — spec-silent, observed order documented
+### 1.3 Binary operator operands (non-short-circuit) — normative, CD-007
 `interp.rs::eval_expr`, `ExprKind::Binary` (lines 738–742, non-`And`/`Or` case): evaluates `lhs`
 via `expect_value`, then `rhs` via `expect_value` — left operand fully evaluated (including any
 side effects, e.g. from a call in `lhs`) before the right operand is evaluated at all.
 
-*Spec status*: silent. No normative citation exists for this order. This is exactly the class
-of gap this WP anticipated — flagged for user disposition, not asserted as a rule here.
+`03-Type-System.md` "Evaluation Order (Core v1)": "the left operand evaluates fully before the
+right operand begins." **Matches spec** (this rule was adopted *from* this observed behavior
+under CD-007).
 
-### 1.4 Function call arguments — spec-silent, observed order documented
+### 1.4 Function call arguments — normative, CD-007
 `interp.rs::eval_call` (lines 1164–1238): for every callee shape (`Res::Builtin`, `Res::Item`,
 `Res::Variant`, `Res::AssociatedFn`, function-pointer value), arguments are evaluated via
 `args.iter().map(|arg| self.expect_value(*arg)).collect::<Result<Vec<_>, _>>()` — Rust's
@@ -85,33 +94,39 @@ of gap this WP anticipated — flagged for user disposition, not asserted as a r
 observed behavior is strict left-to-right evaluation with a short-circuit on the first runtime
 error/trap.
 
-*Spec status*: silent (06-Standard-Library.md documents function *signatures*, never argument
-evaluation order).
+`03-Type-System.md` "Evaluation Order (Core v1)": "arguments evaluate left to right, before the
+call itself executes." **Matches spec.**
 
-### 1.5 Method call: receiver vs. arguments — spec-silent, observed order documented
+### 1.5 Method call: receiver vs. arguments — normative for user-defined types, CONFIRMED DEVIATION for core/builtin types (DEV-033)
 `interp.rs::call_method` (lines 1538–1563): for a user/nominal-type method, the receiver place is
 resolved and cloned (`clone_expr_place(base)`, line 1551) and dereferenced **before** any argument
 expression is evaluated (`args.iter().map(...)`, lines 1557–1560). Symmetrically,
 `call_qualified_trait` (lines 1565–1593) resolves the first (receiver) argument before the rest.
-For core/builtin-type methods (`call_core_method`, line 1784), argument expressions are evaluated
-first (line 1792–1795), and the receiver place is resolved lazily per-operation inside each
-`name == "..."` branch — i.e. the *observed* receiver-vs-argument order differs between the
-user-method path (receiver first) and the core-method path (arguments first), an internal
-inconsistency worth noting even before any spec citation is available.
 
-*Spec status*: silent. `03-Type-System.md`'s "Method Calls and Auto-Borrowing" (lines 486–514)
-specifies *how* a receiver is coerced (which `self` form is chosen) but not *when*, relative to
-arguments, it is evaluated.
+`03-Type-System.md` "Evaluation Order (Core v1)": "the receiver evaluates before any argument;
+arguments then evaluate left to right." **Matches spec for user-defined (nominal) types.**
 
-### 1.6 Struct / tuple / array literal fields — spec-silent, observed order documented
+**Confirmed deviation (DEV-033).** For core/builtin-type methods (`call_core_method`, line 1784
+— `Vec`, `String`, `HashMap`, etc.), argument expressions are evaluated *first* (line 1792–1795),
+and the receiver place is resolved lazily per-operation inside each `name == "..."` branch
+afterward — the opposite order from the now-confirmed-normative rule, and inconsistent with
+`call_method`'s own behavior for user-defined types. This was originally flagged in this
+document's drafting as "an internal inconsistency worth noting even before any spec citation is
+available"; once the receiver-first rule became normative (CD-007, refined under CD-010 during
+the same-day correction pass after external review), this inconsistency became a confirmed,
+numbered deviation rather than just an observation. See DEV-033 in
+`starkc/docs/conformance/KNOWN-DEVIATIONS.md` for full detail.
+
+### 1.6 Struct / tuple / array literal fields — normative, CD-007
 `interp.rs::eval_struct_lit` (lines 2528–2567): fields evaluated via a `for field in fields`
 loop in the order the HIR carries them, which is parse/source order — left to right, sequential.
 `ExprKind::Tuple`/`ExprKind::Array` (lines 794–805): same left-to-right `.map`/`.collect` pattern
 as call arguments.
 
-*Spec status*: silent.
+`03-Type-System.md` "Evaluation Order (Core v1)": "fields/elements evaluate left to right, in the
+order written." **Matches spec.**
 
-### 1.7 Assignment: right-hand side vs. left-hand-side place — spec-silent, observed order documented
+### 1.7 Assignment: right-hand side vs. left-hand-side place — normative, CD-007 (the one non-left-to-right exception)
 `interp.rs::eval_expr`, `ExprKind::Assign` (lines 744–754):
 ```rust
 let right = self.expect_value(*rhs)?;
@@ -121,20 +136,23 @@ self.write_place(&place, value, expr.span)?;
 ```
 The **right-hand side is fully evaluated before the left-hand-side place is resolved at all** —
 including any side effects the place expression's own subexpressions might have (e.g. an index
-expression on the LHS: `arr[f()] = g();` evaluates `g()` before `f()`). This is a real,
-non-obvious observed order (many C-family languages evaluate the LHS place first) and is exactly
-the kind of thing a spec should pin down but currently does not.
+expression on the LHS: `arr[f()] = g();` evaluates `g()` before `f()`).
 
-*Spec status*: silent.
+`03-Type-System.md` "Evaluation Order (Core v1)": "the right-hand side evaluates fully before the
+left-hand-side place is resolved... side effects in a place expression's own subexpressions...
+run *after* the right-hand side." **Matches spec.** This is the construct the spec's own
+"Evaluation Order" section calls out as the exception to its general left-to-right framing (a
+same-day external review caught that the section's original "strictly left to right" opening
+line was in tension with this exact rule — corrected).
 
-### 1.8 Index: base vs. index — spec-silent, observed order documented
+### 1.8 Index: base vs. index — normative, CD-007
 `interp.rs::expr_place`, `ExprKind::Index` (lines 2784–2789): resolves the *base* place first
 (`self.expr_place(*base)?`), then evaluates the index expression (`self.expect_int(*index)?`).
 The value-context Index path (`eval_expr`, lines 772–780) similarly resolves/clones the base
 place before consulting the index's static type to route to `slice_value` or a scalar place read.
 
-*Spec status*: silent; `03-Type-System.md`'s Array Types section (lines 92–98) specifies bounds-
-checking/trap behavior but not evaluation order between base and index.
+`03-Type-System.md` "Evaluation Order (Core v1)": "the base expression resolves to a place before
+the index expression evaluates." **Matches spec.**
 
 ---
 
@@ -191,7 +209,7 @@ Normative algorithm: `03-Type-System.md` "Method Calls and Auto-Borrowing" (line
   method name; falls back to the trait's own default-method body if the impl block doesn't
   override it (WP-C1.3/DEV-013 fix, closed).
 
-**Known deviation (NEW — not yet in the ledger).** `find_method`'s "first impl block found, in
+**Confirmed deviation (DEV-026).** `find_method`'s "first impl block found, in
 HIR item order" rule does not implement "inherent methods shadow trait methods" (spec rule 1
 above, line 493). With a struct `Thing`, a trait `Speak` supplying a default `fn say(&self) ->
 String { "trait-default" }`, `impl Speak for Thing { }` (using the default), and a separate
@@ -230,7 +248,7 @@ line 527–529, so this is never a *dispatch* question at runtime, just a direct
   String|Str)`. **There is no struct/enum arm at all** — anything else falls through to the
   final `_ => Err("invalid binary operation")`.
 
-**Known deviation (NEW — not yet in the ledger, independently re-verified during this WP's own
+**Confirmed deviation (DEV-027, independently re-verified during this WP's own
 review pass — see "Findings requiring a decision"), two-part finding:**
 
 (a) The prelude `Ordering` enum (`06-Standard-Library.md` lines 76–81, "enum Ordering { Less,
@@ -256,7 +274,7 @@ then crash at runtime with `"invalid binary operation"` on reaching `eval_binary
 of gap `<`/`>` had for `==`/`!=` before DEV-008's fix. This is a compile-time/runtime **mismatch**
 of exactly the kind Gate C2 exists to surface: typecheck.rs is (partially) ready for a feature
 that has no working runtime implementation, and no working way to even author the required trait
-method body today. Not present in `KNOWN-DEVIATIONS.md` under any existing DEV-NNN.
+method body today. Recorded as DEV-027.
 
 ### 2.5 Default trait-method fallback
 Spec: `03-Type-System.md` implies default bodies are usable by any implementer (trait method with
@@ -266,6 +284,31 @@ free functions outside traits — `06-Standard-Library.md` line 10–11). `find_
 back to the trait's own default-method body (`TraitItem::Method { body: Some(body), .. }`).
 **Matches spec** (modulo the priority-ordering deviation in §2.2 above, which affects which impl
 block's default/override is reached first, not whether defaults work at all).
+
+### 2.6 By-value receiver expressions are evaluated twice — CONFIRMED DEVIATION (DEV-034), found by external review
+
+**§1's evaluation-order rules implicitly assume each subexpression evaluates exactly once** — an
+ordering rule presupposes a single evaluation to order against others. `call_method` (§2.2, line
+1551) evaluates the receiver expression once via `clone_expr_place` purely to determine dispatch
+(which method/impl to call) — for a non-place receiver expression (e.g. a function call), this
+stores the one-time result in a synthetic temporary place (§3). But `call_user_method`'s
+`hir::Receiver::Value` arm (line 1710, reached when the called method takes `self` by value, not
+`&self`/`&mut self`) calls `self.expect_value(base)?` — **re-evaluating the original receiver
+expression from scratch**, completely independent of the dispatch-time evaluation, rather than
+reusing the already-computed `borrowed_receiver` value `call_method` passes in.
+
+Confirmed empirically:
+```stark
+struct Counter { n: Int32 }
+impl Counter { fn consume(self) -> Int32 { self.n } }
+fn make_counter() -> Counter { println("making"); Counter { n: 1 } }
+fn main() -> Unit { let r = make_counter().consume(); println(r); }
+```
+prints `making` **twice** for one call to `make_counter()` — any observable side effect in a
+by-value method's receiver expression is silently duplicated. This is not a rare shape:
+`expr.consume_style_method()` where `expr` is itself a call or computed expression is ordinary
+method-chaining. See DEV-034 in `starkc/docs/conformance/KNOWN-DEVIATIONS.md` for full detail and
+the proposed fix (reuse `borrowed_receiver` instead of re-evaluating `base`).
 
 ---
 
@@ -313,7 +356,7 @@ with `None`, and error with `"use of moved value"` if the slot was already `None
 *written* via `write_place` (lines 3084–3090): replace the slot's value, and if a previous value
 existed, run `drop_value` on it (see §6).
 
-**Known deviation (NEW — not yet in the ledger).** `03-Type-System.md`'s Array Types section
+**Confirmed deviation (DEV-028).** `03-Type-System.md`'s Array Types section
 (lines 95–98) is explicit and normative: `expr[r]` where `r` is a `Range` denotes a place of
 unsized slice type `[T]`, and specifically states `&expr[r]` has type `&[T]` and `&mut expr[r]`
 has type `&mut [T]` — i.e. taking a reference to a range-indexed place is spec-mandated syntax.
@@ -330,8 +373,8 @@ mutable spec-mandated slice-place forms crash unconditionally. (The *value*-cont
 `eval_expr`'s `Index` arm at lines 772–777, does handle a `Range`-typed index correctly via
 `slice_value` — see §4's note on slice materialization — but that path is only reached when the
 index expression is not being placed under `&`/`&mut`, i.e. `expr_place` is never consulted for
-it; `&`/`&mut` always route through `expr_place` via `UnOp::Ref`, line 714.) Not present in
-`KNOWN-DEVIATIONS.md` under any existing DEV-NNN.
+it; `&`/`&mut` always route through `expr_place` via `UnOp::Ref`, line 714.) Recorded as
+DEV-028.
 
 ---
 
@@ -387,18 +430,58 @@ pointer would — this is the property that makes the representation a faithful 
 implementation-specific) stand-in for "pointer," matching the spirit if not the letter of
 "references are just pointers" (`05-Memory-Model.md` line 395, under "Zero-Cost Abstractions").
 
-One documented nuance, not a spec violation but worth recording precisely: for a **method-call
-receiver** specifically, `call_method`/`call_qualified_trait` first take a value-level *clone* of
-the (dereferenced) receiver purely to decide *which* method/impl to dispatch to
-(`clone_expr_place` + `deref_value`, §2.2) — that clone is discarded after dispatch selection.
-The value actually bound as `self` inside the method body follows the method's declared
-`hir::Receiver` kind: `Receiver::Ref` rebinds that same snapshot clone (sound, since Core v1 has
-no interior mutability — no `RefCell` yet, `05-Memory-Model.md` line 364 marks it "Future" — so a
-`&self` method cannot observably distinguish a live alias from a frozen snapshot taken at call
-time); `Receiver::RefMut` instead round-trips through the real `Place` via `take`/later
-`write_place` (`call_user_method`, lines 1712–1719, 1752–1758), so mutations through `&mut self`
-are genuinely written back. `Receiver::Value` re-evaluates the receiver expression itself
-(`self.expect_value(base)?`), a real second evaluation/move, not reuse of the dispatch-time clone.
+For a **method-call receiver** specifically, `call_method`/`call_qualified_trait` first take a
+value-level *clone* of the (dereferenced) receiver purely to decide *which* method/impl to
+dispatch to (`clone_expr_place` + `deref_value`, §2.2) — that clone is discarded after dispatch
+selection. The value actually bound as `self` inside the method body follows the method's
+declared `hir::Receiver` kind:
+- `Receiver::Value` **re-evaluates the receiver expression itself**
+  (`self.expect_value(base)?`) rather than reusing the dispatch-time clone — this is not a benign
+  redundancy: it is DEV-034 (§2.6), a confirmed double-evaluation bug whenever the receiver
+  expression is not a simple place.
+- `Receiver::RefMut` round-trips through the real `Place` via `take`/later `write_place`
+  (`call_user_method`, lines 1712–1719, 1752–1758), so mutations through `&mut self` are
+  genuinely written back to the caller's storage.
+- `Receiver::Ref` rebinds the dispatch-time snapshot clone directly, reasoned in this document's
+  original drafting as "sound, since Core v1 has no interior mutability... so a `&self` method
+  cannot observably distinguish a live alias from a frozen snapshot taken at call time." **That
+  reasoning is correct only for what the method body itself *reads* through `self` during the
+  call — it does not account for a value *returned* from the method that is derived from `self`
+  and outlives the call.** `self` is stored as a value inside the method's own call frame; a
+  returned `&self.field` is a `Value::Ref` pointing into that frame, and the frame is popped
+  before the return value reaches the caller. See DEV-035 (a confirmed, high-severity finding)
+  immediately below — the snapshot-clone design for `Receiver::Ref` is the direct cause.
+
+### 4.3a Returned references derived from `&self` dangle after the method frame is popped — CONFIRMED DEVIATION (DEV-035), found by external review
+
+`03-Type-System.md`'s shortest-input-lifetime rule (References and Lifetimes, requalified under
+WP-C1.4's borrow checker work) makes returning a reference derived from a reference parameter —
+including `&self` — an entirely ordinary, spec-legal, borrow-checker-approved pattern. A method
+such as `fn value_ref(&self) -> &Int32 { &self.value }` must work; the borrow checker correctly
+accepts it (the *static* analysis is sound). But at runtime, `self` lives in the method's own
+call frame (pushed by `call_user_method`), so `&self.value` evaluates to a `Value::Ref` whose
+`Place` points into that frame. `call_user_method` pops the frame (`cleanup_current_frame` then
+`self.frames.pop()`) **before** the return value reaches the caller — the returned `Value::Ref`
+now points at a frame slot that either no longer exists or has been reused by an unrelated frame.
+
+Confirmed empirically:
+```stark
+struct BoxedValue { value: Int32 }
+impl BoxedValue { fn value_ref(&self) -> &Int32 { &self.value } }
+fn main() -> Unit {
+    let b = BoxedValue { value: 42 };
+    let r = b.value_ref();
+    println(*r);
+}
+```
+fails with `runtime error: dangling reference` at `println(*r)`. This affects essentially every
+idiomatic accessor/getter method returning a reference into `self`, unconditionally — a
+compile-accepts/runtime-always-crashes gap for a large, common, spec-legal program shape, and
+arguably the single most severe finding in this document (DEV-035 is recorded as the highest
+priority in the entire ledger). Root-cause description here is inferred from reading
+`call_user_method`'s frame lifecycle alongside the empirical crash, not yet traced line-by-line
+to a specific fix — see DEV-035 in `starkc/docs/conformance/KNOWN-DEVIATIONS.md` for the proposed
+disposition and the explicit caveat that this needs confirmation before a fix is attempted.
 
 ### 4.4 Slice materialization — copies, not views
 `03-Type-System.md` (line 96–98) and `05-Memory-Model.md` (lines 51–54) describe `&[T]`/`&mut [T]`
@@ -428,8 +511,7 @@ Struct/enum-variant literals: `eval_struct_lit` (lines 2528–2567) evaluates ea
 read, matching move semantics for a non-Copy shorthand field) and collects them into a
 `BTreeMap<String, Option<Value>>` keyed by field name. Tuple/array literals (`ExprKind::Tuple`/
 `Array`, lines 794–805) collect into a `Vec<Option<Value>>` in written order. Both aggregate
-kinds' field order is captured in §1.6 above (spec-silent on evaluation order; observed order is
-source order).
+kinds' field order is captured in §1.6 above (normative, CD-007: left to right, source order).
 
 **Representation note directly relevant to §6:** struct fields (and enum struct-like-variant
 named fields) are stored in a `BTreeMap<String, Option<Value>>`, keyed and therefore *iterated*
@@ -494,7 +576,7 @@ behavior the interpreter's own regression test `runs_drop_in_reverse_declaration
 (line 3567) exercises.
 
 ### 6.2 Struct-field / enum-named-field drop order — NOT declaration order
-**Known deviation (NEW — not yet in the ledger, independently re-verified during this WP's own
+**Confirmed deviation (DEV-029, spec citation added under CD-011, independently re-verified during this WP's own
 review pass — see "Findings requiring a decision").** The spec's only explicit drop-order example
 (§6.1 above) is about sibling `let` bindings in a block; it does not separately spell out
 struct-*internal* field drop order. The only reasonable extension of "reverse declaration order"
@@ -512,7 +594,7 @@ output, `beta` then `alpha`** — conclusively showing drop order tracks field-n
 sort, not source declaration order, and is *invariant* to how the fields were actually declared.
 Tuple/array/tuple-enum-variant fields (`Vec`-backed, lines 3188–3192, 3199–3201) do **not** have
 this problem, since a `Vec` preserves insertion (= declaration) order; only the `BTreeMap`-backed
-named-field cases are affected. Not present in `KNOWN-DEVIATIONS.md` under any existing DEV-NNN.
+named-field cases are affected. Recorded as DEV-029 (spec citation added under CD-011).
 
 ### 6.3 User `Drop::drop` invocation, then recursive field drop
 Spec: `05-Memory-Model.md` lines 264–281 (automatic drop calls the user's `drop` method at scope
@@ -531,7 +613,7 @@ fields before they're gone (`05-Memory-Model.md`'s `FileHandle` example, lines 2
 in §6.2.
 
 ### 6.4 Destructured-but-unbound sub-values are never dropped
-**Known deviation (NEW — not yet in the ledger, independently re-verified during this WP's own
+**Confirmed deviation (DEV-030, independently re-verified during this WP's own
 review pass — see "Findings requiring a decision"), high severity.** Per `03-Type-System.md`
 line 548–550, "every owned value's destructor runs exactly once: at end of scope, at explicit
 `drop`, or when its owner is consumed — never twice," and drop-flag tracking exists precisely so
@@ -566,8 +648,8 @@ match`). This is not merely a missing-cleanup-timing issue (e.g. "dropped too la
 genuine, permanent skip: that `Loud` value's destructor runs zero times, not exactly once, in
 violation of the spec's core Drop soundness invariant. This affects any pattern with a
 `_`/unmentioned-field/`Wild` sub-pattern matched against an owned (by-value, not by-reference)
-scrutinee whose unbound portion has a `Drop` impl anywhere in its type. Not present in
-`KNOWN-DEVIATIONS.md` under any existing DEV-NNN — recommended as a **high-priority** WP-C2.2
+scrutinee whose unbound portion has a `Drop` impl anywhere in its type. Recorded as DEV-030,
+recommended as a **high-priority** WP-C2.2
 candidate given it is a silent correctness bug (no error, no crash, just a resource/destructor
 that never runs), not merely an ergonomic gap like most of the currently-open DEV-NNN entries.
 This finding was independently re-verified (fresh empirical repro, not just trusted from
@@ -746,7 +828,7 @@ detail for anyone reasoning about side effects inside a `map`/`filter` callback 
 unbounded ranges.
 
 ### 9.4 `for`-loop iteration — a narrower, separate mechanism from §9.3
-**Known deviation (NEW — not yet in the ledger), scope note.** `03-Type-System.md`'s "For Loops"
+**Confirmed deviation (DEV-031), scope note.** `03-Type-System.md`'s "For Loops"
 section (lines 459–469) states `for x in expr` "requires `expr` to have a type that implements
 `Iterator`," and explicitly cites `.iter()` methods as a normal way to produce such an expression
 ("slices and collections provide `.iter()` methods"). `06-Standard-Library.md`'s Iterator trait
@@ -765,8 +847,8 @@ Both layers agree with each other (no compile-succeeds/runtime-crashes mismatch 
 "any `Iterator`-typed expression" `for`-loop rule and the implementation's narrower "only
 `Range`/`Array`/`Vec` by value" rule — `HashMap::keys()`, `.iter()`, `MapIter`/`FilterIter`
 chains, and any user type implementing `Iterator` cannot currently be used directly as a
-`for`-loop's iterable, only iterated manually via `.next()` in a `while`/`loop`. Not present in
-`KNOWN-DEVIATIONS.md` under any existing DEV-NNN; flagged as adjacent to, but distinct from, this
+`for`-loop's iterable, only iterated manually via `.next()` in a `while`/`loop`. Recorded as
+DEV-031; flagged as adjacent to, but distinct from, this
 document's core `interp.rs` focus (the compile-time half of this gap lives in `typecheck.rs`).
 
 ### 9.5 Related, already-known deviations affecting this section
@@ -815,31 +897,33 @@ sentence the spec states outright. Flagging this as a soft gap: a conforming-imp
 document at this level of formality would benefit from an explicit determinism statement, but
 this document does not invent one.
 
-### 10.3 `HashMap`/`HashSet` iteration order in the current interpreter — deterministic, but by an implementation accident that conflicts with the spec's own performance-note framing
-`interp.rs::Value::HashMap`/`Value::HashSet` (lines 67–68) are backed by `BTreeMap<Value,
-Option<Value>>`/`BTreeSet<Value>`, using `Value`'s own custom `Ord` impl (lines 204–321, a
-discriminant-tag-then-structural comparison). This means: **iteration order in this interpreter
-is fully deterministic and sorted by key**, given the custom `Ord`. This is a *stronger*
-guarantee than a real open-addressing hash table would typically provide (whose order depends on
-hash function output and insertion/resize history, and is conventionally treated as unspecified).
+### 10.3 `HashMap`/`HashSet` iteration order — normative (CD-009), CONFIRMED DEVIATION in the current interpreter (DEV-032)
 
-**Known deviation (spec-adjacent gap, not asserted as a bug).** This is not a place where the
-interpreter is *wrong* relative to an explicit spec rule — the spec states no iteration-order
-guarantee either way for `HashMap`/`HashSet` — but it is a place where (a) the spec is silent on
-a question a reference-execution contract needs an answer to (does a conforming program get to
-rely on `HashMap::iter()` order?), and (b) the *only* normative-adjacent prose that exists (the
-"Performance Notes" line about "open addressing with Robin Hood hashing") points toward the
-opposite answer from what the reference implementation actually, currently guarantees. A program
-written and tested against this interpreter that incidentally starts depending on sorted
-iteration order (easy to do by accident — e.g. asserting on a `HashMap`'s printed contents) would
-be depending on an implementation detail that (i) has no spec backing and (ii) would plausibly
-break under a from-scratch native implementation that actually built a hash table per the
-Performance Notes' own description. This is a spec-silent, CE1/CE2-shaped case flagged for user
-disposition rather than resolved here — the two live options are "adopt sorted-deterministic
-iteration as the normative rule" (codify what the interpreter already does) or "explicitly
-declare iteration order unspecified" (matching the Performance Notes' framing, but requiring
-conforming programs — and this document's own §10.2 reasoning — not to rely on it). Recommend a
-CD/AD record settle this before Gate C3 (native compilation) makes the choice load-bearing.
+**Status: settled, CD-009 (corrects an earlier, broken CD-008).** This section originally found
+the spec silent on `HashMap`/`HashSet` iteration order, with the only related prose (a
+non-normative "Performance Notes" line about open-addressing hash tables) implying unordered
+iteration while the interpreter's actual `BTreeMap`/`BTreeSet`-backed behavior was fully
+sorted-deterministic — flagged as a CE1/CE2-shaped gap. The user's first answer (adopt
+sorted-by-key as normative, CD-008) turned out to be unimplementable as stated: `HashMap<K, V>`/
+`HashSet<T>` only bound `K`/`T: Hash + Eq`, never `Ord` (`06-Standard-Library.md` lines 271, 293),
+so "ascending key order per the key type's `Ord` impl" could require an implementation that isn't
+guaranteed to exist. An external review of the finalized document caught this the same day; the
+decision was corrected under CD-009 to **first-insertion order** instead — no `Ord` bound needed,
+matching the actual `Hash + Eq` bound, still fully deterministic. `06-Standard-Library.md`'s
+"Iteration Order (Core v1)" section (added under CD-009) is now normative:
+
+> `HashMap`/`HashSet` iteration MUST follow first-insertion order: inserting a new key appends
+> it; re-inserting an existing key keeps its position; remove-then-reinsert moves it to the end.
+
+**Confirmed deviation (DEV-032).** `interp.rs::Value::HashMap`/`Value::HashSet` (lines 67–68) are
+backed by `BTreeMap<Value, Option<Value>>`/`BTreeSet<Value>`, sorted by `Value`'s own internal
+structural `Ord` impl (lines 204–321) — not first-insertion order, and not dispatched through the
+STARK key type's own `Ord` (which, independently, cannot even be implemented today — see DEV-027,
+§2.4). This tracks insertion order only when keys happen to be inserted in already-ascending
+structural order; for any other insertion sequence, observed iteration order now diverges from
+the normative rule. See DEV-032 in `starkc/docs/conformance/KNOWN-DEVIATIONS.md` for full detail
+and the proposed fix (replace the `BTreeMap`/`BTreeSet` representation with an
+insertion-order-preserving structure).
 
 ### 10.4 Other candidate nondeterminism sources checked and ruled out
 - `Random` (`Value::Random(u64)`, an LCG seed): deterministic function of the seed per
@@ -921,22 +1005,35 @@ not because anything was found to investigate.
 
 ---
 
-## Summary of new findings
+## Summary of findings
 
-| # | Topic section | One-line description | Status |
-|---|---|---|---|
-| A | §2.2 | Method dispatch priority (`find_method`) is source-textual-order-dependent, not "inherent shadows trait" per spec | NEW |
-| B | §2.4 | `Ordering` prelude enum unresolvable; `Ord`/`cmp` cannot be conformingly implemented; no `<`/`<=`/`>`/`>=` struct/enum dispatch arm exists | NEW, independently re-verified |
-| C | §3, §4.4 | `&expr[range]` / `&mut expr[range]` (spec-mandated slice-place syntax) crashes at runtime; the one working slice path materializes a copy, not a view | NEW |
-| D | §6.2 | Struct/enum-named-field drop order is reverse-alphabetical-by-field-name (`BTreeMap` artifact), not reverse-declaration-order | NEW, independently re-verified |
-| E | §6.4 | Pattern-match `_`/unbound sub-values of an owned scrutinee are never dropped — a permanent, silent skip, not a timing issue | NEW, high severity, independently re-verified |
-| F | §9.4 | `for` loops accept only `Range`/`Array`/`Vec` directly; general `Iterator`-typed expressions (incl. the spec's own `.iter()` example) rejected at compile time | NEW |
-| — | §10.3 | `HashMap`/`HashSet` iteration order: spec-silent; interpreter's sorted-deterministic behavior conflicts with the spec's own (non-normative) hash-table framing | CE1/CE2 spec-silence flag |
-| — | §1 (all) | Subexpression evaluation order (binary operands, call args, method receiver-vs-args, aggregate-literal fields, assignment lhs/rhs, index base/index) is almost entirely spec-silent | CE1/CE2 spec-silence flag |
-| — | §2.1 | `find_associated_fn` only searches inherent impls, not trait associated functions (e.g. `From::from`) | DEV-024 (existing, cited) |
-| — | §9.5 | `Display`/`Hash` not callable as builtin methods | DEV-023 (existing, cited) |
-| — | §10.4 | `File` has no runtime representation | DEV-009 (existing, cited) |
+Every finding below is now a confirmed, numbered ledger entry — none remain as open escalations.
+Severity, highest first: **DEV-035** (compile-accepts/runtime-always-crashes for an ordinary,
+spec-legal program shape) and **DEV-034** (unconditional duplication of observable side effects)
+are the two most severe, both found only during the external-review correction pass, not the
+original drafting. **DEV-030** (never-dropped match wildcards) is the most severe finding from
+the original drafting pass. The rest are missing-feature, ordering, or residual-risk gaps.
 
-See `COMPILER-STATE.md`'s `### WP-C2.1` session record for how these findings were disposed of
-(recorded as deviations, escalated for a decision, or left as an open question) and this WP's own
-"Findings requiring a decision" writeup.
+| # | Topic section | One-line description | DEV | Found |
+|---|---|---|---|---|
+| A | §2.2 | Method dispatch priority (`find_method`) is source-textual-order-dependent, not "inherent shadows trait" per spec | DEV-026 | drafting |
+| B | §2.4 | `Ordering` prelude enum unresolvable; `Ord`/`cmp` cannot be conformingly implemented; no `<`/`<=`/`>`/`>=` struct/enum dispatch arm exists | DEV-027 | drafting, re-verified |
+| C | §3, §4.4 | `&expr[range]` / `&mut expr[range]` (spec-mandated slice-place syntax) crashes at runtime; the one working slice path materializes a copy, not a view | DEV-028 | drafting |
+| D | §6.2 | Struct/enum-named-field drop order is reverse-alphabetical-by-field-name (`BTreeMap` artifact), not reverse-declaration-order | DEV-029 | drafting, re-verified, spec citation added (CD-011) |
+| E | §6.4 | Pattern-match `_`/unbound sub-values of an owned scrutinee are never dropped — a permanent, silent skip, not a timing issue | DEV-030 | drafting, re-verified, high severity |
+| F | §9.4 | `for` loops accept only `Range`/`Array`/`Vec` directly; general `Iterator`-typed expressions (incl. the spec's own `.iter()` example) rejected at compile time | DEV-031 | drafting |
+| G | §10.3 | `HashMap`/`HashSet`: interpreter sorts by structural `Ord`, not the now-normative first-insertion order (CD-009) | DEV-032 | drafting (as spec-silence flag) → confirmed after CD-009 |
+| H | §1.5 | `call_core_method` evaluates arguments before the receiver, contradicting the now-normative receiver-first rule (CD-007/CD-010) | DEV-033 | drafting (as inconsistency note) → confirmed after CD-010 |
+| I | §2.6, §4.3 | By-value method receiver expressions are evaluated twice, duplicating observable side effects | DEV-034 | **external review** |
+| J | §4.3a | References returned from `&self` methods dangle after the method's call frame is popped — breaks an ordinary, spec-legal accessor pattern unconditionally | DEV-035 | **external review** |
+| — | (parser, not interpreter) | `parser.rs`'s filename-based module-file-lookup bypass is a residual risk for real user projects, not previously flagged when DEV-014 closed | DEV-036 | **external review** |
+| — | §2.1 | `find_associated_fn` only searches inherent impls, not trait associated functions (e.g. `From::from`) | DEV-024 (existing, cited) | Gate C1 |
+| — | §9.5 | `Display`/`Hash` not callable as builtin methods | DEV-023 (existing, cited) | Gate C1 |
+| — | §10.4 | `File` has no runtime representation | DEV-009 (existing, cited) | Gate C0 |
+
+Both spec-silent gaps this document originally raised (evaluation order; `HashMap`/`HashSet`
+iteration order) are settled: CD-007/CD-010 (evaluation order, receiver-before-arguments refined)
+and CD-008/CD-009 (iteration order, corrected from sorted-by-key to first-insertion-order after
+CD-008 was found broken). DEV-029's field-drop-order rule is settled under CD-011. See
+`COMPILER-STATE.md`'s `### WP-C2.1` session record (and its correction-pass addendum) for the
+full decision history.

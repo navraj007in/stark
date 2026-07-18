@@ -657,6 +657,10 @@ impl<'a> Resolver<'a> {
             "math::min" | "std::math::min" => return Res::Builtin(Builtin::MathMin),
             "math::max" | "std::math::max" => return Res::Builtin(Builtin::MathMax),
             "Random::new" => return Res::Builtin(Builtin::RandomNew),
+            // WP-C2.2 (DEV-027): Ordering's unit variants, mirroring IOError's wiring.
+            "Ordering::Less" => return Res::Builtin(Builtin::OrderingLess),
+            "Ordering::Equal" => return Res::Builtin(Builtin::OrderingEqual),
+            "Ordering::Greater" => return Res::Builtin(Builtin::OrderingGreater),
             "IOError::NotFound" => return Res::Builtin(Builtin::IOErrorNotFound),
             "IOError::PermissionDenied" => return Res::Builtin(Builtin::IOErrorPermissionDenied),
             "IOError::AlreadyExists" => return Res::Builtin(Builtin::IOErrorAlreadyExists),
@@ -2061,6 +2065,7 @@ fn resolve_core_type(name: &str) -> Option<CoreType> {
         "FilterIter" => Some(CoreType::FilterIter),
         "Random" => Some(CoreType::Random),
         "IOError" => Some(CoreType::IOError),
+        "Ordering" => Some(CoreType::Ordering),
         _ => None,
     }
 }

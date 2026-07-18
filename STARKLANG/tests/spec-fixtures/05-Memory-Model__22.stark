@@ -1,3 +1,2 @@
-let s = String::from("hello");
-drop(s);                    // Explicitly drop s
-// println(s.as_str());     // Error: s has been dropped
+struct Pair { first: Loud, second: Loud }
+// Dropping a Pair value drops `second` before `first`.

@@ -560,7 +560,7 @@ WP-C1.5)
   shape-only `Lit` tag.
 - **Owning gate:** WP-C1.5 (closed).
 
-## DEV-026 — Method dispatch priority ignores "inherent shadows trait"
+## DEV-026 — Method dispatch priority ignores "inherent shadows trait" (RESOLVED in WP-C2.2)
 
 - **Normative expectation:** `03-Type-System.md` "Method Calls and Auto-Borrowing" (line 493–494):
   inherent methods shadow trait methods of the same name — this must hold unconditionally.
@@ -583,10 +583,12 @@ WP-C1.5)
   a same-named default method, for any type where this matters.
 - **Proposed disposition:** `find_method` needs a two-pass search (inherent impls first,
   unconditionally, then trait impls) rather than a single source-order scan.
-- **Owning gate:** WP-C2.2 (interpreter semantic repair). Found during WP-C2.1 (reference
-  execution contract, `STARKLANG/docs/compiler/reference-execution.md` §2.2).
+- **Resolution:** `find_method` now performs inherent-first and trait-second lookup, independent
+  of declaration order. Regression:
+  `interp::tests::inherent_method_shadows_trait_method_regardless_of_declaration_order`.
+- **Owning gate:** closed, WP-C2.2.
 
-## DEV-027 — `Ordering` prelude type unresolvable; no runtime `Ord`/`cmp` dispatch for struct/enum
+## DEV-027 — `Ordering` prelude type unresolvable; no runtime `Ord`/`cmp` dispatch for struct/enum (RESOLVED in WP-C2.2)
 
 - **Normative expectation:** `06-Standard-Library.md` line 585 lists `Ordering` as part of the
   normative prelude ("Prelude: primitive types, `Option`, `Result`, `Ordering`, essential
@@ -616,10 +618,12 @@ WP-C1.5)
   `Result` are registered) with its three unit variants, then add an `eval_binary` struct/enum
   arm mirroring DEV-008's `Eq`/`eq` dispatch fix, calling the resolved `Ord::cmp` and comparing
   the returned `Ordering` against `Less`/`Greater`/`Equal`.
-- **Owning gate:** WP-C2.2. Found during WP-C2.1
-  (`STARKLANG/docs/compiler/reference-execution.md` §2.4), independently re-verified.
+- **Resolution:** `Ordering` is now a resolvable/runtime core type with all three variants, and
+  nominal comparison operators dispatch through `Ord::cmp`. Regression:
+  `interp::tests::nominal_comparison_dispatches_through_ord_cmp`.
+- **Owning gate:** closed, WP-C2.2.
 
-## DEV-028 — `&expr[range]`/`&mut expr[range]` crash at runtime; slice materialization copies instead of viewing
+## DEV-028 — `&expr[range]`/`&mut expr[range]` crash at runtime; slice materialization copies instead of viewing (RESOLVED in WP-C2.2)
 
 - **Normative expectation:** `03-Type-System.md` lines 95–98 (Array Types): `expr[r]` for a
   `Range` `r` denotes a place of unsized slice type `[T]`; `&expr[r]` has type `&[T]` and
@@ -647,15 +651,19 @@ WP-C1.5)
 - **Proposed disposition:** `expr_place`'s `Index` arm needs a `Value::Range` case producing a
   genuine slice-place representation (not a value copy) so both the crash and the copy-vs-view
   gap are fixed together, not just the crash in isolation.
-- **Owning gate:** WP-C2.2. Found during WP-C2.1
-  (`STARKLANG/docs/compiler/reference-execution.md` §3, §4.4).
+- **Resolution:** runtime slices now carry a base place plus half-open bounds. Scalar projection
+  through a slice maps back to the original array/vector, so shared reads and mutable writes are
+  genuine views; range bounds and display are preserved. Regression:
+  `interp::tests::range_index_references_are_slice_views`.
+- **Owning gate:** closed, WP-C2.2.
 
-## DEV-029 — Struct/enum named-field drop order is alphabetical, not declaration order
+## DEV-029 — Struct/enum named-field drop order is alphabetical, not declaration order (RESOLVED in WP-C2.2)
 
-- **Normative expectation:** `05-Memory-Model.md` "Drop Order" (lines 283–291) establishes
-  reverse-declaration-order drop for sibling `let` bindings; the only coherent extension to
-  struct-internal fields (and the convention every Rust-family language uses) is reverse of the
-  fields' declaration order in the `struct`/`enum` item.
+- **Normative expectation:** `05-Memory-Model.md` "Drop Order" now states explicitly (added under
+  CD-011, in response to an external review that correctly caught this deviation was originally
+  recorded against an *inferred* extension of the spec rather than explicit text): fields drop in
+  reverse of their declaration order in the `struct`/`enum` item, extending the pre-existing
+  reverse-declaration-order rule for sibling `let` bindings.
 - **Current behaviour:** `interp.rs::drop_value` drops a `Value::Struct`'s fields via
   `fields.values_mut().rev()` where `fields: BTreeMap<String, Option<Value>>` — i.e.
   reverse-**alphabetical-by-field-name** order, not reverse-declaration order (same for
@@ -677,10 +685,14 @@ WP-C1.5)
   `Vec<(String, Option<Value>)>`), or (b) keep `BTreeMap` for lookup but track declaration order
   separately for drop purposes. Option (a) is likely simpler and also fixes the same underlying
   order-loss for any other alphabetical-iteration-dependent behavior not yet found.
-- **Owning gate:** WP-C2.2. Found during WP-C2.1
-  (`STARKLANG/docs/compiler/reference-execution.md` §6.2), independently re-verified.
+- **Resolution:** named aggregate cleanup recovers declaration order from HIR and drops in
+  reverse, including unbound fields in partial pattern moves. Regressions:
+  `interp::tests::struct_fields_drop_in_reverse_declaration_order`,
+  `::enum_variant_named_fields_drop_in_reverse_declaration_order`, and
+  `::unbound_struct_pattern_fields_use_reverse_declaration_order`.
+- **Owning gate:** closed, WP-C2.2.
 
-## DEV-030 — Pattern-match wildcard/unbound sub-values of an owned scrutinee are never dropped
+## DEV-030 — Pattern-match wildcard/unbound sub-values of an owned scrutinee are never dropped (RESOLVED in WP-C2.2)
 
 - **Normative expectation:** `03-Type-System.md` line 548–550: "every owned value's destructor
   runs exactly once: at end of scope, at explicit `drop`, or when its owner is consumed — never
@@ -718,12 +730,13 @@ WP-C1.5)
   the match-evaluation code walk the *unclaimed* portion of the scrutinee's value tree after
   pattern testing completes and explicitly drop it, symmetric to how `cleanup_locals` already
   handles ordinary `let` bindings.
-- **Owning gate:** WP-C2.2, recommended **highest priority** among this WP's findings given it is
-  the only one that is a silent, undiagnosed violation of a stated soundness invariant rather than
-  a missing-feature or wrong-order ergonomics gap. Found during WP-C2.1
-  (`STARKLANG/docs/compiler/reference-execution.md` §6.4), independently re-verified.
+- **Resolution:** after the selected arm and its bindings are cleaned up, the interpreter walks
+  the consumed scrutinee and drops every unbound subtree exactly once; reference scrutinees are
+  excluded because they do not own the referent. Regressions cover tuple wildcards, enum
+  payloads, struct fields, declaration order, and borrowed scrutinees.
+- **Owning gate:** closed, WP-C2.2.
 
-## DEV-031 — `for` loops only accept `Range`/`Array`/`Vec` directly, not general `Iterator`-typed expressions
+## DEV-031 — `for` loops only accept `Range`/`Array`/`Vec` directly, not general `Iterator`-typed expressions (RESOLVED in WP-C2.2)
 
 - **Normative expectation:** `03-Type-System.md` "For Loops" (lines 459–469): `for x in expr`
   requires `expr` to have a type implementing `Iterator`, explicitly citing `.iter()` methods on
@@ -745,8 +758,193 @@ WP-C1.5)
 - **Proposed disposition:** both `typecheck.rs`'s for-loop type check and `interp.rs::iter_values`
   need to accept any `Iterator`-implementing type (the existing `MapIter`/`FilterIter`/etc.
   `Value` variants and their `iterator_step` protocol), not just the three hardcoded shapes.
-- **Owning gate:** WP-C2.2. Found during WP-C2.1
-  (`STARKLANG/docs/compiler/reference-execution.md` §9.4).
+- **Resolution:** type checking derives the element type from standard iterator core types or a
+  nominal `Iterator::Item` implementation, and execution repeatedly invokes the iterator
+  protocol. Regression: `interp::tests::for_loop_accepts_standard_and_user_iterators`.
+- **Owning gate:** closed, WP-C2.2.
+
+## DEV-032 — `HashMap`/`HashSet` sort by structural `Ord`, not first-insertion order (RESOLVED in WP-C2.2)
+
+- **Normative expectation:** `06-Standard-Library.md` "Iteration Order" (added under CD-009,
+  correcting CD-008's originally-broken sorted-by-`K::Ord` rule — see CD-009's decision-log entry
+  for why sorted order doesn't work: `K`/`T` are only bound `Hash + Eq`, never `Ord`):
+  `HashMap`/`HashSet` iteration MUST follow first-insertion order.
+- **Current behaviour:** `interp.rs`'s `Value::HashMap`/`Value::HashSet` are backed by
+  `BTreeMap<Value, Option<Value>>`/`BTreeSet<Value>`, sorted by `Value`'s own internal structural
+  `Ord` implementation (a Rust-level total order over the runtime representation, unrelated to
+  whether the STARK key type itself implements `Ord`). This tracks insertion order only by
+  coincidence, when keys happen to be inserted already in ascending structural order.
+- **User impact:** a program relying on the spec's first-insertion-order guarantee (e.g. printing
+  a `HashMap`'s contents and expecting insertion order) currently observes sorted order instead —
+  silently different from the normative rule for any non-monotonic insertion sequence.
+- **Security/soundness impact:** none identified — a determinism-model mismatch, not unsound.
+- **Workaround:** none within the language; be aware current iteration order is sorted, not
+  insertion-order, until fixed.
+- **Proposed disposition:** replace the `BTreeMap`/`BTreeSet` representation with an
+  insertion-order-preserving structure (e.g. a `Vec<(Value, Option<Value>)>` for small maps, or
+  a proper "indexed map" — an index `HashMap<Value, usize>` alongside an insertion-ordered
+  `Vec`, matching how most "ordered map" libraries implement this) so `insert`/`remove`/re-`insert`
+  match the spec's stated position rules exactly.
+- **Resolution:** both collections now use insertion-ordered reference-interpreter
+  representations; replacement preserves position and remove/reinsert appends. Equality remains
+  order-independent. Regressions:
+  `interp::tests::hashmap_iterates_in_first_insertion_order` and
+  `::hashset_iterates_in_first_insertion_order`.
+- **Owning gate:** closed, WP-C2.2.
+
+## DEV-033 — `call_core_method` evaluates arguments before resolving the receiver (RESOLVED in WP-C2.2)
+
+- **Normative expectation:** `03-Type-System.md` "Evaluation Order" (added under CD-007,
+  confirmed as-is under CD-010): "the receiver evaluates before any argument" for method calls.
+- **Current behaviour:** `interp.rs::call_method` correctly resolves the receiver before
+  evaluating arguments for user-defined (nominal struct/enum) types — but for builtin/stdlib-type
+  methods (`Vec`, `String`, `HashMap`, etc.), routed through `call_core_method`, argument
+  expressions are evaluated first (`args.iter().map(|arg| self.expect_value(*arg))...`), and the
+  receiver place is resolved lazily, per-operation, inside each method-name branch afterward.
+- **User impact:** a program whose receiver expression and argument expressions both have
+  observable side effects (e.g. `println`) will see a different interleaving depending on whether
+  the receiver is a user-defined type or a builtin/stdlib type — an internal inconsistency a
+  program author has no way to predict without knowing the implementation's dispatch mechanism.
+- **Security/soundness impact:** none identified — an evaluation-order inconsistency, not unsound.
+- **Workaround:** none within the language; avoid relying on receiver-vs-argument evaluation
+  order for expressions with observable side effects until fixed.
+- **Proposed disposition:** `call_core_method` needs to resolve the receiver place before
+  evaluating any argument expression, matching `call_method`'s order for user-defined types.
+- **Resolution:** core calls resolve and normalize their receiver place once before evaluating
+  arguments, then reuse it throughout dispatch. Regression:
+  `interp::tests::core_method_receiver_resolves_before_arguments_and_only_once`.
+- **Owning gate:** closed, WP-C2.2.
+
+## DEV-034 — By-value method receiver expressions are evaluated twice (RESOLVED in WP-C2.2)
+
+- **Normative expectation:** each subexpression evaluates exactly once (implicit in
+  `03-Type-System.md`'s "Evaluation Order," CD-007/CD-010 — an evaluation-order rule presupposes
+  each subexpression has one evaluation to be ordered against others, not that it may re-run).
+- **Current behaviour:** for a method call `expr.method(args)` where `method` takes `self` by
+  value (not `&self`/`&mut self`) and `expr` is **not** a simple place (e.g. it is itself a
+  function call, or any other computed, non-lvalue expression): `call_method` first evaluates
+  `expr` once via `clone_expr_place` (to determine, from the resulting value's runtime shape,
+  which method implementation to dispatch to) — for a non-place expression this stores the result
+  in a synthetic temporary place. `call_user_method`'s `hir::Receiver::Value` arm then calls
+  `self.expect_value(base)` on the **original** expression a second time, fully re-evaluating it
+  from scratch, completely independent of the first evaluation's stored temporary. Confirmed
+  empirically:
+  ```stark
+  struct Counter { n: Int32 }
+  impl Counter { fn consume(self) -> Int32 { self.n } }
+  fn make_counter() -> Counter { println("making"); Counter { n: 1 } }
+  fn main() -> Unit { let r = make_counter().consume(); println(r); }
+  ```
+  prints `making` **twice** for one logical call to `make_counter()`.
+- **User impact:** any observable side effect in a by-value method's receiver expression
+  (printing, mutation of a captured value, a further nested call with its own side effects) is
+  silently duplicated. This is not an edge case — `expr.consume_style_method()` where `expr` is
+  itself a call or computed expression is an entirely ordinary pattern (method chaining, builder
+  patterns, etc.).
+- **Security/soundness impact:** none identified as memory-unsafe, but a real correctness defect:
+  a program's observable behavior (output, external side effects) differs from what a single
+  evaluation of the receiver expression would produce, unconditionally for this call shape.
+- **Workaround:** bind the receiver to a `let` first (`let tmp = make_counter(); tmp.consume();`)
+  to force a single evaluation, rather than chaining directly.
+- **Proposed disposition:** `call_user_method`'s `hir::Receiver::Value` arm should reuse the
+  already-computed `borrowed_receiver` value (passed in from `call_method`, already the correct,
+  single evaluation of the receiver expression) rather than calling `expect_value(base)` again.
+- **Resolution:** method dispatch resolves the receiver once into a caller-side place; by-value
+  binding consumes that place rather than re-evaluating the source expression. Regression:
+  `interp::tests::by_value_receiver_expression_evaluates_exactly_once`.
+- **Owning gate:** closed, WP-C2.2.
+
+## DEV-035 — References returned from `&self` methods dangle after the method frame is popped (RESOLVED in WP-C2.2)
+
+- **Normative expectation:** `03-Type-System.md` "References and Lifetimes" (the shortest-input-
+  lifetime rule, WP-C1.4) makes returning a reference derived from a reference parameter —
+  including `&self` — an entirely ordinary, spec-legal, borrow-checker-approved pattern. A method
+  such as `fn value_ref(&self) -> &Int32 { &self.value }` must work.
+- **Current behaviour:** inside a user method call, `self` is stored as a value in a newly-pushed
+  method call frame (`call_user_method`). A returned `&self.field` evaluates to a `Value::Ref`
+  whose `Place` points into that method's own frame index. `call_user_method` then calls
+  `cleanup_current_frame` and pops the frame **before** the return value is handed back to the
+  caller — so the returned `Value::Ref` now points at a frame slot that either no longer exists or
+  has been reused by a different, unrelated frame. The caller's subsequent dereference of the
+  returned reference fails with a runtime `"dangling reference"` error. Confirmed empirically:
+  ```stark
+  struct BoxedValue { value: Int32 }
+  impl BoxedValue { fn value_ref(&self) -> &Int32 { &self.value } }
+  fn main() -> Unit {
+      let b = BoxedValue { value: 42 };
+      let r = b.value_ref();
+      println(*r);
+  }
+  ```
+  fails with `runtime error: dangling reference` at the `println(*r)` line.
+- **User impact:** severe and broad — essentially every idiomatic accessor/getter method that
+  returns a reference into `self` (the exact pattern `03-Type-System.md`'s own shortest-input-
+  lifetime rule is written to make legal) crashes unconditionally at runtime, despite compiling
+  cleanly (the borrow checker correctly accepts the program, since the *static* analysis is sound
+  — this is purely a runtime frame-lifecycle bug).
+- **Security/soundness impact:** none identified as memory-unsafe at the interpreter's own
+  (Rust-host) level — the failure mode is a caught runtime error, not undefined behavior — but it
+  is a compile-accepts/runtime-always-crashes gap for a large, common, spec-legal program shape,
+  which in practical terms is more disruptive than DEV-030/DEV-034 despite being "just" an error
+  rather than silent misbehavior.
+- **Workaround:** avoid returning references derived from `&self`/`&mut self`; return an owned
+  clone of the value instead, where possible.
+- **Proposed disposition:** the returned value needs to be checked/rewritten before the method
+  frame is popped — either by detecting a `Value::Ref` pointing into the about-to-be-popped frame
+  and rebasing its `Place` to the caller's own view of the receiver (the place `call_method`
+  already resolved via `clone_expr_place`/`expr_place` before the call), or by deferring the frame
+  pop until after any such rebasing is complete. Needs careful design given the existing
+  `&mut self` write-back path (`call_user_method`'s `RefMut` handling) already does something
+  structurally similar for the receiver itself, just not yet for values borrowed *from* it.
+- **Resolution:** return values are traversed before handoff and every place derived from the
+  method-frame `self` slot is rebased onto the caller's resolved receiver place. Regressions cover
+  `&self`, `&mut self`, nested method chains, and preserved write-through semantics.
+- **Owning gate:** closed, WP-C2.2.
+
+## DEV-036 — Parser's filename-based module-bypass heuristic remains a residual risk for real user projects
+
+- **Normative expectation:** a genuinely missing `mod foo;` backing file must always produce
+  E0202, in every real invocation, per `07-Modules-and-Packages.md`'s multi-file layout rules —
+  the same expectation DEV-014 already states.
+- **Current behaviour:** `parser.rs::load_submodules_recursive` still suppresses the "file not
+  found for module" diagnostic whenever the current file's name is exactly `"test.stark"`, or
+  contains the substring `"spec-fixtures"` or `"STARKLANG"` — a narrower heuristic DEV-014's
+  WP-C1.1 fix deliberately kept (after removing the far more dangerous, unconditionally-firing
+  `env::args()`-based bypass) because one legitimate spec fixture
+  (`07-Modules-and-Packages__01.stark`, a `parse-pass` notation example) needs a
+  backing-file-optional `mod math;` declaration to extract correctly.
+- **User impact:** narrow but real and not previously flagged as a residual concern when DEV-014
+  closed. A real user project whose compiled file's path happens to contain the substring
+  `"spec-fixtures"` or `"STARKLANG"` (e.g. a directory literally named `STARKLANGClone`, or a
+  project nested under a path containing that substring), or whose entry file is named exactly
+  `test.stark`, would silently accept a genuinely missing module file instead of reporting E0202
+  — the same class of silent failure DEV-014 was about, at lower but non-zero real-world
+  likelihood (filename/path collision, not "every invocation of a specific subcommand").
+- **Security/soundness impact:** none identified — an availability/correctness gap (a real error
+  silently suppressed), not memory/type unsafety.
+- **Workaround:** avoid naming a project's entry file exactly `test.stark`, or placing a project
+  under a path containing the substrings `"spec-fixtures"` or `"STARKLANG"`.
+- **Proposed disposition:** stop keying this off the compiled file's name/path entirely. The one
+  legitimate fixture is already identified precisely in `STARKLANG/tests/spec-fixtures/
+  manifest.toml`'s own triage data (machine-readable, structured) — route the exemption through
+  that data (e.g. a test-harness-only flag passed explicitly for that one fixture) rather than a
+  runtime string-match against arbitrary file paths that can collide with real user projects.
+- **Owning gate:** unscheduled. Found during the WP-C2.1 correction pass (external review); not a
+  new bug (present since WP-C1.1's DEV-014 fix), but its residual risk to real user projects was
+  not previously flagged or recorded as its own deviation.
+
+## DEV-037 — Runtime field/index projection did not auto-dereference references (RESOLVED in WP-C2.2)
+
+- **Normative expectation:** `03-Type-System.md`'s auto-dereference rules permit field and index
+  projection through references (for example `r.field` where `r: &T`).
+- **Original behaviour:** the type checker accepted these projections, but `expr_place` appended
+  the projection directly to the place storing `Value::Ref`. Runtime projection then attempted
+  to find a field/index on the reference wrapper and trapped with "use of moved or invalid
+  field." This was discovered while testing nested returned-reference rebasing for DEV-035.
+- **Resolution:** every field, tuple-field, and index projection normalizes its base through any
+  reference chain before appending the projection. Regression:
+  `interp::tests::field_access_through_reference_auto_derefs`.
+- **Owning gate:** found and closed in WP-C2.2.
 
 ## Informational (not owned deviations)
 
@@ -797,11 +995,11 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 29 numbered deviations total (DEV-002 through DEV-031, DEV-001/DEV-003 retired),
-of which DEV-002, DEV-006, DEV-008, DEV-013, DEV-014, DEV-015, DEV-016, DEV-020, DEV-021, and
-DEV-025 are closed/confirmed-correct (no fix owed); DEV-017 is partially closed (tooling built,
-39 of 59 rules remain unclassified); DEV-026 through DEV-031 are new findings from WP-C2.1
-(reference-execution contract), all owned by WP-C2.2 and unfixed as of this writing — DEV-030
-recommended highest priority among them, being the only one that is a silent violation of a
-stated soundness invariant rather than a missing-feature/ordering gap; 2 informational not-owned
-items (DEV-SEED-008, DEV-SEED-014).
+Current count: 35 numbered deviations total (DEV-002 through DEV-037, DEV-001/DEV-003 retired).
+DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was found and repaired
+during that work. DEV-017 remains partially closed (tooling built, 39 of 59 rules remain
+unclassified). DEV-036 remains open and unscheduled because it is a parser/test-harness
+exemption issue outside interpreter semantic repair. The optional candidates DEV-009, DEV-023,
+and DEV-024 also remain open; WP-C2.2's charter explicitly admitted those only "as capacity
+allows," and none was needed to close the ten inherited interpreter-execution findings.
+2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).

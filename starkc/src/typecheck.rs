@@ -672,6 +672,10 @@ impl<'a> TypeChecker<'a> {
                 params: vec![Ty::Primitive(Primitive::UInt64)],
                 ret: Box::new(Ty::Core(CoreType::Random, Vec::new())),
             },
+            // WP-C2.2 (DEV-027): Ordering's unit variants.
+            Builtin::OrderingLess | Builtin::OrderingEqual | Builtin::OrderingGreater => {
+                Ty::Core(CoreType::Ordering, Vec::new())
+            }
             // -- Phase 4E: IOError variant constructors --
             Builtin::IOErrorNotFound
             | Builtin::IOErrorPermissionDenied
@@ -1177,6 +1181,7 @@ impl<'a> TypeChecker<'a> {
                     CoreType::FilterIter => "FilterIter",
                     CoreType::Random => "Random",
                     CoreType::IOError => "IOError",
+                    CoreType::Ordering => "Ordering",
                 };
                 if args.is_empty() {
                     name.to_string()
@@ -1351,7 +1356,8 @@ impl<'a> TypeChecker<'a> {
                             | CoreType::CharsIter
                             | CoreType::SplitIter
                             | CoreType::Random
-                            | CoreType::IOError => 0,
+                            | CoreType::IOError
+                            | CoreType::Ordering => 0,
                             CoreType::Vec
                             | CoreType::Box
                             | CoreType::Option
@@ -3993,9 +3999,26 @@ impl<'a> TypeChecker<'a> {
                 local, iter, body, ..
             } => {
                 let iter_ty = self.check_expr(*iter);
-                let elem_ty = match self.resolve(&iter_ty) {
+                let resolved_iter_ty = self.resolve(&iter_ty);
+                let elem_ty = match resolved_iter_ty.clone() {
                     Ty::Range(elem) | Ty::Array(elem, _) | Ty::Slice(elem) => *elem,
                     Ty::Core(CoreType::Vec, args) => args.first().cloned().unwrap_or(Ty::Error),
+                    other if self.is_iterator_type(&other) => self.iterator_item_type(&other),
+                    Ty::Struct(..) | Ty::Enum(..) => self
+                        .user_iterator_item_type(&resolved_iter_ty)
+                        .unwrap_or_else(|| {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!(
+                                        "for-loop requires an iterable value, found '{}'",
+                                        self.ty_to_string(&resolved_iter_ty)
+                                    ),
+                                    self.hir.expr(*iter).span,
+                                )
+                                .with_code("E0001"),
+                            );
+                            Ty::Error
+                        }),
                     Ty::Error => Ty::Error,
                     other => {
                         self.diags.push(
@@ -5186,6 +5209,32 @@ impl<'a> TypeChecker<'a> {
             }
             _ => Ty::Error,
         }
+    }
+
+    /// WP-C2.2 (DEV-031): recover the `Iterator::Item` associated type for a nominal user
+    /// iterator so a `for` loop can type its binding from the trait implementation.
+    fn user_iterator_item_type(&mut self, iter_ty: &Ty) -> Option<Ty> {
+        let associated_type = self.hir.items.iter().find_map(|item| {
+            let hir::ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                items,
+                ..
+            } = &item.kind
+            else {
+                return None;
+            };
+            if !matches!(trait_ref.res, Res::CoreTrait(hir::CoreTrait::Iterator))
+                || !self.types_equal(&self.type_from_hir_without_diagnostics(*self_ty), iter_ty)
+            {
+                return None;
+            }
+            items.iter().find_map(|item| match item {
+                hir::ImplItem::AssocType { name, ty } if self.text(*name) == "Item" => Some(*ty),
+                _ => None,
+            })
+        })?;
+        Some(self.convert_hir_type(associated_type))
     }
 
     fn core_method_signature(&mut self, receiver: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {

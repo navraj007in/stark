@@ -537,8 +537,12 @@ fn max<T: Ord>(a: T, b: T) -> T {
 ```
 
 ### Evaluation Order (Core v1)
-Subexpressions evaluate **strictly left to right**, with each subexpression's
-side effects (including traps) fully complete before the next begins:
+Evaluation order is defined construct by construct below; each
+subexpression's side effects (including traps) fully complete before the
+next begins. Most constructs evaluate left to right in their written order,
+but **assignment is a named exception** (its right-hand side evaluates
+before its left-hand-side place is resolved, even though the place is
+written first) — see the assignment rule below.
 
 - **Binary operators** (excluding `&&`/`||`): the left operand evaluates
   fully before the right operand begins.

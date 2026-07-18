@@ -1,4 +1,2 @@
-let data = Rc::new(some_value);
-let reference1 = data.clone();   // Increment reference count
-let reference2 = data.clone();   // Increment reference count
-// Data deallocated when all references dropped
+let boxed_int = Box::new(42);
+let large_array = Box::new([0; 1000]);  // Allocate large array on heap

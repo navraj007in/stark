@@ -304,11 +304,17 @@ impl<T: Hash + Eq> HashSet<T> {
 
 ### Iteration Order (Core v1)
 `HashMap::keys`/`values`/`iter` and `HashSet::iter` (and any `for` loop over a
-`HashMap`/`HashSet`) MUST visit entries in ascending key order, per the key
-type's `Ord` implementation. This is normative and deterministic: two
-conforming implementations must produce identical iteration order for the
-same sequence of insertions, regardless of internal storage strategy (see
-"Performance Notes" below, which describes storage, not iteration order).
+`HashMap`/`HashSet`) MUST visit entries in **first-insertion order**:
+`insert`ing a key for the first time appends it to the iteration order;
+`insert`ing an already-present key updates its value without changing its
+position; `remove`ing a key and later re-`insert`ing it places it at the end
+(as a new insertion). This requires no bound beyond `Hash + Eq` on the key
+type (unlike a key-sorted-order rule, which would additionally require
+`K: Ord` — not part of `HashMap`'s/`HashSet`'s bounds). This is normative and
+deterministic: two conforming implementations must produce identical
+iteration order for the same sequence of insertions/removals, regardless of
+internal storage strategy (see "Performance Notes" below, which describes
+storage, not iteration order).
 
 ## String Module (std::string)
 
@@ -620,12 +626,13 @@ threads and concurrency primitives, `Rc`/`Arc`/`RefCell`.
 ### Performance Notes
 - Vec<T> uses exponential growth strategy
 - HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with Robin
-  Hood hashing, or a sorted structure) is implementation-defined; whatever
-  strategy is chosen must still present entries in ascending key order when
-  iterated (see "Iteration Order" under the HashMap/HashSet section above,
-  normative) — a hash-table storage layout does not exempt an implementation
-  from that requirement, though it may need to sort at iteration time to
-  satisfy it.
+  Hood hashing) is implementation-defined; whatever strategy is chosen must
+  still present entries in first-insertion order when iterated (see
+  "Iteration Order" under the HashMap/HashSet section above, normative) — an
+  open-addressing hash-table layout does not exempt an implementation from
+  that requirement, and typically needs a side channel (e.g. a parallel
+  insertion-order list, as most "ordered map" implementations use) to
+  satisfy it efficiently.
 - String operations are UTF-8 aware
 - Iterator chains compile to efficient loops
 

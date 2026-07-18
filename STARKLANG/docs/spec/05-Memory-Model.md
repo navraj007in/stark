@@ -290,6 +290,18 @@ impl Drop for FileHandle {
 }
 ```
 
+Reverse declaration order also applies to a struct's or enum variant's own
+fields: when a value is dropped, its fields drop in reverse of the order
+they were declared in the `struct`/`enum` item (after the value's own
+`Drop::drop`, if any, runs — see "Manual Drop" below and 03-Type-System.md's
+"Copy and Drop"). This extends the sibling-`let`-bindings rule above to
+field-internal drop order, rather than leaving it unspecified.
+
+```stark
+struct Pair { first: Loud, second: Loud }
+// Dropping a Pair value drops `second` before `first`.
+```
+
 ### Manual Drop
 ```stark
 let s = String::from("hello");

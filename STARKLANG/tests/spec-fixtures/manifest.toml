@@ -33,8 +33,8 @@
 #             "statement level"; it is not a source-language entry point.
 #
 # Verdict census (keep in sync when re-triaging):
-#   parse-pass 67, semantic-error 18, notation 30, lex-pass 4, parse-fail 2
-#   = 121 fixtures.
+#   parse-pass 68, semantic-error 18, notation 30, lex-pass 4, parse-fail 2
+#   = 122 fixtures.
 
 ["00-Core-Language-Overview__01.stark"]
 verdict = "parse-pass"
@@ -445,27 +445,32 @@ mode = "snippet"
 
 ["05-Memory-Model__22.stark"]
 verdict = "parse-pass"
+mode = "program"
+note = "Loud undefined (extraction artifact); a top-level struct item, not a snippet"
+
+["05-Memory-Model__23.stark"]
+verdict = "parse-pass"
 mode = "snippet"
 note = "error case is commented out"
 
-["05-Memory-Model__23.stark"]
+["05-Memory-Model__24.stark"]
 verdict = "notation"
 note = "Copy type catalog mixed with code"
 
-["05-Memory-Model__24.stark"]
+["05-Memory-Model__25.stark"]
 verdict = "notation"
 note = "Move type catalog mixed with code"
-
-["05-Memory-Model__25.stark"]
-verdict = "parse-pass"
-mode = "snippet"
 
 ["05-Memory-Model__26.stark"]
 verdict = "parse-pass"
 mode = "snippet"
-note = "Rc is a future feature; some_value undefined (gate2-revisit)"
 
 ["05-Memory-Model__27.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "Rc is a future feature; some_value undefined (gate2-revisit)"
+
+["05-Memory-Model__28.stark"]
 verdict = "parse-pass"
 mode = "snippet"
 note = "RefCell is a future feature (gate2-revisit)"

@@ -117,6 +117,9 @@ pub enum Builtin {
     Eprint,
     Eprintln,
     RandomNew,
+    OrderingLess,
+    OrderingEqual,
+    OrderingGreater,
     IOErrorNotFound,
     IOErrorPermissionDenied,
     IOErrorAlreadyExists,
@@ -145,6 +148,10 @@ pub enum CoreType {
     FilterIter,
     Random,
     IOError,
+    /// WP-C2.2 (DEV-027): `Ordering` is a normative prelude member
+    /// (`06-Standard-Library.md` line 585, `enum Ordering { Less, Equal, Greater }`) required
+    /// by the `Ord` trait's `cmp` signature; previously unresolvable anywhere in the compiler.
+    Ordering,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

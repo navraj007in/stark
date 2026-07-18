@@ -1498,9 +1498,13 @@ and not overloadable.</p>
     if a &gt; b { a } else { b }   // a &gt; b desugars to Ord::cmp(&amp;a, &amp;b)
 }</code></pre>
 <h3 id="evaluation-order-core-v1">Evaluation Order (Core v1)</h3>
-<p>Subexpressions evaluate <strong>strictly left to right</strong>, with
-each subexpression’s side effects (including traps) fully complete
-before the next begins:</p>
+<p>Evaluation order is defined construct by construct below; each
+subexpression’s side effects (including traps) fully complete before the
+next begins. Most constructs evaluate left to right in their written
+order, but <strong>assignment is a named exception</strong> (its
+right-hand side evaluates before its left-hand-side place is resolved,
+even though the place is written first) — see the assignment rule
+below.</p>
 <ul>
 <li><strong>Binary operators</strong> (excluding
 <code>&amp;&amp;</code>/<code>||</code>): the left operand evaluates
@@ -2324,6 +2328,16 @@ impl Drop for FileHandle {
     let z = String::from(&quot;third&quot;);
     // Drop order: z, y, x (reverse declaration order)
 }</code></pre>
+<p>Reverse declaration order also applies to a struct’s or enum
+variant’s own fields: when a value is dropped, its fields drop in
+reverse of the order they were declared in the
+<code>struct</code>/<code>enum</code> item (after the value’s own
+<code>Drop::drop</code>, if any, runs — see “Manual Drop” below and
+03-Type-System.md’s “Copy and Drop”). This extends the
+sibling-<code>let</code>-bindings rule above to field-internal drop
+order, rather than leaving it unspecified.</p>
+<pre class="stark"><code>struct Pair { first: Loud, second: Loud }
+// Dropping a Pair value drops `second` before `first`.</code></pre>
 <h3 id="manual-drop">Manual Drop</h3>
 <pre class="stark"><code>let s = String::from(&quot;hello&quot;);
 drop(s);                    // Explicitly drop s
@@ -2790,11 +2804,18 @@ impl&lt;T: Hash + Eq&gt; HashSet&lt;T&gt; {
 <p><code>HashMap::keys</code>/<code>values</code>/<code>iter</code> and
 <code>HashSet::iter</code> (and any <code>for</code> loop over a
 <code>HashMap</code>/<code>HashSet</code>) MUST visit entries in
-ascending key order, per the key type’s <code>Ord</code> implementation.
-This is normative and deterministic: two conforming implementations must
-produce identical iteration order for the same sequence of insertions,
-regardless of internal storage strategy (see “Performance Notes” below,
-which describes storage, not iteration order).</p>
+<strong>first-insertion order</strong>: <code>insert</code>ing a key for
+the first time appends it to the iteration order; <code>insert</code>ing
+an already-present key updates its value without changing its position;
+<code>remove</code>ing a key and later re-<code>insert</code>ing it
+places it at the end (as a new insertion). This requires no bound beyond
+<code>Hash + Eq</code> on the key type (unlike a key-sorted-order rule,
+which would additionally require <code>K: Ord</code> — not part of
+<code>HashMap</code>’s/<code>HashSet</code>’s bounds). This is normative
+and deterministic: two conforming implementations must produce identical
+iteration order for the same sequence of insertions/removals, regardless
+of internal storage strategy (see “Performance Notes” below, which
+describes storage, not iteration order).</p>
 <h2 id="string-module-stdstring">String Module (std::string)</h2>
 <h3 id="string-type-1">String Type</h3>
 <pre class="stark"><code>// Implementation-provided; internals opaque (UTF-8 byte buffer)
@@ -3079,12 +3100,13 @@ expressions, time/date, threads and concurrency primitives,
 <ul>
 <li>Vec<T> uses exponential growth strategy</li>
 <li>HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with
-Robin Hood hashing, or a sorted structure) is implementation-defined;
-whatever strategy is chosen must still present entries in ascending key
-order when iterated (see “Iteration Order” under the HashMap/HashSet
-section above, normative) — a hash-table storage layout does not exempt
-an implementation from that requirement, though it may need to sort at
-iteration time to satisfy it.</li>
+Robin Hood hashing) is implementation-defined; whatever strategy is
+chosen must still present entries in first-insertion order when iterated
+(see “Iteration Order” under the HashMap/HashSet section above,
+normative) — an open-addressing hash-table layout does not exempt an
+implementation from that requirement, and typically needs a side channel
+(e.g. a parallel insertion-order list, as most “ordered map”
+implementations use) to satisfy it efficiently.</li>
 <li>String operations are UTF-8 aware</li>
 <li>Iterator chains compile to efficient loops</li>
 </ul>
@@ -3245,16 +3267,16 @@ constraint, a <code>path</code> escaping the workspace, or a dependency
 whose name violates the name rule is a manifest error and compilation
 MUST fail.</p>
 <p>Example:</p>
-<div class="sourceCode" id="cb159"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb159-1"><a href="#cb159-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb159-2"><a href="#cb159-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
-<span id="cb159-3"><a href="#cb159-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb159-4"><a href="#cb159-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
-<span id="cb159-5"><a href="#cb159-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
-<span id="cb159-6"><a href="#cb159-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb159-7"><a href="#cb159-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
-<span id="cb159-8"><a href="#cb159-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
-<span id="cb159-9"><a href="#cb159-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb160"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb160-1"><a href="#cb160-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb160-2"><a href="#cb160-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
+<span id="cb160-3"><a href="#cb160-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb160-4"><a href="#cb160-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
+<span id="cb160-5"><a href="#cb160-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb160-6"><a href="#cb160-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb160-7"><a href="#cb160-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
+<span id="cb160-8"><a href="#cb160-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb160-9"><a href="#cb160-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <h2 id="packages-and-dependencies">Packages and Dependencies</h2>
 <p>Dependencies are declared in <code>starkpkg.json</code> under
 <code>dependencies</code>.</p>

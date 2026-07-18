@@ -5,7 +5,7 @@ use crate::hir::{self, BlockId, Builtin, ExprId, Hir, ItemId, LocalId, PatId, Re
 use crate::literal::{self, LitValue};
 use crate::source::{SourceFile, Span};
 use crate::typecheck::{Ty, TypeTables};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -59,13 +59,16 @@ enum Value {
         end: i128,
         inclusive: bool,
     },
+    /// WP-C2.2 (DEV-028): an unsized slice is a view into an existing aggregate, not a copied
+    /// `Array`. The bounds are half-open indices into `place`.
+    Slice(Place, usize, usize),
     Ref(Place),
     Function(ItemId),
     CharsIter(String, usize),
     SplitIter(Vec<String>, usize),
     VecIter(Place, usize),
-    HashMap(BTreeMap<Value, Option<Value>>),
-    HashSet(BTreeSet<Value>),
+    HashMap(InsertionMap),
+    HashSet(InsertionSet),
     HashMapKeysIter(Vec<Option<Value>>, usize),
     HashMapValuesIter(Vec<Option<Value>>, usize),
     HashMapIter(Vec<Option<Value>>, usize),
@@ -76,6 +79,148 @@ enum Value {
     /// mutable state is the seed itself, updated in place by `next_int`.
     Random(u64),
     IOError(IOErrorKind),
+    /// WP-C2.2 (DEV-027): runtime representation of the prelude `Ordering` enum, mirroring
+    /// `IOError`'s builtin-backed pattern (no HIR item; variants resolve to `Builtin`s).
+    Ordering(std::cmp::Ordering),
+}
+
+/// WP-C2.2 (DEV-032): insertion-ordered map backing `Value::HashMap`, per the normative
+/// iteration-order rule (`06-Standard-Library.md` "Iteration Order", CD-009): first insertion
+/// appends; re-inserting an existing key updates its value in place without moving it;
+/// remove-then-reinsert places the key at the end. Linear key search — performance is not a
+/// goal for the reference interpreter; observable ordering semantics are. Equality is
+/// content-based (order-independent), preserving the prior `BTreeMap`-era semantics; `Ord`
+/// compares canonicalized (sorted) entry lists so it stays consistent with `Eq`.
+#[derive(Clone)]
+struct InsertionMap(Vec<(Value, Option<Value>)>);
+
+impl InsertionMap {
+    fn new() -> Self {
+        InsertionMap(Vec::new())
+    }
+    fn position(&self, key: &Value) -> Option<usize> {
+        self.0.iter().position(|(k, _)| k == key)
+    }
+    fn insert(&mut self, key: Value, value: Option<Value>) -> Option<Option<Value>> {
+        match self.position(&key) {
+            Some(index) => Some(std::mem::replace(&mut self.0[index].1, value)),
+            None => {
+                self.0.push((key, value));
+                None
+            }
+        }
+    }
+    fn get(&self, key: &Value) -> Option<&Option<Value>> {
+        self.position(key).map(|index| &self.0[index].1)
+    }
+    fn get_mut(&mut self, key: &Value) -> Option<&mut Option<Value>> {
+        self.position(key).map(|index| &mut self.0[index].1)
+    }
+    fn remove(&mut self, key: &Value) -> Option<Option<Value>> {
+        self.position(key).map(|index| self.0.remove(index).1)
+    }
+    fn contains_key(&self, key: &Value) -> bool {
+        self.position(key).is_some()
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+    fn keys(&self) -> impl Iterator<Item = &Value> {
+        self.0.iter().map(|(k, _)| k)
+    }
+    fn values(&self) -> impl Iterator<Item = &Option<Value>> {
+        self.0.iter().map(|(_, v)| v)
+    }
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Option<Value>> {
+        self.0.iter_mut().map(|(_, v)| v)
+    }
+    fn iter(&self) -> impl Iterator<Item = (&Value, &Option<Value>)> {
+        self.0.iter().map(|(k, v)| (k, v))
+    }
+    fn sorted_entries(&self) -> Vec<(&Value, &Option<Value>)> {
+        let mut entries: Vec<_> = self.0.iter().map(|(k, v)| (k, v)).collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        entries
+    }
+}
+
+impl PartialEq for InsertionMap {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len()
+            && self
+                .0
+                .iter()
+                .all(|(key, value)| other.get(key) == Some(value))
+    }
+}
+
+impl InsertionMap {
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sorted_entries().cmp(&other.sorted_entries())
+    }
+}
+
+/// WP-C2.2 (DEV-032): insertion-ordered set backing `Value::HashSet` — same ordering rules and
+/// comparison semantics as `InsertionMap`.
+#[derive(Clone)]
+struct InsertionSet(Vec<Value>);
+
+impl InsertionSet {
+    fn new() -> Self {
+        InsertionSet(Vec::new())
+    }
+    fn insert(&mut self, value: Value) -> bool {
+        if self.0.contains(&value) {
+            false
+        } else {
+            self.0.push(value);
+            true
+        }
+    }
+    fn remove(&mut self, value: &Value) -> bool {
+        match self.0.iter().position(|v| v == value) {
+            Some(index) => {
+                self.0.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+    fn contains(&self, value: &Value) -> bool {
+        self.0.contains(value)
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+    fn iter(&self) -> impl Iterator<Item = &Value> {
+        self.0.iter()
+    }
+    fn sorted_entries(&self) -> Vec<&Value> {
+        let mut entries: Vec<_> = self.0.iter().collect();
+        entries.sort();
+        entries
+    }
+    fn canonical_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sorted_entries().cmp(&other.sorted_entries())
+    }
+}
+
+impl PartialEq for InsertionSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.0.iter().all(|value| other.contains(value))
+    }
 }
 
 /// Mirrors the `IOError` enum in `06-Standard-Library.md`. Given its own
@@ -162,6 +307,7 @@ impl fmt::Display for Value {
                 end,
                 inclusive,
             } => write!(f, "{start}..{}{end}", if *inclusive { "=" } else { "" }),
+            Value::Slice(_, start, end) => write!(f, "<slice {start}..{end}>"),
             Value::Ref(_) => write!(f, "<reference>"),
             Value::Function(item) => write!(f, "fn#{}", item.0),
             Value::CharsIter(..) => write!(f, "<CharsIter>"),
@@ -194,6 +340,15 @@ impl fmt::Display for Value {
             Value::MapIter(..) => write!(f, "<MapIter>"),
             Value::FilterIter(..) => write!(f, "<FilterIter>"),
             Value::Random(_) => write!(f, "<Random>"),
+            Value::Ordering(ordering) => write!(
+                f,
+                "Ordering::{}",
+                match ordering {
+                    std::cmp::Ordering::Less => "Less",
+                    std::cmp::Ordering::Equal => "Equal",
+                    std::cmp::Ordering::Greater => "Greater",
+                }
+            ),
             Value::IOError(kind) => write!(f, "IOError::{kind}"),
         }
     }
@@ -221,21 +376,23 @@ impl Ord for Value {
                 Value::Option(_) => 13,
                 Value::Result(_) => 14,
                 Value::Range { .. } => 15,
-                Value::Ref(_) => 16,
-                Value::Function(_) => 17,
-                Value::CharsIter(..) => 18,
-                Value::SplitIter(..) => 19,
-                Value::VecIter(..) => 20,
-                Value::HashMap(_) => 21,
-                Value::HashSet(_) => 22,
-                Value::HashMapKeysIter(..) => 23,
-                Value::HashMapValuesIter(..) => 24,
-                Value::HashMapIter(..) => 25,
-                Value::HashSetIter(..) => 26,
-                Value::MapIter(..) => 27,
-                Value::FilterIter(..) => 28,
-                Value::Random(_) => 29,
-                Value::IOError(_) => 30,
+                Value::Slice(..) => 16,
+                Value::Ref(_) => 17,
+                Value::Function(_) => 18,
+                Value::CharsIter(..) => 19,
+                Value::SplitIter(..) => 20,
+                Value::VecIter(..) => 21,
+                Value::HashMap(_) => 22,
+                Value::HashSet(_) => 23,
+                Value::HashMapKeysIter(..) => 24,
+                Value::HashMapValuesIter(..) => 25,
+                Value::HashMapIter(..) => 26,
+                Value::HashSetIter(..) => 27,
+                Value::MapIter(..) => 28,
+                Value::FilterIter(..) => 29,
+                Value::Random(_) => 30,
+                Value::Ordering(_) => 31,
+                Value::IOError(_) => 32,
             }
         }
 
@@ -302,19 +459,27 @@ impl Ord for Value {
                     inclusive: ib,
                 },
             ) => sa.cmp(sb).then_with(|| ea.cmp(eb)).then_with(|| ia.cmp(ib)),
+            (Value::Slice(pa, sa, ea), Value::Slice(pb, sb, eb)) => pa
+                .frame
+                .cmp(&pb.frame)
+                .then_with(|| pa.local.0.cmp(&pb.local.0))
+                .then_with(|| pa.projections.len().cmp(&pb.projections.len()))
+                .then_with(|| sa.cmp(sb))
+                .then_with(|| ea.cmp(eb)),
             (Value::Ref(a), Value::Ref(b)) => a
                 .frame
                 .cmp(&b.frame)
                 .then_with(|| a.local.0.cmp(&b.local.0))
                 .then_with(|| a.projections.len().cmp(&b.projections.len())),
             (Value::Function(a), Value::Function(b)) => a.cmp(b),
-            (Value::HashMap(a), Value::HashMap(b)) => a.cmp(b),
-            (Value::HashSet(a), Value::HashSet(b)) => a.cmp(b),
+            (Value::HashMap(a), Value::HashMap(b)) => a.canonical_cmp(b),
+            (Value::HashSet(a), Value::HashSet(b)) => a.canonical_cmp(b),
             (Value::MapIter(ia, fa), Value::MapIter(ib, fb)) => ia.cmp(ib).then_with(|| fa.cmp(fb)),
             (Value::FilterIter(ia, fa), Value::FilterIter(ib, fb)) => {
                 ia.cmp(ib).then_with(|| fa.cmp(fb))
             }
             (Value::Random(a), Value::Random(b)) => a.cmp(b),
+            (Value::Ordering(a), Value::Ordering(b)) => a.cmp(b),
             (Value::IOError(a), Value::IOError(b)) => a.cmp(b),
             _ => std::cmp::Ordering::Equal,
         }
@@ -511,13 +676,14 @@ impl<'a> Interpreter<'a> {
                 end: 0,
                 inclusive: *inclusive,
             },
+            Value::Slice(place, start, end) => Value::Slice(place.clone(), *start, *end),
             Value::Ref(place) => Value::Ref(place.clone()),
             Value::Function(item) => Value::Function(*item),
             Value::CharsIter(..) => Value::CharsIter(String::new(), 0),
             Value::SplitIter(..) => Value::SplitIter(Vec::new(), 0),
             Value::VecIter(place, _) => Value::VecIter(place.clone(), 0),
-            Value::HashMap(_) => Value::HashMap(BTreeMap::new()),
-            Value::HashSet(_) => Value::HashSet(BTreeSet::new()),
+            Value::HashMap(_) => Value::HashMap(InsertionMap::new()),
+            Value::HashSet(_) => Value::HashSet(InsertionSet::new()),
             Value::HashMapKeysIter(..) => Value::HashMapKeysIter(Vec::new(), 0),
             Value::HashMapValuesIter(..) => Value::HashMapValuesIter(Vec::new(), 0),
             Value::HashMapIter(..) => Value::HashMapIter(Vec::new(), 0),
@@ -529,6 +695,7 @@ impl<'a> Interpreter<'a> {
                 Value::FilterIter(Box::new(self.default_value_for(inner)), *item)
             }
             Value::Random(_) => Value::Random(0),
+            Value::Ordering(_) => Value::Ordering(std::cmp::Ordering::Equal),
             Value::IOError(_) => Value::IOError(IOErrorKind::NotFound),
         }
     }
@@ -738,7 +905,7 @@ impl<'a> Interpreter<'a> {
                 let left = self.expect_value(*lhs)?;
                 let right = self.expect_value(*rhs)?;
                 Ok(Flow::Value(
-                    self.eval_binary(*op, left, right, expr_id, *lhs, expr.span)?,
+                    self.eval_binary(*op, left, right, expr_id, expr.span)?,
                 ))
             }
             hir::ExprKind::Assign { op, lhs, rhs } => {
@@ -748,7 +915,7 @@ impl<'a> Interpreter<'a> {
                     right
                 } else {
                     let current = self.take_place(&place, expr.span)?;
-                    self.eval_binary(assign_binop(*op), current, right, expr_id, *lhs, expr.span)?
+                    self.eval_binary(assign_binop(*op), current, right, expr_id, expr.span)?
                 };
                 self.write_place(&place, value, expr.span)?;
                 Ok(Flow::Value(Value::Unit))
@@ -769,11 +936,10 @@ impl<'a> Interpreter<'a> {
                 let place = self.expr_place(expr_id)?;
                 Ok(Flow::Value(self.take_place(&place, expr.span)?))
             }
-            hir::ExprKind::Index { base, index } => {
+            hir::ExprKind::Index { base: _, index } => {
                 if matches!(self.tables.expr_types.get(index), Some(Ty::Range(_))) {
-                    let range = self.expect_value(*index)?;
-                    let base = self.clone_expr_place(*base)?;
-                    return Ok(Flow::Value(self.slice_value(base, range, expr.span)?));
+                    let place = self.expr_place(expr_id)?;
+                    return Ok(Flow::Value(self.clone_place_value(&place, expr.span)?));
                 }
                 let place = self.expr_place(expr_id)?;
                 Ok(Flow::Value(self.take_place(&place, expr.span)?))
@@ -837,6 +1003,11 @@ impl<'a> Interpreter<'a> {
                         let flow = self.eval_expr(arm.body)?;
                         let locals: Vec<_> = bindings.iter().map(|(local, _)| *local).collect();
                         self.cleanup_locals(&locals)?;
+                        // WP-C2.2 (DEV-030): the match consumed the scrutinee; anything the
+                        // matched pattern did not bind must still be dropped exactly once.
+                        // Runs after the arm body and after the bindings' own cleanup,
+                        // mirroring "the scrutinee temporary outlives the arm" scoping.
+                        self.drop_unbound(arm.pat, value)?;
                         return Ok(flow);
                     }
                 }
@@ -863,13 +1034,29 @@ impl<'a> Interpreter<'a> {
                 local, iter, body, ..
             } => {
                 let iterable = self.expect_value(*iter)?;
-                let values = self.iter_values(iterable, expr.span)?;
-                for value in values {
-                    self.frame_mut().insert(*local, Some(value));
-                    match self.eval_block(*body)? {
-                        Flow::Value(_) | Flow::Continue => {}
-                        Flow::Break(_) => break,
-                        flow => return Ok(flow),
+                match iterable {
+                    Value::Range { .. } | Value::Array(_) | Value::Vec(_) | Value::Slice(..) => {
+                        for value in self.iter_values(iterable, expr.span)? {
+                            self.frame_mut().insert(*local, Some(value));
+                            match self.eval_block(*body)? {
+                                Flow::Value(_) | Flow::Continue => {}
+                                Flow::Break(_) => break,
+                                flow => return Ok(flow),
+                            }
+                        }
+                    }
+                    iterator => {
+                        let iterator_place = self.promote_to_temp_place(iterator, expr.span)?;
+                        while let Some(value) =
+                            self.next_for_iterator(&iterator_place, expr.span)?
+                        {
+                            self.frame_mut().insert(*local, Some(value));
+                            match self.eval_block(*body)? {
+                                Flow::Value(_) | Flow::Continue => {}
+                                Flow::Break(_) => break,
+                                flow => return Ok(flow),
+                            }
+                        }
                     }
                 }
                 self.cleanup_locals(&[*local])?;
@@ -979,6 +1166,11 @@ impl<'a> Interpreter<'a> {
             Res::Builtin(Builtin::IOErrorInvalidInput) => {
                 Ok(Value::IOError(IOErrorKind::InvalidInput))
             }
+            Res::Builtin(Builtin::OrderingLess) => Ok(Value::Ordering(std::cmp::Ordering::Less)),
+            Res::Builtin(Builtin::OrderingEqual) => Ok(Value::Ordering(std::cmp::Ordering::Equal)),
+            Res::Builtin(Builtin::OrderingGreater) => {
+                Ok(Value::Ordering(std::cmp::Ordering::Greater))
+            }
             _ => Err(RuntimeError::new(
                 "path is not a runtime value",
                 self.hir.expr(expr).span,
@@ -1006,7 +1198,6 @@ impl<'a> Interpreter<'a> {
         left: Value,
         right: Value,
         expr: ExprId,
-        lhs_expr: ExprId,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         let left = self.deref_value(left, span)?;
@@ -1025,8 +1216,17 @@ impl<'a> Interpreter<'a> {
             // are looked up here. See COMPILER-STATE.md DEV-008.
             if let Some(nominal) = nominal_item(&left) {
                 if let Some(method) = self.find_method(Some(nominal), "eq", None) {
-                    let result =
-                        self.call_user_method(method, lhs_expr, left.clone(), vec![right], span)?;
+                    // WP-C2.2: `call_user_method` now takes a receiver *place* (DEV-034/035).
+                    // `left` is already fully evaluated here; promote it to a temp place rather
+                    // than re-resolving `lhs_expr`, which could re-run its side effects.
+                    let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
+                    let result = self.call_user_method(
+                        method,
+                        receiver_place,
+                        left.clone(),
+                        vec![right],
+                        span,
+                    )?;
                     let equal = matches!(result, Value::Bool(true));
                     return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
                 }
@@ -1039,6 +1239,29 @@ impl<'a> Interpreter<'a> {
                 _ => left == right,
             };
             return Ok(Value::Bool(if op == BinOp::Eq { equal } else { !equal }));
+        }
+        if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+            // WP-C2.2 (DEV-027): comparison operators on nominal user types dispatch through
+            // `Ord::cmp`, just as equality above dispatches through `Eq::eq`. The type checker
+            // has already required a matching `Ord` implementation.
+            if let Some(nominal) = nominal_item(&left) {
+                if let Some(method) = self.find_method(Some(nominal), "cmp", None) {
+                    let receiver_place = self.promote_to_temp_place(left.clone(), span)?;
+                    let ordering =
+                        self.call_user_method(method, receiver_place, left, vec![right], span)?;
+                    let Value::Ordering(ordering) = ordering else {
+                        return Err(RuntimeError::new("Ord::cmp must return Ordering", span));
+                    };
+                    let result = match op {
+                        BinOp::Lt => ordering == std::cmp::Ordering::Less,
+                        BinOp::Le => ordering != std::cmp::Ordering::Greater,
+                        BinOp::Gt => ordering == std::cmp::Ordering::Greater,
+                        BinOp::Ge => ordering != std::cmp::Ordering::Less,
+                        _ => unreachable!(),
+                    };
+                    return Ok(Value::Bool(result));
+                }
+            }
         }
         match (left, right) {
             (Value::Int(left), Value::Int(right)) => {
@@ -1247,7 +1470,8 @@ impl<'a> Interpreter<'a> {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                self.output.push_str(&deref.to_string());
+                self.output
+                    .push_str(&self.format_runtime_value(&deref, span)?);
                 if builtin == Builtin::Println {
                     self.output.push('\n');
                 }
@@ -1256,7 +1480,10 @@ impl<'a> Interpreter<'a> {
             Builtin::Panic => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                Err(RuntimeError::new(deref.to_string(), span))
+                Err(RuntimeError::new(
+                    self.format_runtime_value(&deref, span)?,
+                    span,
+                ))
             }
             Builtin::Assert => match args.pop() {
                 Some(Value::Bool(true)) => Ok(Value::Unit),
@@ -1373,12 +1600,12 @@ impl<'a> Interpreter<'a> {
                 let capacity = usize_arg(args.pop(), span)?;
                 Ok(Value::Vec(Vec::with_capacity(capacity)))
             }
-            Builtin::HashMapNew => Ok(Value::HashMap(BTreeMap::new())),
+            Builtin::HashMapNew => Ok(Value::HashMap(InsertionMap::new())),
             Builtin::HashMapWithCapacity => {
                 let _capacity = usize_arg(args.pop(), span)?;
-                Ok(Value::HashMap(BTreeMap::new()))
+                Ok(Value::HashMap(InsertionMap::new()))
             }
-            Builtin::HashSetNew => Ok(Value::HashSet(BTreeSet::new())),
+            Builtin::HashSetNew => Ok(Value::HashSet(InsertionSet::new())),
             Builtin::BoxNew => Ok(Value::Boxed(Box::new(args.pop()))),
             Builtin::BoxIntoInner => match args.pop() {
                 Some(Value::Boxed(value)) => Ok((*value).unwrap_or(Value::Unit)),
@@ -1485,6 +1712,9 @@ impl<'a> Interpreter<'a> {
             // -- Phase 4E: Random --
             Builtin::RandomNew => Ok(Value::Random(u64_arg(args.pop(), span)?)),
             // -- Phase 4E: IOError --
+            Builtin::OrderingLess => Ok(Value::Ordering(std::cmp::Ordering::Less)),
+            Builtin::OrderingEqual => Ok(Value::Ordering(std::cmp::Ordering::Equal)),
+            Builtin::OrderingGreater => Ok(Value::Ordering(std::cmp::Ordering::Greater)),
             Builtin::IOErrorNotFound => Ok(Value::IOError(IOErrorKind::NotFound)),
             Builtin::IOErrorPermissionDenied => Ok(Value::IOError(IOErrorKind::PermissionDenied)),
             Builtin::IOErrorAlreadyExists => Ok(Value::IOError(IOErrorKind::AlreadyExists)),
@@ -1548,8 +1778,16 @@ impl<'a> Interpreter<'a> {
                 .call_core_method(Some(expr_id), base, &name, args, span)
                 .map(Flow::Value);
         }
-        let receiver_value = self.clone_expr_place(base)?;
-        let receiver_value = self.deref_value(receiver_value, span)?;
+        // WP-C2.2 (DEV-034): resolve the receiver to a place exactly once, before anything else.
+        // A place expression resolves without re-running its subexpressions later; a non-place
+        // expression (e.g. `make_thing().consume()`) evaluates once here into a synthetic temp
+        // in the caller's frame. Previously the by-value receiver path re-evaluated the original
+        // receiver expression a second time inside `call_user_method` (confirmed empirically:
+        // a `println` inside a receiver-constructing function printed twice for one call), and
+        // the `&mut self` path re-resolved the place (re-running index subexpressions). The
+        // resolved place is also what DEV-035's returned-reference rebasing targets.
+        let receiver_place = self.core_receiver_place(base, span)?;
+        let receiver_value = self.clone_place_value(&receiver_place, span)?;
         let nominal = nominal_item(&receiver_value);
         let method = self.find_method(nominal, &name, None).ok_or_else(|| {
             RuntimeError::new(format!("method '{name}' not found at runtime"), span)
@@ -1558,7 +1796,7 @@ impl<'a> Interpreter<'a> {
             .iter()
             .map(|arg| self.expect_value(*arg))
             .collect::<Result<Vec<_>, _>>()?;
-        self.call_user_method(method, base, receiver_value, values, span)
+        self.call_user_method(method, receiver_place, receiver_value, values, span)
             .map(Flow::Value)
     }
 
@@ -1579,8 +1817,9 @@ impl<'a> Interpreter<'a> {
         let Some((first, rest)) = args.split_first() else {
             return Err(RuntimeError::new("trait call requires receiver", span));
         };
-        let receiver = self.clone_expr_place(*first)?;
-        let receiver = self.deref_value(receiver, span)?;
+        // WP-C2.2 (DEV-034/DEV-035): same single-resolution receiver handling as `call_method`.
+        let receiver_place = self.core_receiver_place(*first, span)?;
+        let receiver = self.clone_place_value(&receiver_place, span)?;
         let method = self
             .find_method(nominal_item(&receiver), &method_name, Some(trait_id))
             .ok_or_else(|| RuntimeError::new("trait implementation not found", span))?;
@@ -1588,7 +1827,7 @@ impl<'a> Interpreter<'a> {
             .iter()
             .map(|arg| self.expect_value(*arg))
             .collect::<Result<Vec<_>, _>>()?;
-        self.call_user_method(method, *first, receiver, values, span)
+        self.call_user_method(method, receiver_place, receiver, values, span)
             .map(Flow::Value)
     }
 
@@ -1597,6 +1836,28 @@ impl<'a> Interpreter<'a> {
         nominal: Option<ItemId>,
         name: &str,
         trait_filter: Option<ItemId>,
+    ) -> Option<Callable> {
+        // WP-C2.2 (DEV-026): inherent methods shadow trait methods of the same name
+        // unconditionally (03-Type-System.md "Method Calls and Auto-Borrowing", rule 1).
+        // Previously a single source-order scan returned whichever matching impl block
+        // appeared first in the file — a trait impl declared above an inherent impl won,
+        // observably flipping which body ran based on item order alone. Two passes: inherent
+        // impls first, then trait impls. A trait-qualified call (`trait_filter` set) skips the
+        // inherent pass entirely, since it names the trait explicitly.
+        if trait_filter.is_none() {
+            if let Some(callable) = self.find_method_pass(nominal, name, None, true) {
+                return Some(callable);
+            }
+        }
+        self.find_method_pass(nominal, name, trait_filter, false)
+    }
+
+    fn find_method_pass(
+        &self,
+        nominal: Option<ItemId>,
+        name: &str,
+        trait_filter: Option<ItemId>,
+        inherent_only: bool,
     ) -> Option<Callable> {
         let nominal = nominal?;
         self.hir.items.iter().find_map(|item| {
@@ -1609,6 +1870,9 @@ impl<'a> Interpreter<'a> {
             else {
                 return None;
             };
+            if inherent_only != trait_.is_none() {
+                return None;
+            }
             if trait_filter.is_some_and(|expected| {
                 !matches!(trait_, Some(reference) if reference.res == Res::Item(expected))
             }) {
@@ -1697,27 +1961,24 @@ impl<'a> Interpreter<'a> {
     fn call_user_method(
         &mut self,
         callable: Callable,
-        base: ExprId,
-        borrowed_receiver: Value,
+        receiver_place: Place,
+        receiver_value: Value,
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
         let Some((receiver_kind, receiver_local)) = callable.receiver else {
             return Err(RuntimeError::new("method has no receiver", span));
         };
-        let mut receiver_place = None;
         let receiver = match receiver_kind {
-            hir::Receiver::Value => self.expect_value(base)?,
-            hir::Receiver::Ref => borrowed_receiver,
-            hir::Receiver::RefMut => {
-                let place = self.core_receiver_place(base, span)?;
-                let receiver = self
-                    .place_slot_mut(&place, span)?
-                    .take()
-                    .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?;
-                receiver_place = Some(place);
-                receiver
-            }
+            // WP-C2.2 (DEV-034): consume the already-resolved place (proper move semantics for
+            // non-Copy receivers, including partial moves out of fields) instead of re-evaluating
+            // the receiver expression — the source of the confirmed double-evaluation bug.
+            hir::Receiver::Value => self.take_place(&receiver_place, span)?,
+            hir::Receiver::Ref => receiver_value,
+            hir::Receiver::RefMut => self
+                .place_slot_mut(&receiver_place, span)?
+                .take()
+                .ok_or_else(|| RuntimeError::new("mutable receiver is unavailable", span))?,
         };
         let mut frame = Frame::default();
         frame.insert(receiver_local, Some(receiver));
@@ -1725,6 +1986,7 @@ impl<'a> Interpreter<'a> {
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);
+        let method_frame = self.frames.len() - 1;
         let result = self.eval_block(callable.body);
         if let Err(error) = result {
             let restored = self
@@ -1733,8 +1995,9 @@ impl<'a> Interpreter<'a> {
                 .get_mut(&receiver_local)
                 .and_then(Option::take);
             self.frames.pop();
-            if let (Some(place), Some(restored)) = (receiver_place, restored) {
-                self.place_slot_mut(&place, span)?.replace(restored);
+            if let (hir::Receiver::RefMut, Some(restored)) = (receiver_kind, restored) {
+                self.place_slot_mut(&receiver_place, span)?
+                    .replace(restored);
             }
             return Err(error);
         }
@@ -1753,16 +2016,27 @@ impl<'a> Interpreter<'a> {
             let restored = restored.ok_or_else(|| {
                 RuntimeError::new("mutable receiver was moved by its method", span)
             })?;
-            let place = receiver_place.expect("mutable receiver place recorded");
-            self.write_place(&place, restored, span)?;
+            self.write_place(&receiver_place, restored, span)?;
         }
-        match flow {
-            Flow::Value(value) | Flow::Return(value) => Ok(value),
-            Flow::Propagate(value) => Ok(value),
+        let mut value = match flow {
+            Flow::Value(value) | Flow::Return(value) => value,
+            Flow::Propagate(value) => value,
             Flow::Break(_) | Flow::Continue => {
-                Err(RuntimeError::new("loop control escaped a method", span))
+                return Err(RuntimeError::new("loop control escaped a method", span))
             }
-        }
+        };
+        // WP-C2.2 (DEV-035): a reference returned from a `&self`/`&mut self` method that was
+        // derived from `self` (e.g. `&self.field`, or `self.items.iter()`) carries a `Place`
+        // pointing into the method's own — just popped — call frame, so any later dereference
+        // failed with "dangling reference" (confirmed empirically: an ordinary getter returning
+        // `&self.value` crashed unconditionally). Rebase such places onto the caller-side
+        // receiver place, preserving any field/index projections taken inside the method.
+        // References into other locals of the popped frame are left untouched: the borrow
+        // checker's return-escape check (E0103, WP-C1.4) rejects those at compile time, and if
+        // one ever slips through, the existing "dangling reference" trap is the correct
+        // backstop, not a silent rebase.
+        rebase_frame_refs(&mut value, method_frame, receiver_local, &receiver_place);
+        Ok(value)
     }
 
     fn is_core_value(&self, expr: ExprId) -> bool {
@@ -1789,6 +2063,12 @@ impl<'a> Interpreter<'a> {
         args: &[ExprId],
         span: Span,
     ) -> Result<Value, RuntimeError> {
+        // WP-C2.2 (DEV-033): resolve the receiver place exactly once, BEFORE evaluating any
+        // argument — the normative evaluation order (03-Type-System.md "Evaluation Order",
+        // CD-007/CD-010) is receiver-before-arguments, but this path previously evaluated all
+        // arguments first and resolved the receiver lazily inside each method-name branch
+        // (also re-resolving it — and re-running index subexpressions — once per use).
+        let receiver_place = self.core_receiver_place(base, span)?;
         let mut values = args
             .iter()
             .map(|arg| self.expect_value(*arg))
@@ -1832,7 +2112,7 @@ impl<'a> Interpreter<'a> {
         // The type-checker (`core_method_signature`) only accepts "clone" for the value-like
         // core types listed there; this mirrors that set. See COMPILER-STATE.md DEV-013.
         if name == "clone" {
-            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_place = receiver_place.clone();
             let receiver_val = self.place_value(&receiver_place, span)?;
             if matches!(
                 receiver_val,
@@ -1851,7 +2131,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "get" {
-            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_place = receiver_place.clone();
             let receiver_val = self.place_value(&receiver_place, span)?;
             match receiver_val {
                 Value::HashMap(map) => {
@@ -1880,7 +2160,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "get_mut" {
-            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_place = receiver_place.clone();
             let receiver_val = self.place_value(&receiver_place, span)?;
             match receiver_val {
                 Value::HashMap(map) => {
@@ -1909,7 +2189,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "iter" {
-            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_place = receiver_place.clone();
             let receiver_val = self.place_value(&receiver_place, span)?;
             match receiver_val {
                 Value::HashMap(map) => {
@@ -1934,7 +2214,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "keys" {
-            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_place = receiver_place.clone();
             let receiver_val = self.place_value(&receiver_place, span)?;
             if let Value::HashMap(map) = receiver_val {
                 let keys = map.keys().cloned().map(Some).collect();
@@ -1942,15 +2222,24 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "values" {
-            let receiver_place = self.core_receiver_place(base, span)?;
+            let receiver_place = receiver_place.clone();
             let receiver_val = self.place_value(&receiver_place, span)?;
             if let Value::HashMap(map) = receiver_val {
                 let values = map.values().cloned().collect();
                 return Ok(Value::HashMapValuesIter(values, 0));
             }
         }
+        if matches!(name, "len" | "is_empty") {
+            if let Value::Slice(_, start, end) = self.place_value(&receiver_place, span)?.clone() {
+                return Ok(if name == "len" {
+                    Value::Int((end - start) as i128)
+                } else {
+                    Value::Bool(start == end)
+                });
+            }
+        }
         if name == "next" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let iter_val = self.place_value(&place, span)?.clone();
             let (next_val, updated_iter) = self.iterator_step(iter_val, Some(&place), span)?;
             let iter_mut = self.place_value_mut(&place, span)?;
@@ -1962,7 +2251,7 @@ impl<'a> Interpreter<'a> {
                 .next()
                 .ok_or_else(|| RuntimeError::new("extend expects an iterator", span))?;
             if let Value::Ref(iter_place) = iter_arg {
-                let place = self.core_receiver_place(base, span)?;
+                let place = receiver_place.clone();
                 loop {
                     let iter_val = self.place_value(&iter_place, span)?.clone();
                     let (next_val, updated_iter) =
@@ -2014,7 +2303,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "count" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let mut cnt = 0u64;
             loop {
@@ -2031,7 +2320,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Int(cnt as i128));
         }
         if name == "collect" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let mut items = Vec::new();
             loop {
@@ -2072,13 +2361,13 @@ impl<'a> Interpreter<'a> {
                 });
 
             if is_hashset {
-                let mut set = BTreeSet::new();
+                let mut set = InsertionSet::new();
                 for x in items.into_iter().flatten() {
                     set.insert(self.deref_value(x, span)?);
                 }
                 return Ok(Value::HashSet(set));
             } else if is_hashmap || is_all_pairs {
-                let mut map = BTreeMap::new();
+                let mut map = InsertionMap::new();
                 for item in items {
                     if let Some(Value::Tuple(p)) = item {
                         let k = self.deref_value(p[0].clone().unwrap_or(Value::Unit), span)?;
@@ -2096,7 +2385,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "fold" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let mut init = values
                 .next()
@@ -2118,7 +2407,7 @@ impl<'a> Interpreter<'a> {
             return Ok(init);
         }
         if name == "reduce" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let f = values
                 .next()
@@ -2147,7 +2436,7 @@ impl<'a> Interpreter<'a> {
             }
         }
         if name == "any" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let f = values
                 .next()
@@ -2171,7 +2460,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Bool(found));
         }
         if name == "all" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let f = values
                 .next()
@@ -2195,7 +2484,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Bool(all_true));
         }
         if name == "find" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let mut iter_val = self.place_value(&place, span)?.clone();
             let f = values
                 .next()
@@ -2220,7 +2509,7 @@ impl<'a> Interpreter<'a> {
             return Ok(Value::Option(found.map(Box::new)));
         }
         if name == "map" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let f = values
                 .next()
                 .ok_or_else(|| RuntimeError::new("map expects function argument", span))?;
@@ -2233,7 +2522,7 @@ impl<'a> Interpreter<'a> {
             return Ok(self.place_value(&place, span)?.clone());
         }
         if name == "filter" {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             let f = values
                 .next()
                 .ok_or_else(|| RuntimeError::new("filter expects function argument", span))?;
@@ -2250,11 +2539,12 @@ impl<'a> Interpreter<'a> {
         }
         let mut owned;
         let target = if mutating {
-            let place = self.core_receiver_place(base, span)?;
+            let place = receiver_place.clone();
             self.place_value_mut(&place, span)?
         } else {
-            let value = self.clone_expr_place(base)?;
-            owned = self.deref_value(value, span)?;
+            // WP-C2.2 (DEV-033): read through the already-resolved (and already ref-chain-
+            // dereferenced) receiver place instead of re-resolving the receiver expression.
+            owned = self.clone_place_value(&receiver_place, span)?;
             &mut owned
         };
         match target {
@@ -2590,6 +2880,18 @@ impl<'a> Interpreter<'a> {
                     },
                 ) => Ok(item == actual && variant == actual_variant),
                 (Res::Builtin(Builtin::None), Value::Option(None)) => Ok(true),
+                (
+                    Res::Builtin(Builtin::OrderingLess),
+                    Value::Ordering(std::cmp::Ordering::Less),
+                )
+                | (
+                    Res::Builtin(Builtin::OrderingEqual),
+                    Value::Ordering(std::cmp::Ordering::Equal),
+                )
+                | (
+                    Res::Builtin(Builtin::OrderingGreater),
+                    Value::Ordering(std::cmp::Ordering::Greater),
+                ) => Ok(true),
                 (Res::Builtin(Builtin::IOErrorNotFound), Value::IOError(IOErrorKind::NotFound)) => {
                     Ok(true)
                 }
@@ -2706,6 +3008,142 @@ impl<'a> Interpreter<'a> {
         Ok(true)
     }
 
+    /// Whether any `Binding` (including a struct-pattern shorthand field) occurs anywhere in
+    /// this pattern subtree. Used by `drop_unbound` to decide between dropping a matched
+    /// sub-value whole (no bindings: fully consumed unbound, the container's own `Drop` runs
+    /// via `drop_value`) and recursing structurally (bindings present: a partial move, so the
+    /// container's own `Drop` must not run — borrowck forbids partial moves out of
+    /// `Drop`-implementing types, making that combination unrepresentable in checked code).
+    fn pattern_binds(&self, pat: PatId) -> bool {
+        match &self.hir.pat(pat).kind {
+            hir::PatKind::Binding { .. } => true,
+            hir::PatKind::Wild
+            | hir::PatKind::Lit(_)
+            | hir::PatKind::Path { .. }
+            | hir::PatKind::Error => false,
+            hir::PatKind::TupleVariant { pats, .. }
+            | hir::PatKind::Tuple(pats)
+            | hir::PatKind::Array(pats) => pats.iter().any(|&p| self.pattern_binds(p)),
+            hir::PatKind::Struct { fields, .. } => fields.iter().any(|field| {
+                field.local.is_some() || field.pat.is_some_and(|p| self.pattern_binds(p))
+            }),
+        }
+    }
+
+    /// WP-C2.2 (DEV-030): drop the portions of an owned, consumed match scrutinee that the
+    /// matched pattern did NOT bind. Matching moves the scrutinee into the match; a `Binding`
+    /// transfers each bound sub-value's ownership to its new local (whose normal end-of-scope
+    /// cleanup drops it), but everything matched by `_`, a literal/path pattern, or an
+    /// unmentioned struct field was previously just abandoned — its destructor never ran, for
+    /// the rest of the program (confirmed empirically; a silent violation of
+    /// `03-Type-System.md`'s "destructors run exactly once" invariant). Reference scrutinees
+    /// are borrows, not owners, and are never dropped through.
+    fn drop_unbound(&mut self, pat: PatId, value: Value) -> Result<(), RuntimeError> {
+        if matches!(value, Value::Ref(_)) {
+            return Ok(());
+        }
+        if !self.pattern_binds(pat) {
+            // Fully unbound subtree: the sub-value was consumed whole; run its full drop
+            // (including the container's own `Drop` impl, if any).
+            return self.drop_value(value);
+        }
+        let kind = &self.hir.pat(pat).kind;
+        match kind {
+            hir::PatKind::Binding { .. } => Ok(()),
+            hir::PatKind::TupleVariant { pats, .. } => {
+                let pats = pats.clone();
+                let payloads: Vec<Option<Value>> = match value {
+                    Value::Enum { fields, .. } => fields,
+                    Value::Option(Some(inner)) => vec![Some(*inner)],
+                    Value::Result(Ok(inner)) | Value::Result(Err(inner)) => vec![Some(*inner)],
+                    Value::IOError(IOErrorKind::Other(msg)) => vec![Some(Value::String(msg))],
+                    _ => return Ok(()),
+                };
+                for (pat, payload) in pats.iter().zip(payloads).rev() {
+                    if let Some(payload) = payload {
+                        self.drop_unbound(*pat, payload)?;
+                    }
+                }
+                Ok(())
+            }
+            hir::PatKind::Struct { fields, .. } => {
+                let field_pats: Vec<(String, Option<PatId>, bool)> = fields
+                    .iter()
+                    .map(|field| {
+                        (
+                            self.text(field.name).to_string(),
+                            field.pat,
+                            field.local.is_some(),
+                        )
+                    })
+                    .collect();
+                let (mut value_fields, mut names) = match value {
+                    Value::Struct { item, fields } => {
+                        (fields, self.declared_field_order(item, None))
+                    }
+                    Value::Enum {
+                        item,
+                        variant,
+                        named,
+                        ..
+                    } => (named, self.declared_field_order(item, Some(variant))),
+                    _ => return Ok(()),
+                };
+                // Unmentioned fields drop in reverse declaration order where the declaration
+                // is known; the map's own (alphabetical) order is only a fallback for values
+                // with no recoverable declaration order. Mentioned-with-subpattern fields
+                // recurse; shorthand-bound fields transferred ownership to their binding.
+                for name in value_fields.keys() {
+                    if !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                }
+                for name in names.into_iter().rev() {
+                    let Some(field_value) = value_fields.remove(&name).flatten() else {
+                        continue;
+                    };
+                    match field_pats.iter().find(|(n, _, _)| *n == name) {
+                        Some((_, Some(sub_pat), _)) => self.drop_unbound(*sub_pat, field_value)?,
+                        Some((_, None, true)) => {}
+                        Some((_, None, false)) | None => self.drop_value(field_value)?,
+                    }
+                }
+                Ok(())
+            }
+            hir::PatKind::Tuple(pats) => {
+                let pats = pats.clone();
+                let values = match value {
+                    Value::Tuple(values) => values,
+                    _ => return Ok(()),
+                };
+                for (pat, item) in pats.iter().zip(values).rev() {
+                    if let Some(item) = item {
+                        self.drop_unbound(*pat, item)?;
+                    }
+                }
+                Ok(())
+            }
+            hir::PatKind::Array(pats) => {
+                let pats = pats.clone();
+                let values = match value {
+                    Value::Array(values) | Value::Vec(values) => values,
+                    _ => return Ok(()),
+                };
+                for (pat, item) in pats.iter().zip(values).rev() {
+                    if let Some(item) = item {
+                        self.drop_unbound(*pat, item)?;
+                    }
+                }
+                Ok(())
+            }
+            // Wild/Lit/Path bind nothing and are handled by the fully-unbound fast path above.
+            hir::PatKind::Wild
+            | hir::PatKind::Lit(_)
+            | hir::PatKind::Path { .. }
+            | hir::PatKind::Error => Ok(()),
+        }
+    }
+
     fn iter_values(&self, value: Value, span: Span) -> Result<Vec<Value>, RuntimeError> {
         match value {
             Value::Range {
@@ -2722,11 +3160,49 @@ impl<'a> Interpreter<'a> {
                 Ok((start..final_end).map(Value::Int).collect())
             }
             Value::Array(values) | Value::Vec(values) => Ok(values.into_iter().flatten().collect()),
-            _ => Err(RuntimeError::new("value is not iterable", span)),
+            Value::Slice(place, start, end) => Ok((start..end)
+                .map(|index| {
+                    let mut item = place.clone();
+                    item.projections.push(Projection::Index(index));
+                    Value::Ref(item)
+                })
+                .collect()),
+            _ => Err(RuntimeError::new("value is not directly iterable", span)),
         }
     }
 
-    fn slice_value(&self, value: Value, range: Value, span: Span) -> Result<Value, RuntimeError> {
+    /// WP-C2.2 (DEV-031): advance a standard or nominal iterator exactly once. `for` calls this
+    /// between body executions, preserving the observable `next`/body interleaving and allowing
+    /// `break` to stop without eagerly exhausting the iterator.
+    fn next_for_iterator(
+        &mut self,
+        iterator_place: &Place,
+        span: Span,
+    ) -> Result<Option<Value>, RuntimeError> {
+        let current = self.clone_place_value(iterator_place, span)?;
+        let next = if nominal_item(&current).is_some() {
+            let method = self
+                .find_method(nominal_item(&current), "next", None)
+                .ok_or_else(|| RuntimeError::new("value is not iterable", span))?;
+            self.call_user_method(method, iterator_place.clone(), current, Vec::new(), span)?
+        } else {
+            let (next, updated) = self.iterator_step(current, Some(iterator_place), span)?;
+            *self.place_value_mut(iterator_place, span)? = updated;
+            Value::Option(next.map(Box::new))
+        };
+        match next {
+            Value::Option(Some(value)) => Ok(Some(*value)),
+            Value::Option(None) => Ok(None),
+            _ => Err(RuntimeError::new("Iterator::next must return Option", span)),
+        }
+    }
+
+    fn slice_bounds(
+        &self,
+        range: Value,
+        length: usize,
+        span: Span,
+    ) -> Result<(usize, usize), RuntimeError> {
         let Value::Range {
             start,
             end,
@@ -2744,14 +3220,10 @@ impl<'a> Interpreter<'a> {
                 .checked_add(1)
                 .ok_or_else(|| RuntimeError::new("slice range overflow", span))?;
         }
-        let values = match value {
-            Value::Array(values) | Value::Vec(values) => values,
-            _ => return Err(RuntimeError::new("value cannot be sliced", span)),
-        };
-        if start > end || end > values.len() {
+        if start > end || end > length {
             return Err(RuntimeError::new("slice range out of bounds", span));
         }
-        Ok(Value::Array(values[start..end].to_vec()))
+        Ok((start, end))
     }
 
     fn expr_place(&mut self, expr: ExprId) -> Result<Place, RuntimeError> {
@@ -2765,15 +3237,24 @@ impl<'a> Interpreter<'a> {
                 local: *local,
                 projections: Vec::new(),
             }),
+            // WP-C2.2 (DEV-037): each projection arm normalizes the base place through any
+            // `Value::Ref` chain before projecting. Field/index access through a reference
+            // (`r.v` for `r: &Inner`) type-checks per the auto-deref rule but previously tried
+            // to project directly on the stored `Value::Ref`, failing at runtime with "use of
+            // moved or invalid field" — confirmed pre-existing at Gate C1 close, found while
+            // fixing DEV-035 (whose nested-accessor case routes a method-returned reference
+            // through exactly this path).
             hir::ExprKind::Field { base, name, .. } => {
-                let mut place = self.expr_place(*base)?;
+                let place = self.expr_place(*base)?;
+                let mut place = self.deref_place(place, node.span)?;
                 place
                     .projections
                     .push(Projection::Field(self.text(*name).to_string()));
                 Ok(place)
             }
             hir::ExprKind::TupleField { base, index } => {
-                let mut place = self.expr_place(*base)?;
+                let place = self.expr_place(*base)?;
+                let mut place = self.deref_place(place, node.span)?;
                 let index = self
                     .text(*index)
                     .parse::<usize>()
@@ -2782,9 +3263,38 @@ impl<'a> Interpreter<'a> {
                 Ok(place)
             }
             hir::ExprKind::Index { base, index } => {
-                let mut place = self.expr_place(*base)?;
+                let place = self.expr_place(*base)?;
+                let place = self.deref_place(place, node.span)?;
+                if matches!(self.tables.expr_types.get(index), Some(Ty::Range(_))) {
+                    let range = self.expect_value(*index)?;
+                    let (base_place, base_start, base_end) = match self
+                        .place_value(&place, node.span)?
+                        .clone()
+                    {
+                        Value::Slice(base_place, start, end) => (base_place, start, end),
+                        Value::Array(values) | Value::Vec(values) => (place, 0, values.len()),
+                        _ => return Err(RuntimeError::new("value cannot be sliced", node.span)),
+                    };
+                    let (start, end) =
+                        self.slice_bounds(range, base_end - base_start, node.span)?;
+                    return self.promote_to_temp_place(
+                        Value::Slice(base_place, base_start + start, base_start + end),
+                        node.span,
+                    );
+                }
                 let index = usize::try_from(self.expect_int(*index)?)
                     .map_err(|_| RuntimeError::new("negative index", self.hir.expr(*index).span))?;
+                if let Value::Slice(base_place, start, end) =
+                    self.place_value(&place, node.span)?.clone()
+                {
+                    if index >= end - start {
+                        return Err(RuntimeError::new("index out of bounds", node.span));
+                    }
+                    let mut item = base_place;
+                    item.projections.push(Projection::Index(start + index));
+                    return Ok(item);
+                }
+                let mut place = place;
                 place.projections.push(Projection::Index(index));
                 Ok(place)
             }
@@ -3009,15 +3519,14 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn clone_expr_place(&mut self, expr: ExprId) -> Result<Value, RuntimeError> {
-        if let Ok(place) = self.expr_place(expr) {
-            return self.clone_place_value(&place, self.hir.expr(expr).span);
-        }
-        self.expect_value(expr)
+    fn core_receiver_place(&mut self, expr: ExprId, span: Span) -> Result<Place, RuntimeError> {
+        let place = self.expr_place(expr)?;
+        self.deref_place(place, span)
     }
 
-    fn core_receiver_place(&mut self, expr: ExprId, span: Span) -> Result<Place, RuntimeError> {
-        let mut place = self.expr_place(expr)?;
+    /// Normalize a place through any chain of `Value::Ref` values stored at it, yielding the
+    /// place of the ultimate referent. A no-op for places whose value is not a reference.
+    fn deref_place(&self, mut place: Place, span: Span) -> Result<Place, RuntimeError> {
         loop {
             match self.place_value(&place, span)? {
                 Value::Ref(referent) => place = referent.clone(),
@@ -3035,6 +3544,29 @@ impl<'a> Interpreter<'a> {
             value = self.clone_place_value(&place, span)?;
         }
         Ok(value)
+    }
+
+    fn format_runtime_value(&self, value: &Value, span: Span) -> Result<String, RuntimeError> {
+        let Value::Slice(place, start, end) = value else {
+            return Ok(value.to_string());
+        };
+        let elements = match self.place_value(place, span)? {
+            Value::Array(elements) | Value::Vec(elements) => elements,
+            _ => return Err(RuntimeError::new("slice base is unavailable", span)),
+        };
+        if start > end || *end > elements.len() {
+            return Err(RuntimeError::new("slice range out of bounds", span));
+        }
+        let rendered = elements[*start..*end]
+            .iter()
+            .map(|element| {
+                element
+                    .as_ref()
+                    .map_or_else(|| "<moved>".to_string(), ToString::to_string)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!("[{rendered}]"))
     }
 
     fn place_value(&self, place: &Place, span: Span) -> Result<&Value, RuntimeError> {
@@ -3136,6 +3668,7 @@ impl<'a> Interpreter<'a> {
             | Value::Vec(_)
             | Value::Boxed(_)
             | Value::Range { .. }
+            | Value::Slice(..)
             | Value::CharsIter(..)
             | Value::SplitIter(..)
             | Value::VecIter(..)
@@ -3148,6 +3681,7 @@ impl<'a> Interpreter<'a> {
             | Value::MapIter(..)
             | Value::FilterIter(..)
             | Value::Random(_)
+            | Value::Ordering(_)
             | Value::IOError(_) => false,
         }
     }
@@ -3190,16 +3724,42 @@ impl<'a> Interpreter<'a> {
                     self.drop_value(child)?;
                 }
             }
-            Value::Struct { fields, .. } => {
-                for child in fields.values_mut().rev().filter_map(Option::take) {
+            // WP-C2.2 (DEV-029): named fields drop in REVERSE DECLARATION order per
+            // 05-Memory-Model.md "Drop Order" (made explicit for fields under CD-011).
+            // The `BTreeMap` representation iterates alphabetically, so the declaration
+            // order is recovered from the HIR item; any field name the HIR doesn't list
+            // (unreachable for well-typed values) falls back to map order afterwards.
+            Value::Struct { item, fields } => {
+                let item = *item;
+                let order = self.declared_field_order(item, None);
+                let mut fields = std::mem::take(fields);
+                for name in order.iter().rev() {
+                    if let Some(child) = fields.remove(name).flatten() {
+                        self.drop_value(child)?;
+                    }
+                }
+                for child in fields.into_values().flatten() {
                     self.drop_value(child)?;
                 }
             }
-            Value::Enum { fields, named, .. } => {
+            Value::Enum {
+                item,
+                variant,
+                fields,
+                named,
+            } => {
+                let (item, variant) = (*item, *variant);
                 for child in fields.iter_mut().rev().filter_map(Option::take) {
                     self.drop_value(child)?;
                 }
-                for child in named.values_mut().rev().filter_map(Option::take) {
+                let order = self.declared_field_order(item, Some(variant));
+                let mut named = std::mem::take(named);
+                for name in order.iter().rev() {
+                    if let Some(child) = named.remove(name).flatten() {
+                        self.drop_value(child)?;
+                    }
+                }
+                for child in named.into_values().flatten() {
                     self.drop_value(child)?;
                 }
             }
@@ -3219,6 +3779,29 @@ impl<'a> Interpreter<'a> {
             _ => {}
         }
         Ok(())
+    }
+
+    /// WP-C2.2 (DEV-029): a struct's (or enum struct-like variant's) field names in source
+    /// declaration order, recovered from the HIR item — the runtime `BTreeMap` representation
+    /// only preserves alphabetical order.
+    fn declared_field_order(&self, item: ItemId, variant: Option<u32>) -> Vec<String> {
+        match (&self.hir.item(item).kind, variant) {
+            (hir::ItemKind::Struct { fields, .. }, None) => fields
+                .iter()
+                .map(|field| self.text(field.name).to_string())
+                .collect(),
+            (hir::ItemKind::Enum { variants, .. }, Some(index)) => variants
+                .get(index as usize)
+                .map(|variant| match &variant.kind {
+                    hir::VariantKind::Struct(fields) => fields
+                        .iter()
+                        .map(|field| self.text(field.name).to_string())
+                        .collect(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     fn find_drop(&self, item: ItemId) -> Option<Callable> {
@@ -3244,6 +3827,87 @@ impl<'a> Interpreter<'a> {
     }
     fn frame_mut(&mut self) -> &mut Frame {
         self.frames.last_mut().expect("runtime frame exists")
+    }
+}
+
+/// WP-C2.2 (DEV-035): rewrite every `Place` reachable inside `value` that points at
+/// `(popped_frame, receiver_local)` — i.e. at the `self` slot of a method call frame that is
+/// about to become (or already is) invalid — so it points at the caller-side receiver place
+/// instead, with any projections taken inside the method appended after the receiver place's
+/// own. Places into *other* locals of the popped frame are deliberately left untouched: the
+/// borrow checker rejects returning references to method-body locals (E0103), and the runtime
+/// "dangling reference" trap remains the correct backstop for anything that slips through.
+/// `BTreeMap`/`BTreeSet` *keys* are not rewritten (they cannot be mutated in place without
+/// breaking the container's ordering invariant); a key containing a frame-local reference is
+/// not constructible from well-typed STARK source, and the dangling-reference backstop covers
+/// it regardless.
+fn rebase_frame_refs(
+    value: &mut Value,
+    popped_frame: usize,
+    receiver_local: LocalId,
+    receiver_place: &Place,
+) {
+    let rebase_place = |place: &mut Place| {
+        if place.frame == popped_frame && place.local == receiver_local {
+            let mut rebased = receiver_place.clone();
+            rebased.projections.append(&mut place.projections);
+            *place = rebased;
+        }
+    };
+    match value {
+        Value::Ref(place) => rebase_place(place),
+        Value::VecIter(place, _) => rebase_place(place),
+        Value::Tuple(items)
+        | Value::Array(items)
+        | Value::Vec(items)
+        | Value::HashMapKeysIter(items, _)
+        | Value::HashMapValuesIter(items, _)
+        | Value::HashMapIter(items, _)
+        | Value::HashSetIter(items, _) => {
+            for item in items.iter_mut().flatten() {
+                rebase_frame_refs(item, popped_frame, receiver_local, receiver_place);
+            }
+        }
+        Value::Enum { fields, named, .. } => {
+            for field in fields.iter_mut().flatten() {
+                rebase_frame_refs(field, popped_frame, receiver_local, receiver_place);
+            }
+            for field in named.values_mut().flatten() {
+                rebase_frame_refs(field, popped_frame, receiver_local, receiver_place);
+            }
+        }
+        Value::Struct { fields, .. } => {
+            for field in fields.values_mut().flatten() {
+                rebase_frame_refs(field, popped_frame, receiver_local, receiver_place);
+            }
+        }
+        Value::Boxed(inner) => {
+            if let Some(inner) = inner.as_mut() {
+                rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+            }
+        }
+        Value::Option(Some(inner)) => {
+            rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+        }
+        Value::Result(Ok(inner)) | Value::Result(Err(inner)) => {
+            rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+        }
+        Value::MapIter(inner, _) | Value::FilterIter(inner, _) => {
+            rebase_frame_refs(inner, popped_frame, receiver_local, receiver_place);
+        }
+        Value::Slice(place, _, _) => {
+            if place.frame == popped_frame && place.local == receiver_local {
+                let mut rebased = receiver_place.clone();
+                rebased.projections.extend(place.projections.clone());
+                *place = rebased;
+            }
+        }
+        Value::HashMap(map) => {
+            for entry in map.values_mut().flatten() {
+                rebase_frame_refs(entry, popped_frame, receiver_local, receiver_place);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -3570,6 +4234,407 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "second\nfirst\n");
+    }
+
+    /// WP-C2.2 (DEV-034): a by-value (`self`) method call on a non-place receiver expression
+    /// must evaluate the receiver expression exactly once. Previously `call_user_method`'s
+    /// `Receiver::Value` arm re-evaluated the original expression after `call_method` had
+    /// already evaluated it once for dispatch — "making" printed twice for one call.
+    #[test]
+    fn by_value_receiver_expression_evaluates_exactly_once() {
+        let execution = execute(
+            "struct Counter { n: Int32 } \
+             impl Counter { fn consume(self) -> Int32 { self.n } } \
+             fn make_counter() -> Counter { println(\"making\"); Counter { n: 1 } } \
+             fn main() { println(make_counter().consume()); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "making\n1\n");
+    }
+
+    /// WP-C2.2 (DEV-035): a reference returned from a `&self` method (`&self.field`) must stay
+    /// valid in the caller. Previously the returned `Value::Ref` pointed into the method's own
+    /// popped call frame and every later dereference trapped with "dangling reference".
+    #[test]
+    fn reference_returned_from_ref_self_method_is_valid_in_the_caller() {
+        let execution = execute(
+            "struct BoxedValue { value: Int32 } \
+             impl BoxedValue { fn value_ref(&self) -> &Int32 { &self.value } } \
+             fn main() { let b = BoxedValue { value: 42 }; let r = b.value_ref(); println(*r); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "42\n");
+    }
+
+    /// WP-C2.2 (DEV-035, `&mut` variant): writing through a `&mut` returned from a
+    /// `&mut self` method must be observable in the original value after the borrow ends.
+    #[test]
+    fn mut_reference_returned_from_mut_self_method_writes_through() {
+        let execution = execute(
+            "struct Holder { value: Int32 } \
+             impl Holder { fn value_mut(&mut self) -> &mut Int32 { &mut self.value } } \
+             fn main() { \
+                 let mut h = Holder { value: 5 }; \
+                 { let m = h.value_mut(); *m = 99; } \
+                 println(h.value); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "99\n");
+    }
+
+    /// WP-C2.2 (DEV-035, nested): a method that calls another `&self` method on `self` and
+    /// projects a field through the returned reference must rebase correctly through both
+    /// popped frames in sequence.
+    #[test]
+    fn nested_self_method_reference_chain_rebases_through_both_frames() {
+        let execution = execute(
+            "struct Inner { v: Int32 } \
+             struct Outer { inner: Inner } \
+             impl Outer { \
+                 fn inner_ref(&self) -> &Inner { &self.inner } \
+                 fn v_ref(&self) -> &Int32 { &self.inner_ref().v } \
+             } \
+             fn main() { let o = Outer { inner: Inner { v: 7 } }; println(*o.v_ref()); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "7\n");
+    }
+
+    /// WP-C2.2 (DEV-037): field access through a reference (`r.v` for `r: &Inner`), in both
+    /// value and place (`&r.v`) contexts, must auto-dereference at runtime. Previously the
+    /// place machinery tried to project a field directly on the stored `Value::Ref` and
+    /// trapped with "use of moved or invalid field" — pre-existing at Gate C1 close, found
+    /// while fixing DEV-035's nested case.
+    #[test]
+    fn field_access_through_reference_auto_derefs() {
+        let execution = execute(
+            "struct Inner { v: Int32 } \
+             fn main() { \
+                 let i = Inner { v: 3 }; \
+                 let r = &i; \
+                 println(r.v); \
+                 let p = &r.v; \
+                 println(*p); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "3\n3\n");
+    }
+
+    /// WP-C2.2 (DEV-030): a `_`-matched element of an owned scrutinee must still be dropped
+    /// exactly once. Previously the unbound portion's destructor never ran at all, for the
+    /// rest of the program. Order: the bound element (`a`) drops with its binding's scope
+    /// cleanup first, then the unbound remainder drops as the consumed scrutinee's cleanup.
+    #[test]
+    fn unbound_match_elements_of_an_owned_scrutinee_are_dropped_exactly_once() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 let pair = (Loud { label: String::from(\"first\") }, Loud { label: String::from(\"second\") }); \
+                 match pair { (a, _) => { println(\"matched\"); } } \
+                 println(\"after match\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "matched\nfirst\nsecond\nafter match\n");
+    }
+
+    /// WP-C2.2 (DEV-030): a fully-unbound enum-variant payload drops whole (its own subtree
+    /// included) when the match consumes the scrutinee.
+    #[test]
+    fn fully_unbound_variant_payload_is_dropped() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             enum Wrap { Has(Loud), Empty } \
+             fn main() { \
+                 let w = Wrap::Has(Loud { label: String::from(\"wrapped\") }); \
+                 match w { Wrap::Has(_) => println(\"has\"), Wrap::Empty => println(\"empty\") } \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "has\nwrapped\ndone\n");
+    }
+
+    /// WP-C2.2 (DEV-030): unmentioned/wildcarded struct-pattern fields drop; bound fields drop
+    /// via their bindings — each exactly once.
+    #[test]
+    fn wildcarded_struct_pattern_fields_are_dropped() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             struct Pair { kept: Loud, thrown: Loud } \
+             fn main() { \
+                 let p = Pair { \
+                     kept: Loud { label: String::from(\"kept\") }, \
+                     thrown: Loud { label: String::from(\"thrown\") }, \
+                 }; \
+                 match p { Pair { kept, thrown: _ } => { println(\"matched\"); } } \
+                 println(\"done\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "matched\nkept\nthrown\ndone\n");
+    }
+
+    #[test]
+    fn unbound_struct_pattern_fields_use_reverse_declaration_order() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             struct Trio { zed: Loud, alpha: Loud, middle: Loud } \
+             fn main() { \
+                 let trio = Trio { \
+                     zed: Loud { label: String::from(\"zed\") }, \
+                     alpha: Loud { label: String::from(\"alpha\") }, \
+                     middle: Loud { label: String::from(\"middle\") }, \
+                 }; \
+                 match trio { Trio { middle, zed: _, alpha: _ } => println(\"matched\") } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "matched\nmiddle\nalpha\nzed\n");
+    }
+
+    /// WP-C2.2 (DEV-030): a by-reference scrutinee is a borrow, not an owner — matching it must
+    /// not drop the referent early; the original drops at its own scope exit.
+    #[test]
+    fn matching_a_reference_scrutinee_does_not_drop_the_referent() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             fn main() { \
+                 let l = Loud { label: String::from(\"owned\") }; \
+                 let r = &l; \
+                 match r { _ => println(\"matched ref\") } \
+                 println(\"still alive\"); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "matched ref\nstill alive\nowned\n");
+    }
+
+    /// WP-C2.2 (DEV-026): an inherent method shadows a same-named trait method unconditionally,
+    /// even when the trait impl block is declared FIRST in the source file. Previously
+    /// `find_method`'s single source-order scan returned whichever impl appeared first.
+    #[test]
+    fn inherent_method_shadows_trait_method_regardless_of_declaration_order() {
+        let execution = execute(
+            "struct Thing { } \
+             trait Speak { fn say(&self) -> String { String::from(\"trait-default\") } } \
+             impl Speak for Thing { } \
+             impl Thing { fn say(&self) -> String { String::from(\"inherent\") } } \
+             fn main() { let t = Thing { }; println(t.say().as_str()); }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "inherent\n");
+    }
+
+    /// WP-C2.2 (DEV-027): `Ordering` is a real prelude type and nominal comparison operators
+    /// dispatch to the user's `Ord::cmp` implementation.
+    #[test]
+    fn nominal_comparison_dispatches_through_ord_cmp() {
+        let execution = execute(
+            "struct Point { x: Int32 } \
+             impl Ord for Point { \
+                 fn cmp(&self, other: &Point) -> Ordering { \
+                     if self.x < other.x { Ordering::Less } \
+                     else if self.x > other.x { Ordering::Greater } \
+                     else { Ordering::Equal } \
+                 } \
+             } \
+             fn main() { \
+                 println(Point { x: 1 } < Point { x: 9 }); \
+                 println(Point { x: 9 } >= Point { x: 1 }); \
+                 println(Point { x: 1 } > Point { x: 9 }); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "true\ntrue\nfalse\n");
+    }
+
+    /// WP-C2.2 (DEV-031): `for` consumes general Iterator-typed expressions, both standard
+    /// adapters and nominal user implementations, rather than only Range/Array/Vec values.
+    #[test]
+    fn for_loop_accepts_standard_and_user_iterators() {
+        let execution = execute(
+            "struct Counter { n: Int32 } \
+             impl Iterator for Counter { \
+                 type Item = Int32; \
+                 fn next(&mut self) -> Option<Int32> { \
+                     println(\"next\"); \
+                     if self.n < 3 { self.n += 1; Some(self.n) } else { None } \
+                 } \
+             } \
+             fn main() { \
+                 let mut values: Vec<Int32> = Vec::new(); \
+                 values.push(4); values.push(5); \
+                 for value in values.iter() { println(*value); } \
+                 let counter = Counter { n: 0 }; \
+                 for value in counter { println(value); } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "4\n5\nnext\n1\nnext\n2\nnext\n3\nnext\n");
+    }
+
+    /// WP-C2.2 (DEV-028): range indexing in a place context creates a slice view. Reads and
+    /// writes through `&[T]`/`&mut [T]` use the original aggregate rather than a copied Array.
+    #[test]
+    fn range_index_references_are_slice_views() {
+        let execution = execute(
+            "fn main() { \
+                 let mut values = [10, 20, 30, 40]; \
+                 { \
+                     let slice: &mut [Int32] = &mut values[1..3]; \
+                     slice[0] = 99; \
+                 } \
+                 println(values[1]); \
+                 let shared: &[Int32] = &values[0..=1]; \
+                 println(shared[1]); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "99\n99\n");
+    }
+
+    /// WP-C2.2 (DEV-029): struct fields drop in reverse DECLARATION order (05-Memory-Model.md,
+    /// CD-011), not reverse-alphabetical order. Two structs with the same fields declared in
+    /// opposite orders must produce opposite drop orders — previously both produced the same
+    /// (alphabetical) order.
+    #[test]
+    fn struct_fields_drop_in_reverse_declaration_order() {
+        let alpha_first = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             struct Pair { alpha: Loud, beta: Loud } \
+             fn main() { let p = Pair { \
+                 alpha: Loud { label: String::from(\"alpha\") }, \
+                 beta: Loud { label: String::from(\"beta\") } }; }",
+        )
+        .unwrap();
+        assert_eq!(alpha_first.output, "beta\nalpha\n");
+
+        let beta_first = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             struct Pair { beta: Loud, alpha: Loud } \
+             fn main() { let p = Pair { \
+                 beta: Loud { label: String::from(\"beta\") }, \
+                 alpha: Loud { label: String::from(\"alpha\") } }; }",
+        )
+        .unwrap();
+        assert_eq!(beta_first.output, "alpha\nbeta\n");
+    }
+
+    /// WP-C2.2 (DEV-029, enum variant): struct-like enum variant fields follow the same
+    /// reverse-declaration drop order.
+    #[test]
+    fn enum_variant_named_fields_drop_in_reverse_declaration_order() {
+        let execution = execute(
+            "struct Loud { label: String } \
+             impl Drop for Loud { fn drop(&mut self) { println(self.label.as_str()); } } \
+             enum E { Named { zed: Loud, ack: Loud } } \
+             fn main() { let e = E::Named { \
+                 zed: Loud { label: String::from(\"zed\") }, \
+                 ack: Loud { label: String::from(\"ack\") } }; }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "ack\nzed\n");
+    }
+
+    /// WP-C2.2 (DEV-033): a core/builtin-type method call resolves its receiver before
+    /// evaluating arguments (03-Type-System.md "Evaluation Order", CD-007/CD-010), and a
+    /// side-effecting index subexpression inside the receiver runs exactly once — previously
+    /// arguments evaluated first and the receiver place was re-resolved per branch.
+    #[test]
+    fn core_method_receiver_resolves_before_arguments_and_only_once() {
+        let execution = execute(
+            "fn idx() -> Int32 { println(\"idx\"); 0 } \
+             fn arg() -> Int32 { println(\"arg\"); 5 } \
+             fn main() { \
+                 let mut vs: Vec<Vec<Int32>> = Vec::new(); \
+                 let mut inner: Vec<Int32> = Vec::new(); \
+                 inner.push(1); \
+                 vs.push(inner); \
+                 vs[idx()].push(arg()); \
+                 println(*vs.get(0u64).unwrap().get(1u64).unwrap()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "idx\narg\n5\n");
+    }
+
+    /// WP-C2.2 (DEV-032): `HashMap`/`HashSet` iterate in first-insertion order per
+    /// `06-Standard-Library.md` "Iteration Order" (CD-009): re-inserting an existing key keeps
+    /// its position; remove-then-reinsert moves it to the end. Previously the `BTreeMap`-backed
+    /// representation iterated in structural-`Ord` sorted order.
+    #[test]
+    fn hashmap_iterates_in_first_insertion_order() {
+        let execution = execute(
+            "fn print_keys(m: &HashMap<Int32, String>) { \
+                 let mut keys = m.keys(); \
+                 while true { match keys.next() { Some(k) => println(*k), None => { break; } } } \
+             } \
+             fn main() { \
+                 let mut m: HashMap<Int32, String> = HashMap::new(); \
+                 m.insert(30, String::from(\"a\")); \
+                 m.insert(10, String::from(\"b\")); \
+                 m.insert(20, String::from(\"c\")); \
+                 print_keys(&m); \
+                 m.insert(10, String::from(\"updated\")); \
+                 print_keys(&m); \
+                 m.remove(&30); \
+                 m.insert(30, String::from(\"again\")); \
+                 print_keys(&m); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "30\n10\n20\n30\n10\n20\n10\n20\n30\n");
+    }
+
+    /// WP-C2.2 (DEV-032, set variant): `HashSet` iteration follows insertion order too.
+    #[test]
+    fn hashset_iterates_in_first_insertion_order() {
+        let execution = execute(
+            "fn main() { \
+                 let mut s: HashSet<Int32> = HashSet::new(); \
+                 s.insert(5); \
+                 s.insert(1); \
+                 s.insert(3); \
+                 let mut it = s.iter(); \
+                 while true { match it.next() { Some(v) => println(*v), None => { break; } } } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "5\n1\n3\n");
+    }
+
+    /// WP-C2.2 (DEV-034 companion): `&mut self` and by-value receiver semantics preserved by
+    /// the receiver-handling restructure — mutation writes back, and a by-value consume still
+    /// moves the receiver.
+    #[test]
+    fn receiver_restructure_preserves_mutation_and_move_semantics() {
+        let execution = execute(
+            "struct Counter { n: Int32 } \
+             impl Counter { \
+                 fn bump(&mut self) { self.n += 1; } \
+                 fn get(&self) -> Int32 { self.n } \
+                 fn consume(self) -> Int32 { self.n } \
+             } \
+             fn main() { \
+                 let mut c = Counter { n: 10 }; \
+                 c.bump(); \
+                 c.bump(); \
+                 println(c.get()); \
+                 println(c.consume()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "12\n12\n");
     }
 
     #[test]
