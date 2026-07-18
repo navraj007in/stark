@@ -11,17 +11,17 @@ const USAGE: &str = "\
 starkc — compiler for the STARK Core v1 language
 
 Usage:
-  starkc check [--snippet] [--extension <name>] [--message-format <text|json>] [--stdin --filename <path>] [<file.stark>]
+  starkc check [--snippet] [--extension <name>] [--message-format <text|json>] [--stdin --filename <path>] [<file.stark|file.st>]
                               Check a source file and report semantic diagnostics.
-  starkc run <file.stark>               Check and execute a Core program.
-  starkc parse [--snippet] [--dump] [--extension <name>] <file.stark>
+  starkc run <file.stark|file.st>        Check and execute a Core program.
+  starkc parse [--snippet] [--dump] [--extension <name>] <file.stark|file.st>
                               Parse a source file and report diagnostics.
                               --snippet parses the harness block-body form
                               (items + statements) instead of Program.
                               --dump prints the AST on success.
                               --extension <name> enables an optional language
                               extension (Gate 4+): tensor.
-  starkc lex <file.stark>     Dump the token stream (debugging aid)
+  starkc lex <file.stark|file.st>  Dump the token stream (debugging aid)
   starkc lsp                  Start LSP server on stdio (for editor integration)
   starkc import <model.onnx> --out <model.stark> [--force]
                               Generate a deterministic STARK model declaration.
