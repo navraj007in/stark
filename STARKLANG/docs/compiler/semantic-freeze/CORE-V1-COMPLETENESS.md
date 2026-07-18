@@ -1,6 +1,6 @@
 # Core v1 Completeness Inventory
 
-Status: **WP-C2.6 inventory complete; decisions updated through WP-C2.7 correction —
+Status: **WP-C2.6 inventory complete; decisions updated through WP-C2.8 —
 governance inventory, not normative semantics**
 Updated: 2026-07-18
 
@@ -81,9 +81,9 @@ cross-reference.
 | SYN-BLOCK-001 | How do statements and a trailing expression determine block syntax? | complete/specified | 02 §Blocks and Statements | SYN-004/U17; SYN-004/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-LET-001 | Which initialized and deferred `let` forms parse? | complete/specified | 02 §Let Statements | SYN-005/U17; SYN-005/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-EXPR-001 | What are expression precedence and associativity? | complete/specified | 02 §Expressions | SYN-006/U17; SYN-006/U17 | ecosystem-breaking/C2.11 | settled/DEV-017 |
-| SYN-PLACE-001 | Which syntactic forms may appear as assignment targets? | partial/specified | 02 §Place Expressions | SYN-006/U17; none | high/C2.8 | Q006 static pending/DEV-017 |
+| SYN-PLACE-001 | Which syntactic forms may appear as assignment targets? | complete/specified | 02 §Place Expressions | SYN-006/U17; none | high/C2.11 | Q006 approved/DEV-017 |
 | SYN-CONTROL-001 | Which `if`, `match`, loop, `break`, `continue`, and `return` forms parse? | complete/specified | 02 §Control Flow | SYN-007/U17; SYN-007/U17 | high/C2.11 | settled/DEV-017 |
-| SYN-PATTERN-001 | Which wildcard, binding, literal, tuple, struct, enum, range, and alternative patterns parse? | partial/specified | 02 §Patterns | SYN-007/U17; none | high/C2.8 | Q020 pending/DEV-017 |
+| SYN-PATTERN-001 | Which wildcard, binding, literal, tuple, struct, enum, range, and alternative patterns parse? | complete/specified | 02 §Patterns | SYN-007/U17; none | high/C2.11 | Q020 approved/DEV-017 |
 | SYN-PATH-001 | Which paths, use trees, and explicit generic arguments parse? | complete/specified | 02 §Paths and Imports | SYN-008/U17; SYN-008/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-LITERAL-001 | Which tuple, array, repeat-array, and struct literal forms parse? | complete/specified | 02 §Literal Expressions | SYN-009/U17; SYN-009/U17 | high/C2.11 | settled/DEV-017 |
 | SYN-GUARD-001 | Where must struct literals be parenthesized to avoid control-flow ambiguity? | complete/prohibited | 02 §Struct Literal Restrictions | SYN-009/U17; SYN-009/U17 | high/C2.11 | settled/DEV-017 |
@@ -95,48 +95,48 @@ cross-reference.
 
 | ID | Exact normative question | Status/class | Home | Evidence (+; −) | Cost/owner | Decision/dev |
 | --- | --- | --- | --- | --- | --- | --- |
-| NAME-SCOPE-001 | Which declarations introduce scopes and when do bindings become visible? | partial/specified | 04 §Scopes and Symbol Tables | SEM-001/U17; none | high/C2.8 | Q004 pending/DEV-017 |
-| NAME-SHADOW-001 | Which declarations may shadow which earlier bindings? | partial/pending-classification | 04 §Name Resolution | SEM-001/U17; none | high/C2.8 | Q004 pending/DEV-017 |
-| NAME-RESOLVE-001 | How are local, item, module, type, value, trait, and associated names resolved? | partial/pending-classification | 04 §Name Resolution | SEM-001,U17; PKG-003/U17 | ecosystem-breaking/C2.8 | Q004,Q005 pending/DEV-017 |
-| TYPE-PRIM-001 | What are the identities of primitive, tuple, array, reference, function, and never types? | partial/specified | 03 §Types | TYP-001/U17; none | ecosystem-breaking/C2.8 | Q003 pending/DEV-017 |
-| TYPE-NOMINAL-001 | What facts determine struct and enum type identity? | partial/pending-classification | 03 §User-Defined Types | TYP-001/U17; none | ecosystem-breaking/C2.8 | Q003,Q013A pending/DEV-017 |
-| TYPE-ALIAS-001 | Does a type alias transparently denote its target or introduce identity? | absent/pending-classification | 03 §Type Aliases | none; none | ecosystem-breaking/C2.8 | Q002 pending/none |
-| TYPE-WF-001 | Which recursive, unsized, zero-length, and edge-size types are well formed? | partial/pending-classification | 03 §Type Well-Formedness | TYP-001/U17; none | ecosystem-breaking/C2.8 | Q003,Q019 pending/DEV-017 |
-| TYPE-INFER-001 | How do local constraints, expected types, later uses, and ambiguity determine inferred types? | partial/pending-classification | 03 §Type Inference | TYP-002/U17; none | high/C2.8 | Q004 pending/DEV-017 |
+| NAME-SCOPE-001 | Which declarations introduce scopes and when do bindings become visible? | complete/specified | 04 §Scopes and Symbol Tables | SEM-001/U17; none | high/C2.11 | Q004 approved/DEV-017 |
+| NAME-SHADOW-001 | Which declarations may shadow which earlier bindings? | complete/specified | 04 §Name Resolution | SEM-001/U17; none | high/C2.11 | Q004 approved/DEV-017 |
+| NAME-RESOLVE-001 | How are local, item, module, type, value, trait, and associated names resolved? | complete/specified | 04 §Name Resolution | SEM-001,U17; PKG-003/U17 | ecosystem-breaking/C2.11 | Q004 approved; Q005 algorithm approved/DEV-017 |
+| TYPE-PRIM-001 | What are the identities of primitive, tuple, array, reference, function, and never types? | complete/specified | 03 §Core Type Identity | TYP-001/U17; none | ecosystem-breaking/C2.11 | Q003 approved/DEV-017 |
+| TYPE-NOMINAL-001 | What facts determine struct and enum type identity? | complete/specified | 03 §Struct Types | TYP-001/U17; none | ecosystem-breaking/C2.11 | Q003 approved; Q013A package token pending/DEV-017 |
+| TYPE-ALIAS-001 | Does a type alias transparently denote its target or introduce identity? | complete/specified | 03 §Type Aliases | none; none | ecosystem-breaking/C2.11 | Q002 approved/none |
+| TYPE-WF-001 | Which recursive, unsized, zero-length, and edge-size types are well formed? | complete/specified | 03 §Type Well-Formedness and Sizedness | TYP-001/U17; none | ecosystem-breaking/C2.11 | Q003 approved; Q019 resource limits pending/DEV-017 |
+| TYPE-INFER-001 | How do local constraints, expected types, later uses, and ambiguity determine inferred types? | complete/specified | 03 §Deterministic Local Inference | TYP-002/U17; none | high/C2.11 | Q004 approved/DEV-017 |
 | TYPE-INFER-002 | When and to what types do unsuffixed numeric literals default? | complete/specified | 03 §Literal Type Inference | TYP-002/U17; TYP-002/U17 | high/C2.11 | settled/DEV-017 |
-| TYPE-GENERIC-001 | How are generic parameters, substitutions, bounds, and explicit arguments normalized? | partial/pending-classification | 03 §Generics | TYP-002,U17; TYP-007/U17 | ecosystem-breaking/C2.8 | Q004 pending/DEV-017 |
+| TYPE-GENERIC-001 | How are generic parameters, substitutions, bounds, and explicit arguments normalized? | complete/specified | 03 §Generic Type Inference | TYP-002,U17; TYP-007/U17 | ecosystem-breaking/C2.11 | Q004 approved/DEV-017 |
 | TYPE-COERCE-001 | Which numeric conversions are implicit? | complete/prohibited | 03 §Type Coercion | TYP-003/U17; TYP-003/U17 | high/C2.11 | settled/DEV-017 |
 | TYPE-COERCE-002 | When may mutable references coerce to shared references? | complete/specified | 03 §Reference Coercions | TYP-003/U17; TYP-003/U17 | high/C2.11 | settled/DEV-017 |
-| TYPE-COERCE-003 | When may an array reference coerce to a slice/view? | partial/specified | 03 §Array-to-Slice Coercion | TYP-003/U17; none | high/C2.8 | Q003 pending/DEV-017 |
+| TYPE-COERCE-003 | When may an array reference coerce to a slice/view? | complete/specified | 03 §Array to Slice Coercion | TYP-003/U17; none | high/C2.11 | Q003 approved/DEV-017 |
 | TYPE-COERCE-004 | How does the never type coerce at control-flow joins? | complete/specified | 03 §Never Type Coercion | TYP-003/U17; TYP-003/U17 | high/C2.11 | settled/DEV-017 |
 | TYPE-CAST-001 | Which explicit numeric casts are legal and what values do they produce? | partial/pending-classification | 03 §Explicit Casts | TYP-003/U17; none | high/C2.9 | Q008,Q010 pending/DEV-017,DEV-024 |
 | TYPE-CFLOW-001 | How do branches and `match` arms choose a common type? | complete/specified | 03 §Control-Flow Typing | TYP-004/U17; TYP-004/U17 | high/C2.11 | settled/DEV-017 |
-| TYPE-LOOP-001 | How do loop kind and reachable `break` values determine expression type? | partial/specified | 03 §Loop Typing | TYP-004/U17; none | high/C2.8 | Q004 pending/DEV-017 |
-| TYPE-METHOD-001 | How are inherent and trait method candidates collected and prioritized? | partial/pending-classification | 03 §Method Resolution | TYP-006/U17; none | ecosystem-breaking/C2.8 | Q004,Q005 pending/DEV-017 |
-| TYPE-METHOD-002 | Which automatic borrow/dereference adjustments are allowed? | partial/pending-classification | 03 §Method Resolution | TYP-006/U17; none | high/C2.8 | Q004 pending; Q006 static pending/DEV-017 |
-| TRAIT-DEF-001 | What declarations, default bodies, and impl obligations are legal? | partial/specified | 03 §Traits and Implementations | TYP-005/U17; none | ecosystem-breaking/C2.8 | Q005 pending/DEV-017 |
-| TRAIT-ASSOC-001 | How are associated functions/types resolved and qualified? | partial/pending-classification | 03 §Associated Items | TYP-005/U17; none | high/C2.8 | Q005,Q015 pending/DEV-017 |
-| TRAIT-COHERENCE-001 | What orphan rule applies across package identities? | partial/pending-classification | 03 §Coherence | SEM-007; SEM-007 | ecosystem-breaking/C2.8 | Q005,Q013A pending/DEV-021 |
-| TRAIT-COHERENCE-002 | How are blanket impl overlap and candidate ambiguity decided? | partial/pending-classification | 03 §Coherence | SEM-007; SEM-007 | ecosystem-breaking/C2.8 | Q005 pending/DEV-021 |
-| TRAIT-LAW-001 | What semantic laws bind `Eq`, `Ord`, and `Hash`, and what follows from violations? | absent/pending-classification | 03 §Standard Traits | none; none | ecosystem-breaking/C2.8 | Q005A pending/none |
+| TYPE-LOOP-001 | How do loop kind and reachable `break` values determine expression type? | complete/specified | 03 §Control Flow Typing | TYP-004/U17; none | high/C2.11 | Q004 approved/DEV-017 |
+| TYPE-METHOD-001 | How are inherent and trait method candidates collected and prioritized? | complete/specified | 03 §Method Calls and Auto-Borrowing | TYP-006/U17; none | ecosystem-breaking/C2.11 | Q004 approved; Q005 algorithm approved/DEV-017 |
+| TYPE-METHOD-002 | Which automatic borrow/dereference adjustments are allowed? | complete/specified | 03 §Method Calls and Auto-Borrowing | TYP-006/U17; none | high/C2.11 | Q004,Q006 approved/DEV-017 |
+| TRAIT-DEF-001 | What declarations, default bodies, and impl obligations are legal? | complete/specified | 03 §Trait Definition | TYP-005/U17; none | ecosystem-breaking/C2.11 | Q005 algorithm approved/DEV-017 |
+| TRAIT-ASSOC-001 | How are associated functions/types resolved and qualified? | complete/specified | 03 §Associated Types | TYP-005/U17; none | high/C2.11 | Q005 algorithm approved; Q015 approved/DEV-017 |
+| TRAIT-COHERENCE-001 | What orphan rule applies across package identities? | complete/specified | 03 §Trait Coherence | SEM-007; SEM-007 | ecosystem-breaking/C2.11 | Q005 algorithm approved; Q013A package token pending/DEV-021 |
+| TRAIT-COHERENCE-002 | How are blanket impl overlap and candidate ambiguity decided? | complete/specified | 03 §Trait Coherence | SEM-007; SEM-007 | ecosystem-breaking/C2.11 | Q005 algorithm approved/DEV-021 |
+| TRAIT-LAW-001 | What semantic laws bind `Eq`, `Ord`, and `Hash`, and what follows from violations? | complete/specified | 03 §Standard Trait Laws | none; none | ecosystem-breaking/C2.11 | Q005A approved/none |
 
 ## Flow, ownership, abstract execution, patterns, and constants
 
 | ID | Exact normative question | Status/class | Home | Evidence (+; −) | Cost/owner | Decision/dev |
 | --- | --- | --- | --- | --- | --- | --- |
 | FLOW-RETURN-001 | Must every reachable non-unit path return a compatible value? | complete/specified | 04 §Return Analysis | SEM-002/U17; SEM-002/U17 | high/C2.11 | settled/DEV-017 |
-| FLOW-LOOP-001 | Which statements are unreachable and which loops are known not to fall through? | partial/specified | 04 §Control Flow Analysis | SEM-003/U17; none | medium/C2.8 | Q004 pending/DEV-017 |
+| FLOW-LOOP-001 | Which statements are unreachable and which loops are known not to fall through? | complete/specified | 04 §Control Flow Analysis | SEM-003/U17; none | medium/C2.11 | Q004 approved/DEV-017 |
 | FLOW-INIT-001 | When is a local definitely initialized on all paths? | complete/specified | 04 §Definite Assignment | none; none | high/C2.11 | settled/none |
 | FLOW-MUT-001 | Which assignments require a mutable binding or mutable place? | complete/specified | 04 §Mutability Checking | none; none | high/C2.11 | settled/none |
 | FLOW-BOUNDS-001 | Which statically provable indexing errors must be rejected? | partial/specified | 04 §Static Bounds Analysis | none; none | medium/C2.9 | Q017 pending/none |
 | FLOW-TRY-001 | Where is `?` legal and what enclosing result type is required? | complete/specified | 04 §Error Propagation Analysis | none; none | high/C2.11 | settled/none |
 | DIAG-CATALOG-001 | Which rejection categories and diagnostic codes are stable and collision-free? | partial/pending-classification | 04 §Diagnostics | SEM-006/U17; none | medium/C2.11 | Q022 pending/DEV-019 |
 | OWN-MOVE-001 | Which value uses move, copy, or borrow an operand? | complete/specified | Abstract Machine §Moves, Partial Moves, and Reinitialization | MEM-001/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
-| OWN-COPY-001 | Which types are implicitly copyable? | partial/pending-classification | 03 §Copy Types | MEM-002/U17; none | ecosystem-breaking/C2.8 | Q003 pending; Q006 static pending/DEV-017 |
-| OWN-BORROW-001 | When may shared and exclusive borrows coexist? | partial/specified | 03 §Borrow Legality | MEM-003/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
-| OWN-REGION-001 | When do local, argument-derived, and temporary borrows end? | partial/pending-classification | 03 §Borrow Regions | MEM-004/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
-| OWN-RETURN-001 | Which references may escape through return values? | partial/pending-classification | 03 §Returned References | MEM-005/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
-| OWN-CARRY-001 | How does reference provenance propagate through aggregates and calls? | partial/pending-classification | 03 §Reference Provenance | MEM-004/U17; none | ecosystem-breaking/C2.8 | Q006 static pending/DEV-017 |
+| OWN-COPY-001 | Which types are implicitly copyable? | complete/specified | 03 §Copy and Drop | MEM-002/U17; none | ecosystem-breaking/C2.11 | Q003,Q006 approved/DEV-017 |
+| OWN-BORROW-001 | When may shared and exclusive borrows coexist? | complete/specified | 03 §Borrowing Rules | MEM-003/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
+| OWN-REGION-001 | When do local, argument-derived, and temporary borrows end? | complete/specified | 03 §References and Lifetimes | MEM-004/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
+| OWN-RETURN-001 | Which references may escape through return values? | complete/specified | 03 §References and Lifetimes | MEM-005/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
+| OWN-CARRY-001 | How does reference provenance propagate through aggregates and calls? | complete/specified | 03 §Borrow-Carrying Types | MEM-004/U17; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-017 |
 | OWN-PARTIAL-001 | Which field moves are permitted before later aggregate use or destruction? | complete/specified | Abstract Machine §Moves, Partial Moves, and Reinitialization | none; none | ecosystem-breaking/C2.11 | Q006 approved/none |
 | OWN-REINIT-001 | When does assignment reinitialize a moved place? | complete/specified | Abstract Machine §Moves, Partial Moves, and Reinitialization | none; none | high/C2.11 | Q006 approved/none |
 | EXEC-EVAL-001 | What is the evaluation order of operands, calls, indexing, and aggregates? | complete/specified | Abstract Machine §Evaluation Order | none; none | ecosystem-breaking/C2.11 | Q006 approved/none |
@@ -167,13 +167,13 @@ cross-reference.
 | DROP-LOOP-001 | When are loop bindings, iterators, and unconsumed elements destroyed? | complete/specified | Abstract Machine §Loops and Iterators | none; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-031,DEV-039 |
 | DROP-COLLECTION-001 | How do collection destruction, clear, remove, replace, and duplicate discard destroy ownership? | complete/specified | Abstract Machine §Collections and Ownership-Discarding Operations | none; none | ecosystem-breaking/C2.11 | Q006 approved/DEV-040 |
 | OBS-COMPARE-001 | Which observations must interpreter, MIR, and native execution compare? | complete/specified | Abstract Machine §Observable Execution and Differential Comparison | none; not-applicable (comparator definition) | ecosystem-breaking/C2.12 | Q006 approved/none |
-| PAT-EXHAUST-001 | Which finite domains require exhaustive patterns? | partial/specified | 04 §Pattern Exhaustiveness | SEM-006/U17; none | high/C2.8 | Q020 pending/DEV-017 |
-| PAT-USEFUL-001 | Which unreachable patterns require rejection or warning? | partial/pending-classification | 04 §Pattern Usefulness | SEM-006/U17; none | medium/C2.8 | Q020 pending/DEV-017 |
+| PAT-EXHAUST-001 | Which finite domains require exhaustive patterns? | complete/specified | 04 §Exhaustiveness Checking | SEM-006/U17; none | high/C2.11 | Q020 approved/DEV-017 |
+| PAT-USEFUL-001 | Which unreachable patterns require rejection or warning? | complete/specified | 04 §Pattern Type Checking | SEM-006/U17; none | medium/C2.11 | Q020 approved/DEV-017 |
 | PAT-OWN-001 | Do Core v1 pattern bindings move, copy, or preserve references for each matched component? | complete/specified | Abstract Machine §Pattern Execution | none; none | ecosystem-breaking/C2.11 | Q006 approved; Q020 runtime approved/none |
 | PAT-DROP-001 | What is destroyed for failed arm tests, wildcards, and selected-arm exit? | complete/specified | Abstract Machine §Pattern Execution | none; none | ecosystem-breaking/C2.11 | Q006 approved; Q020 runtime approved/none |
-| CONST-DECL-001 | Which declarations require compile-time evaluation? | partial/specified | 03 §Constant Contexts | SEM-008/U17; none | high/C2.8 | Q007 pending/DEV-017 |
-| CONST-SUBSET-001 | Which deterministic expressions, calls, and operations are valid in constants? | partial/pending-classification | 03 §Constant Evaluation | SEM-008/U17; none | ecosystem-breaking/C2.8 | Q007 pending/DEV-017 |
-| CONST-FAIL-001 | How do cycles, overflow, traps, and resource limits fail constant evaluation? | absent/pending-classification | 03 §Constant Evaluation Failures | none; none | high/C2.8 | Q007,Q017 pending/none |
+| CONST-DECL-001 | Which declarations require compile-time evaluation? | complete/specified | 03 §Constant Evaluation | SEM-008/U17; none | high/C2.11 | Q007 approved/DEV-017 |
+| CONST-SUBSET-001 | Which deterministic expressions, calls, and operations are valid in constants? | complete/specified | 03 §Constant Evaluation | SEM-008/U17; none | ecosystem-breaking/C2.11 | Q007 approved; Q008,Q010 numeric results pending/DEV-017 |
+| CONST-FAIL-001 | How do cycles, overflow, traps, and resource limits fail constant evaluation? | complete/specified | 03 §Constant Evaluation | none; none | high/C2.11 | Q007 approved; Q017 resource classification pending/none |
 
 ## Numeric and text behavior
 
@@ -219,8 +219,8 @@ cross-reference.
 | STD-PRELUDE-001 | Which names are implicitly available? | complete/specified | 06 §Prelude | STD-001; none | ecosystem-breaking/C2.11 | settled/none |
 | STD-FORMAT-001 | What output and argument behavior do the Core formatting/printing facilities expose? | partial/specified | 06 §Formatting | STD-002; none | high/C2.9 | Q014 pending/DEV-023 |
 | STD-PROFILE-001 | Which APIs are required in each Core profile? | partial/pending-classification | 06 §Conformance Profiles | STD-002/U17; none | ecosystem-breaking/C2.9 | Q024 pending/DEV-009 |
-| STD-HOOK-001 | Which library items are compiler-recognized hooks rather than ordinary APIs? | partial/pending-classification | 06 §Language Hooks | STD-004; none | ecosystem-breaking/C2.8 | Q015 pending/DEV-023 |
-| STD-TRAIT-001 | Which standard traits and required items belong to the Core profile? | partial/pending-classification | 06 §Core Traits | STD-004; STD-004 | ecosystem-breaking/C2.8 | Q005A,Q015 pending/DEV-023 |
+| STD-HOOK-001 | Which library items are compiler-recognized hooks rather than ordinary APIs? | complete/specified | 06 §Canonical Language Hooks | STD-004; none | ecosystem-breaking/C2.11 | Q015 approved; Q012 layout values pending/DEV-023 |
+| STD-TRAIT-001 | Which standard traits and required items belong to the Core profile? | complete/specified | 06 §Core Trait Profile | STD-004; STD-004 | ecosystem-breaking/C2.11 | Q005A,Q015 approved; Q009 float participation pending/DEV-023 |
 | STD-OPTION-001 | What are `Option` representation-independent behavior and APIs? | partial/specified | 06 §Option | none; none | high/C2.11 | pending-owner-approval/none |
 | STD-RESULT-001 | What are `Result`, propagation, and combinator behavior? | partial/specified | 06 §Result | none; none | high/C2.11 | pending-owner-approval/none |
 | STD-ITER-001 | What is the iterator protocol and termination behavior? | partial/specified | 06 §Iterator | STD-003; none | high/C2.11 | pending-owner-approval/none |

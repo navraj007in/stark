@@ -104,7 +104,7 @@ conflict table.
 - Specification: Core v1 complete draft (numbered source documents 00–07 and approved
   `CORE-V1-*.md` semantic chapters normative; concise and generated views non-normative).
 - Compiler: front end, semantic analysis, and execution are done (`starkc/` — lexer, parser,
-  name resolver, type/flow/borrow checker, and a typed-HIR interpreter; the 107-fixture
+  name resolver, type/flow/borrow checker, and a typed-HIR interpreter; the 112-fixture
   conformance suite is green). Also implemented: a `tensor` v0.1 extension front end with
   bounded ONNX signature import/verification, a Gate-5 native deployment path (generated Rust
   host + ONNX Runtime), a source formatter, a naming-convention test runner, a documentation

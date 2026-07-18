@@ -250,6 +250,31 @@ verdict = "parse-fail"
 mode = "program"
 note = "lifetime annotations are a future feature; Core v1 rejects (`'a` fails in the lexer)"
 
+["03-Type-System__44.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "C2.8 type-alias and recursive-sizedness review case; invalid direct recursion is commented"
+
+["03-Type-System__45.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "C2.8 generic and expected-type inference review case"
+
+["03-Type-System__46.stark"]
+verdict = "parse-pass"
+mode = "snippet"
+note = "C2.8 borrowed-rvalue region review case; escaping borrow is commented"
+
+["03-Type-System__47.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "C2.8 exhaustive enum-pattern review case"
+
+["03-Type-System__48.stark"]
+verdict = "parse-pass"
+mode = "program"
+note = "C2.8 constant-evaluation review case"
+
 ["04-Semantic-Analysis__01.stark"]
 verdict = "parse-pass"
 mode = "program"

@@ -1,0 +1,3 @@
+fn inspect(value: &String) { println(value.as_str()); }
+inspect(&String::from("temporary"));
+// let escaped = &String::from("temporary"); // rejected: no lifetime extension

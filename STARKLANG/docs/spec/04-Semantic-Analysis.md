@@ -9,6 +9,14 @@ Semantic analysis validates that programs are meaningful according to STARK's la
 Build symbol tables for scopes and declarations.
 
 #### Scope Rules
+**NAME-SCOPE-001.** Modules, functions, trait/impl bodies, lexical blocks,
+match arms, and generic parameter lists introduce scopes. Module items and
+imports are visible throughout their module independent of declaration order.
+Function parameters and item generic parameters are visible throughout the
+corresponding signature/body. A `let` binding becomes visible only after its
+initializer and declaration complete; it is not visible in its own
+initializer. Pattern bindings are visible only in their selected arm body.
+
 ```stark
 // Module scope
 fn module_function() { }
@@ -30,6 +38,14 @@ fn example() {
 ```
 
 #### Name Resolution Order
+**NAME-RESOLVE-001.** Core has distinct module, type, value, and associated-
+item namespaces. Type context searches types, aliases, traits, and type
+parameters; value context searches locals, parameters, constants, functions,
+and constructors; a path segment naming a module searches the module
+namespace. Associated names are searched only after resolving their
+qualifying type or trait. The same spelling may coexist in different
+namespaces, but two declarations in one namespace and scope are duplicates.
+
 Name resolution distinguishes *lexical* scopes (inside function bodies) from
 *module* scopes.
 
@@ -48,6 +64,14 @@ Unqualified names never implicitly search parent modules or the crate root;
 those require explicit `super::` or `crate::` paths.
 
 #### Shadowing Rules
+**NAME-SHADOW-001.** A local value binding may shadow a value from an outer
+lexical or module scope. It may not duplicate a parameter, local, or pattern
+binding in the same lexical scope. Item/import collisions in the same module
+namespace are errors rather than shadowing. Generic parameters may not
+duplicate another generic parameter or an item-level `Self`; a nested item
+introduces fresh item scopes. When a shadowing binding ends, the outer binding
+is visible again.
+
 ```stark
 let x = 10;       // x: Int32
 {
@@ -132,6 +156,14 @@ fn valid_return(x: &Int32) -> &Int32 {
 ### 4. Control Flow Analysis
 
 #### Unreachable Code Detection
+**FLOW-LOOP-001.** Reachability is computed structurally to a fixed point.
+`return`, `break`, `continue`, propagation by `?`, and expressions of type `!`
+do not fall through. A `loop` without a reachable `break` does not fall
+through; `while` and `for` are assumed able to execute zero times unless their
+condition/iterator is proven otherwise by constant evaluation. Statements
+after a non-fallthrough point are unreachable and require warning `W0005`;
+unreachable code is still parsed, resolved, and type-checked.
+
 ```stark
 fn example() -> Int32 {
     return 42;
@@ -199,10 +231,21 @@ fn valid_match(c: Color) -> String {
 ```
 
 Rules:
-- A `match` over an enum type is exhaustive if every variant is covered, or a wildcard (`_`) arm exists.
-- Tuple patterns are exhaustive if each element position is exhaustive for its type.
-- Literal patterns are exhaustive only for finite domains (e.g., `Bool` with `true` and `false`).
+- A `match` over an enum type is exhaustive if every inhabited variant and
+  payload space is covered, or a wildcard/binding arm covers the remainder.
+- Tuple, array, struct, and variant payload patterns are exhaustive only when
+  their component pattern matrix is exhaustive.
+- `Bool` is exhausted by `true` and `false`; `Unit` by `()`; a zero-variant
+  enum requires no reachable arm. Integer, float, character, string, and
+  other open scalar domains require a wildcard/binding remainder.
 - If a match is not exhaustive, it is a compile-time error.
+
+**PAT-EXHAUST-001.** Exhaustiveness uses a deterministic pattern-matrix
+specialization algorithm over normalized scrutinee types. Constructors are
+enum variants, tuple/array/struct shapes, `true`/`false`, unit, and scalar
+constant/literal tests. The checker recursively specializes each constructor
+and reports a deterministic missing witness. Guards and alternative patterns
+do not exist in Core v1 and therefore cannot affect coverage.
 
 #### Pattern Type Checking
 ```stark
@@ -213,6 +256,36 @@ match x {
     _ => "other"
 }
 ```
+
+Pattern legality:
+
+- wildcard matches any type and introduces nothing;
+- an unresolved identifier introduces one binding; a name resolved as a
+  constant or unit variant is a value test;
+- tuple and array arity must exactly match the scrutinee;
+- a struct/variant path must name the scrutinee's normalized nominal type,
+  every named field must exist and occur once, and omitted fields remain
+  unbound;
+- literal and constant patterns must have the scrutinee type after expected-
+  type literal inference; scalar value tests use built-in equality, while a
+  non-primitive constant pattern requires a lawful `Eq` implementation;
+- every binding name occurs at most once in one pattern.
+
+For an owned scrutinee, a `Copy` component gives its binding the component
+type by copy and a non-`Copy` component gives it that type by move. Moves from
+indexed places, borrowed places, or fields of a type implementing `Drop` are
+rejected. For `&T`/`&mut T` scrutinees, bindings receive shared/exclusive
+reference projections and never move the referent. Their regions and
+provenance follow the C2.8 ownership rules in `03-Type-System.md`; runtime
+creation and destruction order is `PAT-OWN-001`/`PAT-DROP-001`.
+
+**PAT-USEFUL-001.** Arms are examined in source order with the same pattern-
+matrix algorithm. An arm is useful only if it covers at least one value not
+covered by earlier arms. A wholly subsumed arm is a compile-time error.
+Duplicate scalar constants, a constructor after a covering wildcard/binding,
+and structurally subsumed nested patterns are therefore rejected. Pattern
+tests that invoke lawful `Eq` follow source arm order; a trap aborts according
+to the abstract machine.
 
 ### 6. Mutability Analysis
 

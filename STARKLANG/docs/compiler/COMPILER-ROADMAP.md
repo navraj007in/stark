@@ -516,6 +516,13 @@ implementation-independent trait/coherence algorithm with no Core v1 specializat
 impls. Add normative pattern ownership/destruction semantics. Define a bounded, deterministic
 constant-evaluation subset, including cycle, overflow, trap, and cross-package behaviour.
 
+Completed on 2026-07-18. Thirty-three granular static-semantics rules now have exactly one
+normative home across the syntax, type-system, semantic-analysis, and standard-library
+chapters. `CORE-Q-002`, `CORE-Q-003`, `CORE-Q-004`, `CORE-Q-005A`, `CORE-Q-006`,
+`CORE-Q-007`, `CORE-Q-015`, and `CORE-Q-020` are approved; C2.8's coherence algorithm
+portion of `CORE-Q-005` is approved while C2.9 retains canonical package/version identity.
+Compiler/interpreter alignment and granular executable evidence remain deferred to C2.11.
+
 ### WP-C2.9 — Numeric, layout, text, process and package contracts
 
 Complete integer and floating-point operation semantics, including shifts, overflow, casts,

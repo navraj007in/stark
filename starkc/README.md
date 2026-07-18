@@ -51,7 +51,7 @@ cargo run --bin stark -- test             # discover and run fn test_*()/test_ig
 cargo run --bin stark -- fmt --check      # verify formatting; omit --check to rewrite in place
 cargo run --bin stark -- doc --open       # generate and open HTML documentation
 
-cargo test                                # everything, incl. the 107-fixture
+cargo test                                # everything, incl. the 112-fixture
                                           # conformance suite and pseudo-fuzz
 UPDATE_SNAPSHOTS=1 cargo test --test snapshots   # regenerate AST snapshots
 ```

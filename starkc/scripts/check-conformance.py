@@ -9,6 +9,21 @@ from conformance_lib import parse_toml  # noqa: E402
 
 DEVIATION_ID_RE = re.compile(r'^DEV-\d+$')
 GRANULAR_ROW_RE = re.compile(r'^\| ([A-Z][A-Z0-9-]*-\d{3}) \|', re.MULTILINE)
+C2_8_RULE_IDS = {
+    'SYN-PLACE-001', 'SYN-PATTERN-001',
+    'NAME-SCOPE-001', 'NAME-SHADOW-001', 'NAME-RESOLVE-001',
+    'TYPE-PRIM-001', 'TYPE-NOMINAL-001', 'TYPE-ALIAS-001', 'TYPE-WF-001',
+    'TYPE-INFER-001', 'TYPE-GENERIC-001', 'TYPE-COERCE-003', 'TYPE-LOOP-001',
+    'TYPE-METHOD-001', 'TYPE-METHOD-002',
+    'TRAIT-DEF-001', 'TRAIT-ASSOC-001', 'TRAIT-COHERENCE-001',
+    'TRAIT-COHERENCE-002', 'TRAIT-LAW-001',
+    'FLOW-LOOP-001',
+    'OWN-COPY-001', 'OWN-BORROW-001', 'OWN-REGION-001', 'OWN-RETURN-001',
+    'OWN-CARRY-001',
+    'PAT-EXHAUST-001', 'PAT-USEFUL-001',
+    'CONST-DECL-001', 'CONST-SUBSET-001', 'CONST-FAIL-001',
+    'STD-HOOK-001', 'STD-TRAIT-001',
+}
 
 
 def validate_evidence_entry(entry, conformance_dir, rule_id, field_name, errors):
@@ -110,6 +125,34 @@ def main():
                     "Abstract-machine rules missing from the completeness inventory: "
                     + ', '.join(missing_inventory_ids)
                     + "."
+                )
+
+        # WP-C2.8: every approved static-semantics rule must occur exactly once in the
+        # normative source set and remain marked complete in the granular inventory.
+        spec_dir = os.path.join(conformance_dir, 'STARKLANG', 'docs', 'spec')
+        normative_id_counts = {}
+        for filename in sorted(os.listdir(spec_dir)):
+            if not filename.endswith('.md') or filename == 'STARK-Core-v1.md':
+                continue
+            with open(os.path.join(spec_dir, filename), 'r', encoding='utf-8') as f:
+                source_content = f.read()
+            for rule_id in re.findall(
+                r'\*\*([A-Z][A-Z0-9-]*-\d{3})\.\*\*', source_content
+            ):
+                normative_id_counts[rule_id] = normative_id_counts.get(rule_id, 0) + 1
+
+        for rule_id in sorted(C2_8_RULE_IDS):
+            count = normative_id_counts.get(rule_id, 0)
+            if count != 1:
+                errors.append(
+                    f"C2.8 rule {rule_id} occurs {count} times in normative sources; expected 1."
+                )
+            row_match = re.search(
+                rf'^\| {re.escape(rule_id)} \|.*\| complete/', inventory_content, re.MULTILINE
+            )
+            if row_match is None:
+                errors.append(
+                    f"C2.8 rule {rule_id} is not marked complete in the completeness inventory."
                 )
 
         legacy_entries = split_map.get('legacy', [])

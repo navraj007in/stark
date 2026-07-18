@@ -1,0 +1,4 @@
+type UserId = Int32;
+struct User { id: UserId }
+struct Recursive { next: Option<Box<Recursive>> }
+// struct Invalid { next: Invalid } // rejected: infinitely sized

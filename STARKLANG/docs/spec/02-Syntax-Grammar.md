@@ -188,6 +188,13 @@ AssignOp ::= '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '**='
 The left-hand side of an assignment must be a *place expression* — an
 expression that denotes a memory location. Place expressions are:
 
+**SYN-PLACE-001.** The forms in `PlaceExpression` are the complete Core v1
+assignment-target syntax. Parentheses do not change whether an expression is
+a place. Field, tuple-field, index, and dereference forms are accepted by the
+parser and then require the mutable-place typing rules in
+`03-Type-System.md`; calls, literals, casts, ranges, aggregates, and other
+computed values are never assignment targets.
+
 ```ebnf
 PlaceExpression ::= Path                              // Variable
                   | PlaceExpression '.' IDENTIFIER    // Field
@@ -294,6 +301,13 @@ LoopExpression ::= 'loop' Block
                  | 'while' Expression Block
                  | 'for' IDENTIFIER 'in' Expression Block
 ```
+
+**SYN-PATTERN-001.** The productions above are the complete Core v1 pattern
+surface. Core v1 has no pattern guards, alternative (`|`) patterns, rest
+patterns, binding-mode annotations, or range patterns. A named-field pattern
+may list fields in any order but may not repeat a field. Static typing,
+exhaustiveness, usefulness, and ownership are defined by
+`04-Semantic-Analysis.md` and `CORE-V1-ABSTRACT-MACHINE.md`.
 
 Note on pattern name resolution: a single `IDENTIFIER` pattern that resolves to a
 unit enum variant or a constant in scope matches by value; otherwise it introduces

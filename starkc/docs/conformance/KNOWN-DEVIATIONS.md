@@ -457,8 +457,9 @@ in WP-C1.6)
 
 ## DEV-021 — Cross-package coherence checking verified working (previously unverified)
 
-- **Normative expectation:** SEM-007 (orphan rule / overlapping impls) should apply correctly
-  across package boundaries in a multi-package workspace.
+- **Normative expectation:** `TRAIT-COHERENCE-001` and `TRAIT-COHERENCE-002` require the
+  orphan and overlap rules to apply across the complete resolved package graph, independent of
+  source order. C2.9 supplies the canonical package/version token used by those algorithms.
 - **Previous state:** every existing coherence test used an in-memory single file with no real
   `starkpkg.json`, under which `typecheck.rs`'s filesystem-walk-up package-root detection
   (`find_package_root`) always returns `None` — making it impossible to tell from existing tests
@@ -470,7 +471,9 @@ in WP-C1.6)
 - **Security/soundness impact:** none; this closes a soundness *question*, not a soundness gap.
 - **Workaround:** n/a.
 - **Proposed disposition:** none needed.
-- **Owning gate:** closed — verified correct, WP-C1.2.
+- **Owning gate:** closed as the original orphan-rule verification, WP-C1.2. C2.11 must
+  reclassify granular evidence against both C2.8 coherence rules after C2.9 fixes package
+  identity; this does not reopen DEV-021 as a known compiler defect.
 
 ## DEV-022 — Private-item leakage through public signatures: unimplemented, spec-silent
 
@@ -495,9 +498,11 @@ in WP-C1.6)
 
 ## DEV-023 — `Display`/`.fmt()` and `Hash`/`.hash()` missing as callable methods on builtin types
 
-- **Normative expectation:** `Display`/`Hash` should be callable as methods on any type
-  satisfying the bound, including compiler-builtin types (String, Vec, Option, ...), matching
-  the pattern `Clone` now follows after DEV-013's fix.
+- **Normative expectation:** `TYPE-METHOD-001` and `TYPE-METHOD-002` require ordinary,
+  source-order-independent trait-method selection for any receiver satisfying the bound.
+  `STD-HOOK-001` does not classify `Display::fmt` or `Hash::hash` as compiler hooks, so builtin
+  types must participate through the same ordinary dispatch contract rather than name-based
+  interpreter handling.
 - **Current behaviour:** the same bug class as DEV-013's Clone finding, confirmed present but
   not fixed: `String::from("hi").fmt()` and `"hi".hash()`-style calls fail with E0303 "method
   call on non-struct/enum type 'String'". `Display`/`Hash` as *bounds* are already correctly
@@ -514,8 +519,7 @@ in WP-C1.6)
   exactly these types) as a generic dispatch point. `.hash()` needs its own investigation —
   unverified whether the internal hash used for `HashMap`/`HashSet` keys is exposed in a form
   reusable for a user-callable `.hash()` returning `UInt64`.
-- **Owning gate:** WP-C2.8 settles method/hook semantics; WP-C2.11 implements and evidences the
-  approved contract.
+- **Owning gate:** WP-C2.11 implements and evidences the C2.8-approved contract.
 
 ## DEV-024 — `From` trait associated-function calls fail to resolve
 

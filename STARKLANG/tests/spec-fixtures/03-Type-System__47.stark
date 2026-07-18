@@ -1,0 +1,7 @@
+enum Message { Quit, Count(Int32) }
+fn code(message: Message) -> Int32 {
+    match message {
+        Message::Quit => 0,
+        Message::Count(value) => value,
+    }
+}

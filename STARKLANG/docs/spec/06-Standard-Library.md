@@ -96,6 +96,43 @@ fn println(value: &str)
 fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never Type)
 ```
 
+### Core Trait Profile
+
+**STD-TRAIT-001.** The required Core trait identities are `Copy`, `Clone`,
+`Drop`, `Eq`, `Ord`, `Hash`, `Default`, `Display`, `Iterator`, `Index`,
+`IndexMut`, and compiler-owned `Num`, with the required items shown in this
+document. An implementation claiming the Core profile must provide these
+canonical items and the primitive/standard-type implementations explicitly
+required here. Additional traits or implementations are extensions and may
+not change Core resolution or coherence. The semantic laws of `Eq`, `Ord`,
+and `Hash` are defined by `TRAIT-LAW-001`; float participation remains owned
+by C2.9.
+
+### Canonical Language Hooks
+
+**STD-HOOK-001.** A language hook is recognized by canonical standard-item
+identity, never by an unqualified spelling or source declaration order. The
+complete Core v1 hook set is:
+
+| Hook | Language use |
+| --- | --- |
+| `Copy` | implicit place reads |
+| `Drop` and `drop` | deterministic destruction and explicit consumption |
+| `panic` | language trap |
+| `Option` and `Result` | `?` propagation |
+| `Iterator` | `for` protocol |
+| `Index` and `IndexMut` | indexing places/values |
+| `Eq` and `Ord` | generic equality and ordering operators |
+| `Num` | generic primitive numeric operators |
+| `size_of` and `align_of` | target-layout queries |
+
+All other APIs—including `Clone`, `Default`, `Display`, `Hash`, collection
+methods, string methods, math, and I/O—use ordinary name resolution, method
+selection, trait dispatch, or implementation-provided bodies. `HashMap` may
+require `Hash`, but that does not make `Hash` a syntax hook. User declarations
+with a hook's spelling never acquire hook behavior. C2.9 completes the target
+results of `size_of`/`align_of` and canonical package identity.
+
 ## Core Module (std::core)
 
 ### Essential Trait Definitions

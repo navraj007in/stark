@@ -568,6 +568,13 @@ AssignOp ::= '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '**='
 The left-hand side of an assignment must be a *place expression* — an
 expression that denotes a memory location. Place expressions are:
 
+**SYN-PLACE-001.** The forms in `PlaceExpression` are the complete Core v1
+assignment-target syntax. Parentheses do not change whether an expression is
+a place. Field, tuple-field, index, and dereference forms are accepted by the
+parser and then require the mutable-place typing rules in
+`03-Type-System.md`; calls, literals, casts, ranges, aggregates, and other
+computed values are never assignment targets.
+
 ```ebnf
 PlaceExpression ::= Path                              // Variable
                   | PlaceExpression '.' IDENTIFIER    // Field
@@ -674,6 +681,13 @@ LoopExpression ::= 'loop' Block
                  | 'while' Expression Block
                  | 'for' IDENTIFIER 'in' Expression Block
 ```
+
+**SYN-PATTERN-001.** The productions above are the complete Core v1 pattern
+surface. Core v1 has no pattern guards, alternative (`|`) patterns, rest
+patterns, binding-mode annotations, or range patterns. A named-field pattern
+may list fields in any order but may not repeat a field. Static typing,
+exhaustiveness, usefulness, and ownership are defined by
+`04-Semantic-Analysis.md` and `CORE-V1-ABSTRACT-MACHINE.md`.
 
 Note on pattern name resolution: a single `IDENTIFIER` pattern that resolves to a
 unit enum variant or a constant in scope matches by value; otherwise it introduces
@@ -923,6 +937,15 @@ Rules:
   produce a value.
 - A function returning `!` MUST NOT return normally.
 
+### Core Type Identity
+
+**TYPE-PRIM-001.** Each named primitive type is distinct. `Unit` and `()` are
+two spellings of the same single-inhabitant type. Array identity is the ordered
+pair of element type and length; tuple identity is its ordered type sequence;
+reference identity includes pointee type and mutability; function identity
+includes the ordered parameter types and return type. The never type `!` is
+uninhabited and distinct from every other type.
+
 ## Composite Types
 
 ### Array Types
@@ -968,7 +991,7 @@ and slicing.
 (T,)         // Single-element tuple
 (T1, T2)     // Two-element tuple
 (T1, T2, T3) // Three-element tuple
-// ... up to reasonable limit (e.g., 16 elements)
+// ... up to 16 elements
 ```
 
 Examples:
@@ -997,6 +1020,17 @@ whose *written* type is a reference type (`&T`, `&mut T`). Instantiating a
 generic type with a reference type argument (e.g. `Option<&T>`) is permitted;
 the resulting value is *borrow-carrying* — see "References and Lifetimes"
 below.
+
+**TYPE-NOMINAL-001.** A struct or enum type has nominal identity:
+
+```text
+canonical package instance + module path + item name + normalized generic arguments
+```
+
+The canonical package-instance token is supplied by the package identity rules
+completed in C2.9. Relocation, import aliases, re-exports, and local type
+aliases do not change identity. Two separately declared types remain distinct
+even when their fields and variants are structurally identical.
 
 ### Enum Types
 ```stark
@@ -1041,6 +1075,46 @@ type Point2D = (Float64, Float64);
 type ErrorCode = Int32;
 ```
 
+**TYPE-ALIAS-001.** A type alias is transparent. After capture-avoiding
+substitution of its generic arguments, it denotes exactly its target type and
+introduces no nominal identity, constructor, implementation-coherence
+boundary, or distinct method set. Alias expansion is recursive; an alias
+cycle is a compile-time error. A nominal wrapper requires a distinct struct or
+enum declaration.
+
+## Type Well-Formedness and Sizedness
+
+**TYPE-WF-001.** Every value type and every generic parameter in Core v1 is
+implicitly `Sized`; Core has no syntax to relax this bound. The only unsized
+types are implementation-provided `str` and slice `[T]`, and they may occur
+only immediately behind `&` or `&mut`. Bare unsized locals, parameters,
+returns, fields, tuple elements, array elements, generic arguments, and
+`Box<str>`/`Box<[T]>` are prohibited in Core v1.
+
+A declaration is infinitely sized when its field-type dependency graph has a
+cycle containing only direct value edges. References and the
+implementation-provided owning indirections `Box<T>` and `Vec<T>` break that
+graph. Direct and indirect value recursion is rejected; recursion through one
+of those indirections is well formed when all other rules hold.
+
+The following edge types are explicit:
+
+- `[T; 0]` is a sized, inhabited empty array and still requires sized `T`;
+- empty structs are sized, inhabited nominal types;
+- zero-variant enums are sized, uninhabited nominal types;
+- tuples support arities zero through sixteen; `()` is `Unit`;
+- array length is a constant `UInt64`; Core imposes no smaller semantic
+  maximum, while finite compiler/target resource limits are classified by
+  C2.9;
+- `!` is uninhabited, may be written only as a function return type, and
+  coerces to any expected type.
+
+```text
+struct InvalidNode { next: InvalidNode }
+struct ValidNode { next: Option<Box<ValidNode>> }
+type Meter = Int32;
+```
+
 ## The Self Type
 Within a `trait` or `impl` block, `Self` refers to the implementing type:
 
@@ -1065,6 +1139,14 @@ let b = a;  // a is moved to b, a is no longer valid
 ```
 
 ### Borrowing Rules
+**OWN-BORROW-001.** For any overlapping place, a live exclusive borrow
+prohibits every other read, write, borrow, move, or destruction through a
+different access path; one or more live shared borrows permit other shared
+reads/borrows but prohibit writes, exclusive borrows, moves, and destruction.
+Disjoint field projections do not overlap. Index projections are treated as
+overlapping unless the checker proves distinct constant indices. Reborrowing
+cannot grant stronger mutability or outlive the source reference.
+
 1. You can have either one mutable reference or any number of immutable references
 2. References must always be valid (no dangling pointers)
 3. References cannot outlive the data they refer to
@@ -1086,6 +1168,26 @@ borrow_mutable(&mut text);     // OK
 ## References and Lifetimes (Core v1)
 Core v1 has no lifetime annotations. Instead, it enforces the following
 conservative rules, which are normative:
+
+**OWN-REGION-001.** A reference or borrow-carrying value bound to a local
+remains live from creation through the end of that local's lexical block,
+unless the complete carrier is consumed earlier by `drop`. Moving a carrier
+transfers, rather than ends, its live borrow: the borrow then remains live
+through the destination carrier's lexical region or through completion of the
+consuming call. A reference parameter is live for the call. An unbound borrow
+used as a subexpression remains live through its enclosing full expression;
+borrowed rvalue arguments and borrowed temporary method receivers therefore
+remain live through call completion. Core v1 performs no last-use shortening
+and no temporary-lifetime extension for `let r = &make_value()`; such an
+escaping temporary reference is rejected.
+
+**OWN-RETURN-001.** A returned reference or borrow-carrying value must derive,
+on every return path, only from reference parameters. Its caller-visible
+region is the intersection (the shortest region) of every reference parameter
+from which that path's result may derive. Projections into the referent of a
+reference parameter are permitted. A local, temporary, by-value parameter,
+constant temporary, or a field whose root is one of those non-reference
+sources cannot be returned by reference.
 
 1. **No declared reference fields.** Struct, enum variant, and tuple struct
    declarations MUST NOT write a reference type (`&T`, `&mut T`) as a field
@@ -1136,6 +1238,12 @@ lexical rule is strictly more conservative, adopting last-use regions later
 cannot break conforming programs.
 
 ### Borrow-Carrying Types
+**OWN-CARRY-001.** Borrow provenance is structural and transitive through
+tuples, generic arguments, enum payloads, function arguments/results, pattern
+bindings, and implementation-provided borrowed views. A merge of control-flow
+paths carries the union of possible source referents and the most restrictive
+capability; its region cannot exceed the intersection of their valid regions.
+
 A type is **borrow-carrying** if it is:
 - a reference type `&T` or `&mut T`; or
 - a generic type with at least one borrow-carrying type argument
@@ -1162,11 +1270,36 @@ goes out of scope.
 
 ## Type Inference
 
-### Local Type Inference
-Types of `let` bindings are inferred from their initializers. Inference is
-local: it uses the initializer expression and, where necessary, later uses
-within the same function body. Function signatures are always fully explicit,
-so inference never crosses function boundaries.
+### Deterministic Local Inference
+
+**TYPE-INFER-001.** Inference is local to one function or constant body and
+never infers item signatures. For each unannotated local, the checker
+collects equality and trait constraints from its initializer and every use of
+that binding until its scope ends or it is shadowed. Consequently, later uses
+within that region may constrain the local, but uses outside it and bodies of
+called functions may not.
+
+Expected types flow inward from explicit annotations, function parameters,
+return types, assignment destinations, aggregate fields, branch/arm
+unification, and an enclosing call's expected result. Constraint collection
+is independent of traversal or declaration-map iteration order. Solving
+proceeds as follows:
+
+1. expand transparent aliases and create fresh variables for every generic
+   instantiation;
+2. collect exact-type equations, expected-type constraints, associated-type
+   obligations, and required trait bounds;
+3. repeatedly apply equality unification and uniquely selected associated-type
+   normalization to a fixed point;
+4. apply permitted coercions only at their explicit coercion sites;
+5. default an unconstrained integer literal to `Int32` when representable,
+   otherwise `Int64`, and an unconstrained float literal to `Float64`;
+6. reject any remaining unconstrained variable, conflicting equation,
+   unsatisfied obligation, or non-unique solution as an inference error.
+
+Inference never chooses an implementation or overload merely because it was
+declared first. Error-recovery variables may suppress cascaded diagnostics but
+must not turn a rejected program into an accepted one.
 
 ```stark
 let x = 42;             // Inferred as Int32
@@ -1189,7 +1322,19 @@ fn greet(name: &str) {      // Returns Unit
 ```
 
 ### Generic Type Inference
-Generic arguments at call sites are inferred from argument and expected types:
+
+**TYPE-GENERIC-001.** Each generic use receives fresh parameters. Explicit
+turbofish arguments bind the corresponding parameters first; omitted
+arguments are inferred from value arguments and then from the expected result
+type. All occurrences of one parameter must normalize to one type. Associated
+type bindings are obligations, not new inference variables, and normalize
+only after unique trait selection. If any parameter remains unconstrained,
+the call requires explicit arguments.
+
+Generic declarations are compared after alpha-renaming parameters and
+capture-avoiding substitution. Bounds are conjunctions independent of source
+order. Monomorphization and dictionary passing are implementation strategies,
+not type-system differences.
 
 ```stark
 fn identity<T>(x: T) -> T {
@@ -1200,6 +1345,14 @@ let result = identity(42);  // T inferred as Int32
 ```
 
 ## Subtyping and Coercion
+
+Core v1 has no general subtyping. At an expected-type boundary, coercions are
+attempted in this deterministic order: identity/alias normalization, never
+coercion, mutable-to-shared reference weakening, then array-reference to
+slice-reference coercion. A coercion may combine mutable-to-shared weakening
+with array-to-slice exactly once (`&mut [T; N]` to `&[T]`); no other coercion
+chains, implicit numeric conversions, user conversions, or trait-based
+coercions exist.
 
 ### Numeric Coercions
 No implicit numeric conversions. Explicit casting required:
@@ -1222,6 +1375,11 @@ Cast semantics (`as`):
 ```
 
 ### Array to Slice Coercion
+**TYPE-COERCE-003.** Array-to-slice coercion is available only for references.
+It preserves the original referent, bounds, and borrow region; it never copies
+elements or constructs an owned slice. Shared input produces shared output.
+Mutable input may produce mutable output or be weakened to shared output.
+
 ```stark
 &[T; N] -> &[T]     // Array reference to slice reference
 &mut [T; N] -> &mut [T]  // Mutable array reference to mutable slice reference
@@ -1235,6 +1393,14 @@ Cast semantics (`as`):
 ## Trait System (Basic)
 
 ### Trait Definition
+**TRAIT-DEF-001.** A trait declares required methods, optional default method
+bodies, and associated types. An implementation must define every associated
+type and required method not supplied by a default, with an alpha-equivalent
+generic signature, receiver form, parameter types, return type, and bounds.
+An implementation may override a default but may not add trait-associated
+items. Trait and implementation bodies are type-checked under their declared
+bounds.
+
 ```stark
 trait Display {
     fn fmt(&self) -> String;
@@ -1261,6 +1427,13 @@ impl Eq for Point {
 ```
 
 ### Associated Types
+**TRAIT-ASSOC-001.** An associated item is identified by its declaring trait
+and item name. `T::Item` in a trait-bound context is a projection, not a free
+name; it normalizes only after a unique applicable implementation is selected.
+Fully qualified syntax selects the named trait. A missing associated value,
+conflicting binding, unresolved projection, or normalization cycle is a
+compile-time error.
+
 Traits may declare associated types; implementations assign them:
 
 ```stark
@@ -1337,7 +1510,23 @@ for i in 0..10 {
   MUST NOT carry a value.
 - **Block**: the type of the trailing expression, or `Unit` if there is none.
 
+**TYPE-LOOP-001.** Reachable `break` operands in one `loop` are unified using
+the ordinary expected-type and never-coercion rules. A reachable bare
+`break` contributes `Unit`. A `loop` with no reachable `break` has type `!`;
+otherwise it has the unique unified break type. `while` and `for` have type
+`Unit` and reject value-carrying `break`.
+
 ### Method Calls and Auto-Borrowing
+**TYPE-METHOD-001.** Method selection is independent of declaration and hash-
+map iteration order. For each receiver type considered by auto-dereference,
+the checker collects every visible, type-applicable inherent candidate. If
+that set is nonempty it must contain exactly one candidate and trait
+candidates are ignored. Otherwise it collects applicable methods from traits
+in lexical scope or the prelude; exactly one must remain after generic
+substitution and obligations. Zero candidates is unresolved and multiple
+candidates is ambiguous. Fully qualified `Trait::method(receiver, ...)`
+bypasses trait-name lookup but still requires a unique coherent impl.
+
 A method call `recv.m(args)` is resolved as follows:
 
 1. **Candidate collection.** Candidates are, in priority order:
@@ -1367,16 +1556,27 @@ Trait methods can always be called in fully-qualified function form —
 `Display::fmt(&x)` — since a method is an ordinary function whose first
 parameter is the receiver.
 
+**TYPE-METHOD-002.** Auto-dereference examines `S`, then repeatedly removes
+one leading `&`/`&mut`; at each level receiver matching tries by-value,
+shared-borrow, then exclusive-borrow form. Selection stops at the first
+dereference level with an applicable candidate. Auto-borrow never evaluates
+the receiver twice, never moves through a shared reference, and may create
+`&mut` only from a mutable place not conflicting with a live borrow. No
+argument-position auto-borrow, auto-dereference, or user coercion exists.
+
 ### Operators and Traits
 Operator expressions on **primitive types** have built-in meaning (Numeric
-Semantics below). On **generic type parameters**, operators desugar to trait
-method calls, so the corresponding bound is required:
+Semantics below). Equality and ordering on every non-primitive concrete type,
+and on generic parameters, require one uniquely selected coherent `Eq` or
+`Ord` implementation and dispatch to its method. Arithmetic on a generic
+parameter requires `Num` and becomes the corresponding primitive operation
+after monomorphization:
 
-| Operator | Requires bound | Desugars to |
+| Operator | Non-primitive/generic requirement | Meaning |
 | --- | --- | --- |
 | `==`, `!=` | `T: Eq` | `Eq::eq(&a, &b)` (negated for `!=`) |
 | `<`, `<=`, `>`, `>=` | `T: Ord` | `Ord::cmp(&a, &b)` compared to `Ordering` |
-| `+ - * / % **`, bitwise, shifts | `T: Num` | primitive operation after monomorphization |
+| `+ - * / % **`, bitwise, shifts | generic `T: Num` | primitive operation after monomorphization |
 
 `Num` is a compiler-known marker trait implemented by exactly the built-in
 numeric types (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`); user
@@ -1398,6 +1598,17 @@ introduce an evaluation or ownership transfer merely to select a type,
 method, or trait implementation.
 
 ### Copy and Drop (Soundness Rules)
+**OWN-COPY-001.** The built-in scalar primitives except `String`, shared
+reference values, function values, `Unit`, and `!` are `Copy`. Exclusive
+references are not `Copy`.
+Arrays and tuples are `Copy` exactly when every component is `Copy`. A
+user-defined struct or enum may implement `Copy` only when every possible
+field/payload is `Copy`; generic implementations must express and satisfy the
+corresponding bounds. `Box`, `Vec`, `String`, maps, sets, and all types
+implementing `Drop` are not `Copy`. `Copy` is a marker selected by the normal
+coherence rules and cannot be inferred structurally for a user type without
+an implementation.
+
 - `Copy` may be implemented for a type only if **all** of its fields are
   `Copy`. Violations are compile-time errors.
 - A type MUST NOT implement both `Copy` and `Drop` (a copyable type would run
@@ -1484,17 +1695,116 @@ fn max<T: Ord>(a: T, b: T) -> T { if a > b { a } else { b } }
 ```
 
 Rules:
-- A bound `T: Trait` requires a visible `impl Trait for T`.
+- A bound `T: Trait` requires exactly one applicable coherent
+  `impl Trait for T` in the resolved package graph; trait visibility controls
+  whether its name may be written, not whether an existing obligation can be
+  proven.
 - Multiple bounds are allowed: `T: TraitA + TraitB`.
 - Bounds may bind associated types: `I: Iterator<Item = T>`.
 
 ## Trait Coherence (Core v1)
-To avoid ambiguous implementations, Core v1 applies the orphan rule:
-- An `impl` is valid only if either the trait or the type is defined in the current package.
 
-Additionally:
-- If multiple applicable `impl` blocks could apply to the same type at a call site, the program is ill-formed.
-- Blanket implementations (e.g., `impl<T: Trait> OtherTrait for T`) are permitted but must not violate coherence.
+**TRAIT-COHERENCE-001.** A trait implementation is permitted only when the
+current canonical package instance defines either the trait or the head
+nominal type after transparent-alias expansion. Type parameters, primitives,
+tuples, arrays, references, and function types are not local head types.
+Different selected package versions have distinct nominal identities; import
+aliases and re-exports do not make a trait or type local. Inherent
+implementations are permitted only for a nominal type defined by the current
+package.
+
+**TRAIT-COHERENCE-002.** Coherence is checked over the complete resolved
+package graph, independent of source order and whether an implementation is
+used. Two implementations overlap when there exists a substitution that
+unifies their trait and self-type heads and whose declared positive bounds
+can simultaneously hold. Bounds are not assumed disjoint merely because no
+current type is known to satisfy both. Duplicate and overlapping
+implementations are rejected.
+
+Selection for a concrete obligation:
+
+1. expand aliases and normalize already-resolved projections;
+2. collect all coherent impl heads that unify with the obligation;
+3. instantiate each with fresh variables and recursively prove its positive
+   bounds;
+4. require exactly one successful candidate;
+5. substitute its associated types and continue normalization.
+
+Recursive obligation cycles that do not establish a strictly smaller,
+previously proven obligation are rejected. Core v1 has no specialization,
+negative implementations, trait objects, or declaration-order priority.
+Blanket implementations are permitted only when the overlap test proves them
+disjoint from every other implementation.
+
+## Standard Trait Laws
+
+**TRAIT-LAW-001.** Implementations used as Core `Eq`, `Ord`, and `Hash` must
+obey these semantic laws:
+
+- `Eq::eq` is reflexive, symmetric, and transitive;
+- `Ord::cmp` defines a total order, returns `Equal` exactly when `Eq::eq` is
+  true, and is antisymmetric and transitive;
+- values equal under `Eq` produce equal `Hash::hash` results;
+- hashing an unchanged value is stable for the complete execution of one
+  program under one fixed target/environment.
+
+The compiler is required to reject only violations it can prove; it is not
+required to prove arbitrary method bodies lawful. Direct calls still execute
+the user bodies normally. If an implementation violates a law, operations
+whose contract relies on that law—including ordered comparison and hash
+collections—have unspecified logical results, but memory safety, ownership,
+trap behavior, and exactly-once destruction remain guaranteed. A law
+violation never grants undefined behavior. C2.9 separately decides which
+floating types, if any, implement these traits.
+
+## Constant Evaluation (Core v1)
+
+**CONST-DECL-001.** A `const` declaration is evaluated at compile time and
+must produce a value exactly matching or coercible to its declared type.
+Array-repeat counts and constant patterns use the same evaluator; array-type
+lengths remain the integer literals required by the Core grammar and are
+validated at compile time. Constants are immutable values, not addressable storage locations:
+each value-context use produces the constant value, and borrowing a constant
+materializes an ordinary temporary governed by the C2.7 temporary rules.
+Declaration order does not affect visibility or evaluation.
+
+**CONST-SUBSET-001.** Constant expressions are the following closed,
+side-effect-free subset:
+
+- literals, unit, and references to other constants;
+- grouping; tuples; arrays; array repeats; and struct or enum construction;
+- primitive unary, arithmetic, bitwise, shift, logical, comparison, and range
+  operations;
+- `if` expressions whose condition and selected branch are constant;
+- explicit primitive casts;
+- blocks containing only constant expressions and a final constant value.
+
+Every operand follows the abstract-machine evaluation order. Transparent
+aliases, generic substitutions, and expected types are resolved before
+evaluation. Function or method calls, trait dispatch, local bindings,
+assignment, borrowing/dereference, indexing requiring runtime storage,
+`match`, loops, `return`/`break`/`continue`, `?`, `panic`, heap-backed
+collections, I/O, artifact/native-provider access, and runtime state are
+prohibited. No user function is implicitly treated as a constant function.
+
+Floating literals are allowed. Other floating constant operations are allowed
+only where C2.9 supplies a deterministic operation/cast result; the constant
+evaluator must then produce exactly that runtime result and may not use host
+extended precision or host-language defaults.
+
+**CONST-FAIL-001.** Constant dependencies form a graph across the resolved
+package graph. Any dependency cycle is a compile-time error with the cycle
+reported deterministically. A prohibited form, type mismatch, ambiguous
+inference, overflow, division/remainder by zero, invalid shift, invalid cast,
+bounds failure, or any other operation that would trap at runtime is instead
+a compile-time constant-evaluation error at the failing operation. Both
+branches are type-checked, but only the selected branch of a constant `if` is
+evaluated.
+
+Evaluation is deterministic and memoization may not change diagnostics or
+results. Finite implementation resource limits are governed by C2.9; reaching
+one must produce its classified diagnostic and must never be cached as a
+semantic constant value.
 
 ## Numeric Semantics (Core v1)
 - Integer overflow and underflow are runtime errors and MUST trap. This applies
@@ -1528,6 +1838,45 @@ keyword.
 Lambda expressions that capture their environment are a future extension; the
 `fn(...)` function types in Core v1 are non-capturing.
 
+## C2.8 Static-Semantics Examples
+
+These examples are parser fixtures and semantic-review cases; C2.11 supplies
+the positive/negative executable evidence for each granular rule.
+
+```stark
+type UserId = Int32;
+struct User { id: UserId }
+struct Recursive { next: Option<Box<Recursive>> }
+// struct Invalid { next: Invalid } // rejected: infinitely sized
+```
+
+```stark
+fn identity<T>(value: T) -> T { value }
+let inferred: Int64 = identity(1);
+```
+
+```stark
+fn inspect(value: &String) { println(value.as_str()); }
+inspect(&String::from("temporary"));
+// let escaped = &String::from("temporary"); // rejected: no lifetime extension
+```
+
+```stark
+enum Message { Quit, Count(Int32) }
+fn code(message: Message) -> Int32 {
+    match message {
+        Message::Quit => 0,
+        Message::Count(value) => value,
+    }
+}
+```
+
+```stark
+const WIDTH: UInt64 = 4;
+const ENABLED: Bool = WIDTH == 4;
+const SETTINGS: (UInt64, Bool) = (WIDTH, if ENABLED { true } else { false });
+```
+
 ## Conformance
 A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.
 
@@ -1545,6 +1894,14 @@ Semantic analysis validates that programs are meaningful according to STARK's la
 Build symbol tables for scopes and declarations.
 
 #### Scope Rules
+**NAME-SCOPE-001.** Modules, functions, trait/impl bodies, lexical blocks,
+match arms, and generic parameter lists introduce scopes. Module items and
+imports are visible throughout their module independent of declaration order.
+Function parameters and item generic parameters are visible throughout the
+corresponding signature/body. A `let` binding becomes visible only after its
+initializer and declaration complete; it is not visible in its own
+initializer. Pattern bindings are visible only in their selected arm body.
+
 ```stark
 // Module scope
 fn module_function() { }
@@ -1566,6 +1923,14 @@ fn example() {
 ```
 
 #### Name Resolution Order
+**NAME-RESOLVE-001.** Core has distinct module, type, value, and associated-
+item namespaces. Type context searches types, aliases, traits, and type
+parameters; value context searches locals, parameters, constants, functions,
+and constructors; a path segment naming a module searches the module
+namespace. Associated names are searched only after resolving their
+qualifying type or trait. The same spelling may coexist in different
+namespaces, but two declarations in one namespace and scope are duplicates.
+
 Name resolution distinguishes *lexical* scopes (inside function bodies) from
 *module* scopes.
 
@@ -1584,6 +1949,14 @@ Unqualified names never implicitly search parent modules or the crate root;
 those require explicit `super::` or `crate::` paths.
 
 #### Shadowing Rules
+**NAME-SHADOW-001.** A local value binding may shadow a value from an outer
+lexical or module scope. It may not duplicate a parameter, local, or pattern
+binding in the same lexical scope. Item/import collisions in the same module
+namespace are errors rather than shadowing. Generic parameters may not
+duplicate another generic parameter or an item-level `Self`; a nested item
+introduces fresh item scopes. When a shadowing binding ends, the outer binding
+is visible again.
+
 ```stark
 let x = 10;       // x: Int32
 {
@@ -1668,6 +2041,14 @@ fn valid_return(x: &Int32) -> &Int32 {
 ### 4. Control Flow Analysis
 
 #### Unreachable Code Detection
+**FLOW-LOOP-001.** Reachability is computed structurally to a fixed point.
+`return`, `break`, `continue`, propagation by `?`, and expressions of type `!`
+do not fall through. A `loop` without a reachable `break` does not fall
+through; `while` and `for` are assumed able to execute zero times unless their
+condition/iterator is proven otherwise by constant evaluation. Statements
+after a non-fallthrough point are unreachable and require warning `W0005`;
+unreachable code is still parsed, resolved, and type-checked.
+
 ```stark
 fn example() -> Int32 {
     return 42;
@@ -1735,10 +2116,21 @@ fn valid_match(c: Color) -> String {
 ```
 
 Rules:
-- A `match` over an enum type is exhaustive if every variant is covered, or a wildcard (`_`) arm exists.
-- Tuple patterns are exhaustive if each element position is exhaustive for its type.
-- Literal patterns are exhaustive only for finite domains (e.g., `Bool` with `true` and `false`).
+- A `match` over an enum type is exhaustive if every inhabited variant and
+  payload space is covered, or a wildcard/binding arm covers the remainder.
+- Tuple, array, struct, and variant payload patterns are exhaustive only when
+  their component pattern matrix is exhaustive.
+- `Bool` is exhausted by `true` and `false`; `Unit` by `()`; a zero-variant
+  enum requires no reachable arm. Integer, float, character, string, and
+  other open scalar domains require a wildcard/binding remainder.
 - If a match is not exhaustive, it is a compile-time error.
+
+**PAT-EXHAUST-001.** Exhaustiveness uses a deterministic pattern-matrix
+specialization algorithm over normalized scrutinee types. Constructors are
+enum variants, tuple/array/struct shapes, `true`/`false`, unit, and scalar
+constant/literal tests. The checker recursively specializes each constructor
+and reports a deterministic missing witness. Guards and alternative patterns
+do not exist in Core v1 and therefore cannot affect coverage.
 
 #### Pattern Type Checking
 ```stark
@@ -1749,6 +2141,36 @@ match x {
     _ => "other"
 }
 ```
+
+Pattern legality:
+
+- wildcard matches any type and introduces nothing;
+- an unresolved identifier introduces one binding; a name resolved as a
+  constant or unit variant is a value test;
+- tuple and array arity must exactly match the scrutinee;
+- a struct/variant path must name the scrutinee's normalized nominal type,
+  every named field must exist and occur once, and omitted fields remain
+  unbound;
+- literal and constant patterns must have the scrutinee type after expected-
+  type literal inference; scalar value tests use built-in equality, while a
+  non-primitive constant pattern requires a lawful `Eq` implementation;
+- every binding name occurs at most once in one pattern.
+
+For an owned scrutinee, a `Copy` component gives its binding the component
+type by copy and a non-`Copy` component gives it that type by move. Moves from
+indexed places, borrowed places, or fields of a type implementing `Drop` are
+rejected. For `&T`/`&mut T` scrutinees, bindings receive shared/exclusive
+reference projections and never move the referent. Their regions and
+provenance follow the C2.8 ownership rules in `03-Type-System.md`; runtime
+creation and destruction order is `PAT-OWN-001`/`PAT-DROP-001`.
+
+**PAT-USEFUL-001.** Arms are examined in source order with the same pattern-
+matrix algorithm. An arm is useful only if it covers at least one value not
+covered by earlier arms. A wholly subsumed arm is a compile-time error.
+Duplicate scalar constants, a constructor after a covering wildcard/binding,
+and structurally subsumed nested patterns are therefore rejected. Pattern
+tests that invoke lawful `Eq` follow source arm order; a trap aborts according
+to the abstract machine.
 
 ### 6. Mutability Analysis
 
@@ -2709,6 +3131,43 @@ fn print(value: &str)
 fn println(value: &str)
 fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never Type)
 ```
+
+### Core Trait Profile
+
+**STD-TRAIT-001.** The required Core trait identities are `Copy`, `Clone`,
+`Drop`, `Eq`, `Ord`, `Hash`, `Default`, `Display`, `Iterator`, `Index`,
+`IndexMut`, and compiler-owned `Num`, with the required items shown in this
+document. An implementation claiming the Core profile must provide these
+canonical items and the primitive/standard-type implementations explicitly
+required here. Additional traits or implementations are extensions and may
+not change Core resolution or coherence. The semantic laws of `Eq`, `Ord`,
+and `Hash` are defined by `TRAIT-LAW-001`; float participation remains owned
+by C2.9.
+
+### Canonical Language Hooks
+
+**STD-HOOK-001.** A language hook is recognized by canonical standard-item
+identity, never by an unqualified spelling or source declaration order. The
+complete Core v1 hook set is:
+
+| Hook | Language use |
+| --- | --- |
+| `Copy` | implicit place reads |
+| `Drop` and `drop` | deterministic destruction and explicit consumption |
+| `panic` | language trap |
+| `Option` and `Result` | `?` propagation |
+| `Iterator` | `for` protocol |
+| `Index` and `IndexMut` | indexing places/values |
+| `Eq` and `Ord` | generic equality and ordering operators |
+| `Num` | generic primitive numeric operators |
+| `size_of` and `align_of` | target-layout queries |
+
+All other APIs—including `Clone`, `Default`, `Display`, `Hash`, collection
+methods, string methods, math, and I/O—use ordinary name resolution, method
+selection, trait dispatch, or implementation-provided bodies. `HashMap` may
+require `Hash`, but that does not make `Hash` a syntax hook. User declarations
+with a hook's spelling never acquire hook behavior. C2.9 completes the target
+results of `size_of`/`align_of` and canonical package identity.
 
 ## Core Module (std::core)
 
