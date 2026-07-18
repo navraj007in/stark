@@ -705,7 +705,19 @@ Freeze a representative workload set containing at least:
 12. references, mutable references, and slices;
 13. a Drop-bearing nominal value passed through trait dispatch;
 14. an opaque host resource with deterministic Drop;
-15. basic file read/write through the proposed provider boundary.
+15. basic file read/write through the proposed provider boundary;
+16. a named function assigned to a typed function-value local (`fn(T) -> R`);
+17. a function value passed to another function and invoked indirectly;
+18. `Option::map` or `Result::map` called with a function value;
+19. a function value stored in a struct field (route-table shape);
+20. a cross-package function reference;
+21. a monomorphised generic function used as a function value, if Core permits it (if it does
+    not, record that boundary explicitly in the freeze rather than dropping the item).
+
+Items 16-21 exercise **existing frozen Core v1 capability** — non-capturing `fn(...) -> ...`
+function types (`03-Type-System.md`) with `Value::Function` runtime representation — not a
+future closure feature (CD-021). Any of them that fails against the current implementation is
+a new DEV entry surfaced before backend selection, which is the point of freezing them here.
 
 Define measurements:
 
@@ -812,6 +824,7 @@ Under CE3, define `STARKLANG/docs/compiler/mir.md` covering:
 - panic/trap abort paths;
 - source spans and provenance;
 - monomorphised versus generic representation;
+- function-value constants and indirect-call representation (CD-021);
 - validation invariants;
 - textual dump format and versioning.
 
@@ -842,6 +855,7 @@ Implement validation for:
 - move-before-use invariants expected at MIR level;
 - valid discriminant operations;
 - drop-flag consistency;
+- indirect-call signature consistency with the callee's function type (CD-021);
 - no unsupported instruction reaching a backend silently;
 - source/provenance availability.
 
@@ -878,6 +892,7 @@ Add:
 - strings/Vec/runtime calls;
 - ownership/drop elaboration;
 - panic/trap paths;
+- function values and indirect calls, with source provenance retained (CD-021);
 - multi-package symbol linkage.
 
 ### WP-C4.6 — Gate exit
@@ -911,6 +926,8 @@ Under CE4, specify:
 - strings and Vec representation;
 - `Option`/`Result` representation;
 - calling convention;
+- function-value (code-pointer) representation, indirect calling convention, cross-package
+  function-symbol identity, and function values stored in aggregates (CD-021);
 - symbol naming;
 - runtime allocation strategy;
 - drop glue;
@@ -1583,7 +1600,9 @@ Performance regression thresholds may be added only after stable baselines exist
 ### WP-C10.7 — Release decision
 
 A compiler-track completion release requires C0–C8 and the mandatory native path C3–C7 to be
-closed. Native Developer Preview and Native Systems Preview are permitted staged releases, but
+closed. It additionally requires that **every open deviation carries either an owning gate/WP
+or an explicitly recorded accepted-indefinitely disposition** — an open deviation with no
+owner blocks the release decision (CD-021). Native Developer Preview and Native Systems Preview are permitted staged releases, but
 they are not the end state of this roadmap. A build without the native Core backend may be
 published only as an internal snapshot, research preview, or explicitly incomplete pre-release.
 
@@ -1656,6 +1675,9 @@ Exit:
 - pure-STARK HTTP/1.1 routing
 - three working REST endpoints
 - no host-language business logic
+- documented trap-abort operational report: deliberately trigger one handler trap and record
+  what happens to in-flight connections, open resources, buffered output, and process state
+  (CD-021 — evidence input for any future fault-isolation proposal; no semantic change implied)
 ```
 
 P1 does not redefine Core conformance. It proves practical capability.

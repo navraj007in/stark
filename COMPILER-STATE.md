@@ -394,6 +394,32 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   decision log, conformance summary, gate exit summaries, open-deviation index, and the
   Issues 6-8 session record retained inline. Charter/roadmap edits under this entry are
   governance/bookkeeping repairs, not meaning changes to the extracted brief.
+- CD-021 [2026-07-19, owner-approved roadmap amendment — function-value native validation,
+  P1 trap report, release deviation sweep] Origin: an external-review debate established that
+  non-capturing `fn(...) -> ...` function types are **existing frozen Core v1 capability**
+  (`03-Type-System.md:198-200,999`; stdlib contract `06-Standard-Library.md:243-244,260-262,
+  663-666`; `interp.rs:260` `Value::Function(ItemId)`), not a future closure feature — so the
+  native path must validate them explicitly rather than leave them implicit. Three changes,
+  same style/class as CD-018's workload strengthening: (a) WP-C3.1's frozen workload gains
+  items 16-21 (typed function-value local; indirect invocation; `Option::map`/`Result::map`
+  with a function value; function value in a struct field; cross-package function reference;
+  monomorphised-generic function value with an explicit record-the-boundary fallback) — any
+  item failing against the current implementation becomes a DEV entry before backend
+  selection, deliberately; C4 gains explicit indirect-call ownership (WP-C4.1 MIR
+  function-value constants/indirect-call representation, WP-C4.3 indirect-call signature
+  verification, WP-C4.5 function-value lowering with provenance); WP-C5.1's runtime ABI list
+  gains function-value/code-pointer representation, indirect calling convention,
+  cross-package function-symbol identity, and function values in aggregates. (b) P1's exit
+  list (roadmap §4.2) and S5's requirements (`SYSTEMS-ROADMAP.md`) gain a documented
+  trap-abort operational report — deliberately trap one handler, record the effect on
+  in-flight connections/resources/buffered output/process state; evidence input for any
+  future fault-isolation proposal, explicitly no semantic change. (c) WP-C10.7 gains a
+  release-blocking deviation sweep: every open deviation needs an owning gate/WP or a
+  recorded accepted-indefinitely disposition. Related but not enacted here: the planned
+  paper-only "Callable ABI and Future Closure Compatibility Spike" memo (existing-capability
+  section + future-closure-compatibility section, outcomes GO/REVISE-ABI/
+  DEFER-ESCAPING-BORROWS/ANNOTATIONS-LIKELY/NO-CURRENT-DESIGN) remains a separate proposal to
+  be drafted before WP-C5.1; it is a recommendation, not yet approved work.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -702,3 +728,22 @@ of the updated workflow pending — tracked as the remaining CI blocker item in 
 FOLLOW-UP: owner decisions per WP-C3-ENTRY.md blockers 1-2 (six completeness rows, DEV-060);
 corpus freeze after DEV-060 disposition; one demonstrated green CI run.
 NEXT: WP-C3-ENTRY blocker closure; then C3-entry exit artifact; then WP-C3.1.
+
+### CD-021 roadmap amendment — 2026-07-19
+DONE: applied the owner-approved CD-021 amendment (see decision log): WP-C3.1 workload items
+16-21 (existing function-value capability), C4.1/C4.3/C4.5 indirect-call ownership, C5.1
+function-value ABI items, P1/S5 trap-abort operational report, WP-C10.7 release-blocking
+deviation sweep.
+FILES: STARKLANG/docs/compiler/COMPILER-ROADMAP.md,
+STARKLANG/docs/ecosystem/SYSTEMS-ROADMAP.md, COMPILER-STATE.md.
+RULES: none — no normative Core rule, compiler, or interpreter change; the workload items
+reference already-frozen `fn(...)` semantics.
+DECISIONS: CD-021 (owner-approved this session).
+EVIDENCE: spec/implementation citations verified by direct grep before recording
+(03-Type-System.md:198-200,999; 06-Standard-Library.md:243-244,260-262,663-666;
+interp.rs:260). No count/enumeration references to the C3.1 workload existed to go stale
+("at least:" phrasing confirmed).
+FOLLOW-UP: draft the "Callable ABI and Future Closure Compatibility Spike" proposal before
+WP-C5.1 (recommended during C3 spike work); WP-C3-ENTRY blockers unchanged and still open.
+NEXT: WP-C3-ENTRY blocker closure (six completeness rows, DEV-060, corpus freeze, green CI
+run); then C3-entry exit artifact; then WP-C3.1 with the 21-item workload.

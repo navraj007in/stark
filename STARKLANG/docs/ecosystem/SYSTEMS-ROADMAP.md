@@ -96,7 +96,10 @@ Requirements:
 - explicit JSON;
 - sequential blocking execution;
 - correct Drop and shutdown;
-- reproducible package/provider metadata.
+- reproducible package/provider metadata;
+- a documented trap-abort operational report (deliberately trap one handler; record the effect
+  on in-flight connections, open resources, buffered output, and process state — mirrors the
+  P1 exit requirement in `COMPILER-ROADMAP.md` §4.2, CD-021).
 
 This is the practical systems capability milestone.
 
