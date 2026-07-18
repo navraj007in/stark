@@ -29,6 +29,7 @@ those are non-core extensions, not part of Core v1.
 | `03-Type-System.md` | Types, ownership/borrowing, references-and-lifetimes rules, generics, coherence, numeric semantics |
 | `04-Semantic-Analysis.md` | Name resolution, borrow checking, exhaustiveness, definite assignment, error codes |
 | `CORE-V1-ABSTRACT-MACHINE.md` | Values, places, execution, moves, references, destruction, traps |
+| `CORE-V1-FUTURE-BOUNDARIES.md` | Reserved compatibility space, concurrency/FFI exclusions, extension isolation |
 | `05-Memory-Model.md` | Memory-safety guarantees and authority boundaries |
 | `06-Standard-Library.md` | Prelude, Option/Result, Vec/HashMap/String, Iterator, IO, math |
 | `07-Modules-and-Packages.md` | `mod`/`use`, visibility, `starkpkg.json` manifest |

@@ -2,8 +2,9 @@
 
 ## Introduction
 This document provides an overview of the complete STARK core language specification. The
-numbered source documents 00–07 plus `CORE-V1-ABSTRACT-MACHINE.md` in `docs/spec/` are
-normative for Core v1. The concise summary and generated combined artifacts are non-normative
+numbered source documents 00–07 plus `CORE-V1-ABSTRACT-MACHINE.md` and
+`CORE-V1-FUTURE-BOUNDARIES.md` in `docs/spec/` are normative for Core v1. The concise summary
+and generated combined artifacts are non-normative
 views, and compiler-governance ledgers under
 `docs/compiler/semantic-freeze/` are non-normative. The core language defines the
 general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and
@@ -99,6 +100,11 @@ Non-core language extensions live outside Core v1 and are optional. The
 tensor & model type system is specified in
 `docs/extensions/Tensor-Model-Types.md`; the remaining AI/ML surface is
 sketched in `docs/extensions/AI-Extensions.md`.
+
+### Future Boundaries ([CORE-V1-FUTURE-BOUNDARIES.md](./CORE-V1-FUTURE-BOUNDARIES.md))
+Defines the exclusions and compatibility space for capturing closures and explicit lifetimes,
+concurrency, native providers/FFI, metaprogramming, dynamic dispatch, reserved syntax, and
+extension isolation. These are boundaries, not implemented Core features.
 
 ## Core Language Features
 

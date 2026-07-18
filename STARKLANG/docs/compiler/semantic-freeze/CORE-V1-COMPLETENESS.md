@@ -1,6 +1,6 @@
 # Core v1 Completeness Inventory
 
-Status: **WP-C2.6 inventory complete; decisions updated through WP-C2.9 —
+Status: **WP-C2.6 inventory complete; decisions updated through WP-C2.10 —
 governance inventory, not normative semantics**
 Updated: 2026-07-18
 
@@ -65,7 +65,7 @@ cross-reference.
 | LEX-COMMENT-001 | How do line, nested block, and documentation comments tokenize and attach? | partial/specified | 01 §Comments | LEX-010; LEX-010 | medium/C2.11 | pending-owner-approval/none |
 | LEX-SPACE-001 | Which code points are whitespace? | complete/specified | 01 §Whitespace | LEX-011/U17; LEX-011/U17 | low/C2.11 | settled/DEV-017 |
 | LEX-TOKEN-001 | What precedence resolves overlapping lexical tokens? | complete/specified | 01 §Token Precedence | LEX-012/U17; LEX-012/U17 | high/C2.11 | settled/DEV-017 |
-| LEX-RESERVED-001 | Which future words are reserved and rejected as identifiers? | complete/prohibited | 01 §Reserved Tokens | LEX-013; LEX-013 | ecosystem-breaking/C2.10 | settled/none |
+| LEX-RESERVED-001 | Which future words are reserved and rejected as identifiers? | complete/prohibited | 01 §Reserved Tokens | LEX-013; LEX-013 | ecosystem-breaking/C2.11 | Q016 approved/none |
 | LEX-ERROR-001 | Which lexical failures are mandatory rejection conditions? | partial/specified | 01 §Lexical Errors | LEX-014/U17; none | medium/C2.11 | pending-owner-approval/DEV-017 |
 
 ## Grammar and parsing
@@ -235,11 +235,11 @@ cross-reference.
 | TRAP-CATEGORY-001 | Which failures are language traps, and how are host/process/resource failures excluded? | complete/specified | Abstract Machine §Trap Categories | none; none | high/C2.11 | Q017 approved/none |
 | LIMIT-RESOURCE-001 | How are allocation, stack, recursion, and host-resource exhaustion classified? | complete/specified | 07 §Implementation and Target Limits | none; none | high/C2.11 | Q017 approved/none |
 | LIMIT-COMPILER-001 | Which source, nesting, object, array, and package limits may implementations impose? | complete/specified | 07 §Implementation and Target Limits | none; none | high/C2.11 | Q017,Q019 approved/none |
-| FUTURE-SYNTAX-001 | Which tokens and grammar space are reserved for future Core editions? | partial/pending-classification | Future Boundaries §Reserved Syntax | LEX-001/U17; none | ecosystem-breaking/C2.10 | Q016 pending/DEV-017 |
-| FUTURE-CLOSURE-001 | What ownership boundary must future capturing closures preserve? | absent/pending-classification | Future Boundaries §Closures and Lifetimes | none; none | ecosystem-breaking/C2.10 | Q016 pending/none |
-| FUTURE-THREAD-001 | What single-threaded guarantees must remain valid if concurrency is added later? | contradictory/pending-classification | Future Boundaries §Concurrency | none; none | ecosystem-breaking/C2.10 | Q016 pending/none |
-| FUTURE-FFI-001 | What provenance, capability, ABI, and safety boundary applies to native providers/FFI? | absent/pending-classification | Future Boundaries §Native Extensions | none; none | ecosystem-breaking/C2.10 | Q016 pending/none |
-| EXT-ISOLATION-001 | How are post-v1 extensions prevented from silently changing Core v1 behavior? | absent/pending-classification | Future Boundaries §Extension Isolation | none; none | ecosystem-breaking/C2.10 | Q016 pending/none |
+| FUTURE-SYNTAX-001 | Which tokens and grammar space are reserved for future Core editions? | complete/specified | Future Boundaries §Reserved Syntax | LEX-001/U17; none | ecosystem-breaking/C2.11 | Q016 approved/DEV-017 |
+| FUTURE-CLOSURE-001 | What ownership boundary must future capturing closures preserve? | complete/specified | Future Boundaries §Closures and Lifetimes | none; none | ecosystem-breaking/C2.11 | Q016 approved/none |
+| FUTURE-THREAD-001 | What single-threaded guarantees must remain valid if concurrency is added later? | complete/specified | Future Boundaries §Concurrency | none; none | ecosystem-breaking/C2.11 | Q016 approved/none |
+| FUTURE-FFI-001 | What provenance, capability, ABI, and safety boundary applies to native providers/FFI? | complete/specified | Future Boundaries §Native Extensions | none; none | ecosystem-breaking/C2.11 | Q016 approved/none |
+| EXT-ISOLATION-001 | How are post-v1 extensions prevented from silently changing Core v1 behavior? | complete/specified | Future Boundaries §Extension Isolation | none; none | ecosystem-breaking/C2.11 | Q016 approved/none |
 
 ## Exit accounting
 

@@ -25,6 +25,7 @@ sources=(
   "$SPEC_DIR"/0[0-4]-*.md
   "$SPEC_DIR"/CORE-V1-ABSTRACT-MACHINE.md
   "$SPEC_DIR"/0[5-7]-*.md
+  "$SPEC_DIR"/CORE-V1-FUTURE-BOUNDARIES.md
 )
 for f in "${sources[@]}"; do
   base="$(basename "$f" .md)"

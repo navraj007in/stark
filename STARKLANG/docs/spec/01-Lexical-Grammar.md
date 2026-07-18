@@ -227,6 +227,11 @@ async, await, yield, where, macro, unsafe, extern, import, export, null,
 and, or, not, is, dyn
 ```
 
+**LEX-RESERVED-001.** Every spelling in this list tokenizes as a reserved
+keyword and is rejected wherever Core requires an identifier. An
+implementation may not treat an unused reserved word as an identifier or
+silently enable its future meaning.
+
 ## Lexical Analysis Rules
 
 1. **Maximal Munch**: Always match the longest possible token

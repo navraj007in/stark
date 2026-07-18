@@ -245,7 +245,8 @@ Specification Overview</h1>
 <h2 id="introduction">Introduction</h2>
 <p>This document provides an overview of the complete STARK core
 language specification. The numbered source documents 00–07 plus
-<code>CORE-V1-ABSTRACT-MACHINE.md</code> in <code>docs/spec/</code> are
+<code>CORE-V1-ABSTRACT-MACHINE.md</code> and
+<code>CORE-V1-FUTURE-BOUNDARIES.md</code> in <code>docs/spec/</code> are
 normative for Core v1. The concise summary and generated combined
 artifacts are non-normative views, and compiler-governance ledgers under
 <code>docs/compiler/semantic-freeze/</code> are non-normative. The core
@@ -357,6 +358,13 @@ The tensor &amp; model type system is specified in
 <code>docs/extensions/Tensor-Model-Types.md</code>; the remaining AI/ML
 surface is sketched in
 <code>docs/extensions/AI-Extensions.md</code>.</p>
+<h3 id="future-boundaries-core-v1-future-boundaries.md">Future
+Boundaries (<a
+href="./CORE-V1-FUTURE-BOUNDARIES.md">CORE-V1-FUTURE-BOUNDARIES.md</a>)</h3>
+<p>Defines the exclusions and compatibility space for capturing closures
+and explicit lifetimes, concurrency, native providers/FFI,
+metaprogramming, dynamic dispatch, reserved syntax, and extension
+isolation. These are boundaries, not implemented Core features.</p>
 <h2 id="core-language-features">Core Language Features</h2>
 <h3 id="variables-and-mutability">Variables and Mutability</h3>
 <pre class="stark"><code>let x = 42;             // Immutable by default
@@ -550,6 +558,10 @@ over identifiers 2. Longer operators take precedence over shorter ones
 Core v1 grammar production):</p>
 <pre><code>async, await, yield, where, macro, unsafe, extern, import, export, null,
 and, or, not, is, dyn</code></pre>
+<p><strong>LEX-RESERVED-001.</strong> Every spelling in this list
+tokenizes as a reserved keyword and is rejected wherever Core requires
+an identifier. An implementation may not treat an unused reserved word
+as an identifier or silently enable its future meaning.</p>
 <h2 id="lexical-analysis-rules">Lexical Analysis Rules</h2>
 <ol type="1">
 <li><strong>Maximal Munch</strong>: Always match the longest possible
@@ -4435,5 +4447,108 @@ Conformance A conforming Core v1 implementation MUST follow the
 requirements in this document. Any deviations or extensions MUST be
 explicitly documented by the implementation.</li>
 </ul>
+<hr />
+<h1 id="stark-core-v1-future-extension-boundaries">STARK Core v1
+Future-Extension Boundaries</h1>
+<h2 id="status-and-authority-2">Status and authority</h2>
+<p>This chapter is normative for Core v1. It defines compatibility
+constraints and exclusions, not features that a Core implementation must
+accept. Syntax or behavior described as future is rejected in Core v1
+unless an explicitly enabled, versioned extension owns it.</p>
+<h2 id="reserved-syntax-and-evolution">Reserved syntax and
+evolution</h2>
+<p><strong>FUTURE-SYNTAX-001.</strong> The reserved words in
+<code>01-Lexical-Grammar.md</code>, lifetime-token space,
+capturing-lambda delimiters, <code>dyn</code>, <code>unsafe</code>,
+<code>extern</code>, <code>async</code>/<code>await</code>, macro
+invocation and definition space, and attributes are unavailable to Core
+programs. A reserved word is rejected where an identifier is required
+even though Core assigns it no grammar production.</p>
+<p>A future Core edition or extension may assign these forms only under
+an explicit language edition or extension version. It may not
+reinterpret a token sequence that is valid Core v1 with different Core
+behavior. Unknown edition, extension, attribute, macro, or reserved
+syntax is rejected rather than ignored. Macros and compile-time code
+generation are not Core v1 and must not be introduced as an implicit
+substitute for package, dependency, or build tooling.</p>
+<h2 id="capturing-closures-and-explicit-lifetimes">Capturing closures
+and explicit lifetimes</h2>
+<p><strong>FUTURE-CLOSURE-001.</strong> Core v1 function values and
+<code>fn(...)</code> types are non-capturing. A future capturing
+callable model must distinguish at least:</p>
+<ul>
+<li>consumption on one call;</li>
+<li>mutation through exclusive callable access; and</li>
+<li>repeated calls through shared callable access.</li>
+</ul>
+<p>Capture analysis must classify each captured place as moved,
+shared-borrowed, or exclusive-borrowed; preserve the referent/provenance
+rules; and make the closure value’s own move, Copy eligibility, borrow
+region, and deterministic Drop behavior derive from its captures.
+Generic callable bounds may generalize today’s non-capturing function
+parameters, but every valid Core v1 <code>fn(...)</code> argument must
+retain its meaning and dispatch.</p>
+<p>Future explicit lifetime parameters may relax Core v1’s conservative
+lexical regions but may not accept a dangling reference or invalidate a
+currently valid reference. The reserved design space includes lifetime
+arguments, reference fields, variance, lifetime-bearing associated
+types, higher-ranked bounds, and explicit erasure at a native ABI
+boundary. Core v1 accepts none of that syntax and continues to prohibit
+declared reference fields and lifetime annotations.</p>
+<p>Trait objects and runtime vtables are also outside Core v1. A future
+object-safety and <code>dyn</code> design must coexist with static
+generic dispatch and cannot change an existing impl’s coherence, method
+priority, ownership, or destruction.</p>
+<h2 id="concurrency-boundary">Concurrency boundary</h2>
+<p><strong>FUTURE-THREAD-001.</strong> Core v1 program execution is
+single-threaded. Its ownership and borrowing rules prove aliasing and
+memory safety only for that execution model; Core makes no claim that
+all current types are safe to send or share between future threads.</p>
+<p>A concurrency extension must separately specify thread-safety marker
+obligations, atomics and memory ordering, synchronization, shared
+ownership, thread-local storage, scheduler/process observations,
+cross-thread destruction, failure/panic propagation, and concurrent
+native providers. It must preserve Core’s exactly-once evaluation and
+destruction for every execution it accepts and may not introduce a data
+race into a program accepted as safe.</p>
+<h2 id="native-providers-unsafe-code-and-ffi">Native providers, unsafe
+code, and FFI</h2>
+<p><strong>FUTURE-FFI-001.</strong> Core v1 exposes no public
+<code>unsafe</code>, raw pointer, general FFI, external
+calling-convention, or arbitrary dynamic-library interface. Host access
+occurs only through an approved native-provider boundary whose
+package/artifact metadata identifies:</p>
+<ul>
+<li>provider and artifact identity, origin, integrity hash, and
+version;</li>
+<li>the versioned ABI and supported targets;</li>
+<li>imported type/ownership/error contracts and provenance;</li>
+<li>required capabilities and host resources; and</li>
+<li>verification status and the safe Core wrapper surface.</li>
+</ul>
+<p>Provider internals may use host-unsafe mechanisms, but those
+mechanisms are not Core operations and cannot weaken Core memory safety,
+ownership, trap, or capability rules. Pure Core package capabilities
+must remain statically derivable from the resolved package/provider
+graph; a provider cannot acquire an undeclared capability through a
+spelling convention or runtime fallback.</p>
+<h2 id="extension-isolation">Extension isolation</h2>
+<p><strong>EXT-ISOLATION-001.</strong> Every post-v1 extension has a
+stable identifier and semantic version and is enabled explicitly in the
+package/build contract. Without that enablement, its syntax, types,
+builtins, prelude names, providers, and diagnostics are absent and
+extension constructs are rejected.</p>
+<p>An extension may add explicitly scoped syntax and semantics, but
+cannot silently change Core tokenization, name resolution, prelude
+contents, type identity, coherence, ownership, numeric results, standard
+hooks, package identity, process observations, or diagnostics for a
+source that uses only Core v1. Packages must declare required extensions
+and version constraints; unsupported or conflicting requirements reject
+resolution. There is no silent fallback from an extension operation to a
+Core approximation or host-specific behavior.</p>
+<h2 id="conformance-6">Conformance</h2>
+<p>A conforming Core v1 implementation must enforce these exclusions and
+isolation rules. It need not implement any future feature described
+here.</p>
 </body>
 </html>

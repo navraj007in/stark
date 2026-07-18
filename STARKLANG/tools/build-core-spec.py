@@ -17,6 +17,7 @@ SOURCES = [
     SPEC / "05-Memory-Model.md",
     SPEC / "06-Standard-Library.md",
     SPEC / "07-Modules-and-Packages.md",
+    SPEC / "CORE-V1-FUTURE-BOUNDARIES.md",
 ]
 COMBINED = SPEC / "STARK-Core-v1.md"
 

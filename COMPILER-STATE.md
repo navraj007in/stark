@@ -1,16 +1,16 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after WP-C2.9
+Updated: 2026-07-18 after WP-C2.10
 
 ## Position
-Gate: C2  Next: WP-C2.10  Blocked: none
+Gate: C2  Next: WP-C2.11  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: WP-C2.9 numeric, layout, text, process, and package contracts.
-- Transition base commit: `2ecc5c0` (`complete WP-C2.8 static semantics`).
-- Current committed head at the start of WP-C2.9: `2ecc5c0`. This event-style provenance avoids trying to
+- Last completed transition: WP-C2.10 future-extension compatibility boundaries.
+- Transition base commit: `b702a31` (`complete WP-C2.9 platform contracts`).
+- Current committed head at the start of WP-C2.10: `b702a31`. This event-style provenance avoids trying to
   embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -39,7 +39,8 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   recorded in `starkc/docs/dev/compiler-map.md` (WP-C0.1; not re-regenerated for the WP-C1.1/
   C1.2/C1.3 deltas — see that file's own scope note).
 - Core spec revision: `STARKLANG/docs/spec/` files 00-07 plus
-  `CORE-V1-ABSTRACT-MACHINE.md`, normative per `CLAUDE.md`. Spec fixture corpus:
+  `CORE-V1-ABSTRACT-MACHINE.md` and `CORE-V1-FUTURE-BOUNDARIES.md`, normative per
+  `CLAUDE.md`. Spec fixture corpus:
   `STARKLANG/tests/spec-fixtures/manifest.toml`, 112 entries (parse-pass 64,
   semantic-error 16, notation 27, lex-pass 4, parse-fail 1). WP-C2.7 removed 28 stale,
   duplicative memory-model examples and now contains 13 abstract-machine adversarial examples
@@ -308,6 +309,14 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   status/stream mappings. `core-min` is mandatory and `std-full` is optional but indivisible.
   Resource, compiler-limit, API-error, language-trap, and host/process failures are distinct.
   CORE-Q-005, Q008–Q014, Q017–Q019, Q021, Q023, and Q024 are approved; alignment remains C2.11.
+- CD-016 [2026-07-18, WP-C2.10] Approved CORE-Q-016 and the Core v1 future-extension
+  boundary. Core execution is safe and single-threaded; capturing closures, explicit lifetime
+  syntax/reference fields, trait objects, concurrency, macros, unsafe, and general FFI remain
+  outside Core. Future callables must preserve ownership/capture/Drop semantics. Host access is
+  limited to metadata-bound approved native providers with explicit identity, integrity, ABI,
+  target, provenance, capability, and verification. Extensions require explicit stable
+  identity/version enablement and cannot change Core-only behavior. No future feature is
+  implemented by this decision; C2.11 owns exclusion/isolation enforcement evidence.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -2325,3 +2334,37 @@ C2.11 retains alignment, diagnostic allocation, deviation closure, and granular 
 FOLLOW-UP: WP-C2.10 must freeze future closure/lifetime, threading, unsafe/FFI/native-provider,
 and reserved-syntax compatibility boundaries without implementing them.
 NEXT: WP-C2.10 (Future-extension compatibility boundaries)
+
+### WP-C2.10 — 2026-07-18
+DONE: Added the normative Core future-extension boundary and completed the semantic decision
+sequence before implementation alignment. Reserved edition/extension syntax; defined the
+ownership, capture, provenance, callable-capability, and Drop constraints for future closures;
+reserved compatible explicit-lifetime/reference-field and trait-object design space; scoped
+Core guarantees to safe single-threaded execution; enumerated future concurrency obligations;
+excluded public unsafe/general FFI/macros/compile-time generation; constrained host access to
+metadata-bound approved native providers; and required explicit versioned extension isolation
+that preserves every Core-only program.
+FILES: STARKLANG/docs/spec/CORE-V1-FUTURE-BOUNDARIES.md,
+STARKLANG/docs/spec/00-Core-Language-Overview.md,
+STARKLANG/docs/spec/01-Lexical-Grammar.md and regenerated combined Markdown/HTML/PDF;
+STARKLANG/tools/build-core-spec.py, STARKLANG/tools/extract-spec-examples.sh,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/docs/compiler/work-packages/WP-C2.10.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md, starkc/scripts/check-conformance.py,
+CLAUDE.md, COMPILER-STATE.md.
+RULES: `LEX-RESERVED-001`, `FUTURE-SYNTAX-001`, `FUTURE-CLOSURE-001`,
+`FUTURE-THREAD-001`, `FUTURE-FFI-001`, and `EXT-ISOLATION-001`.
+DECISIONS: CORE-Q-016 approved. No new public language feature or implementation behavior was
+introduced.
+EVIDENCE: DOC + fixture conformance + full regression. The combined builder and extractor now
+include the new normative chapter; it contains zero `stark` blocks, so the synchronized corpus
+remains 112 fixtures (64 parse-pass, 16 semantic-error, 27 notation, 4 lex-pass, 1 parse-fail)
+without renumbering. Combined Markdown/HTML/PDF regeneration succeeds (PDF: 89 A4 pages).
+`cargo test --workspace --all-targets --all-features` passes 489 tests with 0 failures and 2
+intentional opt-in tests ignored. Rust formatting, Clippy with warnings denied, conformance
+validation/report generation, Python compilation, governance-document parsing, fixture
+synchronization, and whitespace checks pass. No Rust compiler/interpreter behavior changed.
+FOLLOW-UP: WP-C2.11 must align every approved C2.7–C2.10 decision atomically with diagnostics,
+positive/negative evidence, granular conformance status, and deviation closure.
+NEXT: WP-C2.11 (Implementation alignment and adversarial conformance)

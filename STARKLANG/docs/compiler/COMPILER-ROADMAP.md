@@ -547,6 +547,10 @@ unsafe/FFI out of Core v1; host access uses approved native-provider interfaces 
 ABI, provenance, and capability metadata. Do not add macros or compile-time generation merely
 to compensate for package/build-tooling gaps.
 
+Completed on 2026-07-18. `CORE-V1-FUTURE-BOUNDARIES.md` freezes six compatibility/exclusion
+rules and approves `CORE-Q-016`. No future feature was implemented. C2.11 retains enforcement,
+alignment, diagnostics, and adversarial evidence.
+
 ### WP-C2.11 — Implementation alignment and adversarial conformance
 
 Implement the decisions approved by C2.6–C2.10. Each correction updates the normative source,
