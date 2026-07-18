@@ -685,7 +685,7 @@ Additionally:
 4. **No data races**: Borrowing rules prevent concurrent access violations
 5. **No memory leaks**: Automatic memory management through ownership
 
-## Type System Extensions (Future)
+## Informative Future Directions (Non-Normative)
 
 ### Lifetime Parameters
 ```stark
@@ -702,20 +702,5 @@ keyword.
 Lambda expressions that capture their environment are a future extension; the
 `fn(...)` function types in Core v1 are non-capturing.
 
-## Implementation Notes
-
-### Type Representation
-- Primitive types: Direct machine representation
-- Composite types: Laid out according to platform ABI
-- References: Pointers with compile-time tracking
-- Enums: Tagged unions with optimal layout
-
-### Type Checking Algorithm
-1. Parse source into AST
-2. Build symbol table with declarations
-3. Perform local type inference by unification within function bodies
-   (function signatures are fully annotated, so no global inference is needed)
-4. Check type constraints and ownership rules
-5. Generate type-annotated AST for code generation
 ## Conformance
 A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.

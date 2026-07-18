@@ -481,6 +481,12 @@ impact, owner, and approval state. Both compiler-governance documents remain non
 approved decisions must be transferred into their assigned normative homes. This WP inventories
 and assigns decisions; it does not make unrelated implementation changes.
 
+Completed on 2026-07-18. The full granular ledger and authority map are in
+`STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md`; unresolved decisions are in
+`CORE-V1-OPEN-QUESTIONS.md`; and the checked transition from all 59 legacy coverage rules is
+`STARKLANG/conformance/core-v1-rule-id-map.toml`. No C2.7–C2.11 semantic recommendation was
+approved or implemented.
+
 ### WP-C2.7 — Abstract machine and execution semantics
 
 Create `STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md`, defining values, objects, storage,

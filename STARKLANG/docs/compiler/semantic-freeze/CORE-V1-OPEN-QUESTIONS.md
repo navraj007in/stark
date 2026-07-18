@@ -1,6 +1,6 @@
 # Core v1 Open Questions
 
-Status: **WP-C2.6 skeleton — recommendations are not approved semantics**
+Status: **WP-C2.6 complete — semantic recommendations remain unapproved**
 Created by: Gate C2 semantic-freeze preflight, 2026-07-18
 
 This is a non-normative compiler-governance register. Pending recommendations have no effect on
@@ -19,7 +19,7 @@ Approval states are `pending`, `approved`, `rejected`, and `superseded`.
 
 | ID | Question | Urgency / delay cost | Recommended default | Material alternatives | Compatibility impact | Owner | Approval |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| CORE-Q-001 | Which document owns ownership legality, execution, memory guarantees, and layout? | Immediate; duplicate authority makes every later decision ambiguous. | Type System: legality; Abstract Machine: execution; Memory Model: safety summary; C2.9: observable layout. | Keep duplicate normative chapters; merge all into one chapter. | High documentation and implementation ambiguity if delayed. | C2.6/C2.7 | Pending |
+| CORE-Q-001 | Which document owns ownership legality, execution, memory guarantees, and layout? | Immediate; duplicate authority makes every later decision ambiguous. | Type System: legality; Abstract Machine: execution; Memory Model: safety summary; C2.9: observable layout. | Keep duplicate normative chapters; merge all into one chapter. | High documentation and implementation ambiguity if delayed. | C2.6 | Approved (governance only; see completeness authority map) |
 | CORE-Q-002 | Are type aliases transparent or nominal? | Before MIR type identity; late change breaks APIs and coherence. | Transparent aliases; distinct identity requires a distinct type declaration. | Nominal aliases; context-dependent aliases. | Ecosystem-breaking if changed later. | C2.8 | Pending |
 | CORE-Q-003 | Which recursive and unsized types are legal? | Before layout/MIR; late change alters well-formedness and ABI assumptions. | Require finite sized values; permit only explicitly supported unsized pointees behind references/views. | All generics implicitly sized; general structural unsized types. | High. | C2.8 | Pending |
 | CORE-Q-004 | What inference and normalization algorithm is normative? | Before a second frontend; implementation behavior otherwise becomes accidental law. | Deterministic local constraint solving with specified expected-type flow, defaulting, ambiguity rejection, and trait normalization. | Leave algorithm implementation-defined; global inference. | High source compatibility. | C2.8 | Pending |
@@ -38,10 +38,18 @@ Approval states are `pending`, `approved`, `rejected`, and `superseded`.
 | CORE-Q-015 | Which standard-library items are language hooks? | Before replacing interpreter builtins and stabilizing std. | Enumerate a minimal hook set; all other names use ordinary resolution and trait dispatch. | Recognize APIs by name broadly; make all hooks compiler intrinsics. | High library evolution cost. | C2.8/C2.9 | Pending |
 | CORE-Q-016 | What future boundary must Core v1 preserve? | Before closures, concurrency, and native providers constrain semantics. | Safe single-threaded Core; reserve ownership-aware capturing closures/lifetimes; unsafe/FFI stay non-Core; native providers declare ABI/provenance/capabilities. | Add concurrency/FFI now; leave future behavior unconstrained. | Ecosystem-breaking if delayed. | C2.10 | Pending |
 | CORE-Q-017 | How are resource exhaustion, implementation limits, host failures, and external termination classified? | Before interpreter/native differential comparison; host panics must not become accidental STARK traps. | Separately classify allocation failure, stack exhaustion, recursion/call-depth limits, object/array/source/package size limits, host I/O errors, OS termination, and other failures as specified, implementation-defined, target-defined, or outside language guarantees. Only explicitly specified cases are STARK traps. | Make all failures traps; leave all resource behavior outside the language; prescribe universal limits. | High runtime portability and diagnostics impact. | C2.7/C2.9 | Pending |
+| CORE-Q-018 | How is invalid source encoding diagnosed, and may a tool accept a transport encoding other than UTF-8? | Before lexer conformance is frozen. | Core source is UTF-8; an invalid byte sequence is a source rejection, while transcoding is outside the language. | Implementation-defined decoding; mandatory replacement characters. | High portability and tooling impact. | C2.9 | Pending |
+| CORE-Q-019 | Which source, identifier, nesting, tuple, array, object, and compilation limits are language-level? | Before edge-case suites accidentally canonize compiler limits. | Specify only semantic maxima; classify remaining finite implementation limits and require deterministic diagnostics where possible. | Universal fixed limits; entirely unbounded abstract limits. | Medium source compatibility, high denial-of-service impact. | C2.9 | Pending |
+| CORE-Q-020 | How do patterns bind ownership, test alternatives, run guards, and destroy partial bindings? | Before MIR match lowering and drop elaboration. | Define left-to-right tests, consistent binding modes across alternatives, guard-visible borrows, and explicit cleanup on failure. | Backend-defined order; prohibit guards and alternatives in Core. | Ecosystem-breaking soundness impact. | C2.7/C2.8 | Pending |
+| CORE-Q-021 | Which parser-recovery effects are observable or conformance-relevant? | Before diagnostic snapshots become accidental grammar requirements. | Acceptance/rejection and required diagnostic category are normative; recovery strategy and cascaded diagnostics are deliberately unspecified. | Fully specify recovery; make all diagnostics non-normative. | Low source compatibility, medium tooling impact. | C2.9 | Pending |
+| CORE-Q-022 | Which diagnostic identifiers and rejection categories are stable? | Before C2.11 assigns every negative rule test. | Allocate one collision-free catalog entry per normative rejection category; wording and secondary labels remain non-normative. | Stable wording; no stable identifiers. | Medium tooling compatibility. | C2.11 | Pending |
+| CORE-Q-023 | May a public signature expose a private item or a dependency item not publicly reachable? | Before package APIs and metadata are frozen. | Reject public APIs containing types that consumers cannot name through a public path. | Permit opaque display names; automatically re-export dependencies. | Ecosystem-breaking. | C2.9 | Pending |
+| CORE-Q-024 | What is the exact Core standard-library conformance profile, including `File` and host I/O? | Before interpreter/native profile claims can be compared. | Enumerate required profiles and APIs; host-dependent facilities use explicit availability and error contracts. | One universal profile; leave the whole library host-defined. | High deployment and ecosystem impact. | C2.9 | Pending |
 
 ## Known deviation links
 
-WP-C2.6 must link at least DEV-009, DEV-017, DEV-018, DEV-022, DEV-023, and DEV-024 to the
-corresponding questions and rule rows. DEV-005 and DEV-019 are C2.11 alignment work. DEV-036 is
-C2.12 harness work. Closed C2.2 deviations remain evidence unless a newly specified rule proves
-a residual mismatch.
+The completeness matrix links DEV-009, DEV-015, DEV-017, DEV-018, DEV-019, DEV-022, and
+DEV-024 to their owning questions and rows. DEV-005 and the remaining DEV-019 catalog work are
+C2.11 alignment items; DEV-036 is C2.12 harness work. DEV-023 is owned by C2.8/C2.11 through
+method/builtin evidence even where no semantic decision is required. Closed C2.2 deviations
+remain historical evidence unless a later normative rule proves a residual mismatch.

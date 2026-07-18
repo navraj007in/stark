@@ -8,12 +8,6 @@ and generated combined artifacts are non-normative views, and compiler-governanc
 general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and
 standard library). Non-core extensions are defined separately.
 
-**Maturity: normative draft.** Core v1 is the authoritative definition of the
-language, but it has not yet been validated by a conforming implementation.
-Until a reference lexer/parser/type-checker exists and every normative code
-example is machine-checked, readers should expect the spec to contain
-residual defects, and implementers should report ambiguities as spec bugs.
-
 ## Design Philosophy
 
 ### Core Principles
@@ -72,8 +66,8 @@ Memory safety through compile-time analysis:
 - **Move Semantics**: Explicit ownership transfer
 - **Borrowing System**: Immutable and mutable references
 - **Lifetime Tracking**: Reference validity guarantees
-- **Stack vs Heap**: Allocation strategy and layout
-- **Drop System**: Automatic and manual resource cleanup
+- **Allocation Independence**: Safety rules do not promise a physical allocation strategy
+- **Drop System**: Deterministic resource cleanup
 
 ### 6. Standard Library ([06-Standard-Library.md](./06-Standard-Library.md))
 Essential types and functions for practical programming:
@@ -131,40 +125,6 @@ fn mutate(s: &mut String) {
     s.push('!');
 }
 ```
-
-## Implementation Phases
-
-### Phase 1: Core MVP
-**Goal**: A complete, implementable Core v1
-- Lexer and parser for core syntax
-- Type checker with ownership analysis
-- Module system and import resolution
-- Minimal standard library
-
-### Phase 2: Tooling and Stability
-**Goal**: A stable core suitable for real use
-- Improved diagnostics and error recovery
-- Formatter and basic tooling support
-- Expanded standard library coverage
-
-## Success Criteria
-
-### Correctness
-- [ ] Memory safety enforced by ownership and borrowing
-- [ ] Deterministic type checking and inference
-- [ ] Exhaustive match checking
-
-### Developer Experience
-- [ ] Clear, actionable error messages
-- [ ] Predictable module and import rules
-- [ ] Stable core language surface
-
-## Next Steps
-
-1. **Finalize Core Grammar**: Resolve remaining ambiguities in syntax and lexing
-2. **Solidify Type Rules**: Confirm inference and trait constraints
-3. **Define Module Rules**: Ensure deterministic resolution and visibility
-4. **Validate Stdlib Surface**: Confirm minimal APIs and behaviors
 
 This specification provides a focused foundation for implementing a safe, performant, general-purpose language core.
 
@@ -862,7 +822,7 @@ Notes:
   relational operator; explicit generic arguments require the `::<` form
   (turbofish), so no lookahead disambiguation is required.
 
-## Grammar Extensions for Future Features
+## Informative Future Grammar Sketches (Non-Normative)
 Reserved grammar constructs for later implementation:
 ```ebnf
 // Async functions (future)
@@ -1570,7 +1530,7 @@ Additionally:
 4. **No data races**: Borrowing rules prevent concurrent access violations
 5. **No memory leaks**: Automatic memory management through ownership
 
-## Type System Extensions (Future)
+## Informative Future Directions (Non-Normative)
 
 ### Lifetime Parameters
 ```stark
@@ -1587,21 +1547,6 @@ keyword.
 Lambda expressions that capture their environment are a future extension; the
 `fn(...)` function types in Core v1 are non-capturing.
 
-## Implementation Notes
-
-### Type Representation
-- Primitive types: Direct machine representation
-- Composite types: Laid out according to platform ABI
-- References: Pointers with compile-time tracking
-- Enums: Tagged unions with optimal layout
-
-### Type Checking Algorithm
-1. Parse source into AST
-2. Build symbol table with declarations
-3. Perform local type inference by unification within function bodies
-   (function signatures are fully annotated, so no global inference is needed)
-4. Check type constraints and ownership rules
-5. Generate type-annotated AST for code generation
 ## Conformance
 A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.
 
@@ -2012,64 +1957,6 @@ error — see "Unreachable Code Detection" above.)
 - W0101: Non-PascalCase type
 - W0102: Missing documentation
 
-## Analysis Algorithm
-
-### Pass Order
-1. **Declaration Pass**: Collect all top-level declarations
-2. **Type Resolution Pass**: Resolve all type expressions
-3. **Type Inference Pass**: Infer types for expressions
-4. **Ownership Pass**: Check ownership and borrowing rules
-5. **Control Flow Pass**: Analyze control flow and reachability
-6. **Pattern Pass**: Check pattern exhaustiveness and types
-7. **Constraint Pass**: Validate trait constraints and bounds
-
-### Dependency Resolution
-- Forward references allowed for types and functions
-- Circular dependencies detected and reported
-- Initialization order determined for constants
-
-### Error Recovery
-- Continue analysis after errors when possible
-- Provide multiple related errors in single pass
-- Suggest fixes when unambiguous
-- Avoid cascading errors from single root cause
-
-## Implementation Considerations
-
-### Symbol Table Structure
-```rust
-struct SymbolTable {
-    symbols: HashMap<String, Symbol>,
-    parent: Option<&SymbolTable>,
-    children: Vec<SymbolTable>
-}
-
-enum Symbol {
-    Variable { ty: Type, mutable: bool, initialized: bool },
-    Function { params: Vec<Type>, return_ty: Type },
-    Type { definition: TypeDef },
-    Constant { ty: Type, value: Value }
-}
-```
-
-### Type Checking Context
-```rust
-struct TypeContext {
-    current_function: Option<FunctionId>,
-    expected_return_type: Option<Type>,
-    loop_depth: usize,
-    borrowed_values: HashMap<ValueId, BorrowInfo>
-}
-```
-
-### Error Collection
-```rust
-struct ErrorReporter {
-    errors: Vec<SemanticError>,
-    warnings: Vec<SemanticWarning>,
-    error_limit: usize
-}
-```
 ## Conformance
 A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.
 
@@ -2311,9 +2198,11 @@ fn valid(x: &Int32) -> &Int32 {
 }
 ```
 
-## Memory Management Strategies
+## Informative Allocation Examples (Non-Normative)
 
-### Stack vs Heap Decision
+These examples illustrate possible implementation strategies. Core v1 does not promise stack,
+heap, pointer, reference-count, or physical-layout representation.
+
 ```stark
 // Stack allocated (small, known size)
 let point = Point { x: 1.0, y: 2.0 };
@@ -2325,7 +2214,6 @@ let vector: Vec<Int32> = Vec::new();
 let boxed = Box::new(large_object);
 ```
 
-### Reference Counting (Rc/Arc)
 ```stark
 // Single-threaded reference counting (future feature)
 let data = Rc::new(v);
@@ -2435,15 +2323,16 @@ let p2 = p1;                // p1 moved to p2
 // println(p1.name.as_str());  // Error: p1 no longer valid
 ```
 
-## Smart Pointers
+## Informative Smart-Pointer Examples (Non-Normative)
 
-### Box<T> - Heap Allocation
+`Box`, `Rc`, and `RefCell` representation and future availability are not defined by this
+chapter. Required library contracts, if any, belong in `06-Standard-Library.md`.
+
 ```stark
 let boxed_int = Box::new(42);
 let large_array = Box::new([0; 1000]);  // Allocate large array on heap
 ```
 
-### Rc<T> - Reference Counting (Future)
 ```stark
 let data = Rc::new(some_value);
 let reference1 = data.clone();   // Increment reference count
@@ -2451,7 +2340,6 @@ let reference2 = data.clone();   // Increment reference count
 // Data deallocated when all references dropped
 ```
 
-### RefCell<T> - Interior Mutability (Future)
 ```stark
 let data = RefCell::new(42);
 {
@@ -2478,51 +2366,7 @@ Some checks remain at runtime:
   in 03-Type-System.md)
 - RefCell borrow checking (future feature)
 
-## Performance Considerations
-
-### Zero-Cost Abstractions
-- Ownership and borrowing have no runtime cost
-- References are just pointers
-- Move semantics avoid unnecessary copies
-
-### Optimization Opportunities
-- Dead code elimination for unused values
-- Lifetime optimization to reduce copies
-- Stack allocation for values that do not escape
-
-### Memory Layout Optimization
-- Struct field reordering to minimize padding
-- Enum layout optimization for tagged unions
-- Array and slice bounds check elimination
-
-## Implementation Notes
-
-### Compiler Phases
-1. **Ownership Analysis**: Track value ownership through program
-2. **Borrow Checking**: Validate borrowing rules
-3. **Lifetime Inference**: Determine reference lifetimes
-4. **Drop Insertion**: Insert drop calls at scope exits
-5. **Memory Layout**: Determine stack vs heap allocation
-
-### Error Messages
-```
-Error: borrow of moved value
-  --> example.stark:10:5
-   |
- 8 |     let s1 = String::from("hello");
-   |         -- move occurs because `s1` has type `String`
- 9 |     let s2 = s1;
-   |              -- value moved here
-10 |     println(s1.as_str());
-   |             ^^ value borrowed here after move
-```
-
-### Integration with Type System
-- Ownership information included in type signatures
-- Borrowing constraints encoded in function types
-- Lifetime parameters for generic functions (future)
-
-## Future Extensions
+## Informative Future Directions (Non-Normative)
 
 ### Advanced Features
 - Lifetime parameters and annotations
@@ -3153,26 +2997,13 @@ Items in *neither* profile (informative future work, not required for any
 Core v1 conformance claim): buffered IO, regular expressions, time/date,
 threads and concurrency primitives, `Rc`/`Arc`/`RefCell`.
 
-## Platform Considerations
+## Informative Platform Considerations (Non-Normative)
 
 ### Cross-platform Abstractions
 - File path handling
 - Directory operations
 - Environment variables
 - Process spawning (future)
-
-### Performance Notes
-- Vec<T> uses exponential growth strategy
-- HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with Robin
-  Hood hashing) is implementation-defined; whatever strategy is chosen must
-  still present entries in first-insertion order when iterated (see
-  "Iteration Order" under the HashMap/HashSet section above, normative) — an
-  open-addressing hash-table layout does not exempt an implementation from
-  that requirement, and typically needs a side channel (e.g. a parallel
-  insertion-order list, as most "ordered map" implementations use) to
-  satisfy it efficiently.
-- String operations are UTF-8 aware
-- Iterator chains compile to efficient loops
 
 ## Behavioral Requirements (Core v1)
 - Indexing `Vec<T>` with `[]` MUST perform bounds checking and MUST trap on out-of-bounds access.
@@ -3350,7 +3181,3 @@ use std::collections::Vec;
 - Ambiguous imports are a compile-time error unless aliased.
 ## Conformance
 A conforming Core v1 implementation MUST follow the requirements in this document. Any deviations or extensions MUST be explicitly documented by the implementation.
-
-
----
-

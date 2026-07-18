@@ -2,11 +2,13 @@
 import re
 import sys
 import os
+import tomllib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from conformance_lib import parse_toml  # noqa: E402
 
 DEVIATION_ID_RE = re.compile(r'^DEV-\d+$')
+GRANULAR_ROW_RE = re.compile(r'^\| ([A-Z][A-Z0-9-]*-\d{3}) \|', re.MULTILINE)
 
 
 def validate_evidence_entry(entry, conformance_dir, rule_id, field_name, errors):
@@ -45,6 +47,105 @@ def main():
     valid_statuses = {'implemented', 'partial', 'missing', 'intentionally-deferred', 'spec-defect'}
     errors = []
     warnings = []
+
+    # WP-C2.6: validate the transitional split from every broad legacy rule to stable granular
+    # semantic-freeze inventory IDs. The map deliberately does not copy implementation status;
+    # C2.11 must attach evidence and status at granular resolution.
+    map_path = os.path.join(
+        conformance_dir, 'STARKLANG', 'conformance', 'core-v1-rule-id-map.toml'
+    )
+    inventory_path = os.path.join(
+        conformance_dir,
+        'STARKLANG',
+        'docs',
+        'compiler',
+        'semantic-freeze',
+        'CORE-V1-COMPLETENESS.md',
+    )
+    if not os.path.exists(map_path):
+        errors.append(f"Granular rule map not found at {map_path}.")
+    if not os.path.exists(inventory_path):
+        errors.append(f"Completeness inventory not found at {inventory_path}.")
+    if os.path.exists(map_path) and os.path.exists(inventory_path):
+        with open(map_path, 'rb') as f:
+            split_map = tomllib.load(f)
+        with open(inventory_path, 'r', encoding='utf-8') as f:
+            inventory_content = f.read()
+
+        inventory_ids = GRANULAR_ROW_RE.findall(inventory_content)
+        inventory_id_set = set(inventory_ids)
+        if len(inventory_ids) != len(inventory_id_set):
+            duplicates = sorted(
+                rule_id for rule_id in inventory_id_set if inventory_ids.count(rule_id) > 1
+            )
+            errors.append(f"Duplicate granular inventory IDs: {', '.join(duplicates)}.")
+
+        legacy_entries = split_map.get('legacy', [])
+        mapped_legacy_ids = [entry.get('id') for entry in legacy_entries]
+        coverage_ids = [rule.get('id') for rule in rules]
+        for legacy_id in sorted(set(mapped_legacy_ids)):
+            if mapped_legacy_ids.count(legacy_id) > 1:
+                errors.append(f"Legacy rule '{legacy_id}' occurs more than once in split map.")
+        missing_legacy = sorted(set(coverage_ids) - set(mapped_legacy_ids))
+        unknown_legacy = sorted(set(mapped_legacy_ids) - set(coverage_ids))
+        if missing_legacy:
+            errors.append(f"Legacy rules missing from split map: {', '.join(missing_legacy)}.")
+        if unknown_legacy:
+            errors.append(f"Unknown legacy rules in split map: {', '.join(unknown_legacy)}.")
+
+        for entry in legacy_entries:
+            legacy_id = entry.get('id', '<missing>')
+            granular = entry.get('granular')
+            if not isinstance(granular, list) or not granular:
+                errors.append(f"Legacy rule {legacy_id} has no granular ID list.")
+                continue
+            unknown_granular = sorted(set(granular) - inventory_id_set)
+            if unknown_granular:
+                errors.append(
+                    f"Legacy rule {legacy_id} maps to unknown granular IDs: "
+                    f"{', '.join(unknown_granular)}."
+                )
+
+        questions_path = os.path.join(
+            conformance_dir,
+            'STARKLANG',
+            'docs',
+            'compiler',
+            'semantic-freeze',
+            'CORE-V1-OPEN-QUESTIONS.md',
+        )
+        deviations_path = os.path.join(
+            conformance_dir, 'starkc', 'docs', 'conformance', 'KNOWN-DEVIATIONS.md'
+        )
+        if not os.path.exists(questions_path):
+            errors.append(f"Open-question register not found at {questions_path}.")
+        else:
+            with open(questions_path, 'r', encoding='utf-8') as f:
+                question_content = f.read()
+            known_questions = set(re.findall(r'CORE-Q-(\d{3}[A-Z]?)', question_content))
+            used_questions = set(re.findall(r'\bQ(\d{3}[A-Z]?)\b', inventory_content))
+            unknown_questions = sorted(used_questions - known_questions)
+            if unknown_questions:
+                errors.append(
+                    "Completeness inventory references unknown questions: "
+                    + ', '.join(f"CORE-Q-{qid}" for qid in unknown_questions)
+                    + "."
+                )
+
+        if not os.path.exists(deviations_path):
+            errors.append(f"Known-deviation ledger not found at {deviations_path}.")
+        else:
+            with open(deviations_path, 'r', encoding='utf-8') as f:
+                deviation_content = f.read()
+            known_deviations = set(re.findall(r'^## (DEV-\d+)\b', deviation_content, re.MULTILINE))
+            used_deviations = set(re.findall(r'\bDEV-\d+\b', inventory_content))
+            unknown_deviations = sorted(used_deviations - known_deviations)
+            if unknown_deviations:
+                errors.append(
+                    "Completeness inventory references unknown deviations: "
+                    + ', '.join(unknown_deviations)
+                    + "."
+                )
 
     # WP-C0.3: valid chapter identifiers are derived from the real spec directory, not a
     # hardcoded list, so a renamed/removed spec file is caught automatically.

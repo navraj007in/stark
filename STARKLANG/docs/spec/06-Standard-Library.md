@@ -615,26 +615,13 @@ Items in *neither* profile (informative future work, not required for any
 Core v1 conformance claim): buffered IO, regular expressions, time/date,
 threads and concurrency primitives, `Rc`/`Arc`/`RefCell`.
 
-## Platform Considerations
+## Informative Platform Considerations (Non-Normative)
 
 ### Cross-platform Abstractions
 - File path handling
 - Directory operations
 - Environment variables
 - Process spawning (future)
-
-### Performance Notes
-- Vec<T> uses exponential growth strategy
-- HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with Robin
-  Hood hashing) is implementation-defined; whatever strategy is chosen must
-  still present entries in first-insertion order when iterated (see
-  "Iteration Order" under the HashMap/HashSet section above, normative) — an
-  open-addressing hash-table layout does not exempt an implementation from
-  that requirement, and typically needs a side channel (e.g. a parallel
-  insertion-order list, as most "ordered map" implementations use) to
-  satisfy it efficiently.
-- String operations are UTF-8 aware
-- Iterator chains compile to efficient loops
 
 ## Behavioral Requirements (Core v1)
 - Indexing `Vec<T>` with `[]` MUST perform bounds checking and MUST trap on out-of-bounds access.

@@ -233,9 +233,11 @@ fn valid(x: &Int32) -> &Int32 {
 }
 ```
 
-## Memory Management Strategies
+## Informative Allocation Examples (Non-Normative)
 
-### Stack vs Heap Decision
+These examples illustrate possible implementation strategies. Core v1 does not promise stack,
+heap, pointer, reference-count, or physical-layout representation.
+
 ```stark
 // Stack allocated (small, known size)
 let point = Point { x: 1.0, y: 2.0 };
@@ -247,7 +249,6 @@ let vector: Vec<Int32> = Vec::new();
 let boxed = Box::new(large_object);
 ```
 
-### Reference Counting (Rc/Arc)
 ```stark
 // Single-threaded reference counting (future feature)
 let data = Rc::new(v);
@@ -357,15 +358,16 @@ let p2 = p1;                // p1 moved to p2
 // println(p1.name.as_str());  // Error: p1 no longer valid
 ```
 
-## Smart Pointers
+## Informative Smart-Pointer Examples (Non-Normative)
 
-### Box<T> - Heap Allocation
+`Box`, `Rc`, and `RefCell` representation and future availability are not defined by this
+chapter. Required library contracts, if any, belong in `06-Standard-Library.md`.
+
 ```stark
 let boxed_int = Box::new(42);
 let large_array = Box::new([0; 1000]);  // Allocate large array on heap
 ```
 
-### Rc<T> - Reference Counting (Future)
 ```stark
 let data = Rc::new(some_value);
 let reference1 = data.clone();   // Increment reference count
@@ -373,7 +375,6 @@ let reference2 = data.clone();   // Increment reference count
 // Data deallocated when all references dropped
 ```
 
-### RefCell<T> - Interior Mutability (Future)
 ```stark
 let data = RefCell::new(42);
 {
@@ -400,51 +401,7 @@ Some checks remain at runtime:
   in 03-Type-System.md)
 - RefCell borrow checking (future feature)
 
-## Performance Considerations
-
-### Zero-Cost Abstractions
-- Ownership and borrowing have no runtime cost
-- References are just pointers
-- Move semantics avoid unnecessary copies
-
-### Optimization Opportunities
-- Dead code elimination for unused values
-- Lifetime optimization to reduce copies
-- Stack allocation for values that do not escape
-
-### Memory Layout Optimization
-- Struct field reordering to minimize padding
-- Enum layout optimization for tagged unions
-- Array and slice bounds check elimination
-
-## Implementation Notes
-
-### Compiler Phases
-1. **Ownership Analysis**: Track value ownership through program
-2. **Borrow Checking**: Validate borrowing rules
-3. **Lifetime Inference**: Determine reference lifetimes
-4. **Drop Insertion**: Insert drop calls at scope exits
-5. **Memory Layout**: Determine stack vs heap allocation
-
-### Error Messages
-```
-Error: borrow of moved value
-  --> example.stark:10:5
-   |
- 8 |     let s1 = String::from("hello");
-   |         -- move occurs because `s1` has type `String`
- 9 |     let s2 = s1;
-   |              -- value moved here
-10 |     println(s1.as_str());
-   |             ^^ value borrowed here after move
-```
-
-### Integration with Type System
-- Ownership information included in type signatures
-- Borrowing constraints encoded in function types
-- Lifetime parameters for generic functions (future)
-
-## Future Extensions
+## Informative Future Directions (Non-Normative)
 
 ### Advanced Features
 - Lifetime parameters and annotations

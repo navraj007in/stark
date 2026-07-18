@@ -8,12 +8,6 @@ and generated combined artifacts are non-normative views, and compiler-governanc
 general-purpose language surface (lexing, syntax, types, semantics, memory, modules, and
 standard library). Non-core extensions are defined separately.
 
-**Maturity: normative draft.** Core v1 is the authoritative definition of the
-language, but it has not yet been validated by a conforming implementation.
-Until a reference lexer/parser/type-checker exists and every normative code
-example is machine-checked, readers should expect the spec to contain
-residual defects, and implementers should report ambiguities as spec bugs.
-
 ## Design Philosophy
 
 ### Core Principles
@@ -72,8 +66,8 @@ Memory safety through compile-time analysis:
 - **Move Semantics**: Explicit ownership transfer
 - **Borrowing System**: Immutable and mutable references
 - **Lifetime Tracking**: Reference validity guarantees
-- **Stack vs Heap**: Allocation strategy and layout
-- **Drop System**: Automatic and manual resource cleanup
+- **Allocation Independence**: Safety rules do not promise a physical allocation strategy
+- **Drop System**: Deterministic resource cleanup
 
 ### 6. Standard Library ([06-Standard-Library.md](./06-Standard-Library.md))
 Essential types and functions for practical programming:
@@ -131,40 +125,6 @@ fn mutate(s: &mut String) {
     s.push('!');
 }
 ```
-
-## Implementation Phases
-
-### Phase 1: Core MVP
-**Goal**: A complete, implementable Core v1
-- Lexer and parser for core syntax
-- Type checker with ownership analysis
-- Module system and import resolution
-- Minimal standard library
-
-### Phase 2: Tooling and Stability
-**Goal**: A stable core suitable for real use
-- Improved diagnostics and error recovery
-- Formatter and basic tooling support
-- Expanded standard library coverage
-
-## Success Criteria
-
-### Correctness
-- [ ] Memory safety enforced by ownership and borrowing
-- [ ] Deterministic type checking and inference
-- [ ] Exhaustive match checking
-
-### Developer Experience
-- [ ] Clear, actionable error messages
-- [ ] Predictable module and import rules
-- [ ] Stable core language surface
-
-## Next Steps
-
-1. **Finalize Core Grammar**: Resolve remaining ambiguities in syntax and lexing
-2. **Solidify Type Rules**: Confirm inference and trait constraints
-3. **Define Module Rules**: Ensure deterministic resolution and visibility
-4. **Validate Stdlib Surface**: Confirm minimal APIs and behaviors
 
 This specification provides a focused foundation for implementing a safe, performant, general-purpose language core.
 

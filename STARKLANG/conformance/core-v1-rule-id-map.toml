@@ -1,0 +1,194 @@
+# WP-C2.6 transition map from the original broad coverage IDs to the granular
+# semantic-freeze inventory. This file does not transfer the legacy implementation
+# status to any granular rule. C2.11 must classify positive/negative evidence and
+# assign final conformance status per granular ID.
+
+[meta]
+schema = 1
+legacy_coverage = "STARKLANG/conformance/core-v1-coverage.toml"
+inventory = "STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md"
+owner = "WP-C2.11"
+
+[[legacy]]
+id = "LEX-001"
+granular = ["LEX-KEYWORD-001", "LEX-RESERVED-001", "FUTURE-SYNTAX-001"]
+[[legacy]]
+id = "LEX-002"
+granular = ["LEX-IDENT-001", "LEX-IDENT-002"]
+[[legacy]]
+id = "LEX-003"
+granular = ["LEX-INT-001", "LEX-INT-002"]
+[[legacy]]
+id = "LEX-004"
+granular = ["LEX-FLOAT-001"]
+[[legacy]]
+id = "LEX-005"
+granular = ["LEX-STRING-001", "LEX-ESCAPE-001"]
+[[legacy]]
+id = "LEX-006"
+granular = ["LEX-CHAR-001"]
+[[legacy]]
+id = "LEX-007"
+granular = ["LEX-BOOL-001"]
+[[legacy]]
+id = "LEX-008"
+granular = ["LEX-OP-001", "LEX-TOKEN-001"]
+[[legacy]]
+id = "LEX-009"
+granular = ["LEX-DELIM-001", "LEX-TOKEN-001"]
+[[legacy]]
+id = "LEX-010"
+granular = ["LEX-COMMENT-001"]
+[[legacy]]
+id = "LEX-011"
+granular = ["LEX-SPACE-001"]
+[[legacy]]
+id = "LEX-012"
+granular = ["LEX-TOKEN-001"]
+[[legacy]]
+id = "LEX-013"
+granular = ["FUTURE-SYNTAX-001"]
+[[legacy]]
+id = "LEX-014"
+granular = ["LEX-ERROR-001"]
+
+[[legacy]]
+id = "SYN-001"
+granular = ["SYN-PROGRAM-001", "MOD-DECL-001"]
+[[legacy]]
+id = "SYN-002"
+granular = ["SYN-VIS-001"]
+[[legacy]]
+id = "SYN-003"
+granular = ["SYN-FN-001"]
+[[legacy]]
+id = "SYN-004"
+granular = ["SYN-DATA-001"]
+[[legacy]]
+id = "SYN-005"
+granular = ["SYN-DATA-001"]
+[[legacy]]
+id = "SYN-006"
+granular = ["SYN-DATA-001", "TRAIT-DEF-001"]
+[[legacy]]
+id = "SYN-007"
+granular = ["SYN-DATA-001", "TRAIT-DEF-001"]
+[[legacy]]
+id = "SYN-008"
+granular = ["SYN-ALIAS-001"]
+[[legacy]]
+id = "SYN-009"
+granular = ["SYN-CONST-001"]
+[[legacy]]
+id = "SYN-010"
+granular = ["SYN-LET-001"]
+[[legacy]]
+id = "SYN-011"
+granular = ["SYN-BLOCK-001", "SYN-PLACE-001"]
+[[legacy]]
+id = "SYN-012"
+granular = ["SYN-CONTROL-001", "SYN-PATTERN-001"]
+[[legacy]]
+id = "SYN-013"
+granular = ["SYN-EXPR-001", "SYN-PATH-001", "SYN-LITERAL-001", "SYN-GUARD-001", "SYN-SPLIT-001"]
+
+[[legacy]]
+id = "TYP-001"
+granular = ["TYPE-PRIM-001", "NUM-INT-TYPE-001", "NUM-FLOAT-FORMAT-001", "TEXT-CHAR-001"]
+[[legacy]]
+id = "TYP-002"
+granular = ["TYPE-PRIM-001", "TYPE-WF-001"]
+[[legacy]]
+id = "TYP-003"
+granular = ["TYPE-NOMINAL-001"]
+[[legacy]]
+id = "TYP-004"
+granular = ["TYPE-PRIM-001", "OWN-BORROW-001", "OWN-REGION-001"]
+[[legacy]]
+id = "TYP-005"
+granular = ["TYPE-GENERIC-001"]
+[[legacy]]
+id = "TYP-006"
+granular = ["TRAIT-DEF-001", "TRAIT-COHERENCE-001", "TRAIT-COHERENCE-002"]
+[[legacy]]
+id = "TYP-007"
+granular = ["TYPE-INFER-001", "TYPE-INFER-002"]
+[[legacy]]
+id = "TYP-008"
+granular = ["TYPE-COERCE-001", "TYPE-COERCE-002", "TYPE-COERCE-003", "TYPE-COERCE-004", "TYPE-CAST-001"]
+
+[[legacy]]
+id = "SEM-001"
+granular = ["NAME-SCOPE-001", "NAME-SHADOW-001", "NAME-RESOLVE-001", "MOD-VIS-001"]
+[[legacy]]
+id = "SEM-002"
+granular = ["TYPE-METHOD-001", "TYPE-METHOD-002", "TRAIT-ASSOC-001", "TRAIT-COHERENCE-001", "TRAIT-COHERENCE-002"]
+[[legacy]]
+id = "SEM-003"
+granular = ["CONST-DECL-001", "CONST-SUBSET-001", "CONST-FAIL-001"]
+[[legacy]]
+id = "SEM-004"
+granular = ["FLOW-RETURN-001"]
+[[legacy]]
+id = "SEM-005"
+granular = ["FLOW-LOOP-001", "TYPE-LOOP-001"]
+[[legacy]]
+id = "SEM-006"
+granular = ["PAT-EXHAUST-001", "PAT-USEFUL-001"]
+[[legacy]]
+id = "SEM-007"
+granular = ["TRAIT-COHERENCE-001", "TRAIT-COHERENCE-002"]
+
+[[legacy]]
+id = "MEM-001"
+granular = ["OWN-MOVE-001"]
+[[legacy]]
+id = "MEM-002"
+granular = ["OWN-COPY-001"]
+[[legacy]]
+id = "MEM-003"
+granular = ["OWN-BORROW-001"]
+[[legacy]]
+id = "MEM-004"
+granular = ["OWN-REGION-001", "OWN-RETURN-001", "OWN-CARRY-001"]
+[[legacy]]
+id = "MEM-005"
+granular = ["OWN-RETURN-001"]
+[[legacy]]
+id = "MEM-006"
+granular = ["DROP-EXACT-001", "DROP-ORDER-001", "DROP-ABORT-001"]
+
+[[legacy]]
+id = "STD-001"
+granular = ["STD-PRELUDE-001"]
+[[legacy]]
+id = "STD-002"
+granular = ["STD-FORMAT-001"]
+[[legacy]]
+id = "STD-003"
+granular = ["STD-ITER-001", "STD-VEC-001", "STD-HASH-001", "TEXT-UTF8-001", "TEXT-INDEX-001", "TEXT-BOUNDARY-001"]
+[[legacy]]
+id = "STD-004"
+granular = ["STD-HOOK-001", "STD-TRAIT-001"]
+[[legacy]]
+id = "STD-005"
+granular = ["STD-MATH-001", "STD-RANDOM-001", "STD-IO-001"]
+
+[[legacy]]
+id = "PKG-001"
+granular = ["MOD-DECL-001", "MOD-PATH-001"]
+[[legacy]]
+id = "PKG-002"
+granular = ["MOD-PATH-001"]
+[[legacy]]
+id = "PKG-003"
+granular = ["MOD-VIS-001", "MOD-REEXPORT-001"]
+[[legacy]]
+id = "PKG-004"
+granular = ["MOD-FILE-001"]
+[[legacy]]
+id = "PKG-005"
+granular = ["PKG-MANIFEST-001"]
+[[legacy]]
+id = "PKG-006"
+granular = ["PKG-RESOLVE-001", "PKG-VERSION-001", "PKG-CYCLE-001", "PKG-MULTIVER-001", "PKG-LOCK-001"]

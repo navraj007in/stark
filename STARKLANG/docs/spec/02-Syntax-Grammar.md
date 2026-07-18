@@ -451,7 +451,7 @@ Notes:
   relational operator; explicit generic arguments require the `::<` form
   (turbofish), so no lookahead disambiguation is required.
 
-## Grammar Extensions for Future Features
+## Informative Future Grammar Sketches (Non-Normative)
 Reserved grammar constructs for later implementation:
 ```ebnf
 // Async functions (future)

@@ -173,8 +173,8 @@ impact, workaround, proposed disposition, owning future gate.
   non-`Copy`, non-`Clone` runtime resource type (`File` would be the first of its kind — `Vec`/
   `String`/`HashMap`/`HashSet` are all currently `Clone`-able Rust types wrapped as `Value`
   variants). This is a real interpreter-value-model design question, not a small patch.
-- **Owning gate:** not currently scheduled in C0-C2; candidate for WP-C2.2 (interpreter semantic
-  repair) if judged in scope, otherwise needs a dedicated follow-up WP.
+- **Owning gate:** WP-C2.9 decides the Core I/O/profile/process contract; WP-C2.11 implements
+  and evidences the approved contract. C2.6 inventory row `STD-IO-001`.
 
 ## DEV-010 — LSP hover/definition/references are protocol stubs
 
@@ -378,10 +378,9 @@ in WP-C1.6)
   WP-C1.6's effort budget, a real scope tradeoff rather than an oversight. The generator reports
   these 39 explicitly as "unclassified," which is itself new, precise signal (previously only a
   vague "some rules" note existed anywhere).
-- **Proposed disposition:** no dedicated future WP needed — the natural path is for each WP that
-  touches a chapter's rules to also re-cite them at this precision as part of that WP's own
-  work, using the schema/tooling this WP built.
-- **Owning gate:** WP-C1.6 (tooling closed); remaining 39-rule gap unscheduled.
+- **Proposed disposition:** the C2.6 granular split map prevents broad legacy status from being
+  copied forward. C2.11 re-cites and classifies positive/negative evidence per granular rule.
+- **Owning gate:** WP-C1.6 tooling is closed; the remaining evidence gap is WP-C2.11.
 
 ## DEV-018 — AST span-integrity checking was entirely absent (partially closed)
 
@@ -400,12 +399,10 @@ in WP-C1.6)
 - **Security/soundness impact:** none identified; primarily relevant to future tooling
   correctness (e.g. LSP position lookups, DEV-010) rather than compiled-program behavior.
 - **Workaround:** none needed for the checked subset.
-- **Proposed disposition:** build the full generic, position-indexed AST walker as part of
-  WP-C2.4 ("position and symbol query infrastructure"), which needs this exact mechanism for
-  span→node lookup regardless of testing concerns — building it twice (once minimal here, once
-  properly in C2.4) would be wasted effort.
-- **Owning gate:** WP-C2.4 for the general case; WP-C1.1's Expr/Block check is the interim
-  evidence and does not need to be redone, only extended.
+- **Proposed disposition:** WP-C2.4 supplied compiler-owned position queries, but did not turn
+  Type/Pat/Item containment into exhaustive conformance evidence. C2.11 must either add that
+  adversarial evidence or narrow the invariant explicitly.
+- **Owning gate:** WP-C2.4 query infrastructure is closed; residual verification is WP-C2.11.
 
 ## DEV-019 — Diagnostic-code collisions with the normative E-code table
 
@@ -492,7 +489,7 @@ in WP-C1.6)
   and, if yes, a normative spec addition before any implementation — Charter rule 4 forbids
   adding a new rejection rule inside an implementation WP. Not a bug to fix, a feature to decide
   on.
-- **Owning gate:** unscheduled; needs a proposal.
+- **Owning gate:** WP-C2.9 decision (`CORE-Q-023`); WP-C2.11 implementation/evidence if approved.
 
 ---
 
@@ -517,8 +514,8 @@ in WP-C1.6)
   exactly these types) as a generic dispatch point. `.hash()` needs its own investigation —
   unverified whether the internal hash used for `HashMap`/`HashSet` keys is exposed in a form
   reusable for a user-callable `.hash()` returning `UInt64`.
-- **Owning gate:** unscheduled; candidate for a focused follow-up WP given the fix pattern is
-  now well-understood from the Clone precedent.
+- **Owning gate:** WP-C2.8 settles method/hook semantics; WP-C2.11 implements and evidences the
+  approved contract.
 
 ## DEV-024 — `From` trait associated-function calls fail to resolve
 
@@ -540,7 +537,8 @@ in WP-C1.6)
   generic trait parameter confusing the self-type match. Needs its own investigation before a
   fix is attempted, not assumed to be the same pattern as DEV-013's fixes. `Into`/`TryFrom` not
   independently tested but plausibly share the same gap.
-- **Owning gate:** unscheduled; needs root-cause investigation first.
+- **Owning gate:** WP-C2.8 settles associated-item/conversion semantics; WP-C2.11 performs the
+  root-cause correction and evidence update.
 
 ## DEV-025 — `pat_subsumes` compared literal patterns by shape only, not value (RESOLVED in
 WP-C1.5)
@@ -1078,7 +1076,7 @@ DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was fou
 during that work. DEV-038 through DEV-043 were found by the post-WP-C2.2 review and closed in
 the correction pass. DEV-017 remains partially closed (tooling built, 39 of 59 rules remain
 unclassified). DEV-036 remains open, now explicitly owned by WP-C2.12 as a parser-loader
-hardening regression in the differential corpus. The optional candidates DEV-009, DEV-023, and
-DEV-024 also remain open; WP-C2.2's charter explicitly admitted those only "as capacity allows,"
-and none was needed to close the inherited interpreter-execution findings.
+hardening regression in the differential corpus. DEV-009, DEV-022, DEV-023, and DEV-024 remain
+open with C2.8/C2.9 decision ownership and C2.11 implementation/evidence ownership assigned by
+WP-C2.6.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).

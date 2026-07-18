@@ -252,12 +252,6 @@ compiler-governance ledgers under
 language defines the general-purpose language surface (lexing, syntax,
 types, semantics, memory, modules, and standard library). Non-core
 extensions are defined separately.</p>
-<p><strong>Maturity: normative draft.</strong> Core v1 is the
-authoritative definition of the language, but it has not yet been
-validated by a conforming implementation. Until a reference
-lexer/parser/type-checker exists and every normative code example is
-machine-checked, readers should expect the spec to contain residual
-defects, and implementers should report ambiguities as spec bugs.</p>
 <h2 id="design-philosophy">Design Philosophy</h2>
 <h3 id="core-principles">Core Principles</h3>
 <ol type="1">
@@ -323,9 +317,10 @@ href="./05-Memory-Model.md">05-Memory-Model.md</a>)</h3>
 Rules</strong>: Single ownership, automatic cleanup - <strong>Move
 Semantics</strong>: Explicit ownership transfer - <strong>Borrowing
 System</strong>: Immutable and mutable references - <strong>Lifetime
-Tracking</strong>: Reference validity guarantees - <strong>Stack vs
-Heap</strong>: Allocation strategy and layout - <strong>Drop
-System</strong>: Automatic and manual resource cleanup</p>
+Tracking</strong>: Reference validity guarantees - <strong>Allocation
+Independence</strong>: Safety rules do not promise a physical allocation
+strategy - <strong>Drop System</strong>: Deterministic resource
+cleanup</p>
 <h3 id="standard-library-06-standard-library.md">6. Standard Library (<a
 href="./06-Standard-Library.md">06-Standard-Library.md</a>)</h3>
 <p>Essential types and functions for practical programming: -
@@ -376,46 +371,6 @@ fn borrow(s: &amp;String) -&gt; UInt64 {
 fn mutate(s: &amp;mut String) {
     s.push(&#39;!&#39;);
 }</code></pre>
-<h2 id="implementation-phases">Implementation Phases</h2>
-<h3 id="phase-1-core-mvp">Phase 1: Core MVP</h3>
-<p><strong>Goal</strong>: A complete, implementable Core v1 - Lexer and
-parser for core syntax - Type checker with ownership analysis - Module
-system and import resolution - Minimal standard library</p>
-<h3 id="phase-2-tooling-and-stability">Phase 2: Tooling and
-Stability</h3>
-<p><strong>Goal</strong>: A stable core suitable for real use - Improved
-diagnostics and error recovery - Formatter and basic tooling support -
-Expanded standard library coverage</p>
-<h2 id="success-criteria">Success Criteria</h2>
-<h3 id="correctness">Correctness</h3>
-<ul class="task-list">
-<li><label><input type="checkbox" />Memory safety enforced by ownership
-and borrowing</label></li>
-<li><label><input type="checkbox" />Deterministic type checking and
-inference</label></li>
-<li><label><input type="checkbox" />Exhaustive match
-checking</label></li>
-</ul>
-<h3 id="developer-experience">Developer Experience</h3>
-<ul class="task-list">
-<li><label><input type="checkbox" />Clear, actionable error
-messages</label></li>
-<li><label><input type="checkbox" />Predictable module and import
-rules</label></li>
-<li><label><input type="checkbox" />Stable core language
-surface</label></li>
-</ul>
-<h2 id="next-steps">Next Steps</h2>
-<ol type="1">
-<li><strong>Finalize Core Grammar</strong>: Resolve remaining
-ambiguities in syntax and lexing</li>
-<li><strong>Solidify Type Rules</strong>: Confirm inference and trait
-constraints</li>
-<li><strong>Define Module Rules</strong>: Ensure deterministic
-resolution and visibility</li>
-<li><strong>Validate Stdlib Surface</strong>: Confirm minimal APIs and
-behaviors</li>
-</ol>
 <p>This specification provides a focused foundation for implementing a
 safe, performant, general-purpose language core.</p>
 <h2 id="conformance">Conformance</h2>
@@ -1006,8 +961,8 @@ is always the relational operator; explicit generic arguments require
 the <code>::&lt;</code> form (turbofish), so no lookahead disambiguation
 is required.</li>
 </ul>
-<h2 id="grammar-extensions-for-future-features">Grammar Extensions for
-Future Features</h2>
+<h2 id="informative-future-grammar-sketches-non-normative">Informative
+Future Grammar Sketches (Non-Normative)</h2>
 <p>Reserved grammar constructs for later implementation:</p>
 <pre class="ebnf"><code>// Async functions (future)
 AsyncFunction ::= &#39;async&#39; &#39;fn&#39; IDENTIFIER &#39;(&#39; ParameterList? &#39;)&#39; (&#39;-&gt;&#39; Type)? Block
@@ -1660,8 +1615,8 @@ access violations</li>
 <li><strong>No memory leaks</strong>: Automatic memory management
 through ownership</li>
 </ol>
-<h2 id="type-system-extensions-future">Type System Extensions
-(Future)</h2>
+<h2 id="informative-future-directions-non-normative">Informative Future
+Directions (Non-Normative)</h2>
 <h3 id="lifetime-parameters">Lifetime Parameters</h3>
 <pre class="stark"><code>fn longest&lt;&#39;a&gt;(x: &amp;&#39;a str, y: &amp;&#39;a str) -&gt; &amp;&#39;a str {
     if x.len() &gt; y.len() { x } else { y }
@@ -1673,27 +1628,10 @@ through ownership</li>
 <p>Lambda expressions that capture their environment are a future
 extension; the <code>fn(...)</code> function types in Core v1 are
 non-capturing.</p>
-<h2 id="implementation-notes">Implementation Notes</h2>
-<h3 id="type-representation">Type Representation</h3>
-<ul>
-<li>Primitive types: Direct machine representation</li>
-<li>Composite types: Laid out according to platform ABI</li>
-<li>References: Pointers with compile-time tracking</li>
-<li>Enums: Tagged unions with optimal layout</li>
-</ul>
-<h3 id="type-checking-algorithm">Type Checking Algorithm</h3>
-<ol type="1">
-<li>Parse source into AST</li>
-<li>Build symbol table with declarations</li>
-<li>Perform local type inference by unification within function bodies
-(function signatures are fully annotated, so no global inference is
-needed)</li>
-<li>Check type constraints and ownership rules</li>
-<li>Generate type-annotated AST for code generation ## Conformance A
-conforming Core v1 implementation MUST follow the requirements in this
-document. Any deviations or extensions MUST be explicitly documented by
-the implementation.</li>
-</ol>
+<h2 id="conformance-2">Conformance</h2>
+<p>A conforming Core v1 implementation MUST follow the requirements in
+this document. Any deviations or extensions MUST be explicitly
+documented by the implementation.</p>
 <hr />
 <h1 id="stark-semantic-analysis-specification">STARK Semantic Analysis
 Specification</h1>
@@ -2038,69 +1976,7 @@ Initialization Errors (E0400-E0499)</h4>
 <li>W0101: Non-PascalCase type</li>
 <li>W0102: Missing documentation</li>
 </ul>
-<h2 id="analysis-algorithm">Analysis Algorithm</h2>
-<h3 id="pass-order">Pass Order</h3>
-<ol type="1">
-<li><strong>Declaration Pass</strong>: Collect all top-level
-declarations</li>
-<li><strong>Type Resolution Pass</strong>: Resolve all type
-expressions</li>
-<li><strong>Type Inference Pass</strong>: Infer types for
-expressions</li>
-<li><strong>Ownership Pass</strong>: Check ownership and borrowing
-rules</li>
-<li><strong>Control Flow Pass</strong>: Analyze control flow and
-reachability</li>
-<li><strong>Pattern Pass</strong>: Check pattern exhaustiveness and
-types</li>
-<li><strong>Constraint Pass</strong>: Validate trait constraints and
-bounds</li>
-</ol>
-<h3 id="dependency-resolution">Dependency Resolution</h3>
-<ul>
-<li>Forward references allowed for types and functions</li>
-<li>Circular dependencies detected and reported</li>
-<li>Initialization order determined for constants</li>
-</ul>
-<h3 id="error-recovery">Error Recovery</h3>
-<ul>
-<li>Continue analysis after errors when possible</li>
-<li>Provide multiple related errors in single pass</li>
-<li>Suggest fixes when unambiguous</li>
-<li>Avoid cascading errors from single root cause</li>
-</ul>
-<h2 id="implementation-considerations">Implementation
-Considerations</h2>
-<h3 id="symbol-table-structure">Symbol Table Structure</h3>
-<div class="sourceCode" id="cb106"><pre
-class="sourceCode rust"><code class="sourceCode rust"><span id="cb106-1"><a href="#cb106-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> SymbolTable <span class="op">{</span></span>
-<span id="cb106-2"><a href="#cb106-2" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">:</span> HashMap<span class="op">&lt;</span><span class="dt">String</span><span class="op">,</span> Symbol<span class="op">&gt;,</span></span>
-<span id="cb106-3"><a href="#cb106-3" aria-hidden="true" tabindex="-1"></a>    parent<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;&amp;</span>SymbolTable<span class="op">&gt;,</span></span>
-<span id="cb106-4"><a href="#cb106-4" aria-hidden="true" tabindex="-1"></a>    children<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SymbolTable<span class="op">&gt;</span></span>
-<span id="cb106-5"><a href="#cb106-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
-<span id="cb106-6"><a href="#cb106-6" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb106-7"><a href="#cb106-7" aria-hidden="true" tabindex="-1"></a><span class="kw">enum</span> Symbol <span class="op">{</span></span>
-<span id="cb106-8"><a href="#cb106-8" aria-hidden="true" tabindex="-1"></a>    Variable <span class="op">{</span> ty<span class="op">:</span> Type<span class="op">,</span> mutable<span class="op">:</span> <span class="dt">bool</span><span class="op">,</span> initialized<span class="op">:</span> <span class="dt">bool</span> <span class="op">},</span></span>
-<span id="cb106-9"><a href="#cb106-9" aria-hidden="true" tabindex="-1"></a>    Function <span class="op">{</span> params<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>Type<span class="op">&gt;,</span> return_ty<span class="op">:</span> Type <span class="op">},</span></span>
-<span id="cb106-10"><a href="#cb106-10" aria-hidden="true" tabindex="-1"></a>    Type <span class="op">{</span> definition<span class="op">:</span> TypeDef <span class="op">},</span></span>
-<span id="cb106-11"><a href="#cb106-11" aria-hidden="true" tabindex="-1"></a>    Constant <span class="op">{</span> ty<span class="op">:</span> Type<span class="op">,</span> value<span class="op">:</span> Value <span class="op">}</span></span>
-<span id="cb106-12"><a href="#cb106-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
-<h3 id="type-checking-context">Type Checking Context</h3>
-<div class="sourceCode" id="cb107"><pre
-class="sourceCode rust"><code class="sourceCode rust"><span id="cb107-1"><a href="#cb107-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> TypeContext <span class="op">{</span></span>
-<span id="cb107-2"><a href="#cb107-2" aria-hidden="true" tabindex="-1"></a>    current_function<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>FunctionId<span class="op">&gt;,</span></span>
-<span id="cb107-3"><a href="#cb107-3" aria-hidden="true" tabindex="-1"></a>    expected_return_type<span class="op">:</span> <span class="dt">Option</span><span class="op">&lt;</span>Type<span class="op">&gt;,</span></span>
-<span id="cb107-4"><a href="#cb107-4" aria-hidden="true" tabindex="-1"></a>    loop_depth<span class="op">:</span> <span class="dt">usize</span><span class="op">,</span></span>
-<span id="cb107-5"><a href="#cb107-5" aria-hidden="true" tabindex="-1"></a>    borrowed_values<span class="op">:</span> HashMap<span class="op">&lt;</span>ValueId<span class="op">,</span> BorrowInfo<span class="op">&gt;</span></span>
-<span id="cb107-6"><a href="#cb107-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
-<h3 id="error-collection">Error Collection</h3>
-<div class="sourceCode" id="cb108"><pre
-class="sourceCode rust"><code class="sourceCode rust"><span id="cb108-1"><a href="#cb108-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ErrorReporter <span class="op">{</span></span>
-<span id="cb108-2"><a href="#cb108-2" aria-hidden="true" tabindex="-1"></a>    errors<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SemanticError<span class="op">&gt;,</span></span>
-<span id="cb108-3"><a href="#cb108-3" aria-hidden="true" tabindex="-1"></a>    warnings<span class="op">:</span> <span class="dt">Vec</span><span class="op">&lt;</span>SemanticWarning<span class="op">&gt;,</span></span>
-<span id="cb108-4"><a href="#cb108-4" aria-hidden="true" tabindex="-1"></a>    error_limit<span class="op">:</span> <span class="dt">usize</span></span>
-<span id="cb108-5"><a href="#cb108-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
-<h2 id="conformance-2">Conformance</h2>
+<h2 id="conformance-3">Conformance</h2>
 <p>A conforming Core v1 implementation MUST follow the requirements in
 this document. Any deviations or extensions MUST be explicitly
 documented by the implementation.</p>
@@ -2289,8 +2165,11 @@ Prevention</h3>
 fn valid(x: &amp;Int32) -&gt; &amp;Int32 {
     x                       // OK: returning input reference
 }</code></pre>
-<h2 id="memory-management-strategies">Memory Management Strategies</h2>
-<h3 id="stack-vs-heap-decision">Stack vs Heap Decision</h3>
+<h2 id="informative-allocation-examples-non-normative">Informative
+Allocation Examples (Non-Normative)</h2>
+<p>These examples illustrate possible implementation strategies. Core v1
+does not promise stack, heap, pointer, reference-count, or
+physical-layout representation.</p>
 <pre class="stark"><code>// Stack allocated (small, known size)
 let point = Point { x: 1.0, y: 2.0 };
 let array = [1, 2, 3, 4, 5];
@@ -2299,7 +2178,6 @@ let array = [1, 2, 3, 4, 5];
 let string = String::from(&quot;hello&quot;);
 let vector: Vec&lt;Int32&gt; = Vec::new();
 let boxed = Box::new(large_object);</code></pre>
-<h3 id="reference-counting-rcarc">Reference Counting (Rc/Arc)</h3>
 <pre class="stark"><code>// Single-threaded reference counting (future feature)
 let data = Rc::new(v);
 let data2 = data.clone();   // Increment reference count
@@ -2387,18 +2265,18 @@ struct Person {
 let p1 = Person { name: String::from(&quot;Alice&quot;), age: 30 };
 let p2 = p1;                // p1 moved to p2
 // println(p1.name.as_str());  // Error: p1 no longer valid</code></pre>
-<h2 id="smart-pointers">Smart Pointers</h2>
-<h3 id="box---heap-allocation">Box<T> - Heap Allocation</h3>
+<h2 id="informative-smart-pointer-examples-non-normative">Informative
+Smart-Pointer Examples (Non-Normative)</h2>
+<p><code>Box</code>, <code>Rc</code>, and <code>RefCell</code>
+representation and future availability are not defined by this chapter.
+Required library contracts, if any, belong in
+<code>06-Standard-Library.md</code>.</p>
 <pre class="stark"><code>let boxed_int = Box::new(42);
 let large_array = Box::new([0; 1000]);  // Allocate large array on heap</code></pre>
-<h3 id="rc---reference-counting-future">Rc<T> - Reference Counting
-(Future)</h3>
 <pre class="stark"><code>let data = Rc::new(some_value);
 let reference1 = data.clone();   // Increment reference count
 let reference2 = data.clone();   // Increment reference count
 // Data deallocated when all references dropped</code></pre>
-<h3 id="refcell---interior-mutability-future">RefCell<T> - Interior
-Mutability (Future)</h3>
 <pre class="stark"><code>let data = RefCell::new(42);
 {
     let mut borrowed = data.borrow_mut();  // Runtime borrow check
@@ -2425,55 +2303,8 @@ access</li>
 optimized away) - Integer overflow (traps in ALL build configurations;
 see Numeric Semantics in 03-Type-System.md) - RefCell borrow checking
 (future feature)</p>
-<h2 id="performance-considerations">Performance Considerations</h2>
-<h3 id="zero-cost-abstractions">Zero-Cost Abstractions</h3>
-<ul>
-<li>Ownership and borrowing have no runtime cost</li>
-<li>References are just pointers</li>
-<li>Move semantics avoid unnecessary copies</li>
-</ul>
-<h3 id="optimization-opportunities">Optimization Opportunities</h3>
-<ul>
-<li>Dead code elimination for unused values</li>
-<li>Lifetime optimization to reduce copies</li>
-<li>Stack allocation for values that do not escape</li>
-</ul>
-<h3 id="memory-layout-optimization">Memory Layout Optimization</h3>
-<ul>
-<li>Struct field reordering to minimize padding</li>
-<li>Enum layout optimization for tagged unions</li>
-<li>Array and slice bounds check elimination</li>
-</ul>
-<h2 id="implementation-notes-1">Implementation Notes</h2>
-<h3 id="compiler-phases">Compiler Phases</h3>
-<ol type="1">
-<li><strong>Ownership Analysis</strong>: Track value ownership through
-program</li>
-<li><strong>Borrow Checking</strong>: Validate borrowing rules</li>
-<li><strong>Lifetime Inference</strong>: Determine reference
-lifetimes</li>
-<li><strong>Drop Insertion</strong>: Insert drop calls at scope
-exits</li>
-<li><strong>Memory Layout</strong>: Determine stack vs heap
-allocation</li>
-</ol>
-<h3 id="error-messages">Error Messages</h3>
-<pre><code>Error: borrow of moved value
-  --&gt; example.stark:10:5
-   |
- 8 |     let s1 = String::from(&quot;hello&quot;);
-   |         -- move occurs because `s1` has type `String`
- 9 |     let s2 = s1;
-   |              -- value moved here
-10 |     println(s1.as_str());
-   |             ^^ value borrowed here after move</code></pre>
-<h3 id="integration-with-type-system">Integration with Type System</h3>
-<ul>
-<li>Ownership information included in type signatures</li>
-<li>Borrowing constraints encoded in function types</li>
-<li>Lifetime parameters for generic functions (future)</li>
-</ul>
-<h2 id="future-extensions">Future Extensions</h2>
+<h2 id="informative-future-directions-non-normative-1">Informative
+Future Directions (Non-Normative)</h2>
 <h3 id="advanced-features">Advanced Features</h3>
 <ul>
 <li>Lifetime parameters and annotations</li>
@@ -3092,27 +2923,14 @@ utilities, the conversion traits, and
 required for any Core v1 conformance claim): buffered IO, regular
 expressions, time/date, threads and concurrency primitives,
 <code>Rc</code>/<code>Arc</code>/<code>RefCell</code>.</p>
-<h2 id="platform-considerations">Platform Considerations</h2>
+<h2 id="informative-platform-considerations-non-normative">Informative
+Platform Considerations (Non-Normative)</h2>
 <h3 id="cross-platform-abstractions">Cross-platform Abstractions</h3>
 <ul>
 <li>File path handling</li>
 <li>Directory operations</li>
 <li>Environment variables</li>
 <li>Process spawning (future)</li>
-</ul>
-<h3 id="performance-notes">Performance Notes</h3>
-<ul>
-<li>Vec<T> uses exponential growth strategy</li>
-<li>HashMap<T>/HashSet<T> storage strategy (e.g. open addressing with
-Robin Hood hashing) is implementation-defined; whatever strategy is
-chosen must still present entries in first-insertion order when iterated
-(see “Iteration Order” under the HashMap/HashSet section above,
-normative) — an open-addressing hash-table layout does not exempt an
-implementation from that requirement, and typically needs a side channel
-(e.g. a parallel insertion-order list, as most “ordered map”
-implementations use) to satisfy it efficiently.</li>
-<li>String operations are UTF-8 aware</li>
-<li>Iterator chains compile to efficient loops</li>
 </ul>
 <h2 id="behavioral-requirements-core-v1">Behavioral Requirements (Core
 v1)</h2>
@@ -3271,16 +3089,16 @@ constraint, a <code>path</code> escaping the workspace, or a dependency
 whose name violates the name rule is a manifest error and compilation
 MUST fail.</p>
 <p>Example:</p>
-<div class="sourceCode" id="cb160"><pre
-class="sourceCode json"><code class="sourceCode json"><span id="cb160-1"><a href="#cb160-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
-<span id="cb160-2"><a href="#cb160-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
-<span id="cb160-3"><a href="#cb160-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb160-4"><a href="#cb160-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
-<span id="cb160-5"><a href="#cb160-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
-<span id="cb160-6"><a href="#cb160-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
-<span id="cb160-7"><a href="#cb160-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
-<span id="cb160-8"><a href="#cb160-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
-<span id="cb160-9"><a href="#cb160-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<div class="sourceCode" id="cb156"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb156-1"><a href="#cb156-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb156-2"><a href="#cb156-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;my-app&quot;</span><span class="fu">,</span></span>
+<span id="cb156-3"><a href="#cb156-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="st">&quot;0.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb156-4"><a href="#cb156-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;entry&quot;</span><span class="fu">:</span> <span class="st">&quot;src/main.stark&quot;</span><span class="fu">,</span></span>
+<span id="cb156-5"><a href="#cb156-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;dependencies&quot;</span><span class="fu">:</span> <span class="fu">{</span></span>
+<span id="cb156-6"><a href="#cb156-6" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;tensor-lib&quot;</span><span class="fu">:</span> <span class="st">&quot;^2.1.0&quot;</span><span class="fu">,</span></span>
+<span id="cb156-7"><a href="#cb156-7" aria-hidden="true" tabindex="-1"></a>    <span class="dt">&quot;utils&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;path&quot;</span><span class="fu">:</span> <span class="st">&quot;../utils&quot;</span> <span class="fu">}</span></span>
+<span id="cb156-8"><a href="#cb156-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">}</span></span>
+<span id="cb156-9"><a href="#cb156-9" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
 <h2 id="packages-and-dependencies">Packages and Dependencies</h2>
 <p>Dependencies are declared in <code>starkpkg.json</code> under
 <code>dependencies</code>.</p>
@@ -3328,6 +3146,5 @@ Conformance A conforming Core v1 implementation MUST follow the
 requirements in this document. Any deviations or extensions MUST be
 explicitly documented by the implementation.</li>
 </ul>
-<hr />
 </body>
 </html>

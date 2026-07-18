@@ -73,7 +73,7 @@ impl std::fmt::Display for JsonValue {
             }
             JsonValue::Object(obj) => {
                 let mut entries = obj.iter().collect::<Vec<_>>();
-                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                entries.sort_by_key(|(left, _)| *left);
                 let items = entries
                     .into_iter()
                     .map(|(k, v)| format!("\"{}\":{}", escape_json_string(k), v))

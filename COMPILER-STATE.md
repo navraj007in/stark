@@ -1,18 +1,18 @@
 # STARK Compiler STATE
-Updated: 2026-07-18 after Gate C2 semantic-freeze preflight correction
+Updated: 2026-07-18 after WP-C2.6
 
 ## Position
-Gate: C2  Next: WP-C2.6  Blocked: none
+Gate: C2  Next: WP-C2.7  Blocked: none
 Mandatory compiler path: Core=CORE-FRONTEND-CONFORMING-WITH-LISTED-DEVIATIONS (C1 closed, see
 starkc/docs/compiler/C1-exit-report.md)  MIR=blocked (behind C2/C3)  Native=blocked (behind C2/C3)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
-- Last completed transition: Gate C2 semantic-freeze preflight.
-- Transition commit: `b34d2d02e94aca442c27c99a0cd5bc9daac43268`
-  (`add Gate C2 semantic-freeze preflight`).
-- Current committed head at the start of the preflight correction:
-  `b34d2d02e94aca442c27c99a0cd5bc9daac43268`. This event-style provenance avoids trying to
+- Last completed transition: WP-C2.6 Core completeness inventory and specification authority.
+- Transition base commit: `1ebcb2eec8d8cb95ea0e71c50b7bd16e08151230`
+  (`correct Gate C2 semantic-freeze preflight`).
+- Current committed head at the start of WP-C2.6:
+  `1ebcb2eec8d8cb95ea0e71c50b7bd16e08151230`. This event-style provenance avoids trying to
   embed a commit's own not-yet-known SHA in itself. Commit only on explicit user request.
 - Rust toolchain: `starkc/rust-toolchain.toml` pins `channel = "stable"` (no version number, tracks
   stable) with `rustfmt`/`clippy` components. Active environment measured: `cargo 1.93.0
@@ -64,6 +64,10 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   for any individual rule is not re-verified at Core v1 rule-completeness depth until WP-C1.x; see
   governing rule in `COMPILER-CHARTER.md` §1.5 rule 14 and the explicit no-percentage-trust
   statement this state file and the WP-C0.5 exit report both carry.
+  WP-C2.6 adds `STARKLANG/conformance/core-v1-rule-id-map.toml`, a mechanically validated
+  transition from every one of those 59 broad IDs to the stable granular inventory IDs. It does
+  not inherit broad implementation status; C2.11 must classify evidence and status per granular
+  rule.
 
 ## Current compiler pipeline
 - Source -> lexer (`lexer.rs`) -> parser (`parser.rs`) -> AST (`ast.rs`) -> resolve (`resolve.rs`)
@@ -2093,3 +2097,37 @@ Pandoc parsing, and whitespace validation pass. No Rust source changed, so the i
 FOLLOW-UP: WP-C2.6 may begin after this correction; it must not treat governance defaults as
 approved language semantics.
 NEXT: WP-C2.6 (Core completeness inventory and specification authority)
+
+### WP-C2.6 — 2026-07-18
+DONE: Replaced the semantic-freeze skeletons with a complete granular Core v1 question
+inventory and open-decision register. Every audited behavior has a stable ID, exact question,
+completeness/behavior state, sole normative home, positive/negative evidence state,
+compatibility cost, owner, decision state, and deviation link. Approved the governance-only
+authority split, not any pending language recommendation. Added a TOML transition map covering
+all 59 legacy broad conformance rules without copying their broad implementation status.
+Removed stale maturity/phase/checklist/compiler-algorithm prose and physical-representation
+claims from the normative source surface; retained future/strategy examples only where
+explicitly labeled informative and non-normative. Reassigned the residual open deviations to
+C2.7–C2.11 owners.
+FILES: STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-OPEN-QUESTIONS.md,
+STARKLANG/conformance/core-v1-rule-id-map.toml,
+STARKLANG/docs/compiler/work-packages/WP-C2.6.md,
+STARKLANG/docs/compiler/COMPILER-ROADMAP.md,
+STARKLANG/docs/spec/00-Core-Language-Overview.md,
+STARKLANG/docs/spec/02-Syntax-Grammar.md, STARKLANG/docs/spec/03-Type-System.md,
+STARKLANG/docs/spec/04-Semantic-Analysis.md, STARKLANG/docs/spec/05-Memory-Model.md,
+STARKLANG/docs/spec/06-Standard-Library.md, regenerated combined spec artifacts,
+STARKLANG/tools/build-core-spec.py, starkc/scripts/check-conformance.py,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md, COMPILER-STATE.md.
+RULES: stable granular inventory IDs introduced; legacy LEX/SYN/TYP/SEM/MEM/STD/PKG IDs remain
+as evidence containers until C2.11 migration.
+DECISIONS: CORE-Q-001 governance authority is approved. CORE-Q-002 through CORE-Q-024 remain
+pending. No compiler behavior is made normative and no C2.7+ semantic implementation begins.
+EVIDENCE: DOC + validation — all legacy IDs occur exactly once in the split map; every mapped
+granular ID exists and inventory IDs are unique. Combined specifications and fixture extraction
+were regenerated/checked. The adjacent `sort_by_key` Clippy correction in
+`starkc/src/lsp/protocol.rs` predates and is not part of C2.6 semantics.
+FOLLOW-UP: WP-C2.7 must create the abstract machine and decide CORE-Q-006/related execution
+questions before any implementation alignment.
+NEXT: WP-C2.7 (Abstract machine and execution semantics)
