@@ -1,9 +1,9 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after C3-entry governance-repair pass (CD-020)
+Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
 Gate: C3-ENTRY  Next: complete native-readiness transition before WP-C3.1
-Blocked: six completeness-row approvals; DEV-060 disposition; versioned execution-corpus freeze; CI baseline delta verified green (steps added 2026-07-19, run unverified)
+Blocked: six completeness-row approvals; DEV-060 disposition; versioned execution-corpus freeze; demonstrated green CI run pending (baseline steps added 2026-07-19, not yet run)
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
