@@ -1105,6 +1105,25 @@ fn() -> R          // Function taking no parameters, returning R
 fn(T)              // Function taking T, returning Unit
 ```
 
+**TYPE-FN-001.** Function values are `Copy` and `Clone` (see Copy and Drop)
+and never implement `Drop`. In Core v1, function types do **not** implement
+`Eq`, `Ord`, or `Hash`: comparing or hashing function values is a
+compile-time error, exactly as for the floating-point primitives. Because no
+Core v1 program can compare or hash a function value, function-value
+*identity* is not observable; implementations must guarantee only that
+calling a function value invokes the function it was created from. A future
+extension may add comparison by function identity; it must then also define
+the observable identity of monomorphised generic instances.
+
+**TYPE-FN-002.** A generic function may be used where a concrete function
+type is expected only when the expected type fully determines every generic
+argument. The conversion instantiates the generic function at those
+arguments; the resulting value is the monomorphised instance, and calling it
+behaves exactly like calling the generic function with those type arguments.
+If the expected function type does not fully determine the generic arguments
+(or the bounds are not satisfied by them), the program is rejected at
+compile time.
+
 ## Type Aliases
 ```stark
 type Age = Int32;

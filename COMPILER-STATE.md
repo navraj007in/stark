@@ -516,6 +516,29 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   `starkc/docs/compiler/spikes/WP-C3.4-backend-selection-analysis.md`. Gate C3 closes; next is
   Gate C4 (MIR contract, CE3). This decision selects a backend strategy only — it does not build
   MIR, define the MIR contract, or fix the runtime ABI (those are C4/CE3 and C5.1/CE4).
+- CD-027 [2026-07-19, owner-approved: two CE freezes + a correction-pass authorization] Settled
+  the two CD-022 carry-forward function-value properties and repaired the fn-value feature
+  cluster found by executing CD-021 workload items 16-22 against the interpreter for the first
+  time. **(a) CE1 — TYPE-FN-001** (new normative rule, `03-Type-System.md` §Function Types):
+  function values are `Copy`/`Clone`, never `Drop`, and do **not** implement `Eq`/`Ord`/`Hash`
+  in Core v1 (float-precedent); consequence: function-value identity is unobservable, so the
+  monomorphised-generic-identity question collapses to deterministic symbol naming (C6.2), not
+  language semantics. **(b) CE2 — TYPE-FN-002** (same section): a generic fn coerces to a
+  concrete fn type only when the expected type fully determines every generic argument;
+  semantics = instantiate at the coercion site. Combined spec regenerated; no new code blocks so
+  no fixture re-triage; two granular rows (TYPE-FN-001/002) added to `CORE-V1-COMPLETENESS.md`
+  (166 → 168 rows — the fn-value questions were a genuine inventory gap). **(c) Pre-C4.1
+  correction pass (authorized fix-now):** DEV-061 (indirect calls through fn-value locals/params
+  never executed — missing `Res::Local|SelfValue` arm in interp call dispatch; the machinery
+  existed one arm below), DEV-062 (fn values not `Copy` in borrowck/typecheck — `Ty::Fn`
+  explicitly misclassified against the spec's Copy list), DEV-063 (`Option::map`/`and_then`,
+  `Result::map`/`map_err`/`and_then` absent from the method table despite the normative §Option/
+  §Result APIs) — all three FIXED with 5 new regression tests; the semantic oracle can now
+  execute workload items 16-22. One new narrow deviation found and deliberately not fixed in
+  this pass: DEV-064 (undetermined-generic fn coercion accepted; TYPE-FN-002 requires rejection;
+  owner C4.5). Note: these settlements landed after CD-026's backend selection but before any
+  MIR/ABI work — the selection is unaffected (identity-unobservability removes the one property
+  that could have differentiated the candidates' ABIs).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -585,11 +608,14 @@ Open as of 2026-07-19 (post-DEV-060 closure):
 - DEV-012 — VS Code extension UI never interactively verified. Owner: WP-C8.7.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
+- DEV-064 — coercion of a generic fn with undetermined parameters is not rejected (TYPE-FN-002
+  conformance gap; benign in the type-erased interpreter, a hazard for monomorphising codegen).
+  Owner: C4.5.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
-Closed this session: DEV-060 (repeated call to an un-overridden trait default method wrongly
-flagged as a move) — see CD-024 and `KNOWN-DEVIATIONS.md`'s DEV-060 entry.
+Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
+CD-027 pre-C4.1 correction pass. See `KNOWN-DEVIATIONS.md`.
 
 ## Design fact pinned down by WP-C1.2 (not a deviation, recorded so it isn't re-discovered)
 STARK's visibility model is **stricter than Rust's**: per `07-Modules-and-Packages.md` §Visibility
@@ -1115,3 +1141,32 @@ fn-value properties (CD-022) must be settled during C4/C5. Optional: exe-size/st
 and the Cranelift struct head-to-head remain available if C7 re-evaluation needs them.
 NEXT: Gate C4 — WP-C4.1 (MIR design review, CE3): define the backend-neutral verified MIR contract
 (`STARKLANG/docs/compiler/mir.md`) that the generated-Rust emitter consumes.
+
+### Pre-C4.1 fn-value settlement and correction pass (CD-027) — 2026-07-19
+DONE: settled both CD-022 carry-forward properties (TYPE-FN-001 non-participation in
+Eq/Ord/Hash → identity unobservable; TYPE-FN-002 generic coercion = instantiate-at-coercion,
+both owner-approved) as normative rules in 03-Type-System.md §Function Types; regenerated the
+combined spec (fixtures unchanged — prose-only rules); added TYPE-FN-001/002 rows to the
+completeness inventory (166 → 168). Discovered by first-ever execution of workload items 16-22
+that the whole fn-value feature was a compile-time façade: recorded DEV-061/062/063, got owner
+fix-now authorization, fixed all three (interp dispatch arm; Ty::Fn Copy classification in
+borrowck+typecheck; Option/Result combinator signatures + consuming interp interception), and
+recorded-but-deferred DEV-064 (undetermined-generic coercion, owner C4.5).
+FILES: STARKLANG/docs/spec/03-Type-System.md (+ regenerated STARK-Core-v1.md/.html/.pdf),
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md, starkc/src/interp.rs,
+starkc/src/typecheck.rs, starkc/src/borrowck.rs, starkc/docs/conformance/KNOWN-DEVIATIONS.md,
+COMPILER-STATE.md.
+RULES: TYPE-FN-001, TYPE-FN-002 (new normative, owner-approved CE1/CE2 under CD-027).
+DECISIONS: CD-027.
+EVIDENCE: full workspace `cargo test --workspace --all-targets --all-features` **605 passed / 0
+failed / 2 ignored** (600 → 605: 3 new interp tests, 2 new typecheck tests); `cargo fmt` +
+`cargo clippy --workspace --all-targets --all-features -- -D warnings` clean;
+`build-core-spec.py --check` in sync; fixture extraction in sync; check-conformance.py
+unchanged (89.8%). All empirical claims verified by running the compiler on real programs
+before recording (E0500 rejection, T1/T2/T3 failures pre-fix and outputs post-fix, combinator
+outputs incl. pass-through sides, undetermined-generic acceptance).
+FOLLOW-UP: DEV-064 owned by C4.5. Workload items 16-22 now have a working oracle; item 23
+(Copy aggregate with fn-value field) untested — exercise during C4. The spike reports' "fn
+values unsupported" rows are unaffected (spikes are frozen evidence).
+NEXT: WP-C4.1 — MIR design review (CE3): draft the backend-neutral verified MIR contract
+(STARKLANG/docs/compiler/mir.md) for owner review; the generated-Rust emitter consumes it.

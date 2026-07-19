@@ -1672,6 +1672,105 @@ WP-C1.5)
   `interp::tests::repeated_call_to_overridden_trait_method_is_unaffected_by_dev060`,
   `::repeated_call_to_inherent_method_is_unaffected_by_dev060`. — unscheduled.
 
+## DEV-061 — Indirect calls through function-value locals/parameters are not executable [CLOSED, pre-C4.1 correction pass, 2026-07-19]
+
+- **Normative expectation:** `fn(...) -> ...` types denote non-capturing function values
+  (`03-Type-System.md` §Function Types); a named function assigned to a fn-typed local, or
+  received as a fn-typed parameter, can be invoked (`f(x)`). The stdlib contract depends on this
+  (`Option::map(f: fn(T) -> U)`, `06-Standard-Library.md`).
+- **Current behaviour (confirmed empirically, 2026-07-19, while exercising CD-021 workload items
+  16-17 for the first time):** the *simplest* indirect call fails at runtime with
+  `"expression is not callable"` — `let f: fn(Int32) -> Int32 = double; f(21)` (item 16-17
+  shape), and calling through a fn-typed *parameter* (`fn apply(f: fn(Int32) -> Int32, v: Int32)
+  { f(v) }`) both fail. The type checker accepts all of it.
+- **Root cause (isolated):** `interp.rs`'s call dispatch for a `Path` callee handles
+  `Res::Builtin | Item | Variant | TraitMember | CoreTraitMember | AssociatedFn` and sends
+  everything else — including `Res::Local`/`Res::SelfValue` — to the
+  `"expression is not callable"` error arm. The *general* indirect-call machinery (evaluate
+  callee → `Value::Function(item)` → `item_callable` → `call_callable`) already exists in the
+  non-`Path` fallback arm directly below; a local-callee path simply never reaches it.
+- **User impact:** the entire fn-value feature (workload items 16-23) is a compile-time façade —
+  every spec-legal indirect call fails at runtime. Same severity class as DEV-035 was
+  (checker-accepts / runtime-always-fails for a whole feature area).
+- **Security/soundness impact:** none — availability (legal code fails), not acceptance of
+  illegal code.
+- **Workaround:** call functions directly by name; none for callback-shaped APIs.
+- **Owning gate:** found during Gate C4 entry (pre-WP-C4.1 fn-value property resolution). The
+  interpreter is the semantic oracle for C4.4's HIR/MIR differential — workload items 16-23
+  have no oracle until this is fixed. **Owner approved fix-now (CD-027); FIXED**: added a
+  `Res::Local | Res::SelfValue` arm to `interp.rs`'s Path-callee call dispatch, routing to the
+  same evaluate-callee → `Value::Function` → `item_callable`/`call_callable` machinery the
+  non-path fallback already used. Verified: single indirect call, call through a fn-typed
+  parameter, `f(f(v))`, and generic-fn coercion (TYPE-FN-002) all execute with correct output.
+  Regression tests: `interp::tests::indirect_calls_through_fn_value_locals_and_params_execute`,
+  `::generic_fn_coerced_to_fn_value_executes`. — closed.
+
+## DEV-062 — Function-typed values are not treated as `Copy` by borrow checking [CLOSED, pre-C4.1 correction pass, 2026-07-19]
+
+- **Normative expectation:** "reference values, **function values**, `Unit`, and `!` are `Copy`"
+  (`03-Type-System.md` §Copy and Drop, line 748). Two uses of the same fn-typed local never move.
+- **Current behaviour (confirmed empirically):** `f(f(10))` — CD-022 workload item 22's exact
+  shape — fails borrowck with `E0100 use of moved value 'f'`; so does any second use of a
+  fn-typed local (`f(21); apply(f, 7)`).
+- **Root cause (probable, not yet isolated to the line):** borrowck's/typecheck's Copy
+  classification has no `Ty::Fn` arm, so fn-typed values default to move semantics.
+- **User impact:** each fn-value local is single-use; `f(f(v))` is impossible.
+- **Security/soundness impact:** none — rejection of legal code.
+- **Workaround:** rebind the function name per use.
+- **Owning gate:** same discovery as DEV-061; owner approved fix-now (CD-027); **FIXED**: added
+  `Ty::Fn { .. } => true` arms to `borrowck.rs::is_copy_type` and
+  `typecheck.rs::is_copy_with_impls` (the latter previously listed `Ty::Fn` explicitly as
+  non-Copy, contradicting the spec). Regression test:
+  `typecheck::tests::fn_typed_local_is_copy_and_reusable`. — closed.
+
+## DEV-063 — `Option`/`Result` combinators (`map`, `and_then`, …) missing from the method table [CLOSED, pre-C4.1 correction pass, 2026-07-19]
+
+- **Normative expectation:** `06-Standard-Library.md` §Option lists `map<U>(self, f: fn(T) -> U)`
+  and `and_then`; §Result lists `map`/`map_err`/`and_then`; `Iterator` lists `map`/`fold`/
+  `reduce` taking `fn(...)` values. At minimum required for the `std-full` claim
+  (STD-PROFILE-001: "everything in this document").
+- **Current behaviour (confirmed empirically):** `v.map(double)` on `Option<Int32>` fails at
+  *typecheck* with `E0304 method call on non-struct/enum type 'Option<Int32>'` — the combinator
+  has no entry in `core_method_signature` (other Option methods, e.g. `is_some`/`is_none`,
+  dispatch fine, so this is per-method absence, not a broken dispatcher; the diagnostic text is
+  also misleading).
+- **Honest governance note:** STD-OPTION-001 was approved `settled` under CD-023 on the evidence
+  cited at the time; `map`/`and_then`'s absence is a newly surfaced implementation gap *within*
+  that row's scope — recorded here as a deviation (the ledger's job), not a reopening of the
+  row's normative home.
+- **User impact:** the fn-value-consuming half of the Option/Result API is unusable (blocks
+  workload item 18).
+- **Security/soundness impact:** none.
+- **Workaround:** hand-written `match`.
+- **Owning gate:** owner approved fix-now (CD-027); **FIXED**: `Option::map`/`and_then` and
+  `Result::map`/`map_err`/`and_then` added to `typecheck.rs`'s core-method signatures (fresh
+  inference variable for `U`/`F`, unified through the declared `fn(...)` parameter — the same
+  pattern the iterator `.map` signature already used) and to `interp.rs::call_core_method` as a
+  consuming pre-match interception (take_place the receiver, call the fn value re-entrantly with
+  no receiver borrow outstanding; gated on the receiver being Option/Result so lazy iterator
+  `.map` is untouched). Verified incl. all pass-through sides (`None`, `Err` for `map`, `Ok` for
+  `map_err`). Regression test:
+  `interp::tests::option_result_combinators_execute_with_fn_values`. — closed.
+
+## DEV-064 — Coercion of a generic fn with undetermined parameters is not rejected
+
+- **Normative expectation:** TYPE-FN-002 (`03-Type-System.md` §Function Types, added under
+  CD-027): a generic function may coerce to a concrete fn type only when the expected type
+  fully determines every generic argument; otherwise the program is rejected at compile time.
+- **Current behaviour (confirmed empirically):** `fn count<T>() -> Int32` coerced to
+  `fn() -> Int32` — `T` appears nowhere in the signature, so it is undetermined — is accepted
+  and runs. Benign in the type-erased interpreter (T never influences execution), but
+  ill-defined for a monomorphising backend, which is exactly why TYPE-FN-002 requires
+  rejection.
+- **User impact:** none observable today; becomes a codegen hazard when MIR monomorphisation
+  (C4.5) needs a concrete instantiation for every coerced generic fn.
+- **Security/soundness impact:** none (acceptance of a spec-prohibited but currently
+  harmless program — a conformance gap, not a safety gap).
+- **Workaround:** n/a.
+- **Owning gate:** C4.5 (monomorphisation) at latest — the checker must reject undetermined
+  coercions before native lowering depends on full determination. Deliberately not fixed in
+  the CD-027 correction pass to keep that pass to its three authorized items. — open.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1721,7 +1820,14 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 58 numbered deviations total (DEV-002 through DEV-060, DEV-001/DEV-003 retired).
+Current count: 62 numbered deviations total (DEV-002 through DEV-064, DEV-001/DEV-003 retired).
+DEV-061/062/063 (the function-value cluster: indirect calls not executable, fn values not Copy in
+borrowck, Option/Result combinators missing) were found 2026-07-19 during Gate C4 entry by
+executing CD-021 workload items 16-22 against the interpreter for the first time — exactly the
+early-surfacing those workload items were frozen to provide — and **closed the same day** in the
+owner-approved pre-C4.1 correction pass (CD-027). DEV-064 (undetermined-generic fn coercion not
+rejected, a TYPE-FN-002 conformance gap) was found during the same pass and remains open, owned
+by C4.5 monomorphisation.
 DEV-056 (`?` propagation swallowed outside aggregate construction), DEV-057 (Eq/Ord
 comparison dispatch passed owned clones instead of borrowed places), DEV-058 (Float32 nested
 inside a tuple/array/Option/Result/struct still formatted via Float64 digits -- the residual gap

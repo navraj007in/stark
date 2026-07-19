@@ -200,6 +200,10 @@ impl<'a> BorrowChecker<'a> {
             }
             Ty::Tuple(elements) => elements.iter().all(|element| self.is_copy_type(element)),
             Ty::Array(element, _) => self.is_copy_type(element),
+            // DEV-062: function values are `Copy` per 03-Type-System.md §Copy and Drop /
+            // TYPE-FN-001 — repeated use of a fn-typed local (e.g. `f(f(x))`) must not be
+            // flagged as a move.
+            Ty::Fn { .. } => true,
             _ => false,
         }
     }

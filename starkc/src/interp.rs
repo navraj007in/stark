@@ -2155,6 +2155,30 @@ impl<'a> Interpreter<'a> {
                     }
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
                 },
+                // DEV-061: an indirect call through a function-value local or `self`
+                // (`let f: fn(Int32) -> Int32 = double; f(x)`, or a fn-typed parameter).
+                // These previously fell into the "expression is not callable" arm below even
+                // though the general value-dispatch machinery (the non-Path fallback of the
+                // outer match) already handled exactly this for non-path callee expressions.
+                Res::Local(_) | Res::SelfValue(_) => {
+                    let function = self.expect_value(callee)?;
+                    if let Some(propagated) = self.pending_propagation.take() {
+                        return Ok(Flow::Propagate(propagated));
+                    }
+                    let Value::Function(item) = function else {
+                        return Err(RuntimeError::new("expression is not callable", span));
+                    };
+                    match self.eval_call_arguments(args)? {
+                        Ok(values) => {
+                            let callable = self.item_callable(item).ok_or_else(|| {
+                                RuntimeError::new("expression is not callable", span)
+                            })?;
+                            self.call_callable(callable, None, values, span)
+                                .map(Flow::Value)
+                        }
+                        Err(propagated) => Ok(Flow::Propagate(propagated)),
+                    }
+                }
                 _ => Err(RuntimeError::new("expression is not callable", span)),
             },
             hir::ExprKind::Field { base, name, .. } => {
@@ -3172,6 +3196,67 @@ impl<'a> Interpreter<'a> {
             };
             resource.0.borrow_mut().take();
             return Ok(Value::Result(Ok(Box::new(Value::Unit))));
+        }
+        // DEV-063: the fn-value-consuming `Option`/`Result` combinators
+        // (06-Standard-Library.md §Option/§Result). Intercepted here — before the borrowing
+        // receiver match below — because they consume `self` (take_place) and re-enter the
+        // interpreter to call the user's function value, which must happen with no receiver
+        // borrow outstanding. Gated on the receiver actually being an Option/Result so the
+        // iterator `.map` (lazy MapIter) path below is unaffected.
+        if matches!(name, "map" | "and_then" | "map_err")
+            && matches!(
+                self.place_value(&receiver_place, span)?,
+                Value::Option(_) | Value::Result(_)
+            )
+        {
+            let func = values.next().ok_or_else(|| {
+                RuntimeError::new(format!("{name} expects a function argument"), span)
+            })?;
+            let Value::Function(func_item) = func else {
+                return Err(RuntimeError::new(
+                    format!("{name} expects a function value"),
+                    span,
+                ));
+            };
+            let callable = self
+                .item_callable(func_item)
+                .ok_or_else(|| RuntimeError::new("expression is not callable", span))?;
+            let receiver = self.take_place(&receiver_place, span)?;
+            return match (receiver, name) {
+                (Value::Option(option), "map") => match option {
+                    Some(value) => {
+                        let mapped = self.call_callable(callable, None, vec![*value], span)?;
+                        Ok(Value::Option(Some(Box::new(mapped))))
+                    }
+                    None => Ok(Value::Option(None)),
+                },
+                (Value::Option(option), "and_then") => match option {
+                    Some(value) => self.call_callable(callable, None, vec![*value], span),
+                    None => Ok(Value::Option(None)),
+                },
+                (Value::Result(result), "map") => match result {
+                    Ok(value) => {
+                        let mapped = self.call_callable(callable, None, vec![*value], span)?;
+                        Ok(Value::Result(Ok(Box::new(mapped))))
+                    }
+                    Err(error) => Ok(Value::Result(Err(error))),
+                },
+                (Value::Result(result), "map_err") => match result {
+                    Ok(value) => Ok(Value::Result(Ok(value))),
+                    Err(error) => {
+                        let mapped = self.call_callable(callable, None, vec![*error], span)?;
+                        Ok(Value::Result(Err(Box::new(mapped))))
+                    }
+                },
+                (Value::Result(result), "and_then") => match result {
+                    Ok(value) => self.call_callable(callable, None, vec![*value], span),
+                    Err(error) => Ok(Value::Result(Err(error))),
+                },
+                (_, _) => Err(RuntimeError::new(
+                    format!("unsupported combinator '{name}' for this receiver"),
+                    span,
+                )),
+            };
         }
         if name == "fmt" {
             let receiver = self.place_value(&receiver_place, span)?;
@@ -7332,6 +7417,80 @@ mod tests {
         )
         .unwrap();
         assert_eq!(execution.output, "Ada\nAda\n");
+    }
+
+    /// DEV-061 [CLOSED]: indirect calls through function-value locals and parameters execute.
+    /// Covers CD-021 workload items 16 (typed fn-value local), 17 (fn value passed and invoked
+    /// indirectly), and 22 (`f(f(v))` — repeated indirect invocation through one `Copy` local,
+    /// which also exercises the DEV-062 borrowck fix end to end).
+    #[test]
+    fn indirect_calls_through_fn_value_locals_and_params_execute() {
+        let execution = execute(
+            "fn double(x: Int32) -> Int32 { x * 2 } \
+             fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 { f(v) } \
+             fn main() { \
+                 let f: fn(Int32) -> Int32 = double; \
+                 println(f(21)); \
+                 println(apply(double, 5)); \
+                 println(apply(f, 7)); \
+                 println(f(f(10))); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "42\n10\n14\n40\n");
+    }
+
+    /// TYPE-FN-002 (CD-027): a generic function coerced to a concrete fn type is the
+    /// monomorphised instance and executes correctly through the fn value.
+    #[test]
+    fn generic_fn_coerced_to_fn_value_executes() {
+        let execution = execute(
+            "fn identity<T>(x: T) -> T { x } \
+             fn main() { \
+                 let f: fn(Int32) -> Int32 = identity; \
+                 println(f(41) + 1); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "42\n");
+    }
+
+    /// DEV-063 [CLOSED]: the fn-value-consuming `Option`/`Result` combinators from
+    /// 06-Standard-Library.md execute, including the pass-through sides (`None`, `Err`, `Ok`
+    /// for `map_err`). Covers CD-021 workload item 18.
+    #[test]
+    fn option_result_combinators_execute_with_fn_values() {
+        let execution = execute(
+            "fn double(x: Int32) -> Int32 { x * 2 } \
+             fn half(n: Int32) -> Option<Int32> { \
+                 if n % 2 == 0 { Some(n / 2) } else { None } \
+             } \
+             fn describe(code: Int32) -> String { String::from(\"error\") } \
+             fn main() { \
+                 println(Some(21).map(double).unwrap()); \
+                 match Some(10).and_then(half) { \
+                     Some(v) => println(v), \
+                     None => println(\"none\"), \
+                 } \
+                 match Some(7).and_then(half) { \
+                     Some(v) => println(v), \
+                     None => println(\"none\"), \
+                 } \
+                 let r: Result<Int32, Int32> = Ok(4); \
+                 println(r.map(double).unwrap()); \
+                 let e: Result<Int32, Int32> = Err(7); \
+                 match e.map(double) { \
+                     Ok(v) => println(v), \
+                     Err(code) => println(code), \
+                 } \
+                 match e.map_err(describe) { \
+                     Ok(v) => println(v), \
+                     Err(msg) => println(msg.as_str()), \
+                 } \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "42\n5\nnone\n8\n7\nerror\n");
     }
 
     /// Companion regression for DEV-060 (see `typecheck.rs`'s

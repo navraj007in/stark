@@ -1200,6 +1200,25 @@ references). Capturing closures are a future extension.</p>
 <pre class="stark"><code>fn(T1, T2) -&gt; R    // Function taking T1, T2 and returning R
 fn() -&gt; R          // Function taking no parameters, returning R
 fn(T)              // Function taking T, returning Unit</code></pre>
+<p><strong>TYPE-FN-001.</strong> Function values are <code>Copy</code>
+and <code>Clone</code> (see Copy and Drop) and never implement
+<code>Drop</code>. In Core v1, function types do <strong>not</strong>
+implement <code>Eq</code>, <code>Ord</code>, or <code>Hash</code>:
+comparing or hashing function values is a compile-time error, exactly as
+for the floating-point primitives. Because no Core v1 program can
+compare or hash a function value, function-value <em>identity</em> is
+not observable; implementations must guarantee only that calling a
+function value invokes the function it was created from. A future
+extension may add comparison by function identity; it must then also
+define the observable identity of monomorphised generic instances.</p>
+<p><strong>TYPE-FN-002.</strong> A generic function may be used where a
+concrete function type is expected only when the expected type fully
+determines every generic argument. The conversion instantiates the
+generic function at those arguments; the resulting value is the
+monomorphised instance, and calling it behaves exactly like calling the
+generic function with those type arguments. If the expected function
+type does not fully determine the generic arguments (or the bounds are
+not satisfied by them), the program is rejected at compile time.</p>
 <h2 id="type-aliases">Type Aliases</h2>
 <pre class="stark"><code>type Age = Int32;
 type Point2D = (Float64, Float64);

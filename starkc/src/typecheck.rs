@@ -6135,15 +6135,76 @@ impl<'a> TypeChecker<'a> {
                     "is_some" | "is_none" => Some((Vec::new(), bool_ty, false)),
                     "unwrap" => Some((Vec::new(), value.clone(), false)),
                     "unwrap_or" => Some((vec![value.clone()], value, false)),
+                    // DEV-063: the fn-value-consuming combinators from 06-Standard-Library.md
+                    // §Option. `U` is a fresh inference variable determined by unifying the
+                    // declared `fn(T) -> U` parameter against the argument -- the same pattern
+                    // the iterator `.map`/`.filter` signatures below already use.
+                    "map" => {
+                        let u_ty = self.new_type_var();
+                        let map_fn = Ty::Fn {
+                            params: vec![value.clone()],
+                            ret: Box::new(u_ty.clone()),
+                        };
+                        Some((vec![map_fn], Ty::Core(CoreType::Option, vec![u_ty]), false))
+                    }
+                    "and_then" => {
+                        let u_ty = self.new_type_var();
+                        let then_fn = Ty::Fn {
+                            params: vec![value.clone()],
+                            ret: Box::new(Ty::Core(CoreType::Option, vec![u_ty.clone()])),
+                        };
+                        Some((vec![then_fn], Ty::Core(CoreType::Option, vec![u_ty]), false))
+                    }
                     _ => None,
                 }
             }
             Ty::Core(CoreType::Result, args) => {
                 let value = args.first().cloned().unwrap_or(Ty::Error);
+                let error = args.get(1).cloned().unwrap_or(Ty::Error);
                 match name {
                     "is_ok" | "is_err" => Some((Vec::new(), bool_ty, false)),
                     "unwrap" => Some((Vec::new(), value.clone(), false)),
                     "unwrap_or" => Some((vec![value.clone()], value, false)),
+                    // DEV-063: 06-Standard-Library.md §Result combinators.
+                    "map" => {
+                        let u_ty = self.new_type_var();
+                        let map_fn = Ty::Fn {
+                            params: vec![value.clone()],
+                            ret: Box::new(u_ty.clone()),
+                        };
+                        Some((
+                            vec![map_fn],
+                            Ty::Core(CoreType::Result, vec![u_ty, error]),
+                            false,
+                        ))
+                    }
+                    "map_err" => {
+                        let f_ty = self.new_type_var();
+                        let map_fn = Ty::Fn {
+                            params: vec![error.clone()],
+                            ret: Box::new(f_ty.clone()),
+                        };
+                        Some((
+                            vec![map_fn],
+                            Ty::Core(CoreType::Result, vec![value, f_ty]),
+                            false,
+                        ))
+                    }
+                    "and_then" => {
+                        let u_ty = self.new_type_var();
+                        let then_fn = Ty::Fn {
+                            params: vec![value.clone()],
+                            ret: Box::new(Ty::Core(
+                                CoreType::Result,
+                                vec![u_ty.clone(), error.clone()],
+                            )),
+                        };
+                        Some((
+                            vec![then_fn],
+                            Ty::Core(CoreType::Result, vec![u_ty, error]),
+                            false,
+                        ))
+                    }
                     _ => None,
                 }
             }
@@ -6940,7 +7001,12 @@ fn is_copy_with_impls(ty: &Ty, copy_types: &HashSet<ItemId>) -> bool {
             .all(|element| is_copy_with_impls(element, copy_types)),
         Ty::Array(element, _) => is_copy_with_impls(element, copy_types),
         Ty::Infer(_) | Ty::Param(_) => false,
-        Ty::Ref { mutable: true, .. } | Ty::Slice(_) | Ty::Fn { .. } | Ty::Range(_) => false,
+        // DEV-062: function values are `Copy` per 03-Type-System.md §Copy and Drop ("reference
+        // values, function values, `Unit`, and `!` are `Copy`") / TYPE-FN-001. This arm
+        // previously listed `Ty::Fn` alongside `&mut`/slices as non-Copy, contradicting the
+        // spec.
+        Ty::Fn { .. } => true,
+        Ty::Ref { mutable: true, .. } | Ty::Slice(_) | Ty::Range(_) => false,
         Ty::Extension(ext) => match &**ext {
             ExtensionTy::Tensor(tensor) => tensor.is_copy(),
             ExtensionTy::Model(_) => false,
@@ -9389,6 +9455,49 @@ mod tests {
         assert!(
             diags.iter().all(|d| d.code.as_deref() != Some("E0100")),
             "DEV-060 (mut receiver variant) regressed: {diags:?}"
+        );
+    }
+
+    /// TYPE-FN-001 (CD-027): function values do not participate in `Eq`/`Ord` — comparing them
+    /// is a compile-time E0500, exactly like the float primitives. Pins the pre-existing
+    /// rejection now that it is normative rather than incidental.
+    #[test]
+    fn fn_values_do_not_satisfy_eq_or_ord() {
+        for op in ["==", "<"] {
+            let src = format!(
+                "fn double(x: Int32) -> Int32 {{ x * 2 }} \
+                 fn triple(x: Int32) -> Int32 {{ x * 3 }} \
+                 fn main() {{ \
+                     let f: fn(Int32) -> Int32 = double; \
+                     let g: fn(Int32) -> Int32 = triple; \
+                     println(f {op} g); \
+                 }}"
+            );
+            let diags = check_src(&src);
+            assert!(
+                diags.iter().any(|d| d.code.as_deref() == Some("E0500")),
+                "fn-value `{op}` must be rejected with E0500 (TYPE-FN-001): {diags:?}"
+            );
+        }
+    }
+
+    /// DEV-062 [CLOSED]: function values are `Copy` (03-Type-System.md §Copy and Drop /
+    /// TYPE-FN-001), so repeated use of a fn-typed local — including `f(f(x))`, CD-021 workload
+    /// item 22's exact shape — must not raise E0100.
+    #[test]
+    fn fn_typed_local_is_copy_and_reusable() {
+        let src = "fn double(x: Int32) -> Int32 { x * 2 } \
+                   fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 { f(v) } \
+                   fn main() { \
+                       let f: fn(Int32) -> Int32 = double; \
+                       println(f(f(10))); \
+                       println(apply(f, 7)); \
+                       println(f(1)); \
+                   }";
+        let diags = check_src(src);
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("E0100")),
+            "DEV-062 regressed — fn-typed local wrongly moved: {diags:?}"
         );
     }
 
