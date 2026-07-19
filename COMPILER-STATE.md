@@ -1,8 +1,19 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-1 — **WP-C4.7 correction package under way (increment 1 of 9 done)**
+Updated: 2026-07-20 after WP-C4.7-2 — **WP-C4.7 correction package under way (2 of 9 increments done)**
 
 ## Position
-Gate: C4  Next: **WP-C4.7-2 (evidence symmetry: verifier negatives + unsupported fixtures)**.
+Gate: C4  Next: **WP-C4.7-3 (type-preserving layout queries — CE3 amendment A4 drafted for owner
+approval BEFORE any code)**.
+**WP-C4.7-2 DONE 2026-07-20** (evidence symmetry, CD-033's evidence rule): 6 hand-built verifier
+negatives covering the Class-A classes (bitwise-on-float and Pow-on-float-dest → MIR-0004;
+`VecGetRef` wrong schematic dest, `CharsIterNext` wrong operand, runtime call arity → MIR-0005;
+`SwitchInt` on Float64 → MIR-0004, pinning that A2's Char widening stopped at Char) and 4
+clean-Unsupported fixtures pinning every pinnable Class-A residual. **Finding that changes
+WP-C4.7-8's shape:** two recorded "MIR residuals" are actually **front-end-blocked** and never
+reach lowering — method-own generic params (`h.first(7, 9)` → E0001 "expected 'U', found
+'Int32'") and non-bare impl heads (`Holder<Vec<T>>` → E0302 "method not found"). By the §1 rule
+(a MIR gap must be typecheck-clean AND oracle-supported) both are front-end work first; C4.7-8.4
+and 8.5 are annotated accordingly. Workspace 752/0/2; fmt + clippy clean 1.93/1.97.
 **WP-C4.7-1 DONE 2026-07-20** (doc/evidence reconciliation, no code): the WP-C4.6 A5 arithmetic
 additions are now recorded in `mir.md` as MIR **amendment A3** (`MirBinOp::BitAnd/BitOr/BitXor`
 pure; `CheckedOp::Pow`; `Shl`/`Shr` ACTIVE under NUM-SHIFT-001; `TrapCategory::InvalidShift` with
@@ -1790,3 +1801,42 @@ EVIDENCE: doc-only increment; full validation gate run anyway (workspace tests, 
 FOLLOW-UP: none blocking.
 NEXT: WP-C4.7-2 — verifier negatives (5–6 hand-built `MirBody` cases) + clean-Unsupported
 fixtures for every recorded Class-A residual, each probed with `c46_probe` first.
+
+### WP-C4.7-2 — evidence symmetry: verifier negatives + unsupported fixtures — 2026-07-20
+DONE: CD-033's evidence rule says every Class-A class carries hand-built verifier negatives and
+every recorded residual is pinned by a clean-Unsupported fixture. Both halves now hold.
+**Verifier negatives (6, hand-built `MirBody`s in `tests/mir_verify.rs`)** — each checked to fail
+for the *intended* reason, not incidentally (verified by temporarily asserting a bogus code and
+reading the actual message): `rejects_bitwise_binop_on_floats` ("bitwise BinOp on Float64",
+MIR-0004 — amendment A3's integer-only rule); `rejects_pow_on_non_integer_dest` (MIR-0004 — `Pow`
+must not become a float power op with different trapping); `rejects_vec_get_ref_with_wrong_dest`
+(MIR-0005 — the schematic-in-T signature must not degrade to "any Option of any reference");
+`rejects_chars_iter_next_on_non_iterator` (MIR-0005, fixed table);
+`rejects_runtime_call_arity_mismatch` (MIR-0005 — the plan's suggested
+`rejects_call_arity_against_instance` did NOT exist, so the arity path is pinned here instead of
+skipped); `rejects_switch_on_float` ("SwitchInt scrutinee is non-integer Float64", MIR-0004 —
+pins that A2's Char-scrutinee widening did not over-widen).
+**Unsupported fixtures (4, in `unsupported_constructs_report_cleanly`)**: droppable scrutinee +
+nested pattern ("A2 residual"), droppable Iterator Item, `&mut base[range]`, `unwrap_or` on a
+droppable payload. Every one probed with `c46_probe` (LOWER-UNSUPPORTED) *and* `oracle_run`
+(ORACLE-OK) before being added, so each demonstrably pins a MIR gap rather than a front-end one;
+`front_end_src` re-asserts typecheck-cleanliness on every run. A stale comment block above the
+case table (describing a generic-comparison case that no longer exists) was removed.
+FINDING (changes WP-C4.7-8's shape): the plan's fixtures for **method-own generic parameters**
+and **non-bare impl heads** cannot live in this test because they are **front-end-blocked** —
+`impl Holder { fn first<U>(&self, a: U, b: U) -> U }` + `h.first(7, 9)` fails E0001 "expected
+'U', found 'Int32'" (method-own params are not substituted at the call site at all), and
+`impl<T> Wrap for Holder<Vec<T>>` + `h.wrapped()` on `Holder<Vec<Int32>>` fails E0302 "method
+'wrapped' not found" (method resolution does not structurally unify non-bare impl heads, though
+DEV-073 records that it does handle bare-param heads). Neither reaches lowering, so by §1's rule
+both are front-end work first. C4.7-8.4/8.5 annotated in the plan.
+FILES: starkc/tests/mir_verify.rs (+6 tests), starkc/tests/mir_lowering.rs (+4 fixtures, stale
+comment removed), STARKLANG/docs/compiler/work-packages/WP-C4.7.md (tracker + 8.4/8.5 notes),
+COMPILER-STATE.md.
+RULES: none — tests only; no compiler behavior changed.
+DECISIONS: none at CE level. (CD-035 from C4.7-1 still awaits owner ratification.)
+EVIDENCE: workspace 752 passed / 0 failed / 2 ignored (+6); fmt clean; clippy clean on 1.93 and
+1.97.
+FOLLOW-UP: none blocking.
+NEXT: WP-C4.7-3 — research C2.9's target-layout decision, then DRAFT `mir-amendment-A4-layout.md`
+(`Rvalue::LayoutQuery`) and STOP for owner CE3 approval before writing any code.

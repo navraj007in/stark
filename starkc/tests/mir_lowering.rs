@@ -259,11 +259,20 @@ fn option_lowers_as_logical_enum() {
 /// silent mislowering.
 #[test]
 fn unsupported_constructs_report_cleanly() {
+    // WP-C4.7-2 (CD-033 evidence rule): every RESIDUAL recorded by the Class-A campaign is
+    // pinned here by a program that is typecheck-clean AND oracle-supported — so the residual is
+    // demonstrably a MIR gap, not a front-end one, and so the day it gets implemented this test
+    // fails loudly instead of the residual being quietly forgotten. Each case was probed with
+    // `cargo run --example c46_probe` (LOWER-UNSUPPORTED) and `--example oracle_run` (ORACLE-OK)
+    // before being added.
+    //
+    // NOT pinnable here, and deliberately so: the two remaining recorded residuals — method-own
+    // generic parameters (`impl Holder { fn first<U>(&self, a: U, b: U) -> U }`) and non-bare
+    // impl heads (`impl<T> Wrap for Holder<Vec<T>>`) — never REACH lowering. They fail in the
+    // type checker first (E0001 "expected 'U', found 'Int32'" and E0302 "method not found"
+    // respectively), which makes them front-end gaps by the WP-C4.7 §1 rule, whatever their MIR
+    // status would be. See the WP-C4.7-2 record in COMPILER-STATE.md.
     let cases = [
-        // A3 (C4.6) lowers user-nominal `==`/`!=` (Eq) and `<`/`<=`/`>`/`>=` (Ord, Amendment
-        // A2). What still dispatches through a user impl and stays Unsupported: comparison on a
-        // GENERIC nominal instantiation (needs A1's impl-level monomorphisation) — the guard
-        // must reject, never emit a structural BinOp that would silently diverge from the oracle.
         (
             // The core HashMap surface (0.1-A3, f-3a) lowers; values() stays reserved.
             "hashmapvalues.stark",
@@ -273,6 +282,54 @@ fn unsupported_constructs_report_cleanly() {
                  for v in m.values() { println(*v); } \
              }",
             "C4.5",
+        ),
+        (
+            // A2 residual: a droppable scrutinee reaching the general (recursive) match engine.
+            // `lower_general_match` requires a drop-free scrutinee in Consuming mode; the
+            // droppable leaves of a nested pattern are not yet elaborated. Owner: WP-C4.7-8.3.
+            "dropscrutnested.stark",
+            "fn main() { \
+                 let o = Some((String::from(\"x\"), 1)); \
+                 match o { \
+                     Some((s, n)) => { println(n); } \
+                     None => { println(0); } \
+                 } \
+             }",
+            "A2 residual",
+        ),
+        (
+            // A1 residual: a user `Iterator` whose `Item` needs dropping — the per-iteration
+            // scope around the loop-variable binding is not yet emitted. Owner: WP-C4.7-8.2.
+            "dropiteritem.stark",
+            "struct Words { n: Int32 } \
+             impl Iterator for Words { \
+                 type Item = String; \
+                 fn next(&mut self) -> Option<String> { \
+                     if self.n == 0 { None } else { self.n = self.n - 1; Some(String::from(\"w\")) } \
+                 } \
+             } \
+             fn main() { let mut w = Words { n: 2 }; for s in w { println(s); } }",
+            "droppable Item",
+        ),
+        (
+            // A4-2e reserved: slice views are shared-only in surface 0.1-A6; `&mut base[range]`
+            // needs a SliceNewMut op and writes through a Slice window. Owner: WP-C4.7-8.6
+            // (and an owner decision on whether it is required for C4 exit at all).
+            "mutslice.stark",
+            "fn main() { let mut a = [1, 2, 3]; let s = &mut a[0..2]; println(s.len()); }",
+            "mutable slice",
+        ),
+        (
+            // A4-1 residual: `unwrap_or` over a droppable payload — in the Some/Ok arm the
+            // default is UNUSED and owes a drop, which needs arm-scoped drop elaboration.
+            // Owner: WP-C4.7-8.1.
+            "unwraporrdrop.stark",
+            "fn main() { \
+                 let o: Option<String> = Some(String::from(\"hi\")); \
+                 let s = o.unwrap_or(String::from(\"no\")); \
+                 println(s); \
+             }",
+            "droppable payload",
         ),
     ];
     for (name, src, needle) in cases {

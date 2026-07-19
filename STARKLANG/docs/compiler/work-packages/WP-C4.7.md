@@ -334,13 +334,23 @@ Order within the increment (each independently commit-able):
    scrutinee temp itself is never auto-dropped (it was fully decomposed). Pin oracle timing
    for a two-level case FIRST (`Some((TagA, TagB))` with printing dtors, matched by
    `Some((a, _))` — which dtor fires when?). This is the hardest piece; budget a session.
-4. **Method-own generic parameters** (`fn map<U>`): needs checker-recorded per-call-site
+4. **Method-own generic parameters** (`fn map<U>`): **C4.7-2 finding — this is front-end-first.**
+   `impl Holder { fn first<U>(&self, a: U, b: U) -> U }` called as `h.first(7, 9)` fails
+   typecheck with E0001 "expected 'U', found 'Int32'": method-own params are not substituted at
+   the call site at all, so nothing reaches lowering. Fix the checker first (per-call-site
+   instantiation recording for METHODS), then the MIR half below. Original MIR plan: needs
+   checker-recorded per-call-site
    instantiations for METHODS (the C4.5c `generic_insts` machinery records top-level fn
    uses; extend recording to method calls, keyed by the method-call expr), then a
    `FnKey::ImplFn` extension carrying method-level args alongside impl-level args — this is
    a FnKey shape change: check whether `mir.md` describes FnKey (it's lowering-internal;
    if not contract-visible, no CE3 needed — verify, state your conclusion in the report).
-5. **Non-bare impl heads** (`impl<T> Holder<Vec<T>>`): extend `impl_generic_subst` to unify
+5. **Non-bare impl heads** (`impl<T> Holder<Vec<T>>`): **C4.7-2 finding — also front-end-first.**
+   `impl<T> Wrap for Holder<Vec<T>>` + `h.wrapped()` on `Holder<Vec<Int32>>` fails typecheck with
+   E0302 "method 'wrapped' not found", so method resolution does not structurally unify non-bare
+   impl heads either — despite handling bare-param generic impls (DEV-073's entry notes the
+   method path works for those). Fix resolution first, then the MIR half: extend
+   `impl_generic_subst` to unify
    the written self args STRUCTURALLY against the instantiation (reuse `bind_written_ty`,
    which already walks written-HIR-vs-MirTy) instead of requiring bare params.
 6. **Mutable slice views** (`&mut base[range]`): decide with the owner whether required for
@@ -377,7 +387,15 @@ Order within the increment (each independently commit-able):
   `WP-C4.6.md` and A1 rev. 10. **Naming note:** the A5 work is recorded as MIR amendment **A3**
   per this plan's §2 C4.7-1 wording, so C4.7-3's layout amendment is renumbered **A4**
   (`mir-amendment-A4-layout.md`) to avoid two A3s.
-- C4.7-2: _pending_
+- C4.7-2: **DONE 2026-07-20** — 6 verifier negatives (`rejects_bitwise_binop_on_floats`,
+  `rejects_pow_on_non_integer_dest`, `rejects_vec_get_ref_with_wrong_dest`,
+  `rejects_chars_iter_next_on_non_iterator`, `rejects_runtime_call_arity_mismatch`,
+  `rejects_switch_on_float`; the plan's item A.6 `rejects_call_arity_against_instance` did NOT
+  exist, so the arity path is pinned by the runtime-arity test instead) + 4 clean-Unsupported
+  fixtures, each probed typecheck-clean AND oracle-supported first. **Finding:** the plan's
+  fixtures B.2 (method-own generics) and B.3 (non-bare impl heads) are **front-end-blocked**
+  (E0001 / E0302 — they never reach lowering), which reclassifies C4.7-8.4 and C4.7-8.5 as
+  front-end-first work. Workspace 752/0/2.
 - C4.7-3: _pending_ (CE3 draft first)
 - C4.7-4: _pending_
 - C4.7-5: _pending_

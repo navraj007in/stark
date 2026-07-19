@@ -1220,3 +1220,199 @@ fn rejects_slice_len_on_non_slice_receiver() {
     );
     expect_code(&program_with(vec![b]), "MIR-0012");
 }
+
+// ------------------------------------------- WP-C4.7-2: Class-A verifier negatives --
+//
+// CD-033's evidence rule: every Class-A class carries hand-built negatives proving the verifier
+// rejects malformed MIR of that class loudly, with the contract's allocated code — the lowering
+// and the verifier stay two independent readings of mir.md. These complement the differential
+// tests (which only ever see MIR the lowering actually produced).
+
+#[test]
+fn rejects_bitwise_binop_on_floats() {
+    // A5/amendment A3: bitwise ops are INTEGER-only. A float operand is MIR-0004 — the guard
+    // that keeps `&`/`|`/`^` from being read as a generic bit-pattern operation on any type.
+    let b = body(
+        vec![
+            ret_local(),
+            local(MirTy::Float64),
+            local(MirTy::Float64),
+            local(MirTy::Float64),
+        ],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(3)),
+                Rvalue::BinOp(
+                    mir::MirBinOp::BitAnd,
+                    Operand::Copy(Place::local(LocalId(1))),
+                    Operand::Copy(Place::local(LocalId(2))),
+                ),
+            )],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0004");
+}
+
+#[test]
+fn rejects_pow_on_non_integer_dest() {
+    // A5/amendment A3: `Pow` is integer exponentiation (NUM-INT-ARITH-001). A Float64 dest must
+    // not silently become a float power operation, which has different trapping behavior.
+    use mir::CheckedOp;
+    let b = body(
+        vec![ret_local(), local(MirTy::Float64)],
+        vec![
+            block(
+                vec![],
+                Terminator::Checked {
+                    op: CheckedOp::Pow,
+                    args: vec![
+                        Operand::Const(Constant::Float(2.0, MirTy::Float64)),
+                        Operand::Const(Constant::Float(3.0, MirTy::Float64)),
+                    ],
+                    dest: LocalId(1),
+                    target: BlockId(1),
+                    trap: mir::TrapInfo {
+                        category: mir::TrapCategory::IntegerOverflow,
+                        source: info(),
+                    },
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0004");
+}
+
+#[test]
+fn rejects_vec_get_ref_with_wrong_dest() {
+    // 0.1-A4: `VecGetRef` is schematic in T — its dest is `Option<&T>` for the RECEIVER's T.
+    // `Vec<Int32>` receiver with an `Option<&Bool>` dest is MIR-0005; the schematic signature
+    // must not degrade to "any Option of any reference".
+    let vec_int = MirTy::Core(starkc::hir::CoreType::Vec, vec![MirTy::Int32]);
+    let vec_ref = MirTy::Ref {
+        mutable: false,
+        inner: Box::new(vec_int.clone()),
+    };
+    let wrong_dest = MirTy::Enum(
+        EnumRef::CoreOption,
+        vec![MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Bool),
+        }],
+    );
+    let b = body(
+        vec![
+            ret_local(),
+            local(vec_int),
+            local(vec_ref),
+            local(wrong_dest),
+        ],
+        vec![
+            BasicBlock {
+                statements: vec![(
+                    Statement::Assign(
+                        Place::local(LocalId(2)),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place: Place::local(LocalId(1)),
+                        },
+                    ),
+                    info(),
+                )],
+                terminator: (
+                    Terminator::Call {
+                        callee: Callee::Runtime(RuntimeFn::VecGetRef),
+                        args: vec![
+                            Operand::Copy(Place::local(LocalId(2))),
+                            Operand::Const(Constant::Int(0, MirTy::UInt64)),
+                        ],
+                        dest: Place::local(LocalId(3)),
+                        target: BlockId(1),
+                    },
+                    info(),
+                ),
+            },
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_chars_iter_next_on_non_iterator() {
+    // 0.1-A5: `CharsIterNext` takes `&mut CharsIter` from the FIXED signature table. An Int32
+    // operand is MIR-0005 — the fixed table is checked, not assumed.
+    let b = body(
+        vec![
+            ret_local(),
+            local(MirTy::Int32),
+            local(MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char])),
+        ],
+        vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::CharsIterNext),
+                    args: vec![Operand::Copy(Place::local(LocalId(1)))],
+                    dest: Place::local(LocalId(2)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_runtime_call_arity_mismatch() {
+    // The runtime surface is a CLOSED, signed contract: a `CharsIterNext` called with two
+    // operands is MIR-0005 on arity, before any per-argument typing. (WP-C4.7-2 checked for an
+    // existing `rejects_call_arity_against_instance`; there was none, so the arity path against
+    // a runtime signature is pinned here.)
+    let b = body(
+        vec![
+            ret_local(),
+            local(MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char])),
+        ],
+        vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::CharsIterNext),
+                    args: vec![
+                        Operand::Const(Constant::Int(0, MirTy::Int32)),
+                        Operand::Const(Constant::Int(1, MirTy::Int32)),
+                    ],
+                    dest: Place::local(LocalId(1)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_switch_on_float() {
+    // A2 widened `SwitchInt`'s scrutinee to `Char` (literal Char patterns switch on the Unicode
+    // scalar). This pins that the widening stopped there: a Float64 scrutinee is MIR-0004. Float
+    // equality is not a discriminant test, and a jump table over floats has no meaning.
+    let b = body(
+        vec![ret_local(), local(MirTy::Float64)],
+        vec![
+            block(
+                vec![],
+                Terminator::SwitchInt {
+                    scrut: Operand::Copy(Place::local(LocalId(1))),
+                    arms: vec![(0, BlockId(1))],
+                    otherwise: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0004");
+}
