@@ -31,6 +31,29 @@ pub struct LowerError {
     pub span: Span,
 }
 
+/// LIMIT-MIR-MONO-INSTANCES — the named compiler-resource limit on monomorphised function
+/// instances per program (contract §2: recursive or explosive instantiation must fail through
+/// a named limit with a compiler-limit diagnostic, never an arbitrary crash; resource
+/// classification per C2.9). The value is a capacity choice, not semantics; raising it is not
+/// a contract change. It also indirectly bounds the type-nesting depth polymorphic recursion
+/// can build (each runaway instance nests one constructor deeper), keeping the recursive type
+/// converters within stack budget — revisit both together if the value changes.
+pub const LIMIT_MIR_MONO_INSTANCES: usize = 512;
+
+/// Does `ty` mention a user struct/enum anywhere? Comparisons on such types dispatch through
+/// the user's `Eq`/`Ord` impl (C4.5e); MIR's structural `BinOp` must not be emitted for them.
+fn ty_mentions_user_nominal(ty: &MirTy) -> bool {
+    match ty {
+        MirTy::Struct(..) | MirTy::Enum(EnumRef::User(_), _) => true,
+        MirTy::Enum(_, args) | MirTy::Core(_, args) => args.iter().any(ty_mentions_user_nominal),
+        MirTy::Tuple(elems) => elems.iter().any(ty_mentions_user_nominal),
+        MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_mentions_user_nominal(elem),
+        MirTy::Ref { inner, .. } => ty_mentions_user_nominal(inner),
+        // FnPtr comparison is rejected upstream by the checker (TYPE-FN-001).
+        _ => false,
+    }
+}
+
 fn unsupported<T>(what: impl Into<String>, span: Span) -> Result<T, LowerError> {
     Err(LowerError {
         what: what.into(),
@@ -73,7 +96,7 @@ pub fn lower_program(
     // Populate the nominal type context (struct fields, user-enum variant payloads) for every
     // non-generic top-level nominal type, so the verifier/backends can resolve projections.
     {
-        let probe = FnLowerer::new(hir, tables, &src, file_id, FnKey::Top(main));
+        let probe = FnLowerer::new(hir, tables, &src, file_id, FnKey::Top(main, Vec::new()));
         for &item_id in &root_items {
             match &hir.item(item_id).kind {
                 ItemKind::Struct {
@@ -92,7 +115,10 @@ pub fn lower_program(
                         }
                     }
                     if ok {
-                        program.types.struct_fields.insert(item_id.0, tys);
+                        program
+                            .types
+                            .struct_fields
+                            .insert((item_id.0, Vec::new()), tys);
                     }
                 }
                 ItemKind::Enum {
@@ -124,7 +150,10 @@ pub fn lower_program(
                         all.push(tys);
                     }
                     if ok {
-                        program.types.enum_variants.insert(item_id.0, all);
+                        program
+                            .types
+                            .enum_variants
+                            .insert((item_id.0, Vec::new()), all);
                     }
                 }
                 _ => {}
@@ -136,7 +165,7 @@ pub fn lower_program(
     // keyed by canonical symbol (top fns, impl methods/assoc fns, trait defaults — C4.5a).
     let mut queued: BTreeMap<String, ()> = BTreeMap::new();
     let mut worklist = VecDeque::new();
-    let main_key = FnKey::Top(main);
+    let main_key = FnKey::Top(main, Vec::new());
     queued.insert(key_symbol(hir, &src, &main_key)?, ());
     worklist.push_back(main_key);
     let mut bodies = Vec::new();
@@ -146,6 +175,19 @@ pub fn lower_program(
         for callee in lowerer.discovered_callees {
             let symbol = key_symbol(hir, &src, &callee)?;
             if queued.insert(symbol, ()).is_none() {
+                // C4.5c: the named instance limit — polymorphic recursion or explosive
+                // generic instantiation fails here deterministically, never by exhaustion.
+                if queued.len() > LIMIT_MIR_MONO_INSTANCES {
+                    return Err(LowerError {
+                        what: format!(
+                            "program exceeds the compiler resource limit \
+                             LIMIT-MIR-MONO-INSTANCES ({LIMIT_MIR_MONO_INSTANCES} monomorphised \
+                             function instances); recursive generic instantiation cannot be \
+                             compiled"
+                        ),
+                        span: Span { lo: 0, hi: 0 },
+                    });
+                }
                 worklist.push_back(callee);
             }
         }
@@ -153,7 +195,132 @@ pub fn lower_program(
     }
     bodies.sort_by(|a, b| a.instance.symbol.cmp(&b.instance.symbol));
     program.bodies = bodies;
+    // C4.5c: register every generic nominal instantiation reachable from the lowered bodies
+    // in the type context, so the verifier and backends can resolve its projections.
+    register_reachable_nominal_instances(hir, tables, &src, file_id, &mut program)?;
     Ok(program)
+}
+
+/// Field/variant payload types for one monomorphised nominal instance.
+enum NominalFields {
+    Struct(Vec<MirTy>),
+    Enum(Vec<Vec<MirTy>>),
+}
+
+fn nominal_instance_fields(
+    hir: &Hir,
+    tables: &TypeTables,
+    src: &str,
+    file: FileId,
+    item: ItemId,
+    args: &[MirTy],
+) -> Result<NominalFields, LowerError> {
+    let span0 = Span { lo: 0, hi: 0 };
+    let mut probe = FnLowerer::new(hir, tables, src, file, FnKey::Top(item, Vec::new()));
+    let generics = match &hir.item(item).kind {
+        ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. } => generics,
+        _ => return unsupported("nominal instance of a non-nominal item", span0),
+    };
+    if generics.len() != args.len() {
+        return unsupported(
+            "nominal type instantiated with the wrong number of type arguments",
+            span0,
+        );
+    }
+    for (param, ty) in generics.iter().zip(args) {
+        let name = src[param.name.lo as usize..param.name.hi as usize].to_string();
+        probe.param_subst.insert(name, ty.clone());
+    }
+    match &hir.item(item).kind {
+        ItemKind::Struct { fields, .. } => {
+            let tys = fields
+                .iter()
+                .map(|f| probe.hir_field_ty(f.ty))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(NominalFields::Struct(tys))
+        }
+        ItemKind::Enum { variants, .. } => {
+            let mut all = Vec::new();
+            for v in variants {
+                let payload: Vec<hir::TypeId> = match &v.kind {
+                    hir::VariantKind::Unit => Vec::new(),
+                    hir::VariantKind::Tuple(tys) => tys.clone(),
+                    hir::VariantKind::Struct(fields) => fields.iter().map(|f| f.ty).collect(),
+                };
+                let tys = payload
+                    .iter()
+                    .map(|&t| probe.hir_field_ty(t))
+                    .collect::<Result<Vec<_>, _>>()?;
+                all.push(tys);
+            }
+            Ok(NominalFields::Enum(all))
+        }
+        _ => unreachable!("guarded above"),
+    }
+}
+
+/// Walk every type that appears in the lowered bodies' locals and register a type-context
+/// entry for each generic nominal instantiation encountered, closing over field types
+/// (a `Pair<Int32>` field of type `Option<Point>` registers nothing new, but a field of
+/// another generic nominal recurses). Non-generic nominals keep their up-front entries.
+fn register_reachable_nominal_instances(
+    hir: &Hir,
+    tables: &TypeTables,
+    src: &str,
+    file: FileId,
+    program: &mut MirProgram,
+) -> Result<(), LowerError> {
+    use std::collections::BTreeSet;
+    let mut visit: Vec<MirTy> = Vec::new();
+    for body in &program.bodies {
+        for decl in &body.locals {
+            visit.push(decl.ty.clone());
+        }
+    }
+    let mut seen: BTreeSet<(u32, Vec<MirTy>)> = BTreeSet::new();
+    while let Some(ty) = visit.pop() {
+        match ty {
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                for a in &args {
+                    visit.push(a.clone());
+                }
+                if args.is_empty() || !seen.insert((item.0, args.clone())) {
+                    continue;
+                }
+                match nominal_instance_fields(hir, tables, src, file, item, &args)? {
+                    NominalFields::Struct(tys) => {
+                        for t in &tys {
+                            visit.push(t.clone());
+                        }
+                        program.types.struct_fields.insert((item.0, args), tys);
+                    }
+                    NominalFields::Enum(variants) => {
+                        for v in &variants {
+                            for t in v {
+                                visit.push(t.clone());
+                            }
+                        }
+                        program.types.enum_variants.insert((item.0, args), variants);
+                    }
+                }
+            }
+            MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Tuple(args) => {
+                for a in args {
+                    visit.push(a);
+                }
+            }
+            MirTy::Array(elem, _) | MirTy::Slice(elem) => visit.push(*elem),
+            MirTy::Ref { inner, .. } => visit.push(*inner),
+            MirTy::FnPtr { params, ret } => {
+                for p in params {
+                    visit.push(p);
+                }
+                visit.push(*ret);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ fn lowering --
@@ -162,8 +329,10 @@ pub fn lower_program(
 /// discovery deduplicates by symbol.
 #[derive(Clone, Debug)]
 pub enum FnKey {
-    /// Top-level `fn`.
-    Top(ItemId),
+    /// Top-level `fn`, monomorphised at the given concrete type arguments (empty for
+    /// non-generic fns). Arguments are always fully concrete: the discovering caller applies
+    /// its own substitution before constructing the key (C4.5c).
+    Top(ItemId, Vec<MirTy>),
     /// A method or associated function inside an `impl` block (`items[member]`).
     ImplFn { impl_item: ItemId, member: u32 },
     /// An un-overridden trait default method, monomorphised for one implementing nominal type.
@@ -203,12 +372,17 @@ fn impl_self_item(hir: &Hir, impl_item: ItemId) -> Option<ItemId> {
 fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
     let span0 = Span { lo: 0, hi: 0 };
     match key {
-        FnKey::Top(item) => {
+        FnKey::Top(item, type_args) => {
             let name = item_name_text(hir, src, *item).ok_or_else(|| LowerError {
                 what: "unnamed top-level fn".into(),
                 span: span0,
             })?;
-            Ok(format!("{name}@[]"))
+            let args_text = type_args
+                .iter()
+                .map(super::dump_ty)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(format!("{name}@[{args_text}]"))
         }
         FnKey::ImplFn { impl_item, member } => {
             let ItemKind::Impl { trait_, items, .. } = &hir.item(*impl_item).kind else {
@@ -266,6 +440,9 @@ struct FnLowerer<'a> {
     key: FnKey,
     /// Concrete `Self` type for method/trait-default bodies (C4.5a).
     self_subst: Option<MirTy>,
+    /// Concrete types for the body's own generic parameters, from the instance's type
+    /// arguments (C4.5c monomorphisation). Empty for non-generic bodies.
+    param_subst: HashMap<String, MirTy>,
     locals: Vec<LocalDecl>,
     local_map: HashMap<u32, LocalId>,
     blocks: Vec<Option<BasicBlock>>,
@@ -284,6 +461,7 @@ impl<'a> FnLowerer<'a> {
             file,
             key,
             self_subst: None,
+            param_subst: HashMap::new(),
             locals: Vec::new(),
             local_map: HashMap::new(),
             blocks: vec![None],
@@ -363,10 +541,18 @@ impl<'a> FnLowerer<'a> {
                 Primitive::Unit => MirTy::Unit,
                 _ => return unsupported(format!("type {p:?} (C4.5)"), span),
             },
-            Ty::Struct(item, args) if args.is_empty() => MirTy::Struct(*item, Vec::new()),
-            Ty::Enum(item, args) if args.is_empty() => {
-                MirTy::Enum(EnumRef::User(*item), Vec::new())
-            }
+            Ty::Struct(item, args) => MirTy::Struct(
+                *item,
+                args.iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            Ty::Enum(item, args) => MirTy::Enum(
+                EnumRef::User(*item),
+                args.iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
             Ty::Core(crate::hir::CoreType::Option, args) => {
                 let inner = args
                     .iter()
@@ -401,9 +587,17 @@ impl<'a> FnLowerer<'a> {
                 mutable: *mutable,
                 inner: Box::new(self.mir_ty(inner, span)?),
             },
-            Ty::Param(name) if name == "Self" => match &self.self_subst {
-                Some(self_ty) => self_ty.clone(),
-                None => return unsupported("Self outside a method body", span),
+            // C4.5c: the body's own generic parameters resolve through the instance's
+            // type arguments; `Self` through the receiver type as before.
+            Ty::Param(name) => match self.param_subst.get(name) {
+                Some(concrete) => concrete.clone(),
+                None if name == "Self" => match &self.self_subst {
+                    Some(self_ty) => self_ty.clone(),
+                    None => return unsupported("Self outside a method body", span),
+                },
+                None => {
+                    return unsupported(format!("unbound generic parameter {name} (C4.5)"), span)
+                }
             },
             _ => return unsupported(format!("type {ty:?} (C4.5)"), span),
         })
@@ -416,15 +610,39 @@ impl<'a> FnLowerer<'a> {
         match &node.kind {
             hir::TypeKind::Primitive(p) => self.mir_ty(&Ty::Primitive(*p), span),
             hir::TypeKind::Path { res, args, .. } => match res {
-                Res::Item(item) => match &self.hir.item(*item).kind {
-                    ItemKind::Struct { .. } if args.is_none() => {
-                        Ok(MirTy::Struct(*item, Vec::new()))
+                Res::Item(item) => {
+                    let converted_args = match args {
+                        Some(list) => list
+                            .args
+                            .iter()
+                            .map(|a| match a {
+                                hir::GenericArg::Type(t) => self.hir_field_ty(*t),
+                                _ => unsupported("field type argument (C4.5)", span),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                        None => Vec::new(),
+                    };
+                    match &self.hir.item(*item).kind {
+                        ItemKind::Struct { .. } => Ok(MirTy::Struct(*item, converted_args)),
+                        ItemKind::Enum { .. } => {
+                            Ok(MirTy::Enum(EnumRef::User(*item), converted_args))
+                        }
+                        _ => unsupported("field type form (C4.5)", span),
                     }
-                    ItemKind::Enum { .. } if args.is_none() => {
-                        Ok(MirTy::Enum(EnumRef::User(*item), Vec::new()))
+                }
+                // C4.5c: a generic parameter in a field/signature position resolves through
+                // the active substitution (nominal-instantiation registration or a
+                // monomorphised body's own parameters).
+                Res::TypeParam => {
+                    let name = self.text(span);
+                    match self.param_subst.get(name) {
+                        Some(concrete) => Ok(concrete.clone()),
+                        None => unsupported(
+                            format!("unbound generic parameter {name} in field type (C4.5)"),
+                            span,
+                        ),
                     }
-                    _ => unsupported("field type form (C4.5)", span),
-                },
+                }
                 Res::CoreType(core) => {
                     let inner = match args {
                         Some(list) => list
@@ -558,7 +776,7 @@ impl<'a> FnLowerer<'a> {
     fn fn_parts(&self) -> Result<(&'a hir::FnSig, hir::BlockId, Option<MirTy>), LowerError> {
         let span0 = Span { lo: 0, hi: 0 };
         match &self.key {
-            FnKey::Top(item) => match &self.hir.item(*item).kind {
+            FnKey::Top(item, _) => match &self.hir.item(*item).kind {
                 ItemKind::Fn(def) => Ok((&def.sig, def.body, None)),
                 _ => unsupported("FnKey::Top on non-fn", span0),
             },
@@ -602,15 +820,36 @@ impl<'a> FnLowerer<'a> {
         let key = self.key.clone();
         let (sig, body_block, self_ty) = self.fn_parts()?;
         let sig_span = sig.span;
+        // C4.5c: a generic top-level fn lowers once per concrete instantiation; the key's
+        // type arguments substitute for the signature's own generic parameters throughout.
         if !sig.generics.is_empty() {
-            return unsupported("generic function (monomorphisation is C4.5b+)", sig_span);
+            match &key {
+                FnKey::Top(_, type_args) if type_args.len() == sig.generics.len() => {
+                    for (param, ty) in sig.generics.iter().zip(type_args.iter()) {
+                        self.param_subst
+                            .insert(self.text(param.name).to_string(), ty.clone());
+                    }
+                }
+                FnKey::Top(..) => {
+                    return unsupported(
+                        "generic fn instantiated with the wrong number of type arguments",
+                        sig_span,
+                    );
+                }
+                _ => {
+                    return unsupported(
+                        "generic impl/trait method (monomorphisation of methods is a later C4.5 increment)",
+                        sig_span,
+                    );
+                }
+            }
         }
         self.self_subst = self_ty.clone();
 
         // Signature types: top fns use the checker's grounded fn_types; methods derive from
         // the HIR signature (concrete for impls; Self-substituted for trait defaults).
         let (params_no_recv, ret) = match (&key, self_ty.as_ref()) {
-            (FnKey::Top(item), _) => {
+            (FnKey::Top(item, _), _) => {
                 let (param_tys, ret_ty) = self
                     .tables
                     .fn_types
@@ -717,15 +956,15 @@ impl<'a> FnLowerer<'a> {
             .drain(..)
             .map(|b| b.expect("every allocated block must be sealed"))
             .collect();
-        let instance_item = match &self.key {
-            FnKey::Top(item) => *item,
-            FnKey::ImplFn { impl_item, .. } => *impl_item,
-            FnKey::TraitDefault { trait_item, .. } => *trait_item,
+        let (instance_item, instance_type_args) = match &self.key {
+            FnKey::Top(item, type_args) => (*item, type_args.clone()),
+            FnKey::ImplFn { impl_item, .. } => (*impl_item, Vec::new()),
+            FnKey::TraitDefault { trait_item, .. } => (*trait_item, Vec::new()),
         };
         Ok(MirBody {
             instance: Instance {
                 item: instance_item,
-                type_args: Vec::new(),
+                type_args: instance_type_args,
                 symbol,
             },
             params,
@@ -1096,24 +1335,11 @@ impl<'a> FnLowerer<'a> {
                     let ty = self.locals[mir_local.0 as usize].ty.clone();
                     Ok(self.read_place(Place::local(mir_local), &ty))
                 }
-                // A named function used as a function value (CD-021 item 16).
+                // A named function used as a function value (CD-021 item 16; generic fns
+                // monomorphise through the recorded instantiation, C4.5c / CD-021 item 21).
                 Res::Item(item) => {
-                    let ItemKind::Fn(def) = &self.hir.item(*item).kind else {
-                        return unsupported("non-function item in value position", span);
-                    };
-                    if !def.sig.generics.is_empty() {
-                        return unsupported(
-                            "generic fn as function value (monomorphisation is C4.5)",
-                            span,
-                        );
-                    }
-                    self.discovered_callees.push(FnKey::Top(*item));
-                    let name = self.text(def.sig.name).to_string();
-                    Ok(Operand::Const(Constant::FnPtr(Instance {
-                        item: *item,
-                        type_args: Vec::new(),
-                        symbol: format!("{name}@[]"),
-                    })))
+                    let instance = self.top_fn_instance(*item, expr, span)?;
+                    Ok(Operand::Const(Constant::FnPtr(instance)))
                 }
                 Res::Builtin(Builtin::None) => Ok(self.aggregate_to_temp(
                     expr,
@@ -1213,6 +1439,16 @@ impl<'a> FnLowerer<'a> {
                             self.lower_arith_operands(*op, lhs_op, rhs_op, &lhs_ty, span)
                         }
                         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                            // C4.5c guard: comparisons whose operands contain a user nominal
+                            // type dispatch through the user's `Eq`/`Ord` impl (the HIR
+                            // oracle already does); MIR's structural `BinOp` would silently
+                            // diverge from that, so reject until C4.5e lowers impl dispatch.
+                            if ty_mentions_user_nominal(&lhs_ty) {
+                                return unsupported(
+                                    "comparison on a user-defined type dispatches through its Eq/Ord impl (C4.5e)",
+                                    span,
+                                );
+                            }
                             let mir_op = match op {
                                 BinOp::Eq => MirBinOp::Eq,
                                 BinOp::Ne => MirBinOp::Ne,
@@ -1822,14 +2058,9 @@ impl<'a> FnLowerer<'a> {
                 }
                 Res::Builtin(_) => unsupported("builtin (C4.5)", span),
                 Res::Item(item) => {
-                    let ItemKind::Fn(def) = &self.hir.item(*item).kind else {
-                        return unsupported("call to a non-function item", span);
-                    };
-                    if !def.sig.generics.is_empty() {
-                        return unsupported("generic call (monomorphisation is C4.5)", span);
-                    }
-                    self.discovered_callees.push(FnKey::Top(*item));
-                    let name = self.text(def.sig.name).to_string();
+                    // C4.5c: generic callees resolve to a concrete monomorphised instance
+                    // through the checker's recorded instantiation.
+                    let instance = self.top_fn_instance(*item, callee, span)?;
                     let ops = args
                         .iter()
                         .map(|&a| self.lower_expr_to_operand(a))
@@ -1837,11 +2068,7 @@ impl<'a> FnLowerer<'a> {
                     let after = self.new_block();
                     self.terminate(
                         Terminator::Call {
-                            callee: Callee::Instance(Instance {
-                                item: *item,
-                                type_args: Vec::new(),
-                                symbol: format!("{name}@[]"),
-                            }),
+                            callee: Callee::Instance(instance),
                             args: ops,
                             dest,
                             target: after,
@@ -1871,6 +2098,18 @@ impl<'a> FnLowerer<'a> {
                 // C4.5a: associated function (`Point::new(3, 4)`).
                 Res::AssociatedFn(nominal, name_span) => {
                     let nominal = *nominal;
+                    // C4.5c boundary: associated fns on generic nominals need impl-level
+                    // substitution, owned by a later C4.5 increment.
+                    if let ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. } =
+                        &self.hir.item(nominal).kind
+                    {
+                        if !generics.is_empty() {
+                            return unsupported(
+                                "associated fn on a generic nominal type (a later C4.5 increment)",
+                                span,
+                            );
+                        }
+                    }
                     let name_text = self.text(*name_span).to_string();
                     let Some((key, _receiver)) =
                         self.find_impl_fn(nominal, &name_text, /*receiverless=*/ true)
@@ -1927,6 +2166,44 @@ impl<'a> FnLowerer<'a> {
             },
             _ => unsupported("indirect callee expression (C4.5)", span),
         }
+    }
+
+    /// C4.5c: resolve a use of a top-level fn item (call callee or fn-value position) to its
+    /// concrete monomorphised instance. Generic fns consume the checker's recorded
+    /// instantiation for the referencing expression; this body's own substitution is applied
+    /// so the resulting type arguments are always fully concrete, even for generic-to-generic
+    /// calls whose recorded arguments mention the caller's parameters.
+    fn top_fn_instance(
+        &mut self,
+        item: ItemId,
+        use_expr: ExprId,
+        span: Span,
+    ) -> Result<Instance, LowerError> {
+        let ItemKind::Fn(def) = &self.hir.item(item).kind else {
+            return unsupported("use of a non-function item as a function", span);
+        };
+        let type_args = if def.sig.generics.is_empty() {
+            Vec::new()
+        } else {
+            let Some(recorded) = self.tables.generic_insts.get(&use_expr) else {
+                // The checker records every accepted use of a generic fn (undetermined ones
+                // are E0004-rejected before lowering), so a miss is a pipeline invariant
+                // violation, not a user error — still reported cleanly, never mislowered.
+                return unsupported("generic fn use without a recorded instantiation", span);
+            };
+            recorded
+                .iter()
+                .map(|t| self.mir_ty(t, span))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let key = FnKey::Top(item, type_args.clone());
+        let symbol = key_symbol(self.hir, self.src, &key)?;
+        self.discovered_callees.push(key);
+        Ok(Instance {
+            item,
+            type_args,
+            symbol,
+        })
     }
 
     /// C4.5a method resolution: inherent impls first, then trait impls, then trait defaults —
@@ -2024,7 +2301,17 @@ impl<'a> FnLowerer<'a> {
         let base_ty = self.expr_mir_ty(base)?;
         let (peeled_ty, base_ref_layers) = Self::peel_refs(base_ty.clone());
         let nominal = match &peeled_ty {
-            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => *item,
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                // C4.5c boundary: methods on a *generic* nominal instantiation need
+                // impl-level substitution, which a later C4.5 increment owns.
+                if !args.is_empty() {
+                    return unsupported(
+                        "method call on a generic nominal instantiation (a later C4.5 increment)",
+                        span,
+                    );
+                }
+                *item
+            }
             other => {
                 return unsupported(
                     format!("method call on non-nominal receiver {other:?} (C4.5b+)"),

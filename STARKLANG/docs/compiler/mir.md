@@ -91,7 +91,11 @@ reachable from the bodies (`Option`/`Result` payloads derive from their type arg
 need no table entry). The type context is *part of the in-memory MIR compilation unit*: the
 verifier requires it to type projections step by step, and every backend requires it for
 layout; it is not serialized in the textual dump. This is an additive amendment recorded under
-CD-029; the MIR version remains v0.1.
+CD-029; the MIR version remains v0.1. *Implementation note (WP-C4.5c):* because a nominal type
+in monomorphised-only MIR is an instance, the context's entries are keyed per
+`(ItemId, type arguments)` — `Pair<Int32>` and `Pair<Bool>` are distinct entries; non-generic
+nominals key with an empty argument vector. This realizes the paragraph above for generic
+nominals and is not a shape/version change.
 
 ## 3. MIR types (`MirTy`)
 

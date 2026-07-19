@@ -256,10 +256,15 @@ fn option_lowers_as_logical_enum() {
 #[test]
 fn unsupported_constructs_report_cleanly() {
     let cases = [
+        // C4.5c lowers generic fns; comparisons on user nominal types still dispatch through
+        // the user's Eq/Ord impl, which C4.5e owns — the guard must reject, never emit a
+        // structural BinOp that would silently diverge from the oracle.
         (
-            "generic.stark",
-            "fn id<T>(x: T) -> T { x } fn main() { println(id(1)); }",
-            "generic",
+            "user_eq.stark",
+            "struct P { x: Int32 } \
+             impl Eq for P { fn eq(&self, other: &P) -> Bool { self.x == other.x } } \
+             fn main() { let a = P { x: 1 }; let b = P { x: 1 }; println(a == b); }",
+            "C4.5e",
         ),
         (
             "string.stark",
@@ -294,5 +299,77 @@ fn unsupported_constructs_report_cleanly() {
                 e.what
             ),
         }
+    }
+}
+
+/// WP-C4.5c: generic fns lower once per concrete instantiation with deterministic, injective
+/// symbols; identical instantiations reached through multiple call sites deduplicate to one
+/// body.
+#[test]
+fn generic_instances_deduplicate_with_deterministic_symbols() {
+    let src = "fn id<T>(x: T) -> T { x } \
+               fn main() { println(id(1)); println(id(2)); println(id(true)); }";
+    let front = front_end_src("mono.stark", src.to_string());
+    let program = lower_ok(&front);
+    assert_structural_invariants(&program);
+    let symbols: Vec<&str> = program
+        .bodies
+        .iter()
+        .map(|b| b.instance.symbol.as_str())
+        .collect();
+    assert_eq!(
+        symbols,
+        vec!["id@[Bool]", "id@[Int32]", "main@[]"],
+        "one body per instantiation, sorted by canonical symbol"
+    );
+    // The Int32 instance carries its type argument on the Instance record too.
+    let int_instance = &program.bodies[1].instance;
+    assert_eq!(int_instance.type_args, vec![mir::MirTy::Int32]);
+    // Determinism: an independent second lowering produces an identical dump.
+    let again = lower_ok(&front_end_src("mono.stark", src.to_string()));
+    assert_eq!(program.dump(), again.dump());
+}
+
+/// WP-C4.5c: a generic nominal instantiation reachable from the bodies gets a type-context
+/// entry keyed by its concrete type arguments, so the verifier can resolve its projections.
+#[test]
+fn generic_struct_instantiations_register_in_type_context() {
+    let src = "struct Pair<T> { a: T, b: T } \
+               fn main() { \
+                   let p = Pair { a: 1, b: 2 }; \
+                   let q = Pair { a: true, b: false }; \
+                   println(p.a); \
+                   if q.b { println(1); } \
+               }";
+    let front = front_end_src("genstruct.stark", src.to_string());
+    let program = lower_ok(&front);
+    let entries: Vec<&(u32, Vec<mir::MirTy>)> = program.types.struct_fields.keys().collect();
+    let int_entry = entries
+        .iter()
+        .find(|(_, args)| args == &vec![mir::MirTy::Int32]);
+    let bool_entry = entries
+        .iter()
+        .find(|(_, args)| args == &vec![mir::MirTy::Bool]);
+    assert!(
+        int_entry.is_some() && bool_entry.is_some(),
+        "expected Pair<Int32> and Pair<Bool> context entries, got keys: {entries:?}"
+    );
+    // And the verifier accepts the program end to end.
+    starkc::mir::verify::verify_program(&program).expect("verifier accepts generic nominals");
+}
+
+/// WP-C4.5c: polymorphic recursion cannot be monomorphised; it must fail through the named
+/// compiler-resource limit — deterministically, never by memory exhaustion or stack overflow.
+#[test]
+fn polymorphic_recursion_trips_the_named_instance_limit() {
+    let src = "fn f<T>(x: T) { f((x,)); } fn main() { f(0); }";
+    let front = front_end_src("polyrec.stark", src.to_string());
+    match lower_program(&front.hir, &front.tables, front.file.clone()) {
+        Ok(_) => panic!("polymorphic recursion must not lower"),
+        Err(e) => assert!(
+            e.what.contains("LIMIT-MIR-MONO-INSTANCES"),
+            "limit failure must name the resource limit, got: {}",
+            e.what
+        ),
     }
 }

@@ -35,7 +35,7 @@ pub struct FileId(pub u32);
 
 /// Nominal identity for enum types: user enums carry their HIR item; `Option`/`Result` are
 /// logical core enums with no user item (contract §3, CD-028 required change #2).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum EnumRef {
     User(crate::hir::ItemId),
     CoreOption,
@@ -55,7 +55,9 @@ pub struct Instance {
 
 // --------------------------------------------------------------------- types --
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+// `Ord` (WP-C4.5c): `MirTy` vectors key the `TypeContext` maps per monomorphised nominal
+// instantiation; the ordering is structural and carries no semantic meaning.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum MirTy {
     Int8,
     Int16,
@@ -354,14 +356,17 @@ pub enum Terminator {
 // ------------------------------------------------------------------- program --
 
 /// Nominal-type layout information the verifier and backends need to resolve projections:
-/// struct field types and user-enum variant payload types, keyed by `ItemId`. `Option`/
+/// struct field types and user-enum variant payload types, keyed per **monomorphised nominal
+/// instance** `(ItemId, type arguments)` — contract §2 defines the type context over nominal
+/// types reachable from the bodies, and a nominal type in monomorphised-only MIR *is* an
+/// instance (WP-C4.5c; non-generic nominals key with an empty argument vector). `Option`/
 /// `Result` payloads are derived from their type arguments directly (no table entry needed).
 /// An implementation companion to the contract's nominal types — not part of the dump, not a
 /// shape/version change.
 #[derive(Clone, Debug, Default)]
 pub struct TypeContext {
-    pub struct_fields: std::collections::BTreeMap<u32, Vec<MirTy>>,
-    pub enum_variants: std::collections::BTreeMap<u32, Vec<Vec<MirTy>>>,
+    pub struct_fields: std::collections::BTreeMap<(u32, Vec<MirTy>), Vec<MirTy>>,
+    pub enum_variants: std::collections::BTreeMap<(u32, Vec<MirTy>), Vec<Vec<MirTy>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -502,7 +507,10 @@ fn dump_local_kind(kind: &LocalKind) -> String {
     }
 }
 
-fn dump_ty(ty: &MirTy) -> String {
+/// Deterministic, injective textual rendering of a type. Doubles as the type-argument
+/// mangling inside canonical instance symbols (contract §2: deterministic + injective +
+/// stable for identical inputs; NOT a stable external ABI).
+pub(crate) fn dump_ty(ty: &MirTy) -> String {
     match ty {
         MirTy::Struct(item, args) => dump_generic("struct", &format!("#{}", item.0), args),
         MirTy::Enum(EnumRef::User(item), args) => {

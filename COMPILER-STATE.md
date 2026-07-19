@@ -1,16 +1,29 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after CD-022 follow-up amendment
+Updated: 2026-07-19 after WP-C4.5c
 
 ## Position
-Gate: C4  Next: WP-C4.5c (generics + full static dispatch)  Blocked: none
+Gate: C4  Next: WP-C4.5d (ownership and Drop)  Blocked: none
 C4.1-C4.4 done; WP-C4.5 split into increments (WP-C4.5.md). Done so far: C4.5a
-(methods/assoc-fns/trait dispatch incl. defaults; corpus __01 differential-green) and
+(methods/assoc-fns/trait dispatch incl. defaults; corpus __01 differential-green),
 C4.5-contract-cleanup (CD-029: trap provenance through outcomes + differential span
 comparison; VerifiedMirProgram wrapper — run_program consumes proof-of-verification only;
 TypeContext amended into mir.md §2, still v0.1; canonical_float spec tests as the
-compensating control for the intentionally-shared formatter). Differential status: no
-difference in lowering and MIR execution for the tested subset, with some runtime algorithms
-intentionally shared and separately spec-tested. Workspace 640/0/2.
+compensating control for the intentionally-shared formatter), C4.5b (indexing via CheckIndex
+proof tokens + real reference places; DEV-065/066 oracle fixes), and **C4.5c 2026-07-19**
+(generics + full static dispatch: checker-recorded instantiations in
+`TypeTables::generic_insts` with E0004 undetermined-rejection — DEV-064 closed; monomorphised
+`FnKey::Top(item, type_args)` instances, injective `name@[args]` symbols, named
+`LIMIT-MIR-MONO-INSTANCES`=512 limit negatively tested on polymorphic recursion; generic
+nominal instantiations registered per `(item, args)` in TypeContext; operator + trait-bound
+method dispatch per instantiation; comparisons on user nominals clean-Unsupported until
+C4.5e's Eq/Ord impl dispatch; DEV-067 recorded — pre-existing checker over-rejection of
+bounded params at intra-generic call sites and `&T` receivers, owner: later C4.5 increment;
+6 new differential + 3 lowering + 3 typecheck tests). Same session: fixed the CI break — a
+`collapsible_match` lint new in CI's clippy 1.97 (verify.rs; local was 1.93, 1.97 installed
+side-by-side and both fmt+clippy verified clean at CI parity), failing every run since the
+WP-C4.3 push. Differential status: no difference in lowering and MIR execution for the tested
+subset, with some runtime algorithms intentionally shared and separately spec-tested.
+Workspace 658/0/2 (C4.5b-2 baseline re-measured 646; the previously recorded 640 was stale).
 WP-C4.3 done 2026-07-19: `src/mir/verify.rs` implements all 13 contract §10 obligations with
 the MIR-xxxx internal namespace (first allocation, see Diagnostic codes); every lowered program
 verifies clean; 13 hand-crafted invalid bodies each rejected with their specific code; one
@@ -635,13 +648,13 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   extension code (Core-only scope), but WP-C9.1/C9.2 will need this as input later.
 
 ## Known deviations — open index
-Canonical ledger (full structured entries, all 58 numbered deviations):
+Canonical ledger (full structured entries, all 65 numbered deviations):
 `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. The per-deviation narrative that used to live in
 this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim in
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-19 (post-DEV-060 closure):
+Open as of 2026-07-19 (post-WP-C4.5c):
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -649,14 +662,15 @@ Open as of 2026-07-19 (post-DEV-060 closure):
 - DEV-012 — VS Code extension UI never interactively verified. Owner: WP-C8.7.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
-- DEV-064 — coercion of a generic fn with undetermined parameters is not rejected (TYPE-FN-002
-  conformance gap; benign in the type-erased interpreter, a hazard for monomorphising codegen).
-  Owner: C4.5.
+- DEV-067 — bounded generic parameters lose their bounds at intra-generic call sites (E0500)
+  and behind `&T` receivers (E0302); over-rejection only, pre-existing, surfaced by WP-C4.5c's
+  differential tests. Owner: a later C4.5 increment (with generic method monomorphisation).
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
 Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
-CD-027 pre-C4.1 correction pass. See `KNOWN-DEVIATIONS.md`.
+CD-027 pre-C4.1 correction pass; DEV-064 (undetermined-generic rejection, WP-C4.5c, E0004);
+DEV-065/066 (C4.5b oracle fixes). See `KNOWN-DEVIATIONS.md`.
 
 ## Design fact pinned down by WP-C1.2 (not a deviation, recorded so it isn't re-discovered)
 STARK's visibility model is **stricter than Rust's**: per `07-Modules-and-Packages.md` §Visibility

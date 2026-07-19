@@ -1752,24 +1752,53 @@ WP-C1.5)
   `map_err`). Regression test:
   `interp::tests::option_result_combinators_execute_with_fn_values`. — closed.
 
-## DEV-064 — Coercion of a generic fn with undetermined parameters is not rejected
+## DEV-064 — Coercion of a generic fn with undetermined parameters is not rejected [CLOSED, C4.5c, 2026-07-19]
 
 - **Normative expectation:** TYPE-FN-002 (`03-Type-System.md` §Function Types, added under
   CD-027): a generic function may coerce to a concrete fn type only when the expected type
   fully determines every generic argument; otherwise the program is rejected at compile time.
-- **Current behaviour (confirmed empirically):** `fn count<T>() -> Int32` coerced to
-  `fn() -> Int32` — `T` appears nowhere in the signature, so it is undetermined — is accepted
-  and runs. Benign in the type-erased interpreter (T never influences execution), but
+  TYPE-GENERIC-001's closing rule ("if any parameter remains unconstrained, the call requires
+  explicit arguments") states the same requirement for direct calls.
+- **Previous behaviour (confirmed empirically):** `fn count<T>() -> Int32` coerced to
+  `fn() -> Int32` — `T` appears nowhere in the signature, so it is undetermined — was accepted
+  and ran. Benign in the type-erased interpreter (T never influences execution), but
   ill-defined for a monomorphising backend, which is exactly why TYPE-FN-002 requires
-  rejection.
-- **User impact:** none observable today; becomes a codegen hazard when MIR monomorphisation
-  (C4.5) needs a concrete instantiation for every coerced generic fn.
-- **Security/soundness impact:** none (acceptance of a spec-prohibited but currently
-  harmless program — a conformance gap, not a safety gap).
-- **Workaround:** n/a.
-- **Owning gate:** C4.5 (monomorphisation) at latest — the checker must reject undetermined
-  coercions before native lowering depends on full determination. Deliberately not fixed in
-  the CD-027 correction pass to keep that pass to its three authorized items. — open.
+  rejection. The undetermined direct call (`count();`) was equally accepted.
+- **Fix (WP-C4.5c):** the checker now records the ordered generic-argument types for every
+  use of a generic fn (`TypeTables::generic_insts`, keyed by the referencing path
+  expression), grounds them once inference completes, and rejects any instantiation still
+  containing an inference variable with **E0004** ("Cannot infer type" — the spec-assigned
+  code) — covering both the coercion and direct-call forms uniformly. Tensor-kinded generics
+  (`Dim`/`DType`/`Device`) unify through the tensor context and are exempt. The same recorded
+  table is what MIR monomorphisation consumes, so instance collection never sees an unnamed
+  instantiation (mir.md §2's stated upstream requirement).
+- **Regression evidence:** `typecheck.rs::tests::undetermined_generic_fn_coercion_is_rejected`,
+  `::undetermined_generic_call_requires_turbofish` (rejection + turbofish acceptance), and
+  `::determined_generic_fn_coercion_publishes_instantiation` (determined coercion stays
+  accepted and publishes `[Int32]`). — closed.
+
+## DEV-067 — Bounded generic parameters lose their bounds at intra-generic call sites and behind references
+
+- **Normative expectation:** inside `fn f<T: Ord>(...)`, the parameter `T` satisfies the
+  bound `Ord` — a call `g(x)` to `fn g<U: Ord>(u: U)` with `x: T` must type-check
+  (TYPE-GENERIC-001: all bound obligations are discharged by the caller's own bound), and a
+  trait-bound method call through a reference receiver (`shape: &T` with `T: Area`,
+  `shape.area()`) must resolve exactly as the by-value form does (auto-deref, 03-Type-System
+  §Operators and Traits / §Generic Type Inference).
+- **Current behaviour (confirmed empirically at `d1c1c25`, pre-C4.5c, so pre-existing):**
+  two over-rejections of valid Core programs. (a) A generic fn recursing (or calling any
+  other generic fn) with a *bounded* parameter fails `E0500 type 'T' does not satisfy trait
+  bound 'Ord'` — the bound check on the callee's instantiation does not consult the enclosing
+  body's own parameter bounds. (b) A method call on a `&T` receiver whose `T` carries the
+  trait bound fails `E0302 method 'area' not found for type '&T'` — bounded-parameter method
+  lookup works by value but does not peel the reference. Both surfaced while writing
+  WP-C4.5c's differential tests (the tests use unbounded recursion and by-value receivers as
+  workarounds, marked with this ID).
+- **User impact:** valid generic code patterns (bounded recursion, `&T` trait dispatch) are
+  rejected; workarounds exist (unbounded parameter where possible, by-value receiver).
+- **Security/soundness impact:** none — over-rejection only; no invalid program is accepted.
+- **Owning gate:** C4.5 (a later increment, alongside generic method monomorphisation, which
+  needs the same bounds-environment machinery) — open.
 
 ## DEV-065 — Array index OOB reported "use of moved or invalid field" [CLOSED, C4.5b-1, 2026-07-19]
 
@@ -1862,14 +1891,17 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 64 numbered deviations total (DEV-002 through DEV-066, DEV-001/DEV-003 retired).
+Current count: 65 numbered deviations total (DEV-002 through DEV-067, DEV-001/DEV-003 retired).
 DEV-061/062/063 (the function-value cluster: indirect calls not executable, fn values not Copy in
 borrowck, Option/Result combinators missing) were found 2026-07-19 during Gate C4 entry by
 executing CD-021 workload items 16-22 against the interpreter for the first time — exactly the
 early-surfacing those workload items were frozen to provide — and **closed the same day** in the
 owner-approved pre-C4.1 correction pass (CD-027). DEV-064 (undetermined-generic fn coercion not
-rejected, a TYPE-FN-002 conformance gap) was found during the same pass and remains open, owned
-by C4.5 monomorphisation.
+rejected, a TYPE-FN-002 conformance gap) was found during the same pass and **closed by
+WP-C4.5c** (E0004 rejection in the checker). DEV-067 (bounded generic parameters lose their
+bounds at intra-generic call sites and behind reference receivers, an over-rejection) was found
+while writing WP-C4.5c's differential tests, confirmed pre-existing, and remains open, owned by
+a later C4.5 increment.
 DEV-056 (`?` propagation swallowed outside aggregate construction), DEV-057 (Eq/Ord
 comparison dispatch passed owned clones instead of borrowed places), DEV-058 (Float32 nested
 inside a tuple/array/Option/Result/struct still formatted via Float64 digits -- the residual gap

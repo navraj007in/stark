@@ -406,3 +406,115 @@ fn reference_to_struct_field_agrees() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.5c: generics and full static dispatch ----
+
+/// Monomorphised generic fns over multiple primitive instantiations, with operator dispatch
+/// on the generic parameter resolving per instantiation (`Ord` comparison to integer and
+/// float comparisons, `Num` arithmetic to checked-integer vs IEEE-float operations).
+#[test]
+fn generic_fns_over_primitive_instantiations_agree() {
+    differential(
+        "generic_prims.stark",
+        "fn largest<T: Ord>(a: T, b: T) -> T { if a > b { a } else { b } } \
+         fn twice<T: Num>(x: T) -> T { x + x } \
+         fn main() { \
+             println(largest(3, 7)); \
+             println(largest(2.5, 1.5)); \
+             println(twice(21)); \
+             println(twice(0.25)); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A generic fn calling another generic fn with arguments that mention the caller's own
+/// parameter: the recorded instantiation composes with the caller's substitution.
+#[test]
+fn generic_calling_generic_agrees() {
+    differential(
+        "generic_chain.stark",
+        "fn id<T>(x: T) -> T { x } \
+         fn pass<T>(x: T) -> T { id(x) } \
+         fn main() { println(pass(11)); println(pass(false)); }"
+            .to_string(),
+    );
+}
+
+/// Recursion inside a generic fn stays within one instance (no runaway instantiation).
+/// The recursing parameter is deliberately unbounded: a *bounded* parameter at an
+/// intra-generic call site is over-rejected by the checker today (DEV-067).
+#[test]
+fn generic_recursion_agrees() {
+    differential(
+        "generic_rec.stark",
+        "fn count_down<T>(marker: T, n: Int32) -> Int32 { \
+             if n > 0 { count_down(marker, n - 1) } else { 99 } \
+         } \
+         fn main() { println(count_down(true, 3)); println(count_down(1.5, 2)); }"
+            .to_string(),
+    );
+}
+
+/// Static trait dispatch through a generic parameter's bound: the method call on a `T`
+/// receiver resolves to the implementing type's method after substitution. (A `&T` receiver
+/// is over-rejected by the checker today — DEV-067 — so the receiver is by value here.)
+#[test]
+fn trait_bound_method_dispatch_in_generic_fn_agrees() {
+    differential(
+        "generic_bound_dispatch.stark",
+        "trait Area { fn area(&self) -> Int32; } \
+         struct Sq { s: Int32 } \
+         struct Rect { w: Int32, h: Int32 } \
+         impl Area for Sq { fn area(&self) -> Int32 { self.s * self.s } } \
+         impl Area for Rect { fn area(&self) -> Int32 { self.w * self.h } } \
+         fn measure<T: Area>(shape: T) -> Int32 { shape.area() } \
+         fn main() { \
+             let sq = Sq { s: 4 }; \
+             let r = Rect { w: 3, h: 5 }; \
+             println(measure(sq)); \
+             println(measure(r)); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Generic user nominals: struct construction, field access through the registered
+/// type-context entries, and pattern matching on a generic user enum.
+#[test]
+fn generic_struct_and_enum_agree() {
+    differential(
+        "generic_nominals.stark",
+        "struct Pair<T> { a: T, b: T } \
+         enum MyOpt<T> { None2, Some2(T) } \
+         fn main() { \
+             let p = Pair { a: 10, b: 32 }; \
+             println(p.a + p.b); \
+             let q = Pair { a: true, b: false }; \
+             if q.a { println(1); } \
+             let m = MyOpt::Some2(7); \
+             match m { \
+                 MyOpt::Some2(v) => println(v), \
+                 MyOpt::None2 => println(0), \
+             } \
+         }"
+        .to_string(),
+    );
+}
+
+/// CD-021 workload item 21: a monomorphised generic fn as a function value — the coercion
+/// site's determined instantiation becomes the FnPtr constant's instance.
+#[test]
+fn monomorphised_generic_fn_value_agrees() {
+    differential(
+        "generic_fnval.stark",
+        "fn id<T>(x: T) -> T { x } \
+         fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 { f(v) } \
+         fn main() { \
+             let f: fn(Int32) -> Int32 = id; \
+             println(f(41)); \
+             println(apply(f, 7)); \
+         }"
+        .to_string(),
+    );
+}

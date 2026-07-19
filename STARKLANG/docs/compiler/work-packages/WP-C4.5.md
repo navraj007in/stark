@@ -31,9 +31,28 @@ HIR/MIR differential agreement before the next begins.
    cross-frame mutation; DEV-066 (borrowck moved a reference on deref-read, rejecting
    `*r = *r + 1`) found by the differential and fixed. **Slices deferred to C4.5e** where
    their consumers (String/Vec views) live — nothing in the current workload reaches them.
-4. **C4.5c — generics and full static dispatch:** real `Instance.type_args` monomorphisation
-   with deterministic deduplication and the named resource limit; generic fns/types; operator
-   dispatch on generic parameters; DEV-064's rejection in typecheck.
+4. **C4.5c — generics and full static dispatch: DONE 2026-07-19.** Real
+   `Instance.type_args` monomorphisation: the checker records every generic-fn use's ordered
+   instantiation (`TypeTables::generic_insts`, grounded; undetermined ⇒ E0004 — DEV-064
+   closed, TYPE-FN-002/TYPE-GENERIC-001), and lowering consumes it to build concrete
+   `FnKey::Top(item, type_args)` instances with injective `name@[args]` symbols,
+   worklist-deduplicated, capped by the named resource limit `LIMIT-MIR-MONO-INSTANCES`
+   (=512; polymorphic recursion trips it deterministically, negatively tested). Generic
+   bodies lower once per instantiation via `param_subst` (`Ty::Param` → concrete), giving
+   operator dispatch on generic parameters per instantiation (checked-int vs IEEE-float);
+   trait-bound method dispatch on `T` receivers resolves statically after substitution.
+   Generic structs/enums instantiate (`MirTy` args populated; `TypeContext` keys became
+   `(item, type_args)` per contract §2's nominal-instance language, entries registered by a
+   reachability fixpoint over body locals). Guard: comparisons on user nominal types are
+   clean-Unsupported naming C4.5e (they dispatch through user `Eq`/`Ord` impls, which the
+   structural `BinOp` would silently diverge from). Differential: 6 new tests (primitives ×
+   operators, generic-calling-generic, generic recursion, bound dispatch, generic nominals +
+   match, monomorphised fn value — CD-021 item 21). Found & recorded DEV-067 (pre-existing
+   checker over-rejection: bounded params at intra-generic call sites, `&T` bounded-method
+   receivers), owner: later C4.5 increment. Methods/assoc fns *on generic nominals* and
+   generic impl/trait methods are clean-Unsupported, owned by the increment that adds
+   impl-level substitution. Workspace 658/0/2 (baseline re-measured: 646 at C4.5b-2, the
+   recorded 640 was stale).
 5. **C4.5d — ownership and Drop:** field-sensitive initialization, partial moves, drop flags,
    `Drop` terminator elaboration (reverse declaration order, exactly once), verifier's
    field-precise move refinement.

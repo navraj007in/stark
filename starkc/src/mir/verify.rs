@@ -170,12 +170,12 @@ impl<'a> BodyCx<'a> {
         let mut ty = self.local_ty(place.local, bi)?;
         for projection in &place.projection {
             ty = match (projection, ty) {
-                (Projection::Field(i), MirTy::Struct(item, _)) => {
+                (Projection::Field(i), MirTy::Struct(item, args)) => {
                     match self
                         .program
                         .types
                         .struct_fields
-                        .get(&item.0)
+                        .get(&(item.0, args))
                         .and_then(|fields| fields.get(*i as usize))
                     {
                         Some(f) => f.clone(),
@@ -441,12 +441,17 @@ impl<'a> BodyCx<'a> {
                     self.expect_ty(elem, t, "array element", bi);
                 }
             }
-            (AggKind::Struct(item), MirTy::Struct(expected_item, _)) => {
+            (AggKind::Struct(item), MirTy::Struct(expected_item, args)) => {
                 if item != expected_item {
                     self.err("MIR-0004", bi, "struct aggregate item mismatch");
                     return;
                 }
-                match self.program.types.struct_fields.get(&item.0) {
+                match self
+                    .program
+                    .types
+                    .struct_fields
+                    .get(&(item.0, args.clone()))
+                {
                     Some(fields) => {
                         if fields.len() != operands.len() {
                             self.err("MIR-0004", bi, "struct aggregate field-count mismatch");
@@ -1004,11 +1009,9 @@ impl<'a> BodyCx<'a> {
                         self.scan_operand_for_proof_misuse(arg, bi as u32);
                     }
                 }
-                Terminator::Checked { op, args, .. } => {
-                    if !matches!(op, CheckedOp::CheckIndex) {
-                        for arg in args {
-                            self.scan_operand_for_proof_misuse(arg, bi as u32);
-                        }
+                Terminator::Checked { op, args, .. } if !matches!(op, CheckedOp::CheckIndex) => {
+                    for arg in args {
+                        self.scan_operand_for_proof_misuse(arg, bi as u32);
                     }
                 }
                 _ => {}
@@ -1102,7 +1105,7 @@ fn variant_payload(
         EnumRef::User(item) => program
             .types
             .enum_variants
-            .get(&item.0)
+            .get(&(item.0, args.to_vec()))
             .and_then(|variants| variants.get(variant as usize).cloned()),
     }
 }

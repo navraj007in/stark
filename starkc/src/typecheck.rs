@@ -45,6 +45,34 @@ pub enum ExtensionTy {
     ModelError,
 }
 
+/// Structural search for a type constructor anywhere inside `ty` (WP-C4.5c helpers for
+/// auditing grounded generic instantiations before publication).
+fn ty_contains(ty: &Ty, pred: &dyn Fn(&Ty) -> bool) -> bool {
+    if pred(ty) {
+        return true;
+    }
+    match ty {
+        Ty::Ref { inner, .. } => ty_contains(inner, pred),
+        Ty::Struct(_, args) | Ty::Enum(_, args) | Ty::Core(_, args) => {
+            args.iter().any(|arg| ty_contains(arg, pred))
+        }
+        Ty::Tuple(elems) => elems.iter().any(|e| ty_contains(e, pred)),
+        Ty::Array(elem, _) | Ty::Slice(elem) | Ty::Range(elem) => ty_contains(elem, pred),
+        Ty::Fn { params, ret } => {
+            params.iter().any(|p| ty_contains(p, pred)) || ty_contains(ret, pred)
+        }
+        _ => false,
+    }
+}
+
+fn ty_contains_infer(ty: &Ty) -> bool {
+    ty_contains(ty, &|t| matches!(t, Ty::Infer(_)))
+}
+
+fn ty_contains_error(ty: &Ty) -> bool {
+    ty_contains(ty, &|t| matches!(t, Ty::Error))
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ModelTy {
     pub item_id: ItemId,
@@ -112,6 +140,12 @@ pub struct TypeChecker<'a> {
     fn_sigs: HashMap<ItemId, FnSigTy>,
     const_types: HashMap<ItemId, Ty>,
     alias_stack: Vec<ItemId>,
+    /// WP-C4.5c: ordered generic-argument types for every use of a *generic* fn item, keyed
+    /// by the referencing path expression. Grounded and published as
+    /// `TypeTables::generic_insts` for MIR monomorphisation; an instantiation still
+    /// containing `Ty::Infer` once inference completes is rejected with E0004
+    /// (TYPE-GENERIC-001 / TYPE-FN-002 — the DEV-064 fix).
+    generic_insts: HashMap<ExprId, Vec<Ty>>,
 
     // Scopes context
     current_self_ty: Option<Ty>,
@@ -159,6 +193,12 @@ pub struct TypeTables {
     /// package can remain library-importable without imposing a `main`
     /// requirement during type checking.
     pub fn_types: HashMap<ItemId, (Vec<Ty>, Ty)>,
+    /// WP-C4.5c: grounded, ordered generic-argument types for each use of a generic fn item,
+    /// keyed by the referencing path expression (the call callee or fn-value use). Inside a
+    /// generic body the entries may themselves be `Ty::Param`; they are fully concrete after
+    /// the enclosing instantiation substitutes its own arguments. Entries never contain
+    /// `Ty::Infer` — undetermined instantiations are rejected during checking (E0004).
+    pub generic_insts: HashMap<ExprId, Vec<Ty>>,
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +244,7 @@ pub fn analyze_with_options(
         fn_sigs: HashMap::new(),
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
+        generic_insts: HashMap::new(),
         current_self_ty: None,
         current_assoc_types: HashMap::new(),
         current_fn_ret: None,
@@ -245,6 +286,36 @@ pub fn analyze_with_options(
             )
         })
         .collect();
+    // WP-C4.5c (DEV-064): every use of a generic fn must have fully determined generic
+    // arguments once inference completes — an undetermined instantiation cannot be
+    // monomorphised, so it is rejected here (TYPE-GENERIC-001: "if any parameter remains
+    // unconstrained, the call requires explicit arguments"; TYPE-FN-002 for the fn-value
+    // coercion form), never left for a backend to trip over. `Ty::Param` entries are fine:
+    // inside a generic body they are determined by the enclosing instantiation.
+    let mut generic_insts = HashMap::new();
+    let mut undetermined: Vec<Span> = Vec::new();
+    for (&expr_id, tys) in &checker.generic_insts {
+        let grounded: Vec<Ty> = tys.iter().map(|ty| checker.ground(ty)).collect();
+        if grounded.iter().any(ty_contains_error) {
+            continue; // the use site already failed checking; avoid a cascade
+        }
+        if grounded.iter().any(ty_contains_infer) {
+            undetermined.push(hir.expr(expr_id).span);
+            continue;
+        }
+        generic_insts.insert(expr_id, grounded);
+    }
+    undetermined.sort_by_key(|span| (span.lo, span.hi));
+    for span in undetermined {
+        checker.diags.push(
+            Diagnostic::error(
+                "cannot infer the generic arguments for this use of a generic function; \
+                 supply them explicitly with `::<...>`",
+                span,
+            )
+            .with_code("E0004"),
+        );
+    }
     let mut diagnostics = checker.diags;
     diagnostics.extend(crate::flow::check(hir, file.clone(), &expr_types));
     diagnostics.extend(crate::borrowck::check(
@@ -258,6 +329,7 @@ pub fn analyze_with_options(
         local_types,
         local_mutability: checker.local_mutability,
         fn_types,
+        generic_insts,
     };
     diagnostics.extend(crate::interp::check_constants(hir, file, &tables));
     TypeCheckResult {
@@ -3495,6 +3567,7 @@ impl<'a> TypeChecker<'a> {
                             *item_id,
                             sig.clone(),
                             turbofish.as_ref(),
+                            Some(expr_id),
                             expr.span,
                         );
                         Ty::Fn {
@@ -4769,6 +4842,7 @@ impl<'a> TypeChecker<'a> {
         item_id: ItemId,
         sig: FnSigTy,
         turbofish: Option<&hir::GenericArgs>,
+        use_expr: Option<ExprId>,
         span: Span,
     ) -> FnSigTy {
         let item = self.hir.item(item_id);
@@ -4848,6 +4922,33 @@ impl<'a> TypeChecker<'a> {
                 self.bounds_checks.push((var.clone(), trait_bounds, span));
                 map.insert(param_name, var);
             }
+        }
+
+        // WP-C4.5c: record the ordered instantiation for MIR monomorphisation, keyed by the
+        // referencing path expression. Fresh inference variables recorded here resolve through
+        // `subst` by the time `analyze` grounds and publishes the table; any that remain
+        // undetermined are rejected there (E0004 — TYPE-GENERIC-001 / TYPE-FN-002, DEV-064).
+        // Tensor-kinded parameters (`Dim`/`DType`/`Device` bounds) unify through the tensor
+        // context, not value-type substitution — those functions are extension territory and
+        // are neither recorded nor subject to the undetermined-instantiation rejection.
+        let has_tensor_kinded_param = generics.iter().any(|param| {
+            param.bounds.iter().any(|bound| {
+                bound.res == Res::Err
+                    && matches!(
+                        single_segment_name(&bound.path, self),
+                        Some("Dim" | "DType" | "Device")
+                    )
+            })
+        });
+        if let Some(expr_id) = use_expr.filter(|_| !has_tensor_kinded_param) {
+            let ordered: Vec<Ty> = generics
+                .iter()
+                .map(|param| {
+                    let name = self.text(param.name).to_string();
+                    map.get(&name).cloned().unwrap_or(Ty::Error)
+                })
+                .collect();
+            self.generic_insts.insert(expr_id, ordered);
         }
 
         // Associated-type equality bindings participate in substitution, so a
@@ -10120,6 +10221,65 @@ mod tests {
         assert!(invalid
             .iter()
             .any(|diagnostic| diagnostic.code.as_deref() == Some("E0500")));
+    }
+
+    /// WP-C4.5c / DEV-064 (TYPE-FN-002): coercing a generic fn whose generic arguments the
+    /// expected fn type does not determine must be rejected — `T` appears nowhere in
+    /// `count`'s signature, so no instantiation is nameable.
+    #[test]
+    fn undetermined_generic_fn_coercion_is_rejected() {
+        let diags = check_src(
+            "fn count<T>() -> Int32 { 0 } fn main() { let f: fn() -> Int32 = count; f(); }",
+        );
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0004")),
+            "expected E0004, got: {diags:?}"
+        );
+    }
+
+    /// WP-C4.5c (TYPE-GENERIC-001): a direct call that leaves a generic parameter
+    /// unconstrained requires explicit arguments; without turbofish it is rejected, with
+    /// turbofish it is accepted.
+    #[test]
+    fn undetermined_generic_call_requires_turbofish() {
+        let invalid = check_src("fn count<T>() -> Int32 { 0 } fn main() { count(); }");
+        assert!(
+            invalid.iter().any(|d| d.code.as_deref() == Some("E0004")),
+            "expected E0004, got: {invalid:?}"
+        );
+
+        let valid = check_src("fn count<T>() -> Int32 { 0 } fn main() { count::<Bool>(); }");
+        assert!(valid.is_empty(), "unexpected diagnostics: {valid:?}");
+    }
+
+    /// WP-C4.5c: a coercion the expected type fully determines stays accepted, and the
+    /// grounded instantiation is published for monomorphisation.
+    #[test]
+    fn determined_generic_fn_coercion_publishes_instantiation() {
+        let file = Arc::new(SourceFile::new(
+            "test.stark",
+            "fn id<T>(x: T) -> T { x } fn main() { let f: fn(Int32) -> Int32 = id; f(1); }"
+                .to_string(),
+        ));
+        let (ast, parse_diags) = crate::parser::parse(&file, crate::parser::ParseMode::Program);
+        assert!(parse_diags.is_empty());
+        let (hir, resolve_diags) = crate::resolve::resolve(&ast, file.clone());
+        assert!(resolve_diags.is_empty());
+        let result = analyze(&hir, file);
+        assert!(
+            result.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            result.diagnostics
+        );
+        assert!(
+            result
+                .tables
+                .generic_insts
+                .values()
+                .any(|args| args == &vec![Ty::Primitive(Primitive::Int32)]),
+            "expected a published [Int32] instantiation, got: {:?}",
+            result.tables.generic_insts
+        );
     }
 
     #[test]
