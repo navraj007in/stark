@@ -1825,3 +1825,85 @@ fn char_literal_patterns_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A2-2: general + nested pattern lowering ----
+
+/// Tuple scrutinees, array patterns, and deep nesting (`Some((a, Some(b)))`,
+/// `((a, b), [c, d])`) all agree with the oracle, including arm ORDER (first match wins).
+#[test]
+fn nested_and_compound_patterns_agree() {
+    differential(
+        "a2_nested.stark",
+        "fn main() { \
+             let t = (1, 2); \
+             match t { (0, b) => println(b), (a, b) => println(a + b), } \
+             let v: Option<(Int32, Option<Int32>)> = Some((5, Some(7))); \
+             match v { \
+                 Some((a, Some(b))) => println(a * 100 + b), \
+                 Some((a, None)) => println(a), \
+                 None => println(-1), \
+             } \
+             let w: Option<(Int32, Option<Int32>)> = Some((9, None)); \
+             match w { \
+                 Some((a, Some(b))) => println(a * 100 + b), \
+                 Some((a, None)) => println(a), \
+                 None => println(-1), \
+             } \
+             let u = ((1, 2), [3, 4]); \
+             match u { ((a, b), [c, d]) => println(a + b + c + d), } \
+         }"
+        .to_string(),
+    );
+}
+
+/// Struct patterns — literal sub-patterns select arms in order; bindings and shorthand bind.
+#[test]
+fn struct_patterns_agree() {
+    differential(
+        "a2_struct_pat.stark",
+        "struct Point { x: Int32, y: Int32 } \
+         fn main() { \
+             let p = Point { x: 3, y: 4 }; \
+             match p { \
+                 Point { x: 0, y } => println(y), \
+                 Point { x, y: 0 } => println(x), \
+                 Point { x, y } => println(x + y), \
+             } \
+             let q = Point { x: 0, y: 9 }; \
+             match q { Point { x: 0, y } => println(y * 10), _ => println(-1), } \
+         }"
+        .to_string(),
+    );
+}
+
+/// String literal patterns on a `&str` scrutinee compare by content (StrEq, never structural).
+#[test]
+fn string_literal_patterns_agree() {
+    differential(
+        "a2_str_pat.stark",
+        "fn main() { \
+             let s = String::from(\"beta\"); \
+             match s.as_str() { \
+                 \"alpha\" => println(1), \
+                 \"beta\" => println(2), \
+                 _ => println(0), \
+             } \
+             match \"x\" { \"x\" => println(3), _ => println(4), } \
+         }"
+        .to_string(),
+    );
+}
+
+/// Float literal patterns use spec-exact IEEE equality.
+#[test]
+fn float_literal_patterns_agree() {
+    differential(
+        "a2_float_pat.stark",
+        "fn main() { \
+             let x = 1.5; \
+             match x { 1.5 => println(1), _ => println(0), } \
+             match 2.5 { 1.5 => println(2), _ => println(3), } \
+         }"
+        .to_string(),
+    );
+}

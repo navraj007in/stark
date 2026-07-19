@@ -184,8 +184,8 @@ required class is green.
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
 - A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
 - A4 (core-min surface): **DONE 2026-07-20** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, `0.1-A4`), A4-2c (println Ordering), A4-2d (chars, `0.1-A5`), A4-2e (slicing, `0.1-A6`) — see below
-- A2 (patterns): **in progress** — A2-1 (DEV-070 both-engine fix + Char literal patterns) DONE 2026-07-20; A2-2 (tuple/array scrutinees, nested patterns, String/Float literal patterns) pending — see below
-- A1 (generic impls): _pending_
+- A2 (patterns): **DONE 2026-07-20** — A2-1 (DEV-070 both-engine fix + Char literal patterns) + A2-2 (general recursive engine: tuple/array/struct scrutinees, nested patterns, String/Float literals); one recorded residual (droppable scrutinee + nested patterns) — see below
+- A1 (generic impls): _pending_ (the last Class-A blocker)
 
 ### A2-1 — DEV-070 fix (both engines) + Char literal patterns, DONE 2026-07-20
 
@@ -206,6 +206,25 @@ regression matrix: `match_deref_self_twice_fieldless_agree`, `match_deref_self_c
 `match_deref_self_noncopy_wildcard_agree`, `match_copy_scrutinee_reusable_agree`,
 `match_owned_drop_scrutinee_still_consumes_agree`, plus `char_literal_patterns_agree`.
 DEV-070 CLOSED; DEV-072 opened (front-end owner).
+
+### A2-2 — general + nested pattern lowering, DONE 2026-07-20
+
+A **general recursive pattern engine** (`lower_general_match`): sequential per-arm
+test-and-bind, fully recursive over pattern structure — tuple/array/struct scrutinees, nested
+variant patterns (`Some((a, Some(b)))`, `((a, b), [c, d])`), struct patterns with literal
+sub-patterns and shorthand bindings, Char (codepoint `SwitchInt` in the scalar path),
+**Float** (spec-exact IEEE `BinOp::Eq`), and **String** literal patterns (content equality via
+`StrEq` on a `&str` scrutinee — never a structural BinOp, V-STR-2). Discriminant tests per
+nesting level; array element access mints `CheckIndex` proofs at constant indices (statically
+in-bounds — the checker verified pattern length). Routing: FLAT enum arms keep the proven
+drop-elaborated C4.5d path; scalar scrutinees keep the compact `SwitchInt` path; everything
+else routes to the general engine. Consuming mode requires a drop-free scrutinee —
+**recorded residual: a droppable scrutinee with genuinely NESTED patterns** (flat droppable
+matches are unaffected) stays clean-Unsupported ("A2 residual"); generalizing the C4.5d
+drop-unit decomposition to arbitrary pattern trees is the follow-up, surfaced loudly, never
+mislowered. ByRef mode composes with the engine (Copy-only bindings enforced recursively).
+Evidence: `nested_and_compound_patterns_agree`, `struct_patterns_agree`,
+`string_literal_patterns_agree`, `float_literal_patterns_agree` (+ the A2-1 matrix).
 
 ### A5 + A7 — DONE 2026-07-19
 

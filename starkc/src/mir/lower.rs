@@ -5373,16 +5373,18 @@ impl<'a> FnLowerer<'a> {
 
         let join = self.new_block();
         match &scrut_ty {
-            MirTy::Enum(enum_ref, args) => self.lower_enum_match(
-                *enum_ref,
-                args.clone(),
-                scrut_place,
-                mode,
-                &arms,
-                dest,
-                join,
-                span,
-            )?,
+            // Flat enum arms keep the proven, drop-elaborated C4.5d path.
+            MirTy::Enum(enum_ref, args) if self.enum_arms_are_flat(&arms) => self
+                .lower_enum_match(
+                    *enum_ref,
+                    args.clone(),
+                    scrut_place,
+                    mode,
+                    &arms,
+                    dest,
+                    join,
+                    span,
+                )?,
             MirTy::Bool
             | MirTy::Int8
             | MirTy::Int16
@@ -5393,6 +5395,25 @@ impl<'a> FnLowerer<'a> {
             | MirTy::UInt32
             | MirTy::UInt64
             | MirTy::Char => self.lower_int_match(scrut_place, &arms, dest, join, span)?,
+            // A2-2: everything else — tuple/array/struct/Float/&str scrutinees and NESTED enum
+            // patterns — routes to the general recursive engine. Consuming mode requires a
+            // drop-free scrutinee (droppable + nested is the recorded residual: it needs the
+            // C4.5d drop-unit decomposition generalized to arbitrary pattern trees).
+            MirTy::Enum(..)
+            | MirTy::Tuple(_)
+            | MirTy::Array(..)
+            | MirTy::Struct(..)
+            | MirTy::Float32
+            | MirTy::Float64
+            | MirTy::Ref { .. } => {
+                if mode == MatchMode::Consuming && self.ty_needs_drop(&scrut_ty, span)? {
+                    return unsupported(
+                        "droppable scrutinee with nested/general patterns (A2 residual)",
+                        span,
+                    );
+                }
+                self.lower_general_match(scrut_place, scrut_ty, mode, &arms, dest, join, span)?
+            }
             _ => return unsupported("match scrutinee type (C4.5)", span),
         }
         self.current = join;
@@ -5639,6 +5660,596 @@ impl<'a> FnLowerer<'a> {
             self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
         }
         Ok(())
+    }
+
+    /// A2-2: is every arm within the FLAT shapes the drop-elaborated `lower_enum_match` path
+    /// supports (top-level Wild/Binding, or a variant pattern whose sub-patterns are all
+    /// Wild/Binding/shorthand)? Anything else routes to the general engine.
+    fn enum_arms_are_flat(&self, arms: &[(hir::PatId, ExprId)]) -> bool {
+        arms.iter().all(|&(pat, _)| match &self.hir.pat(pat).kind {
+            hir::PatKind::Wild | hir::PatKind::Binding { .. } | hir::PatKind::Path { .. } => true,
+            hir::PatKind::TupleVariant { pats, .. } => pats.iter().all(|&p| {
+                matches!(
+                    self.hir.pat(p).kind,
+                    hir::PatKind::Wild | hir::PatKind::Binding { .. }
+                )
+            }),
+            hir::PatKind::Struct { fields, .. } => fields.iter().all(|f| match f.pat {
+                None => true,
+                Some(p) => matches!(
+                    self.hir.pat(p).kind,
+                    hir::PatKind::Wild | hir::PatKind::Binding { .. }
+                ),
+            }),
+            _ => false,
+        })
+    }
+
+    /// A2-2: the GENERAL pattern engine — sequential per-arm test-and-bind, fully recursive
+    /// over pattern structure (tuples, arrays, structs, nested variants, Char/Float/String
+    /// literals). Restricted to scrutinee types without drop obligations in Consuming mode
+    /// (droppable + nested is the recorded residual); ByRef mode enforces Copy-only bindings.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_general_match(
+        &mut self,
+        scrut: Place,
+        scrut_ty: MirTy,
+        mode: MatchMode,
+        arms: &[(hir::PatId, ExprId)],
+        dest: Option<Place>,
+        join: BlockId,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        for &(pat, body) in arms {
+            let fail = self.new_block();
+            self.emit_pattern_test(pat, &scrut, &scrut_ty, fail, span)?;
+            self.scopes.push(Vec::new());
+            let depth = self.scopes.len() - 1;
+            self.bind_pattern(pat, &scrut, &scrut_ty, mode, span)?;
+            self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
+            self.current = fail;
+        }
+        // Exhaustiveness was verified upstream; a fall-off is unreachable.
+        let next = self.new_block();
+        self.terminate(
+            Terminator::Unreachable,
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+            next,
+        );
+        self.blocks.pop();
+        Ok(())
+    }
+
+    /// Emit the recursive TEST for `pat` against `place`: on mismatch jump to `fail`; on match
+    /// fall through in `self.current`. Emits no bindings (the bind phase re-walks the pattern).
+    fn emit_pattern_test(
+        &mut self,
+        pat: hir::PatId,
+        place: &Place,
+        ty: &MirTy,
+        fail: BlockId,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let pat_span = self.hir.pat(pat).span;
+        match &self.hir.pat(pat).kind {
+            hir::PatKind::Wild | hir::PatKind::Binding { .. } => Ok(()),
+            hir::PatKind::Lit(lit) => {
+                let text = self.text(pat_span).to_string();
+                match ty {
+                    MirTy::Bool
+                    | MirTy::Char
+                    | MirTy::Int8
+                    | MirTy::Int16
+                    | MirTy::Int32
+                    | MirTy::Int64
+                    | MirTy::UInt8
+                    | MirTy::UInt16
+                    | MirTy::UInt32
+                    | MirTy::UInt64 => {
+                        let value = match lit {
+                            Lit::Bool(b) => i128::from(*b),
+                            Lit::Int { base, suffix } => literal::parse_int_literal(
+                                &text, *base, *suffix,
+                            )
+                            .ok_or_else(|| LowerError {
+                                what: "unparseable literal pattern".to_string(),
+                                span: pat_span,
+                            })?,
+                            Lit::Char => match literal::eval_lit_value(*lit, &text) {
+                                Some(crate::literal::LitValue::Char(c)) => i128::from(u32::from(c)),
+                                _ => {
+                                    return unsupported(
+                                        "unparseable char literal pattern",
+                                        pat_span,
+                                    )
+                                }
+                            },
+                            _ => return unsupported("literal/type mismatch in pattern", pat_span),
+                        };
+                        let eq = self.new_temp(MirTy::Bool);
+                        self.emit(
+                            Statement::Assign(
+                                Place::local(eq),
+                                Rvalue::BinOp(
+                                    MirBinOp::Eq,
+                                    Operand::Copy(place.clone()),
+                                    Operand::Const(Constant::Int(value, ty.clone())),
+                                ),
+                            ),
+                            self.synthetic(span, SyntheticKind::MatchDesugar),
+                        );
+                        self.branch_on(eq, fail, span);
+                        Ok(())
+                    }
+                    // A2-2: Float literal patterns — spec-exact IEEE equality, matching the
+                    // oracle's structural comparison.
+                    MirTy::Float32 | MirTy::Float64 => {
+                        let Lit::Float { suffix } = lit else {
+                            return unsupported("literal/type mismatch in pattern", pat_span);
+                        };
+                        let value =
+                            literal::parse_float_literal(&text, *suffix).ok_or_else(|| {
+                                LowerError {
+                                    what: "unparseable float literal pattern".to_string(),
+                                    span: pat_span,
+                                }
+                            })?;
+                        let eq = self.new_temp(MirTy::Bool);
+                        self.emit(
+                            Statement::Assign(
+                                Place::local(eq),
+                                Rvalue::BinOp(
+                                    MirBinOp::Eq,
+                                    Operand::Copy(place.clone()),
+                                    Operand::Const(Constant::Float(value, ty.clone())),
+                                ),
+                            ),
+                            self.synthetic(span, SyntheticKind::MatchDesugar),
+                        );
+                        self.branch_on(eq, fail, span);
+                        Ok(())
+                    }
+                    // A2-2: String literal patterns on a `&str` scrutinee — content equality
+                    // via `StrEq` (never a structural BinOp, V-STR-2).
+                    MirTy::Ref { inner, .. } if matches!(**inner, MirTy::Str) => {
+                        let Lit::Str { .. } = lit else {
+                            return unsupported("literal/type mismatch in pattern", pat_span);
+                        };
+                        let value = match literal::eval_lit_value(*lit, &text) {
+                            Some(crate::literal::LitValue::Str(s)) => s,
+                            _ => {
+                                return unsupported("unparseable string literal pattern", pat_span)
+                            }
+                        };
+                        let eq = self.new_temp(MirTy::Bool);
+                        self.emit_runtime_call(
+                            RuntimeFn::StrEq,
+                            vec![
+                                Operand::Copy(place.clone()),
+                                Operand::Const(Constant::Str(value)),
+                            ],
+                            Place::local(eq),
+                            span,
+                        );
+                        self.branch_on(eq, fail, span);
+                        Ok(())
+                    }
+                    other => unsupported(
+                        format!("literal pattern on scrutinee type {other:?}"),
+                        pat_span,
+                    ),
+                }
+            }
+            hir::PatKind::Path { res, .. } => {
+                let variant = self.variant_of_res(res, pat_span)?;
+                self.emit_discriminant_test(place, variant, fail, span);
+                Ok(())
+            }
+            hir::PatKind::TupleVariant { res, pats, .. } => {
+                let res = *res;
+                let pats = pats.clone();
+                let variant = self.variant_of_res(&res, pat_span)?;
+                self.emit_discriminant_test(place, variant, fail, span);
+                let (enum_ref, args) = match ty {
+                    MirTy::Enum(er, args) => (*er, args.clone()),
+                    other => {
+                        return unsupported(
+                            format!("variant pattern on non-enum {other:?}"),
+                            pat_span,
+                        )
+                    }
+                };
+                let payload_tys = self.variant_payload_types(enum_ref, &args, variant, span)?;
+                for (i, &sub) in pats.iter().enumerate() {
+                    let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
+                    let mut sub_place = place.clone();
+                    sub_place
+                        .projection
+                        .push(Projection::VariantField(variant, i as u32));
+                    self.emit_pattern_test(sub, &sub_place, &field_ty, fail, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Struct { res, fields, .. } => {
+                let res = *res;
+                let fields: Vec<(Span, Option<hir::PatId>, Option<crate::hir::LocalId>)> =
+                    fields.iter().map(|f| (f.name, f.pat, f.local)).collect();
+                match ty {
+                    MirTy::Enum(er, args) => {
+                        let (er, args) = (*er, args.clone());
+                        let variant = self.variant_of_res(&res, pat_span)?;
+                        self.emit_discriminant_test(place, variant, fail, span);
+                        let payload_tys = self.variant_payload_types(er, &args, variant, span)?;
+                        let order = self.variant_field_order(&res, variant)?;
+                        for (name_span, sub, _) in &fields {
+                            let Some(sub) = sub else { continue };
+                            let name_text = self.text(*name_span).to_string();
+                            let Some(index) = order.iter().position(|n| *n == name_text) else {
+                                return unsupported("unknown variant field", *name_span);
+                            };
+                            let field_ty = payload_tys.get(index).cloned().unwrap_or(MirTy::Unit);
+                            let mut sub_place = place.clone();
+                            sub_place
+                                .projection
+                                .push(Projection::VariantField(variant, index as u32));
+                            self.emit_pattern_test(*sub, &sub_place, &field_ty, fail, span)?;
+                        }
+                        Ok(())
+                    }
+                    MirTy::Struct(item, args) => {
+                        let (item, args) = (*item, args.clone());
+                        let field_tys = match nominal_instance_fields(
+                            self.hir,
+                            self.tables,
+                            self.meta,
+                            item,
+                            &args,
+                        )? {
+                            NominalFields::Struct(tys) => tys,
+                            NominalFields::Enum(_) => {
+                                return unsupported("struct pattern on enum item", pat_span)
+                            }
+                        };
+                        for (name_span, sub, _) in &fields {
+                            let Some(sub) = sub else { continue };
+                            let index = self.struct_field_index(item, *name_span)?;
+                            let field_ty = field_tys.get(index).cloned().unwrap_or(MirTy::Unit);
+                            let mut sub_place = place.clone();
+                            sub_place.projection.push(Projection::Field(index as u32));
+                            self.emit_pattern_test(*sub, &sub_place, &field_ty, fail, span)?;
+                        }
+                        Ok(())
+                    }
+                    other => unsupported(
+                        format!("struct pattern on scrutinee type {other:?}"),
+                        pat_span,
+                    ),
+                }
+            }
+            hir::PatKind::Tuple(pats) => {
+                let pats = pats.clone();
+                let elem_tys = match ty {
+                    MirTy::Tuple(elems) => elems.clone(),
+                    other => {
+                        return unsupported(
+                            format!("tuple pattern on scrutinee type {other:?}"),
+                            pat_span,
+                        )
+                    }
+                };
+                for (i, &sub) in pats.iter().enumerate() {
+                    let elem_ty = elem_tys.get(i).cloned().unwrap_or(MirTy::Unit);
+                    let mut sub_place = place.clone();
+                    sub_place.projection.push(Projection::Field(i as u32));
+                    self.emit_pattern_test(sub, &sub_place, &elem_ty, fail, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Array(pats) => {
+                let pats = pats.clone();
+                let elem_ty = match ty {
+                    MirTy::Array(elem, _) => (**elem).clone(),
+                    other => {
+                        return unsupported(
+                            format!("array pattern on scrutinee type {other:?}"),
+                            pat_span,
+                        )
+                    }
+                };
+                for (i, &sub) in pats.iter().enumerate() {
+                    let sub_place = self.array_elem_place(place, ty, i, span)?;
+                    self.emit_pattern_test(sub, &sub_place, &elem_ty, fail, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Error => unsupported("error pattern", pat_span),
+        }
+    }
+
+    /// Emit the recursive BIND for a matched `pat`: bindings read out of the scrutinee
+    /// (Copy per `read_place`; ByRef enforces Copy-only). Tests were already emitted.
+    fn bind_pattern(
+        &mut self,
+        pat: hir::PatId,
+        place: &Place,
+        ty: &MirTy,
+        mode: MatchMode,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let pat_span = self.hir.pat(pat).span;
+        match &self.hir.pat(pat).kind {
+            hir::PatKind::Wild | hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => Ok(()),
+            hir::PatKind::Binding { name, local } => {
+                if mode == MatchMode::ByRef && !self.is_copy(ty) {
+                    return unsupported(
+                        "binding a non-Copy payload through a shared reference (front-end move-out-of-borrow gap)",
+                        pat_span,
+                    );
+                }
+                let (name, local) = (self.text(*name).to_string(), *local);
+                self.locals.push(LocalDecl {
+                    ty: ty.clone(),
+                    kind: LocalKind::User(name),
+                });
+                let bound = LocalId((self.locals.len() - 1) as u32);
+                self.local_map.insert(local.0, bound);
+                let value = self.read_place(place.clone(), ty, span)?;
+                self.emit(
+                    Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+                    self.synthetic(span, SyntheticKind::MatchDesugar),
+                );
+                Ok(())
+            }
+            hir::PatKind::TupleVariant { res, pats, .. } => {
+                let res = *res;
+                let pats = pats.clone();
+                let variant = self.variant_of_res(&res, pat_span)?;
+                let (enum_ref, args) = match ty {
+                    MirTy::Enum(er, args) => (*er, args.clone()),
+                    _ => return unsupported("variant pattern on non-enum", pat_span),
+                };
+                let payload_tys = self.variant_payload_types(enum_ref, &args, variant, span)?;
+                for (i, &sub) in pats.iter().enumerate() {
+                    let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
+                    let mut sub_place = place.clone();
+                    sub_place
+                        .projection
+                        .push(Projection::VariantField(variant, i as u32));
+                    self.bind_pattern(sub, &sub_place, &field_ty, mode, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Struct { res, fields, .. } => {
+                let res = *res;
+                let fields: Vec<(Span, Option<hir::PatId>, Option<crate::hir::LocalId>)> =
+                    fields.iter().map(|f| (f.name, f.pat, f.local)).collect();
+                match ty {
+                    MirTy::Enum(er, args) => {
+                        let (er, args) = (*er, args.clone());
+                        let variant = self.variant_of_res(&res, pat_span)?;
+                        let payload_tys = self.variant_payload_types(er, &args, variant, span)?;
+                        let order = self.variant_field_order(&res, variant)?;
+                        for (name_span, sub, shorthand) in &fields {
+                            let name_text = self.text(*name_span).to_string();
+                            let Some(index) = order.iter().position(|n| *n == name_text) else {
+                                return unsupported("unknown variant field", *name_span);
+                            };
+                            let field_ty = payload_tys.get(index).cloned().unwrap_or(MirTy::Unit);
+                            let mut sub_place = place.clone();
+                            sub_place
+                                .projection
+                                .push(Projection::VariantField(variant, index as u32));
+                            match (sub, shorthand) {
+                                (Some(sub), _) => {
+                                    self.bind_pattern(*sub, &sub_place, &field_ty, mode, span)?
+                                }
+                                (None, Some(local)) => self.bind_shorthand(
+                                    name_text, *local, &sub_place, &field_ty, mode, span,
+                                )?,
+                                (None, None) => {}
+                            }
+                        }
+                        Ok(())
+                    }
+                    MirTy::Struct(item, args) => {
+                        let (item, args) = (*item, args.clone());
+                        let field_tys = match nominal_instance_fields(
+                            self.hir,
+                            self.tables,
+                            self.meta,
+                            item,
+                            &args,
+                        )? {
+                            NominalFields::Struct(tys) => tys,
+                            NominalFields::Enum(_) => {
+                                return unsupported("struct pattern on enum item", pat_span)
+                            }
+                        };
+                        for (name_span, sub, shorthand) in &fields {
+                            let index = self.struct_field_index(item, *name_span)?;
+                            let field_ty = field_tys.get(index).cloned().unwrap_or(MirTy::Unit);
+                            let mut sub_place = place.clone();
+                            sub_place.projection.push(Projection::Field(index as u32));
+                            match (sub, shorthand) {
+                                (Some(sub), _) => {
+                                    self.bind_pattern(*sub, &sub_place, &field_ty, mode, span)?
+                                }
+                                (None, Some(local)) => {
+                                    let name = self.text(*name_span).to_string();
+                                    self.bind_shorthand(
+                                        name, *local, &sub_place, &field_ty, mode, span,
+                                    )?
+                                }
+                                (None, None) => {}
+                            }
+                        }
+                        Ok(())
+                    }
+                    _ => unsupported("struct pattern on scrutinee type", pat_span),
+                }
+            }
+            hir::PatKind::Tuple(pats) => {
+                let pats = pats.clone();
+                let elem_tys = match ty {
+                    MirTy::Tuple(elems) => elems.clone(),
+                    _ => return unsupported("tuple pattern on non-tuple", pat_span),
+                };
+                for (i, &sub) in pats.iter().enumerate() {
+                    let elem_ty = elem_tys.get(i).cloned().unwrap_or(MirTy::Unit);
+                    let mut sub_place = place.clone();
+                    sub_place.projection.push(Projection::Field(i as u32));
+                    self.bind_pattern(sub, &sub_place, &elem_ty, mode, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Array(pats) => {
+                let pats = pats.clone();
+                let elem_ty = match ty {
+                    MirTy::Array(elem, _) => (**elem).clone(),
+                    _ => return unsupported("array pattern on non-array", pat_span),
+                };
+                for (i, &sub) in pats.iter().enumerate() {
+                    let sub_place = self.array_elem_place(place, ty, i, span)?;
+                    self.bind_pattern(sub, &sub_place, &elem_ty, mode, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Error => unsupported("error pattern", pat_span),
+        }
+    }
+
+    /// A shorthand struct-field binding (`Point { x }`): bind `x` to the field's value.
+    fn bind_shorthand(
+        &mut self,
+        name: String,
+        hir_local: crate::hir::LocalId,
+        place: &Place,
+        ty: &MirTy,
+        mode: MatchMode,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if mode == MatchMode::ByRef && !self.is_copy(ty) {
+            return unsupported(
+                "binding a non-Copy payload through a shared reference (front-end move-out-of-borrow gap)",
+                span,
+            );
+        }
+        self.locals.push(LocalDecl {
+            ty: ty.clone(),
+            kind: LocalKind::User(name),
+        });
+        let bound = LocalId((self.locals.len() - 1) as u32);
+        self.local_map.insert(hir_local.0, bound);
+        let value = self.read_place(place.clone(), ty, span)?;
+        self.emit(
+            Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+        );
+        Ok(())
+    }
+
+    /// The resolved variant index of an enum pattern's path resolution.
+    fn variant_of_res(&self, res: &Res, pat_span: Span) -> Result<u32, LowerError> {
+        Ok(match res {
+            Res::Variant(_, v) => *v,
+            Res::Builtin(Builtin::None) => 0,
+            Res::Builtin(Builtin::Some) => 1,
+            Res::Builtin(Builtin::Ok) => 0,
+            Res::Builtin(Builtin::Err) => 1,
+            Res::Builtin(Builtin::OrderingLess) => 0,
+            Res::Builtin(Builtin::OrderingEqual) => 1,
+            Res::Builtin(Builtin::OrderingGreater) => 2,
+            _ => return unsupported("enum pattern resolution (C4.5)", pat_span),
+        })
+    }
+
+    /// Emit `if discriminant(place) != variant goto fail`.
+    fn emit_discriminant_test(&mut self, place: &Place, variant: u32, fail: BlockId, span: Span) {
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+        );
+        let eq = self.new_temp(MirTy::Bool);
+        self.emit(
+            Statement::Assign(
+                Place::local(eq),
+                Rvalue::BinOp(
+                    MirBinOp::Eq,
+                    Operand::Copy(Place::local(disc)),
+                    Operand::Const(Constant::Int(i128::from(variant), MirTy::Int64)),
+                ),
+            ),
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+        );
+        self.branch_on(eq, fail, span);
+    }
+
+    /// Branch: `eq == 1` falls through to a fresh pass block; otherwise jump to `fail`.
+    fn branch_on(&mut self, eq: LocalId, fail: BlockId, span: Span) {
+        let pass = self.new_block();
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(eq)),
+                arms: vec![(1, pass)],
+                otherwise: fail,
+            },
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+            pass,
+        );
+    }
+
+    /// An array element place at a CONSTANT index: `CheckIndex` mints the proof (statically
+    /// in-bounds — the checker verified the pattern length against the array length).
+    fn array_elem_place(
+        &mut self,
+        base: &Place,
+        array_ty: &MirTy,
+        index: usize,
+        span: Span,
+    ) -> Result<Place, LowerError> {
+        let _ = array_ty;
+        self.locals.push(LocalDecl {
+            ty: MirTy::Int64,
+            kind: LocalKind::IndexProof,
+        });
+        let proof = LocalId((self.locals.len() - 1) as u32);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Checked {
+                op: CheckedOp::CheckIndex,
+                args: vec![
+                    Operand::Copy(base.clone()),
+                    Operand::Const(Constant::Int(index as i128, MirTy::Int64)),
+                ],
+                dest: proof,
+                target: after,
+                trap: TrapInfo {
+                    category: TrapCategory::IndexOutOfBounds,
+                    source: self.synthetic(span, SyntheticKind::MatchDesugar),
+                },
+            },
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+            after,
+        );
+        let mut place = base.clone();
+        place.projection.push(Projection::Index(proof));
+        Ok(place)
+    }
+
+    /// The declared index of a struct field by name.
+    fn struct_field_index(&self, item: ItemId, name_span: Span) -> Result<usize, LowerError> {
+        let ItemKind::Struct { fields, .. } = &self.hir.item(item).kind else {
+            return unsupported("field pattern on non-struct item", name_span);
+        };
+        let name_text = self.text(name_span);
+        fields
+            .iter()
+            .position(|f| self.meta.item_text(item, f.name) == name_text)
+            .ok_or_else(|| LowerError {
+                what: "unknown field".to_string(),
+                span: name_span,
+            })
     }
 
     /// The payload field types of one variant of a matched enum instance.
