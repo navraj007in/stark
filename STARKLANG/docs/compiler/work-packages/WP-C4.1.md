@@ -36,16 +36,29 @@ Design highlights:
 - 13 verifier obligations (V-CFG/V-TY/V-MOVE/V-DISC/V-DROP/V-IDX/V-FN/V-SRC/V-RT) mapped to
   WP-C4.3; invalid MIR = `MIR-xxxx` internal diagnostic, safe failure.
 
-## Owner review (CE3) — five flagged judgment calls (mir.md §12)
+## Owner review (CE3) — outcome (2026-07-19, CD-028)
 
-1. Drop as a statement (divergence from Rust-MIR shape; justified by abort-no-unwind).
-2. All trapping ops as terminators (explicitness vs block count).
-3. Monomorphised-only MIR + whole-program compilation assumption.
-4. `Option`/`Result` as opaque Core runtime types in v0.1 (not ordinary MIR enums).
-5. Split `CheckIndex`-dominates-`Index` discipline (enables later bounds-check elimination).
+Verdict: **APPROVE WITH REQUIRED CHANGES** — three required changes, all applied:
+
+1. Drop as a statement → **REVISED: `Drop { place, target }` terminator**, no unwind edge. The
+   statement form violated the contract's own totality invariant (destructors are user code).
+2. All trapping ops as terminators → **APPROVED**, with the one-normal-successor /
+   implicit-abort / no-recovery-successor refinement made explicit.
+3. Monomorphised-only MIR → **APPROVED for v0.1**, with three qualifications recorded:
+   mangling reproducible but not a stable external ABI; named resource limit for instantiation
+   explosion; deduplicated instance discovery.
+4. Opaque `Option`/`Result` → **REVISED: logical MIR enums** (`EnumRef::CoreOption`/
+   `CoreResult`) sharing the user-enum aggregate/discriminant/match machinery; physical layout
+   stays a C5.1/ABI concern; combinators may remain runtime calls.
+5. `CheckIndex`→`Index` split → **APPROVED with revision: opaque index-proof tokens**
+   (`IndexProof` locals binding base+index+length) replace ordinary integer locals; `Vec`
+   indexing stays on runtime operations in v0.1 (mutable length).
 
 ## Done when
 
 - [x] `mir.md` drafted with all roadmap-required coverage, marked PROPOSED.
-- [ ] CE3 owner review completed; each §12 question confirmed or amended.
-- [ ] Contract status flipped to APPROVED (with a CD entry); WP-C4.2 opens against it.
+- [x] CE3 owner review completed; each §12 question confirmed or amended
+      (**approve-with-required-changes, all three revisions applied**).
+- [x] Contract status flipped to APPROVED (CD-028); WP-C4.2 opens against it.
+
+**WP-C4.1 CLOSED 2026-07-19. Next: WP-C4.2 (typed HIR → MIR lowering, scalar core).**

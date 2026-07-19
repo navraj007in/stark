@@ -1,8 +1,9 @@
 # STARK MIR v0.1 — Mid-level Intermediate Representation Contract
 
-**Status: PROPOSED — pending CE3 owner review (WP-C4.1).** Nothing below is binding until the
-owner approves it; C4.2 lowering does not begin against an unapproved contract. Prepared
-2026-07-19 under Gate C4.
+**Status: APPROVED (CE3, 2026-07-19, CD-028) — verdict "approve with required changes", all
+three required changes applied below.** The owner-confirmed decisions on the five §12 judgment
+calls are recorded in §12; WP-C4.2 lowering may begin against this contract. Any future change
+to this contract's shape requires a new CE3 review and a version bump.
 
 This document is a **non-normative implementation contract**, not language specification. The
 language's runtime authority is `STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md` and the
@@ -60,15 +61,20 @@ Instance = (ItemId of the fn or method, Vec<MirTy> concrete type arguments)
   `Ty::Param`/`Ty::Infer` are **prohibited** in verified MIR (verifier rule V-TY-2).
 - Instance discovery starts at `main` (or the harness entry) and transitively collects every
   direct callee instance, every function-value constant's instance, every Drop impl instance of
-  a dropped type, and every trait-method instance the front end resolved. Instantiation is
-  finite or compilation fails with a compiler-limit diagnostic (resource classification per
-  C2.9); the depth limit is a named constant in the implementation.
+  a dropped type, and every trait-method instance the front end resolved. Discovery is
+  **deterministic and deduplicating**: identical instances reached through multiple call paths
+  are one instance. Recursive or explosive instantiation fails through a **named
+  compiler-resource limit** with a compiler-limit diagnostic (resource classification per
+  C2.9) — never an arbitrary crash.
 - **Deterministic symbol identity:** an instance's canonical name is
   `⟨package⟩::⟨module path⟩::⟨item name⟩@⟨mangled type args⟩`, where the mangling is a
   deterministic, injective encoding of the `MirTy` vector (exact scheme fixed at implementation
   with tests; requirement here is determinism + injectivity + stability across identical
   inputs). This satisfies C6.2's deterministic-symbol requirement, and — because TYPE-FN-001
   makes function-value identity unobservable — nothing more is semantically required of it.
+  **The textual mangling is reproducible for identical compiler inputs but is *not* a stable
+  external ABI** (CE3 qualification): Core v1 promises no ABI (C2.9), and the scheme may change
+  with the MIR version.
 - Rationale for monomorphised-only: the MIR interpreter (C4.4) must execute MIR without
   reinventing the HIR interpreter's type-erased model (which would validate nothing about
   monomorphisation); the direct backend requires it; the generated-Rust backend can consume it
@@ -88,21 +94,33 @@ MirTy ::= Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64
         | Str                          -- unsized; appears only behind Ref
         | String
         | Struct(ItemId, Vec<MirTy>)   -- monomorphised nominal instance
-        | Enum(ItemId, Vec<MirTy>)
+        | Enum(EnumRef, Vec<MirTy>)    -- user enums AND Option/Result (logical enums, below)
         | Tuple(Vec<MirTy>)
         | Array(Box<MirTy>, u64)
         | Slice(Box<MirTy>)            -- unsized; appears only behind Ref
         | Ref { mutable: Bool, inner: Box<MirTy> }
         | FnPtr { params: Vec<MirTy>, ret: Box<MirTy> }
-        | Core(CoreType, Vec<MirTy>)   -- Vec, Box, Option, Result, HashMap, HashSet, Range, …
+        | Core(CoreType, Vec<MirTy>)   -- Vec, Box, HashMap, HashSet, Range, iterators, …
+                                       --   (NOT Option/Result — see below)
+
+EnumRef ::= User(ItemId) | CoreOption | CoreResult
 ```
 
-- `Core(...)` types are **semantically opaque runtime types** at the MIR level: their operations
-  are runtime calls (§7), their layout is a C5.1/ABI concern, and their behavior is fixed by the
-  normative stdlib chapter (e.g. insertion-order HashMap iteration, CD-009). MIR does not open
-  their representation. (`Option`/`Result` are deliberately *also* Core types rather than
-  ordinary enums in v0.1, matching the current runtime; revisiting that is an explicit open
-  question, §12.)
+- **`Option<T>` and `Result<T, E>` are logical MIR enums** (CE3 required change): they use
+  exactly the same `Aggregate`/`Discriminant`/`VariantField`/`SwitchInt` machinery as user
+  enums, with `EnumRef::CoreOption`/`CoreResult` supplying their nominal identity (they have no
+  user `ItemId`). `CoreOption` has variants `None = 0`, `Some(T) = 1`; `CoreResult` has
+  `Ok(T) = 0`, `Err(E) = 1`. Their **physical layout remains a C5.1/ABI decision** — MIR does
+  not decide niche-vs-tag representation. Rationale: one enum system, one match-lowering path,
+  one discriminant discipline; the alternative (opaque runtime types) would have let the
+  *current interpreter's* internal representation shape the IR, exactly the coupling this
+  contract exists to prevent. Runtime calls may still implement higher-level *combinators*
+  (`map`, `and_then`, formatting) in v0.1, but construction and pattern matching never require
+  a runtime call.
+- The remaining `Core(...)` types are **semantically opaque runtime types** at the MIR level:
+  their operations are runtime calls (§7), their layout is a C5.1/ABI concern, and their
+  behavior is fixed by the normative stdlib chapter (e.g. insertion-order HashMap iteration,
+  CD-009). MIR does not open their representation.
 - `Never` types check as any type's bottom (the type of `panic(...)`/diverging calls).
 - Well-formedness: `Str`/`Slice` only under `Ref` (V-TY-3); no `Param`/`Infer` (V-TY-2).
 
@@ -112,7 +130,9 @@ MirTy ::= Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64
 MirBody {
     instance:  Instance,
     sig:       (params: Vec<MirTy>, ret: MirTy),
-    locals:    Vec<LocalDecl { ty: MirTy, kind: Return | Param(i) | User(name) | Temp | DropFlag }>,
+    locals:    Vec<LocalDecl { ty: MirTy,
+                               kind: Return | Param(i) | User(name) | Temp | DropFlag
+                                   | IndexProof }>,   -- opaque; see §6's proof tokens
     blocks:    Vec<BasicBlock { statements: Vec<Statement>, terminator: Terminator }>,
     entry:     BlockId,
     spans:     per-statement/terminator SourceInfo (see §9),
@@ -133,8 +153,9 @@ Place    ::= Local . Projection*
 Projection ::= Field(u32)              -- struct/tuple field by index (declaration order)
              | VariantField(v, u32)    -- enum payload field, only after a discriminant test
              | Deref                   -- through Ref
-             | Index(Local)            -- element of Array/Slice; MUST be dominated by a
-                                       --   CheckIndex terminator that produced this Local (§6)
+             | Index(ProofLocal)       -- element of Array/Slice, consuming an index-proof
+                                       --   token produced by a CheckIndex terminator (§6);
+                                       --   ordinary integer locals are NOT accepted here
 Operand  ::= Copy(Place) | Move(Place) | Const(Constant)
 Constant ::= literal of a primitive/String type
            | FnPtr(Instance)           -- a function value (CD-021); Copy; no comparison ops
@@ -149,12 +170,15 @@ Rvalue   ::= Use(Operand)
            | RefOf { mutable, place }              -- take a reference
 ```
 
-- **Every operation that can trap is a terminator, not an rvalue** (§6). The rvalue set above is
-  total (never traps, never calls user code). This is the contract's central honesty invariant:
-  a backend that lowers only rvalues + terminators cannot accidentally skip a trap check,
-  because the trap is control flow, not a side effect of an expression. (Integer negation traps
-  on `MIN`, so `Neg` on integers is a checked terminator, not a `UnOp`; float division and
-  remainder trap on zero divisors per CD-006, so they are checked terminators too.)
+- **The statement and rvalue sets are total: they never trap, never call user code, and never
+  diverge.** Every operation that can trap, call user code, or diverge is a terminator (§6) —
+  including `Drop`, which runs a user destructor (CE3 required change; the original draft had
+  `Drop` as a statement, violating this very invariant). This is the contract's central honesty
+  invariant: a backend that lowers only rvalues + terminators cannot accidentally skip a trap
+  check or hide a user-code call, because both are control flow, not expression side effects.
+  (Integer negation traps on `MIN`, so `Neg` on integers is a checked terminator, not a `UnOp`;
+  float division and remainder trap on zero divisors per CD-006, so they are checked
+  terminators too.)
 - `Move` vs `Copy` on operands is decided by the front end's frozen Copy semantics (fn values,
   references, primitives, all-Copy aggregates are `Copy` — TYPE-FN-001, 03-Type-System §Copy
   and Drop). The verifier enforces move-before-use at the MIR level (V-MOVE-1) as a *defense in
@@ -169,14 +193,20 @@ Rvalue   ::= Use(Operand)
 Terminator ::=
     Goto { target }
   | SwitchInt { scrut: Operand, arms: Vec<(u128, BlockId)>, otherwise: BlockId }
-        -- if/match lowering; enum matching switches on Discriminant
+        -- if/match lowering; enum matching (incl. Option/Result) switches on Discriminant
   | Call { callee: Callee, args: Vec<Operand>, dest: Place, target: BlockId }
         -- no unwind edge exists; a trap inside the callee aborts the program
-  | Checked { op: CheckedOp, args: Vec<Operand>, dest: Place, target: BlockId,
+  | Drop { place: Place, target: BlockId }
+        -- run the destructor for `place`, then continue at `target`. NO unwind edge: a
+        --   destructor that traps aborts the program. A terminator (not a statement, CE3
+        --   required change) because it invokes user code that may trap, diverge, or mutate
+        --   observable state.
+  | Checked { op: CheckedOp, args: Vec<Operand>, dest: Place | ProofLocal, target: BlockId,
               trap: TrapInfo }
         -- trapping primitives: integer add/sub/mul/div/rem/neg, shifts,
-        --   float div/rem (CD-006), numeric `as` casts, index bounds check
-        --   (CheckIndex yields the proven in-bounds index local used by Index projections)
+        --   float div/rem (CD-006), numeric `as` casts, and CheckIndex (below).
+        -- Exactly ONE normal successor (`target`); the failure outcome is an implicit
+        --   abort described by `trap` — there is no unwind or recovery successor of any kind.
   | Trap { info: TrapInfo }            -- unconditional: panic(msg), unwrap on None, assert, …
   | Return                             -- reads Local(0)
   | Unreachable                        -- statically-proven-impossible arms (verifier-guarded)
@@ -196,12 +226,23 @@ TrapCategory ::= IntegerOverflow | DivideByZero | IndexOutOfBounds | CastFailure
 - **`Trap` and `Checked` failures abort** with the category and source location (feeding
   WP-C5.5's trap file:line requirement). There is no edge to a cleanup block because the
   language has none.
-- `Statement ::= Assign(Place, Rvalue) | Drop(Place) | Nop`. **`Drop` is a statement, not a
-  terminator** — justified precisely by abort semantics: a destructor that traps aborts the
-  whole program, so Drop needs no failure edge, and its success path is simply the next
-  statement. (This is a deliberate, load-bearing divergence from Rust MIR, where Drop is a
-  terminator because of unwinding. It makes STARK MIR blocks materially larger and simpler.
-  Flagged for CE3 attention, §12.)
+- `Statement ::= Assign(Place, Rvalue) | Nop`. The statement set is total (§5); everything that
+  can trap, diverge, or run user code — including `Drop` — is a terminator. (The original
+  proposal placed `Drop` in the statement set; CE3 review correctly identified that as a
+  violation of the totality invariant, since destructors are user code. The approved `Drop`
+  terminator keeps every property the statement form wanted — no unwind edge, single normal
+  continuation — while keeping the CFG honest about where user code runs.)
+- **`CheckIndex` and index-proof tokens** (CE3 revised design): `CheckIndex { base, index }`
+  succeeds by defining an **opaque index-proof token** into a dedicated `ProofLocal` — a local
+  of kind `IndexProof` that semantically binds *(base place identity, index value, checked
+  length)*. Proof tokens cannot be constructed by ordinary assignment, copied, moved, cast, or
+  used with any base other than the one they were checked against; their only consumer is an
+  `Index(ProofLocal)` projection on that base. Dominance of an ordinary integer local is *not*
+  sufficient (the local could be reassigned, or the base/length could differ). In v0.1 the
+  proof discipline covers fixed-length `Array` (verifier may validate against the compile-time
+  length) and `Slice` through an unchanged reference; **`Vec` indexing lowers through `Runtime`
+  operations** because its length is mutable — a future MIR version may extend the proof
+  discipline to `Vec` with an explicit invalidation rule.
 
 ## 7. Runtime surface
 
@@ -217,14 +258,16 @@ codegen (charter rule: no unsupported construct reaches a backend silently).
 
 ## 8. Drop elaboration and drop flags
 
-- Lowering emits explicit `Drop(place)` statements at scope exits, early exits (`return`,
-  `break`, `continue`), and assignment-overwrite points, in **reverse declaration order**
-  (including struct-field internal order per CD-011), exactly once per initialized value —
-  implementing the abstract machine's destruction rules structurally.
+- Lowering emits explicit `Drop { place, target }` **terminators** at scope exits, early exits
+  (`return`, `break`, `continue`), and assignment-overwrite points, in **reverse declaration
+  order** (including struct-field internal order per CD-011), exactly once per initialized
+  value — implementing the abstract machine's destruction rules structurally. Sequential drops
+  form a chain of single-terminator blocks; this is the accepted block-count cost of keeping
+  user-code execution visible in the CFG.
 - Conditionally-initialized locals get a `DropFlag` boolean local; lowering emits flag
   assignments at init/move points and branches on the flag (ordinary `SwitchInt`) around the
-  `Drop`. **No special conditional-drop instruction exists** — drop flags are ordinary data +
-  ordinary control flow, keeping the verifier and backends simple.
+  `Drop` terminator. **No special conditional-drop instruction exists** — drop flags are
+  ordinary data + ordinary control flow, keeping the verifier and backends simple.
 - On any trap path: no drops execute (abort). The differential corpus's instrumented-drop
   fixtures (C6.5) are the enforcement mechanism for order/exactly-once, complementing the
   verifier's structural checks (V-DROP-1: `Drop` only on droppable-typed places; V-DROP-2:
@@ -252,10 +295,14 @@ V-TY-1   Assign LHS/RHS types agree; Call/Checked dest and arg types match calle
 V-TY-2   no Param/Infer types anywhere (monomorphised-only invariant)
 V-TY-3   Str/Slice appear only under Ref
 V-MOVE-1 no use of a moved-from place on any path (move-before-use, defense in depth)
-V-DISC-1 Discriminant/VariantField only on enum-typed places; SwitchInt arms ⊆ variant set
-V-DROP-1 Drop only on places whose type can require dropping
+V-DISC-1 Discriminant/VariantField only on enum-typed places (user AND CoreOption/CoreResult);
+         SwitchInt arms ⊆ variant set
+V-DROP-1 Drop terminator only on places whose type can require dropping; no unwind successor
 V-DROP-2 drop-flag locals: Bool, written only Const(true/false), read only by SwitchInt
-V-IDX-1  every Index(local) projection is dominated by the CheckIndex that defined that local
+V-IDX-1  Index(proof) projections consume an IndexProof local defined by a CheckIndex on the
+         SAME base place; proof locals are never assigned by statements, never copied/moved,
+         never used with a different base, and are single-base-bound (CE3 revised design)
+V-IDX-2  IndexProof locals appear only as CheckIndex dests and Index projection arguments
 V-FN-1   no BinOp/UnOp on FnPtr operands (TYPE-FN-001: no comparison, no arithmetic)
 V-SRC-1  every statement/terminator has SourceInfo with a real FileId
 V-RT-1   every Runtime callee is in the enumerated RuntimeFn set for this MIR version
@@ -290,24 +337,36 @@ fn demo::main@[] {
 }
 ```
 
-## 12. Open questions flagged for CE3 review
+## 12. CE3 review outcomes (owner decisions, 2026-07-19, CD-028)
 
-1. **Drop as a statement** (§6) — the abort-no-unwind justification is sound, but it is a
-   divergence from the Rust-MIR shape contributors may know; confirm.
-2. **All trapping ops as terminators** (§5/§6) — maximally explicit and differential-friendly,
-   at the cost of more blocks; the alternative (trapping rvalues with an implicit abort) hides
-   traps from the CFG. Recommend as written; confirm.
-3. **Monomorphised-only MIR** (§2) — recommend as written; the alternative undermines C4.4's
-   differential value. Confirm, including the whole-program-compilation assumption (Core
-   promises no separate-compilation ABI, per C2.9).
-4. **`Option`/`Result` as opaque Core runtime types rather than ordinary MIR enums** (§3) —
-   matches the current runtime and keeps v0.1 small, but means `match` on them lowers through
-   runtime tests rather than `Discriminant`. A future MIR version may migrate them to ordinary
-   enums; doing it now would couple C4 to a runtime-representation change. Recommend opaque for
-   v0.1; confirm.
-5. **`CheckIndex`-dominates-`Index` discipline** (§5, V-IDX-1) vs. a single fused checked-index
-   operation — fused is simpler for backends, split enables C7.4's bounds-check elimination
-   later without changing MIR shape. Recommend split as written; confirm.
+Verdict: **APPROVE WITH REQUIRED CHANGES** — all applied above.
+
+1. **Drop** — *Revise (required change, applied).* Owner decision: "Drop remains explicit and
+   has no unwind edge, but it is represented as a terminator because it may invoke user code,
+   diverge, or abort. Successful completion transfers to one normal target; failure aborts the
+   process." The original statement form violated the totality invariant (§5) — destructors are
+   user code.
+2. **Trapping operations as terminators** — *Approved as written.* Owner decision: "Every
+   primitive operation that may trap is represented by an explicit terminator with one normal
+   successor and an aborting failure outcome. MIR size is secondary to semantic visibility in
+   v0.1." The one-normal-successor / implicit-abort / no-recovery refinement is now explicit in
+   §6.
+3. **Monomorphised-only MIR** — *Approved for v0.1.* Owner decision: "Verified MIR contains
+   only concrete instances; unresolved type parameters are prohibited. Instance discovery is
+   deterministic, deduplicated, and resource-bounded. Symbol mangling is reproducible for
+   identical compiler inputs but is not yet a stable external ABI." All three qualifications
+   are now in §2.
+4. **`Option`/`Result`** — *Revise (required change, applied).* Owner decision: "`Option` and
+   `Result` are represented as logical enums in MIR and use the same aggregate, discriminant,
+   payload, and match machinery as user enums. Their physical layout remains an ABI/backend
+   concern. Runtime calls may implement library combinators but do not define their fundamental
+   enum semantics." The opaque form would have let the current interpreter's representation
+   shape the IR — the exact coupling this contract prohibits.
+5. **`CheckIndex`/`Index`** — *Approved with revision (required change, applied).* Owner
+   decision: "Confirm the split check/access design, but replace the ordinary checked-index
+   integer local with an opaque index-proof token tied to the base, index, and applicable
+   length. `Index` projections consume that proof. Dominance of an ordinary mutable local is
+   not sufficient." See §6's proof tokens and V-IDX-1/2.
 
 ## 13. What this contract does not cover (owned elsewhere)
 

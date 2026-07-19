@@ -2,7 +2,10 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C3 CLOSED (backend selected)  Next: Gate C4 — WP-C4.1 (MIR design review, CE3)  Blocked: none
+Gate: C4 (MIR contract approved)  Next: WP-C4.2 (typed HIR → MIR lowering, scalar core)  Blocked: none
+MIR v0.1 contract APPROVED under CE3 (CD-028, approve-with-required-changes — Drop terminator,
+Option/Result as logical enums, index-proof tokens; all applied). `mir.md` is the binding
+implementation contract; changes to its shape need a new CE3 review + version bump.
 Gate C3 complete 2026-07-19: WP-C3.1 (workload freeze + framework), WP-C3.2 (generated-Rust spike
 4/17→8/17 with breadth), WP-C3.3 (direct Cranelift spike 3/17), WP-C3 breadth run, and **WP-C3.4
 backend selection = `SELECT-GENERATED`** (owner CE5 decision, CD-026): generated Rust as the
@@ -1194,3 +1197,33 @@ FOLLOW-UP: on approval, record a CD entry flipping mir.md to APPROVED and open W
 HIR→MIR lowering). DEV-064 fix must land in typecheck before instance collection can rely on
 full determination (C4.5 at latest).
 NEXT: CE3 owner review of mir.md §12's five questions; then WP-C4.2.
+
+### WP-C4.1 CE3 review outcome (CD-028) — 2026-07-19
+DONE: owner CE3 review of the MIR v0.1 contract returned **APPROVE WITH REQUIRED CHANGES**;
+all three required changes applied and the contract flipped to APPROVED. (1) Drop moved from
+Statement to Terminator (`Drop { place, target }`, no unwind edge) — the review correctly
+caught that the statement form violated the contract's own totality invariant, since
+destructors are user code that may trap/diverge/mutate; the totality invariant is now stated
+in full ("statements/rvalues never trap, never call user code, never diverge") and actually
+holds. (2) Option/Result changed from opaque Core runtime types to **logical MIR enums**
+(`EnumRef::CoreOption`/`CoreResult`, same aggregate/discriminant/match machinery as user
+enums; physical layout stays C5.1/ABI; combinators may remain runtime calls) — the opaque form
+had let the current interpreter's representation shape the IR. (3) CheckIndex/Index kept split
+but the ordinary integer index local replaced with **opaque IndexProof tokens** binding
+base+index+length, consumed only by Index projections on the same base (V-IDX-1/2); Vec
+indexing stays on runtime ops in v0.1 (mutable length). Approved unchanged: trapping-ops-as-
+terminators (with the one-normal-successor/implicit-abort refinement made explicit) and
+monomorphised-only MIR (with three qualifications: mangling not a stable external ABI; named
+resource limit; deduplicated discovery). Owner decision wordings recorded verbatim in mir.md
+§12.
+FILES: STARKLANG/docs/compiler/mir.md (APPROVED), STARKLANG/docs/compiler/work-packages/
+WP-C4.1.md (closed), COMPILER-STATE.md.
+RULES: none — implementation contract, subordinate to CORE-V1-ABSTRACT-MACHINE.md.
+DECISIONS: CD-028 (owner CE3).
+EVIDENCE: design review only; no code changed; workspace baseline 605/0/2 unchanged.
+FOLLOW-UP: none blocking. DEV-064 (undetermined-generic coercion rejection) still owned by
+C4.5; the CD-021 callable-ABI memo still recommended pre-C5.1.
+NEXT: WP-C4.2 — typed HIR → MIR lowering, scalar core (literals/locals, unary/binary ops,
+blocks/assignments, functions/calls, if/loops/break/continue/return, tuples/arrays/structs/
+basic enums, pattern matching without advanced drop elaboration), with every MIR instruction
+carrying real or labeled-synthetic SourceInfo.
