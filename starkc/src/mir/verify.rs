@@ -1081,6 +1081,24 @@ impl<'a> BodyCx<'a> {
                     None
                 }
             },
+            // 0.1-A2: iterator ops resolve T from the Core(VecIter,[T]) operand.
+            VecIterNext => match arg_tys.first().and_then(|o| o.as_ref()) {
+                Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                    MirTy::Core(crate::hir::CoreType::VecIter, args) => args.first().cloned(),
+                    other => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("VecIterNext operand is &{other:?}, not &mut VecIter"),
+                        );
+                        None
+                    }
+                },
+                _ => {
+                    self.err("MIR-0012", bi, "VecIterNext operand is not a &mut VecIter");
+                    None
+                }
+            },
             _ => match arg_tys.first().and_then(|o| o.as_ref()) {
                 Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
                     MirTy::Core(crate::hir::CoreType::Vec, args) => args.first().cloned(),
@@ -1109,6 +1127,13 @@ impl<'a> BodyCx<'a> {
                     format!("VecIndexGet requires a Copy element type, found {t:?}"),
                 );
             }
+            VecIterNew | VecIterNext if !self.mir_is_copy(&t) => {
+                self.err(
+                    "MIR-0016",
+                    bi,
+                    format!("Vec iteration requires a Copy element type, found {t:?}"),
+                );
+            }
             VecClear if self.mir_needs_drop(&t) => {
                 self.err(
                     "MIR-0016",
@@ -1131,6 +1156,22 @@ impl<'a> BodyCx<'a> {
             VecReplace => (vec![vec_ref(&t, true), uint64, t.clone()], t.clone()),
             VecRemove => (vec![vec_ref(&t, true), uint64], t.clone()),
             VecClear => (vec![vec_ref(&t, true)], MirTy::Unit),
+            // 0.1-A2 iteration: New borrows the Vec; Next yields Option<&T>.
+            VecIterNew => (
+                vec![vec_ref(&t, false)],
+                MirTy::Core(crate::hir::CoreType::VecIter, vec![t.clone()]),
+            ),
+            VecIterNext => {
+                let iter_ref = MirTy::Ref {
+                    mutable: true,
+                    inner: Box::new(MirTy::Core(crate::hir::CoreType::VecIter, vec![t.clone()])),
+                };
+                let elem_ref = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(t.clone()),
+                };
+                (vec![iter_ref], opt(&elem_ref))
+            }
             _ => unreachable!("non-Vec op in vec_runtime_sig"),
         })
     }
@@ -1678,6 +1719,8 @@ fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
             | VecReplace
             | VecRemove
             | VecClear
+            | VecIterNew
+            | VecIterNext
     )
 }
 
@@ -1724,7 +1767,7 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
         // Vec ops are schematic in T — resolved by `vec_runtime_sig`, never this fixed table.
         VecNew | VecWithCapacity | VecPush | VecPop | VecLen | VecIsEmpty | VecIndexGet
-        | VecReplace | VecRemove | VecClear => {
+        | VecReplace | VecRemove | VecClear | VecIterNew | VecIterNext => {
             unreachable!("Vec ops resolve through vec_runtime_sig, not runtime_sig")
         }
     }

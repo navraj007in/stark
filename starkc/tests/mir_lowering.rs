@@ -177,7 +177,7 @@ fn golden_mini_dump() {
     // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
     // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
     let expected = "\
-// STARK MIR v0.1 (runtime-surface 0.1-A1)
+// STARK MIR v0.1 (runtime-surface 0.1-A2)
 
 fn main@[] {
   locals: _0: Unit [ret], _1: Unit [tmp], _2: Int32 [tmp], _3: Int64 [tmp]
@@ -271,16 +271,14 @@ fn unsupported_constructs_report_cleanly() {
             "C4.5e",
         ),
         (
-            // Vec data ops (e-2) lower; by-reference `.iter()` is deferred to an A2 surface
-            // bump (interior references into runtime containers).
-            "veciter.stark",
+            // Vec iteration (0.1-A2, f-2) lowers; HashMap remains outside the surface.
+            "hashmap.stark",
             "fn main() { \
-                 let mut v: Vec<Int32> = Vec::new(); v.push(1); \
-                 let mut total = 0; \
-                 for x in v.iter() { total = total + *x; } \
-                 println(total); \
+                 let mut m: HashMap<Int32, Int32> = HashMap::new(); \
+                 m.insert(1, 2); \
+                 println(m.len()); \
              }",
-            "A2",
+            "C4.5",
         ),
         (
             // Char literals + Char-dependent ops are deferred to a later C4.5e sub-slice.
@@ -456,8 +454,8 @@ fn string_literal_dump_round_trips_escapes() {
     let program = lower_ok(&front);
     let dump = program.dump();
     assert!(
-        dump.contains("(runtime-surface 0.1-A1)"),
-        "dump header must carry the A1 runtime surface, got:\n{dump}"
+        dump.contains("(runtime-surface 0.1-A2)"),
+        "dump header must carry the current runtime surface, got:\n{dump}"
     );
     assert!(
         dump.contains("const \"a\\\"b\\\\c\\n\""),

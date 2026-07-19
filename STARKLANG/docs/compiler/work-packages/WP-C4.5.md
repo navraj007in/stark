@@ -175,6 +175,20 @@ HIR/MIR differential agreement before the next begins.
      re-reads a moved place. Workspace 699/0/2.
    - (CD-030 deferral — resolved by f-1 above) frame-generation identities in the MIR
      interpreter, before cross-package call graphs grow the frame traffic.
+   - **C4.5f-2 — by-reference Vec iteration, surface `0.1-A2`: DONE 2026-07-19** (activated
+     per CD-032's dated-enumeration rule; amendment rev. 5). `VecIterNew : (&Vec<T>) ->
+     Core(VecIter,[T])` and `VecIterNext : (&mut Core(VecIter,[T])) -> Option<&T>`, both
+     `T: Copy` (V-COPY-1/MIR-0016). Interpreter per the §5e carry-forward: the iterator is a
+     snapshot aggregate `[Vec, cursor]` in a frame local; `Next` hands out interior `&T`
+     references into that local — exactly what f-1's frame generations protect once the
+     iterator dies. Lowering: `Vec::iter()` → `VecIterNew` (Copy check); `for value in
+     v.iter()` desugars to header/`VecIterNext`/discriminant-switch with the `&T` loop
+     variable bound by move from the `Option<&T>`; `break`/`continue` reuse the existing
+     loop-scope machinery; iterator local registered droppable (no-op glue). Verifier:
+     schematic-T arms for both ops + Copy enforcement; `read/write_resolved` gained
+     Index-on-Vec projection arms. `MIR_RUNTIME_SURFACE = "0.1-A2"` (surface gate + dump
+     header). **`collection_iter__01` corpus case differential-green.** 2 new differential
+     tests (corpus + empty-Vec/break/deref behaviors). Workspace 701/0/2.
    - (CD-032) **Vec/collection iteration**, folded here from A1. STARK's `.iter()` is
      by-reference (`value: &T`), i.e. an interior reference into a runtime container — the same
      machinery as the reserved `VecGetRef`/`StringSubstring` views. Design carry-forward is in

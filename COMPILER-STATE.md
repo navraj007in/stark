@@ -1,11 +1,18 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5f-1 (frame generations + move poison)
+Updated: 2026-07-19 after WP-C4.5f-2 (Vec iteration, surface 0.1-A2)
 
 ## Position
-Gate: C4  Next: WP-C4.5f-2 (interior references + Vec iteration via the `0.1-A2` surface bump
-— unblocks `collection_iter__01`); then f-3 multi-package symbols/linkage; Char/`assert_eq`
-(e-1 deferral) slots anywhere. All 17 frozen corpus cases lower/pass EXCEPT the two
-`collection_iter__*` (need f-2 iteration; `__02` also needs HashMap ops).  Blocked: none
+Gate: C4  Next: WP-C4.5f-3 (multi-package symbols/linkage — the last structural f piece);
+remaining smaller items: Char/`assert_eq` (e-1 deferral), HashMap surface (`collection_iter__02`,
+the one corpus case still out). **16 of 17 frozen corpus cases differential-green.**
+Blocked: none
+**WP-C4.5f-2 done 2026-07-19** (by-reference Vec iteration, surface `0.1-A2` per CD-032's
+dated-enumeration rule, amendment rev. 5): `VecIterNew`/`VecIterNext -> Option<&T>` (`T: Copy`,
+V-COPY-1/MIR-0016); interpreter iterator = snapshot aggregate `[Vec, cursor]` in a frame local
+handing out interior `&T` refs — protected by f-1's frame generations (built first,
+deliberately); `for value in v.iter()` desugar; Index-on-Vec projection arms;
+`MIR_RUNTIME_SURFACE = "0.1-A2"`. **`collection_iter__01` corpus case differential-green.**
+Workspace 701/0/2; fmt+clippy clean 1.93/1.97.
 **WP-C4.5f-1 done 2026-07-19** (both CD-030 deferrals): `Frame.generation` (monotonic) +
 `MirValue::Ref` carries the pointee's generation; every deref and runtime-op ref helper
 validates (slot, generation) — stale references to reused frame slots fail loudly (adversarial

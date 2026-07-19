@@ -616,7 +616,10 @@ impl<'a> Interp<'a> {
                         None => return self.internal("variant field out of bounds"),
                     }
                 }
-                (ConcreteProj::Index(i), MirValue::Aggregate(elems)) => match elems.get(*i) {
+                // 0.1-A2: `Index` also resolves into a runtime Vec snapshot (iterator
+                // interior references, C4.5f-2).
+                (ConcreteProj::Index(i), MirValue::Aggregate(elems))
+                | (ConcreteProj::Index(i), MirValue::Vec(elems)) => match elems.get(*i) {
                     Some(e) => e,
                     None => {
                         return self.internal("proven index out of bounds (verifier/lowering bug)")
@@ -677,7 +680,8 @@ impl<'a> Interp<'a> {
                         .get_mut(*i as usize)
                         .ok_or_else(|| MirRunError::Internal("variant write oob".into()))?
                 }
-                (ConcreteProj::Index(i), MirValue::Aggregate(elems)) => {
+                (ConcreteProj::Index(i), MirValue::Aggregate(elems))
+                | (ConcreteProj::Index(i), MirValue::Vec(elems)) => {
                     elems.get_mut(*i).ok_or_else(|| {
                         MirRunError::Internal("proven index write out of bounds".into())
                     })?
@@ -1162,6 +1166,63 @@ impl<'a> Interp<'a> {
                 }
                 self.mutate_vec_ref(&recv, |v| v.remove(i))
             }
+            // --- 0.1-A2 (C4.5f-2): by-reference iteration. The iterator value is an opaque
+            // two-field aggregate [snapshot Vec, Int cursor] living in a frame local; `Next`
+            // hands out interior references into THAT local (base + [Field(0), Index(i)]),
+            // which the f-1 frame-generation guard protects once the iterator dies. The
+            // snapshot is sound because iteration is `T: Copy` and borrowck forbids mutating
+            // the source Vec while the iterator lives (A1 §5e carry-forward).
+            VecIterNew => {
+                let recv = args.next();
+                let elems = self.read_vec_ref(&recv)?;
+                Ok(MirValue::Aggregate(vec![
+                    MirValue::Vec(elems),
+                    MirValue::Int(0),
+                ]))
+            }
+            VecIterNext => {
+                let Some(MirValue::Ref {
+                    frame,
+                    generation,
+                    local,
+                    path,
+                }) = args.next()
+                else {
+                    return self.internal("VecIterNext expects a &mut iterator reference");
+                };
+                self.check_ref_live(frame, generation)?;
+                let iter_value = self.read_resolved(frame, local, &path)?;
+                let MirValue::Aggregate(fields) = &iter_value else {
+                    return self.internal(format!("iterator referent is {iter_value:?}"));
+                };
+                let (len, cursor) = match (fields.first(), fields.get(1)) {
+                    (Some(MirValue::Vec(elems)), Some(MirValue::Int(c))) => (elems.len(), *c),
+                    other => return self.internal(format!("malformed iterator state {other:?}")),
+                };
+                if (cursor as usize) < len {
+                    // Bump the cursor in place, then hand out the interior reference.
+                    let mut cursor_path = path.clone();
+                    cursor_path.push(ConcreteProj::Field(1));
+                    self.write_resolved(frame, local, &cursor_path, MirValue::Int(cursor + 1))?;
+                    let mut elem_path = path;
+                    elem_path.push(ConcreteProj::Field(0));
+                    elem_path.push(ConcreteProj::Index(cursor as usize));
+                    Ok(MirValue::Enum {
+                        variant: 1,
+                        fields: vec![MirValue::Ref {
+                            frame,
+                            generation,
+                            local,
+                            path: elem_path,
+                        }],
+                    })
+                } else {
+                    Ok(MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    })
+                }
+            }
             other => self.internal(format!("runtime {other:?} is not a Vec op")),
         }
     }
@@ -1290,6 +1351,8 @@ fn is_vec_runtime(rt: RuntimeFn) -> bool {
             | VecReplace
             | VecRemove
             | VecClear
+            | VecIterNew
+            | VecIterNext
     )
 }
 

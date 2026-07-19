@@ -30,7 +30,11 @@ pub const MIR_VERSION: &str = "0.1";
 /// Runtime-surface revision (Amendment A1, CD-031). Additive `RuntimeFn`/String/Vec growth
 /// bumps this, not `MIR_VERSION`. Stamped onto every `MirProgram`; a consumer rejects a
 /// program whose `runtime_surface` it does not support before consuming any body.
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A1";
+///
+/// `0.1-A2` (C4.5f-2, per CD-032's activation rule — dated enumeration in the amendment doc
+/// rev. 5): adds by-reference Vec iteration, `VecIterNew`/`VecIterNext` yielding
+/// `Option<&T>` for `T: Copy`.
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A2";
 
 // ------------------------------------------------------------------ identity --
 
@@ -348,6 +352,11 @@ pub enum RuntimeFn {
     VecReplace,
     VecRemove,
     VecClear,
+    // --- 0.1-A2 (C4.5f-2, CD-032): by-reference Vec iteration. The iterator borrows the
+    // source Vec (borrowck forbids mutation while live); `VecIterNext` yields `Option<&T>`
+    // and requires `T: Copy` (V-COPY-1). ---
+    VecIterNew,
+    VecIterNext,
 }
 
 #[derive(Clone, Debug)]

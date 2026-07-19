@@ -391,6 +391,23 @@ I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
 
+**Rev. 5 — surface `0.1-A2` activation (2026-07-19, WP-C4.5f-2, per CD-032's dated-enumeration
+rule).** Activates by-reference Vec iteration, the §5e carry-forward design:
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `VecIterNew` | `(&Vec<T>) -> Core(VecIter, [T])` | — | interior-borrow (§5e); **requires `T: Copy`** (V-COPY-1/MIR-0016); iterator value is non-Copy, drop-elaborated (no-op glue — no droppable elements by the Copy bound) |
+| `VecIterNext` | `(&mut Core(VecIter,[T])) -> Option<&T>` | — | **by-reference** (the CD-032 correction of rev. 1–3's by-value form); yields an interior `&T`; requires `T: Copy` |
+
+Schematic `T`: `VecIterNew` from the first `&Vec` operand; `VecIterNext` from the
+`Core(VecIter,[T])` operand (as §6 already stated for the carry-forward). Interpreter
+representation exactly per §5e: the iterator is a snapshot aggregate `[Vec, cursor]` in a frame
+local; `VecIterNext` hands out interior references into that local, protected by the C4.5f-1
+frame-generation guard once the iterator dies (the guard landed first, deliberately).
+`MIR_RUNTIME_SURFACE = "0.1-A2"`; the surface gate (§6) and dump header (§7) carry it. Programs
+without iteration are unchanged. `StringSubstring`/`VecGetRef` and by-value/non-Copy iteration
+remain reserved (§5d).
+
 **Rev. 4 — CD-032 (owner decision 2026-07-19, post-C4.5e-2).** Vec iteration corrected and
 moved out of surface `0.1-A1`. A1's by-value `VecIterNext -> Option<T>` had no STARK source
 trigger (STARK iteration is `for x in v.iter()`, binding `&T`), so all Vec iteration is

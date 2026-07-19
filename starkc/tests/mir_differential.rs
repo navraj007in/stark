@@ -1051,3 +1051,39 @@ fn match_arm_that_moves_binding_does_not_double_drop_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.5f-2: by-reference Vec iteration (surface 0.1-A2) ----
+
+/// The frozen `collection_iter__01` corpus case (Vec push/index/iterate with `for value in
+/// values.iter()` binding `&Int32`) now runs through both engines.
+#[test]
+fn collection_iter_01_corpus_case_agrees() {
+    let path = corpus_dir().join("collection_iter__01_vec_push_index_iterate.stark");
+    let source = std::fs::read_to_string(&path).unwrap();
+    differential(&path.to_string_lossy(), source);
+}
+
+/// Iteration behaviors: empty Vec (zero iterations), break inside the loop, and mutation of
+/// an outer accumulator through the `&T` loop variable's deref.
+#[test]
+fn vec_iteration_behaviors_agree() {
+    differential(
+        "iterbehave.stark",
+        "fn main() { \
+             let empty: Vec<Int32> = Vec::new(); \
+             let mut count = 0; \
+             for x in empty.iter() { count = count + 1; } \
+             println(count); \
+             let mut v: Vec<Int32> = Vec::new(); \
+             v.push(5); v.push(6); v.push(7); \
+             let mut sum = 0; \
+             for x in v.iter() { \
+                 if *x == 7 { break; } \
+                 sum = sum + *x; \
+             } \
+             println(sum); \
+             println(v.len()); \
+         }"
+        .to_string(),
+    );
+}

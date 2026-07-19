@@ -633,6 +633,14 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::Vec, inner)
             }
+            // 0.1-A2 (C4.5f-2): the borrowing Vec iterator.
+            Ty::Core(crate::hir::CoreType::VecIter, args) => {
+                let inner = args
+                    .iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                MirTy::Core(crate::hir::CoreType::VecIter, inner)
+            }
             Ty::Tuple(elems) => MirTy::Tuple(
                 elems
                     .iter()
@@ -904,7 +912,11 @@ impl<'a> FnLowerer<'a> {
             // A1 (CD-031): String and Vec ALWAYS require runtime drop glue (buffer reclaim;
             // Vec also drops elements). Both are leaf drop units — `collect_drop_units`' `_`
             // arm makes them units, and the interp's `drop_in_place` reclaims/element-drops.
-            MirTy::String | MirTy::Core(crate::hir::CoreType::Vec, _) => true,
+            // 0.1-A2: the iterator likewise (cursor/borrow release; T: Copy means no element
+            // destructors — glue is observably a no-op).
+            MirTy::String
+            | MirTy::Core(crate::hir::CoreType::Vec, _)
+            | MirTy::Core(crate::hir::CoreType::VecIter, _) => true,
             _ => false,
         })
     }
@@ -1801,11 +1813,17 @@ impl<'a> FnLowerer<'a> {
                 let (lo, hi, inclusive) = match &self.hir.expr(*iter).kind {
                     hir::ExprKind::Range { lo, hi, inclusive } => (*lo, *hi, *inclusive),
                     _ => {
+                        // 0.1-A2 (C4.5f-2): `for x in v.iter()` — borrowing Vec iteration.
+                        let iter_ty = self.expr_mir_ty(*iter)?;
+                        if let MirTy::Core(crate::hir::CoreType::VecIter, args) = &iter_ty {
+                            let elem = args.first().cloned().unwrap_or(MirTy::Unit);
+                            return self
+                                .lower_for_over_vec_iter(*var, *local, *iter, *body, elem, span);
+                        }
                         return unsupported(
-                            "for over a non-range iterator (e.g. Vec::iter — by-reference \
-                             iteration, deferred to an A2 surface bump)",
+                            "for over a non-range, non-Vec iterator (a later increment)",
                             span,
-                        )
+                        );
                     }
                 };
                 let elem_ty = self.expr_mir_ty(lo)?;
@@ -3566,28 +3584,32 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         let name = self.text(name_span).to_string();
         // (runtime fn, receiver mutability).
-        let (rt, recv_mut) =
-            match name.as_str() {
-                "push" => (RuntimeFn::VecPush, true),
-                "pop" => (RuntimeFn::VecPop, true),
-                "remove" => (RuntimeFn::VecRemove, true),
-                "clear" => {
-                    // A1 §5a: `clear()` on a droppable element type must not hide destructors in
-                    // the opaque runtime op — it lowers to a pop-and-drop loop instead.
-                    if self.ty_needs_drop(&elem, span)? {
-                        return self.lower_vec_clear_droppable(base, elem, dest, span);
-                    }
-                    (RuntimeFn::VecClear, true)
+        let (rt, recv_mut) = match name.as_str() {
+            "push" => (RuntimeFn::VecPush, true),
+            "pop" => (RuntimeFn::VecPop, true),
+            "remove" => (RuntimeFn::VecRemove, true),
+            "clear" => {
+                // A1 §5a: `clear()` on a droppable element type must not hide destructors in
+                // the opaque runtime op — it lowers to a pop-and-drop loop instead.
+                if self.ty_needs_drop(&elem, span)? {
+                    return self.lower_vec_clear_droppable(base, elem, dest, span);
                 }
-                "len" => (RuntimeFn::VecLen, false),
-                "is_empty" => (RuntimeFn::VecIsEmpty, false),
-                "iter" => return unsupported(
-                    "Vec::iter is by-reference iteration (&T) — deferred to an owner-reviewed A2 \
-                     surface bump (interior references into runtime containers)",
-                    span,
-                ),
-                _ => return unsupported(format!("Vec::{name} (a later C4.5e sub-slice)"), span),
-            };
+                (RuntimeFn::VecClear, true)
+            }
+            "len" => (RuntimeFn::VecLen, false),
+            "is_empty" => (RuntimeFn::VecIsEmpty, false),
+            // 0.1-A2 (C4.5f-2): borrowing iteration; T must be Copy (V-COPY-1).
+            "iter" => {
+                if !self.is_copy(&elem) {
+                    return unsupported(
+                        "Vec iteration over a non-Copy element type (reserved beyond 0.1-A2)",
+                        span,
+                    );
+                }
+                (RuntimeFn::VecIterNew, false)
+            }
+            _ => return unsupported(format!("Vec::{name} (a later C4.5e sub-slice)"), span),
+        };
         let recv = self.borrow_vec_receiver(base, recv_mut, elem.clone(), span)?;
         let mut ops = vec![recv];
         for &arg in args {
@@ -3653,6 +3675,131 @@ impl<'a> FnLowerer<'a> {
         self.emit(
             Statement::Assign(dest, Rvalue::Use(Operand::Const(Constant::Unit))),
             self.info(span),
+        );
+        Ok(())
+    }
+
+    /// 0.1-A2 (C4.5f-2): `for value in v.iter() { body }`. Desugar:
+    /// ```text
+    /// it = <iter expr>            // VecIterNew(&v) via the method-call lowering
+    /// header:
+    ///   nxt = VecIterNext(&mut it)     // Option<&T>
+    ///   switch discriminant(nxt) [Some → body_bb] else exit
+    /// body_bb:
+    ///   value: &T = move nxt.v1.0
+    ///   ...body (own scope)...
+    ///   goto header
+    /// exit:
+    /// ```
+    /// The loop variable is a `&T` interior reference into the iterator's frame local; the
+    /// f-1 frame generations guard it if it ever escapes. `T: Copy` (V-COPY-1) was checked
+    /// when `iter()` lowered. The iterator local is registered droppable (no-op glue).
+    #[allow(clippy::too_many_arguments)]
+    fn lower_for_over_vec_iter(
+        &mut self,
+        var: Span,
+        var_local: crate::hir::LocalId,
+        iter: ExprId,
+        body: hir::BlockId,
+        elem: MirTy,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let iter_ty = MirTy::Core(crate::hir::CoreType::VecIter, vec![elem.clone()]);
+        let elem_ref = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(elem.clone()),
+        };
+        let opt_ty = MirTy::Enum(EnumRef::CoreOption, vec![elem_ref.clone()]);
+
+        // Materialize the iterator into a registered droppable local.
+        let it_op = self.lower_expr_to_operand(iter)?;
+        self.locals.push(LocalDecl {
+            ty: iter_ty.clone(),
+            kind: LocalKind::Temp,
+        });
+        let it_local = LocalId((self.locals.len() - 1) as u32);
+        self.register_droppable_local(it_local, &iter_ty, false, span)?;
+        self.emit(
+            Statement::Assign(Place::local(it_local), Rvalue::Use(it_op)),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        self.set_flags_under(it_local.0, &[], true, span);
+
+        let header = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.terminate(
+            Terminator::Goto { target: header },
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+            header,
+        );
+
+        // header: nxt = VecIterNext(&mut it); switch on its discriminant.
+        let iter_ref_ty = MirTy::Ref {
+            mutable: true,
+            inner: Box::new(iter_ty),
+        };
+        let iter_ref = self.new_temp(iter_ref_ty.clone());
+        self.emit(
+            Statement::Assign(
+                Place::local(iter_ref),
+                Rvalue::RefOf {
+                    mutable: true,
+                    place: Place::local(it_local),
+                },
+            ),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        let nxt = self.new_temp(opt_ty);
+        self.emit_runtime_call(
+            RuntimeFn::VecIterNext,
+            vec![Operand::Copy(Place::local(iter_ref))],
+            Place::local(nxt),
+            span,
+        );
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(Place::local(nxt))),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(disc)),
+                arms: vec![(1, body_block)],
+                otherwise: exit,
+            },
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+            body_block,
+        );
+
+        // body: bind the &T loop variable, run the body in its own scope, loop.
+        self.locals.push(LocalDecl {
+            ty: elem_ref.clone(),
+            kind: LocalKind::User(self.text(var).to_string()),
+        });
+        let bound = LocalId((self.locals.len() - 1) as u32);
+        self.local_map.insert(var_local.0, bound);
+        self.emit(
+            Statement::Assign(
+                Place::local(bound),
+                Rvalue::Use(Operand::Move(Place {
+                    local: nxt,
+                    projection: vec![Projection::VariantField(1, 0)],
+                })),
+            ),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        self.loops.push(LoopTargets {
+            continue_target: header,
+            break_target: exit,
+            scope_depth: self.scopes.len(),
+        });
+        self.lower_block_value(body)?;
+        self.loops.pop();
+        self.terminate(
+            Terminator::Goto { target: header },
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+            exit,
         );
         Ok(())
     }
