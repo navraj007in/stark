@@ -42,8 +42,12 @@ pub enum MirValue {
 
 #[derive(Debug)]
 pub enum MirRunError {
+    /// A language trap: category AND provenance (review correction: discarding SourceInfo
+    /// made the differential blind to wrong-location traps — a right-category trap at the
+    /// wrong operand would have passed C4.4).
     Trap {
         category: TrapCategory,
+        source: SourceInfo,
     },
     /// A bug in lowering/verification/interpretation — never a language-level outcome.
     Internal(String),
@@ -56,7 +60,10 @@ pub struct MirExecution {
 
 const FUEL: u64 = 50_000_000;
 
-pub fn run_program(program: &MirProgram) -> Result<MirExecution, MirRunError> {
+pub fn run_program(
+    verified: crate::mir::verify::VerifiedMirProgram<'_>,
+) -> Result<MirExecution, MirRunError> {
+    let program = verified.program();
     let by_symbol: HashMap<&str, usize> = program
         .bodies
         .iter()
@@ -195,6 +202,7 @@ impl<'a> Interp<'a> {
                         None => {
                             return Err(MirRunError::Trap {
                                 category: trap.category,
+                                source: trap.source,
                             })
                         }
                     }
@@ -202,6 +210,7 @@ impl<'a> Interp<'a> {
                 Terminator::Trap { info } => {
                     return Err(MirRunError::Trap {
                         category: info.category,
+                        source: info.source,
                     })
                 }
                 Terminator::Return => {

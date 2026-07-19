@@ -44,7 +44,22 @@ pub struct MirError {
     pub block: u32,
 }
 
-pub fn verify_program(program: &MirProgram) -> Result<(), Vec<MirError>> {
+/// Proof-of-verification token (review correction: "no backend bypasses MIR validation" as an
+/// API property, not just a roadmap rule). The only way to obtain one is `verify_program`
+/// succeeding; `mir::interp::run_program` — and eventually the generated-Rust backend —
+/// consume this wrapper, never a raw `&MirProgram`.
+#[derive(Clone, Copy)]
+pub struct VerifiedMirProgram<'a> {
+    program: &'a MirProgram,
+}
+
+impl<'a> VerifiedMirProgram<'a> {
+    pub fn program(&self) -> &'a MirProgram {
+        self.program
+    }
+}
+
+pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Vec<MirError>> {
     let mut errors = Vec::new();
     for body in &program.bodies {
         let mut cx = BodyCx {
@@ -55,7 +70,7 @@ pub fn verify_program(program: &MirProgram) -> Result<(), Vec<MirError>> {
         cx.verify();
     }
     if errors.is_empty() {
-        Ok(())
+        Ok(VerifiedMirProgram { program })
     } else {
         Err(errors)
     }

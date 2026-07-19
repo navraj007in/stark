@@ -80,10 +80,11 @@ fn differential(name: &str, source: String) {
         Ok(program) => program,
         Err(e) => panic!("{name}: lowering failed: {} @ {:?}", e.what, e.span),
     };
-    if let Err(errors) = verify_program(&program) {
-        panic!("{name}: verifier rejected lowered MIR:\n{errors:#?}");
-    }
-    let mir_result = run_program(&program);
+    let verified = match verify_program(&program) {
+        Ok(verified) => verified,
+        Err(errors) => panic!("{name}: verifier rejected lowered MIR:\n{errors:#?}"),
+    };
+    let mir_result = run_program(verified);
 
     match (oracle, mir_result) {
         (Ok(oracle_exec), Ok(mir_exec)) => {
@@ -97,7 +98,7 @@ fn differential(name: &str, source: String) {
                 "{name}: exit status mismatch"
             );
         }
-        (Err(oracle_err), Err(MirRunError::Trap { category })) => {
+        (Err(oracle_err), Err(MirRunError::Trap { category, source })) => {
             assert!(
                 oracle_err.is_trap,
                 "{name}: oracle errored non-trap ({}) but MIR trapped {category:?}",
@@ -108,6 +109,24 @@ fn differential(name: &str, source: String) {
                 "{name}: trap category mismatch — MIR {category:?} vs oracle message {:?}",
                 oracle_err.message
             );
+            // Provenance (review correction): a right-category trap at the WRONG location is
+            // a lowering bug the comparator must catch. User-origin traps must match the
+            // oracle's span exactly (both derive from the same HIR spans); synthetic-origin
+            // traps (e.g. for-loop desugar) compare their documented classification instead.
+            assert!(
+                (source.file.0 as usize) < program.files.len(),
+                "{name}: MIR trap carries an invalid FileId"
+            );
+            match source.origin {
+                starkc::mir::Origin::UserCode => assert_eq!(
+                    (source.span.lo, source.span.hi),
+                    (oracle_err.span.lo, oracle_err.span.hi),
+                    "{name}: trap PROVENANCE mismatch — MIR {category:?} at {:?} vs oracle at {:?}",
+                    source.span,
+                    oracle_err.span
+                ),
+                starkc::mir::Origin::Synthetic(_) => {}
+            }
         }
         (Ok(exec), Err(mir_err)) => panic!(
             "{name}: oracle succeeded (stdout {:?}) but MIR failed: {mir_err:?}",

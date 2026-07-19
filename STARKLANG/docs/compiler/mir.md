@@ -84,6 +84,15 @@ Instance = (ItemId of the fn or method, Vec<MirTy> concrete type arguments)
   the type checker must reject fn-value coercions whose instantiation is undetermined, so
   instance collection never sees an unnamed instantiation.
 
+**Program shape (CD-029 amendment, CE3-reviewed):** a MIR program consists of (a) the interned
+source-file table (`FileId` indexes it), (b) the body set, and (c) the **nominal type
+context** — the struct field types and user-enum variant payload types for every nominal type
+reachable from the bodies (`Option`/`Result` payloads derive from their type arguments and
+need no table entry). The type context is *part of the in-memory MIR compilation unit*: the
+verifier requires it to type projections step by step, and every backend requires it for
+layout; it is not serialized in the textual dump. This is an additive amendment recorded under
+CD-029; the MIR version remains v0.1.
+
 ## 3. MIR types (`MirTy`)
 
 A closed, first-order, fully concrete type language:
@@ -225,7 +234,10 @@ TrapCategory ::= IntegerOverflow | DivideByZero | IndexOutOfBounds | CastFailure
 
 - **`Trap` and `Checked` failures abort** with the category and source location (feeding
   WP-C5.5's trap file:line requirement). There is no edge to a cleanup block because the
-  language has none.
+  language has none. **Execution outcomes carry the full `TrapInfo` — category AND
+  `SourceInfo` — through every consumer** (CD-029): a differential comparator or backend that
+  observes only the category is blind to wrong-location traps, so provenance is part of the
+  observable trap outcome, not an implementation nicety.
 - `Statement ::= Assign(Place, Rvalue) | Nop`. The statement set is total (§5); everything that
   can trap, diverge, or run user code — including `Drop` — is a terminator. (The original
   proposal placed `Drop` in the statement set; CE3 review correctly identified that as a

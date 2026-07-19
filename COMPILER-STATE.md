@@ -2,12 +2,15 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C4  Next: WP-C4.5 (complete Core lowering)  Blocked: none
-WP-C4.4 done 2026-07-19: `src/mir/interp.rs` executes verified MIR; 7-test differential harness
-proves HIR == MIR (stdout/status byte-equal; traps agree by category) across all lowerable
-frozen-corpus cases + fn-values + Option/Result + structs + recursion + div-zero/overflow
-traps. Zero semantic differences found. Float printing shares the oracle's own canonical_float
-(exposed pub) — one algorithm, no drift. Workspace 632/0/2.
+Gate: C4  Next: WP-C4.5b (indexing + references)  Blocked: none
+C4.1-C4.4 done; WP-C4.5 split into increments (WP-C4.5.md). Done so far: C4.5a
+(methods/assoc-fns/trait dispatch incl. defaults; corpus __01 differential-green) and
+C4.5-contract-cleanup (CD-029: trap provenance through outcomes + differential span
+comparison; VerifiedMirProgram wrapper — run_program consumes proof-of-verification only;
+TypeContext amended into mir.md §2, still v0.1; canonical_float spec tests as the
+compensating control for the intentionally-shared formatter). Differential status: no
+difference in lowering and MIR execution for the tested subset, with some runtime algorithms
+intentionally shared and separately spec-tested. Workspace 640/0/2.
 WP-C4.3 done 2026-07-19: `src/mir/verify.rs` implements all 13 contract §10 obligations with
 the MIR-xxxx internal namespace (first allocation, see Diagnostic codes); every lowered program
 verifies clean; 13 hand-crafted invalid bodies each rejected with their specific code; one
@@ -556,6 +559,27 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   owner C4.5). Note: these settlements landed after CD-026's backend selection but before any
   MIR/ABI work — the selection is unaffected (identity-unobservability removes the one property
   that could have differentiated the candidates' ABIs).
+
+- CD-029 [2026-07-19, review-directed correction pass before C4.5 breadth] Four corrections
+  from the external review of the C4.1-C4.4 foundation, applied before they could embed across
+  complete-Core lowering. (a) **Trap provenance**: `MirRunError::Trap` was discarding
+  `SourceInfo` — a right-category trap at the wrong location would have passed the C4.4
+  differential; outcomes now carry full `TrapInfo`, mir.md §6 amended to make provenance part
+  of the observable trap outcome, and the differential compares user-origin trap spans exactly
+  against the oracle (synthetic origins compare classification). Both existing trap tests pass
+  with exact span equality. (b) **TypeContext contract treatment**: formally amended into
+  mir.md §2 as part of the in-memory MIR compilation unit (additive, not dump-serialized, MIR
+  stays v0.1) — resolving the governance debt the WP-C4.3 record flagged. (c) **Verified-MIR
+  wrapper**: `verify_program` returns `VerifiedMirProgram<'_>`; `run_program` (and eventually
+  the generated-Rust backend) consumes only that — "no backend bypasses MIR validation" is now
+  an API property. (d) **Differential-independence caveat**: the shared `canonical_float`
+  formatter is structurally invisible to the HIR/MIR differential; claim qualified everywhere
+  going forward ("no difference in lowering and MIR execution for the tested subset, with some
+  runtime algorithms intentionally shared") and compensated by new spec-derived golden +
+  round-trip property tests (`tests/canonical_float.rs`, incl. NaN/±inf/-0.0/notation
+  boundaries at exponent 15↔16 and -4↔-5/subnormals/max-min finite). Also adopted the review's
+  C4.5 increment ordering + honest maturity calibration (architecture ~90%, implementation
+  breadth ~35-45%, validation ~70%) into WP-C4.5.md.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -1346,3 +1370,26 @@ FOLLOW-UP: the differential net must widen with every C4.5 construct as it lands
 NEXT: WP-C4.5 — complete Core lowering (generics/monomorphisation, trait dispatch, patterns,
 CheckIndex/indexing, strings/Vec/runtime surface, ownership/drop elaboration with real Drop
 terminators, panic paths, multi-package linkage), differential-first.
+
+### C4.5a + CD-029 correction pass — 2026-07-19
+DONE: (1) WP-C4.5 split per charter §2.2 with the review-adopted increment order (WP-C4.5.md).
+(2) C4.5a landed: FnKey instance identity (Top/ImplFn/TraitDefault-per-implementing-type),
+method + associated-fn call lowering (receiver-before-arguments), trait dispatch with
+inherent > trait-impl > default precedence, Self substitution; interim by-value reference
+model documented in code (&self receivers Copy-passed; &mut self cleanly Unsupported until
+C4.5b/d); corpus struct_enum_trait__01 now differential-green; 2 new differential tests
+(methods/assoc fns incl. repeated &self + consuming self; trait default-vs-override).
+(3) CD-029 corrections applied (see decision log): trap provenance end-to-end with exact-span
+differential comparison; VerifiedMirProgram wrapper; TypeContext formalized in mir.md §2;
+canonical_float spec tests (6, incl. boundary/subnormal/round-trip property).
+FILES: starkc/src/mir/{lower,interp,verify}.rs, starkc/tests/{mir_differential,mir_lowering,
+mir_verify,canonical_float}.rs (last new), STARKLANG/docs/compiler/mir.md (CD-029 amendments),
+STARKLANG/docs/compiler/work-packages/WP-C4.5.md (new), COMPILER-STATE.md.
+RULES: none — implementation + contract bookkeeping under the approved MIR contract.
+DECISIONS: CD-029.
+EVIDENCE: differential 9/9 with provenance comparison live (user-origin trap spans equal the
+oracle's exactly in both trap tests); canonical_float 6/6; full workspace 640 passed / 0
+failed / 2 ignored; fmt + clippy clean. Differential claim now stated in qualified form.
+FOLLOW-UP: generated-Rust backend must consume VerifiedMirProgram when it lands (C5).
+NEXT: WP-C4.5b — indexing and references (CheckIndex proof tokens, arrays/slices, real
+reference places replacing the interim by-value model, &mut self).

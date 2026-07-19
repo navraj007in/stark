@@ -156,7 +156,7 @@ fn block(statements: Vec<Statement>, terminator: Terminator) -> BasicBlock {
 
 fn expect_code(program: &MirProgram, code: &str) {
     match verify_program(program) {
-        Ok(()) => panic!("expected verifier rejection with {code}, got clean pass"),
+        Ok(_) => panic!("expected verifier rejection with {code}, got clean pass"),
         Err(errors) => assert!(
             errors.iter().any(|e| e.code == code),
             "expected {code}, got: {errors:#?}"
