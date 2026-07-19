@@ -457,6 +457,13 @@ impl<'a> BodyCx<'a> {
                         }
                         self.expect_ty(expected, &lt, "float arithmetic", bi);
                     }
+                    // A5: bitwise ops are integer-only and result-typed as the operands.
+                    MirBinOp::BitAnd | MirBinOp::BitOr | MirBinOp::BitXor => {
+                        if !is_integer(&lt) {
+                            self.err("MIR-0004", bi, format!("bitwise BinOp on {lt:?}"));
+                        }
+                        self.expect_ty(expected, &lt, "bitwise op", bi);
+                    }
                 }
             }
             Rvalue::Aggregate(kind, operands) => self.check_aggregate(expected, kind, operands, bi),

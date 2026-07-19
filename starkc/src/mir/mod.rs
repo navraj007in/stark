@@ -248,6 +248,11 @@ pub enum MirBinOp {
     FloatAdd,
     FloatSub,
     FloatMul,
+    // A5: bitwise operators are pure (non-trapping) — for same-width two's-complement operands
+    // the result is always representable in the operand width, so no range check is owed.
+    BitAnd,
+    BitOr,
+    BitXor,
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +292,9 @@ pub enum TrapCategory {
     UnwrapNone,
     UnwrapErr,
     AssertFailure,
+    /// A5 / NUM-SHIFT-001: a shift count that is negative or ≥ the operand width. Distinct from
+    /// `IntegerOverflow` (which a left shift still raises when its *result* is not representable).
+    InvalidShift,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -306,6 +314,9 @@ pub enum CheckedOp {
     Neg,
     Shl,
     Shr,
+    /// A5: integer exponentiation (NUM-INT-ARITH-001) — nonnegative exponent required,
+    /// each intermediate multiply checked; traps on overflow or negative exponent.
+    Pow,
     FloatDiv,
     FloatRem,
     Cast,

@@ -67,6 +67,7 @@ fn oracle_fragment(category: TrapCategory) -> &'static str {
         TrapCategory::UnwrapNone => "unwrap",
         TrapCategory::UnwrapErr => "unwrap",
         TrapCategory::AssertFailure => "assert",
+        TrapCategory::InvalidShift => "invalid shift",
     }
 }
 
@@ -1283,6 +1284,100 @@ fn assert_eq_and_ne_agree() {
              assert_ne(\"ab\", \"cd\"); \
              println(1); \
              assert_eq(3, 5); \
+             println(2); \
+         }"
+        .to_string(),
+    );
+}
+
+// ---- WP-C4.6 A5: bitwise / shift / power operators ----
+
+/// Bitwise and/or/xor/not, shifts, and `**` all agree with the oracle, including compound-assign
+/// forms and a signed arithmetic right shift.
+#[test]
+fn bit_shift_pow_operators_agree() {
+    differential(
+        "a5_ops.stark",
+        "fn main() { \
+             println(6 & 3); \
+             println(6 | 3); \
+             println(6 ^ 3); \
+             let n: Int32 = ~5; \
+             println(n); \
+             println(1 << 4); \
+             println(64 >> 2); \
+             let s: Int32 = -16 >> 2; \
+             println(s); \
+             println(2 ** 10); \
+             let mut x = 6; \
+             x &= 3; \
+             x <<= 2; \
+             x **= 2; \
+             println(x); \
+         }"
+        .to_string(),
+    );
+}
+
+/// An unsigned bitwise-not is width-masked (`~0u8 == 255`), matching the oracle.
+#[test]
+fn unsigned_bitnot_is_width_masked_agree() {
+    differential(
+        "a5_ubitnot.stark",
+        "fn main() { let a = 5 as UInt8; let b = ~a; println(b); }".to_string(),
+    );
+}
+
+/// A shift count at/above the operand width traps identically (IntegerOverflow category) in both
+/// engines, after identical pre-trap output.
+#[test]
+fn oversized_shift_count_traps_agree() {
+    differential(
+        "a5_shift_trap.stark",
+        "fn main() { println(1); let k = 40; let x: Int32 = 1 << k; println(x); }".to_string(),
+    );
+}
+
+/// Integer `**` overflow traps identically after identical pre-trap output.
+#[test]
+fn pow_overflow_traps_agree() {
+    differential(
+        "a5_pow_trap.stark",
+        "fn main() { println(1); let x: Int32 = 10 ** 10; println(x); }".to_string(),
+    );
+}
+
+// ---- WP-C4.6 A7: normative expression forms in value position ----
+
+/// `loop { break <value>; }` yields the break value; a plain-`break` loop is Unit.
+#[test]
+fn loop_break_value_agree() {
+    differential(
+        "a7_loop_value.stark",
+        "fn main() { \
+             let mut i = 0; \
+             let found = loop { \
+                 if i == 3 { break i * 10; } \
+                 i = i + 1; \
+             }; \
+             println(found); \
+             let u = loop { break; }; \
+             println(7); \
+         }"
+        .to_string(),
+    );
+}
+
+/// `[value; count]` repeat, `while`/`if`-without-else in value position all agree.
+#[test]
+fn repeat_and_unit_value_forms_agree() {
+    differential(
+        "a7_forms.stark",
+        "fn main() { \
+             let a = [9; 4]; \
+             println(a[0] + a[1] + a[2] + a[3]); \
+             let u = while false { }; \
+             let v = if true { println(1); }; \
              println(2); \
          }"
         .to_string(),

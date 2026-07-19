@@ -556,6 +556,10 @@ struct LoopTargets {
     /// Scope-stack depth at loop entry (C4.5d): `break`/`continue` drop every scope at this
     /// depth or deeper before jumping out of / restarting the loop.
     scope_depth: usize,
+    /// A7: for a `loop` in value position, the local that `break <value>` writes before jumping
+    /// to the break target — the loop expression's value is read from it at the exit block.
+    /// `None` for statement-position loops and for `while`/`for` (both are Unit-typed).
+    value_target: Option<LocalId>,
 }
 
 /// One drop-tracked unit of a droppable local (C4.5d): a sub-place (pure field path from the
@@ -1788,7 +1792,30 @@ impl<'a> FnLowerer<'a> {
                 self.terminate(Terminator::Goto { target }, self.info(span), dead);
                 Ok(())
             }
-            StmtKind::Break(Some(_)) => unsupported("break with value (C4.5)", span),
+            StmtKind::Break(Some(value)) => {
+                // A7: `break <value>` — evaluate the value (before the scope drops, since it may
+                // read locals in those scopes), write it into the innermost loop's value target
+                // (a value-position `loop`), then drop scopes and jump out. If there is no value
+                // target (a `while`/`for`, or a statement-position loop), the value type-checks
+                // as Unit; lower it for its side effects and discard.
+                let Some(targets) = self.loops.last() else {
+                    return unsupported("break outside a loop", span);
+                };
+                let target = targets.break_target;
+                let depth = targets.scope_depth;
+                let value_target = targets.value_target;
+                let op = self.lower_expr_to_operand(*value)?;
+                if let Some(local) = value_target {
+                    self.emit(
+                        Statement::Assign(Place::local(local), Rvalue::Use(op)),
+                        self.info(span),
+                    );
+                }
+                self.emit_scope_drops_from(depth, span);
+                let dead = self.new_block();
+                self.terminate(Terminator::Goto { target }, self.info(span), dead);
+                Ok(())
+            }
             StmtKind::Continue => {
                 let Some(targets) = self.loops.last() else {
                     return unsupported("continue outside a loop", span);
@@ -1878,6 +1905,7 @@ impl<'a> FnLowerer<'a> {
                     continue_target: header,
                     break_target: exit,
                     scope_depth: self.scopes.len(),
+                    value_target: None,
                 });
                 self.lower_block_value(*body)?;
                 self.loops.pop();
@@ -1896,6 +1924,7 @@ impl<'a> FnLowerer<'a> {
                     continue_target: body_block,
                     break_target: exit,
                     scope_depth: self.scopes.len(),
+                    value_target: None,
                 });
                 self.lower_block_value(*body)?;
                 self.loops.pop();
@@ -1998,6 +2027,7 @@ impl<'a> FnLowerer<'a> {
                     continue_target: latch,
                     break_target: exit,
                     scope_depth: self.scopes.len(),
+                    value_target: None,
                 });
                 self.lower_block_value(*body)?;
                 self.loops.pop();
@@ -2070,7 +2100,13 @@ impl<'a> FnLowerer<'a> {
                             AssignOp::MulAssign => BinOp::Mul,
                             AssignOp::DivAssign => BinOp::Div,
                             AssignOp::RemAssign => BinOp::Rem,
-                            _ => return unsupported("compound bit/pow assignment (C4.5)", span),
+                            AssignOp::PowAssign => BinOp::Pow,
+                            AssignOp::BitAndAssign => BinOp::BitAnd,
+                            AssignOp::BitOrAssign => BinOp::BitOr,
+                            AssignOp::BitXorAssign => BinOp::BitXor,
+                            AssignOp::ShlAssign => BinOp::Shl,
+                            AssignOp::ShrAssign => BinOp::Shr,
+                            AssignOp::Assign => unreachable!("handled above"),
                         };
                         let result = self.lower_arith_operands(bin, current, rhs_op, &ty, span)?;
                         self.emit(
@@ -2215,6 +2251,34 @@ impl<'a> FnLowerer<'a> {
                             Ok(Operand::Copy(Place::local(dest)))
                         }
                     },
+                    // A5: `~a` is `a ^ all-ones`. For a signed width the mask is −1 (i128
+                    // all-ones, giving !a = −a−1); for an unsigned width W it is `(1<<W)−1`
+                    // (giving `(!a) & mask`). Both agree with the oracle's `UnOp::BitNot` and
+                    // stay in range, so no trap is owed. Desugaring to BitXor avoids a
+                    // type-carrying MIR unary op.
+                    UnOp::BitNot => {
+                        let mask = match &ty {
+                            MirTy::Int8 | MirTy::Int16 | MirTy::Int32 | MirTy::Int64 => -1_i128,
+                            MirTy::UInt8 => i128::from(u8::MAX),
+                            MirTy::UInt16 => i128::from(u16::MAX),
+                            MirTy::UInt32 => i128::from(u32::MAX),
+                            MirTy::UInt64 => i128::from(u64::MAX),
+                            _ => return unsupported("bitwise-not on a non-integer type", span),
+                        };
+                        let dest = self.new_temp(ty.clone());
+                        self.emit(
+                            Statement::Assign(
+                                Place::local(dest),
+                                Rvalue::BinOp(
+                                    MirBinOp::BitXor,
+                                    inner,
+                                    Operand::Const(Constant::Int(mask, ty)),
+                                ),
+                            ),
+                            self.info(span),
+                        );
+                        Ok(Operand::Copy(Place::local(dest)))
+                    }
                     _ => unsupported("unary operator (C4.5)", span),
                 }
             }
@@ -2235,7 +2299,17 @@ impl<'a> FnLowerer<'a> {
                     let lhs_op = self.lower_expr_to_operand(*lhs)?;
                     let rhs_op = self.lower_expr_to_operand(*rhs)?;
                     match op {
-                        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+                        BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Rem
+                        | BinOp::Pow
+                        | BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                        | BinOp::Shl
+                        | BinOp::Shr => {
                             self.lower_arith_operands(*op, lhs_op, rhs_op, &lhs_ty, span)
                         }
                         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -2285,7 +2359,10 @@ impl<'a> FnLowerer<'a> {
                 else_,
             } => {
                 let Some(else_expr) = else_ else {
-                    return unsupported("if-as-value without else", span);
+                    // A7: a `then`-only `if` is Unit-typed even in value position; lower it for
+                    // its effects and yield Unit.
+                    self.lower_unit_expr(expr)?;
+                    return Ok(Operand::Const(Constant::Unit));
                 };
                 let ty = self.expr_mir_ty(expr)?;
                 let dest = self.new_temp(ty);
@@ -2342,6 +2419,23 @@ impl<'a> FnLowerer<'a> {
                     .iter()
                     .map(|&e| self.lower_expr_to_operand(e))
                     .collect::<Result<Vec<_>, _>>()?;
+                self.aggregate_to_temp(expr, AggKind::Array(elem_ty), ops, span)
+            }
+            // A7: `[value; count]` — value evaluated once, replicated `count` times (count is a
+            // const carried by the array type; the value is `Copy`, so replicating the operand
+            // matches the oracle's clone-per-element).
+            hir::ExprKind::Repeat { value, .. } => {
+                let (elem_ty, count) = match self.expr_mir_ty(expr)? {
+                    MirTy::Array(elem, len) => (*elem, len as usize),
+                    other => {
+                        return unsupported(format!("repeat of non-array type {other:?}"), span)
+                    }
+                };
+                let op = self.lower_expr_to_operand(*value)?;
+                if matches!(op, Operand::Move(_)) {
+                    return unsupported("repeat of a non-Copy value", span);
+                }
+                let ops = vec![op; count];
                 self.aggregate_to_temp(expr, AggKind::Array(elem_ty), ops, span)
             }
             hir::ExprKind::StructLit { res, fields, .. } => {
@@ -2498,6 +2592,45 @@ impl<'a> FnLowerer<'a> {
             }
             // C4.5e-3: the `?` try operator on Option/Result.
             hir::ExprKind::Try(inner) => self.lower_try(*inner, span),
+            // A7: `while`/`for` are Unit-typed even in value position — lower for effects,
+            // yield Unit.
+            hir::ExprKind::While { .. } | hir::ExprKind::For { .. } => {
+                self.lower_unit_expr(expr)?;
+                Ok(Operand::Const(Constant::Unit))
+            }
+            // A7: `loop` in value position. A Unit-typed loop lowers as a statement and yields
+            // Unit. A non-Unit loop carries its value through `break <value>`: every break
+            // writes the result local (the type system guarantees no plain `break` here), and
+            // the exit block reads it.
+            hir::ExprKind::Loop { body } => {
+                let ty = self.expr_mir_ty(expr)?;
+                if matches!(ty, MirTy::Unit) {
+                    self.lower_unit_expr(expr)?;
+                    return Ok(Operand::Const(Constant::Unit));
+                }
+                let result = self.new_temp(ty.clone());
+                let body_block = self.new_block();
+                let exit = self.new_block();
+                self.terminate(
+                    Terminator::Goto { target: body_block },
+                    self.info(span),
+                    body_block,
+                );
+                self.loops.push(LoopTargets {
+                    continue_target: body_block,
+                    break_target: exit,
+                    scope_depth: self.scopes.len(),
+                    value_target: Some(result),
+                });
+                self.lower_block_value(*body)?;
+                self.loops.pop();
+                self.terminate(
+                    Terminator::Goto { target: body_block },
+                    self.info(span),
+                    exit,
+                );
+                self.read_place(Place::local(result), &ty, span)
+            }
             _ => unsupported("expression form (C4.5)", span),
         }
     }
@@ -2726,12 +2859,32 @@ impl<'a> FnLowerer<'a> {
                 _ => unreachable!(),
             }
         }
+        // A5: pure (non-trapping) bitwise ops.
+        if let Some(mir_op) = match op {
+            BinOp::BitAnd => Some(MirBinOp::BitAnd),
+            BinOp::BitOr => Some(MirBinOp::BitOr),
+            BinOp::BitXor => Some(MirBinOp::BitXor),
+            _ => None,
+        } {
+            let dest = self.new_temp(operand_ty.clone());
+            self.emit(
+                Statement::Assign(Place::local(dest), Rvalue::BinOp(mir_op, lhs, rhs)),
+                self.info(span),
+            );
+            return Ok(Operand::Copy(Place::local(dest)));
+        }
         let (checked, category) = match op {
             BinOp::Add => (CheckedOp::Add, TrapCategory::IntegerOverflow),
             BinOp::Sub => (CheckedOp::Sub, TrapCategory::IntegerOverflow),
             BinOp::Mul => (CheckedOp::Mul, TrapCategory::IntegerOverflow),
             BinOp::Div => (CheckedOp::Div, TrapCategory::DivideByZero),
             BinOp::Rem => (CheckedOp::Rem, TrapCategory::DivideByZero),
+            // A5: shifts trap on an invalid count / non-representable left shift; `**` traps on
+            // overflow or a negative exponent. Both surface as IntegerOverflow (matching the
+            // oracle's category — the differential compares category, not message).
+            BinOp::Shl => (CheckedOp::Shl, TrapCategory::IntegerOverflow),
+            BinOp::Shr => (CheckedOp::Shr, TrapCategory::IntegerOverflow),
+            BinOp::Pow => (CheckedOp::Pow, TrapCategory::IntegerOverflow),
             _ => unreachable!(),
         };
         self.checked_to_temp(checked, vec![lhs, rhs], operand_ty.clone(), category, span)
@@ -4014,6 +4167,7 @@ impl<'a> FnLowerer<'a> {
             continue_target: header,
             break_target: exit,
             scope_depth: self.scopes.len(),
+            value_target: None,
         });
         self.lower_block_value(body)?;
         self.loops.pop();

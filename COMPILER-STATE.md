@@ -1,22 +1,21 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after the WP-C4.6 gate-exit audit — **C4 OPEN, blockers recorded**
+Updated: 2026-07-19 after WP-C4.6 A5+A7 — **C4 OPEN, working the Class-A blockers (CD-033)**
 
 ## Position
-Gate: C4  Next: owner disposition of the WP-C4.6 Decision section, then Class-A blocker
-increments. **WP-C4.5 complete (all 17 corpus cases differential-green, surface 0.1-A3); the
-WP-C4.6 exit audit ran 2026-07-19** — full sweep of ~105 `unsupported` sites + 33 pipeline
-probes, written up in `STARKLANG/docs/compiler/work-packages/WP-C4.6.md`. Exit condition 1
-(corpus equivalence) SATISFIED; condition 3 (nothing carried silently) SATISFIED by the audit;
-condition 2 (every normative Core construct required by C5 lowers) **NOT satisfied — C4 stays
-open** per the roadmap rule. Seven blocker classes (A1 generic impls; A2 general patterns;
-A3 user Eq/Ord dispatch; A4 core-min stdlib ops incl. slices/chars/get/size_of; A5
-bit/shift/pow operators; A6 non-Copy Vec iteration; A7 small expr forms — ~5–7 sessions
-total), plus recorded front-end gaps (DEV-067, DEV-069, Box deref, Ordering/cmp surface).
-**Owner decision pending (CE-shaped, flagged not resolved): the reading of "required by C5"
-(full normative Core + core-min vs. named representative workload) and the C5 stdlib profile
-claim (core-min vs std-full); also the A3 `Ordering` design note (CE3, touches the runtime
-surface).**
-Blocked: WP-C4.6 closure on the owner decision above (Class-A work can proceed meanwhile).
+Gate: C4  Next: A6 (non-Copy Vec iteration), per CD-033's dependency-aware order. **WP-C4.5
+complete; the WP-C4.6 gate-exit audit ran and the owner disposed it as CD-033** (full normative
+Core + `core-min` reading; C4 stays open; all seven Class-A blockers required; dependency-aware
+order A5+A7 → A6 → A3 Eq/Ord → A4 → A2 → A1). Progress against that order:
+**A5 (bit/shift/pow) and A7 (value-position expr forms) DONE 2026-07-19.** A5: pure bitwise
+`MirBinOp`, `~` desugared to `^ mask`, trapping `Shl`/`Shr`/`Pow` with the NUM-SHIFT-001 count
+bound + `checked_pow`; new faithful `TrapCategory::InvalidShift` (bad count) vs `IntegerOverflow`
+(non-representable left shift), threaded via a `CheckedOutcome` category-override return. A7:
+`loop { break v; }` value via `LoopTargets.value_target`, `[v; n]` repeat, Unit-typed
+`if`/`while`/`for` in value position. 6 new differential tests; workspace 713/0; clippy clean
+1.93/1.97. Remaining Class-A blockers: A6, A3 (Eq then CE3 `Ordering` note then Ord), A4
+(`core-min` surface — dated amendment), A2 (patterns), A1 (generic impls). Front-end
+prerequisites still owned separately: DEV-067, DEV-069, Box deref, primitive `Ordering::cmp`.
+Blocked: WP-C4.6 closure on all required classes going green (Class-A work in progress).
 **WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
 - **f-3a HashMap surface (`0.1-A3`, amendment rev. 6):** `RuntimeFn` HashMap group
   (New/Insert/Get/Len/IsEmpty/ContainsKey/KeysIterNew/KeysIterNext); insertion-ordered
@@ -768,6 +767,32 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   carry-forward design, rev-4 log added. No code change; strings (e-1) and the Vec data
   surface (e-2) are untouched. `collection_iter__01`'s `for value in values.iter()` stays
   clean-Unsupported until C4.5f; its push/index/len half lowers under e-2.
+- CD-033 [2026-07-19, owner disposition of the WP-C4.6 gate-exit audit] **Gate C4 stays
+  open under the strict reading: "every normative Core construct required by C5" means the
+  full normative Core language plus the `core-min` stdlib profile, NOT a representative-
+  workload subset** (which would weaken the gate and let known language gaps transfer into C5
+  merely because the chosen app avoids them). `core-min` is the C5 baseline, not std-full.
+  **Required before C4 exit:** A1 (generic impls/assoc fns/trait methods/generic Drop), A2
+  (general + nested pattern lowering), A3 (user `Eq`/`Ord` operator dispatch — `Eq` may
+  proceed independently, but the `Ordering` runtime-surface amendment must be drafted for CE3
+  review before the `Ord` portion is implemented), A4 (`core-min` ops: chars iteration,
+  `Vec::get`/`get_mut`, slices, `size_of`/`align_of`, first-class integer ranges, and the
+  `core-min`-classified Option/Result operations — via a required dated runtime-surface
+  amendment), A5 (bit/shift/pow operators), A6 (non-Copy Vec iteration — the Copy restriction
+  is an implementation compromise, not a language rule), A7 (normative expression forms).
+  **May remain reserved beyond C4** unless separately required by the stable Core contract:
+  std-full ops (`HashSet`, `HashMap::values`/`remove`, `Vec::contains`). **Front-end
+  prerequisites with explicit owners:** DEV-069 is a prerequisite for the C5 multi-file/
+  multi-package application claim (parallel front-end WP allowed, but C5 must not claim normal
+  multi-file support while declaration spans read against the wrong file); DEV-067, `Box`
+  deref, and the primitive `Ordering::cmp` surface get explicit owners and are resolved where
+  `core-min` requires. **Implementation order (dependency-aware, not smallest-first):**
+  (1) A5+A7 mechanical coverage; (2) A6 borrowed Vec iteration; (3) A3 `Eq`, then the CE3
+  `Ordering` decision, then `Ord`; (4) A4 runtime/`core-min` surface; (5) A2 general pattern
+  lowering; (6) A1 generic impl monomorphisation. The WP-C4.6 exit report is updated after
+  each class with positive, negative, verifier, and HIR/MIR differential evidence; C4 closes
+  only when all required classes are green and no normative Core or `core-min` construct
+  required by C5 remains silently unsupported.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

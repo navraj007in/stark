@@ -161,9 +161,61 @@ wrong generic-arg counts, unknown fields/variants, print/assert/drop arity), unp
 literals (checker parsed them first), "not a call"/"not a match" dispatch preconditions,
 struct/enum shape crosschecks. No spec exposure; they fail loudly per the C4.3 charter.
 
-## Decision required (CE-shaped — flagged, not resolved here)
+## Decision — RESOLVED (CD-033, owner, 2026-07-19)
 
-Exit condition 2 hinges on what "required by C5" means. Two coherent readings:
+**Reading (i) — full normative Core + `core-min` — adopted.** Gate C4 stays open. `core-min`
+is the C5 baseline, not std-full. All Class-A classes A1–A7 are required before C4 exit
+(including the `core-min` items in A4). std-full ops (`HashSet`, `HashMap::values`/`remove`,
+`Vec::contains`) may stay reserved beyond C4 unless separately required by the stable Core
+contract. Front-end prerequisites get explicit owners: DEV-069 blocks the C5 multi-file claim
+(parallel front-end WP allowed); DEV-067, `Box` deref, and primitive `Ordering::cmp` resolved
+where `core-min` requires. A3's `Ord` portion waits on a CE3 `Ordering` runtime-surface
+amendment (`Eq` may proceed first); A4 needs a dated runtime-surface amendment.
+
+**Implementation order (dependency-aware):** (1) A5+A7 mechanical; (2) A6 borrowed Vec
+iteration; (3) A3 `Eq` → CE3 `Ordering` decision → `Ord`; (4) A4 `core-min` surface;
+(5) A2 general patterns; (6) A1 generic impl monomorphisation. This report is updated after
+each class with positive/negative/verifier/differential evidence. C4 closes only when every
+required class is green.
+
+### Class progress
+- A5 (bit/shift/pow): **DONE 2026-07-19** — see below
+- A7 (expr forms): **DONE 2026-07-19** — see below
+- A6 (non-Copy Vec iter): _pending_
+- A3 Eq / Ord: _pending_
+- A4 (core-min surface): _pending_
+- A2 (patterns): _pending_
+- A1 (generic impls): _pending_
+
+### A5 + A7 — DONE 2026-07-19
+
+**A5 (bitwise / shift / power).** `MirBinOp::BitAnd`/`BitOr`/`BitXor` are pure (for same-width
+two's-complement operands on the i128 carrier the result is always representable, so no range
+check is owed); `~a` desugars to `a ^ mask` (mask = −1 for signed widths, `(1<<W)−1` for
+unsigned width W), avoiding a type-carrying MIR unary op. `CheckedOp::Shl`/`Shr`/`Pow` are
+trapping: shifts enforce the NUM-SHIFT-001 count bound (nonnegative, `< width` of the left
+operand = dest type) and range-filter the result; `**` requires a nonnegative exponent
+(`u32::try_from`) with each intermediate multiply checked (`checked_pow`). Compound assigns
+(`&=`, `<<=`, `**=`, …) route through the same `lower_arith_operands`. New faithful trap
+category **`TrapCategory::InvalidShift`** distinguishes a bad shift count (oracle message
+"invalid shift count") from a non-representable left-shift result (`IntegerOverflow`); the
+interpreter's checked-op path gained a `CheckedOutcome` return so a shift can override the
+terminator's default category. Verifier: bitwise arm (integer-only, result-typed as operands);
+shifts/pow reuse the existing checked-binary arm (the checker unifies both operands to the same
+type). Evidence: `bit_shift_pow_operators_agree`, `unsigned_bitnot_is_width_masked_agree`,
+`oversized_shift_count_traps_agree`, `pow_overflow_traps_agree` (4 differential).
+
+**A7 (normative expression forms in value position).** `loop { break <value>; }` carries its
+value through a new `LoopTargets.value_target` local that `break <value>` writes before the
+scope-drops + jump; the exit block reads it (Unit-typed loops and `while`/`for` lower as
+statements and yield `Unit`). `[value; count]` repeat replicates the once-evaluated Copy
+operand `count` times (count from the array type). `then`-only `if`, `while`, and `for` in
+value position lower for effects and yield `Unit`. Evidence: `loop_break_value_agree`,
+`repeat_and_unit_value_forms_agree` (2 differential). Workspace 713/0; clippy clean 1.93/1.97.
+
+### Original decision framing (retained for the record)
+
+Exit condition 2 hinged on what "required by C5" means. Two coherent readings:
 
 - **(i) Full normative Core + `core-min`:** all of Class A (and the `core-min` items in
   Class B) are gate blockers. C4 stays open ~5–7 sessions of Class-A work (plus front-end
@@ -180,12 +232,11 @@ scope), and the A3 `Ordering` design note (touches the runtime surface, CE3).
 **Recommendation:** reading (i) for Class A1–A3 + A5 (they are unambiguous language-level
 normative constructs — impls, patterns, operators — not stdlib tiering), with A4/A6/A7
 sequenced behind the profile decision. But the choice is the owner's; this audit records
-blockers either way.
+blockers either way. **[Adopted in full — see CD-033 above; reading (i) for all of A1–A7.]**
 
 ## Status
 
-C4 **OPEN**. Blockers recorded above; none carried silently. Next work: owner disposition of
-the Decision section, then Class-A increments in effort order (A5 → A7 → A6 → A3 → A4 →
-A2 → A1 is smallest-first; A1 → A2 first is highest-value-first).
+C4 **OPEN** (CD-033). All Class-A classes required; none carried silently. Work proceeds in
+the dependency-aware order under the Class progress tracker above.
 
 Probe harness: `starkc/examples/c46_probe.rs` (committed); probe sources are inlined above.

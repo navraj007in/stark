@@ -316,13 +316,15 @@ impl<'a> Interp<'a> {
                     }
                     let dest_ty = &body.locals[dest.0 as usize].ty;
                     match self.eval_checked(*op, &values, dest_ty)? {
-                        Some(value) => {
+                        CheckedOutcome::Value(value) => {
                             self.frames[here].locals[dest.0 as usize] = Some(value);
                             block = *target;
                         }
-                        None => {
+                        // A5: a shift with a bad count overrides the terminator's category with
+                        // `InvalidShift`; every other trap uses the terminator's own category.
+                        CheckedOutcome::Trap(override_category) => {
                             return Err(MirRunError::Trap {
-                                category: trap.category,
+                                category: override_category.unwrap_or(trap.category),
                                 source: trap.source,
                                 message: None,
                             })
@@ -795,22 +797,29 @@ impl<'a> Interp<'a> {
             (FloatAdd, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a + b),
             (FloatSub, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a - b),
             (FloatMul, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a * b),
+            // A5: bitwise on the sign-extended i128 carrier — for same-width operands the low
+            // bits agree with the true-width result and the value stays in range (no trap).
+            (BitAnd, MirValue::Int(a), MirValue::Int(b)) => MirValue::Int(a & b),
+            (BitOr, MirValue::Int(a), MirValue::Int(b)) => MirValue::Int(a | b),
+            (BitXor, MirValue::Int(a), MirValue::Int(b)) => MirValue::Int(a ^ b),
             (op, l, r) => {
                 return self.internal(format!("BinOp {op:?} on {l:?}, {r:?}"));
             }
         })
     }
 
-    /// Checked/trapping primitives. `Ok(None)` = trap.
+    // (see `CheckedOutcome` below)
+    /// Checked/trapping primitives. `Trap(None)` traps with the terminator's own category;
+    /// `Trap(Some(cat))` overrides it (A5 shifts: a bad count is `InvalidShift`).
     fn eval_checked(
         &self,
         op: CheckedOp,
         args: &[MirValue],
         dest_ty: &MirTy,
-    ) -> Result<Option<MirValue>, MirRunError> {
+    ) -> Result<CheckedOutcome, MirRunError> {
         use CheckedOp::*;
         match op {
-            Add | Sub | Mul | Div | Rem | Neg => {
+            Add | Sub | Mul | Div | Rem | Neg | Pow => {
                 let (min, max) = int_range(dest_ty)
                     .ok_or_else(|| MirRunError::Internal("checked int op on non-int".into()))?;
                 let int = |v: &MirValue| -> Result<i128, MirRunError> {
@@ -842,13 +851,52 @@ impl<'a> Interp<'a> {
                         }
                     }
                     Neg => int(&args[0])?.checked_neg(),
+                    // A5: exponent must be nonnegative (u32::try_from rejects negatives,
+                    // NUM-INT-ARITH-001); each intermediate multiply is checked by checked_pow.
+                    Pow => {
+                        let base = int(&args[0])?;
+                        u32::try_from(int(&args[1])?)
+                            .ok()
+                            .and_then(|exp| base.checked_pow(exp))
+                    }
                     _ => unreachable!(),
                 };
-                Ok(result.filter(|v| *v >= min && *v <= max).map(MirValue::Int))
+                Ok(result
+                    .filter(|v| *v >= min && *v <= max)
+                    .map(MirValue::Int)
+                    .into())
             }
-            Shl | Shr => Err(MirRunError::Internal(
-                "shifts are not lowered yet (C4.5)".into(),
-            )),
+            Shl | Shr => {
+                // A5 / NUM-SHIFT-001: the count must be nonnegative and strictly less than the
+                // bit width of the LEFT operand (= the dest/result type); otherwise trap. No
+                // masking or reduction. Left shift traps when the result is not representable
+                // (the post-hoc range filter); right shift on the i128 carrier is arithmetic
+                // for signed and — since unsigned values are stored nonnegative — logical for
+                // unsigned, matching the abstract machine.
+                let (min, max) = int_range(dest_ty)
+                    .ok_or_else(|| MirRunError::Internal("shift on non-int".into()))?;
+                let width = int_width(dest_ty)
+                    .ok_or_else(|| MirRunError::Internal("shift width on non-int".into()))?;
+                let int = |v: &MirValue| -> Result<i128, MirRunError> {
+                    match v {
+                        MirValue::Int(i) => Ok(*i),
+                        other => Err(MirRunError::Internal(format!("shift operand {other:?}"))),
+                    }
+                };
+                let (left, count) = (int(&args[0])?, int(&args[1])?);
+                if count < 0 || count >= i128::from(width) {
+                    return Ok(CheckedOutcome::Trap(Some(TrapCategory::InvalidShift)));
+                }
+                let result = if matches!(op, Shl) {
+                    left.checked_shl(count as u32)
+                } else {
+                    left.checked_shr(count as u32)
+                };
+                Ok(result
+                    .filter(|v| *v >= min && *v <= max)
+                    .map(MirValue::Int)
+                    .into())
+            }
             FloatDiv | FloatRem => {
                 let (a, b) = match (&args[0], &args[1]) {
                     (MirValue::Float(a), MirValue::Float(b)) => (*a, *b),
@@ -860,17 +908,15 @@ impl<'a> Interp<'a> {
                 };
                 // CD-006: division/modulo by zero traps for floats too.
                 if b == 0.0 {
-                    return Ok(None);
+                    return Ok(CheckedOutcome::Trap(None));
                 }
-                Ok(Some(MirValue::Float(if matches!(op, FloatDiv) {
-                    a / b
-                } else {
-                    a % b
-                })))
+                Ok(CheckedOutcome::Value(MirValue::Float(
+                    if matches!(op, FloatDiv) { a / b } else { a % b },
+                )))
             }
             Cast => {
                 let value = &args[0];
-                Ok(match (value, dest_ty) {
+                Ok(CheckedOutcome::from(match (value, dest_ty) {
                     (MirValue::Int(v), ty) if int_range(ty).is_some() => {
                         let (min, max) = int_range(ty).unwrap();
                         if *v >= min && *v <= max {
@@ -898,7 +944,7 @@ impl<'a> Interp<'a> {
                     (value, ty) => {
                         return Err(MirRunError::Internal(format!("cast {value:?} to {ty:?}")))
                     }
-                })
+                }))
             }
             CheckIndex => {
                 let len = match &args[0] {
@@ -920,9 +966,9 @@ impl<'a> Interp<'a> {
                 if index >= 0 && index < len {
                     // The proof VALUE is the checked index (interp-internal representation of
                     // the opaque token; MIR-level opacity is the verifier's concern).
-                    Ok(Some(MirValue::Int(index)))
+                    Ok(CheckedOutcome::Value(MirValue::Int(index)))
                 } else {
-                    Ok(None) // IndexOutOfBounds trap
+                    Ok(CheckedOutcome::Trap(None)) // IndexOutOfBounds
                 }
             }
         }
@@ -1638,6 +1684,34 @@ fn option_value(v: Option<MirValue>) -> MirValue {
             fields: Vec::new(),
         },
     }
+}
+
+/// Outcome of a checked/trapping primitive (A5). `Trap(None)` traps with the terminator's own
+/// category; `Trap(Some(cat))` overrides it — a shift with a bad count is `InvalidShift` even
+/// though the terminator's default category is `IntegerOverflow`.
+enum CheckedOutcome {
+    Value(MirValue),
+    Trap(Option<TrapCategory>),
+}
+
+impl From<Option<MirValue>> for CheckedOutcome {
+    fn from(opt: Option<MirValue>) -> Self {
+        match opt {
+            Some(v) => CheckedOutcome::Value(v),
+            None => CheckedOutcome::Trap(None),
+        }
+    }
+}
+
+/// Bit width of an integer MIR type (A5, for the NUM-SHIFT-001 count bound).
+fn int_width(ty: &MirTy) -> Option<u32> {
+    Some(match ty {
+        MirTy::Int8 | MirTy::UInt8 => 8,
+        MirTy::Int16 | MirTy::UInt16 => 16,
+        MirTy::Int32 | MirTy::UInt32 => 32,
+        MirTy::Int64 | MirTy::UInt64 => 64,
+        _ => return None,
+    })
 }
 
 fn int_range(ty: &MirTy) -> Option<(i128, i128)> {
