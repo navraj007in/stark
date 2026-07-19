@@ -2,17 +2,18 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C3  Next: WP-C3.4 (backend selection, CE5 owner decision)  Blocked: none
-C3-ENTRY closed 2026-07-19; WP-C3.1 (workload freeze + framework), WP-C3.2 (generated-Rust spike,
-4/17 corpus match), and WP-C3.3 (direct Cranelift spike, 3/17 corpus match) all done — both spikes
-match the interpreter exactly on their supported subset incl. trap→abort parity, both isolated per
-charter §2.2. Reports: `starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md`,
-`WP-C3.3-direct-cranelift.md`. Native backend selection status: SPIKING. Next: WP-C3.4 compares
-interpreter / generated-Rust / direct and selects (SELECT-GENERATED / SELECT-DIRECT / REVISE /
-BLOCKED) under CE5 — **owner decision**.
+Gate: C3 CLOSED (backend selected)  Next: Gate C4 — WP-C4.1 (MIR design review, CE3)  Blocked: none
+Gate C3 complete 2026-07-19: WP-C3.1 (workload freeze + framework), WP-C3.2 (generated-Rust spike
+4/17→8/17 with breadth), WP-C3.3 (direct Cranelift spike 3/17), WP-C3 breadth run, and **WP-C3.4
+backend selection = `SELECT-GENERATED`** (owner CE5 decision, CD-026): generated Rust as the
+initial production backend behind verified MIR, backend-neutral MIR keeping direct-Cranelift open
+as a C7 migration. Decision analysis:
+`starkc/docs/compiler/spikes/WP-C3.4-backend-selection-analysis.md`. Native backend selection
+status: SELECTED. Next: Gate C4 (MIR contract + verified lowering) — WP-C4.1 defines the MIR
+under CE3; the generated-Rust emitter will consume that verified MIR, not typed HIR.
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
-closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
-(behind C3, mandatory per CD-004 — C3 selects how, not whether)
+closed)  Backend=SELECTED (generated Rust/C, CD-026)  MIR=open (Gate C4 next, WP-C4.1/CE3)
+Native=blocked (behind C4, mandatory per CD-004)
 Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpansion=blocked (no approved workload, Conditional Track T)
 
 ## Repository baseline
@@ -498,6 +499,24 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   regeneration is a freeze violation the integrity test catches. No semantic or Core behavior
   change.
 
+- CD-026 [2026-07-19, WP-C3.4, owner CE5 decision] **Backend selection: `SELECT-GENERATED`.**
+  Generated Rust is the initial production backend behind verified MIR; the MIR contract is to be
+  designed backend-neutrally so `SELECT-DIRECT` (Cranelift) remains a live C7-gated migration
+  (charter §1.6 rule 9). Basis: WP-C3.2 (generated-Rust) reached 8/17 frozen-corpus breadth
+  cheaply with zero mismatches and trap parity, the shortest/lowest-risk path to correct broad
+  native compilation (charter §1.6 rule 7); WP-C3.3 (direct Cranelift) is correct and self-
+  contained (no rustc dep) but owns monomorphization/layout/drop/runtime up front — the better
+  *eventual* backend if the self-contained-compiler goal becomes primary, which is a C7 judgment.
+  Neither `REVISE` (missing data — exe size/startup, MIR-level comparison — is inherent to
+  sequencing, needs C4-C7, not a bounded pre-C4 follow-up) nor `BLOCKED` (both paths demonstrated
+  correct native execution). Accepted trade: `stark build` permanently requires a rustc toolchain
+  and is slower; acceptable for STARK-as-research-language, re-evaluated at C7. Full three-way
+  analysis + the required architecture commitments (MIR boundary, runtime/ABI, targets, debug
+  mapping, unsupported-MVP closure, why-direct-rejected-as-initial):
+  `starkc/docs/compiler/spikes/WP-C3.4-backend-selection-analysis.md`. Gate C3 closes; next is
+  Gate C4 (MIR contract, CE3). This decision selects a backend strategy only — it does not build
+  MIR, define the MIR contract, or fix the runtime ABI (those are C4/CE3 and C5.1/CE4).
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
@@ -601,19 +620,22 @@ involving nested modules and private items should assume this stricter model.
   entry anywhere in `Cargo.toml`/`Cargo.lock`).
 
 ## Native backend selection
-- Status: **SPIKING** (Gate C3 open; WP-C3.1 done — hypothesis, workload freeze, and measurement
-  framework set; WP-C3.2/C3.3 spikes not yet run). Per CD-004 this is not a whether-question —
-  native compilation is mandatory (`COMPILER-CHARTER.md` §1.2); C3 selects *which* backend
-  architecture, not whether one is built.
-- Selected strategy: none yet (selection is WP-C3.4, escalation CE5).
-- **Leading hypothesis (WP-C3.1, to be falsified by the spikes, NOT a decision):**
-  `SELECT-GENERATED` (generated Rust/C) as the initial production backend, with direct Cranelift
-  (`SELECT-DIRECT`) as the primary challenger. Rationale: shortest path to correctness (charter
-  §1.6 rule 7), reuses old Gate 5's generated-Rust lowering precedent, borrows a mature
-  toolchain's monomorphization/Drop/codegen. Falsifiers (rustc build-dependency weight,
-  compile-time margin, semantic-mapping fights forcing `unsafe`, binary size/startup) are listed
-  in `proposals/NATIVE-CORE-ARCHITECTURE.md` §4. **CE5 escalation flag: the actual backend
-  selection at WP-C3.4 is the owner's; this hypothesis only orients the spikes.**
+- Status: **SELECTED** (WP-C3.4, owner CE5 decision, 2026-07-19).
+- Selected strategy: **generated Rust/C** — generated Rust as the initial production backend
+  behind verified MIR, with a **backend-neutral MIR contract that keeps `SELECT-DIRECT`
+  (Cranelift) open as a C7-gated migration** (charter §1.6 rule 9, no lock-in). Decision +
+  full three-way analysis: `starkc/docs/compiler/spikes/WP-C3.4-backend-selection-analysis.md`;
+  recorded as CD-026.
+- Architecture commitments (roadmap WP-C3.4): emitter consumes **verified MIR** (not typed HIR);
+  small STARK runtime library (print/panic/trap glue); Rust owns MVP value layout + calling
+  convention; Native Provider ABI (C5.1) as `extern "C"` provider calls from generated Rust;
+  Tier-1 targets first (linux-x64, macos-arm64) via rustc; debug/trap file:line via a STARK-span
+  → generated-Rust-line → rustc-debug-info table; unsupported-MVP closure (floats/`?`/tuple
+  patterns/traits/Drop/refs/Vec/HashMap/fn-values) tracked into C4.5/C5/C6.
+- **Accepted trade (recorded):** `stark build` requires a full `rustc` toolchain as a permanent
+  build dependency, and builds are slower than the direct backend. Acceptable for STARK-as-
+  research-language; **re-evaluate the backend choice at C7** if the self-contained-compiler /
+  systems-platform goal becomes primary (same evidence-gated pattern as the LLVM decision).
 - Workload: 23-item frozen set (`NATIVE-CORE-ARCHITECTURE.md` §5), items 1-10 mapped to the
   frozen `exec_snapshots` corpus v1.0.0 (semantic oracle), items 11-23 specified reference
   programs. Two properties (fn-value Eq/Ord/Hash participation, monomorphised-generic fn-value
@@ -1069,3 +1091,27 @@ startup/runtime still unmeasured for both; the fair comparison is at the MIR lev
 HIR. The two open fn-value properties (CD-022) still pending pre-C3.4.
 NEXT: WP-C3.4 — backend and runtime architecture selection under CE5 (owner): SELECT-GENERATED /
 SELECT-DIRECT / REVISE / BLOCKED.
+
+### WP-C3.4 — Backend selection (owner CE5 decision) — 2026-07-19
+DONE: drafted the three-way backend-selection analysis
+(`starkc/docs/compiler/spikes/WP-C3.4-backend-selection-analysis.md`) consolidating the WP-C3.1
+framework + WP-C3.2/C3.3 spikes + breadth run, with a reasoned recommendation and the required
+architecture commitments; presented the decision to the owner (CE5). **Owner selected
+`SELECT-GENERATED`** — generated Rust as the initial production backend behind verified MIR,
+backend-neutral MIR keeping direct-Cranelift open as a C7 migration. Recorded as CD-026;
+Native-backend-selection section → SELECTED / generated Rust/C; created WP-C3.4.md; Position line
+advanced to Gate C4 / WP-C4.1. Gate C3 is complete.
+FILES: starkc/docs/compiler/spikes/WP-C3.4-backend-selection-analysis.md (new),
+STARKLANG/docs/compiler/work-packages/WP-C3.4.md (new), COMPILER-STATE.md.
+RULES: none — a strategy selection only; does not build MIR, define the MIR contract (C4/CE3), or
+fix the runtime ABI (C5.1/CE4). No Core/compiler/interpreter change.
+DECISIONS: CD-026 (owner CE5). Native-backend-selection = SELECTED.
+EVIDENCE: decision presented and recorded; the supporting spike evidence (WP-C3.2/C3.3/breadth
+reports) is unchanged and already committed. No new code; workspace baseline unchanged (600/0/2).
+FOLLOW-UP: the disposable spikes (`tests/spike_genrust.rs`, `tests/spike_cranelift.rs`, Cranelift
+dev-deps) are retained for now as C3 evidence; remove/rewrite them when the real MIR-consuming
+generated-Rust backend lands (they are not production architecture, charter §2.2). The two open
+fn-value properties (CD-022) must be settled during C4/C5. Optional: exe-size/startup measurement
+and the Cranelift struct head-to-head remain available if C7 re-evaluation needs them.
+NEXT: Gate C4 — WP-C4.1 (MIR design review, CE3): define the backend-neutral verified MIR contract
+(`STARKLANG/docs/compiler/mir.md`) that the generated-Rust emitter consumes.
