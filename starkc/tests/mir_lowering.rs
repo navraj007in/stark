@@ -271,10 +271,16 @@ fn unsupported_constructs_report_cleanly() {
             "C4.5e",
         ),
         (
-            // Vec is a later C4.5e sub-slice (e-2); strings (e-1) now lower.
-            "vec.stark",
-            "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); println(v.len()); }",
-            "C4.5",
+            // Vec data ops (e-2) lower; by-reference `.iter()` is deferred to an A2 surface
+            // bump (interior references into runtime containers).
+            "veciter.stark",
+            "fn main() { \
+                 let mut v: Vec<Int32> = Vec::new(); v.push(1); \
+                 let mut total = 0; \
+                 for x in v.iter() { total = total + *x; } \
+                 println(total); \
+             }",
+            "A2",
         ),
         (
             "tryop.stark",

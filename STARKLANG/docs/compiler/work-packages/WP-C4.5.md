@@ -100,6 +100,25 @@ HIR/MIR differential agreement before the next begins.
      corpus cases to pass. 6 differential + 3 verifier + 1 dump test. Deferred to later e
      sub-slices: Char + Char-dependent String ops (`push`/`pop`, Print(ln)Char), `assert_eq`/
      `assert_ne` formatting. Workspace 684/0/2.
+   - **C4.5e-2 — Vec data surface + Vec drop: DONE 2026-07-19.** `RuntimeFn` Vec group
+     (`VecNew`/`WithCapacity`/`Push`/`Pop`/`Len`/`IsEmpty`/`IndexGet`/`Replace`/`Remove`/
+     `Clear`), `MirValue::Vec`. Lowering: `Vec::new`/`with_capacity`; Vec method dispatch
+     (`push`/`pop`/`remove`/`clear`/`len`/`is_empty`); `v[i]` read → `VecIndexGet` (Copy T);
+     `v[i] = x` → `VecReplace` + drop-old (install-then-destroy, CD-012); `clear()` on a
+     droppable element → explicit pop-and-drop loop (A1 §5a — no `RuntimeFn` runs a user
+     destructor); `Vec<T>` is a droppable leaf unit. Verifier: schematic-T `runtime_sig`
+     (constructor from dest element, methods from first `&Vec` operand), V-COPY-1 (MIR-0016):
+     `VecIndexGet` requires Copy T, `VecClear` requires non-droppable T; `copy_types` populated;
+     precise `mir_needs_drop` mirrors lowering's `ty_needs_drop`. Interp: Vec ops mutate `&mut
+     Vec` in place through the reference; index/replace/remove trap `IndexOutOfBounds` with the
+     **call site's** provenance; **Vec drop drops elements in reverse index order** (matched to
+     the frozen oracle) then reclaims. 4 differential + 2 verifier tests. **Deferred — flagged
+     for owner (A1 gap):** `.iter()` iteration. STARK's `.iter()` binds `value: &T`
+     (by-reference), which A1 lowered as by-value `VecIterNext -> Option<T>` and separately
+     reserved by-reference iteration to a C4.5f-dependent sub-slice. `collection_iter__01`'s
+     `for value in values.iter()` therefore stays clean-Unsupported; its push/index/len half
+     lowers. Resolving whether/how A1 adds by-reference Vec iteration (interior references into
+     runtime containers) needs an owner-reviewed surface bump (`0.1-A2`). Workspace 691/0/2.
    Also owns (accumulated boundaries): user-nominal
    `Eq`/`Ord` operator dispatch (needs `Ordering` runtime values), match on owned
    Drop-bearing scrutinees (`drop_unbound` partial drops), projected-move take-and-poison in

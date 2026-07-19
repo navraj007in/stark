@@ -102,6 +102,18 @@ pub fn lower_program(
     // non-generic top-level nominal type, so the verifier/backends can resolve projections.
     {
         let probe = FnLowerer::new(hir, tables, &src, file_id, FnKey::Top(main, Vec::new()));
+        // A1 (CD-031): record which non-generic nominals carry an `impl Copy` so the verifier's
+        // V-COPY-1 (`copy_types`) can resolve Copy-ness without HIR access.
+        for &item_id in &root_items {
+            if matches!(
+                &hir.item(item_id).kind,
+                ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. }
+                    if generics.is_empty()
+            ) && probe.type_has_copy_impl(item_id)
+            {
+                program.types.copy_types.insert((item_id.0, Vec::new()));
+            }
+        }
         for &item_id in &root_items {
             match &hir.item(item_id).kind {
                 ItemKind::Struct {
@@ -613,6 +625,14 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Enum(EnumRef::CoreResult, inner)
             }
+            // A1 (CD-031), C4.5e-2: Vec<T> is an opaque runtime type.
+            Ty::Core(crate::hir::CoreType::Vec, args) => {
+                let inner = args
+                    .iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                MirTy::Core(crate::hir::CoreType::Vec, inner)
+            }
             Ty::Tuple(elems) => MirTy::Tuple(
                 elems
                     .iter()
@@ -881,10 +901,10 @@ impl<'a> FnLowerer<'a> {
                 any
             }
             MirTy::Array(elem, _) => self.ty_needs_drop(elem, span)?,
-            // A1 (CD-031): String always requires runtime drop glue (buffer reclaim). It is a
-            // leaf drop unit — `collect_drop_units`' `_` arm makes it one, and the interp's
-            // `drop_in_place` `_` arm reclaims it (unobservable, no user code).
-            MirTy::String => true,
+            // A1 (CD-031): String and Vec ALWAYS require runtime drop glue (buffer reclaim;
+            // Vec also drops elements). Both are leaf drop units — `collect_drop_units`' `_`
+            // arm makes them units, and the interp's `drop_in_place` reclaims/element-drops.
+            MirTy::String | MirTy::Core(crate::hir::CoreType::Vec, _) => true,
             _ => false,
         })
     }
@@ -1780,7 +1800,13 @@ impl<'a> FnLowerer<'a> {
             } => {
                 let (lo, hi, inclusive) = match &self.hir.expr(*iter).kind {
                     hir::ExprKind::Range { lo, hi, inclusive } => (*lo, *hi, *inclusive),
-                    _ => return unsupported("for over a non-range iterator (C4.5)", span),
+                    _ => {
+                        return unsupported(
+                            "for over a non-range iterator (e.g. Vec::iter — by-reference \
+                             iteration, deferred to an A2 surface bump)",
+                            span,
+                        )
+                    }
                 };
                 let elem_ty = self.expr_mir_ty(lo)?;
                 let lo_op = self.lower_expr_to_operand(lo)?;
@@ -1881,6 +1907,17 @@ impl<'a> FnLowerer<'a> {
                 Ok(())
             }
             hir::ExprKind::Assign { op, lhs, rhs } => {
+                // A1 (CD-031), C4.5e-2: `v[i] = x` on a Vec is `old = VecReplace(&mut v, i, x)`
+                // then drop `old` (install-then-destroy, CD-012) — not a place assignment.
+                if matches!(op, AssignOp::Assign) {
+                    if let hir::ExprKind::Index { base, index } = &self.hir.expr(*lhs).kind {
+                        let (peeled, _) = Self::peel_refs(self.expr_mir_ty(*base)?);
+                        if let MirTy::Core(crate::hir::CoreType::Vec, elem_args) = &peeled {
+                            let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
+                            return self.lower_vec_index_set(*base, *index, elem, *rhs, span);
+                        }
+                    }
+                }
                 // Evaluation order: RHS before LHS place (CD-007).
                 let rhs_op = self.lower_expr_to_operand(*rhs)?;
                 let place = self.lower_place(*lhs)?;
@@ -2271,6 +2308,23 @@ impl<'a> FnLowerer<'a> {
                 self.read_place(place, &field_ty, span)
             }
             hir::ExprKind::Index { base, index } => {
+                // A1 (CD-031), C4.5e-2: `v[i]` on a Vec is a runtime-checked VecIndexGet (Copy
+                // element, V-COPY-1); arrays/slices keep the CheckIndex proof discipline.
+                let (peeled, _) = Self::peel_refs(self.expr_mir_ty(*base)?);
+                if let MirTy::Core(crate::hir::CoreType::Vec, elem_args) = &peeled {
+                    let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
+                    let recv = self.borrow_vec_receiver(*base, false, elem.clone(), span)?;
+                    let idx = self.lower_expr_to_operand(*index)?;
+                    let idx = self.widen_index_to_u64(idx, *index, span)?;
+                    let dest = self.new_temp(elem.clone());
+                    self.emit_runtime_call(
+                        RuntimeFn::VecIndexGet,
+                        vec![recv, idx],
+                        Place::local(dest),
+                        span,
+                    );
+                    return self.read_place(Place::local(dest), &elem, span);
+                }
                 let place = self.lower_index_place(*base, *index, span)?;
                 let elem_ty = self.expr_mir_ty(expr)?;
                 self.read_place(place, &elem_ty, span)
@@ -2728,6 +2782,19 @@ impl<'a> FnLowerer<'a> {
                     self.emit_runtime_call(RuntimeFn::StringFromStr, ops, dest, span);
                     Ok(())
                 }
+                // A1 (CD-031), C4.5e-2: Vec construction.
+                Res::Builtin(Builtin::VecNew) => {
+                    self.emit_runtime_call(RuntimeFn::VecNew, vec![], dest, span);
+                    Ok(())
+                }
+                Res::Builtin(Builtin::VecWithCapacity) => {
+                    let ops = args
+                        .iter()
+                        .map(|&a| self.lower_expr_to_operand(a))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.emit_runtime_call(RuntimeFn::VecWithCapacity, ops, dest, span);
+                    Ok(())
+                }
                 // A1 (CD-031): `panic(msg)` → an unconditional Trap carrying the message.
                 Res::Builtin(Builtin::Panic) => {
                     let message = match args.first() {
@@ -3058,6 +3125,11 @@ impl<'a> FnLowerer<'a> {
         if matches!(peeled_ty, MirTy::String | MirTy::Str) {
             return self.lower_string_method_call(base, &peeled_ty, name_span, args, dest, span);
         }
+        // A1 (CD-031), C4.5e-2: Vec methods dispatch to the Vec RuntimeFn surface.
+        if let MirTy::Core(crate::hir::CoreType::Vec, elem_args) = &peeled_ty {
+            let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
+            return self.lower_vec_method_call(base, elem, name_span, args, dest, span);
+        }
         let nominal = match &peeled_ty {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 // C4.5c boundary: methods on a *generic* nominal instantiation need
@@ -3266,6 +3338,182 @@ impl<'a> FnLowerer<'a> {
             }
             _ => unsupported("non-comparison string binop", span),
         }
+    }
+
+    /// A1 (CD-031), C4.5e-2: lower a method call on a `Vec<T>` receiver to the Vec RuntimeFn
+    /// surface. Iteration (`iter`) is deferred to an owner-reviewed surface bump (STARK's
+    /// `.iter()` is by-reference `&T` — A1 reserved it).
+    fn lower_vec_method_call(
+        &mut self,
+        base: ExprId,
+        elem: MirTy,
+        name_span: Span,
+        args: &[ExprId],
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let name = self.text(name_span).to_string();
+        // (runtime fn, receiver mutability).
+        let (rt, recv_mut) =
+            match name.as_str() {
+                "push" => (RuntimeFn::VecPush, true),
+                "pop" => (RuntimeFn::VecPop, true),
+                "remove" => (RuntimeFn::VecRemove, true),
+                "clear" => {
+                    // A1 §5a: `clear()` on a droppable element type must not hide destructors in
+                    // the opaque runtime op — it lowers to a pop-and-drop loop instead.
+                    if self.ty_needs_drop(&elem, span)? {
+                        return self.lower_vec_clear_droppable(base, elem, dest, span);
+                    }
+                    (RuntimeFn::VecClear, true)
+                }
+                "len" => (RuntimeFn::VecLen, false),
+                "is_empty" => (RuntimeFn::VecIsEmpty, false),
+                "iter" => return unsupported(
+                    "Vec::iter is by-reference iteration (&T) — deferred to an owner-reviewed A2 \
+                     surface bump (interior references into runtime containers)",
+                    span,
+                ),
+                _ => return unsupported(format!("Vec::{name} (a later C4.5e sub-slice)"), span),
+            };
+        let recv = self.borrow_vec_receiver(base, recv_mut, elem.clone(), span)?;
+        let mut ops = vec![recv];
+        for &arg in args {
+            ops.push(self.lower_expr_to_operand(arg)?);
+        }
+        self.emit_runtime_call(rt, ops, dest, span);
+        Ok(())
+    }
+
+    /// `v.clear()` for a droppable element type: pop-and-drop each element at a visible `Drop`
+    /// terminator (A1 §5a — no `RuntimeFn` runs a user destructor). `VecPop` returns
+    /// `Option<T>`; the loop drops each `Some(x)` and stops at `None`.
+    fn lower_vec_clear_droppable(
+        &mut self,
+        base: ExprId,
+        elem: MirTy,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        self.discover_drop_impls(&elem)?;
+        let opt_ty = MirTy::Enum(EnumRef::CoreOption, vec![elem.clone()]);
+        let header = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.terminate(Terminator::Goto { target: header }, self.info(span), header);
+        // header: pop → Option<T>, switch on discriminant.
+        let popped = self.new_temp(opt_ty.clone());
+        let recv = self.borrow_vec_receiver(base, true, elem.clone(), span)?;
+        self.emit_runtime_call(RuntimeFn::VecPop, vec![recv], Place::local(popped), span);
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(
+                Place::local(disc),
+                Rvalue::Discriminant(Place::local(popped)),
+            ),
+            self.info(span),
+        );
+        // discriminant 1 = Some → body; 0 = None → exit.
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(disc)),
+                arms: vec![(1, body_block)],
+                otherwise: exit,
+            },
+            self.info(span),
+            body_block,
+        );
+        // body: extract the payload into a temp, drop it, loop.
+        let elem_temp = self.new_temp(elem.clone());
+        self.emit(
+            Statement::Assign(
+                Place::local(elem_temp),
+                Rvalue::Use(Operand::Move(Place {
+                    local: popped,
+                    projection: vec![Projection::VariantField(1, 0)],
+                })),
+            ),
+            self.info(span),
+        );
+        self.emit_temp_drop(elem_temp, span);
+        self.terminate(Terminator::Goto { target: header }, self.info(span), exit);
+        // exit: clear() returns Unit.
+        self.emit(
+            Statement::Assign(dest, Rvalue::Use(Operand::Const(Constant::Unit))),
+            self.info(span),
+        );
+        Ok(())
+    }
+
+    /// `v[i] = x` (A1 §5c): `old = VecReplace(&mut v, i, x)`, then drop `old` when the element
+    /// type is droppable (install-then-destroy per CD-012; the RHS is already installed by the
+    /// time the old value is destroyed).
+    fn lower_vec_index_set(
+        &mut self,
+        base: ExprId,
+        index: ExprId,
+        elem: MirTy,
+        rhs: ExprId,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        // Evaluation order: RHS, then receiver/index (CD-007 keeps RHS first).
+        let rhs_op = self.lower_expr_to_operand(rhs)?;
+        let recv = self.borrow_vec_receiver(base, true, elem.clone(), span)?;
+        let idx = self.lower_expr_to_operand(index)?;
+        let idx = self.widen_index_to_u64(idx, index, span)?;
+        let old = self.new_temp(elem.clone());
+        self.emit_runtime_call(
+            RuntimeFn::VecReplace,
+            vec![recv, idx, rhs_op],
+            Place::local(old),
+            span,
+        );
+        if self.ty_needs_drop(&elem, span)? {
+            self.discover_drop_impls(&elem)?;
+            self.emit_temp_drop(old, span);
+        }
+        Ok(())
+    }
+
+    /// Coerce a Vec index operand to `UInt64` (the schematic Vec-op index type), inserting a
+    /// widening checked cast if the checker did not already type it `UInt64`.
+    fn widen_index_to_u64(
+        &mut self,
+        idx: Operand,
+        index_expr: ExprId,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        if matches!(self.expr_mir_ty(index_expr)?, MirTy::UInt64) {
+            Ok(idx)
+        } else {
+            self.cast_to_temp(idx, MirTy::UInt64, span)
+        }
+    }
+
+    /// Build a `&Vec`/`&mut Vec` receiver operand: pass a reference base through, or borrow an
+    /// owned `Vec` place.
+    fn borrow_vec_receiver(
+        &mut self,
+        base: ExprId,
+        mutable: bool,
+        elem: MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
+        if layers > 0 {
+            return self.lower_expr_to_operand(base);
+        }
+        let place = self.lower_place(base)?;
+        let ref_ty = MirTy::Ref {
+            mutable,
+            inner: Box::new(MirTy::Core(crate::hir::CoreType::Vec, vec![elem])),
+        };
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
+            self.info(span),
+        );
+        self.read_place(Place::local(temp), &ref_ty, span)
     }
 
     /// Build a `&String`/`&mut String` receiver operand: pass a reference base through, or

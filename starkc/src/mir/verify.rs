@@ -655,6 +655,11 @@ impl<'a> BodyCx<'a> {
                         }
                         None => None,
                     },
+                    // A1: Vec ops have schematic-in-T signatures and V-COPY-1 constraints;
+                    // string/print ops use the fixed table.
+                    Callee::Runtime(rt) if is_vec_runtime_fn(*rt) => {
+                        self.vec_runtime_sig(*rt, &arg_tys, dest_ty.as_ref(), bi)
+                    }
                     Callee::Runtime(rt) => Some(runtime_sig(*rt)),
                 };
                 if let Some((params, ret)) = sig {
@@ -1044,6 +1049,144 @@ impl<'a> BodyCx<'a> {
                 moved.insert(moved_key(place));
             }
             Operand::Const(_) => {}
+        }
+    }
+
+    // ---- A1 (CD-031) Vec runtime ops: schematic T + V-COPY-1 ----
+
+    /// Resolve a Vec op's schematic signature (A1 §6: constructors take `T` from the
+    /// destination element, methods from the first `Vec` operand) and enforce V-COPY-1
+    /// (MIR-0016): `VecIndexGet` requires `T: Copy`; `VecClear` requires non-droppable `T`.
+    fn vec_runtime_sig(
+        &mut self,
+        rt: RuntimeFn,
+        arg_tys: &[Option<MirTy>],
+        dest_ty: Option<&MirTy>,
+        bi: u32,
+    ) -> Option<(Vec<MirTy>, MirTy)> {
+        use RuntimeFn::*;
+        let vec = |t: &MirTy| MirTy::Core(crate::hir::CoreType::Vec, vec![t.clone()]);
+        let vec_ref = |t: &MirTy, mutable| MirTy::Ref {
+            mutable,
+            inner: Box::new(vec(t)),
+        };
+        let opt = |t: &MirTy| MirTy::Enum(EnumRef::CoreOption, vec![t.clone()]);
+
+        // Resolve T.
+        let t = match rt {
+            VecNew | VecWithCapacity => match dest_ty {
+                Some(MirTy::Core(crate::hir::CoreType::Vec, args)) => args.first().cloned(),
+                _ => {
+                    self.err("MIR-0012", bi, "Vec constructor dest is not a Vec type");
+                    None
+                }
+            },
+            _ => match arg_tys.first().and_then(|o| o.as_ref()) {
+                Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                    MirTy::Core(crate::hir::CoreType::Vec, args) => args.first().cloned(),
+                    other => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("Vec op first operand is &{other:?}, not &Vec"),
+                        );
+                        None
+                    }
+                },
+                _ => {
+                    self.err("MIR-0012", bi, "Vec op first operand is not a &Vec");
+                    None
+                }
+            },
+        }?;
+
+        // V-COPY-1.
+        match rt {
+            VecIndexGet if !self.mir_is_copy(&t) => {
+                self.err(
+                    "MIR-0016",
+                    bi,
+                    format!("VecIndexGet requires a Copy element type, found {t:?}"),
+                );
+            }
+            VecClear if self.mir_needs_drop(&t) => {
+                self.err(
+                    "MIR-0016",
+                    bi,
+                    format!("VecClear requires a non-droppable element type, found {t:?}"),
+                );
+            }
+            _ => {}
+        }
+
+        let uint64 = MirTy::UInt64;
+        Some(match rt {
+            VecNew => (vec![], vec(&t)),
+            VecWithCapacity => (vec![uint64], vec(&t)),
+            VecPush => (vec![vec_ref(&t, true), t.clone()], MirTy::Unit),
+            VecPop => (vec![vec_ref(&t, true)], opt(&t)),
+            VecLen => (vec![vec_ref(&t, false)], uint64),
+            VecIsEmpty => (vec![vec_ref(&t, false)], MirTy::Bool),
+            VecIndexGet => (vec![vec_ref(&t, false), uint64], t.clone()),
+            VecReplace => (vec![vec_ref(&t, true), uint64, t.clone()], t.clone()),
+            VecRemove => (vec![vec_ref(&t, true), uint64], t.clone()),
+            VecClear => (vec![vec_ref(&t, true)], MirTy::Unit),
+            _ => unreachable!("non-Vec op in vec_runtime_sig"),
+        })
+    }
+
+    /// A1: precise droppability, mirroring lowering's `ty_needs_drop` so the verifier never
+    /// rejects a valid lowering (String/Vec always; a nominal with an own `Drop` impl or a
+    /// droppable field; recursion through aggregates). Distinct from the conservative
+    /// `may_need_drop` used by the Drop-terminator sanity check.
+    fn mir_needs_drop(&self, ty: &MirTy) -> bool {
+        match ty {
+            MirTy::String | MirTy::Core(..) => true,
+            MirTy::Struct(item, args) => {
+                let key = (item.0, args.clone());
+                self.program.types.drop_impls.contains_key(&key)
+                    || self
+                        .program
+                        .types
+                        .struct_fields
+                        .get(&key)
+                        .is_some_and(|fs| fs.iter().any(|f| self.mir_needs_drop(f)))
+            }
+            MirTy::Enum(EnumRef::User(item), args) => {
+                let key = (item.0, args.clone());
+                self.program.types.drop_impls.contains_key(&key)
+                    || self
+                        .program
+                        .types
+                        .enum_variants
+                        .get(&key)
+                        .is_some_and(|vs| {
+                            vs.iter().any(|v| v.iter().any(|f| self.mir_needs_drop(f)))
+                        })
+            }
+            MirTy::Enum(_, args) => args.iter().any(|a| self.mir_needs_drop(a)),
+            MirTy::Tuple(elems) => elems.iter().any(|e| self.mir_needs_drop(e)),
+            MirTy::Array(elem, _) => self.mir_needs_drop(elem),
+            _ => false,
+        }
+    }
+
+    /// A1: is `ty` `Copy` at the MIR level? Primitives/refs/fn-values/all-Copy aggregates are
+    /// Copy; user nominals are Copy iff `TypeContext::copy_types` records an `impl Copy`;
+    /// String/Vec and mutable refs are not.
+    fn mir_is_copy(&self, ty: &MirTy) -> bool {
+        match ty {
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => self
+                .program
+                .types
+                .copy_types
+                .contains(&(item.0, args.clone())),
+            MirTy::Enum(_, args) => args.iter().all(|a| self.mir_is_copy(a)),
+            MirTy::Tuple(elems) => elems.iter().all(|e| self.mir_is_copy(e)),
+            MirTy::Array(elem, _) => self.mir_is_copy(elem),
+            MirTy::Ref { mutable, .. } => !*mutable,
+            MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
+            _ => true,
         }
     }
 
@@ -1521,6 +1664,23 @@ fn variant_payload(
     }
 }
 
+fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(
+        rt,
+        VecNew
+            | VecWithCapacity
+            | VecPush
+            | VecPop
+            | VecLen
+            | VecIsEmpty
+            | VecIndexGet
+            | VecReplace
+            | VecRemove
+            | VecClear
+    )
+}
+
 /// A1 V-STR-2: is `ty` a `String`, or a `str` behind any depth of reference? Such operands
 /// must not appear in structural `BinOp`/`UnOp` — comparisons route through `StrEq`/`StrCmp`.
 fn is_stringish(ty: &MirTy) -> bool {
@@ -1562,6 +1722,11 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         StrToString => (vec![str_ref()], MirTy::String),
         StrEq => (vec![str_ref(), str_ref()], MirTy::Bool),
         StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
+        // Vec ops are schematic in T — resolved by `vec_runtime_sig`, never this fixed table.
+        VecNew | VecWithCapacity | VecPush | VecPop | VecLen | VecIsEmpty | VecIndexGet
+        | VecReplace | VecRemove | VecClear => {
+            unreachable!("Vec ops resolve through vec_runtime_sig, not runtime_sig")
+        }
     }
 }
 

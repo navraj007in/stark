@@ -335,6 +335,19 @@ pub enum RuntimeFn {
     StrToString,
     StrEq,
     StrCmp,
+    // --- A1 (CD-031), C4.5e-2: Vec data surface. Iteration (VecIterNew/VecIterNext) is NOT
+    // here: STARK's `.iter()` is by-reference (`&T`), which A1 reserved to an interior-
+    // reference sub-slice; activating it needs an owner-reviewed surface bump. ---
+    VecNew,
+    VecWithCapacity,
+    VecPush,
+    VecPop,
+    VecLen,
+    VecIsEmpty,
+    VecIndexGet,
+    VecReplace,
+    VecRemove,
+    VecClear,
 }
 
 #[derive(Clone, Debug)]

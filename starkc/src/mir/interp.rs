@@ -68,6 +68,10 @@ pub enum MirValue {
     Str(std::rc::Rc<str>),
     /// An owned `String` value (A1). Non-Copy; drop-elaborated (buffer reclaim is a no-op).
     String(String),
+    /// An owned `Vec<T>` value (A1/C4.5e-2). Non-Copy; drop-elaborated (elements dropped in
+    /// reverse index order, then buffer reclaimed — §5a). Opaque to projections: manipulated
+    /// only through the Vec `RuntimeFn` surface.
+    Vec(Vec<MirValue>),
 }
 
 #[derive(Debug)]
@@ -232,7 +236,9 @@ impl<'a> Interp<'a> {
                             };
                             self.call(idx, values)?
                         }
-                        Callee::Runtime(rt) => self.run_runtime(*rt, values)?,
+                        // A1: trap-capable runtime ops abort with the CALL SITE's SourceInfo
+                        // as provenance (runtime ops carry no TrapInfo of their own, §5).
+                        Callee::Runtime(rt) => self.run_runtime(*rt, values, bb.terminator.1)?,
                     };
                     self.write_place(here, dest, result)?;
                     block = *target;
@@ -456,9 +462,36 @@ impl<'a> Interp<'a> {
                     self.drop_in_place(frame, local, p, elem)?;
                 }
             }
+            // A1 (CD-031) §5a: Vec<T> drops its elements through STARK glue in REVERSE index
+            // order (matched to the oracle), then reclaims the buffer (unobservable). Elements
+            // are opaque to projections, so they drop from the read-out value via a scratch
+            // slot rather than a place path.
+            MirTy::Core(crate::hir::CoreType::Vec, args) => {
+                let elem_ty = args.first().cloned().unwrap_or(MirTy::Unit);
+                if let MirValue::Vec(mut elems) = self.read_resolved(frame, local, &path)? {
+                    while let Some(e) = elems.pop() {
+                        self.drop_owned_value(frame, e, &elem_ty)?;
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Drop a standalone owned value (a Vec element, §5a): place it in a scratch slot of
+    /// `frame` so its glue can take an `&mut` reference, run the glue, then remove the slot.
+    fn drop_owned_value(
+        &mut self,
+        frame: usize,
+        value: MirValue,
+        ty: &MirTy,
+    ) -> Result<(), MirRunError> {
+        let scratch = self.frames[frame].locals.len() as u32;
+        self.frames[frame].locals.push(Some(value));
+        let result = self.drop_in_place(frame, scratch, Vec::new(), ty);
+        self.frames[frame].locals.truncate(scratch as usize);
+        result
     }
 
     // ---- place resolution (C4.5b-2) ----
@@ -873,8 +906,16 @@ impl<'a> Interp<'a> {
 
     // ---- runtime surface ----
 
-    fn run_runtime(&mut self, rt: RuntimeFn, args: Vec<MirValue>) -> Result<MirValue, MirRunError> {
+    fn run_runtime(
+        &mut self,
+        rt: RuntimeFn,
+        args: Vec<MirValue>,
+        call_info: SourceInfo,
+    ) -> Result<MirValue, MirRunError> {
         use RuntimeFn::*;
+        if is_vec_runtime(rt) {
+            return self.run_vec_runtime(rt, args, call_info);
+        }
         let mut iter = args.into_iter();
         let arg = iter.next();
         let rest: Vec<MirValue> = iter.collect();
@@ -995,6 +1036,114 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// A1 (CD-031) Vec data-surface ops. `&Vec`/`&mut Vec` operands arrive as `Ref`s and are
+    /// read/mutated in place; index/replace/remove trap `IndexOutOfBounds` with the call
+    /// site's provenance (§5). Iteration is not here (deferred — see the enum note).
+    fn run_vec_runtime(
+        &mut self,
+        rt: RuntimeFn,
+        args: Vec<MirValue>,
+        call_info: SourceInfo,
+    ) -> Result<MirValue, MirRunError> {
+        use RuntimeFn::*;
+        let oob = || MirRunError::Trap {
+            category: TrapCategory::IndexOutOfBounds,
+            source: call_info,
+            message: None,
+        };
+        let mut args = args.into_iter();
+        match rt {
+            VecNew | VecWithCapacity => Ok(MirValue::Vec(Vec::new())),
+            VecPush => {
+                let recv = args.next();
+                let item = args
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("VecPush missing item".into()))?;
+                self.mutate_vec_ref(&recv, |v| v.push(item))?;
+                Ok(MirValue::Unit)
+            }
+            VecPop => {
+                let recv = args.next();
+                let popped = self.mutate_vec_ref(&recv, |v| v.pop())?;
+                Ok(option_value(popped))
+            }
+            VecLen => {
+                let recv = args.next();
+                Ok(MirValue::Int(self.read_vec_ref(&recv)?.len() as i128))
+            }
+            VecIsEmpty => {
+                let recv = args.next();
+                Ok(MirValue::Bool(self.read_vec_ref(&recv)?.is_empty()))
+            }
+            VecClear => {
+                let recv = args.next();
+                self.mutate_vec_ref(&recv, |v| v.clear())?;
+                Ok(MirValue::Unit)
+            }
+            VecIndexGet => {
+                let recv = args.next();
+                let i = int_arg(args.next())? as usize;
+                let v = self.read_vec_ref(&recv)?;
+                v.get(i).cloned().ok_or_else(oob)
+            }
+            VecReplace => {
+                let recv = args.next();
+                let i = int_arg(args.next())? as usize;
+                let item = args
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("VecReplace missing item".into()))?;
+                let len = self.read_vec_ref(&recv)?.len();
+                if i >= len {
+                    return Err(oob());
+                }
+                self.mutate_vec_ref(&recv, |v| std::mem::replace(&mut v[i], item))
+            }
+            VecRemove => {
+                let recv = args.next();
+                let i = int_arg(args.next())? as usize;
+                let len = self.read_vec_ref(&recv)?.len();
+                if i >= len {
+                    return Err(oob());
+                }
+                self.mutate_vec_ref(&recv, |v| v.remove(i))
+            }
+            other => self.internal(format!("runtime {other:?} is not a Vec op")),
+        }
+    }
+
+    fn read_vec_ref(&self, v: &Option<MirValue>) -> Result<Vec<MirValue>, MirRunError> {
+        match v {
+            Some(MirValue::Ref { frame, local, path }) => {
+                match self.read_resolved(*frame, *local, path)? {
+                    MirValue::Vec(elems) => Ok(elems),
+                    other => self.internal(format!("Vec ref referent is {other:?}")),
+                }
+            }
+            Some(MirValue::Vec(elems)) => Ok(elems.clone()),
+            other => self.internal(format!("expected a &Vec argument, got {other:?}")),
+        }
+    }
+
+    /// Mutate the `Vec` behind a `&mut Vec` reference argument in place, returning the
+    /// closure's result.
+    fn mutate_vec_ref<R>(
+        &mut self,
+        v: &Option<MirValue>,
+        f: impl FnOnce(&mut Vec<MirValue>) -> R,
+    ) -> Result<R, MirRunError> {
+        let Some(MirValue::Ref { frame, local, path }) = v else {
+            return self.internal(format!("expected a &mut Vec argument, got {v:?}"));
+        };
+        let (frame, local, path) = (*frame, *local, path.clone());
+        let mut vec = match self.read_resolved(frame, local, &path)? {
+            MirValue::Vec(elems) => elems,
+            other => return self.internal(format!("&mut Vec referent is {other:?}")),
+        };
+        let out = f(&mut vec);
+        self.write_resolved(frame, local, &path, MirValue::Vec(vec))?;
+        Ok(out)
+    }
+
     /// The content of a `&str` argument (a `Str` value; a `String`/`Ref` is a lowering bug).
     fn as_str(&self, v: &Option<MirValue>) -> Result<std::rc::Rc<str>, MirRunError> {
         match v {
@@ -1043,6 +1192,46 @@ impl<'a> Interp<'a> {
             MirValue::String(s) => Ok(s),
             other => self.internal(format!("trap message operand is {other:?}")),
         }
+    }
+}
+
+fn is_vec_runtime(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(
+        rt,
+        VecNew
+            | VecWithCapacity
+            | VecPush
+            | VecPop
+            | VecLen
+            | VecIsEmpty
+            | VecIndexGet
+            | VecReplace
+            | VecRemove
+            | VecClear
+    )
+}
+
+fn int_arg(v: Option<MirValue>) -> Result<i128, MirRunError> {
+    match v {
+        Some(MirValue::Int(i)) => Ok(i),
+        other => Err(MirRunError::Internal(format!(
+            "expected an integer argument, got {other:?}"
+        ))),
+    }
+}
+
+/// Wrap an optional element as a `MirValue` `Option` enum (CoreOption: v0 = None, v1 = Some).
+fn option_value(v: Option<MirValue>) -> MirValue {
+    match v {
+        Some(inner) => MirValue::Enum {
+            variant: 1,
+            fields: vec![inner],
+        },
+        None => MirValue::Enum {
+            variant: 0,
+            fields: Vec::new(),
+        },
     }
 }
 

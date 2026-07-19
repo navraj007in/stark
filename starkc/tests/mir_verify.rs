@@ -845,3 +845,106 @@ fn rejects_unsupported_runtime_surface() {
     program.runtime_surface = "0.1-A999".to_string();
     expect_code(&program, "MIR-0017");
 }
+
+// ---- WP-C4.5e-2: A1 Vec V-COPY-1 verifier rules ----
+
+fn vec_ty(elem: MirTy) -> MirTy {
+    MirTy::Core(starkc::hir::CoreType::Vec, vec![elem])
+}
+
+/// A1 V-COPY-1 (MIR-0016): `VecIndexGet` requires a Copy element type; a non-Copy element
+/// (here a user struct with no `impl Copy`) is rejected.
+#[test]
+fn rejects_vec_index_get_on_non_copy_element() {
+    let item = starkc::hir::ItemId(0);
+    let struct_ty = MirTy::Struct(item, Vec::new());
+    let vref = MirTy::Ref {
+        mutable: false,
+        inner: Box::new(vec_ty(struct_ty.clone())),
+    };
+    let b = body(
+        vec![
+            ret_local(),
+            local(vec_ty(struct_ty.clone())),
+            local(vref.clone()),
+            local(struct_ty.clone()),
+        ],
+        vec![
+            block(
+                vec![Statement::Assign(
+                    Place::local(LocalId(2)),
+                    Rvalue::RefOf {
+                        mutable: false,
+                        place: Place::local(LocalId(1)),
+                    },
+                )],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::VecIndexGet),
+                    args: vec![
+                        Operand::Copy(Place::local(LocalId(2))),
+                        Operand::Const(Constant::Int(0, MirTy::UInt64)),
+                    ],
+                    dest: Place::local(LocalId(3)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    let mut program = program_with(vec![b]);
+    // Struct has no impl Copy (copy_types empty) and no fields → non-Copy, non-droppable.
+    program
+        .types
+        .struct_fields
+        .insert((0, Vec::new()), Vec::new());
+    expect_code(&program, "MIR-0016");
+}
+
+/// A1 V-COPY-1 (MIR-0016): `VecClear` requires a non-droppable element type; a Drop-bearing
+/// element must instead lower to a pop-and-drop loop, so a `VecClear` on it is invalid MIR.
+#[test]
+fn rejects_vec_clear_on_droppable_element() {
+    let item = starkc::hir::ItemId(0);
+    let struct_ty = MirTy::Struct(item, Vec::new());
+    let vref = MirTy::Ref {
+        mutable: true,
+        inner: Box::new(vec_ty(struct_ty.clone())),
+    };
+    let b = body(
+        vec![
+            ret_local(),
+            local(vec_ty(struct_ty.clone())),
+            local(vref),
+            local(MirTy::Unit),
+        ],
+        vec![
+            block(
+                vec![Statement::Assign(
+                    Place::local(LocalId(2)),
+                    Rvalue::RefOf {
+                        mutable: true,
+                        place: Place::local(LocalId(1)),
+                    },
+                )],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::VecClear),
+                    args: vec![Operand::Copy(Place::local(LocalId(2)))],
+                    dest: Place::local(LocalId(3)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    let mut program = program_with(vec![b]);
+    // Give the struct a Drop impl so it is droppable.
+    program
+        .types
+        .struct_fields
+        .insert((0, Vec::new()), Vec::new());
+    program
+        .types
+        .drop_impls
+        .insert((0, Vec::new()), "Loud::Drop::drop@[]".to_string());
+    expect_code(&program, "MIR-0016");
+}

@@ -827,3 +827,89 @@ fn struct_with_string_field_drops_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.5e-2: Vec data surface (Amendment A1) ----
+
+/// Vec construction, push, len, index-read, index-set, pop, remove, is_empty, clear all agree
+/// with the oracle (no iteration — by-reference `.iter()` is deferred to an A2 surface bump).
+#[test]
+fn vec_data_operations_agree() {
+    differential(
+        "vecops.stark",
+        "fn main() { \
+             let mut v: Vec<Int32> = Vec::new(); \
+             v.push(10); v.push(20); v.push(30); \
+             println(v.len()); \
+             println(v[0u64]); println(v[2u64]); \
+             v[1u64] = 99; \
+             println(v[1u64]); \
+             let x = v.pop(); \
+             match x { Some(n) => println(n), None => println(0) } \
+             println(v.len()); \
+             let r = v.remove(0u64); \
+             println(r); \
+             println(v.is_empty()); \
+             v.clear(); \
+             println(v.is_empty()); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A `Vec` of droppable elements drops them in REVERSE index order at scope exit, and
+/// `v[i] = x` on a droppable element runs the replaced element's destructor
+/// (install-then-destroy). Both match the oracle (validates A1 §5a end to end).
+#[test]
+fn vec_of_droppable_elements_drops_reverse_order_agree() {
+    differential(
+        "vecdrop.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         fn main() { \
+             let mut v: Vec<Loud> = Vec::new(); \
+             v.push(Loud { id: 1 }); \
+             v.push(Loud { id: 2 }); \
+             v.push(Loud { id: 3 }); \
+             println(100); \
+             v[1u64] = Loud { id: 20 }; \
+             println(101); \
+         }"
+        .to_string(),
+    );
+}
+
+/// `v.clear()` on a droppable element type destroys every element (via the pop-and-drop loop,
+/// A1 §5a — never hidden in an opaque runtime op), matching the oracle.
+#[test]
+fn vec_clear_droppable_runs_destructors_agree() {
+    differential(
+        "vecclear.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         fn main() { \
+             let mut v: Vec<Loud> = Vec::new(); \
+             v.push(Loud { id: 1 }); \
+             v.push(Loud { id: 2 }); \
+             println(100); \
+             v.clear(); \
+             println(101); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A Vec index out of bounds traps IndexOutOfBounds with the call-site provenance, after
+/// partial output.
+#[test]
+fn vec_index_out_of_bounds_traps_agree() {
+    differential(
+        "vecoob.stark",
+        "fn main() { \
+             let mut v: Vec<Int32> = Vec::new(); \
+             v.push(1); \
+             println(0); \
+             println(v[5u64]); \
+         }"
+        .to_string(),
+    );
+}

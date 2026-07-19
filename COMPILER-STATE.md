@@ -1,10 +1,25 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5e-1 (strings)
+Updated: 2026-07-19 after WP-C4.5e-2 (Vec data surface)
 
 ## Position
-Gate: C4  Next: WP-C4.5e-2 (Vec/slices: Vec runtime surface + Vec drop with reverse-index
-element order + iteration; then Char + Char-dependent String ops, Option/Result combinators)
-Blocked: none
+Gate: C4  Next: **owner decision needed on the A1 Vec-iteration gap** (see below) before the
+iteration sub-slice; meanwhile WP-C4.5e-3 can take Char + Char String ops, `assert_eq`/`ne`,
+Option/Result combinators, then C4.5f (multi-package + frame generations, which unblocks
+by-reference iteration).  Blocked: none
+**A1 GAP FLAGGED (owner decision):** STARK's `Vec::iter()` binds `value: &T` (by-reference),
+but Amendment A1 lowered `VecIterNext` as by-value `Option<T>` and *reserved* by-reference
+iteration to a C4.5f-dependent sub-slice. So `collection_iter__01`'s `for value in
+values.iter()` cannot lower yet (its push/index/len half does). Adding by-reference Vec
+iteration means interior references into a runtime container — needs an owner-reviewed
+`0.1-A2` surface bump. Not resolved unilaterally.
+**WP-C4.5e-2 done 2026-07-19** (Vec data surface, A1/CD-031): `RuntimeFn` Vec group +
+`MirValue::Vec`; `Vec::new`/`with_capacity`, method dispatch (push/pop/remove/clear/len/
+is_empty), `v[i]` read → `VecIndexGet` (Copy T), `v[i]=x` → `VecReplace`+drop-old, `clear()`
+on droppable T → pop-and-drop loop (§5a — destructors only at visible Drop terminators),
+`Vec<T>` a droppable leaf unit dropping elements **reverse index order** (matched to oracle);
+verifier schematic-T `runtime_sig` + V-COPY-1 (MIR-0016, `copy_types` populated,
+`mir_needs_drop` precise); interp Vec ops (in-place `&mut Vec` mutation, call-site trap
+provenance). 4 differential + 2 verifier tests. Workspace 691/0/2; fmt+clippy clean 1.93/1.97.
 **WP-C4.5e-1 done 2026-07-19** (strings, implementing Amendment A1/CD-031): A1 shape
 foundation landed (`MIR_RUNTIME_SURFACE`, `MirProgram.mir_version`/`runtime_surface`,
 `Constant::Str`, `Trap.message`, `TypeContext.copy_types`, String/str `RuntimeFn` group, dump
