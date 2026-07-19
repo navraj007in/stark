@@ -2,7 +2,12 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C4  Next: WP-C4.4 (MIR interpreter, differential vs HIR oracle)  Blocked: none
+Gate: C4  Next: WP-C4.5 (complete Core lowering)  Blocked: none
+WP-C4.4 done 2026-07-19: `src/mir/interp.rs` executes verified MIR; 7-test differential harness
+proves HIR == MIR (stdout/status byte-equal; traps agree by category) across all lowerable
+frozen-corpus cases + fn-values + Option/Result + structs + recursion + div-zero/overflow
+traps. Zero semantic differences found. Float printing shares the oracle's own canonical_float
+(exposed pub) — one algorithm, no drift. Workspace 632/0/2.
 WP-C4.3 done 2026-07-19: `src/mir/verify.rs` implements all 13 contract §10 obligations with
 the MIR-xxxx internal namespace (first allocation, see Diagnostic codes); every lowered program
 verifies clean; 13 hand-crafted invalid bodies each rejected with their specific code; one
@@ -1311,3 +1316,33 @@ over-clever legal MIR, never accepts moved-from reads); field-precise tracking w
 partial moves need it. TypeContext addition noted as additive (no dump/shape change, no
 version bump) — fold into the contract text at the next version bump.
 NEXT: WP-C4.4 — MIR interpreter + differential harness vs the HIR oracle over corpus v1.0.0.
+
+### WP-C4.4 — MIR interpreter + HIR/MIR differential — 2026-07-19
+DONE: implemented `starkc/src/mir/interp.rs` (executes verified MIR: option-slot locals with
+loud use-after-move detection via taking Moves; projection reads/writes; Checked terminators
+with per-width trap semantics incl. MIN/-1 and CD-006 float div/rem-by-zero; checked numeric
+casts; SwitchInt with the lowering's u128 key wrap; direct/indirect/runtime calls; 50M-step
+fuel guard; TrapCategory outcomes distinct from internal errors) and the Gate C4 comparator
+`tests/mir_differential.rs`: 7 tests running lower→verify→execute vs the HIR oracle — 5
+lowerable frozen-corpus cases (byte-equal stdout+status; primitive__02 traps agree), fn-values
+(CD-021 items 16/17/22 through MIR), Option/Result logical enums end-to-end, structs/tuples,
+div-zero trap, mid-output trap, recursion+loops. `interp::canonical_float` exposed pub so the
+MIR runtime formats floats with the oracle's own algorithm (single source, no drift).
+RESULT: **zero semantic differences between HIR and MIR execution** across the supported
+workload. One comparator-map bug caught by the harness itself (oracle "division by zero" vs
+map's "divide by zero") — a harness fix, not an engine disagreement.
+FILES: starkc/src/mir/interp.rs (new), starkc/src/mir/mod.rs (module reg),
+starkc/src/interp.rs (canonical_float made pub with doc), starkc/tests/mir_differential.rs
+(new, 7 tests), STARKLANG/docs/compiler/work-packages/WP-C4.4.md (new), COMPILER-STATE.md.
+RULES: none — differential infrastructure; no Core semantics change. The MIR interpreter is
+explicitly not a user-facing VM (charter §1.6 rule 11).
+DECISIONS: none at CE level.
+EVIDENCE: `cargo test --test mir_differential` 7/7; full workspace 632 passed / 0 failed /
+2 ignored (625 → 632); fmt + clippy -D warnings clean. The C4.4 comparator condition — HIR
+interpreter output/failure == MIR interpreter output/failure — holds for every workload the
+scalar-core lowering supports.
+FOLLOW-UP: the differential net must widen with every C4.5 construct as it lands (the roadmap's
+"generated corpus" + full-corpus replay obligations, carried per CD-018/CD-020).
+NEXT: WP-C4.5 — complete Core lowering (generics/monomorphisation, trait dispatch, patterns,
+CheckIndex/indexing, strings/Vec/runtime surface, ownership/drop elaboration with real Drop
+terminators, panic paths, multi-package linkage), differential-first.

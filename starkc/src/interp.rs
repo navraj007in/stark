@@ -5502,7 +5502,11 @@ fn is_float(primitive: Primitive) -> bool {
     matches!(primitive, Primitive::Float32 | Primitive::Float64)
 }
 
-fn canonical_float(value: f64) -> String {
+/// Canonical Core v1 Float64 text (shortest round-trip digits, always with a decimal point or
+/// exponent; NaN/inf/-0.0 spellings per the frozen numeric contract). `pub` so the MIR
+/// interpreter's runtime surface (mir::interp) formats floats IDENTICALLY to this oracle —
+/// one algorithm, no drift (WP-C4.4).
+pub fn canonical_float(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_string();
     }

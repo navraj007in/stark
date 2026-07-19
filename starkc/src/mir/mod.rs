@@ -15,6 +15,7 @@
 //!   (the DEV-006 lesson) and either a user span or a labeled synthetic origin.
 //! - The textual dump is deterministic and versioned (`MIR_VERSION`).
 
+pub mod interp;
 pub mod lower;
 pub mod verify;
 
