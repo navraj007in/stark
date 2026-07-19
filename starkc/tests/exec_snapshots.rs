@@ -55,6 +55,106 @@ fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/exec_snapshots")
 }
 
+/// WP-C3-ENTRY corpus freeze (CD-025): the execution-snapshot corpus is versioned and locked
+/// so that C3/C4 differential work references a stable baseline by `corpus_version`, not by
+/// "current contents." `corpus.lock` records `corpus_version`, the base commit, and a SHA-256
+/// per corpus file (every `.stark`/`.snap`, including `metamorphic/`). This test enforces the
+/// freeze three ways: every listed file's hash must still match, no listed file may be missing,
+/// and no `.stark`/`.snap` file may exist that the lock does not list. Any intentional corpus
+/// change must regenerate `corpus.lock` AND bump `corpus_version` with a dated note in
+/// `COMPILER-STATE.md` (see WP-C3-ENTRY.md); regenerating a `.snap` via `UPDATE_SNAPSHOTS=1`
+/// without a version bump is a freeze violation this test will catch.
+#[test]
+fn corpus_lock_matches_frozen_snapshot() {
+    use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
+
+    fn hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for &b in bytes {
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    let dir = corpus_dir();
+    let lock_text = std::fs::read_to_string(dir.join("corpus.lock"))
+        .expect("corpus.lock must exist (WP-C3-ENTRY freeze)");
+
+    // Parse: skip blank/`#` lines; `key = value` header lines; `<hash>  <path>` file lines.
+    let mut version: Option<String> = None;
+    let mut locked: BTreeMap<String, String> = BTreeMap::new();
+    for line in lock_text.lines() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once(" = ") {
+            if key == "corpus_version" {
+                version = Some(value.to_string());
+            }
+            continue;
+        }
+        let (hash, path) = line
+            .split_once("  ")
+            .unwrap_or_else(|| panic!("malformed corpus.lock line: {line:?}"));
+        assert!(
+            locked.insert(path.to_string(), hash.to_string()).is_none(),
+            "duplicate path in corpus.lock: {path}"
+        );
+    }
+    assert_eq!(
+        version.as_deref(),
+        Some("1.0.0"),
+        "corpus.lock corpus_version changed without updating this assertion (freeze governance)"
+    );
+
+    // Enumerate the actual corpus (every .stark/.snap, recursively), relative to the corpus dir.
+    let mut actual: Vec<String> = Vec::new();
+    fn collect(dir: &Path, base: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(&path, base, out);
+            } else if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("stark") | Some("snap")
+            ) {
+                out.push(
+                    path.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
+            }
+        }
+    }
+    collect(&dir, &dir, &mut actual);
+    actual.sort();
+
+    // No unlisted corpus file (present-but-unlisted).
+    for path in &actual {
+        assert!(
+            locked.contains_key(path),
+            "corpus file '{path}' is not listed in corpus.lock: freeze a new corpus_version \
+             and regenerate the lock rather than adding files silently"
+        );
+    }
+    // No missing listed file (listed-but-absent) and every hash matches.
+    for (path, expected_hash) in &locked {
+        let bytes = std::fs::read(dir.join(path))
+            .unwrap_or_else(|_| panic!("corpus.lock lists '{path}' but it is absent on disk"));
+        let actual_hash = hex(&Sha256::digest(&bytes));
+        assert_eq!(
+            &actual_hash, expected_hash,
+            "corpus file '{path}' has changed since the v1.0.0 freeze; if intentional, bump \
+             corpus_version and regenerate corpus.lock with a dated COMPILER-STATE.md note"
+        );
+    }
+}
+
 /// Every primary corpus case, one per named coverage category from the WP-C2.12 roadmap text.
 /// Filenames are `<category>__<NN>_<description>.stark`; the matching golden file is the same
 /// name with a `.snap` extension.

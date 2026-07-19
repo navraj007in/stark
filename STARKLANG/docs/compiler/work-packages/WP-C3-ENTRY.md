@@ -109,11 +109,17 @@ supported-target compile matrix (roadmap, C3-ENTRY section).
       ledger and the state decision log. **Closed 2026-07-19, CD-023 — all six approved as-is.**
 - [x] DEV-060 has an explicit disposition (fix landed with regression test, or documented
       acceptance with workload carve-out). **Closed 2026-07-19 — fixed with regression tests.**
-- [ ] `corpus.lock` exists at `corpus_version = "1.0.0"` with a passing integrity test.
-- [ ] The updated CI workflow has one demonstrated green run.
-- [ ] `starkc/docs/compiler/C3-entry-exit.md` exists, states all of the above with evidence,
-      and names WP-C3.1 as next.
-- [ ] `COMPILER-STATE.md` Position line reads `Gate: C3  Next: WP-C3.1  Blocked: none`.
+- [x] `corpus.lock` exists at `corpus_version = "1.0.0"` with a passing integrity test.
+      **Closed 2026-07-19, CD-025 — `corpus_lock_matches_frozen_snapshot` in exec_snapshots.rs,
+      negatively verified.**
+- [x] The updated CI workflow has one demonstrated green run. **Closed 2026-07-19 — green on
+      `origin/main` @ `3d12f45`, owner-confirmed.**
+- [x] `starkc/docs/compiler/C3-entry-exit.md` exists, states all of the above with evidence,
+      and names WP-C3.1 as next. **Written 2026-07-19.**
+- [x] `COMPILER-STATE.md` Position line reads `Gate: C3  Next: WP-C3.1  Blocked: none`.
+      **Done 2026-07-19.**
+
+**WP-C3-ENTRY CLOSED 2026-07-19. Gate C3 open; next WP-C3.1.**
 
 ## Scope-control answers (charter §2.6)
 

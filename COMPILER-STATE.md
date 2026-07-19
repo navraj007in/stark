@@ -2,8 +2,11 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C3-ENTRY  Next: complete native-readiness transition before WP-C3.1
-Blocked: versioned execution-corpus freeze; demonstrated green CI run pending (baseline steps added 2026-07-19, not yet run)
+Gate: C3  Next: WP-C3.1  Blocked: none
+C3-ENTRY closed 2026-07-19 — all four blockers resolved; see
+starkc/docs/compiler/C3-entry-exit.md. Gate C3 (Native Compiler Architecture and Backend
+Selection Spike) is open; WP-C3.1 freezes the 23-item workload and writes
+NATIVE-CORE-ARCHITECTURE.md.
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
@@ -34,9 +37,10 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Latest verified code baseline: `cargo test --workspace --all-targets --all-features`
-  (starkc/, against the post-DEV-060-fix baseline, CD-024, 2026-07-19):
-  **596 passed, 0 failed, 2 ignored** (up from 594 — DEV-060's fix added one new typecheck
-  regression test, one new interp execution test, and rewrote one existing test in place)
+  (starkc/, post-CD-025, 2026-07-19):
+  **597 passed, 0 failed, 2 ignored** (594 → 596 from DEV-060's fix: one new typecheck
+  regression test, one new interp execution test, one existing test rewritten in place; 596 →
+  597 from CD-025's `corpus_lock_matches_frozen_snapshot` integrity test)
   across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 32 integration-test files**
   (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`,
@@ -476,6 +480,20 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   `KNOWN-DEVIATIONS.md`'s DEV-060 entry. This closes the second of C3-ENTRY's four blockers; the
   corpus freeze (now unblocked — WP-C3-ENTRY.md's procedure required this fix to land first) and
   the green CI run remain open.
+- CD-025 [2026-07-19] Froze the WP-C2.12 execution-snapshot corpus and closed C3-ENTRY. Blocker
+  3 (corpus freeze): `starkc/tests/exec_snapshots/corpus.lock` created at `corpus_version =
+  1.0.0`, base commit `3d12f45`, SHA-256 per corpus file (48 files: 31 `.stark` + 17 `.snap`
+  incl. `metamorphic/`); lock digest
+  `8cda2df5e26aa35dfc8eb222f1e073eb4ea2336297e91ecc4e62b8fbd27dc0dc`. New integrity test
+  `corpus_lock_matches_frozen_snapshot` (exec_snapshots.rs) enforces hash-match + no-missing +
+  no-unlisted, negatively verified (tampering one `.snap` fails it with the expected message;
+  restore passes). Freeze taken after DEV-060's fix per WP-C3-ENTRY.md procedure. Blocker 4 (CI):
+  green on `origin/main` @ `3d12f45`, owner-confirmed. With blockers 1 (CD-023) and 2 (CD-024)
+  already closed, **C3-ENTRY is closed** — exit artifact `starkc/docs/compiler/C3-entry-exit.md`
+  written, Position line flipped to `Gate: C3  Next: WP-C3.1  Blocked: none`. Any future corpus
+  change must bump `corpus_version` with a dated note here; a bare `UPDATE_SNAPSHOTS=1`
+  regeneration is a freeze violation the integrity test catches. No semantic or Core behavior
+  change.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -855,3 +873,24 @@ since a fix could legitimately change corpus output) — next actionable step; g
 needs a push to origin.
 NEXT: freeze the versioned execution corpus per WP-C3-ENTRY.md's procedure; then push and
 obtain a green CI run; then write starkc/docs/compiler/C3-entry-exit.md; then WP-C3.1.
+
+### C3-ENTRY blockers 3-4 closure + gate close — 2026-07-19 (CD-025)
+DONE: froze the execution-snapshot corpus and closed the C3-ENTRY transition. corpus.lock
+(v1.0.0, 48 files, base 3d12f45) + integrity test `corpus_lock_matches_frozen_snapshot`
+(negatively verified). CI green on origin/main @ 3d12f45 (owner-confirmed). Wrote exit artifact
+C3-entry-exit.md; flipped Position to Gate C3 / WP-C3.1 / Blocked: none; checked off all
+WP-C3-ENTRY Done-when items. Gate C3 is open.
+FILES: starkc/tests/exec_snapshots/corpus.lock (new), starkc/tests/exec_snapshots.rs (new
+integrity test), starkc/docs/compiler/C3-entry-exit.md (new),
+STARKLANG/docs/compiler/work-packages/WP-C3-ENTRY.md, COMPILER-STATE.md.
+RULES: none — freeze/governance only, no Core behavior change.
+DECISIONS: CD-025.
+EVIDENCE: `cargo test --test exec_snapshots` 4 passed (incl. integrity test); tamper-then-
+restore negative check confirms the integrity test fails on drift; `cargo fmt --all -- --check`
+and `cargo clippy --test exec_snapshots --all-features -- -D warnings` clean; full workspace
+596/0/2 from CD-024 unchanged (corpus freeze adds one test → next full run will read 597/0/2).
+FOLLOW-UP: none blocking. Optional pre-C5.1: draft the "Callable ABI and Future Closure
+Compatibility Spike" proposal during C3 spike work (CD-021).
+NEXT: WP-C3.1 — freeze the 23-item representative workload, define the measurement set, write
+STARKLANG/docs/compiler/proposals/NATIVE-CORE-ARCHITECTURE.md. Gate C3 selects backend
+architecture (SELECT-GENERATED / SELECT-DIRECT / REVISE / BLOCKED), never interpreter-only.
