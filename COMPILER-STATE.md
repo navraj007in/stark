@@ -1,22 +1,27 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.6 A6 — **C4 OPEN, working the Class-A blockers (CD-033)**
+Updated: 2026-07-19 after WP-C4.6 A3 Eq — **C4 OPEN; A3 Ord awaits CE3 (Amendment A2 drafted)**
 
 ## Position
-Gate: C4  Next: A3 (user Eq/Ord dispatch — Eq first, then the CE3 `Ordering` note, then Ord),
-per CD-033's dependency-aware order. **WP-C4.5 complete; the WP-C4.6 gate-exit audit ran and the
-owner disposed it as CD-033** (full normative Core + `core-min` reading; C4 stays open; all seven
-Class-A blockers required; order A5+A7 → A6 → A3 → A4 → A2 → A1). Progress:
-**A5, A7, and A6 DONE 2026-07-19.** A5: pure bitwise `MirBinOp`, `~` → `^ mask`, trapping
-`Shl`/`Shr`/`Pow` (NUM-SHIFT-001 bound + `checked_pow`), new `TrapCategory::InvalidShift` via a
-`CheckedOutcome` category override. A7: `loop { break v; }` value target, `[v; n]` repeat,
-Unit-typed value-position `if`/`while`/`for`. A6: Vec iteration converted from a `T: Copy`
-snapshot to a **borrowed cursor** (`[vec-ref, cursor]`, live-indexed like HashMap `KeysIter`);
-V-COPY-1 dropped for `VecIterNew`/`VecIterNext`; `Vec<String>` iteration lowers; amendment
-rev. 7 (no surface bump, stays `0.1-A3`). 7 new differential tests total; workspace 713/0;
-clippy clean 1.93/1.97. Remaining Class-A blockers: A3 (Eq → CE3 `Ordering` note → Ord),
-A4 (`core-min` surface — dated amendment), A2 (patterns), A1 (generic impls). Front-end
+Gate: C4  Next: **owner CE3 review of `mir-amendment-A2-ordering.md`** (needed before the A3
+Ord portion), then A4. Per CD-033's dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1).
+Progress: **A5, A7, A6, and A3-Eq DONE 2026-07-19.** A5: pure bitwise `MirBinOp`, `~` → `^ mask`,
+trapping `Shl`/`Shr`/`Pow`, new `TrapCategory::InvalidShift`. A7: `loop`-break value, `[v;n]`
+repeat, Unit-typed value-position `if`/`while`/`for`. A6: Vec iteration → borrowed cursor
+(V-COPY-1 dropped for the iterator ops; `Vec<String>` iterates; amendment rev. 7). A3-Eq:
+`==`/`!=` on a user nominal → `Eq::eq` dispatch, operands borrowed (borrow-not-move, oracle-
+matched); `find_impl_fn` + `borrow_value_ref`. 8 new differential tests total; workspace 715/0;
+clippy clean 1.93/1.97.
+**A3-Ord is BLOCKED on CE3 approval** of `STARKLANG/docs/compiler/mir-amendment-A2-ordering.md`
+(drafted 2026-07-19 per CD-033: adds `EnumRef::CoreOrdering` — the prelude `Ordering` enum as a
+MIR value, discriminants Less=0/Equal=1/Greater=2 — plus the `<`/`<=`/`>`/`>=` → `cmp` +
+discriminant-compare lowering; additive, no runtime-surface change, stays `0.1-A3`). **No Ord
+lowering code is written until approved.**
+**Found DEV-070** (open, owned by A2): `match` on a shared-reference scrutinee (`match *self`)
+moves it out and poisons the borrowed place on a second read — blocks realistic enum `Eq`/`Ord`
+bodies, not A3's dispatch. Remaining Class-A blockers: A3-Ord (post-CE3), A4 (`core-min`
+surface — dated amendment), A2 (patterns; owns DEV-070), A1 (generic impls). Front-end
 prerequisites owned separately: DEV-067, DEV-069, Box deref, primitive `Ordering::cmp`.
-Blocked: WP-C4.6 closure on all required classes going green (Class-A work in progress).
+Blocked: A3-Ord on CE3; WP-C4.6 closure on all required classes going green.
 **WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
 - **f-3a HashMap surface (`0.1-A3`, amendment rev. 6):** `RuntimeFn` HashMap group
   (New/Insert/Get/Len/IsEmpty/ContainsKey/KeysIterNew/KeysIterNext); insertion-ordered

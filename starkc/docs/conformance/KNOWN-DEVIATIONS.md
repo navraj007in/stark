@@ -1888,6 +1888,29 @@ WP-C1.5)
   `files.len() >= 2`; differential output agreement). Widening that test tracks this
   deviation's front-end fix.
 
+## DEV-070 — `match` on a scrutinee behind a shared reference moves it out [OPEN, found WP-C4.6 A3, 2026-07-19]
+
+- **What:** `lower_match` always materializes the scrutinee by value
+  (`lower_expr_to_operand(scrutinee)` → an `Operand::Move` for a non-`Copy` enum), then the
+  arms consume that temp. When the scrutinee is a place the function does **not own** — a
+  `Deref` of a shared reference, e.g. `match *self` inside a `&self` method — this MOVES the
+  enum out of the borrowed place and (C4.5f-1) poisons it. A single match still runs (the
+  moved-from place is never read again), but a **second** read of the same borrowed value
+  traps the MIR interpreter with `read of a moved-out place … (C4.5f-1 poison)`.
+- **Repro:** `enum Color { Red, Green, Blue }` with
+  `impl Color { fn ord(&self) -> Int32 { match *self { Color::Red => 0, Color::Green => 1,
+  Color::Blue => 2 } } }` and `fn main() { let a = Color::Green; println(a.ord());
+  println(a.ord()); }` → poison on the second call. Independent of A3 (no `==` involved); A3's
+  user-`Eq` dispatch merely made it easy to reach, since a realistic enum `Eq::eq` body matches
+  `*self`/`*other`.
+- **Scope:** MIR pattern lowering. The fix is the **A2** work (non-consuming / by-reference
+  match): when the scrutinee is a borrowed place (or `Copy`), the match must read the
+  discriminant and bind payloads **without** moving/dropping the scrutinee. Owned by WP-C4.6 A2.
+- **Consequence for A3:** user-`Eq` dispatch itself is complete and correct (proven by
+  `user_struct_eq_dispatch_agrees`, whose `eq` body reads `self.id`/`other.id` fields rather
+  than matching). Enum `Eq` impls whose body matches `*self` are blocked on this deviation, not
+  on A3's dispatch mechanism.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1937,7 +1960,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 67 numbered deviations total (DEV-002 through DEV-069, DEV-001/DEV-003 retired).
+Current count: 68 numbered deviations total (DEV-002 through DEV-070, DEV-001/DEV-003 retired).
 DEV-069 (front end + HIR interpreter not multi-file-span-clean: cross-file spans read against
 the entry file, breaking cross-file methods/literals/field reads) was found during WP-C4.5f-3c's
 multi-file lowering work and remains **open**, owned by a future front-end WP — the MIR lowering

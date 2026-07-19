@@ -1407,3 +1407,26 @@ fn non_copy_vec_iteration_agrees() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A3: user-defined Eq operator dispatch ----
+
+/// `==`/`!=` on a user struct dispatch through its `Eq::eq` impl; operands are BORROWED (no
+/// early drop), and a Drop-bearing type drops normally at scope end — all matching the oracle.
+#[test]
+fn user_struct_eq_dispatch_agrees() {
+    differential(
+        "a3_struct_eq.stark",
+        "struct Tag { id: Int32 } \
+         impl Eq for Tag { fn eq(&self, other: &Tag) -> Bool { self.id == other.id } } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         fn main() { \
+             let a = Tag { id: 1 }; \
+             let b = Tag { id: 1 }; \
+             let c = Tag { id: 2 }; \
+             if a == b { println(100); } \
+             if a != c { println(200); } \
+             println(300); \
+         }"
+        .to_string(),
+    );
+}

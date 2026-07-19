@@ -182,7 +182,7 @@ required class is green.
 - A5 (bit/shift/pow): **DONE 2026-07-19** — see below
 - A7 (expr forms): **DONE 2026-07-19** — see below
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
-- A3 Eq / Ord: _pending_
+- A3 Eq: **DONE 2026-07-19**; A3 Ord: **BLOCKED on CE3 approval of Amendment A2 (drafted)** — see below
 - A4 (core-min surface): _pending_
 - A2 (patterns): _pending_
 - A1 (generic impls): _pending_
@@ -225,6 +225,30 @@ unchanged. `Vec<String>` iteration now lowers. Amendment rev. 7 records the repr
 change (no surface bump — stays `0.1-A3`). Evidence: `non_copy_vec_iteration_agrees`
 (1 differential; the existing `collection_iter__01`/`__02` corpus cases stay green under the
 new representation).
+
+### A3 — Eq DONE 2026-07-19; Ord BLOCKED on CE3 (Amendment A2 drafted)
+
+**Eq (done).** `==`/`!=` on a (non-generic) user nominal now dispatches to the type's
+`Eq::eq(&self, &other) -> Bool` impl (`!=` negates), routed before eager operand lowering so
+both sides are **borrowed** (`&Self`) not moved — matching the oracle's `Eq::eq` dispatch and
+its borrow-not-move semantics. `find_impl_fn(nominal, "eq", …)` resolves the impl; a shared
+`borrow_value_ref` helper builds the `&Self` operands (materializing a temp for a non-place
+operand). Ordered comparison and comparison on a *compound* type containing a user nominal stay
+clean `Unsupported`. Evidence: `user_struct_eq_dispatch_agrees` (struct with a `Drop` impl:
+dispatch + borrow-not-move + correct Drop ordering all agree). **Found DEV-070** (open, owned by
+A2): `match` on a scrutinee behind a shared reference (`match *self` in a `&self` method) moves
+it out and poisons the borrowed place on a second read — this blocks realistic *enum* `Eq`
+bodies (which match `*self`), not A3's dispatch mechanism, so the enum differential test waits on
+A2.
+
+**Ord (blocked, CE3).** Per CD-033, the `Ord` portion requires a CE3 `Ordering` runtime-surface
+amendment drafted **before** implementation. Draft filed:
+`STARKLANG/docs/compiler/mir-amendment-A2-ordering.md` (adds `EnumRef::CoreOrdering` as the MIR
+representation of the prelude `Ordering` enum — fixed discriminants Less=0/Equal=1/Greater=2 —
+and the `<`/`<=`/`>`/`>=` → `cmp` + discriminant-compare lowering; additive, no runtime-surface
+change, stays `0.1-A3`). **No `Ord` lowering code is written until this is approved.** The
+`userord` lowering fixture confirms `a < b` on a user `Ord` type is currently a clean
+`Unsupported` ("Ord/Eq impl").
 
 ### Original decision framing (retained for the record)
 

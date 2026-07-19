@@ -2296,6 +2296,21 @@ impl<'a> FnLowerer<'a> {
                     {
                         return self.lower_string_comparison(*op, *lhs, *rhs, span);
                     }
+                    // A3 (C4.6, CD-033): `==`/`!=` on a (non-generic) user nominal dispatches
+                    // through its `Eq::eq` impl — the oracle does the same. Handled before eager
+                    // operand lowering so both sides are borrowed as `&Self`, not moved. Ordered
+                    // comparisons on a user nominal (`Ord`) still wait on the CE3 `Ordering`
+                    // runtime-surface amendment; generic-nominal Eq waits on A1.
+                    if matches!(op, BinOp::Eq | BinOp::Ne) {
+                        if let MirTy::Struct(item, targs)
+                        | MirTy::Enum(EnumRef::User(item), targs) =
+                            &Self::peel_refs(lhs_ty.clone()).0
+                        {
+                            if targs.is_empty() {
+                                return self.lower_user_eq(*item, *op, *lhs, *rhs, span);
+                            }
+                        }
+                    }
                     let lhs_op = self.lower_expr_to_operand(*lhs)?;
                     let rhs_op = self.lower_expr_to_operand(*rhs)?;
                     match op {
@@ -2313,13 +2328,16 @@ impl<'a> FnLowerer<'a> {
                             self.lower_arith_operands(*op, lhs_op, rhs_op, &lhs_ty, span)
                         }
                         BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                            // C4.5c guard: comparisons whose operands contain a user nominal
-                            // type dispatch through the user's `Eq`/`Ord` impl (the HIR
-                            // oracle already does); MIR's structural `BinOp` would silently
-                            // diverge from that, so reject until C4.5e lowers impl dispatch.
+                            // Direct user-nominal `==`/`!=` was already routed to `Eq::eq` above
+                            // (A3). What remains here and still dispatches through a user impl:
+                            // ordered comparisons on a user nominal (`Ord`, awaiting the CE3
+                            // `Ordering` runtime-surface amendment) and any comparison on a
+                            // COMPOUND type that merely contains a user nominal (needs structural
+                            // + impl dispatch). Both would silently diverge from the oracle under
+                            // a structural `BinOp`, so they stay unsupported.
                             if ty_mentions_user_nominal(&lhs_ty) {
                                 return unsupported(
-                                    "comparison on a user-defined type dispatches through its Eq/Ord impl (C4.5e)",
+                                    "ordered/compound comparison on a user-defined type dispatches through its Ord/Eq impl (A3 Ord pending the Ordering amendment)",
                                     span,
                                 );
                             }
@@ -3501,6 +3519,81 @@ impl<'a> FnLowerer<'a> {
     /// C4.5a method resolution: inherent impls first, then trait impls, then trait defaults —
     /// mirroring `typecheck::resolve_method`'s precedence for the non-generic subset. When
     /// `receiverless`, only receiverless fns match (associated-function position).
+    /// A3: borrow `expr` as `&Self` (or pass an existing reference through), materializing a
+    /// temp for a non-place operand — the operand shape `Eq::eq`/`Ord::cmp` dispatch needs.
+    fn borrow_value_ref(&mut self, expr: ExprId, span: Span) -> Result<Operand, LowerError> {
+        let (peeled, layers) = Self::peel_refs(self.expr_mir_ty(expr)?);
+        if layers > 0 {
+            return self.lower_expr_to_operand(expr);
+        }
+        let place = self.place_or_temp(expr, &peeled, span)?;
+        let ref_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(peeled),
+        };
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(
+                Place::local(temp),
+                Rvalue::RefOf {
+                    mutable: false,
+                    place,
+                },
+            ),
+            self.info(span),
+        );
+        self.read_place(Place::local(temp), &ref_ty, span)
+    }
+
+    /// A3 (C4.6, CD-033): lower `a == b` / `a != b` on a user nominal to a call of its
+    /// `Eq::eq(&self, &other) -> Bool` impl (`!=` negates). Evaluation order is left-then-right,
+    /// both borrowed — matching the HIR oracle's `Eq::eq` dispatch.
+    fn lower_user_eq(
+        &mut self,
+        nominal: ItemId,
+        op: BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false) else {
+            return unsupported("`==`/`!=` on a user type without an `Eq` impl", span);
+        };
+        let lhs_ref = self.borrow_value_ref(lhs, span)?;
+        let rhs_ref = self.borrow_value_ref(rhs, span)?;
+        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        self.discovered_callees.push(key);
+        let eq_dest = self.new_temp(MirTy::Bool);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Instance(Instance {
+                    item: nominal,
+                    type_args: Vec::new(),
+                    symbol,
+                }),
+                args: vec![lhs_ref, rhs_ref],
+                dest: Place::local(eq_dest),
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+        if matches!(op, BinOp::Eq) {
+            self.read_place(Place::local(eq_dest), &MirTy::Bool, span)
+        } else {
+            let neq = self.new_temp(MirTy::Bool);
+            self.emit(
+                Statement::Assign(
+                    Place::local(neq),
+                    Rvalue::UnOp(MirUnOp::Not, Operand::Copy(Place::local(eq_dest))),
+                ),
+                self.info(span),
+            );
+            Ok(Operand::Copy(Place::local(neq)))
+        }
+    }
+
     fn find_impl_fn(
         &self,
         nominal: ItemId,
