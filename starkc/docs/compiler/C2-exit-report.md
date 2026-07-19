@@ -25,6 +25,13 @@ ledger's own governance approval was not recorded for these six rows before this
 written. This is exactly the kind of real, narrow, honestly-disclosed gap the roadmap's
 `FROZEN-WITH-LISTED-DEVIATIONS` outcome exists to communicate.
 
+> **Post-gate update (2026-07-19, CD-023):** the table above is the accurate record as of gate
+> close and is not rewritten. The owner has since approved all six rows during C3-ENTRY
+> closure; `CORE-V1-COMPLETENESS.md` now records `settled` for each (`LEX-ERROR-001` keeps its
+> DEV-017 evidence-classification note — that gap is about test-citation precision, not
+> behavior, and remains separately tracked). Zero completeness rows remain
+> `pending-owner-approval`. See `COMPILER-STATE.md`'s CD-023 decision-log entry.
+
 This is **not** a claim that WP-C2.12 (differential interpreter corpus) is complete in the
 exhaustive sense its own roadmap text describes, and it is not a claim that MIR or native
 compilation exist yet — those are Gate C3+ per the mandatory correctness path. See "Why not

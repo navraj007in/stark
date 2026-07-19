@@ -7308,8 +7308,34 @@ mod tests {
         assert_eq!(execution.output, "3\n");
     }
 
+    /// DEV-060 [CLOSED]: end-to-end confirmation that the fixed program (see `typecheck.rs`'s
+    /// `repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move` for the
+    /// decisive diagnostic-level regression) both type-checks *and* executes correctly -- two
+    /// calls to an un-overridden trait default method on the same receiver now produce the
+    /// correct output twice, not just "no diagnostic".
+    #[test]
+    fn repeated_call_to_unoverridden_default_trait_method_executes_correctly() {
+        let execution = execute(
+            "trait Greet { \
+                 fn name(&self) -> String; \
+                 fn greeting(&self) -> String { self.name() } \
+             } \
+             struct Person { label: String } \
+             impl Greet for Person { \
+                 fn name(&self) -> String { self.label.clone() } \
+             } \
+             fn main() { \
+                 let p = Person { label: String::from(\"Ada\") }; \
+                 println(p.greeting()); \
+                 println(p.greeting()); \
+             }",
+        )
+        .unwrap();
+        assert_eq!(execution.output, "Ada\nAda\n");
+    }
+
     /// Companion regression for DEV-060 (see `typecheck.rs`'s
-    /// `repeated_call_to_unoverridden_default_trait_method_is_wrongly_flagged_as_move` for the
+    /// `repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move` for the
     /// decisive diagnostic-level regression): two calls to an *overridden* trait method (not a
     /// default fallback) are unaffected by DEV-060.
     #[test]

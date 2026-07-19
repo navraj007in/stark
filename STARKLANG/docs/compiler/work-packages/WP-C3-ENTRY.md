@@ -16,14 +16,15 @@ and the exact next WP (WP-C3.1). C3 does not open without this artifact existing
 
 ## Blockers and owners
 
-### 1. Six completeness-row approvals — owner: project owner
+### 1. Six completeness-row approvals — **CLOSED 2026-07-19 (CD-023)**
 
-Formally approve (or amend) the six rows still marked `pending-owner-approval` in
-`STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md`:
+All six rows previously `pending-owner-approval` in
+`STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md` are approved as-is (behavior
+already implemented/tested; the gap was governance bookkeeping only) and now read `settled`:
 
 ```text
 LEX-COMMENT-001   comment tokenization/attachment
-LEX-ERROR-001     mandatory lexical rejection conditions
+LEX-ERROR-001     mandatory lexical rejection conditions (DEV-017 evidence note retained)
 STD-OPTION-001    Option behavior/APIs
 STD-RESULT-001    Result, propagation, combinators
 STD-ITER-001      iterator protocol and termination
@@ -35,15 +36,18 @@ report). Approval is recorded by flipping each row's decision state in the compl
 and noting the batch in a dated `COMPILER-STATE.md` decision-log entry. Recommendations here
 are explicitly unapproved until the owner acts.
 
-### 2. DEV-060 disposition — owner: project owner (implementation: any session)
+### 2. DEV-060 disposition — **CLOSED 2026-07-19 (option (a): fixed)**
 
-DEV-060 (repeated call to an un-overridden trait default method wrongly flagged as a move —
-`starkc/docs/conformance/KNOWN-DEVIATIONS.md`) must be disposed **before the workload freeze in
-WP-C3.1**, because C3.1 workload item 11 (default trait method calling another trait method)
-sits directly on the affected dispatch path, and freezing a comparator workload over a known
-defect muddies every later differential result. Allowed dispositions: (a) fix now with a
-regression test (recommended), or (b) explicitly accept-and-document with a workload-item-11
-carve-out note in the freeze record. Silence is not a disposition.
+Root cause isolated and fixed: `borrowck.rs`'s `method_receiver` had no equivalent to
+`typecheck.rs::resolve_method`'s `default_fallback` (WP-C1.3/DEV-013), so a call to an
+un-overridden trait default method returned `None` from `method_receiver` and fell through the
+`Call` handler's `None => self.check_expr(*base)` arm, which unconditionally consumes (moves)
+the receiver — regardless of the method's real receiver kind. Added the matching trait-default
+fallback to `method_receiver`. Verified: both `&self` (original repro) and `&mut self`
+(companion test — the `RefMut` arm wasn't exercised by the original repro) variants now
+type-check, and the original repro executes with correct output twice. Full workspace suite
+596/0/2 (up from 594), `cargo fmt`/`clippy` clean. See `KNOWN-DEVIATIONS.md`'s DEV-060 entry
+for the full writeup and regression-test list. Workload item 11 needs no carve-out.
 
 ### 3. Versioned execution-corpus freeze — mechanical definition
 
@@ -101,10 +105,10 @@ supported-target compile matrix (roadmap, C3-ENTRY section).
 
 ## Done when
 
-- [ ] All six completeness rows carry an owner decision (approved or amended), recorded in the
-      ledger and the state decision log.
-- [ ] DEV-060 has an explicit disposition (fix landed with regression test, or documented
-      acceptance with workload carve-out).
+- [x] All six completeness rows carry an owner decision (approved or amended), recorded in the
+      ledger and the state decision log. **Closed 2026-07-19, CD-023 — all six approved as-is.**
+- [x] DEV-060 has an explicit disposition (fix landed with regression test, or documented
+      acceptance with workload carve-out). **Closed 2026-07-19 — fixed with regression tests.**
 - [ ] `corpus.lock` exists at `corpus_version = "1.0.0"` with a passing integrity test.
 - [ ] The updated CI workflow has one demonstrated green run.
 - [ ] `starkc/docs/compiler/C3-entry-exit.md` exists, states all of the above with evidence,

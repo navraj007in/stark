@@ -605,7 +605,7 @@ impl<'a> BorrowChecker<'a> {
             Ty::Struct(item, _) | Ty::Enum(item, _) => item,
             _ => return None,
         };
-        self.hir.items.iter().find_map(|item| {
+        if let Some(receiver) = self.hir.items.iter().find_map(|item| {
             let hir::ItemKind::Impl { self_ty, items, .. } = &item.kind else {
                 return None;
             };
@@ -622,6 +622,55 @@ impl<'a> BorrowChecker<'a> {
             items.iter().find_map(|item| match item {
                 hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == method_name => {
                     def.sig.receiver
+                }
+                _ => None,
+            })
+        }) {
+            return Some(receiver);
+        }
+
+        // DEV-060: mirror typecheck.rs::resolve_method's `default_fallback` (WP-C1.3) -- a
+        // trait method declared with a real body and never overridden by any impl is a legal
+        // call, but the search above only ever looks at `ImplItem::Fn` overrides (exactly like
+        // typecheck.rs's own override-only `candidates` collection, considered alone). Without
+        // this fallback, an un-overridden trait default method returns `None` here, and the
+        // `Call` handler's `None => self.check_expr(*base)` arm unconditionally moves the
+        // receiver (`check_expr`'s `Path` arm consumes any `Local`/`SelfValue` place)
+        // regardless of the method's real `&self`/`&mut self`/`self` kind -- so a second call
+        // on the same receiver was wrongly flagged as a use of a moved value.
+        self.hir.items.iter().find_map(|item| {
+            let hir::ItemKind::Impl {
+                self_ty: impl_self_ty_id,
+                trait_: Some(trait_ref),
+                ..
+            } = &item.kind
+            else {
+                return None;
+            };
+            let matches_type = matches!(
+                self.hir.ty(*impl_self_ty_id).kind,
+                hir::TypeKind::Path {
+                    res: Res::Item(impl_item),
+                    ..
+                } if impl_item == item_id
+            );
+            if !matches_type {
+                return None;
+            }
+            let Res::Item(trait_id) = trait_ref.res else {
+                return None;
+            };
+            let hir::ItemKind::Trait {
+                items: trait_items, ..
+            } = &self.hir.item(trait_id).kind
+            else {
+                return None;
+            };
+            trait_items.iter().find_map(|trait_item| match trait_item {
+                hir::TraitItem::Method { sig, body: Some(_) }
+                    if self.text(sig.name) == method_name =>
+                {
+                    sig.receiver
                 }
                 _ => None,
             })

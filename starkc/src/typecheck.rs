@@ -9331,18 +9331,21 @@ mod tests {
         );
     }
 
-    /// DEV-060 (found while writing DEV-051's regression tests, NOT fixed here -- see
-    /// `KNOWN-DEVIATIONS.md`): calling the same un-overridden trait *default* method twice on
-    /// the same receiver incorrectly reports `E0100 use of moved value` on the second call, even
-    /// though the method only takes `&self`. Confirmed present on the pre-DEV-051-fix head too
-    /// (via `git stash`), so this is a separate, pre-existing defect in the `default_fallback`
-    /// method-resolution path in `resolve_method`, not something the DEV-051 fix introduced --
-    /// and confirmed narrow: two calls to an *overridden* trait method, or two calls to an
-    /// ordinary inherent method, are both unaffected (`interp.rs`'s
-    /// `repeated_call_to_overridden_trait_method_is_unaffected_by_dev060`/
-    /// `::repeated_call_to_inherent_method_is_unaffected_by_dev060`).
+    /// DEV-060 [CLOSED]: calling the same un-overridden trait *default* method twice on the
+    /// same receiver used to incorrectly report `E0100 use of moved value` on the second call,
+    /// even though the method only takes `&self`. Root cause: `borrowck.rs`'s `method_receiver`
+    /// (used by the `Call` handler to decide whether a method receiver is moved, borrowed, or
+    /// mutably borrowed) only ever searched `ImplItem::Fn` overrides -- it had no equivalent to
+    /// `typecheck.rs::resolve_method`'s `default_fallback` (WP-C1.3/DEV-013), so an
+    /// un-overridden default method returned `None`, and the `None` arm unconditionally
+    /// consumed (moved) the receiver via `check_expr`'s `Path` arm, regardless of the method's
+    /// real receiver kind. Fixed by adding the matching trait-default-body fallback to
+    /// `method_receiver` itself. Confirmed narrow both before and after the fix: two calls to
+    /// an *overridden* trait method, or two calls to an ordinary inherent method, were always
+    /// unaffected (`interp.rs`'s `repeated_call_to_overridden_trait_method_is_unaffected_by_
+    /// dev060`/`::repeated_call_to_inherent_method_is_unaffected_by_dev060`).
     #[test]
-    fn repeated_call_to_unoverridden_default_trait_method_is_wrongly_flagged_as_move() {
+    fn repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move() {
         let src = "trait Greet { \
                        fn name(&self) -> String; \
                        fn greeting(&self) -> String { self.name() } \
@@ -9358,10 +9361,34 @@ mod tests {
                    }";
         let diags = check_src(src);
         assert!(
-            diags.iter().any(|d| d.code.as_deref() == Some("E0100")),
-            "expected the still-open DEV-060 'use of moved value' defect; if this now passes, \
-             DEV-060 has been fixed and this test should be rewritten to assert success: \
-             {diags:?}"
+            diags.iter().all(|d| d.code.as_deref() != Some("E0100")),
+            "DEV-060 regressed: unexpected 'use of moved value' on a repeated call to an \
+             un-overridden trait default method: {diags:?}"
+        );
+    }
+
+    /// DEV-060 companion: the same defect for a `&mut self` un-overridden trait default -- the
+    /// fallback must propagate `RefMut`, not just `Ref`, so two calls correctly register two
+    /// non-conflicting mutable borrows (sequential, not simultaneous) rather than a move.
+    #[test]
+    fn repeated_call_to_unoverridden_mut_default_trait_method_is_no_longer_flagged_as_move() {
+        let src = "trait Counter { \
+                       fn bump_inner(&mut self); \
+                       fn bump(&mut self) { self.bump_inner(); } \
+                   } \
+                   struct Count { value: Int32 } \
+                   impl Counter for Count { \
+                       fn bump_inner(&mut self) { self.value = self.value + 1; } \
+                   } \
+                   fn main() { \
+                       let mut c = Count { value: 0 }; \
+                       c.bump(); \
+                       c.bump(); \
+                   }";
+        let diags = check_src(src);
+        assert!(
+            diags.iter().all(|d| d.code.as_deref() != Some("E0100")),
+            "DEV-060 (mut receiver variant) regressed: {diags:?}"
         );
     }
 

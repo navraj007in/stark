@@ -1622,32 +1622,53 @@ WP-C1.5)
 - **Owning gate:** correction-brief Issue 4 (post-WP-C2.12), reproduced against the current head
   before fixing, closed the same session.
 
-## DEV-060 — Repeated call to an un-overridden trait default method is wrongly flagged as a move
+## DEV-060 — Repeated call to an un-overridden trait default method is wrongly flagged as a move [CLOSED, C3-ENTRY, 2026-07-19]
 
 - **Normative expectation:** calling a `&self` method twice on the same receiver never moves it;
   the second call should see the same borrowed value as the first, exactly as two calls to an
   ordinary inherent method or an overridden trait method already do.
-- **Current behaviour:** confirmed with a minimal repro: for a `Greet` trait with a required
+- **Previous behaviour:** confirmed with a minimal repro: for a `Greet` trait with a required
   `fn name(&self) -> String` and a default `fn greeting(&self) -> String { self.name() }`,
   implemented for a struct that only overrides `name`, calling `p.greeting(); p.greeting();`
-  (two calls, same receiver `p`) raises `E0100 use of moved value 'p'` on the *second* call, even
+  (two calls, same receiver `p`) raised `E0100 use of moved value 'p'` on the *second* call, even
   though `greeting` only takes `&self`. Confirmed narrow: two calls to an *overridden* trait
-  method (`p.name(); p.name();`), or two calls to an ordinary inherent method, are both
-  unaffected — the defect is specific to a method resolved through the `default_fallback` path
-  in `resolve_method` (an un-overridden trait default), not method dispatch in general.
-- **User impact:** any un-overridden trait default method can only be called once per receiver
-  per scope — a real, fairly common pattern (calling the same default-implemented method twice)
-  is rejected outright.
-- **Security/soundness impact:** none identified — a rejection of legal code (availability), not
-  an acceptance of illegal code.
-- **Workaround:** override the method per-impl instead of relying on the trait default, or bind
-  the result of the first call instead of calling it again.
-- **Owning gate:** found while writing DEV-051's regression tests (confirmed present on the
-  pre-DEV-051-fix head too, via `git stash`, so this is a separate, pre-existing defect, not one
-  introduced by DEV-051's fix). Root cause not isolated beyond "the `default_fallback` method
-  path in `resolve_method`/its interaction with `borrowck.rs`'s move analysis" — needs its own
-  investigation. Regressions documenting the current (defective) behavior and its scope:
-  `typecheck::tests::repeated_call_to_unoverridden_default_trait_method_is_wrongly_flagged_as_move`,
+  method (`p.name(); p.name();`), or two calls to an ordinary inherent method, were both
+  unaffected.
+- **Root cause (isolated during C3-ENTRY closure):** `borrowck.rs`'s `method_receiver` — which
+  the `Call` handler uses to decide whether a method receiver is moved, borrowed, or mutably
+  borrowed before executing the borrow-checked body — only ever searched `ImplItem::Fn`
+  overrides. It had no equivalent to `typecheck.rs::resolve_method`'s `default_fallback`
+  (WP-C1.3/DEV-013), the mechanism that lets an un-overridden trait default method type-check at
+  all. So for a call to such a method, `method_receiver` returned `None`, and the `Call`
+  handler's `None => self.check_expr(*base)` arm ran instead of the `Some(Receiver::Ref/RefMut/
+  Value)` arms — `check_expr`'s `Path` arm unconditionally consumes (moves) any `Local`/
+  `SelfValue` place, regardless of the method's real receiver kind. The two typecheck-level
+  candidate searches (`resolve_method`'s override collection and its `default_fallback`) and the
+  borrowck-level search (`method_receiver`) had silently drifted to cover different sets of
+  callable methods.
+- **User impact (while open):** any un-overridden trait default method could only be called once
+  per receiver per scope — a real, fairly common pattern (calling the same default-implemented
+  method twice) was rejected outright.
+- **Security/soundness impact:** none identified — this was a rejection of legal code
+  (availability), not an acceptance of illegal code.
+- **Fix:** added the matching trait-default-body fallback directly to `method_receiver`
+  (`borrowck.rs`) — mirrors `typecheck.rs`'s `default_fallback` search (find a trait impl for
+  the receiver's type where the trait declares an un-overridden method with a body matching the
+  call name) but returns just that method's declared `sig.receiver`, which the existing
+  `Some(Receiver::Ref/RefMut/Value)` arms then handle exactly as they already do for overridden
+  methods. Verified both the `&self` case (original repro) and a `&mut self` variant (two
+  sequential calls to an un-overridden `&mut self` default must register two non-conflicting
+  borrows, not a move) — the `RefMut` arm wasn't exercised by the original repro alone. Full
+  workspace suite re-run clean: 596 passed / 0 failed / 2 ignored (up from 594; two new tests,
+  net of one rewritten in place), `cargo fmt --all -- --check` and `cargo clippy --workspace
+  --all-targets --all-features -- -D warnings` both clean.
+- **Regression tests:**
+  `typecheck::tests::repeated_call_to_unoverridden_default_trait_method_is_no_longer_flagged_as_move`
+  (rewritten from the original defect-documenting test to assert success),
+  `typecheck::tests::repeated_call_to_unoverridden_mut_default_trait_method_is_no_longer_flagged_as_move`
+  (new, `&mut self` variant),
+  `interp::tests::repeated_call_to_unoverridden_default_trait_method_executes_correctly` (new,
+  end-to-end execution — proves correct *output*, not just absence of a diagnostic),
   `interp::tests::repeated_call_to_overridden_trait_method_is_unaffected_by_dev060`,
   `::repeated_call_to_inherent_method_is_unaffected_by_dev060`. — unscheduled.
 
@@ -1726,7 +1747,8 @@ produce **wrong runtime output**, not merely a spurious diagnostic -- DEV-053's 
 misclassification, not a separate algorithm bug), and **closed** with a real fix in
 `resolve.rs`/`typecheck.rs`. DEV-060 (repeated call to an un-overridden trait default method
 wrongly flagged as a move) was found while writing DEV-051's regression tests, confirmed
-pre-existing and unrelated to that fix (via `git stash`), and remains open, unscheduled.
+pre-existing and unrelated to that fix (via `git stash`), and was **closed during C3-ENTRY
+closure** (2026-07-19) with a real fix in `borrowck.rs`'s `method_receiver`.
 DEV-026 through DEV-035 are closed by WP-C2.2, along with DEV-037, which was found and repaired
 during that work. DEV-038 through DEV-043 were found by the post-WP-C2.2 review and closed in
 the correction pass. DEV-044 through DEV-050 were found by an external review of the committed
@@ -1743,9 +1765,9 @@ by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 — which WP-C2.6 had a
 decision ownership and C2.11 implementation ownership — were all **resolved by WP-C2.11**; see
 their individual entries. (A prior revision of this paragraph, written at WP-C2.6 time, still
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
-**Currently open (2026-07-19):** DEV-005 (unowned), DEV-010 (WP-C8.2/C8.3), DEV-011
-(unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled remainder), DEV-060 (C3-ENTRY,
-disposition required before the C3 workload freeze).
+**Currently open (2026-07-19, post-DEV-060 closure):** DEV-005 (unowned), DEV-010
+(WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
+remainder). DEV-060 closed the same day it was made a C3-ENTRY blocker.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping

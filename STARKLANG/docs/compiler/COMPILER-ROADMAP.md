@@ -639,14 +639,18 @@ closure list below.
 
 Required closure:
 
-- formally approve the six completeness rows still marked `pending-owner-approval`;
+- formally approve the six completeness rows still marked `pending-owner-approval` —
+  **done 2026-07-19 (CD-023)**: all six approved as-is and flipped to `settled` in
+  `CORE-V1-COMPLETENESS.md`;
 - resolve or explicitly assign DEV-051, DEV-052, and DEV-055 — **done 2026-07-19**: all three
   closed with real fixes and regression tests in a post-Gate-C2 correction-brief session; see
   `KNOWN-DEVIATIONS.md` and `COMPILER-STATE.md`'s dated `### Post-Gate-C2 correction brief —
   Issues 6-8` session record. One new, separate, narrower deviation (DEV-060: repeated call to
   an un-overridden trait default method wrongly flagged as a move) was found while writing
-  DEV-051's regression tests and remains open;
-- assign and dispose DEV-060 before the C3 workload freeze;
+  DEV-051's regression tests and was closed separately (see below);
+- assign and dispose DEV-060 before the C3 workload freeze — **done 2026-07-19 (CD-024)**: fixed
+  in `borrowck.rs::method_receiver` (missing trait-default-body fallback), regression tests
+  added; see `KNOWN-DEVIATIONS.md`'s DEV-060 entry;
 - freeze a versioned execution corpus for C3/C4;
 - transfer unfinished WP-C2.12 generated-corpus work to C4.4 and C6.5 ownership;
 - transfer unfinished WP-C2.12 cross-backend replay work to C4.4, C5.6, and C6.5 ownership;
@@ -658,7 +662,7 @@ DEV ownership defaults unless superseded by owner decision:
 DEV-051 trait default sibling calls -> RESOLVED 2026-07-19
 DEV-052 qualified CoreTrait calls -> RESOLVED 2026-07-19
 DEV-055 glob-imported unit variants -> RESOLVED 2026-07-19
-DEV-060 repeated default-method call move error -> owner: C3-ENTRY; disposition required before C3 workload freeze
+DEV-060 repeated default-method call move error -> RESOLVED 2026-07-19
 ```
 
 CI baseline before native work expands:

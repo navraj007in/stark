@@ -62,11 +62,11 @@ cross-reference.
 | LEX-BOOL-001 | Do `true` and `false` tokenize as Boolean literals? | complete/specified | 01 §Boolean Literals | LEX-007/U17; LEX-007/U17 | high/C2.11 | settled/DEV-017 |
 | LEX-OP-001 | Which operator spellings form tokens? | complete/specified | 01 §Operators | LEX-008/U17; LEX-008/U17 | ecosystem-breaking/C2.11 | settled/DEV-017 |
 | LEX-DELIM-001 | Which delimiters and punctuation form tokens? | complete/specified | 01 §Delimiters | LEX-009/U17; LEX-009/U17 | ecosystem-breaking/C2.11 | settled/DEV-017 |
-| LEX-COMMENT-001 | How do line, nested block, and documentation comments tokenize and attach? | partial/specified | 01 §Comments | LEX-010; LEX-010 | medium/C2.11 | pending-owner-approval/none |
+| LEX-COMMENT-001 | How do line, nested block, and documentation comments tokenize and attach? | partial/specified | 01 §Comments | LEX-010; LEX-010 | medium/C2.11 | settled/none |
 | LEX-SPACE-001 | Which code points are whitespace? | complete/specified | 01 §Whitespace | LEX-011/U17; LEX-011/U17 | low/C2.11 | settled/DEV-017 |
 | LEX-TOKEN-001 | What precedence resolves overlapping lexical tokens? | complete/specified | 01 §Token Precedence | LEX-012/U17; LEX-012/U17 | high/C2.11 | settled/DEV-017 |
 | LEX-RESERVED-001 | Which future words are reserved and rejected as identifiers? | complete/prohibited | 01 §Reserved Tokens | LEX-013; LEX-013 | ecosystem-breaking/C2.11 | Q016 approved/none |
-| LEX-ERROR-001 | Which lexical failures are mandatory rejection conditions? | partial/specified | 01 §Lexical Errors | LEX-014/U17; none | medium/C2.11 | pending-owner-approval/DEV-017 |
+| LEX-ERROR-001 | Which lexical failures are mandatory rejection conditions? | partial/specified | 01 §Lexical Errors | LEX-014/U17; none | medium/C2.11 | settled/DEV-017 |
 
 ## Grammar and parsing
 
@@ -221,10 +221,10 @@ cross-reference.
 | STD-PROFILE-001 | Which APIs are required in each Core profile? | complete/specified | 06 §Conformance Profiles | STD-002/U17; C2.11 | ecosystem-breaking/C2.11 | Q024 approved/none |
 | STD-HOOK-001 | Which library items are compiler-recognized hooks rather than ordinary APIs? | complete/specified | 06 §Canonical Language Hooks | STD-004; C2.11 | ecosystem-breaking/C2.11 | Q015 approved; Q012 layout values pending/none |
 | STD-TRAIT-001 | Which standard traits and required items belong to the Core profile? | complete/specified | 06 §Core Trait Profile | STD-004; C2.11 | ecosystem-breaking/C2.11 | Q005A,Q015 approved; Q009 approved/none |
-| STD-OPTION-001 | What are `Option` representation-independent behavior and APIs? | partial/specified | 06 §Option | none; none | high/C2.11 | pending-owner-approval/none |
-| STD-RESULT-001 | What are `Result`, propagation, and combinator behavior? | partial/specified | 06 §Result | none; none | high/C2.11 | pending-owner-approval/none |
-| STD-ITER-001 | What is the iterator protocol and termination behavior? | partial/specified | 06 §Iterator | STD-003; none | high/C2.11 | pending-owner-approval/none |
-| STD-VEC-001 | What are vector growth, indexing, bounds, and ownership contracts? | partial/specified | 06 §Vec | STD-003; none | high/C2.11 | pending-owner-approval/none |
+| STD-OPTION-001 | What are `Option` representation-independent behavior and APIs? | partial/specified | 06 §Option | none; none | high/C2.11 | settled/none |
+| STD-RESULT-001 | What are `Result`, propagation, and combinator behavior? | partial/specified | 06 §Result | none; none | high/C2.11 | settled/none |
+| STD-ITER-001 | What is the iterator protocol and termination behavior? | partial/specified | 06 §Iterator | STD-003; none | high/C2.11 | settled/none |
+| STD-VEC-001 | What are vector growth, indexing, bounds, and ownership contracts? | partial/specified | 06 §Vec | STD-003; none | high/C2.11 | settled/none |
 | STD-HASH-001 | What equality, hashing, collision, and iteration-order contracts govern maps/sets? | complete/specified | 06 §HashMap and HashSet | STD-003; none | ecosystem-breaking/C2.11 | Q005A approved/none |
 | STD-IO-001 | Which I/O APIs and error mappings are required? | complete/specified | 06 §I/O | C2.11; C2.11 | high/C2.11 | Q014,Q017,Q024 approved/none |
 | STD-CONVERT-001 | Which parsing/conversion APIs share language numeric semantics? | complete/specified | 06 §Conversion | C2.11; C2.11 | ecosystem-breaking/C2.11 | Q008,Q010 approved/none |

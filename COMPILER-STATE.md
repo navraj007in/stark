@@ -3,7 +3,7 @@ Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
 Gate: C3-ENTRY  Next: complete native-readiness transition before WP-C3.1
-Blocked: six completeness-row approvals; DEV-060 disposition; versioned execution-corpus freeze; demonstrated green CI run pending (baseline steps added 2026-07-19, not yet run)
+Blocked: versioned execution-corpus freeze; demonstrated green CI run pending (baseline steps added 2026-07-19, not yet run)
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
@@ -34,8 +34,10 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   itself) separately requires Rust 1.88 due to the `ort` crate's MSRV
   (`starkc/docs/gate5-backend-decision.md:107-110`) — this does not raise `starkc`'s MSRV.
 - Latest verified code baseline: `cargo test --workspace --all-targets --all-features`
-  (starkc/, against the post-DEV-051/052/055 correction baseline recorded below):
-  **594 passed, 0 failed, 2 ignored** across **4 unittest binaries** (`src/lib.rs`,
+  (starkc/, against the post-DEV-060-fix baseline, CD-024, 2026-07-19):
+  **596 passed, 0 failed, 2 ignored** (up from 594 — DEV-060's fix added one new typecheck
+  regression test, one new interp execution test, and rewrote one existing test in place)
+  across **4 unittest binaries** (`src/lib.rs`,
   `src/main.rs`, `src/bin/stark.rs`, `src/bin/starkide.rs`) **+ 32 integration-test files**
   (`find starkc/tests -maxdepth 1 -type f -name '*.rs' | wc -l`,
   re-counted against the
@@ -444,6 +446,36 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   committed head" → "Amendment base commit" (self-referential staleness by construction).
   Outstanding from the same review, not part of this entry: a demonstrated green CI run
   (requires pushing to origin; no run exists yet).
+- CD-023 [2026-07-19, owner-approved] Approved all six `pending-owner-approval` completeness
+  rows (`LEX-COMMENT-001`, `LEX-ERROR-001`, `STD-OPTION-001`, `STD-RESULT-001`, `STD-ITER-001`,
+  `STD-VEC-001`) as-is — the behavior each row describes has been implemented and exercised
+  throughout Gate C2; the gap was governance bookkeeping only (C2 exit report). All six flipped
+  to `settled` in `CORE-V1-COMPLETENESS.md` (`LEX-ERROR-001` keeps its DEV-017 note — an
+  evidence-citation-precision gap, not a behavior question). C2-exit-report.md gained a dated
+  post-gate update note per the same convention as the DEV-051/052/055 correction, rather than
+  rewriting historical gate-close evidence. This closes the first of C3-ENTRY's four blockers;
+  DEV-060, the corpus freeze, and the green CI run remain open.
+- CD-024 [2026-07-19, owner-approved disposition: fix now] Closed DEV-060 (repeated call to an
+  un-overridden trait default method wrongly flagged as a move). Root cause: `borrowck.rs`'s
+  `method_receiver` — consulted by the `Call` handler to decide whether a method receiver is
+  moved, borrowed, or mutably borrowed — only ever searched `ImplItem::Fn` overrides, with no
+  equivalent to `typecheck.rs::resolve_method`'s `default_fallback` (WP-C1.3/DEV-013). A call to
+  an un-overridden trait default method therefore returned `None` from `method_receiver`, and
+  the `Call` handler's `None => self.check_expr(*base)` arm ran instead of the `Some(Receiver::
+  ..)` arms — `check_expr`'s `Path` arm unconditionally consumes (moves) any `Local`/`SelfValue`
+  place, regardless of the method's real receiver kind. Fixed by adding the matching
+  trait-default-body fallback to `method_receiver` itself, mirroring `typecheck.rs`'s search but
+  returning the method's declared `sig.receiver`. Verified both the `&self` case (original
+  repro) and a new `&mut self` companion case (the `RefMut` arm wasn't exercised by the original
+  repro alone — two sequential calls must register two non-conflicting borrows, not a move), and
+  that the original repro now executes with correct output twice, not just "no diagnostic".
+  Full workspace suite: 596 passed / 0 failed / 2 ignored (up from 594 — one new typecheck test,
+  one new interp execution test, one existing test rewritten in place from
+  documenting-the-defect to asserting success). `cargo fmt --all -- --check` and `cargo clippy
+  --workspace --all-targets --all-features -- -D warnings` both clean. Full writeup:
+  `KNOWN-DEVIATIONS.md`'s DEV-060 entry. This closes the second of C3-ENTRY's four blockers; the
+  corpus freeze (now unblocked — WP-C3-ENTRY.md's procedure required this fix to land first) and
+  the green CI run remain open.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -505,7 +537,7 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-19:
+Open as of 2026-07-19 (post-DEV-060 closure):
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -513,10 +545,11 @@ Open as of 2026-07-19:
 - DEV-012 — VS Code extension UI never interactively verified. Owner: WP-C8.7.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
-- DEV-060 — repeated call to an un-overridden trait default method wrongly flagged as a move.
-  Owner: C3-ENTRY; disposition required before the C3 workload freeze.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
+
+Closed this session: DEV-060 (repeated call to an un-overridden trait default method wrongly
+flagged as a move) — see CD-024 and `KNOWN-DEVIATIONS.md`'s DEV-060 entry.
 
 ## Design fact pinned down by WP-C1.2 (not a deviation, recorded so it isn't re-discovered)
 STARK's visibility model is **stricter than Rust's**: per `07-Modules-and-Packages.md` §Visibility
@@ -603,7 +636,8 @@ evidence in the C0/C1/C2 exit reports.
 - [ ] WP-C1.1 follow-up (not blocking): underscore-placement rules for binary/octal literals
       untested; no max-value-per-suffix positive test for the 8 int / 2 float suffixes.
 - [ ] DEV-017 remainder: classify the 39 unclassified legacy coverage rules (unscheduled).
-- [ ] DEV-060: dispose before C3 workload freeze (C3-ENTRY blocker).
+- [x] DEV-060: dispose before C3 workload freeze (C3-ENTRY blocker). **Closed 2026-07-19,
+      CD-024 — fixed in `borrowck.rs::method_receiver`.**
 Completed follow-ups through Gate C2 are archived verbatim in the state-archive file.
 
 ## Gate exit summaries
@@ -789,3 +823,35 @@ C3-entry CI blocker item); callable-ABI/closure-compatibility spike proposal sti
 pre-C5.1.
 NEXT: WP-C3-ENTRY blocker closure (six completeness rows, DEV-060, corpus freeze, green CI);
 then C3-entry exit artifact; then WP-C3.1 with the 23-item workload.
+
+### C3-ENTRY blockers 1-2 closure — 2026-07-19 (CD-023/CD-024)
+DONE: applied both owner-approved decisions from this session. CD-023: six
+`pending-owner-approval` completeness rows approved as-is, flipped to `settled` in
+`CORE-V1-COMPLETENESS.md`, C2-exit-report.md given a dated post-gate note, WP-C3-ENTRY.md
+blocker 1 marked closed. CD-024: DEV-060 root-caused and fixed in `borrowck.rs::method_receiver`
+(missing trait-default-body fallback, mirroring typecheck.rs's own `default_fallback`); two new
+regression tests plus one rewritten; KNOWN-DEVIATIONS.md, WP-C3-ENTRY.md blocker 2, and the
+open-deviation index all updated to reflect closure.
+FILES: starkc/src/borrowck.rs (fix), starkc/src/typecheck.rs (rewrote
+`repeated_call_to_unoverridden_default_trait_method_is_wrongly_flagged_as_move` to
+`_is_no_longer_flagged_as_move`; added `repeated_call_to_unoverridden_mut_default_trait_
+method_is_no_longer_flagged_as_move`), starkc/src/interp.rs (added
+`repeated_call_to_unoverridden_default_trait_method_executes_correctly`),
+STARKLANG/docs/compiler/semantic-freeze/CORE-V1-COMPLETENESS.md,
+starkc/docs/compiler/C2-exit-report.md, starkc/docs/conformance/KNOWN-DEVIATIONS.md,
+STARKLANG/docs/compiler/work-packages/WP-C3-ENTRY.md, COMPILER-STATE.md.
+RULES: none — no normative Core rule change; this closes a compiler defect where legal,
+spec-conforming code was wrongly rejected (availability bug, not a soundness/acceptance bug).
+DECISIONS: CD-023, CD-024 (both owner-approved this session).
+EVIDENCE: `cargo build` clean; full `cargo test --workspace --all-targets --all-features`
+596 passed / 0 failed / 2 ignored (up from 594); `cargo fmt --all -- --check` clean; `cargo
+clippy --workspace --all-targets --all-features -- -D warnings` clean; `python3
+starkc/scripts/check-conformance.py` re-run, unchanged (89.8%/53-of-59 — DEV-060 was a
+runtime/borrowck defect, not a conformance-database entry). Root cause independently isolated
+by direct code reading (borrowck.rs's `method_receiver` vs typecheck.rs's `resolve_method`),
+not assumed from the ledger's prior "needs its own investigation" note.
+FOLLOW-UP: corpus freeze is now unblocked (WP-C3-ENTRY.md required DEV-060 resolved first,
+since a fix could legitimately change corpus output) — next actionable step; green CI run still
+needs a push to origin.
+NEXT: freeze the versioned execution corpus per WP-C3-ENTRY.md's procedure; then push and
+obtain a green CI run; then write starkc/docs/compiler/C3-entry-exit.md; then WP-C3.1.
