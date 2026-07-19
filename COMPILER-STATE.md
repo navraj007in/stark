@@ -1,27 +1,28 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.6 A3 Eq — **C4 OPEN; A3 Ord awaits CE3 (Amendment A2 drafted)**
+Updated: 2026-07-19 after WP-C4.6 A3 (Eq+Ord) — **C4 OPEN; A4 next (CD-033)**
 
 ## Position
-Gate: C4  Next: **owner CE3 review of `mir-amendment-A2-ordering.md`** (needed before the A3
-Ord portion), then A4. Per CD-033's dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1).
-Progress: **A5, A7, A6, and A3-Eq DONE 2026-07-19.** A5: pure bitwise `MirBinOp`, `~` → `^ mask`,
-trapping `Shl`/`Shr`/`Pow`, new `TrapCategory::InvalidShift`. A7: `loop`-break value, `[v;n]`
-repeat, Unit-typed value-position `if`/`while`/`for`. A6: Vec iteration → borrowed cursor
-(V-COPY-1 dropped for the iterator ops; `Vec<String>` iterates; amendment rev. 7). A3-Eq:
-`==`/`!=` on a user nominal → `Eq::eq` dispatch, operands borrowed (borrow-not-move, oracle-
-matched); `find_impl_fn` + `borrow_value_ref`. 8 new differential tests total; workspace 715/0;
-clippy clean 1.93/1.97.
-**A3-Ord is BLOCKED on CE3 approval** of `STARKLANG/docs/compiler/mir-amendment-A2-ordering.md`
-(drafted 2026-07-19 per CD-033: adds `EnumRef::CoreOrdering` — the prelude `Ordering` enum as a
-MIR value, discriminants Less=0/Equal=1/Greater=2 — plus the `<`/`<=`/`>`/`>=` → `cmp` +
-discriminant-compare lowering; additive, no runtime-surface change, stays `0.1-A3`). **No Ord
-lowering code is written until approved.**
-**Found DEV-070** (open, owned by A2): `match` on a shared-reference scrutinee (`match *self`)
-moves it out and poisons the borrowed place on a second read — blocks realistic enum `Eq`/`Ord`
-bodies, not A3's dispatch. Remaining Class-A blockers: A3-Ord (post-CE3), A4 (`core-min`
-surface — dated amendment), A2 (patterns; owns DEV-070), A1 (generic impls). Front-end
-prerequisites owned separately: DEV-067, DEV-069, Box deref, primitive `Ordering::cmp`.
-Blocked: A3-Ord on CE3; WP-C4.6 closure on all required classes going green.
+Gate: C4  Next: **A4** (`core-min` runtime surface — chars/get/get_mut/slices/size_of/align_of/
+Range values/Option-Result combinators; needs a dated runtime-surface amendment, "prepare"-
+authorized by CD-033), per the dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1).
+Progress: **A5, A7, A6, and A3 (Eq+Ord) DONE 2026-07-19.** A5: pure bitwise `MirBinOp`,
+`~` → `^ mask`, trapping `Shl`/`Shr`/`Pow`, new `TrapCategory::InvalidShift`. A7: `loop`-break
+value, `[v;n]` repeat, Unit value-position `if`/`while`/`for`. A6: Vec iteration → borrowed
+cursor (V-COPY-1 dropped for the iterator ops; amendment rev. 7). A3-Eq: `==`/`!=` → `Eq::eq`
+dispatch (borrow-not-move). **A3-Ord: CE3-approved Amendment A2** (`mir-amendment-A2-ordering.md`,
+approved with 5 clarifications) — `EnumRef::CoreOrdering` (prelude `Ordering` as a logical MIR
+enum, Less=0/Equal=1/Greater=2) across lowering/verify/interp/dump; `Ordering::Less/Equal/Greater`
+construction; direct `cmp`; all four ordered ops on non-generic user nominals → `cmp` +
+discriminant-compare; v3-variant → MIR-0008; generic-nominal comparison stays `Unsupported`.
+`mir.md` records the C4-open additive-amendment versioning policy + `CoreOrdering` in `EnumRef`.
+13 new differential + 2 verifier tests across the session; workspace 720/0; clippy clean
+1.93/1.97.
+**Open deviations found this session:** DEV-070 (owned by A2 — `match *self` on a shared-ref
+scrutinee moves+poisons; blocks realistic enum Eq/Ord bodies, not A3 dispatch), DEV-071
+(front-end — all-variant `Ordering` match wrongly non-exhaustive). Remaining Class-A blockers:
+A4 (next), A2 (patterns; owns DEV-070), A1 (generic impls). Front-end prereqs owned separately:
+DEV-067, DEV-069, Box deref, primitive `Ordering::cmp`, DEV-071.
+Blocked: WP-C4.6 closure on all required classes going green (A5/A7/A6/A3 done; A4/A2/A1 remain).
 **WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
 - **f-3a HashMap surface (`0.1-A3`, amendment rev. 6):** `RuntimeFn` HashMap group
   (New/Insert/Get/Len/IsEmpty/ContainsKey/KeysIterNew/KeysIterNext); insertion-ordered
@@ -799,6 +800,23 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   each class with positive, negative, verifier, and HIR/MIR differential evidence; C4 closes
   only when all required classes are green and no normative Core or `core-min` construct
   required by C5 remains silently unsupported.
+
+- CD-034 [2026-07-19, CE3 — owner-approved MIR Amendment A2 with clarifications] Approved
+  `EnumRef::CoreOrdering` as the MIR representation of the prelude `Ordering` enum (three
+  fieldless variants, logical discriminants Less=0/Equal=1/Greater=2 — logical MIR only, not a
+  physical ABI; C5.1 owns physical layout) and the ordered-operator lowering (`<`/`<=`/`>`/`>=`
+  on a non-generic user nominal → `Ord::cmp` call + discriminant compare; operands borrowed
+  left-to-right, never moved). Additive; **runtime surface stays `0.1-A3`, `MIR_VERSION` stays
+  `0.1`.** Five clarifications required and applied: (1) renamed "Ordering as a Runtime Value" →
+  "Ordering as a Logical MIR Enum" (avoid confusion with the `RuntimeFn` surface); (2)
+  discriminants logical-only; (3) recorded the **C4-open additive-amendment versioning policy**
+  in `mir.md` (until C4 closes, CE3-approved additive shape amendments stay in v0.1 and are
+  recorded in the contract; after C4 exit any shape change needs a version bump) and reflected
+  `CoreOrdering` in the contract's `EnumRef` description; (4) `println(Ordering)` is out of A2
+  (Display is A4) — the round-trip test verifies construct/return/match only; (5) DEV-070
+  accepted as correctly classified and owned by A2. Implemented in the same session with
+  full lowering/verify/interp/dump coverage; the invalid-variant guard (v3 → MIR-0008) satisfies
+  the CE3 requirement #8. Amendment doc `mir-amendment-A2-ordering.md` marked APPROVED.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

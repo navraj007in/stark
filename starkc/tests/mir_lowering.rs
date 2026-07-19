@@ -260,10 +260,10 @@ fn option_lowers_as_logical_enum() {
 #[test]
 fn unsupported_constructs_report_cleanly() {
     let cases = [
-        // A3 (C4.6) lowers user-nominal `==`/`!=` through `Eq::eq`; ORDERED comparison through
-        // `Ord` still dispatches through the user impl and awaits the CE3 `Ordering`
-        // runtime-surface amendment — the guard must reject, never emit a structural BinOp that
-        // would silently diverge from the oracle.
+        // A3 (C4.6) lowers user-nominal `==`/`!=` (Eq) and `<`/`<=`/`>`/`>=` (Ord, Amendment
+        // A2). What still dispatches through a user impl and stays Unsupported: comparison on a
+        // GENERIC nominal instantiation (needs A1's impl-level monomorphisation) — the guard
+        // must reject, never emit a structural BinOp that would silently diverge from the oracle.
         (
             // The core HashMap surface (0.1-A3, f-3a) lowers; values() stays reserved.
             "hashmapvalues.stark",
@@ -273,20 +273,6 @@ fn unsupported_constructs_report_cleanly() {
                  for v in m.values() { println(*v); } \
              }",
             "C4.5",
-        ),
-        (
-            // A3 (C4.6): user-nominal `==`/`!=` now dispatches through `Eq::eq`; ordered
-            // comparison through `Ord` still awaits the CE3 `Ordering` runtime-surface amendment.
-            "userord.stark",
-            "struct P { x: Int32 } \
-             impl Eq for P { fn eq(&self, other: &P) -> Bool { self.x == other.x } } \
-             impl Ord for P { fn cmp(&self, other: &P) -> Ordering { \
-                 if self.x < other.x { Ordering::Less } \
-                 else if self.x > other.x { Ordering::Greater } \
-                 else { Ordering::Equal } \
-             } } \
-             fn main() { let a = P { x: 1 }; let b = P { x: 2 }; if a < b { println(1); } }",
-            "Ord/Eq impl",
         ),
     ];
     for (name, src, needle) in cases {

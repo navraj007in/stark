@@ -182,8 +182,8 @@ required class is green.
 - A5 (bit/shift/pow): **DONE 2026-07-19** — see below
 - A7 (expr forms): **DONE 2026-07-19** — see below
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
-- A3 Eq: **DONE 2026-07-19**; A3 Ord: **BLOCKED on CE3 approval of Amendment A2 (drafted)** — see below
-- A4 (core-min surface): _pending_
+- A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
+- A4 (core-min surface): _pending_ (next)
 - A2 (patterns): _pending_
 - A1 (generic impls): _pending_
 
@@ -241,14 +241,22 @@ it out and poisons the borrowed place on a second read — this blocks realistic
 bodies (which match `*self`), not A3's dispatch mechanism, so the enum differential test waits on
 A2.
 
-**Ord (blocked, CE3).** Per CD-033, the `Ord` portion requires a CE3 `Ordering` runtime-surface
-amendment drafted **before** implementation. Draft filed:
-`STARKLANG/docs/compiler/mir-amendment-A2-ordering.md` (adds `EnumRef::CoreOrdering` as the MIR
-representation of the prelude `Ordering` enum — fixed discriminants Less=0/Equal=1/Greater=2 —
-and the `<`/`<=`/`>`/`>=` → `cmp` + discriminant-compare lowering; additive, no runtime-surface
-change, stays `0.1-A3`). **No `Ord` lowering code is written until this is approved.** The
-`userord` lowering fixture confirms `a < b` on a user `Ord` type is currently a clean
-`Unsupported` ("Ord/Eq impl").
+**Ord (done, under CE3-approved Amendment A2).** The owner approved
+`mir-amendment-A2-ordering.md` with five clarifications (renamed "logical MIR enum" not "runtime
+value"; discriminants are logical MIR only, not physical ABI; C4-open additive-amendment
+versioning policy recorded in `mir.md`; no Display requirement; DEV-070 accepted under A2).
+Implemented: `EnumRef::CoreOrdering` (the prelude `Ordering` as a logical MIR enum, Less=0/
+Equal=1/Greater=2) across lowering/verify/interp/deterministic dump; construction of
+`Ordering::Less`/`Equal`/`Greater`; direct `cmp` calls returning `Ordering`; all four ordered
+operators on non-generic user nominals lowered to `cmp` + discriminant-compare (`<`→`d==0`,
+`<=`→`d!=2`, `>`→`d==2`, `>=`→`d!=0`); valid-variant checking (v3 → MIR-0008); clean
+`Unsupported` for generic-nominal comparison; no change to primitive comparison. Evidence:
+`user_ord_all_operators_agree`, `ordering_value_round_trips_through_match_agree`,
+`user_ord_borrows_and_drops_normally_agree` (differential), `rejects_invalid_core_ordering_variant`
++ `accepts_valid_core_ordering_variants` (verifier). **Found DEV-071** (open, front-end): an
+all-three-variant `Ordering` match is wrongly flagged non-exhaustive (exhaustiveness gap); the
+round-trip test uses an explicit-plus-wildcard match, which fully exercises the MIR path.
+DEV-070 remains open under A2 (enum `Eq`/`Ord` bodies that `match *self`).
 
 ### Original decision framing (retained for the record)
 

@@ -2,8 +2,17 @@
 
 **Status: APPROVED (CE3, 2026-07-19, CD-028) — verdict "approve with required changes", all
 three required changes applied below.** The owner-confirmed decisions on the five §12 judgment
-calls are recorded in §12; WP-C4.2 lowering may begin against this contract. Any future change
-to this contract's shape requires a new CE3 review and a version bump.
+calls are recorded in §12; WP-C4.2 lowering may begin against this contract.
+
+**Versioning policy (CE3 clarification, 2026-07-19, WP-C4.6 A2).** *Until Gate C4 closes and MIR
+v0.1 is frozen for backend consumption, narrow additive shape amendments may remain within MIR
+v0.1 only when individually approved under CE3 and recorded in this contract. After C4 exit, any
+MIR shape change requires a MIR version bump.* This supersedes the earlier blanket "any shape
+change requires a version bump" reading. Amendments approved under this policy to date:
+**A1** (CD-031, `Constant::Str`, drop-elaborated `String`/`Vec`, `Trap.message`, runtime-surface
+`RuntimeFn` groups — `mir-amendment-A1-strings-runtime.md`) and **A2** (`EnumRef::CoreOrdering`,
+the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`). Both are
+additive and remain MIR v0.1.
 
 This document is a **non-normative implementation contract**, not language specification. The
 language's runtime authority is `STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md` and the
@@ -110,7 +119,7 @@ MirTy ::= Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64
         | Str                          -- unsized; appears only behind Ref
         | String
         | Struct(ItemId, Vec<MirTy>)   -- monomorphised nominal instance
-        | Enum(EnumRef, Vec<MirTy>)    -- user enums AND Option/Result (logical enums, below)
+        | Enum(EnumRef, Vec<MirTy>)    -- user enums AND Option/Result/Ordering (logical enums, below)
         | Tuple(Vec<MirTy>)
         | Array(Box<MirTy>, u64)
         | Slice(Box<MirTy>)            -- unsized; appears only behind Ref
@@ -119,15 +128,18 @@ MirTy ::= Int8 | Int16 | Int32 | Int64 | UInt8 | UInt16 | UInt32 | UInt64
         | Core(CoreType, Vec<MirTy>)   -- Vec, Box, HashMap, HashSet, Range, iterators, …
                                        --   (NOT Option/Result — see below)
 
-EnumRef ::= User(ItemId) | CoreOption | CoreResult
+EnumRef ::= User(ItemId) | CoreOption | CoreResult | CoreOrdering
 ```
 
-- **`Option<T>` and `Result<T, E>` are logical MIR enums** (CE3 required change): they use
-  exactly the same `Aggregate`/`Discriminant`/`VariantField`/`SwitchInt` machinery as user
-  enums, with `EnumRef::CoreOption`/`CoreResult` supplying their nominal identity (they have no
-  user `ItemId`). `CoreOption` has variants `None = 0`, `Some(T) = 1`; `CoreResult` has
-  `Ok(T) = 0`, `Err(E) = 1`. Their **physical layout remains a C5.1/ABI decision** — MIR does
-  not decide niche-vs-tag representation. Rationale: one enum system, one match-lowering path,
+- **`Option<T>`, `Result<T, E>`, and `Ordering` are logical MIR enums** (CE3 required change;
+  `CoreOrdering` added by Amendment A2): they use exactly the same
+  `Aggregate`/`Discriminant`/`VariantField`/`SwitchInt` machinery as user enums, with
+  `EnumRef::CoreOption`/`CoreResult`/`CoreOrdering` supplying their nominal identity (they have
+  no user `ItemId`). `CoreOption` has variants `None = 0`, `Some(T) = 1`; `CoreResult` has
+  `Ok(T) = 0`, `Err(E) = 1`; `CoreOrdering` (the prelude `Ordering`) has the three fieldless
+  variants `Less = 0`, `Equal = 1`, `Greater = 2`. Their **physical layout remains a C5.1/ABI
+  decision** — MIR does not decide niche-vs-tag representation, and these logical discriminants
+  are not a physical ABI. Rationale: one enum system, one match-lowering path,
   one discriminant discipline; the alternative (opaque runtime types) would have let the
   *current interpreter's* internal representation shape the IR, exactly the coupling this
   contract exists to prevent. Runtime calls may still implement higher-level *combinators*

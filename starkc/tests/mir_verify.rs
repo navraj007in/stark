@@ -419,6 +419,50 @@ fn rejects_enum_aggregate_arity_mismatch() {
 }
 
 #[test]
+fn rejects_invalid_core_ordering_variant() {
+    // A2 (CE3): CoreOrdering has exactly three fieldless variants (0/1/2); a v3 aggregate is an
+    // invalid variant and must fail verification (MIR-0008).
+    let b = body(
+        vec![
+            ret_local(),
+            local(MirTy::Enum(EnumRef::CoreOrdering, Vec::new())),
+        ],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(1)),
+                Rvalue::Aggregate(AggKind::EnumVariant(EnumRef::CoreOrdering, 3), Vec::new()),
+            )],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0008");
+}
+
+#[test]
+fn accepts_valid_core_ordering_variants() {
+    // The three legal Ordering variants (Less=0, Equal=1, Greater=2) verify cleanly.
+    for v in 0..=2u32 {
+        let b = body(
+            vec![
+                ret_local(),
+                local(MirTy::Enum(EnumRef::CoreOrdering, Vec::new())),
+            ],
+            vec![block(
+                vec![Statement::Assign(
+                    Place::local(LocalId(1)),
+                    Rvalue::Aggregate(AggKind::EnumVariant(EnumRef::CoreOrdering, v), Vec::new()),
+                )],
+                Terminator::Return,
+            )],
+        );
+        assert!(
+            verify_program(&program_with(vec![b])).is_ok(),
+            "Ordering variant v{v} should verify"
+        );
+    }
+}
+
+#[test]
 fn rejects_index_proof_bound_to_a_different_base() {
     // The CE3 same-base rule: a proof produced by CheckIndex on _1 may not index _2.
     use mir::{CheckedOp, TrapCategory, TrapInfo};

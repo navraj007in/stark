@@ -418,6 +418,8 @@ impl<'a> Interp<'a> {
                 .get(variant as usize)
                 .cloned()
                 .ok_or_else(|| MirRunError::Internal("Result variant out of range".into()))?]),
+            // A2 (CE3): Ordering's three variants are all fieldless.
+            EnumRef::CoreOrdering => Ok(Vec::new()),
             EnumRef::User(item) => self
                 .program
                 .types

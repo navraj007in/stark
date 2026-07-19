@@ -1807,6 +1807,12 @@ fn variant_payload(
             1 => Some(vec![args.get(1)?.clone()]),
             _ => None,
         },
+        // A2 (CE3): Ordering has exactly three fieldless variants (Less=0, Equal=1, Greater=2);
+        // any other index is an invalid `CoreOrdering` variant and fails verification.
+        EnumRef::CoreOrdering => match variant {
+            0..=2 => Some(Vec::new()),
+            _ => None,
+        },
         EnumRef::User(item) => program
             .types
             .enum_variants

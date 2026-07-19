@@ -47,13 +47,18 @@ pub const MIR_RUNTIME_SURFACE: &str = "0.1-A3";
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FileId(pub u32);
 
-/// Nominal identity for enum types: user enums carry their HIR item; `Option`/`Result` are
-/// logical core enums with no user item (contract §3, CD-028 required change #2).
+/// Nominal identity for enum types: user enums carry their HIR item; `Option`/`Result`/
+/// `Ordering` are logical core enums with no user item (contract §3, CD-028 required change #2;
+/// `CoreOrdering` added by MIR Amendment A2, CE3-approved 2026-07-19).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum EnumRef {
     User(crate::hir::ItemId),
     CoreOption,
     CoreResult,
+    /// The prelude `Ordering` enum as a logical MIR enum (Amendment A2). Fixed logical
+    /// discriminants: `Less = 0`, `Equal = 1`, `Greater = 2` — logical MIR only, not a physical
+    /// ABI (C5.1 chooses the physical layout). Three fieldless variants; `Copy`, no drop glue.
+    CoreOrdering,
 }
 
 /// A monomorphised function instance. Scalar core (WP-C4.2) only produces empty `type_args`;
@@ -624,6 +629,7 @@ pub(crate) fn dump_ty(ty: &MirTy) -> String {
         }
         MirTy::Enum(EnumRef::CoreOption, args) => dump_generic("Option", "", args),
         MirTy::Enum(EnumRef::CoreResult, args) => dump_generic("Result", "", args),
+        MirTy::Enum(EnumRef::CoreOrdering, args) => dump_generic("Ordering", "", args),
         MirTy::Tuple(elems) => {
             let inner = elems.iter().map(dump_ty).collect::<Vec<_>>().join(", ");
             format!("({inner})")
@@ -678,6 +684,7 @@ fn dump_rvalue(rvalue: &Rvalue) -> String {
                 AggKind::EnumVariant(EnumRef::User(item), v) => format!("enum#{}::v{v}", item.0),
                 AggKind::EnumVariant(EnumRef::CoreOption, v) => format!("Option::v{v}"),
                 AggKind::EnumVariant(EnumRef::CoreResult, v) => format!("Result::v{v}"),
+                AggKind::EnumVariant(EnumRef::CoreOrdering, v) => format!("Ordering::v{v}"),
             };
             format!(
                 "aggregate {kind_text}({})",

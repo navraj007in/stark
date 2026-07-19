@@ -1911,6 +1911,22 @@ WP-C1.5)
   than matching). Enum `Eq` impls whose body matches `*self` are blocked on this deviation, not
   on A3's dispatch mechanism.
 
+## DEV-071 — `match` on `Ordering` with all three variants is flagged non-exhaustive [OPEN, found WP-C4.6 A3-Ord, 2026-07-19]
+
+- **What:** the front-end exhaustiveness checker does not recognize the prelude `Ordering` enum
+  as having exactly `{ Less, Equal, Greater }`, so a `match` covering all three explicit
+  variants is rejected `E0303` "non-exhaustive pattern match". A wildcard arm (or two explicit
+  variants + `_`) is accepted.
+- **Repro:** `let o = a.cmp(&b); match o { Ordering::Less => …, Ordering::Equal => …,
+  Ordering::Greater => … }` → E0303.
+- **Scope:** front-end typecheck exhaustiveness (`Ordering`'s variant set isn't registered for
+  the usefulness/exhaustiveness algorithm). Independent of MIR: the MIR `CoreOrdering` match
+  path lowers and runs correctly (proven by `ordering_value_round_trips_through_match_agree`,
+  which uses an explicit-plus-wildcard match). Owner: front end (adjacent to the A2 pattern
+  work but distinct — this is exhaustiveness, not by-reference matching).
+- **Consequence for A3-Ord:** none for the dispatch/round-trip mechanism; only cosmetic (users
+  must add a `_` arm to an all-variants `Ordering` match until fixed).
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1960,7 +1976,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 68 numbered deviations total (DEV-002 through DEV-070, DEV-001/DEV-003 retired).
+Current count: 69 numbered deviations total (DEV-002 through DEV-071, DEV-001/DEV-003 retired).
 DEV-069 (front end + HIR interpreter not multi-file-span-clean: cross-file spans read against
 the entry file, breaking cross-file methods/literals/field reads) was found during WP-C4.5f-3c's
 multi-file lowering work and remains **open**, owned by a future front-end WP — the MIR lowering

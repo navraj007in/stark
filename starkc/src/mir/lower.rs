@@ -739,6 +739,10 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Enum(EnumRef::CoreResult, inner)
             }
+            // A2 (CE3): the prelude `Ordering` enum as a logical MIR enum, fieldless.
+            Ty::Core(crate::hir::CoreType::Ordering, _) => {
+                MirTy::Enum(EnumRef::CoreOrdering, Vec::new())
+            }
             // A1 (CD-031), C4.5e-2: Vec<T> is an opaque runtime type.
             Ty::Core(crate::hir::CoreType::Vec, args) => {
                 let inner = args
@@ -861,6 +865,9 @@ impl<'a> FnLowerer<'a> {
                     match core {
                         crate::hir::CoreType::Option => Ok(MirTy::Enum(EnumRef::CoreOption, inner)),
                         crate::hir::CoreType::Result => Ok(MirTy::Enum(EnumRef::CoreResult, inner)),
+                        crate::hir::CoreType::Ordering => {
+                            Ok(MirTy::Enum(EnumRef::CoreOrdering, Vec::new()))
+                        }
                         _ => unsupported("core field type (C4.5)", span),
                     }
                 }
@@ -2159,6 +2166,26 @@ impl<'a> FnLowerer<'a> {
                     Vec::new(),
                     span,
                 )?),
+                // A2 (CE3): `Ordering::Less/Equal/Greater` construct the logical `CoreOrdering`
+                // enum with the fixed discriminants Less=0, Equal=1, Greater=2.
+                Res::Builtin(
+                    variant @ (Builtin::OrderingLess
+                    | Builtin::OrderingEqual
+                    | Builtin::OrderingGreater),
+                ) => {
+                    let disc = match variant {
+                        Builtin::OrderingLess => 0,
+                        Builtin::OrderingEqual => 1,
+                        Builtin::OrderingGreater => 2,
+                        _ => unreachable!(),
+                    };
+                    Ok(self.aggregate_to_temp(
+                        expr,
+                        AggKind::EnumVariant(EnumRef::CoreOrdering, disc),
+                        Vec::new(),
+                        span,
+                    )?)
+                }
                 // Unit enum variant in value position (`Shape::Point`).
                 Res::Variant(item, variant) => Ok(self.aggregate_to_temp(
                     expr,
@@ -2308,6 +2335,19 @@ impl<'a> FnLowerer<'a> {
                         {
                             if targs.is_empty() {
                                 return self.lower_user_eq(*item, *op, *lhs, *rhs, span);
+                            }
+                        }
+                    }
+                    // A3 Ord (A2 amendment, CE3): ordered comparison on a (non-generic) user
+                    // nominal dispatches through `Ord::cmp`, then maps the returned `Ordering`
+                    // discriminant to the comparison's `Bool`.
+                    if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+                        if let MirTy::Struct(item, targs)
+                        | MirTy::Enum(EnumRef::User(item), targs) =
+                            &Self::peel_refs(lhs_ty.clone()).0
+                        {
+                            if targs.is_empty() {
+                                return self.lower_user_ord(*item, *op, *lhs, *rhs, span);
                             }
                         }
                     }
@@ -2716,7 +2756,9 @@ impl<'a> FnLowerer<'a> {
                     vec![err_payload],
                 )
             }
-            EnumRef::User(_) => unreachable!("? only on Option/Result"),
+            EnumRef::User(_) | EnumRef::CoreOrdering => {
+                unreachable!("? only on Option/Result")
+            }
         };
         // The propagated value must match the function's return type nominally; both share the
         // logical-enum representation, so the aggregate types against ret_ty directly.
@@ -3592,6 +3634,78 @@ impl<'a> FnLowerer<'a> {
             );
             Ok(Operand::Copy(Place::local(neq)))
         }
+    }
+
+    /// A3 Ord (Amendment A2, CE3): lower `a < b` / `<=` / `>` / `>=` on a user nominal to a call
+    /// of its `Ord::cmp(&self, &other) -> Ordering`, then map the returned `Ordering`
+    /// discriminant (Less=0, Equal=1, Greater=2) to the comparison's `Bool`:
+    /// `<` → `d == 0`, `<=` → `d != 2`, `>` → `d == 2`, `>=` → `d != 0` — matching the oracle.
+    /// Operands are borrowed left-then-right (`&Self`), never moved.
+    fn lower_user_ord(
+        &mut self,
+        nominal: ItemId,
+        op: BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false) else {
+            return unsupported(
+                "ordered comparison on a user type without an `Ord` impl",
+                span,
+            );
+        };
+        let lhs_ref = self.borrow_value_ref(lhs, span)?;
+        let rhs_ref = self.borrow_value_ref(rhs, span)?;
+        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        self.discovered_callees.push(key);
+        // cmp(&a, &b) -> Ordering
+        let ord_ty = MirTy::Enum(EnumRef::CoreOrdering, Vec::new());
+        let ord_dest = self.new_temp(ord_ty.clone());
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Instance(Instance {
+                    item: nominal,
+                    type_args: Vec::new(),
+                    symbol,
+                }),
+                args: vec![lhs_ref, rhs_ref],
+                dest: Place::local(ord_dest),
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+        // Read the discriminant, then compare against the fixed variant index.
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(
+                Place::local(disc),
+                Rvalue::Discriminant(Place::local(ord_dest)),
+            ),
+            self.info(span),
+        );
+        let (mir_op, rhs_disc) = match op {
+            BinOp::Lt => (MirBinOp::Eq, 0), // Less
+            BinOp::Le => (MirBinOp::Ne, 2), // not Greater
+            BinOp::Gt => (MirBinOp::Eq, 2), // Greater
+            BinOp::Ge => (MirBinOp::Ne, 0), // not Less
+            _ => unreachable!("lower_user_ord on a non-ordered operator"),
+        };
+        let result = self.new_temp(MirTy::Bool);
+        self.emit(
+            Statement::Assign(
+                Place::local(result),
+                Rvalue::BinOp(
+                    mir_op,
+                    Operand::Copy(Place::local(disc)),
+                    Operand::Const(Constant::Int(rhs_disc, MirTy::Int64)),
+                ),
+            ),
+            self.info(span),
+        );
+        Ok(Operand::Copy(Place::local(result)))
     }
 
     fn find_impl_fn(
@@ -4732,6 +4846,10 @@ impl<'a> FnLowerer<'a> {
                     Res::Builtin(Builtin::Some) => 1,
                     Res::Builtin(Builtin::Ok) => 0,
                     Res::Builtin(Builtin::Err) => 1,
+                    // A2 (CE3): Ordering variants (fieldless), discriminants Less=0/Equal=1/Greater=2.
+                    Res::Builtin(Builtin::OrderingLess) => 0,
+                    Res::Builtin(Builtin::OrderingEqual) => 1,
+                    Res::Builtin(Builtin::OrderingGreater) => 2,
                     _ => return unsupported("enum pattern resolution (C4.5)", pat_span),
                 },
                 _ => return unsupported("pattern form in enum match (C4.5)", pat_span),
@@ -4829,6 +4947,8 @@ impl<'a> FnLowerer<'a> {
                 .get(variant as usize)
                 .cloned()
                 .unwrap_or(MirTy::Unit)]),
+            // A2 (CE3): Ordering's three variants are all fieldless.
+            EnumRef::CoreOrdering => Ok(Vec::new()),
             EnumRef::User(item) => {
                 match nominal_instance_fields(self.hir, self.tables, self.meta, item, scrut_args)? {
                     NominalFields::Enum(variants) => {

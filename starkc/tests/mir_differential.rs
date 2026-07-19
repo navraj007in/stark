@@ -1430,3 +1430,92 @@ fn user_struct_eq_dispatch_agrees() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A3 Ord (MIR Amendment A2, CE3): user Ord operator dispatch ----
+
+/// All four ordered operators on a user `Ord` type, covering Less/Equal/Greater results, agree
+/// with the oracle. `cmp` returns the logical `CoreOrdering` enum; the operators map its
+/// discriminant to the comparison's Bool.
+#[test]
+fn user_ord_all_operators_agree() {
+    differential(
+        "a3_ord_ops.stark",
+        "struct P { x: Int32 } \
+         impl Ord for P { \
+             fn cmp(&self, other: &P) -> Ordering { \
+                 if self.x < other.x { Ordering::Less } \
+                 else if self.x > other.x { Ordering::Greater } \
+                 else { Ordering::Equal } \
+             } \
+         } \
+         fn main() { \
+             let a = P { x: 1 }; \
+             let b = P { x: 2 }; \
+             let c = P { x: 1 }; \
+             if a < b { println(1); } \
+             if b > a { println(2); } \
+             if a <= c { println(3); } \
+             if a >= c { println(4); } \
+             if a >= b { println(90); } else { println(5); } \
+             if b <= a { println(91); } else { println(6); } \
+         }"
+        .to_string(),
+    );
+}
+
+/// A directly-invoked `cmp` returns an `Ordering` value that round-trips through a `match` by
+/// variant, agreeing with the oracle. (Three-arm exhaustive Ordering matches are a front-end
+/// gap — DEV-071 — so this uses an explicit-plus-wildcard match, which still exercises the MIR
+/// `CoreOrdering` construct/return/discriminant-switch path.)
+#[test]
+fn ordering_value_round_trips_through_match_agree() {
+    differential(
+        "a3_ord_match.stark",
+        "struct P { x: Int32 } \
+         impl Ord for P { \
+             fn cmp(&self, other: &P) -> Ordering { \
+                 if self.x < other.x { Ordering::Less } \
+                 else if self.x > other.x { Ordering::Greater } \
+                 else { Ordering::Equal } \
+             } \
+         } \
+         fn report(o: Ordering) -> Int32 { \
+             match o { Ordering::Less => 10, Ordering::Greater => 30, _ => 20, } \
+         } \
+         fn main() { \
+             let a = P { x: 3 }; \
+             let b = P { x: 5 }; \
+             println(report(a.cmp(&b))); \
+             println(report(b.cmp(&a))); \
+             println(report(a.cmp(&a))); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Ordered comparison BORROWS both operands (no early move/drop) and evaluates left-to-right; a
+/// `Drop`-bearing `Ord` type drops both operands once, at scope end, in reverse declaration
+/// order — all matching the oracle.
+#[test]
+fn user_ord_borrows_and_drops_normally_agree() {
+    differential(
+        "a3_ord_drop.stark",
+        "struct Tag { id: Int32 } \
+         impl Ord for Tag { \
+             fn cmp(&self, other: &Tag) -> Ordering { \
+                 if self.id < other.id { Ordering::Less } \
+                 else if self.id > other.id { Ordering::Greater } \
+                 else { Ordering::Equal } \
+             } \
+         } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         fn tag(id: Int32) -> Tag { println(id * 10); Tag { id: id } } \
+         fn main() { \
+             let a = tag(1); \
+             let b = tag(2); \
+             if a < b { println(100); } \
+             println(200); \
+         }"
+        .to_string(),
+    );
+}
