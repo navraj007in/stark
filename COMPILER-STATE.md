@@ -2,11 +2,12 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C3  Next: WP-C3.1  Blocked: none
-C3-ENTRY closed 2026-07-19 — all four blockers resolved; see
-starkc/docs/compiler/C3-entry-exit.md. Gate C3 (Native Compiler Architecture and Backend
-Selection Spike) is open; WP-C3.1 freezes the 23-item workload and writes
-NATIVE-CORE-ARCHITECTURE.md.
+Gate: C3  Next: WP-C3.2 / WP-C3.3 (backend spikes)  Blocked: none
+C3-ENTRY closed 2026-07-19; WP-C3.1 done — `NATIVE-CORE-ARCHITECTURE.md` written, 23-item
+workload frozen, measurement framework defined, leading hypothesis SELECT-GENERATED (to be
+falsified by the spikes; CE5 selection is the owner's at WP-C3.4). Native backend selection
+status: SPIKING. Next: implement the generated-Rust spike (WP-C3.2) and direct-Cranelift spike
+(WP-C3.3), then WP-C3.4 selects.
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
@@ -598,16 +599,26 @@ involving nested modules and private items should assume this stricter model.
   entry anywhere in `Cargo.toml`/`Cargo.lock`).
 
 ## Native backend selection
-- Status: not evaluated (Gate C3 has not opened; C0-C2 are prerequisite per the mandatory
-  compiler completion path in `COMPILER-ROADMAP.md` §4.1). Per CD-004, this is no longer a
-  whether-question — native compilation is mandatory (`COMPILER-CHARTER.md` §1.2); C3 will
-  select *which* backend architecture (`SELECT-GENERATED`/`SELECT-DIRECT`), not decide whether
-  one is built.
-- Selected strategy: none yet.
+- Status: **SPIKING** (Gate C3 open; WP-C3.1 done — hypothesis, workload freeze, and measurement
+  framework set; WP-C3.2/C3.3 spikes not yet run). Per CD-004 this is not a whether-question —
+  native compilation is mandatory (`COMPILER-CHARTER.md` §1.2); C3 selects *which* backend
+  architecture, not whether one is built.
+- Selected strategy: none yet (selection is WP-C3.4, escalation CE5).
+- **Leading hypothesis (WP-C3.1, to be falsified by the spikes, NOT a decision):**
+  `SELECT-GENERATED` (generated Rust/C) as the initial production backend, with direct Cranelift
+  (`SELECT-DIRECT`) as the primary challenger. Rationale: shortest path to correctness (charter
+  §1.6 rule 7), reuses old Gate 5's generated-Rust lowering precedent, borrows a mature
+  toolchain's monomorphization/Drop/codegen. Falsifiers (rustc build-dependency weight,
+  compile-time margin, semantic-mapping fights forcing `unsafe`, binary size/startup) are listed
+  in `proposals/NATIVE-CORE-ARCHITECTURE.md` §4. **CE5 escalation flag: the actual backend
+  selection at WP-C3.4 is the owner's; this hypothesis only orients the spikes.**
+- Workload: 23-item frozen set (`NATIVE-CORE-ARCHITECTURE.md` §5), items 1-10 mapped to the
+  frozen `exec_snapshots` corpus v1.0.0 (semantic oracle), items 11-23 specified reference
+  programs. Two properties (fn-value Eq/Ord/Hash participation, monomorphised-generic fn-value
+  identity) must be settled from the frozen spec or by CE1/CE2 before selection (CD-022).
 - Evidence: see CD-002 for the closest existing evidence (old Gate 6/7 tensor/ONNX-deployment
-  track), which bears on a narrower tensor-deployment question, not general Core native
-  compilation — informative precedent for C3's methodology, not a substitute for it. See CD-004
-  for why that old evidence can no longer be read as license to skip general native compilation.
+  track) — informative precedent for methodology, not a substitute (CD-004). Fresh evidence
+  comes from the C3.2/C3.3 spikes.
 
 ## Diagnostic codes allocated or changed
 - **E0008** [WP-C1.5] Integer literal out of range for its type (suffixed literal exceeds its
@@ -894,3 +905,35 @@ Compatibility Spike" proposal during C3 spike work (CD-021).
 NEXT: WP-C3.1 — freeze the 23-item representative workload, define the measurement set, write
 STARKLANG/docs/compiler/proposals/NATIVE-CORE-ARCHITECTURE.md. Gate C3 selects backend
 architecture (SELECT-GENERATED / SELECT-DIRECT / REVISE / BLOCKED), never interpreter-only.
+
+### WP-C3.1 — Architecture hypothesis and workload freeze — 2026-07-19
+DONE: authored the Gate C3 setup deliverables. Wrote
+`STARKLANG/docs/compiler/proposals/NATIVE-CORE-ARCHITECTURE.md` (new proposals/ dir): the four
+separated questions, pipeline context, the frozen-Core decisions that favor native lowering
+(trap-abort-no-unwind, no trait objects, non-capturing fn values, borrow-check-before-codegen,
+deterministic order), the architecture hypothesis (Candidate A generated Rust/C vs Candidate B
+direct Cranelift; leading hypothesis SELECT-GENERATED with explicit falsifiers), the frozen
+23-item workload mapped to corpus v1.0.0 (items 1-10) + specified reference programs (11-23),
+the risk register (both candidates, per hard construct), the 13-dimension measurement framework,
+and the WP-C3.4 decision preview. Created `work-packages/WP-C3.1.md`. Set Native-backend-
+selection status to SPIKING; flipped Position Next to WP-C3.2/C3.3.
+FILES: STARKLANG/docs/compiler/proposals/NATIVE-CORE-ARCHITECTURE.md (new),
+STARKLANG/docs/compiler/work-packages/WP-C3.1.md (new), COMPILER-STATE.md.
+RULES: none — non-normative proposal; no Core semantics, compiler, or interpreter change. States
+a hypothesis, freezes a workload, defines measurements; selects nothing.
+DECISIONS: none at CE level. Leading hypothesis (SELECT-GENERATED) is explicitly flagged as
+falsifiable orientation for the spikes, not a decision — CE5 backend selection remains the
+owner's at WP-C3.4. Flagged per the CE-escalation convention.
+EVIDENCE: all 15 corpus-case references + the workspace-relocation test name + the two
+metamorphic pair names verified to resolve against the real tree (no dangling pointers).
+Interpreter support for the harder workload items confirmed by direct source read: function
+values (`Value::Function`, interp.rs:2168 indirect call), file I/O (`Value::File` +
+`read_to_string`/`write`, DEV-009 resolved), references/slices. No build/test run needed — no
+code changed.
+FOLLOW-UP: recommended (not approved) — draft the "Callable ABI and Future Closure Compatibility
+Spike" memo during C3 spike work, before WP-C5.1 freezes the ABI (CD-021). The two open fn-value
+properties (Eq/Ord/Hash participation, monomorphised-generic identity) must be settled before
+WP-C3.4 selection (CD-022).
+NEXT: WP-C3.2 (generated Rust/C spike) and WP-C3.3 (direct Cranelift spike) — each implements
+the reachable workload subset and reports every measurement dimension + unsupported constructs;
+then WP-C3.4 selects under CE5.
