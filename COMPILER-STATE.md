@@ -1,21 +1,21 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.6 A2 — **C4 OPEN; six of seven classes done, only A1 remains**
+Updated: 2026-07-20 after WP-C4.6 A1 — **ALL SEVEN CLASS-A BLOCKERS GREEN; C4 closure decision with the owner**
 
 ## Position
-Gate: C4  Next: **A1** (generic impl monomorphisation — the LAST Class-A blocker). **A2 DONE
-2026-07-20** in two increments. A2-1 — DEV-070 closed in BOTH engines: oracle `Receiver::Ref`
-bound `self` to a value clone (same bug class as the Eq/Ord-dispatch correction) → now binds
-`Value::Ref(place)`; MIR gained `MatchMode::ByRef` (scrutinee read through a shared ref matched
-IN PLACE; Copy payloads bound by copy; unbound payloads untouched; no arm-end drops; owned
-scrutinees keep C4.5d consuming semantics — consumption per scrutinee, no blanket rule, per
-CE3); Char literal patterns; **DEV-072** opened (front end passes a move-out-of-borrow through
-match bindings; oracle's legacy clone masked it). A2-2 — general recursive pattern engine:
-tuple/array/struct scrutinees, nested patterns (`Some((a, Some(b)))`), struct patterns with
-literal sub-patterns/shorthand, Float (IEEE-exact Eq) + String (StrEq) literal patterns; flat
-enum arms keep the drop-elaborated C4.5d path, scalars keep SwitchInt. **Recorded residual:**
-droppable scrutinee + genuinely NESTED patterns stays clean-Unsupported (generalizing C4.5d
-drop units to pattern trees is the follow-up; flat droppable matches unaffected). 10 A2
-differential tests total; workspace 743/0; clippy 1.93/1.97 clean. **A4 COMPLETE (all 2026-07-20):** A4-1 `size_of`/`align_of` + `unwrap_or`; A4-2a
+Gate: C4  Next: **owner's C4 closure decision** — see `WP-C4.6.md` "Gate closure input" (the
+Class-A requirement of CD-033 is met; the enumerated front-end deviations and clean-Unsupported
+MIR residuals are the owner's call on whether they block closure). **A1 DONE 2026-07-20**, the
+last Class-A blocker: `FnKey::ImplFn`/`TraitDefault` carry the instantiation's type args
+(symbols render them — `Stack::push_item@[Int32]`); impl-generic substitution aligns the
+impl's written self-type args (bare params) with the instantiation; covered: methods on
+generic nominal instantiations, associated fns (instantiation INFERRED by one-way sig
+unification), trait impls + defaults, Drop impls per instantiation, user `Iterator` for-loops
+(desugar to `next()` instance calls; oracle already supported). Residuals clean-Unsupported:
+method-own generics, non-bare impl self args, droppable Iterator Item. **DEV-073** opened
+(front end: generic impls unmatched in operator-trait/iterable bound checks — both engines
+reject consistently; MIR dispatch is instantiation-ready). 3 A1 differential tests; workspace
+746/0; clippy 1.93/1.97 clean. Earlier same day: A2 complete (DEV-070 closed both engines,
+DEV-072 opened, general pattern engine; see WP-C4.6.md). **A4 COMPLETE (all 2026-07-20):** A4-1 `size_of`/`align_of` + `unwrap_or`; A4-2a
 `map`/`and_then`/`map_err` + Range-as-value (MIR tuple `(start,end,inclusive)`); A4-2b
 `Vec::get`/`get_mut` (`Option<&T>`, never trap) at `0.1-A4` (A1 rev. 8); A4-2c `println(Ordering)`
 (no new op); A4-2d `chars()` iteration (`Option<Char>` by value) at `0.1-A5` (A1 rev. 9);

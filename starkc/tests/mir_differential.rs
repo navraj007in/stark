@@ -1907,3 +1907,78 @@ fn float_literal_patterns_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A1: generic impl monomorphisation ----
+
+/// Methods, associated fns, a trait impl with a default method, and a Drop impl — all on
+/// GENERIC nominals, across two instantiations (Int32 + String, incl. a Vec<T> field) — agree
+/// with the oracle end to end, including dtor timing.
+#[test]
+fn generic_impls_full_matrix_agree() {
+    differential(
+        "a1_full.stark",
+        "struct Stack<T> { items: Vec<T> } \
+         impl<T> Stack<T> { \
+             fn make() -> Stack<T> { Stack { items: Vec::new() } } \
+             fn push_item(&mut self, v: T) { self.items.push(v); } \
+             fn size(&self) -> UInt64 { self.items.len() } \
+         } \
+         trait Describe { fn id(&self) -> Int32; fn twice(&self) -> Int32 { self.id() * 2 } } \
+         struct Tagged<T> { v: T, n: Int32 } \
+         impl<T> Describe for Tagged<T> { fn id(&self) -> Int32 { self.n } } \
+         impl<T> Drop for Tagged<T> { fn drop(&mut self) { println(self.n); } } \
+         fn main() { \
+             let mut s: Stack<Int32> = Stack::make(); \
+             s.push_item(4); \
+             s.push_item(5); \
+             println(s.size()); \
+             let mut t: Stack<String> = Stack::make(); \
+             t.push_item(String::from(\"hi\")); \
+             println(t.size()); \
+             let g = Tagged { v: 9, n: 77 }; \
+             println(g.id()); \
+             println(g.twice()); \
+             println(100); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A method returning `&T` through auto-deref (`*h.get()`) and a generic Drop with distinct
+/// instantiations dropping in reverse declaration order.
+#[test]
+fn generic_method_ref_return_and_drop_order_agree() {
+    differential(
+        "a1_refret.stark",
+        "struct Holder<T> { value: T } \
+         impl<T> Holder<T> { fn get(&self) -> &T { &self.value } } \
+         struct Res<T> { value: T } \
+         impl<T> Drop for Res<T> { fn drop(&mut self) { println(0 - 1); } } \
+         fn main() { \
+             let h = Holder { value: 7 }; \
+             println(*h.get()); \
+             let a = Res { value: 1 }; \
+             let b = Res { value: String::from(\"x\") }; \
+             println(50); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A user `Iterator` impl drives a `for` loop: `it.next()` instance calls yield
+/// `Option<Item>` by value until `None`, agreeing with the oracle.
+#[test]
+fn user_iterator_for_loop_agrees() {
+    differential(
+        "a1_user_iter.stark",
+        "struct Counter { n: Int32 } \
+         impl Iterator for Counter { \
+             type Item = Int32; \
+             fn next(&mut self) -> Option<Int32> { \
+                 if self.n > 0 { self.n = self.n - 1; Some(self.n) } else { None } \
+             } \
+         } \
+         fn main() { let c = Counter { n: 3 }; for x in c { println(x); } println(9); }"
+            .to_string(),
+    );
+}

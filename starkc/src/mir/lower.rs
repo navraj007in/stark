@@ -448,13 +448,21 @@ pub enum FnKey {
     /// non-generic fns). Arguments are always fully concrete: the discovering caller applies
     /// its own substitution before constructing the key (C4.5c).
     Top(ItemId, Vec<MirTy>),
-    /// A method or associated function inside an `impl` block (`items[member]`).
-    ImplFn { impl_item: ItemId, member: u32 },
-    /// An un-overridden trait default method, monomorphised for one implementing nominal type.
+    /// A method or associated function inside an `impl` block (`items[member]`), monomorphised
+    /// at the IMPL-level type arguments (A1: the nominal instantiation's args; empty for
+    /// non-generic impls). Always fully concrete, like `Top`.
+    ImplFn {
+        impl_item: ItemId,
+        member: u32,
+        type_args: Vec<MirTy>,
+    },
+    /// An un-overridden trait default method, monomorphised for one implementing nominal
+    /// instantiation (A1: `self_args` are the nominal's concrete type arguments).
     TraitDefault {
         trait_item: ItemId,
         member: u32,
         self_item: ItemId,
+        self_args: Vec<MirTy>,
     },
 }
 
@@ -502,7 +510,11 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                 .join(", ");
             Ok(format!("{}{name}@[{args_text}]", meta.symbol_prefix(*item)))
         }
-        FnKey::ImplFn { impl_item, member } => {
+        FnKey::ImplFn {
+            impl_item,
+            member,
+            type_args,
+        } => {
             let ItemKind::Impl { trait_, items, .. } = &hir.item(*impl_item).kind else {
                 return unsupported("FnKey::ImplFn on non-impl", span0);
             };
@@ -516,8 +528,15 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             };
             let method = meta.item_text(*impl_item, def.sig.name);
             let prefix = meta.symbol_prefix(self_item);
+            // A1: the impl-level instantiation renders inside the brackets — the non-generic
+            // form stays `@[]`, keeping pre-A1 symbols stable.
+            let args_text = type_args
+                .iter()
+                .map(super::dump_ty)
+                .collect::<Vec<_>>()
+                .join(", ");
             match trait_ {
-                None => Ok(format!("{prefix}{type_name}::{method}@[]")),
+                None => Ok(format!("{prefix}{type_name}::{method}@[{args_text}]")),
                 Some(trait_ref) => {
                     let trait_name = match trait_ref.res {
                         Res::Item(t) => item_name_text(hir, meta, t).unwrap_or("?"),
@@ -526,7 +545,9 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                         Res::CoreTrait(_) => meta.item_text(*impl_item, trait_ref.path.span),
                         _ => "?",
                     };
-                    Ok(format!("{prefix}{type_name}::{trait_name}::{method}@[]"))
+                    Ok(format!(
+                        "{prefix}{type_name}::{trait_name}::{method}@[{args_text}]"
+                    ))
                 }
             }
         }
@@ -534,6 +555,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             trait_item,
             member,
             self_item,
+            self_args,
         } => {
             let trait_name = item_name_text(hir, meta, *trait_item).unwrap_or("?");
             let type_name = item_name_text(hir, meta, *self_item).unwrap_or("?");
@@ -545,7 +567,18 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             };
             let method = meta.item_text(*trait_item, sig.name);
             let prefix = meta.symbol_prefix(*self_item);
-            Ok(format!("{trait_name}::{method}@[{prefix}{type_name}]"))
+            if self_args.is_empty() {
+                Ok(format!("{trait_name}::{method}@[{prefix}{type_name}]"))
+            } else {
+                let args_text = self_args
+                    .iter()
+                    .map(super::dump_ty)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!(
+                    "{trait_name}::{method}@[{prefix}{type_name}<{args_text}>]"
+                ))
+            }
         }
     }
 }
@@ -892,6 +925,13 @@ impl<'a> FnLowerer<'a> {
                         crate::hir::CoreType::Ordering => {
                             Ok(MirTy::Enum(EnumRef::CoreOrdering, Vec::new()))
                         }
+                        // A1: runtime container types in signature/field position.
+                        crate::hir::CoreType::String => Ok(MirTy::String),
+                        crate::hir::CoreType::Vec
+                        | crate::hir::CoreType::HashMap
+                        | crate::hir::CoreType::VecIter
+                        | crate::hir::CoreType::KeysIter
+                        | crate::hir::CoreType::CharsIter => Ok(MirTy::Core(*core, inner)),
                         _ => unsupported("core field type (C4.5)", span),
                     }
                 }
@@ -997,13 +1037,9 @@ impl<'a> FnLowerer<'a> {
     fn ty_needs_drop(&self, ty: &MirTy, span: Span) -> Result<bool, LowerError> {
         Ok(match ty {
             MirTy::Struct(item, args) => {
+                // A1: a Drop impl on a generic nominal drops per instantiation — the dtor
+                // instance is monomorphised at the same type arguments.
                 if self.type_has_drop_impl(*item) {
-                    if !args.is_empty() {
-                        return unsupported(
-                            "Drop impl on a generic nominal type (a later C4.5 increment)",
-                            span,
-                        );
-                    }
                     true
                 } else {
                     let fields =
@@ -1020,12 +1056,6 @@ impl<'a> FnLowerer<'a> {
             }
             MirTy::Enum(EnumRef::User(item), args) => {
                 if self.type_has_drop_impl(*item) {
-                    if !args.is_empty() {
-                        return unsupported(
-                            "Drop impl on a generic nominal type (a later C4.5 increment)",
-                            span,
-                        );
-                    }
                     true
                 } else {
                     let fields =
@@ -1109,7 +1139,11 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Find `impl Drop for <item>`'s `drop` method, as a lowerable key + canonical symbol.
-    fn drop_impl_key(&self, item: ItemId) -> Result<Option<(FnKey, String)>, LowerError> {
+    fn drop_impl_key(
+        &self,
+        item: ItemId,
+        type_args: &[MirTy],
+    ) -> Result<Option<(FnKey, String)>, LowerError> {
         for (idx, candidate) in self.hir.items.iter().enumerate() {
             let ItemKind::Impl {
                 trait_: Some(trait_ref),
@@ -1136,6 +1170,7 @@ impl<'a> FnLowerer<'a> {
                 let key = FnKey::ImplFn {
                     impl_item,
                     member: member as u32,
+                    type_args: type_args.to_vec(),
                 };
                 let symbol = key_symbol(self.hir, self.meta, &key)?;
                 return Ok(Some((key, symbol)));
@@ -1151,7 +1186,7 @@ impl<'a> FnLowerer<'a> {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 let (item, args) = (*item, args.clone());
                 if !self.drop_impl_symbols.contains_key(&(item.0, args.clone())) {
-                    if let Some((key, symbol)) = self.drop_impl_key(item)? {
+                    if let Some((key, symbol)) = self.drop_impl_key(item, &args)? {
                         self.drop_impl_symbols
                             .insert((item.0, args.clone()), symbol);
                         self.discovered_callees.push(key);
@@ -1482,7 +1517,11 @@ impl<'a> FnLowerer<'a> {
                 ItemKind::Fn(def) => Ok((&def.sig, def.body, None)),
                 _ => unsupported("FnKey::Top on non-fn", span0),
             },
-            FnKey::ImplFn { impl_item, member } => {
+            FnKey::ImplFn {
+                impl_item,
+                member,
+                type_args,
+            } => {
                 let ItemKind::Impl { items, .. } = &self.hir.item(*impl_item).kind else {
                     return unsupported("FnKey::ImplFn on non-impl", span0);
                 };
@@ -1493,13 +1532,25 @@ impl<'a> FnLowerer<'a> {
                     what: "impl self type is not nominal".into(),
                     span: span0,
                 })?;
-                let self_ty = self.nominal_ty(self_item, span0)?;
+                let self_ty = if type_args.is_empty() {
+                    self.nominal_ty(self_item, span0)?
+                } else {
+                    // A1: the concrete instantiation of the impl's nominal.
+                    match &self.hir.item(self_item).kind {
+                        ItemKind::Struct { .. } => MirTy::Struct(self_item, type_args.clone()),
+                        ItemKind::Enum { .. } => {
+                            MirTy::Enum(EnumRef::User(self_item), type_args.clone())
+                        }
+                        _ => return unsupported("impl self type is not nominal", span0),
+                    }
+                };
                 Ok((&def.sig, def.body, Some(self_ty)))
             }
             FnKey::TraitDefault {
                 trait_item,
                 member,
                 self_item,
+                self_args,
             } => {
                 let ItemKind::Trait { items, .. } = &self.hir.item(*trait_item).kind else {
                     return unsupported("FnKey::TraitDefault on non-trait", span0);
@@ -1511,10 +1562,179 @@ impl<'a> FnLowerer<'a> {
                 else {
                     return unsupported("trait member has no default body", span0);
                 };
-                let self_ty = self.nominal_ty(*self_item, span0)?;
+                let self_ty = if self_args.is_empty() {
+                    self.nominal_ty(*self_item, span0)?
+                } else {
+                    match &self.hir.item(*self_item).kind {
+                        ItemKind::Struct { .. } => MirTy::Struct(*self_item, self_args.clone()),
+                        ItemKind::Enum { .. } => {
+                            MirTy::Enum(EnumRef::User(*self_item), self_args.clone())
+                        }
+                        _ => return unsupported("trait self type is not nominal", span0),
+                    }
+                };
                 Ok((sig, *body, Some(self_ty)))
             }
         }
+    }
+
+    /// A1: infer a generic nominal's instantiation at an associated-fn CALL by unifying the
+    /// fn's declared parameter/return types (written in impl generics) against the call's
+    /// concrete argument/result types, then substituting the impl's written self arguments.
+    fn infer_assoc_fn_instantiation(
+        &self,
+        impl_item: ItemId,
+        member: u32,
+        call_expr: ExprId,
+        call_args: &[ExprId],
+        span: Span,
+    ) -> Result<Vec<MirTy>, LowerError> {
+        let ItemKind::Impl { items, self_ty, .. } = &self.hir.item(impl_item).kind else {
+            return unsupported("assoc-fn impl is not an impl", span);
+        };
+        let hir::ImplItem::Fn { def, .. } = &items[member as usize] else {
+            return unsupported("assoc-fn member is not a fn", span);
+        };
+        let mut bound: std::collections::HashMap<String, MirTy> = Default::default();
+        // Params against argument types, then the return against the call's result type.
+        for (p, &arg) in def.sig.params.iter().zip(call_args) {
+            let concrete = self.expr_mir_ty(arg)?;
+            self.bind_written_ty(impl_item, p.ty, &concrete, &mut bound);
+        }
+        if let hir::RetTy::Ty(ret) = &def.sig.ret {
+            let concrete = self.expr_mir_ty(call_expr)?;
+            self.bind_written_ty(impl_item, *ret, &concrete, &mut bound);
+        }
+        // The impl's written self arguments (bare params) give the nominal's instantiation.
+        let hir::TypeKind::Path {
+            args: Some(written),
+            ..
+        } = &self.hir.ty(*self_ty).kind
+        else {
+            return unsupported("generic impl self type has no written arguments", span);
+        };
+        let mut out = Vec::new();
+        for arg in &written.args {
+            let hir::GenericArg::Type(t) = arg else {
+                return unsupported("non-type impl self argument", span);
+            };
+            let name = self.meta.item_text(impl_item, self.hir.ty(*t).span);
+            match bound.get(name) {
+                Some(concrete) => out.push(concrete.clone()),
+                None => {
+                    return unsupported(
+                        format!(
+                            "cannot infer the instantiation of `{name}` for this associated-fn call"
+                        ),
+                        span,
+                    )
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Structural one-way unification: walk the WRITTEN HIR type against a concrete MirTy and
+    /// bind each generic-parameter name encountered. Mismatched shapes are ignored (the
+    /// checker already validated the call).
+    fn bind_written_ty(
+        &self,
+        impl_item: ItemId,
+        written: hir::TypeId,
+        concrete: &MirTy,
+        bound: &mut std::collections::HashMap<String, MirTy>,
+    ) {
+        let node = self.hir.ty(written);
+        match (&node.kind, concrete) {
+            (
+                hir::TypeKind::Path {
+                    res: Res::TypeParam,
+                    ..
+                },
+                _,
+            ) => {
+                let name = self.meta.item_text(impl_item, node.span).to_string();
+                bound.entry(name).or_insert_with(|| concrete.clone());
+            }
+            (
+                hir::TypeKind::Path {
+                    args: Some(list), ..
+                },
+                MirTy::Struct(_, cargs)
+                | MirTy::Enum(EnumRef::User(_), cargs)
+                | MirTy::Enum(EnumRef::CoreOption, cargs)
+                | MirTy::Enum(EnumRef::CoreResult, cargs)
+                | MirTy::Core(_, cargs),
+            ) => {
+                for (w, c) in list.args.iter().zip(cargs) {
+                    if let hir::GenericArg::Type(t) = w {
+                        self.bind_written_ty(impl_item, *t, c, bound);
+                    }
+                }
+            }
+            (hir::TypeKind::Ref { inner, .. }, MirTy::Ref { inner: cinner, .. }) => {
+                self.bind_written_ty(impl_item, *inner, cinner, bound);
+            }
+            (hir::TypeKind::Tuple(elems), MirTy::Tuple(celems)) => {
+                for (w, c) in elems.iter().zip(celems) {
+                    self.bind_written_ty(impl_item, *w, c, bound);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A1: the impl-generic substitution for an `ImplFn` instance — map each impl generic
+    /// parameter to its concrete type by aligning the impl's WRITTEN self-type arguments
+    /// (which must be bare parameter names, e.g. `impl<T> Holder<T>`) with the instantiation.
+    fn impl_generic_subst(
+        &self,
+        impl_item: ItemId,
+        type_args: &[MirTy],
+    ) -> Result<Vec<(String, MirTy)>, LowerError> {
+        let span0 = Span { lo: 0, hi: 0 };
+        let ItemKind::Impl {
+            generics, self_ty, ..
+        } = &self.hir.item(impl_item).kind
+        else {
+            return unsupported("impl_generic_subst on non-impl", span0);
+        };
+        if generics.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hir::TypeKind::Path {
+            args: Some(written),
+            ..
+        } = &self.hir.ty(*self_ty).kind
+        else {
+            return unsupported("generic impl self type has no written arguments", span0);
+        };
+        let mut subst = Vec::new();
+        for (i, arg) in written.args.iter().enumerate() {
+            let hir::GenericArg::Type(t) = arg else {
+                return unsupported("non-type impl self argument", span0);
+            };
+            let hir::TypeKind::Path {
+                res: Res::TypeParam,
+                ..
+            } = &self.hir.ty(*t).kind
+            else {
+                return unsupported(
+                    "generic impl with a non-parameter self argument (e.g. impl Holder<Vec<T>>)",
+                    span0,
+                );
+            };
+            let name = self
+                .meta
+                .item_text(impl_item, self.hir.ty(*t).span)
+                .to_string();
+            let concrete = type_args.get(i).cloned().ok_or_else(|| LowerError {
+                what: "impl instantiated with too few type arguments".into(),
+                span: span0,
+            })?;
+            subst.push((name, concrete));
+        }
+        Ok(subst)
     }
 
     fn lower_body(&mut self) -> Result<MirBody, LowerError> {
@@ -1539,10 +1759,27 @@ impl<'a> FnLowerer<'a> {
                     );
                 }
                 _ => {
+                    // A1 lowers IMPL-level generics; a method's OWN generic parameters
+                    // (`fn map<U>(&self, ...)`) still need per-call-site instantiation
+                    // recording and remain a later increment.
                     return unsupported(
-                        "generic impl/trait method (monomorphisation of methods is a later C4.5 increment)",
+                        "method with its own generic parameters (a later increment)",
                         sig_span,
                     );
+                }
+            }
+        }
+        // A1: an impl's generic parameters substitute from the instance's type arguments
+        // (aligned through the impl's written self-type arguments).
+        if let FnKey::ImplFn {
+            impl_item,
+            type_args,
+            ..
+        } = &key
+        {
+            if !type_args.is_empty() {
+                for (name, ty) in self.impl_generic_subst(*impl_item, type_args)? {
+                    self.param_subst.insert(name, ty);
                 }
             }
         }
@@ -1675,8 +1912,16 @@ impl<'a> FnLowerer<'a> {
             .collect();
         let (instance_item, instance_type_args) = match &self.key {
             FnKey::Top(item, type_args) => (*item, type_args.clone()),
-            FnKey::ImplFn { impl_item, .. } => (*impl_item, Vec::new()),
-            FnKey::TraitDefault { trait_item, .. } => (*trait_item, Vec::new()),
+            FnKey::ImplFn {
+                impl_item,
+                type_args,
+                ..
+            } => (*impl_item, type_args.clone()),
+            FnKey::TraitDefault {
+                trait_item,
+                self_args,
+                ..
+            } => (*trait_item, self_args.clone()),
         };
         Ok(MirBody {
             instance: Instance {
@@ -2018,6 +2263,16 @@ impl<'a> FnLowerer<'a> {
                                 span,
                             );
                         }
+                        // A1: `for x in it` over a USER Iterator impl — desugar to repeated
+                        // `it.next()` instance calls yielding `Option<Item>` by value.
+                        if let MirTy::Struct(item, targs)
+                        | MirTy::Enum(EnumRef::User(item), targs) = &iter_ty
+                        {
+                            let (item, targs) = (*item, targs.clone());
+                            return self.lower_for_over_user_iter(
+                                *var, *local, *iter, *body, item, targs, span,
+                            );
+                        }
                         // A4: `for i in r` where `r` is a range VALUE (`Ty::Range`) — the
                         // front-end type distinguishes it from a genuine 3-tuple. The inclusive
                         // flag is a runtime field, so the loop condition branches on it.
@@ -2295,8 +2550,10 @@ impl<'a> FnLowerer<'a> {
                     return self.read_place(Place::local(dest), &ty, span);
                 }
                 if matches!(op, UnOp::Deref) {
-                    // `*r` as a value: place = r + Deref.
-                    let mut place = self.lower_place(*operand)?;
+                    // `*r` as a value: place = r + Deref. A1: a non-place operand (e.g. a
+                    // method-call result `*h.get()`) materializes into a temp first.
+                    let operand_ty = self.expr_mir_ty(*operand)?;
+                    let mut place = self.place_or_temp(*operand, &operand_ty, span)?;
                     place.projection.push(Projection::Deref);
                     return self.read_place(place, &ty, span);
                 }
@@ -2400,9 +2657,8 @@ impl<'a> FnLowerer<'a> {
                         | MirTy::Enum(EnumRef::User(item), targs) =
                             &Self::peel_refs(lhs_ty.clone()).0
                         {
-                            if targs.is_empty() {
-                                return self.lower_user_eq(*item, *op, *lhs, *rhs, span);
-                            }
+                            let (item, targs) = (*item, targs.clone());
+                            return self.lower_user_eq(item, &targs, *op, *lhs, *rhs, span);
                         }
                     }
                     // A3 Ord (A2 amendment, CE3): ordered comparison on a (non-generic) user
@@ -2413,9 +2669,8 @@ impl<'a> FnLowerer<'a> {
                         | MirTy::Enum(EnumRef::User(item), targs) =
                             &Self::peel_refs(lhs_ty.clone()).0
                         {
-                            if targs.is_empty() {
-                                return self.lower_user_ord(*item, *op, *lhs, *rhs, span);
-                            }
+                            let (item, targs) = (*item, targs.clone());
+                            return self.lower_user_ord(item, &targs, *op, *lhs, *rhs, span);
                         }
                     }
                     let lhs_op = self.lower_expr_to_operand(*lhs)?;
@@ -3661,31 +3916,51 @@ impl<'a> FnLowerer<'a> {
                     );
                     Ok(())
                 }
-                // C4.5a: associated function (`Point::new(3, 4)`).
+                // C4.5a: associated function (`Point::new(3, 4)`). A1: on a GENERIC nominal
+                // (`Holder::make(7)`), the instantiation is inferred by unifying the fn's
+                // declared signature against the call's concrete argument/result types.
                 Res::AssociatedFn(nominal, name_span) => {
                     let nominal = *nominal;
-                    // C4.5c boundary: associated fns on generic nominals need impl-level
-                    // substitution, owned by a later C4.5 increment.
-                    if let ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. } =
-                        &self.hir.item(nominal).kind
-                    {
-                        if !generics.is_empty() {
-                            return unsupported(
-                                "associated fn on a generic nominal type (a later C4.5 increment)",
-                                span,
-                            );
-                        }
-                    }
                     let name_text = self.text(*name_span).to_string();
-                    let Some((key, _receiver)) =
-                        self.find_impl_fn(nominal, &name_text, /*receiverless=*/ true)
+                    // Locate first (empty args), then infer and rebuild the key.
+                    let Some((located, _receiver)) =
+                        self.find_impl_fn(nominal, &name_text, /*receiverless=*/ true, &[])
                     else {
                         return unsupported(
                             format!("associated function {name_text} not found"),
                             span,
                         );
                     };
+                    let nominal_generic = matches!(
+                        &self.hir.item(nominal).kind,
+                        ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. }
+                            if !generics.is_empty()
+                    );
+                    let key = if !nominal_generic {
+                        located
+                    } else {
+                        let FnKey::ImplFn {
+                            impl_item, member, ..
+                        } = located
+                        else {
+                            return unsupported(
+                                "associated fn on a generic nominal via a trait default",
+                                span,
+                            );
+                        };
+                        let type_args = self
+                            .infer_assoc_fn_instantiation(impl_item, member, expr, &args, span)?;
+                        FnKey::ImplFn {
+                            impl_item,
+                            member,
+                            type_args,
+                        }
+                    };
                     let symbol = key_symbol(self.hir, self.meta, &key)?;
+                    let instance_args = match &key {
+                        FnKey::ImplFn { type_args, .. } => type_args.clone(),
+                        _ => Vec::new(),
+                    };
                     self.discovered_callees.push(key);
                     let ops = args
                         .iter()
@@ -3696,7 +3971,7 @@ impl<'a> FnLowerer<'a> {
                         Terminator::Call {
                             callee: Callee::Instance(Instance {
                                 item: nominal,
-                                type_args: Vec::new(),
+                                type_args: instance_args,
                                 symbol,
                             }),
                             args: ops,
@@ -3804,15 +4079,17 @@ impl<'a> FnLowerer<'a> {
     /// A3 (C4.6, CD-033): lower `a == b` / `a != b` on a user nominal to a call of its
     /// `Eq::eq(&self, &other) -> Bool` impl (`!=` negates). Evaluation order is left-then-right,
     /// both borrowed — matching the HIR oracle's `Eq::eq` dispatch.
+    #[allow(clippy::too_many_arguments)]
     fn lower_user_eq(
         &mut self,
         nominal: ItemId,
+        type_args: &[MirTy],
         op: BinOp,
         lhs: ExprId,
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false) else {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "eq", false, type_args) else {
             return unsupported("`==`/`!=` on a user type without an `Eq` impl", span);
         };
         let lhs_ref = self.borrow_value_ref(lhs, span)?;
@@ -3825,7 +4102,7 @@ impl<'a> FnLowerer<'a> {
             Terminator::Call {
                 callee: Callee::Instance(Instance {
                     item: nominal,
-                    type_args: Vec::new(),
+                    type_args: type_args.to_vec(),
                     symbol,
                 }),
                 args: vec![lhs_ref, rhs_ref],
@@ -3855,15 +4132,17 @@ impl<'a> FnLowerer<'a> {
     /// discriminant (Less=0, Equal=1, Greater=2) to the comparison's `Bool`:
     /// `<` → `d == 0`, `<=` → `d != 2`, `>` → `d == 2`, `>=` → `d != 0` — matching the oracle.
     /// Operands are borrowed left-then-right (`&Self`), never moved.
+    #[allow(clippy::too_many_arguments)]
     fn lower_user_ord(
         &mut self,
         nominal: ItemId,
+        type_args: &[MirTy],
         op: BinOp,
         lhs: ExprId,
         rhs: ExprId,
         span: Span,
     ) -> Result<Operand, LowerError> {
-        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false) else {
+        let Some((key, _receiver)) = self.find_impl_fn(nominal, "cmp", false, type_args) else {
             return unsupported(
                 "ordered comparison on a user type without an `Ord` impl",
                 span,
@@ -3881,7 +4160,7 @@ impl<'a> FnLowerer<'a> {
             Terminator::Call {
                 callee: Callee::Instance(Instance {
                     item: nominal,
-                    type_args: Vec::new(),
+                    type_args: type_args.to_vec(),
                     symbol,
                 }),
                 args: vec![lhs_ref, rhs_ref],
@@ -3927,6 +4206,7 @@ impl<'a> FnLowerer<'a> {
         nominal: ItemId,
         name: &str,
         receiverless: bool,
+        type_args: &[MirTy],
     ) -> Option<(FnKey, Option<hir::Receiver>)> {
         let mut inherent: Option<(FnKey, Option<hir::Receiver>)> = None;
         let mut via_trait: Option<(FnKey, Option<hir::Receiver>)> = None;
@@ -3953,6 +4233,7 @@ impl<'a> FnLowerer<'a> {
                     FnKey::ImplFn {
                         impl_item,
                         member: member as u32,
+                        type_args: type_args.to_vec(),
                     },
                     def.sig.receiver,
                 );
@@ -3990,6 +4271,7 @@ impl<'a> FnLowerer<'a> {
                                         trait_item,
                                         member: member as u32,
                                         self_item: nominal,
+                                        self_args: type_args.to_vec(),
                                     },
                                     sig.receiver,
                                 ));
@@ -4048,17 +4330,11 @@ impl<'a> FnLowerer<'a> {
                 base, *enum_ref, ty_args, name_span, args, dest, span,
             );
         }
-        let nominal = match &peeled_ty {
+        // A1: methods on generic nominal instantiations monomorphise at the receiver's
+        // concrete type arguments (impl-level substitution).
+        let (nominal, nominal_args) = match &peeled_ty {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
-                // C4.5c boundary: methods on a *generic* nominal instantiation need
-                // impl-level substitution, which a later C4.5 increment owns.
-                if !args.is_empty() {
-                    return unsupported(
-                        "method call on a generic nominal instantiation (a later C4.5 increment)",
-                        span,
-                    );
-                }
-                *item
+                (*item, args.clone())
             }
             other => {
                 return unsupported(
@@ -4068,7 +4344,8 @@ impl<'a> FnLowerer<'a> {
             }
         };
         let name_text = self.text(name_span).to_string();
-        let Some((key, receiver)) = self.find_impl_fn(nominal, &name_text, false) else {
+        let Some((key, receiver)) = self.find_impl_fn(nominal, &name_text, false, &nominal_args)
+        else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
         };
         // Receiver operand FIRST (normative order), before arguments. C4.5b-2: real borrows.
@@ -4122,7 +4399,7 @@ impl<'a> FnLowerer<'a> {
             Terminator::Call {
                 callee: Callee::Instance(Instance {
                     item: nominal,
-                    type_args: Vec::new(),
+                    type_args: nominal_args.clone(),
                     symbol,
                 }),
                 args: ops,
@@ -4868,6 +5145,182 @@ impl<'a> FnLowerer<'a> {
         );
         self.terminate(Terminator::Goto { target: header }, syn(self), exit);
         Ok(())
+    }
+
+    /// A1: `for x in it` over a USER `Iterator` impl — desugar to a loop of `it.next()`
+    /// instance calls (`&mut self`), switching on the returned `Option<Item>` discriminant and
+    /// binding the loop variable BY VALUE from the `Some` payload (matching the oracle).
+    #[allow(clippy::too_many_arguments)]
+    fn lower_for_over_user_iter(
+        &mut self,
+        var: Span,
+        var_local: crate::hir::LocalId,
+        iter: ExprId,
+        body: hir::BlockId,
+        item: ItemId,
+        targs: Vec<MirTy>,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let Some((key, receiver)) = self.find_impl_fn(item, "next", false, &targs) else {
+            return unsupported(
+                "for over a non-range, non-Vec iterator without an Iterator impl",
+                span,
+            );
+        };
+        if !matches!(receiver, Some(hir::Receiver::RefMut)) {
+            return unsupported("Iterator::next must take &mut self", span);
+        }
+        let iter_ty = self.expr_mir_ty(iter)?;
+        // The Item type: the located `next`'s declared `Option<Item>` return, evaluated under
+        // the impl-level substitution of this instantiation.
+        let opt_ty = self.impl_fn_ret_ty(&key, span)?;
+        let MirTy::Enum(EnumRef::CoreOption, opt_args) = &opt_ty else {
+            return unsupported("Iterator::next must return Option", span);
+        };
+        let elem = opt_args.first().cloned().unwrap_or(MirTy::Unit);
+        if self.ty_needs_drop(&elem, span)? {
+            // The yielded value would need per-iteration drop elaboration; recorded residual.
+            return unsupported(
+                "user Iterator yielding a droppable Item type (a later increment)",
+                span,
+            );
+        }
+        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        self.discovered_callees.push(key);
+
+        // Materialize the iterator into a registered local (it may itself be droppable).
+        let it_op = self.lower_expr_to_operand(iter)?;
+        self.locals.push(LocalDecl {
+            ty: iter_ty.clone(),
+            kind: LocalKind::Temp,
+        });
+        let it_local = LocalId((self.locals.len() - 1) as u32);
+        self.register_droppable_local(it_local, &iter_ty, false, span)?;
+        self.emit(
+            Statement::Assign(Place::local(it_local), Rvalue::Use(it_op)),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        self.set_flags_under(it_local.0, &[], true, span);
+
+        let header = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.terminate(
+            Terminator::Goto { target: header },
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+            header,
+        );
+        // header: nxt = next(&mut it); switch on its discriminant.
+        let iter_ref_ty = MirTy::Ref {
+            mutable: true,
+            inner: Box::new(iter_ty),
+        };
+        let iter_ref = self.new_temp(iter_ref_ty);
+        self.emit(
+            Statement::Assign(
+                Place::local(iter_ref),
+                Rvalue::RefOf {
+                    mutable: true,
+                    place: Place::local(it_local),
+                },
+            ),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        let nxt = self.new_temp(opt_ty);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Instance(Instance {
+                    item,
+                    type_args: targs,
+                    symbol,
+                }),
+                args: vec![Operand::Copy(Place::local(iter_ref))],
+                dest: Place::local(nxt),
+                target: after,
+            },
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+            after,
+        );
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(Place::local(nxt))),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(disc)),
+                arms: vec![(1, body_block)],
+                otherwise: exit,
+            },
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+            body_block,
+        );
+        // body: bind the Item loop variable by value, run the body, loop.
+        self.locals.push(LocalDecl {
+            ty: elem.clone(),
+            kind: LocalKind::User(self.text(var).to_string()),
+        });
+        let bound = LocalId((self.locals.len() - 1) as u32);
+        self.local_map.insert(var_local.0, bound);
+        self.emit(
+            Statement::Assign(
+                Place::local(bound),
+                Rvalue::Use(Operand::Move(Place {
+                    local: nxt,
+                    projection: vec![Projection::VariantField(1, 0)],
+                })),
+            ),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        self.loops.push(LoopTargets {
+            continue_target: header,
+            break_target: exit,
+            scope_depth: self.scopes.len(),
+            value_target: None,
+        });
+        self.lower_block_value(body)?;
+        self.loops.pop();
+        self.terminate(
+            Terminator::Goto { target: header },
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+            exit,
+        );
+        // The registered iterator local drops with its enclosing scope (flag live).
+        Ok(())
+    }
+
+    /// A1: an `ImplFn` instance's declared return type, evaluated under the impl-level
+    /// substitution of the key's type arguments (scratch save/restore of the active substs).
+    fn impl_fn_ret_ty(&mut self, key: &FnKey, span: Span) -> Result<MirTy, LowerError> {
+        let FnKey::ImplFn {
+            impl_item,
+            member,
+            type_args,
+        } = key
+        else {
+            return unsupported("impl_fn_ret_ty on a non-impl key", span);
+        };
+        let ItemKind::Impl { items, .. } = &self.hir.item(*impl_item).kind else {
+            return unsupported("impl_fn_ret_ty on non-impl", span);
+        };
+        let hir::ImplItem::Fn { def, .. } = &items[*member as usize] else {
+            return unsupported("impl member is not a fn", span);
+        };
+        let ret_id = match &def.sig.ret {
+            hir::RetTy::Ty(t) => *t,
+            hir::RetTy::Unit => return Ok(MirTy::Unit),
+            hir::RetTy::Never(_) => return unsupported("never-returning method", span),
+        };
+        let saved_params = self.param_subst.clone();
+        let saved_self = self.self_subst.clone();
+        for (name, ty) in self.impl_generic_subst(*impl_item, type_args)? {
+            self.param_subst.insert(name, ty);
+        }
+        let result = self.hir_field_ty(ret_id);
+        self.param_subst = saved_params;
+        self.self_subst = saved_self;
+        result
     }
 
     #[allow(clippy::too_many_arguments)]

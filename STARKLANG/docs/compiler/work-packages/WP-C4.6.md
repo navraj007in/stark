@@ -185,7 +185,10 @@ required class is green.
 - A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
 - A4 (core-min surface): **DONE 2026-07-20** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, `0.1-A4`), A4-2c (println Ordering), A4-2d (chars, `0.1-A5`), A4-2e (slicing, `0.1-A6`) — see below
 - A2 (patterns): **DONE 2026-07-20** — A2-1 (DEV-070 both-engine fix + Char literal patterns) + A2-2 (general recursive engine: tuple/array/struct scrutinees, nested patterns, String/Float literals); one recorded residual (droppable scrutinee + nested patterns) — see below
-- A1 (generic impls): _pending_ (the last Class-A blocker)
+- A1 (generic impls): **DONE 2026-07-20** — impl-level monomorphisation (methods, associated fns, trait impls + defaults, Drop on generic nominals; user Iterator for-loops) — see below
+
+**ALL SEVEN CLASS-A BLOCKER CLASSES ARE GREEN (2026-07-20).** The C4 closure decision returns
+to the owner — see "Gate closure input" at the end of this document.
 
 ### A2-1 — DEV-070 fix (both engines) + Char literal patterns, DONE 2026-07-20
 
@@ -225,6 +228,55 @@ drop-unit decomposition to arbitrary pattern trees is the follow-up, surfaced lo
 mislowered. ByRef mode composes with the engine (Copy-only bindings enforced recursively).
 Evidence: `nested_and_compound_patterns_agree`, `struct_patterns_agree`,
 `string_literal_patterns_agree`, `float_literal_patterns_agree` (+ the A2-1 matrix).
+
+### A1 — generic impl monomorphisation, DONE 2026-07-20
+
+**Impl-level substitution.** `FnKey::ImplFn`/`TraitDefault` now carry the instantiation's type
+arguments (concrete, like `Top`); symbols render them (`Stack::push_item@[Int32]`,
+`Describe::twice@[Tagged<Int32>]` — non-generic forms keep their pre-A1 spelling). A body
+instance's impl-generic substitution maps each impl parameter to its concrete type by aligning
+the impl's WRITTEN self-type arguments (bare parameter names, `impl<T> Holder<T>`) with the
+instantiation; `hir_field_ty` (already `param_subst`-aware) resolves every signature/field
+type. Covered end to end: **methods** on generic nominal instantiations (receiver's args =
+instance args); **associated fns** on generic nominals (`Stack::make()` — instantiation
+INFERRED by one-way unification of the fn's declared parameter/return types against the
+call's concrete types, then substituted through the written self args; un-inferable →
+clean-Unsupported); **trait impls + defaults** on generic nominals (`TraitDefault` carries
+`self_args`); **Drop impls** on generic nominals (dtor instances monomorphised per
+instantiation; `drop_impls` was already keyed `(item, args)`); **user `Iterator` for-loops**
+(desugared to `it.next()` instance calls yielding `Option<Item>` by value — the oracle already
+supported these; Item type read from the located `next`'s declared return under the impl
+substitution). Runtime container types (`Vec<T>` etc.) now convert in field/signature
+position. `*h.get()` (deref of a call result) materializes through `place_or_temp`.
+Residuals, all clean-Unsupported: a method's OWN generic parameters (`fn map<U>`); non-bare
+written self arguments (`impl<T> Holder<Vec<T>>`); a user Iterator yielding a droppable Item
+(needs per-iteration drop elaboration). **Found DEV-073** (front end): the checker does not
+match GENERIC impls in operator-trait/iterable bound checks (`impl<T> Eq for W<T>` ⊬
+`W<Int32>: Eq`; `impl<T> Iterator for Repeat<T>` not recognized by for-loops) — both engines
+reject consistently, so no differential divergence; the MIR dispatch is instantiation-ready
+the moment the checker admits them. Evidence: `generic_impls_full_matrix_agree` (two `Stack<T>`
+instantiations incl. a `Vec<T>` field + trait default + generic Drop with dtor timing),
+`generic_method_ref_return_and_drop_order_agree`, `user_iterator_for_loop_agrees`.
+
+## Gate closure input (for the owner's C4 decision)
+
+All seven Class-A classes are green with positive, negative, verifier, and HIR/MIR
+differential evidence (per CD-033's evidence rule). **Recorded non-blocking residuals and
+front-end gaps carried past the exit, none silent:**
+- MIR residuals (clean-Unsupported, named): droppable scrutinee + NESTED patterns (A2);
+  method-own generic parameters, non-bare generic impl self args, droppable Iterator Item
+  (A1); mutable slice views (A4-2e); `unwrap_or`/combinators on droppable payloads (A4-1/2a).
+- Front-end deviations (owner: front end): DEV-067 (bounded generics at intra-generic call
+  sites), DEV-069 (multi-file span discipline — prerequisite for the C5 multi-file claim per
+  CD-033), DEV-071 (Ordering exhaustiveness), DEV-072 (move-out-of-borrow via match bindings
+  passes borrowck), DEV-073 (generic impls unmatched in operator/iterable bound checks),
+  `Box` deref, primitive `Ordering::cmp` surface, `Vec::get` literal-typing quirk.
+- std-full ops explicitly reserved per CD-033: `HashSet`, `HashMap::values`/`remove`,
+  `Vec::contains`.
+Per CD-033: "C4 closes only when all required classes are green and no normative Core or
+`core-min` construct required by C5 remains silently unsupported." The Class-A requirement is
+met; whether the enumerated front-end deviations block closure (they cap which normative
+programs REACH MIR) is the owner's call.
 
 ### A5 + A7 — DONE 2026-07-19
 

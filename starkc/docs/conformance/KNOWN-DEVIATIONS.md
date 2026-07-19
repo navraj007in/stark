@@ -1956,6 +1956,24 @@ WP-C1.5)
 - **Consequence for A3-Ord:** none for the dispatch/round-trip mechanism; only cosmetic (users
   must add a `_` arm to an all-variants `Ordering` match until fixed).
 
+## DEV-073 — Checker does not match GENERIC impls for operator/iterable bounds [OPEN, found WP-C4.6 A1, 2026-07-20]
+
+- **What:** the front end's bound-satisfaction checks do not recognize a generic impl as
+  satisfying a concrete instantiation's bound: (a) `impl<T> Eq for W<T>` does not satisfy
+  `W<Int32>: Eq` — `a == b` on `W<Int32>` is rejected E0500 "does not satisfy operator trait
+  'Eq'"; (b) `impl<T> Iterator for Repeat<T>` is not recognized by the for-loop iterable check
+  — `for x in r` on `Repeat<Int32>` is rejected E0001 "for-loop requires an iterable value".
+  Non-generic impls match fine; ordinary METHOD calls on generic nominals also work (the
+  method-resolution path does handle generic impls) — only the operator-trait/iterable
+  bound-satisfaction paths lack generic-impl matching.
+- **Scope:** front-end typecheck (impl matching in `require_operator_bound` / the for-loop
+  iterable check). Distinct from DEV-067 (bounds lost at intra-generic call sites): this is
+  about CONCRETE instantiations failing to find their generic impl. MIR-side A1 dispatch is
+  ready for these the moment the checker admits them (the `find_impl_fn` path is
+  instantiation-aware). Owner: front end.
+- **Repro:** `struct W<T> { v: T } impl<T> Eq for W<T> { fn eq(&self, o: &W<T>) -> Bool { true } }
+  fn main() { let a = W { v: 1 }; if a == W { v: 2 } { println(1); } }` → E0500.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2005,7 +2023,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 70 numbered deviations total (DEV-002 through DEV-072, DEV-001/DEV-003 retired).
+Current count: 71 numbered deviations total (DEV-002 through DEV-073, DEV-001/DEV-003 retired).
 DEV-069 (front end + HIR interpreter not multi-file-span-clean: cross-file spans read against
 the entry file, breaking cross-file methods/literals/field reads) was found during WP-C4.5f-3c's
 multi-file lowering work and remains **open**, owned by a future front-end WP — the MIR lowering
