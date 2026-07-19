@@ -1519,3 +1519,40 @@ fn user_ord_borrows_and_drops_normally_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A4-1: size_of/align_of + Option/Result unwrap_or (no runtime-surface amendment) ----
+
+/// `size_of::<T>()` / `align_of::<T>()` lower to the fixed word constant the reference
+/// implementation reports, agreeing with the oracle.
+#[test]
+fn size_of_align_of_agree() {
+    differential(
+        "a4_sizeof.stark",
+        "fn main() { \
+             println(size_of::<Int32>()); \
+             println(align_of::<Bool>()); \
+             println(size_of::<Int64>() + align_of::<UInt8>()); \
+         }"
+        .to_string(),
+    );
+}
+
+/// `Option::unwrap_or` / `Result::unwrap_or` select the payload or the default, agreeing with
+/// the oracle for both variants.
+#[test]
+fn option_result_unwrap_or_agree() {
+    differential(
+        "a4_unwrap_or.stark",
+        "fn main() { \
+             let a: Option<Int32> = Some(7); \
+             let b: Option<Int32> = None; \
+             println(a.unwrap_or(9)); \
+             println(b.unwrap_or(9)); \
+             let r: Result<Int32, Int32> = Ok(3); \
+             let e: Result<Int32, Int32> = Err(1); \
+             println(r.unwrap_or(0)); \
+             println(e.unwrap_or(0)); \
+         }"
+        .to_string(),
+    );
+}

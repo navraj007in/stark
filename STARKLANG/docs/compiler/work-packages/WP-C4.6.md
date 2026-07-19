@@ -183,7 +183,7 @@ required class is green.
 - A7 (expr forms): **DONE 2026-07-19** — see below
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
 - A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
-- A4 (core-min surface): _pending_ (next)
+- A4 (core-min surface): **in progress** — A4-1 (size_of/align_of, unwrap_or) DONE 2026-07-19; A4-2 (Vec::get/get_mut, chars, slices — needs the dated runtime-surface amendment) + combinators (map/and_then/map_err) + Range-as-value pending — see below
 - A2 (patterns): _pending_
 - A1 (generic impls): _pending_
 
@@ -257,6 +257,22 @@ operators on non-generic user nominals lowered to `cmp` + discriminant-compare (
 all-three-variant `Ordering` match is wrongly flagged non-exhaustive (exhaustiveness gap); the
 round-trip test uses an explicit-plus-wildcard match, which fully exercises the MIR path.
 DEV-070 remains open under A2 (enum `Eq`/`Ord` bodies that `match *self`).
+
+### A4 — core-min surface (in progress)
+
+Sub-sliced (like A1's e-1/e-2/e-3). **A4-1 DONE 2026-07-19** (no runtime-surface amendment
+needed): `size_of::<T>()` / `align_of::<T>()` lower to the fixed word constant the reference
+implementation reports (the HIR oracle returns 8 for every type — MIR matches exactly, type
+erased, result `UInt64`); `Option::unwrap_or` / `Result::unwrap_or` select payload-or-default
+via a discriminant switch, default evaluated once before the switch (non-droppable payload only
+for now — a droppable payload/default needs drop-of-unused elaboration, deferred). Evidence:
+`size_of_align_of_agree`, `option_result_unwrap_or_agree`.
+
+**Remaining A4 (pending):** `map`/`and_then`/`map_err` combinators (fn-value calls, no
+amendment); Range/RangeInclusive as first-class bound values; and the interior-ref/iterator/slice
+surface — `Vec::get`/`get_mut` (`Option<&T>`), `chars()` iteration, array/Vec slicing — which
+**needs the dated runtime-surface amendment** CD-033 pre-authorized (A4-2). `println` of the
+core-min types (the Display path deferred from A2) also lands here.
 
 ### Original decision framing (retained for the record)
 

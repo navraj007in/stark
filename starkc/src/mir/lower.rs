@@ -3408,6 +3408,20 @@ impl<'a> FnLowerer<'a> {
                     );
                     Ok(())
                 }
+                // A4 (C4.6): `size_of::<T>()` / `align_of::<T>()`. Core v1's reference
+                // implementation reports a fixed word size (the HIR oracle returns 8 for every
+                // type); MIR matches that constant exactly. The type argument is erased — the
+                // result is `UInt64`.
+                Res::Builtin(Builtin::SizeOf | Builtin::AlignOf) => {
+                    self.emit(
+                        Statement::Assign(
+                            dest,
+                            Rvalue::Use(Operand::Const(Constant::Int(8, MirTy::UInt64))),
+                        ),
+                        self.info(span),
+                    );
+                    Ok(())
+                }
                 Res::Builtin(_) => unsupported("builtin (C4.5)", span),
                 Res::Item(item) => {
                     // C4.5c: generic callees resolve to a concrete monomorphised instance
@@ -3813,12 +3827,13 @@ impl<'a> FnLowerer<'a> {
             let kv = kv_args.clone();
             return self.lower_map_method_call(base, kv, name_span, args, dest, span);
         }
-        // C4.5e-3: Option/Result inspection and extraction methods.
-        if let MirTy::Enum(enum_ref @ (EnumRef::CoreOption | EnumRef::CoreResult), args) =
+        // C4.5e-3: Option/Result inspection and extraction methods; A4: value combinators.
+        if let MirTy::Enum(enum_ref @ (EnumRef::CoreOption | EnumRef::CoreResult), ty_args) =
             &peeled_ty
         {
-            return self
-                .lower_option_result_method_call(base, *enum_ref, args, name_span, dest, span);
+            return self.lower_option_result_method_call(
+                base, *enum_ref, ty_args, name_span, args, dest, span,
+            );
         }
         let nominal = match &peeled_ty {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
@@ -4035,12 +4050,14 @@ impl<'a> FnLowerer<'a> {
     /// C4.5e-3: lower `is_some`/`is_none`/`is_ok`/`is_err`/`unwrap` on an Option/Result
     /// receiver. Inspection reads the discriminant; `unwrap` switches on it, extracting the
     /// payload on the expected variant and trapping otherwise.
+    #[allow(clippy::too_many_arguments)]
     fn lower_option_result_method_call(
         &mut self,
         base: ExprId,
         enum_ref: EnumRef,
         args: &[MirTy],
         name_span: Span,
+        call_args: &[ExprId],
         dest: Place,
         span: Span,
     ) -> Result<(), LowerError> {
@@ -4096,6 +4113,62 @@ impl<'a> FnLowerer<'a> {
                     .push(Projection::VariantField(ok_variant, 0));
                 let value = self.read_place(payload_place, &payload_ty, span)?;
                 self.emit(Statement::Assign(dest, Rvalue::Use(value)), self.info(span));
+            }
+            // A4: `unwrap_or(default)` — Some/Ok → payload, None/Err → the eagerly-evaluated
+            // default. Both branches assign `dest` and join. The default is evaluated once,
+            // before the switch (matching by-value argument evaluation). Non-droppable payload
+            // only for now: a droppable payload/default would need drop-of-unused elaboration
+            // (the discarded branch's value), owned by a later increment.
+            "unwrap_or" => {
+                let payload_ty = args.first().cloned().unwrap_or(MirTy::Unit);
+                if self.ty_needs_drop(&payload_ty, span)? {
+                    return unsupported(
+                        "unwrap_or on a droppable payload type (a later increment)",
+                        span,
+                    );
+                }
+                let Some(&default_expr) = call_args.first() else {
+                    return unsupported("unwrap_or expects one argument", span);
+                };
+                let default_op = self.lower_expr_to_operand(default_expr)?;
+                let disc = self.new_temp(MirTy::Int64);
+                self.emit(
+                    Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
+                    self.info(span),
+                );
+                let ok_block = self.new_block();
+                let else_block = self.new_block();
+                let join = self.new_block();
+                self.terminate(
+                    Terminator::SwitchInt {
+                        scrut: Operand::Copy(Place::local(disc)),
+                        arms: vec![(u128::from(ok_variant), ok_block)],
+                        otherwise: else_block,
+                    },
+                    self.info(span),
+                    ok_block,
+                );
+                // Ok/Some arm: move the payload into dest.
+                let mut payload_place = place;
+                payload_place
+                    .projection
+                    .push(Projection::VariantField(ok_variant, 0));
+                let payload = self.read_place(payload_place, &payload_ty, span)?;
+                self.emit(
+                    Statement::Assign(dest.clone(), Rvalue::Use(payload)),
+                    self.info(span),
+                );
+                self.terminate(
+                    Terminator::Goto { target: join },
+                    self.info(span),
+                    else_block,
+                );
+                // None/Err arm: the default.
+                self.emit(
+                    Statement::Assign(dest, Rvalue::Use(default_op)),
+                    self.info(span),
+                );
+                self.terminate(Terminator::Goto { target: join }, self.info(span), join);
             }
             _ => {
                 return unsupported(
