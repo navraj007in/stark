@@ -16,10 +16,32 @@ semantic oracle) over the frozen `exec_snapshots` corpus (`corpus_version = 1.0.
 `genrust_spike_matches_interpreter_on_frozen_corpus` (compile+run+diff; skips cleanly, class
 MANUAL, if `rustc` is absent) and `genrust_spike_reports_unsupported_constructs_cleanly`.
 
-## Result summary
+## Breadth extension (2026-07-19)
 
-- **Supported and matched the interpreter exactly: 4 / 17 frozen corpus cases.** Zero semantic
-  mismatches on any supported case.
+After the initial scalar/control-flow spike, the generated-Rust lowerer was extended with
+aggregate/generic breadth: struct definitions, `impl` blocks (associated fns + `&self`/`&mut
+self`/`self` methods), struct literals, field access, method calls, generics with trait bounds,
+`Option`/`Result` (`Some`/`None`/`Ok`/`Err`, `is_some`/`is_none`), `match` with pattern lowering
+(wildcard, binding, literal, path/unit-variant, tuple-variant, struct-variant, tuple), `String`/
+`&str` and string literals. **This lifted frozen-corpus coverage from 4/17 to 8/17**, adding
+`expr_stmt__02` (String), `struct_enum_trait__01` (structs+methods), `struct_enum_trait__03`
+(generics + `Ord` bound + `String`), and `option_result__01` (`Option` + `match`) — all matching
+the interpreter exactly, zero mismatches.
+
+The load-bearing observation: **each construct was a small, mechanical text-emission addition
+(~250 lines total for the whole breadth extension) because rustc absorbs monomorphization,
+aggregate layout, calling-convention/ABI, and Drop.** A STARK struct becomes a `#[derive(Clone,
+Copy)] struct`; a generic fn becomes `fn f<T: Ord>(...)` and rustc monomorphizes; `Option`/`match`
+map 1:1; `String` maps to Rust `String`. No layout, no offsets, no ABI, no drop elaboration was
+written by the backend. The remaining 9 unsupported are floats (need STARK's `canonical_float`
+formatter ported — mechanical), `?` (easy), tuple patterns (easy), traits/Drop, references, and
+Vec/HashMap (method mapping) — i.e. mostly *more mechanical transpiler work*, not fundamental
+barriers.
+
+## Result summary (initial scalar spike)
+
+- **Supported and matched the interpreter exactly: 4 / 17 frozen corpus cases** (before the
+  breadth extension above; 8/17 after). Zero semantic mismatches on any supported case.
 - **Trap-abort parity demonstrated**: `primitive__02` (`Int8` `120 + 100`) traps in the
   interpreter and the generated binary exits non-zero — the abort-without-unwind contract holds
   through generated Rust.

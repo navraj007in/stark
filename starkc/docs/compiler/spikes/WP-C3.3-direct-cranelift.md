@@ -162,6 +162,20 @@ surface. Licence: Apache-2.0 with LLVM exception (Bytecode Alliance). Pinned to 
 1.93 compatibility. These lines and `tests/spike_cranelift.rs` are removed when Gate C3 selects a
 backend (WP-C3.4); the spike is not production architecture (charter §2.2).
 
+## Breadth run (2026-07-19)
+
+Coverage remains **3/17**. Extending the direct backend to the aggregate/generic breadth that the
+generated-Rust spike reached (structs, generics, `Option`/`match`, `String`) requires, per
+construct family, a dedicated subsystem — struct-by-value needs stack-slot layout + field offsets
++ load/store + an **sret ABI transform**; enums need **tagged-union layout** + discriminant
+switching; generics need a **monomorphization engine**; String/Vec need a **runtime library**.
+Rather than build a second real backend inside the C3 spike, the cost was measured concretely from
+the ~600-line integer/control-flow Cranelift lowerer already built. The full head-to-head is in
+`starkc/docs/compiler/spikes/WP-C3-breadth-comparison.md`. Key point for WP-C3.4: **most of this
+breadth cost is mandatory MIR work anyway** (Gate C4 supplies monomorphization-ready,
+drop-elaborated, layout-bearing MIR), so the HIR-level comparison overstates the direct backend's
+long-run cost.
+
 ## Reproduce
 
 ```bash

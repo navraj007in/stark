@@ -640,10 +640,22 @@ involving nested modules and private items should assume this stricter model.
     bigger beneficiary of the mandatory MIR (MIR ≈ Cranelift's own block/terminator model).
     Report: `starkc/docs/compiler/spikes/WP-C3.3-direct-cranelift.md`; artifact
     `tests/spike_cranelift.rs` + dev-only Cranelift deps (isolated, disposable).
+- **Breadth run (2026-07-19):** generated-Rust extended to structs/impl-methods/generics/
+  Option/Result/match/String → **8/17** frozen corpus cases (all matching), via ~250 lines of
+  mechanical text emission (rustc absorbs monomorphization/layout/ABI/Drop). Cranelift breadth
+  **measured at the struct boundary, not fully implemented** — struct-by-value needs stack-slot
+  layout + field offsets + sret ABI; enums need tagged-union layout; generics need a
+  monomorphization engine; String/Vec need a runtime — each a subsystem the direct backend owns.
+  Cranelift stays 3/17. **Key WP-C3.4 caveat: most of that direct-backend breadth cost is
+  mandatory MIR work anyway (Gate C4), so the HIR-level comparison overstates the direct
+  backend's long-run cost.** Full head-to-head:
+  `starkc/docs/compiler/spikes/WP-C3-breadth-comparison.md`. (Implementing Cranelift
+  struct-by-value is a bounded ~150-200-line follow-up if an exact struct head-to-head number is
+  wanted.)
 - Both spikes done; the tradeoff is symmetric and matches the §4 hypothesis: generated-Rust =
-  low glue + free cross-platform/debug-info + heavy rustc dep; direct = fast builds + no rustc +
-  ABI control + biggest MIR beneficiary, but much more backend engineering. Neither falsified nor
-  cleared; WP-C3.4 selects.
+  low glue + free cross-platform/debug-info + broad correctness cheaply + heavy rustc dep; direct
+  = fast builds + no rustc + ABI control + biggest MIR beneficiary, but owns monomorphization/
+  layout/drop/runtime. Neither falsified nor cleared; WP-C3.4 selects (CE5, owner).
 - Evidence: see CD-002 for the closest existing evidence (old Gate 6/7 tensor/ONNX-deployment
   track) — informative precedent for methodology, not a substitute (CD-004).
 
@@ -1030,3 +1042,30 @@ candidates and exe-size/startup/runtime measurement before a confident selection
 fn-value properties (CD-022) still pending pre-selection.
 NEXT: WP-C3.4 — backend and runtime architecture selection under CE5 (owner decision):
 SELECT-GENERATED / SELECT-DIRECT / REVISE / BLOCKED.
+
+### WP-C3 breadth run (both spikes) — 2026-07-19
+DONE: extended the generated-Rust spike across aggregate/generic breadth (structs, impl/methods,
+struct literals, field/method access, generics + trait bounds, Option/Result, match + pattern
+lowering, String/&str) → 8/17 frozen corpus cases, all matching the interpreter (was 4/17). ~250
+lines of mechanical text emission; rustc absorbs monomorphization/layout/ABI/Drop. Cranelift
+breadth measured at the struct boundary rather than fully implemented (would need stack-slot
+layout + sret ABI for structs, tagged-union layout for enums, a monomorphization engine for
+generics, a runtime for String/Vec — each a subsystem), grounded in the built ~600-line Cranelift
+lowerer; Cranelift stays 3/17. Wrote WP-C3-breadth-comparison.md (the head-to-head + the caveat
+that most direct-backend breadth cost is mandatory MIR work anyway, so the HIR-level comparison
+overstates it). Updated WP-C3.2 and WP-C3.3 reports.
+FILES: starkc/tests/spike_genrust.rs (breadth extension + updated unsupported-cases test),
+starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md, WP-C3.3-direct-cranelift.md,
+WP-C3-breadth-comparison.md (new), COMPILER-STATE.md.
+RULES: none — spike/evidence only; no front-end bypass, no backend selection, no Core/compiler/
+interpreter change.
+DECISIONS: none at CE level. Native-backend-selection stays SPIKING.
+EVIDENCE: `cargo test --test spike_genrust` 2 passed (match-interpreter now 8/17 + updated
+unsupported-cleanly test); full workspace `cargo test --workspace --all-targets --all-features`
+600 passed / 0 failed / 2 ignored; `cargo fmt --all -- --check` + `cargo clippy --test
+spike_genrust --all-features -- -D warnings` clean.
+FOLLOW-UP: optional exact Cranelift struct head-to-head (~150-200-line sret impl); exe-size/
+startup/runtime still unmeasured for both; the fair comparison is at the MIR level (Gate C4), not
+HIR. The two open fn-value properties (CD-022) still pending pre-C3.4.
+NEXT: WP-C3.4 — backend and runtime architecture selection under CE5 (owner): SELECT-GENERATED /
+SELECT-DIRECT / REVISE / BLOCKED.

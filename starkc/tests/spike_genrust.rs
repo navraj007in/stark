@@ -69,6 +69,47 @@ impl<'a> Lowerer<'a> {
         for item_id in items {
             match &self.hir.item(item_id).kind {
                 ItemKind::Fn(def) => self.lower_fn(def)?,
+                ItemKind::Struct {
+                    name,
+                    fields,
+                    generics,
+                } => {
+                    // Breadth run: struct definitions. Subset = all-primitive fields (Copy).
+                    if !generics.is_empty() {
+                        return Err(unsup("generic struct"));
+                    }
+                    self.out.push_str("#[derive(Clone, Copy)]\n");
+                    self.out
+                        .push_str(&format!("struct {} {{\n", self.text(*name)));
+                    for f in fields {
+                        let fty = self.rust_type(f.ty)?;
+                        self.out
+                            .push_str(&format!("    {}: {fty},\n", self.text(f.name)));
+                    }
+                    self.out.push_str("}\n\n");
+                }
+                ItemKind::Impl {
+                    trait_: None,
+                    self_ty,
+                    items: impl_items,
+                    generics,
+                    ..
+                } => {
+                    if !generics.is_empty() {
+                        return Err(unsup("generic impl"));
+                    }
+                    let ty_name = self.rust_type(*self_ty)?;
+                    self.out.push_str(&format!("impl {ty_name} {{\n"));
+                    for ii in impl_items {
+                        if let starkc::hir::ImplItem::Fn { def, .. } = ii {
+                            let body = self.lower_method(def)?;
+                            self.out.push_str(&body);
+                        } else {
+                            return Err(unsup("non-fn impl item"));
+                        }
+                    }
+                    self.out.push_str("}\n\n");
+                }
                 ItemKind::Use(_) | ItemKind::Mod { .. } => {}
                 other => return Err(unsup(format!("top-level item {}", item_kind_name(other)))),
             }
@@ -76,34 +117,176 @@ impl<'a> Lowerer<'a> {
         Ok(())
     }
 
-    fn lower_fn(&mut self, def: &starkc::hir::FnDef) -> Result<(), Unsupported> {
+    /// Lower a method or associated function inside an `impl` block (indented body).
+    fn lower_method(&mut self, def: &starkc::hir::FnDef) -> Result<String, Unsupported> {
         if !def.sig.generics.is_empty() {
-            return Err(unsup("generic function"));
+            return Err(unsup("generic method"));
         }
+        let name = self.text(def.sig.name);
+        let mut params = String::new();
+        match def.sig.receiver {
+            Some(starkc::hir::Receiver::Ref) => params.push_str("&self"),
+            Some(starkc::hir::Receiver::RefMut) => params.push_str("&mut self"),
+            Some(starkc::hir::Receiver::Value) => params.push_str("self"),
+            None => {}
+        }
+        for p in &def.sig.params {
+            if !params.is_empty() {
+                params.push_str(", ");
+            }
+            let pty = self.rust_type(p.ty)?;
+            params.push_str(&format!("{}: {pty}", self.text(p.name)));
+        }
+        let ret = match &def.sig.ret {
+            starkc::hir::RetTy::Unit => "()".to_string(),
+            starkc::hir::RetTy::Ty(t) => self.rust_type(*t)?,
+            starkc::hir::RetTy::Never(_) => return Err(unsup("never-returning method")),
+        };
+        let body = self.lower_block(def.body)?;
+        Ok(format!("    fn {name}({params}) -> {ret} {body}\n"))
+    }
+
+    /// General type lowering: primitives, nominal struct/enum types, and core Option/Result/
+    /// String/str.
+    fn rust_type(&self, ty_id: starkc::hir::TypeId) -> Result<String, Unsupported> {
+        use starkc::hir::CoreType;
+        match &self.hir.ty(ty_id).kind {
+            starkc::hir::TypeKind::Primitive(Primitive::String) => Ok("String".to_string()),
+            starkc::hir::TypeKind::Primitive(Primitive::Str) => Ok("&str".to_string()),
+            starkc::hir::TypeKind::Primitive(p) => Ok(rust_prim(*p)
+                .ok_or_else(|| unsup(format!("primitive {p:?}")))?
+                .to_string()),
+            starkc::hir::TypeKind::Path { res, path, args } => match res {
+                Res::Item(item) => match &self.hir.item(*item).kind {
+                    ItemKind::Struct { name, .. } | ItemKind::Enum { name, .. } => {
+                        Ok(self.text(*name).to_string())
+                    }
+                    _ => Err(unsup("path type is not a struct/enum")),
+                },
+                Res::CoreType(CoreType::String) => Ok("String".to_string()),
+                Res::CoreType(ct @ (CoreType::Option | CoreType::Result)) => {
+                    let inner = self.type_args(args)?;
+                    let head = if matches!(ct, CoreType::Option) {
+                        "Option"
+                    } else {
+                        "Result"
+                    };
+                    Ok(format!("{head}<{}>", inner.join(", ")))
+                }
+                // A generic type parameter (`T`) — the name is valid Rust.
+                Res::TypeParam => Ok(self.text(path.span).to_string()),
+                _ => Err(unsup(format!("path type: {}", self.text(path.span)))),
+            },
+            _ => Err(unsup("unsupported type form")),
+        }
+    }
+
+    fn type_args(
+        &self,
+        args: &Option<starkc::hir::GenericArgs>,
+    ) -> Result<Vec<String>, Unsupported> {
+        let mut out = Vec::new();
+        if let Some(a) = args {
+            for arg in &a.args {
+                match arg {
+                    starkc::hir::GenericArg::Type(t) => out.push(self.rust_type(*t)?),
+                    _ => return Err(unsup("non-type generic argument")),
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn lower_pat(&self, pid: starkc::hir::PatId) -> Result<String, Unsupported> {
+        use starkc::hir::PatKind;
+        match &self.hir.pat(pid).kind {
+            PatKind::Wild => Ok("_".to_string()),
+            PatKind::Binding { name, .. } => Ok(self.text(*name).to_string()),
+            PatKind::Lit(_) => Ok(self.text(self.hir.pat(pid).span).to_string()),
+            // None, unit enum variants, and constants: the path text (`None`, `Enum::Variant`) is
+            // valid Rust for the subset.
+            PatKind::Path { path, .. } => Ok(self.text(path.span).to_string()),
+            PatKind::TupleVariant { path, pats, .. } => {
+                let mut inner = Vec::new();
+                for p in pats {
+                    inner.push(self.lower_pat(*p)?);
+                }
+                Ok(format!("{}({})", self.text(path.span), inner.join(", ")))
+            }
+            PatKind::Struct { path, fields, .. } => {
+                let mut fs = Vec::new();
+                for f in fields {
+                    match f.pat {
+                        Some(p) => {
+                            fs.push(format!("{}: {}", self.text(f.name), self.lower_pat(p)?))
+                        }
+                        None => fs.push(self.text(f.name).to_string()), // shorthand
+                    }
+                }
+                Ok(format!("{} {{ {} }}", self.text(path.span), fs.join(", ")))
+            }
+            PatKind::Tuple(pats) => {
+                let mut inner = Vec::new();
+                for p in pats {
+                    inner.push(self.lower_pat(*p)?);
+                }
+                Ok(format!("({})", inner.join(", ")))
+            }
+            PatKind::Array(_) => Err(unsup("array pattern")),
+            PatKind::Error => Err(unsup("error pattern")),
+        }
+    }
+
+    fn lower_fn(&mut self, def: &starkc::hir::FnDef) -> Result<(), Unsupported> {
         if def.sig.receiver.is_some() {
             return Err(unsup("method (self receiver)"));
         }
         let name = self.text(def.sig.name);
+        let generics = self.lower_generics(&def.sig.generics)?;
         let mut params = String::new();
         for (i, p) in def.sig.params.iter().enumerate() {
             if i > 0 {
                 params.push_str(", ");
             }
-            let pty = self.convert_param_ty(p.ty)?;
-            params.push_str(&format!("{}: {}", self.text(p.name), pty));
+            let pty = self.rust_type(p.ty)?;
+            params.push_str(&format!("{}: {pty}", self.text(p.name)));
         }
         let ret = match &def.sig.ret {
             starkc::hir::RetTy::Unit => "()".to_string(),
-            starkc::hir::RetTy::Ty(t) => self.convert_param_ty(*t)?.to_string(),
+            starkc::hir::RetTy::Ty(t) => self.rust_type(*t)?,
             starkc::hir::RetTy::Never(_) => return Err(unsup("never-returning function")),
         };
         // `main` stays `main`; everything else keeps its STARK name (valid Rust idents in-subset).
         self.out
-            .push_str(&format!("fn {name}({params}) -> {ret} {{\n"));
+            .push_str(&format!("fn {name}{generics}({params}) -> {ret} {{\n"));
         let body = self.lower_block(def.body)?;
         self.out.push_str(&body);
         self.out.push_str("\n}\n\n");
         Ok(())
+    }
+
+    /// Lower generic parameters with trait bounds: `<T: Ord, U: Clone>`. STARK's compiler-known
+    /// bound names (Ord/Eq/Clone/...) match Rust's spelling for the subset.
+    fn lower_generics(
+        &self,
+        generics: &[starkc::hir::GenericParam],
+    ) -> Result<String, Unsupported> {
+        if generics.is_empty() {
+            return Ok(String::new());
+        }
+        let mut parts = Vec::new();
+        for g in generics {
+            let mut bounds = Vec::new();
+            for bound in &g.bounds {
+                bounds.push(self.text(bound.path.span).to_string());
+            }
+            if bounds.is_empty() {
+                parts.push(self.text(g.name).to_string());
+            } else {
+                parts.push(format!("{}: {}", self.text(g.name), bounds.join(" + ")));
+            }
+        }
+        Ok(format!("<{}>", parts.join(", ")))
     }
 
     fn convert_param_ty(&self, ty_id: starkc::hir::TypeId) -> Result<&'static str, Unsupported> {
@@ -177,6 +360,7 @@ impl<'a> Lowerer<'a> {
             ExprKind::Lit(lit) => self.lower_lit(id, lit),
             ExprKind::Path { path, res, .. } => match res {
                 Res::Local(_) | Res::SelfValue(_) => Ok(self.text(path.span).to_string()),
+                Res::Builtin(Builtin::None) => Ok("None".to_string()),
                 other => Err(unsup(format!(
                     "path resolving to {other:?} in value position"
                 ))),
@@ -244,15 +428,54 @@ impl<'a> Lowerer<'a> {
             }
             ExprKind::Block(b) => self.lower_block(*b),
             // Everything below is deliberately out of the spike subset.
-            ExprKind::Field { .. } | ExprKind::TupleField { .. } => {
-                Err(unsup("field access / method call"))
-            }
+            ExprKind::Field { base, name, .. } => Ok(format!(
+                "({}).{}",
+                self.lower_expr(*base)?,
+                self.text(*name)
+            )),
+            ExprKind::TupleField { .. } => Err(unsup("tuple field")),
             ExprKind::Index { .. } => Err(unsup("indexing")),
             ExprKind::Try(_) => Err(unsup("`?` operator")),
             ExprKind::Tuple(_) => Err(unsup("tuple")),
             ExprKind::Array(_) | ExprKind::Repeat { .. } => Err(unsup("array")),
-            ExprKind::StructLit { .. } => Err(unsup("struct literal")),
-            ExprKind::Match { .. } => Err(unsup("match")),
+            ExprKind::StructLit { path, res, fields } => {
+                let name = match res {
+                    Res::Item(item) => match &self.hir.item(*item).kind {
+                        ItemKind::Struct { name, .. } => self.text(*name).to_string(),
+                        _ => return Err(unsup("struct literal of non-struct")),
+                    },
+                    _ => {
+                        return Err(unsup(format!(
+                            "struct literal path {}",
+                            self.text(path.span)
+                        )))
+                    }
+                };
+                let mut out = format!("{name} {{ ");
+                for (i, f) in fields.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    let val = match f.expr {
+                        Some(e) => self.lower_expr(e)?,
+                        None => self.text(f.name).to_string(), // field shorthand
+                    };
+                    out.push_str(&format!("{}: {val}", self.text(f.name)));
+                }
+                out.push_str(" }");
+                Ok(out)
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                let s = self.lower_expr(*scrutinee)?;
+                let mut out = format!("match ({s}) {{\n");
+                for arm in arms {
+                    let pat = self.lower_pat(arm.pat)?;
+                    let body = self.lower_expr(arm.body)?;
+                    out.push_str(&format!("    {pat} => {{ {body} }}\n"));
+                }
+                out.push('}');
+                Ok(out)
+            }
             ExprKind::Cast { .. } => Err(unsup("`as` cast")),
             ExprKind::Range { .. } => Err(unsup("range value outside a for-loop")),
             ExprKind::Error => Err(unsup("error expression")),
@@ -297,7 +520,20 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_call(&mut self, callee: ExprId, args: &[ExprId]) -> Result<String, Unsupported> {
-        let ExprKind::Path { res, .. } = &self.hir.expr(callee).kind else {
+        // Method call: `receiver.method(args)` — callee is a Field expression.
+        if let ExprKind::Field { base, name, .. } = &self.hir.expr(callee).kind {
+            let recv = self.lower_expr(*base)?;
+            let mut lowered = Vec::new();
+            for &a in args {
+                lowered.push(self.lower_expr(a)?);
+            }
+            return Ok(format!(
+                "({recv}).{}({})",
+                self.text(*name),
+                lowered.join(", ")
+            ));
+        }
+        let ExprKind::Path { res, path, .. } = &self.hir.expr(callee).kind else {
             return Err(unsup("indirect / non-path call"));
         };
         match res {
@@ -308,6 +544,27 @@ impl<'a> Lowerer<'a> {
             Res::Builtin(Builtin::Print) => {
                 let a = self.lower_one_arg(args)?;
                 Ok(format!("stark_print({a})"))
+            }
+            Res::Builtin(ctor @ (Builtin::Some | Builtin::Ok | Builtin::Err)) => {
+                let mut lowered = Vec::new();
+                for &a in args {
+                    lowered.push(self.lower_expr(a)?);
+                }
+                let head = match ctor {
+                    Builtin::Some => "Some",
+                    Builtin::Ok => "Ok",
+                    Builtin::Err => "Err",
+                    _ => unreachable!(),
+                };
+                Ok(format!("{head}({})", lowered.join(", ")))
+            }
+            Res::Builtin(Builtin::StringFrom) => {
+                // String::from(literal)
+                let mut lowered = Vec::new();
+                for &a in args {
+                    lowered.push(self.lower_expr(a)?);
+                }
+                Ok(format!("String::from({})", lowered.join(", ")))
             }
             Res::Builtin(b) => Err(unsup(format!("builtin {b:?}"))),
             Res::Item(item_id) => {
@@ -321,17 +578,34 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(format!("{name}({})", lowered.join(", ")))
             }
+            // Associated-function call: `Type::func(args)` (e.g. `Point::new(3, 4)`). The path
+            // text is already `Type::func` and is valid Rust for the subset.
+            Res::AssociatedFn(..) => {
+                let mut lowered = Vec::new();
+                for &a in args {
+                    lowered.push(self.lower_expr(a)?);
+                }
+                Ok(format!("{}({})", self.text(path.span), lowered.join(", ")))
+            }
             other => Err(unsup(format!("call to {other:?}"))),
         }
     }
 
     fn lower_one_arg(&mut self, args: &[ExprId]) -> Result<String, Unsupported> {
+        use starkc::hir::CoreType;
         if args.len() != 1 {
             return Err(unsup("print/println with != 1 argument"));
         }
-        let ty = self.expr_ty(args[0])?;
-        if !matches!(&ty, Ty::Primitive(p) if is_integer(*p) || *p == Primitive::Bool) {
-            return Err(unsup("print/println of a non-integer, non-bool value"));
+        // Peel references — `&str`, `&String`, `&Int32` all print via the value's Display.
+        let mut ty = self.expr_ty(args[0])?;
+        while let Ty::Ref { inner, .. } = ty {
+            ty = *inner;
+        }
+        let printable = matches!(&ty, Ty::Primitive(p)
+            if is_integer(*p) || *p == Primitive::Bool || *p == Primitive::Str || *p == Primitive::String)
+            || matches!(&ty, Ty::Core(CoreType::String, _));
+        if !printable {
+            return Err(unsup("print/println of an unsupported value type"));
         }
         self.lower_expr(args[0])
     }
@@ -351,7 +625,8 @@ impl<'a> Lowerer<'a> {
                 Ok(format!("{base}{suffix}"))
             }
             Lit::Float { .. } => Err(unsup("float literal")),
-            Lit::Str { .. } => Err(unsup("string literal")),
+            // STARK string-literal syntax (incl. the leading `r` on raw strings) is valid Rust.
+            Lit::Str { .. } => Ok(self.text(self.hir.expr(id).span).to_string()),
             Lit::Char => Err(unsup("char literal")),
         }
     }
@@ -675,17 +950,17 @@ fn genrust_spike_matches_interpreter_on_frozen_corpus() {
 /// constructs" deliverable. Does not require rustc.
 #[test]
 fn genrust_spike_reports_unsupported_constructs_cleanly() {
+    // Cases still outside the (breadth-extended) subset: they must report unsupported, not emit
+    // possibly-wrong code. (Structs, generics, Option/match, and String became *supported* by the
+    // breadth extension and are covered by the match-the-interpreter test instead.)
     let cases = [
+        ("collection_iter__01_vec_push_index_iterate", "Vec"),
         (
-            "struct_enum_trait__01_struct_construction_and_methods",
-            "struct",
+            "collection_iter__02_hashmap_insert_get_iteration_order",
+            "HashMap",
         ),
-        (
-            "option_result__01_option_construction_and_match",
-            "enum/Option",
-        ),
-        ("collection_iter__01_vec_push_index_iterate", "Vec/String"),
-        ("expr_stmt__04_match_and_patterns", "match"),
+        ("primitive__03_float_arithmetic_and_casts", "Float64"),
+        ("option_result__02_result_and_try_propagation", "? operator"),
     ];
     for (name, note) in cases {
         let front = front_end(name);
