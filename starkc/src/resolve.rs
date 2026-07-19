@@ -163,6 +163,10 @@ pub fn resolve_with_options(
     // Pass 3: Lower AST to HIR & perform lexical/local name resolution
     resolver.lower_crate();
 
+    // C4.5f-3c: carry the synthetic-span names (dependency-package mod wrappers) into HIR
+    // so MIR lowering's module-path walk can read them.
+    resolver.hir.synthetic_spans = resolver.ast.synthetic_spans.clone();
+
     (resolver.hir, resolver.diags)
 }
 

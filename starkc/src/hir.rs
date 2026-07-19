@@ -231,6 +231,10 @@ pub struct Hir {
     pub root: Root,
     pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
     pub publicly_nameable_items: std::collections::HashSet<ItemId>,
+    /// C4.5f-3c: names for synthetic spans (dependency-package `mod` wrappers use spans at
+    /// `lo >= 0x8000_0000` that index no real file). Copied from the AST so consumers past
+    /// resolution (MIR lowering's module-path walk) can read them.
+    pub synthetic_spans: std::collections::HashMap<crate::source::Span, String>,
 }
 
 pub enum Root {

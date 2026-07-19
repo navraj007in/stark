@@ -1087,3 +1087,204 @@ fn vec_iteration_behaviors_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.5f-3c: multi-file / multi-package lowering ----
+
+/// A real two-file program (`mod helper;` loaded from disk): cross-module calls, a
+/// cross-module struct with methods and a Drop impl, and module-qualified canonical
+/// symbols. Exercises per-item file plumbing (spans/SourceInfo in the right file, name
+/// reads in the declaring file) end to end.
+#[test]
+fn multi_file_module_program_agrees_with_qualified_symbols() {
+    let dir = std::env::temp_dir().join(format!("stark_f3c_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let helper_path = dir.join("helper.stark");
+    std::fs::write(
+        &helper_path,
+        "pub fn add_self(n: Int32) -> Int32 { n + n }\n\
+         pub fn add_both(a: Int32, b: Int32) -> Int32 { add_self(a) + b }\n",
+    )
+    .unwrap();
+    let main_path = dir.join("main.stark");
+    // NOTE (DEV-069): the FRONT END + ORACLE are not multi-file-span-clean — typecheck and
+    // the HIR interpreter read spans against the entry file, so cross-file METHODS
+    // mis-resolve, cross-file LITERALS mis-parse, and cross-file FIELD reads fail. The test
+    // therefore stays on the front-end-safe subset (scalar free fns, literal-free helper
+    // bodies), padded so helper name spans stay in-bounds for the checker's reads. The MIR
+    // lowering under test IS multi-file-clean (per-item files via ProgramMeta); widening
+    // this test tracks DEV-069's front-end fix, not MIR work.
+    let main_src = "mod helper;\n\
+         fn main() {\n\
+             println(helper::add_self(4));\n\
+             println(helper::add_both(2, 5));\n\
+             println(100);\n\
+         }\n\
+         // padding padding padding padding padding padding padding padding padding\n\
+         // padding padding padding padding padding padding padding padding padding\n\
+         // padding padding padding padding padding padding padding padding padding\n\
+         // padding padding padding padding padding padding padding padding padding\n";
+    std::fs::write(&main_path, main_src).unwrap();
+
+    let file = Arc::new(SourceFile::new(
+        main_path.to_string_lossy().into_owned(),
+        main_src.to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    let errors: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "typecheck: {errors:?}");
+
+    // Oracle vs MIR.
+    let oracle =
+        interp::run_with_partial_output(&hir, file.clone(), &checked.tables).expect("oracle runs");
+    let program = lower_program(&hir, &checked.tables, file.clone())
+        .unwrap_or_else(|e| panic!("lowering failed: {} @ {:?}", e.what, e.span));
+    // Module-qualified symbols + a second interned file.
+    let symbols: Vec<&str> = program
+        .bodies
+        .iter()
+        .map(|b| b.instance.symbol.as_str())
+        .collect();
+    assert!(
+        symbols.contains(&"helper::add_self@[]"),
+        "expected module-qualified fn symbol, got {symbols:?}"
+    );
+    assert!(
+        symbols.contains(&"helper::add_both@[]"),
+        "expected the module-qualified fn symbol, got {symbols:?}"
+    );
+    assert!(
+        program.files.len() >= 2,
+        "expected the helper file interned in the file table"
+    );
+    let verified = verify_program(&program).expect("multi-file program verifies");
+    let exec = match run_program(verified) {
+        Ok(exec) => exec,
+        Err(failure) => panic!(
+            "MIR failed: {:?} (stdout {:?})",
+            failure.error, failure.output
+        ),
+    };
+    assert_eq!(exec.output, oracle.output, "multi-file differential");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// C4.5 EXIT CHECK: the ENTIRE frozen corpus (`corpus_version` current, all 17 cases) runs
+/// equivalently through both interpreters — the WP-C4.5 exit criterion.
+#[test]
+fn entire_frozen_corpus_agrees() {
+    for name in [
+        "collection_iter__01_vec_push_index_iterate",
+        "collection_iter__02_hashmap_insert_get_iteration_order",
+        "expr_stmt__01_arithmetic_and_precedence",
+        "expr_stmt__02_if_else_and_block_tail",
+        "expr_stmt__03_loops_break_continue",
+        "expr_stmt__04_match_and_patterns",
+        "option_result__01_option_construction_and_match",
+        "option_result__02_result_and_try_propagation",
+        "ownership_drop__01_move_and_drop_order",
+        "ownership_drop__02_shared_borrow_does_not_move",
+        "primitive__01_integer_widths_and_overflow_traps",
+        "primitive__02_integer_overflow_traps",
+        "primitive__03_float_arithmetic_and_casts",
+        "struct_enum_trait__01_struct_construction_and_methods",
+        "struct_enum_trait__02_enum_and_pattern_match",
+        "struct_enum_trait__03_generic_function_and_trait_bound",
+        "struct_enum_trait__04_trait_default_and_override",
+    ] {
+        let path = corpus_dir().join(format!("{name}.stark"));
+        let source = std::fs::read_to_string(&path).unwrap();
+        differential(&path.to_string_lossy(), source);
+    }
+}
+
+// ---- WP-C4.5f-3a: HashMap surface (0.1-A3) ----
+
+/// HashMap new/insert/get/len/is_empty/contains_key agree, including insert's returned
+/// `Option<V>` (None on fresh key, Some(old) on overwrite — the A1 honesty rule's visible form).
+#[test]
+fn hashmap_data_operations_agree() {
+    differential(
+        "mapops.stark",
+        "fn main() { \
+             let mut m: HashMap<Int32, Int32> = HashMap::new(); \
+             println(m.is_empty()); \
+             match m.insert(1, 10) { Some(old) => println(old), None => println(-1), }; \
+             match m.insert(1, 11) { Some(old) => println(old), None => println(-1), }; \
+             m.insert(2, 20); \
+             println(m.len()); \
+             println(m.contains_key(&2)); \
+             println(m.contains_key(&9)); \
+             match m.get(&1) { Some(v) => println(*v), None => println(-1), }; \
+             match m.get(&9) { Some(v) => println(*v), None => println(-1), }; \
+         }"
+        .to_string(),
+    );
+}
+
+/// `for k in m.keys()` observes deterministic insertion order (CD-009) identically in both
+/// engines, including reads back through `get` inside the loop body.
+#[test]
+fn hashmap_keys_iteration_order_agrees() {
+    differential(
+        "mapkeys.stark",
+        "fn main() { \
+             let mut m: HashMap<Int32, Int32> = HashMap::new(); \
+             m.insert(3, 30); \
+             m.insert(1, 10); \
+             m.insert(2, 20); \
+             for k in m.keys() { \
+                 println(*k); \
+                 match m.get(k) { Some(v) => println(*v), None => println(-1), }; \
+             } \
+         }"
+        .to_string(),
+    );
+}
+
+// ---- WP-C4.5f-3b: Char ops + assert_eq/assert_ne ----
+
+/// Char literals, `println(Char)`, and `String::push`/`pop` of a Char agree.
+#[test]
+fn char_operations_agree() {
+    differential(
+        "charops.stark",
+        "fn main() { \
+             let c = 'x'; \
+             println(c); \
+             let mut s = String::from(\"hi\"); \
+             s.push('!'); \
+             println(s.as_str()); \
+             match s.pop() { Some(last) => println(last), None => println('?'), }; \
+             println(s.as_str()); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Passing `assert_eq`/`assert_ne` (scalar and string) are no-ops; a failing `assert_eq`
+/// traps AssertFailure after identical pre-trap output in both engines.
+#[test]
+fn assert_eq_and_ne_agree() {
+    differential(
+        "asserteq.stark",
+        "fn main() { \
+             assert_eq(2 + 2, 4); \
+             assert_ne(1, 2); \
+             assert_eq(\"ab\", \"ab\"); \
+             assert_ne(\"ab\", \"cd\"); \
+             println(1); \
+             assert_eq(3, 5); \
+             println(2); \
+         }"
+        .to_string(),
+    );
+}

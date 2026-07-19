@@ -197,6 +197,43 @@ HIR/MIR differential agreement before the next begins.
      (`VecIterNew`/`VecIterNext` in a by-reference `Option<&T>` form). Unblocks
      `collection_iter__01`'s `for value in values.iter()` (its push/index/len half already
      lowers under e-2).
+   - **C4.5f-3a — HashMap surface, `0.1-A3`: DONE 2026-07-19** (amendment rev. 6, per CD-032's
+     dated-enumeration rule). `RuntimeFn` HashMap group (`New`/`Insert`/`Get`/`Len`/`IsEmpty`/
+     `ContainsKey`/`KeysIterNew`/`KeysIterNext`); map represented as an insertion-ordered
+     (CD-009) `MirValue::Vec` of `[k, v]` aggregates. `insert` returns the displaced
+     `Option<V>` — the honesty rule's visible form: no `RuntimeFn` runs a user destructor, the
+     caller drops the returned Option at a visible `Drop`; user-`Drop` `K`/`V` are refused by
+     lowering. `get` yields an interior `Option<&V>`; `keys()` is a **true borrowed cursor**
+     (not a snapshot — the map stays borrowed), `for k in m.keys()` reuses the generalized
+     `lower_for_over_iter` desugaring from f-2. Verifier: schematic-`(K,V)` `map_runtime_sig`
+     (constructors from destination, methods from the first `&HashMap` operand, `KeysIterNext`
+     from `Core(KeysIter,[K])`). **`collection_iter__02` corpus case differential-green — all
+     17 frozen corpus cases now reachable.** 2 differential tests (data ops incl.
+     insert-returns-old; keys-order + get-in-loop).
+   - **C4.5f-3b — Char ops + `assert_eq`/`assert_ne`: DONE 2026-07-19** (rev. 6 enumeration,
+     with f-3a's `0.1-A3` bump). `MirTy::Char` (Char literals are `Constant::Int` carrying the
+     Unicode scalar value), `PrintlnChar`/`PrintChar`, `String::push(Char)`/`pop() ->
+     Option<Char>` → `StringPushChar`/`StringPopChar`. `assert_eq`/`assert_ne` lower to a
+     scalar `BinOp::Eq` or `StrEq`/`StrCmp` string comparison feeding a conditional
+     `Trap{AssertFailure}` (message fidelity vs. the oracle's formatted message deferred with
+     the e-1 boundary). 2 differential tests (char print/push/pop; passing scalar+string
+     asserts then a failing `assert_eq` trap with pre-trap prefix).
+   - **C4.5f-3c — multi-file/multi-package lowering: DONE 2026-07-19.** `ProgramMeta`: every
+     source file interned (`FileId(0)` = entry), each item mapped to its declaring file +
+     module path, `FnLowerer` reads every cross-item name (impl/trait/struct/field/variant
+     text) against the **owning item's** file; `resolve.rs`/`hir.rs` carry `synthetic_spans`
+     so generated wrappers are never text-read. Canonical symbols are module-qualified
+     (`⟨module⟩::name@[args]`, e.g. `helper::add_self@[]`), computed per item's module path —
+     package-stable linkage identity for C5. Differential test: two-file program agreeing
+     end-to-end with qualified symbols and an interned file table. **Found DEV-069 (open,
+     front-end WP):** the type checker + HIR oracle read cross-file spans against the entry
+     file (cross-file methods/literals/field reads all break), so the test pins the
+     front-end-safe subset; the MIR side is multi-file-clean. Also fixed here, found by the
+     exit sweep: MIR-interp call-argument binding was positional over locals `1..n`, silently
+     clobbering interleaved drop-flag locals for any callee with droppable params (bit
+     `largest::<String>` in `struct_enum_trait__03`) — now bound by declared `Param(i)` kind
+     with arity checks; and method receivers/`&expr` on non-place expressions (call results)
+     now materialize through `place_or_temp`. Workspace 707/0/2.
 
 ## Differential-independence caveat (recorded per CD-029)
 
@@ -210,3 +247,12 @@ spec-derived tests (`tests/canonical_float.rs`), not by the differential.
 WP-C4.5 completes when every normative Core construct required by C5 has verified MIR lowering
 and the full frozen corpus (`corpus_version` current) runs equivalently through both
 interpreters — feeding directly into the C4.6 gate exit.
+
+**EXIT SATISFIED 2026-07-19.** `tests/mir_differential.rs::entire_frozen_corpus_agrees` runs
+all 17 frozen corpus cases (`corpus_version` current) through both interpreters and they agree
+on output, trap category, trap provenance, trap message, and pre-trap stdout. 52 differential +
+12 lowering/dump + 29 verifier tests; workspace 707/0. Runtime surface at exit: `0.1-A3`
+(A1 rev. 6). Known-open boundaries carried past the exit, none corpus-blocking: DEV-067
+(bounded-generic over-rejection), DEV-069 (front-end multi-file span discipline), user-nominal
+`Eq`/`Ord` operator dispatch, generic impl/trait methods, reserved surface ops
+(`values()`/`remove()`/`HashSet`/`StringSubstring`/`VecGetRef`), assert-message fidelity.

@@ -660,6 +660,10 @@ impl<'a> BodyCx<'a> {
                     Callee::Runtime(rt) if is_vec_runtime_fn(*rt) => {
                         self.vec_runtime_sig(*rt, &arg_tys, dest_ty.as_ref(), bi)
                     }
+                    // 0.1-A3: HashMap ops are schematic in (K, V).
+                    Callee::Runtime(rt) if is_map_runtime_fn(*rt) => {
+                        self.map_runtime_sig(*rt, &arg_tys, dest_ty.as_ref(), bi)
+                    }
                     Callee::Runtime(rt) => Some(runtime_sig(*rt)),
                 };
                 if let Some((params, ret)) = sig {
@@ -1173,6 +1177,111 @@ impl<'a> BodyCx<'a> {
                 (vec![iter_ref], opt(&elem_ref))
             }
             _ => unreachable!("non-Vec op in vec_runtime_sig"),
+        })
+    }
+
+    /// 0.1-A3: HashMap ops, schematic in (K, V). Constructors resolve from the destination;
+    /// methods from the first `&HashMap` operand; the keys iterator from `Core(KeysIter,[K])`.
+    /// User-`Drop` K/V is a lowering-side exclusion; the verifier checks shapes only.
+    fn map_runtime_sig(
+        &mut self,
+        rt: RuntimeFn,
+        arg_tys: &[Option<MirTy>],
+        dest_ty: Option<&MirTy>,
+        bi: u32,
+    ) -> Option<(Vec<MirTy>, MirTy)> {
+        use RuntimeFn::*;
+        let map = |k: &MirTy, v: &MirTy| {
+            MirTy::Core(crate::hir::CoreType::HashMap, vec![k.clone(), v.clone()])
+        };
+        let map_ref = |k: &MirTy, v: &MirTy, mutable| MirTy::Ref {
+            mutable,
+            inner: Box::new(map(k, v)),
+        };
+        let sref = |t: &MirTy| MirTy::Ref {
+            mutable: false,
+            inner: Box::new(t.clone()),
+        };
+        let opt = |t: MirTy| MirTy::Enum(EnumRef::CoreOption, vec![t]);
+
+        // Resolve (K, V).
+        let kv = match rt {
+            HashMapNew => match dest_ty {
+                Some(MirTy::Core(crate::hir::CoreType::HashMap, args)) if args.len() == 2 => {
+                    Some((args[0].clone(), args[1].clone()))
+                }
+                _ => {
+                    self.err("MIR-0012", bi, "HashMap constructor dest is not a HashMap");
+                    None
+                }
+            },
+            HashMapKeysIterNext => match arg_tys.first().and_then(|o| o.as_ref()) {
+                Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                    MirTy::Core(crate::hir::CoreType::KeysIter, args) => args
+                        .first()
+                        .map(|k| (k.clone(), MirTy::Unit /* V unused */)),
+                    other => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("KeysIterNext operand is &{other:?}, not &mut KeysIter"),
+                        );
+                        None
+                    }
+                },
+                _ => {
+                    self.err(
+                        "MIR-0012",
+                        bi,
+                        "KeysIterNext operand is not a &mut KeysIter",
+                    );
+                    None
+                }
+            },
+            _ => match arg_tys.first().and_then(|o| o.as_ref()) {
+                Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                    MirTy::Core(crate::hir::CoreType::HashMap, args) if args.len() == 2 => {
+                        Some((args[0].clone(), args[1].clone()))
+                    }
+                    other => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("HashMap op first operand is &{other:?}, not &HashMap"),
+                        );
+                        None
+                    }
+                },
+                _ => {
+                    self.err("MIR-0012", bi, "HashMap op first operand is not a &HashMap");
+                    None
+                }
+            },
+        };
+        let (k, v) = kv?;
+
+        Some(match rt {
+            HashMapNew => (vec![], map(&k, &v)),
+            HashMapInsert => (
+                vec![map_ref(&k, &v, true), k.clone(), v.clone()],
+                opt(v.clone()),
+            ),
+            HashMapGet => (vec![map_ref(&k, &v, false), sref(&k)], opt(sref(&v))),
+            HashMapLen => (vec![map_ref(&k, &v, false)], MirTy::UInt64),
+            HashMapIsEmpty => (vec![map_ref(&k, &v, false)], MirTy::Bool),
+            HashMapContainsKey => (vec![map_ref(&k, &v, false), sref(&k)], MirTy::Bool),
+            HashMapKeysIterNew => (
+                vec![map_ref(&k, &v, false)],
+                MirTy::Core(crate::hir::CoreType::KeysIter, vec![k.clone()]),
+            ),
+            HashMapKeysIterNext => {
+                let iter_ref = MirTy::Ref {
+                    mutable: true,
+                    inner: Box::new(MirTy::Core(crate::hir::CoreType::KeysIter, vec![k.clone()])),
+                };
+                (vec![iter_ref], opt(sref(&k)))
+            }
+            _ => unreachable!("non-HashMap op in map_runtime_sig"),
         })
     }
 
@@ -1724,6 +1833,21 @@ fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
     )
 }
 
+fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(
+        rt,
+        HashMapNew
+            | HashMapInsert
+            | HashMapGet
+            | HashMapLen
+            | HashMapIsEmpty
+            | HashMapContainsKey
+            | HashMapKeysIterNew
+            | HashMapKeysIterNext
+    )
+}
+
 /// A1 V-STR-2: is `ty` a `String`, or a `str` behind any depth of reference? Such operands
 /// must not appear in structural `BinOp`/`UnOp` — comparisons route through `StrEq`/`StrCmp`.
 fn is_stringish(ty: &MirTy) -> bool {
@@ -1765,10 +1889,21 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         StrToString => (vec![str_ref()], MirTy::String),
         StrEq => (vec![str_ref(), str_ref()], MirTy::Bool),
         StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
+        // 0.1-A3 (f-3b): Char ops.
+        PrintlnChar | PrintChar => (vec![MirTy::Char], MirTy::Unit),
+        StringPushChar => (vec![string_ref(true), MirTy::Char], MirTy::Unit),
+        StringPopChar => (
+            vec![string_ref(true)],
+            MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char]),
+        ),
         // Vec ops are schematic in T — resolved by `vec_runtime_sig`, never this fixed table.
         VecNew | VecWithCapacity | VecPush | VecPop | VecLen | VecIsEmpty | VecIndexGet
         | VecReplace | VecRemove | VecClear | VecIterNew | VecIterNext => {
             unreachable!("Vec ops resolve through vec_runtime_sig, not runtime_sig")
+        }
+        HashMapNew | HashMapInsert | HashMapGet | HashMapLen | HashMapIsEmpty
+        | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext => {
+            unreachable!("HashMap ops resolve through map_runtime_sig, not runtime_sig")
         }
     }
 }

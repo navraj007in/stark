@@ -177,7 +177,7 @@ fn golden_mini_dump() {
     // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
     // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
     let expected = "\
-// STARK MIR v0.1 (runtime-surface 0.1-A2)
+// STARK MIR v0.1 (runtime-surface 0.1-A3)
 
 fn main@[] {
   locals: _0: Unit [ret], _1: Unit [tmp], _2: Int32 [tmp], _3: Int64 [tmp]
@@ -271,20 +271,22 @@ fn unsupported_constructs_report_cleanly() {
             "C4.5e",
         ),
         (
-            // Vec iteration (0.1-A2, f-2) lowers; HashMap remains outside the surface.
-            "hashmap.stark",
+            // The core HashMap surface (0.1-A3, f-3a) lowers; values() stays reserved.
+            "hashmapvalues.stark",
             "fn main() { \
                  let mut m: HashMap<Int32, Int32> = HashMap::new(); \
                  m.insert(1, 2); \
-                 println(m.len()); \
+                 for v in m.values() { println(*v); } \
              }",
             "C4.5",
         ),
         (
-            // Char literals + Char-dependent ops are deferred to a later C4.5e sub-slice.
-            "char.stark",
-            "fn main() { let c = 'a'; let mut s = String::new(); s.push(c); }",
-            "Char",
+            // User-nominal Eq/Ord operator dispatch remains a later increment.
+            "usereq.stark",
+            "struct P { x: Int32 } \
+             impl Eq for P { fn eq(&self, other: &P) -> Bool { self.x == other.x } } \
+             fn main() { let a = P { x: 1 }; let b = P { x: 1 }; println(a == b); }",
+            "Eq/Ord impl",
         ),
     ];
     for (name, src, needle) in cases {
@@ -454,7 +456,7 @@ fn string_literal_dump_round_trips_escapes() {
     let program = lower_ok(&front);
     let dump = program.dump();
     assert!(
-        dump.contains("(runtime-surface 0.1-A2)"),
+        dump.contains("(runtime-surface 0.1-A3)"),
         "dump header must carry the current runtime surface, got:\n{dump}"
     );
     assert!(

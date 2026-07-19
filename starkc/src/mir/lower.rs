@@ -64,23 +64,122 @@ fn unsupported<T>(what: impl Into<String>, span: Span) -> Result<T, LowerError> 
     })
 }
 
+/// C4.5f-3c: per-program metadata for multi-file / multi-package lowering. Every item knows
+/// its defining file (so spans and name reads land in the right source) and its module path
+/// (so canonical symbols are package/module-qualified: `⟨package⟩::⟨module⟩::name@[args]`).
+struct ProgramMeta {
+    /// Interned files; index = `FileId`. The entry file is `FileId(0)`.
+    files: Vec<Arc<SourceFile>>,
+    /// `item.0` → (defining file, module path from the root, outermost first).
+    items: HashMap<u32, (FileId, Vec<String>)>,
+    /// Every item reachable from the root, modules included (deterministic walk order).
+    all_items: Vec<ItemId>,
+}
+
+impl ProgramMeta {
+    fn build(hir: &Hir, entry: &Arc<SourceFile>) -> Result<Self, LowerError> {
+        let mut files: Vec<Arc<SourceFile>> = vec![entry.clone()];
+        let mut by_name: HashMap<String, FileId> = HashMap::new();
+        by_name.insert(entry.name.clone(), FileId(0));
+        let mut intern = |file: &Arc<SourceFile>, files: &mut Vec<Arc<SourceFile>>| -> FileId {
+            if let Some(&id) = by_name.get(&file.name) {
+                return id;
+            }
+            let id = FileId(files.len() as u32);
+            files.push(file.clone());
+            by_name.insert(file.name.clone(), id);
+            id
+        };
+
+        let root_items = match &hir.root {
+            hir::Root::Program(items) => items.clone(),
+            _ => return unsupported("non-program root", Span { lo: 0, hi: 0 }),
+        };
+        let mut items: HashMap<u32, (FileId, Vec<String>)> = HashMap::new();
+        let mut all_items: Vec<ItemId> = Vec::new();
+        let mut stack: Vec<(ItemId, Vec<String>)> =
+            root_items.iter().rev().map(|&i| (i, Vec::new())).collect();
+        while let Some((item_id, path)) = stack.pop() {
+            let file_id = match hir.item_files.get(&item_id) {
+                Some(f) => intern(f, &mut files),
+                None => FileId(0),
+            };
+            items.insert(item_id.0, (file_id, path.clone()));
+            all_items.push(item_id);
+            if let ItemKind::Mod {
+                name,
+                items: Some(children),
+            } = &hir.item(item_id).kind
+            {
+                // The mod's name span reads in the file DECLARING the mod (this item's own
+                // file); dependency-package wrappers use synthetic spans resolved by name.
+                let mod_name = if let Some(s) = hir.synthetic_spans.get(name) {
+                    s.clone()
+                } else {
+                    let src = &files[file_id.0 as usize].src;
+                    src.get(name.lo as usize..name.hi as usize)
+                        .unwrap_or("?")
+                        .to_string()
+                };
+                let mut child_path = path;
+                child_path.push(mod_name);
+                for &child in children.iter().rev() {
+                    stack.push((child, child_path.clone()));
+                }
+            }
+        }
+        Ok(ProgramMeta {
+            files,
+            items,
+            all_items,
+        })
+    }
+
+    fn item_file(&self, item: ItemId) -> FileId {
+        self.items
+            .get(&item.0)
+            .map(|(f, _)| *f)
+            .unwrap_or(FileId(0))
+    }
+
+    fn item_src(&self, item: ItemId) -> &str {
+        &self.files[self.item_file(item).0 as usize].src
+    }
+
+    /// Read a span belonging to `item`'s file.
+    fn item_text(&self, item: ItemId, span: Span) -> &str {
+        self.item_src(item)
+            .get(span.lo as usize..span.hi as usize)
+            .unwrap_or("?")
+    }
+
+    /// `"dep::inner::"` for a nested item; empty for root items.
+    fn symbol_prefix(&self, item: ItemId) -> String {
+        match self.items.get(&item.0) {
+            Some((_, path)) if !path.is_empty() => format!("{}::", path.join("::")),
+            _ => String::new(),
+        }
+    }
+}
+
 /// Lower a whole program (entry `main` plus every transitively-called supported function).
 pub fn lower_program(
     hir: &Hir,
     tables: &TypeTables,
     file: Arc<SourceFile>,
 ) -> Result<MirProgram, LowerError> {
-    let root_items = match &hir.root {
-        hir::Root::Program(items) => items.clone(),
-        _ => return unsupported("non-program root", Span { lo: 0, hi: 0 }),
-    };
-    let src = file.src.clone();
-    let text = |span: Span| src[span.lo as usize..span.hi as usize].to_string();
+    // C4.5f-3c: multi-file/multi-package metadata — per-item files, module paths, and the
+    // full (module-nested included) item list.
+    let meta = ProgramMeta::build(hir, &file)?;
 
+    // `main` is the ROOT `main` (executable-mode selection, CD-017): module/package `main`s
+    // do not qualify.
     let mut main = None;
-    for &item_id in &root_items {
+    for &item_id in &meta.all_items {
         if let ItemKind::Fn(def) = &hir.item(item_id).kind {
-            if text(def.sig.name) == "main" {
+            if meta.symbol_prefix(item_id).is_empty()
+                && meta.item_text(item_id, def.sig.name) == "main"
+            {
                 main = Some(item_id);
             }
         }
@@ -90,40 +189,65 @@ pub fn lower_program(
     };
 
     let mut program = MirProgram {
-        files: vec![file.clone()],
+        files: meta.files.clone(),
         bodies: Vec::new(),
         types: TypeContext::default(),
         mir_version: MIR_VERSION.to_string(),
         runtime_surface: MIR_RUNTIME_SURFACE.to_string(),
     };
-    let file_id = FileId(0);
 
     // Populate the nominal type context (struct fields, user-enum variant payloads) for every
-    // non-generic top-level nominal type, so the verifier/backends can resolve projections.
-    {
-        let probe = FnLowerer::new(hir, tables, &src, file_id, FnKey::Top(main, Vec::new()));
-        // A1 (CD-031): record which non-generic nominals carry an `impl Copy` so the verifier's
-        // V-COPY-1 (`copy_types`) can resolve Copy-ness without HIR access.
-        for &item_id in &root_items {
-            if matches!(
-                &hir.item(item_id).kind,
-                ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. }
-                    if generics.is_empty()
-            ) && probe.type_has_copy_impl(item_id)
-            {
-                program.types.copy_types.insert((item_id.0, Vec::new()));
-            }
+    // non-generic nominal — module-nested ones included (f-3c) — so the verifier/backends can
+    // resolve projections. Each nominal gets a probe keyed to itself so field-type spans read
+    // in the nominal's own file.
+    for &item_id in &meta.all_items {
+        let probe = FnLowerer::new(hir, tables, &meta, FnKey::Top(item_id, Vec::new()));
+        // A1 (CD-031): record which non-generic nominals carry an `impl Copy` (V-COPY-1).
+        if matches!(
+            &hir.item(item_id).kind,
+            ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. }
+                if generics.is_empty()
+        ) && probe.type_has_copy_impl(item_id)
+        {
+            program.types.copy_types.insert((item_id.0, Vec::new()));
         }
-        for &item_id in &root_items {
-            match &hir.item(item_id).kind {
-                ItemKind::Struct {
-                    fields, generics, ..
-                } if generics.is_empty() => {
+        match &hir.item(item_id).kind {
+            ItemKind::Struct {
+                fields, generics, ..
+            } if generics.is_empty() => {
+                let mut tys = Vec::new();
+                let mut ok = true;
+                for f in fields {
+                    // Field HIR types convert through the same path as everything else.
+                    match probe.hir_field_ty(f.ty) {
+                        Ok(t) => tys.push(t),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    program
+                        .types
+                        .struct_fields
+                        .insert((item_id.0, Vec::new()), tys);
+                }
+            }
+            ItemKind::Enum {
+                variants, generics, ..
+            } if generics.is_empty() => {
+                let mut all = Vec::new();
+                let mut ok = true;
+                for v in variants {
+                    let payload: Vec<hir::TypeId> = match &v.kind {
+                        hir::VariantKind::Unit => Vec::new(),
+                        hir::VariantKind::Tuple(tys) => tys.clone(),
+                        hir::VariantKind::Struct(fields) => fields.iter().map(|f| f.ty).collect(),
+                    };
                     let mut tys = Vec::new();
-                    let mut ok = true;
-                    for f in fields {
-                        // Field HIR types convert through the same path as everything else.
-                        match probe.hir_field_ty(f.ty) {
+                    for ty_id in payload {
+                        match probe.hir_field_ty(ty_id) {
                             Ok(t) => tys.push(t),
                             Err(_) => {
                                 ok = false;
@@ -131,63 +255,33 @@ pub fn lower_program(
                             }
                         }
                     }
-                    if ok {
-                        program
-                            .types
-                            .struct_fields
-                            .insert((item_id.0, Vec::new()), tys);
+                    if !ok {
+                        break;
                     }
+                    all.push(tys);
                 }
-                ItemKind::Enum {
-                    variants, generics, ..
-                } if generics.is_empty() => {
-                    let mut all = Vec::new();
-                    let mut ok = true;
-                    for v in variants {
-                        let payload: Vec<hir::TypeId> = match &v.kind {
-                            hir::VariantKind::Unit => Vec::new(),
-                            hir::VariantKind::Tuple(tys) => tys.clone(),
-                            hir::VariantKind::Struct(fields) => {
-                                fields.iter().map(|f| f.ty).collect()
-                            }
-                        };
-                        let mut tys = Vec::new();
-                        for ty_id in payload {
-                            match probe.hir_field_ty(ty_id) {
-                                Ok(t) => tys.push(t),
-                                Err(_) => {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if !ok {
-                            break;
-                        }
-                        all.push(tys);
-                    }
-                    if ok {
-                        program
-                            .types
-                            .enum_variants
-                            .insert((item_id.0, Vec::new()), all);
-                    }
+                if ok {
+                    program
+                        .types
+                        .enum_variants
+                        .insert((item_id.0, Vec::new()), all);
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
 
     // Deterministic, deduplicating instance discovery (contract §2): worklist from `main`,
-    // keyed by canonical symbol (top fns, impl methods/assoc fns, trait defaults — C4.5a).
+    // keyed by canonical symbol (top fns, impl methods/assoc fns, trait defaults — C4.5a;
+    // module/package-qualified per f-3c).
     let mut queued: BTreeMap<String, ()> = BTreeMap::new();
     let mut worklist = VecDeque::new();
     let main_key = FnKey::Top(main, Vec::new());
-    queued.insert(key_symbol(hir, &src, &main_key)?, ());
+    queued.insert(key_symbol(hir, &meta, &main_key)?, ());
     worklist.push_back(main_key);
     let mut bodies = Vec::new();
     while let Some(key) = worklist.pop_front() {
-        let mut lowerer = FnLowerer::new(hir, tables, &src, file_id, key.clone());
+        let mut lowerer = FnLowerer::new(hir, tables, &meta, key.clone());
         let body = lowerer.lower_body()?;
         // C4.5d: dtor symbols this body's drop glue dispatches through.
         program
@@ -195,7 +289,7 @@ pub fn lower_program(
             .drop_impls
             .append(&mut lowerer.drop_impl_symbols);
         for callee in lowerer.discovered_callees {
-            let symbol = key_symbol(hir, &src, &callee)?;
+            let symbol = key_symbol(hir, &meta, &callee)?;
             if queued.insert(symbol, ()).is_none() {
                 // C4.5c: the named instance limit — polymorphic recursion or explosive
                 // generic instantiation fails here deterministically, never by exhaustion.
@@ -219,7 +313,7 @@ pub fn lower_program(
     program.bodies = bodies;
     // C4.5c: register every generic nominal instantiation reachable from the lowered bodies
     // in the type context, so the verifier and backends can resolve its projections.
-    register_reachable_nominal_instances(hir, tables, &src, file_id, &mut program)?;
+    register_reachable_nominal_instances(hir, tables, &meta, &mut program)?;
     Ok(program)
 }
 
@@ -232,13 +326,13 @@ enum NominalFields {
 fn nominal_instance_fields(
     hir: &Hir,
     tables: &TypeTables,
-    src: &str,
-    file: FileId,
+    meta: &ProgramMeta,
     item: ItemId,
     args: &[MirTy],
 ) -> Result<NominalFields, LowerError> {
     let span0 = Span { lo: 0, hi: 0 };
-    let mut probe = FnLowerer::new(hir, tables, src, file, FnKey::Top(item, Vec::new()));
+    // The probe is keyed to the nominal itself, so field-type spans read in ITS file (f-3c).
+    let mut probe = FnLowerer::new(hir, tables, meta, FnKey::Top(item, Vec::new()));
     let generics = match &hir.item(item).kind {
         ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. } => generics,
         _ => return unsupported("nominal instance of a non-nominal item", span0),
@@ -250,7 +344,7 @@ fn nominal_instance_fields(
         );
     }
     for (param, ty) in generics.iter().zip(args) {
-        let name = src[param.name.lo as usize..param.name.hi as usize].to_string();
+        let name = meta.item_text(item, param.name).to_string();
         probe.param_subst.insert(name, ty.clone());
     }
     match &hir.item(item).kind {
@@ -288,8 +382,7 @@ fn nominal_instance_fields(
 fn register_reachable_nominal_instances(
     hir: &Hir,
     tables: &TypeTables,
-    src: &str,
-    file: FileId,
+    meta: &ProgramMeta,
     program: &mut MirProgram,
 ) -> Result<(), LowerError> {
     use std::collections::BTreeSet;
@@ -309,7 +402,7 @@ fn register_reachable_nominal_instances(
                 if args.is_empty() || !seen.insert((item.0, args.clone())) {
                     continue;
                 }
-                match nominal_instance_fields(hir, tables, src, file, item, &args)? {
+                match nominal_instance_fields(hir, tables, meta, item, &args)? {
                     NominalFields::Struct(tys) => {
                         for t in &tys {
                             visit.push(t.clone());
@@ -365,7 +458,8 @@ pub enum FnKey {
     },
 }
 
-fn item_name_text<'a>(hir: &Hir, src: &'a str, item: ItemId) -> Option<&'a str> {
+/// The item's declared name, read in the item's own file (f-3c).
+fn item_name_text<'a>(hir: &Hir, meta: &'a ProgramMeta, item: ItemId) -> Option<&'a str> {
     let span = match &hir.item(item).kind {
         ItemKind::Fn(def) => def.sig.name,
         ItemKind::Struct { name, .. }
@@ -373,7 +467,7 @@ fn item_name_text<'a>(hir: &Hir, src: &'a str, item: ItemId) -> Option<&'a str> 
         | ItemKind::Trait { name, .. } => *name,
         _ => return None,
     };
-    Some(&src[span.lo as usize..span.hi as usize])
+    Some(meta.item_text(item, span))
 }
 
 fn impl_self_item(hir: &Hir, impl_item: ItemId) -> Option<ItemId> {
@@ -390,12 +484,14 @@ fn impl_self_item(hir: &Hir, impl_item: ItemId) -> Option<ItemId> {
 }
 
 /// Deterministic canonical symbol for a body (contract §2: injective for identical inputs;
-/// not a stable external ABI).
-fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
+/// not a stable external ABI). f-3c: `⟨package/module path⟩::name@[args]` — every name reads
+/// in its declaring item's own file, and module-nested items carry their path, so equal
+/// names in different modules/packages stay distinct.
+fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, LowerError> {
     let span0 = Span { lo: 0, hi: 0 };
     match key {
         FnKey::Top(item, type_args) => {
-            let name = item_name_text(hir, src, *item).ok_or_else(|| LowerError {
+            let name = item_name_text(hir, meta, *item).ok_or_else(|| LowerError {
                 what: "unnamed top-level fn".into(),
                 span: span0,
             })?;
@@ -404,7 +500,7 @@ fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
                 .map(super::dump_ty)
                 .collect::<Vec<_>>()
                 .join(", ");
-            Ok(format!("{name}@[{args_text}]"))
+            Ok(format!("{}{name}@[{args_text}]", meta.symbol_prefix(*item)))
         }
         FnKey::ImplFn { impl_item, member } => {
             let ItemKind::Impl { trait_, items, .. } = &hir.item(*impl_item).kind else {
@@ -414,24 +510,23 @@ fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
                 what: "impl self type is not a nominal item".into(),
                 span: span0,
             })?;
-            let type_name = item_name_text(hir, src, self_item).unwrap_or("?");
+            let type_name = item_name_text(hir, meta, self_item).unwrap_or("?");
             let hir::ImplItem::Fn { def, .. } = &items[*member as usize] else {
                 return unsupported("FnKey::ImplFn member is not a fn", span0);
             };
-            let method = &src[def.sig.name.lo as usize..def.sig.name.hi as usize];
+            let method = meta.item_text(*impl_item, def.sig.name);
+            let prefix = meta.symbol_prefix(self_item);
             match trait_ {
-                None => Ok(format!("{type_name}::{method}@[]")),
+                None => Ok(format!("{prefix}{type_name}::{method}@[]")),
                 Some(trait_ref) => {
                     let trait_name = match trait_ref.res {
-                        Res::Item(t) => item_name_text(hir, src, t).unwrap_or("?"),
+                        Res::Item(t) => item_name_text(hir, meta, t).unwrap_or("?"),
                         // C4.5d: compiler-known trait impls (`impl Drop for T`) render their
                         // source-level trait name — symbols stay injective and readable.
-                        Res::CoreTrait(_) => {
-                            &src[trait_ref.path.span.lo as usize..trait_ref.path.span.hi as usize]
-                        }
+                        Res::CoreTrait(_) => meta.item_text(*impl_item, trait_ref.path.span),
                         _ => "?",
                     };
-                    Ok(format!("{type_name}::{trait_name}::{method}@[]"))
+                    Ok(format!("{prefix}{type_name}::{trait_name}::{method}@[]"))
                 }
             }
         }
@@ -440,16 +535,17 @@ fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
             member,
             self_item,
         } => {
-            let trait_name = item_name_text(hir, src, *trait_item).unwrap_or("?");
-            let type_name = item_name_text(hir, src, *self_item).unwrap_or("?");
+            let trait_name = item_name_text(hir, meta, *trait_item).unwrap_or("?");
+            let type_name = item_name_text(hir, meta, *self_item).unwrap_or("?");
             let ItemKind::Trait { items, .. } = &hir.item(*trait_item).kind else {
                 return unsupported("FnKey::TraitDefault on non-trait", span0);
             };
             let hir::TraitItem::Method { sig, .. } = &items[*member as usize] else {
                 return unsupported("FnKey::TraitDefault member is not a method", span0);
             };
-            let method = &src[sig.name.lo as usize..sig.name.hi as usize];
-            Ok(format!("{trait_name}::{method}@[{type_name}]"))
+            let method = meta.item_text(*trait_item, sig.name);
+            let prefix = meta.symbol_prefix(*self_item);
+            Ok(format!("{trait_name}::{method}@[{prefix}{type_name}]"))
         }
     }
 }
@@ -479,6 +575,9 @@ struct DropUnit {
 struct FnLowerer<'a> {
     hir: &'a Hir,
     tables: &'a TypeTables,
+    /// f-3c: program-wide file/module metadata (per-item files and paths).
+    meta: &'a ProgramMeta,
+    /// The source of the file DEFINING this body's item — body spans read here.
     src: &'a str,
     file: FileId,
     key: FnKey,
@@ -505,10 +604,19 @@ struct FnLowerer<'a> {
 }
 
 impl<'a> FnLowerer<'a> {
-    fn new(hir: &'a Hir, tables: &'a TypeTables, src: &'a str, file: FileId, key: FnKey) -> Self {
+    fn new(hir: &'a Hir, tables: &'a TypeTables, meta: &'a ProgramMeta, key: FnKey) -> Self {
+        // f-3c: the body's spans and text reads belong to the DEFINING item's file.
+        let owner = match &key {
+            FnKey::Top(item, _) => *item,
+            FnKey::ImplFn { impl_item, .. } => *impl_item,
+            FnKey::TraitDefault { trait_item, .. } => *trait_item,
+        };
+        let file = meta.item_file(owner);
+        let src: &'a str = &meta.files[file.0 as usize].src;
         FnLowerer {
             hir,
             tables,
+            meta,
             src,
             file,
             key,
@@ -594,6 +702,8 @@ impl<'a> FnLowerer<'a> {
                 Primitive::Float64 => MirTy::Float64,
                 Primitive::Bool => MirTy::Bool,
                 Primitive::Unit => MirTy::Unit,
+                // f-3b: Char (a Unicode scalar codepoint value).
+                Primitive::Char => MirTy::Char,
                 // A1 (CD-031): first-class text types.
                 Primitive::String => MirTy::String,
                 Primitive::Str => MirTy::Str,
@@ -640,6 +750,21 @@ impl<'a> FnLowerer<'a> {
                     .map(|a| self.mir_ty(a, span))
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::VecIter, inner)
+            }
+            // 0.1-A3 (f-3a): HashMap and its keys iterator.
+            Ty::Core(crate::hir::CoreType::HashMap, args) => {
+                let inner = args
+                    .iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                MirTy::Core(crate::hir::CoreType::HashMap, inner)
+            }
+            Ty::Core(crate::hir::CoreType::KeysIter, args) => {
+                let inner = args
+                    .iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                MirTy::Core(crate::hir::CoreType::KeysIter, inner)
             }
             Ty::Tuple(elems) => MirTy::Tuple(
                 elems
@@ -846,14 +971,8 @@ impl<'a> FnLowerer<'a> {
                     }
                     true
                 } else {
-                    let fields = nominal_instance_fields(
-                        self.hir,
-                        self.tables,
-                        self.src,
-                        self.file,
-                        *item,
-                        args,
-                    )?;
+                    let fields =
+                        nominal_instance_fields(self.hir, self.tables, self.meta, *item, args)?;
                     let NominalFields::Struct(tys) = fields else {
                         return unsupported("struct item with enum fields shape", span);
                     };
@@ -874,14 +993,8 @@ impl<'a> FnLowerer<'a> {
                     }
                     true
                 } else {
-                    let fields = nominal_instance_fields(
-                        self.hir,
-                        self.tables,
-                        self.src,
-                        self.file,
-                        *item,
-                        args,
-                    )?;
+                    let fields =
+                        nominal_instance_fields(self.hir, self.tables, self.meta, *item, args)?;
                     let NominalFields::Enum(variants) = fields else {
                         return unsupported("enum item with struct fields shape", span);
                     };
@@ -916,7 +1029,9 @@ impl<'a> FnLowerer<'a> {
             // destructors — glue is observably a no-op).
             MirTy::String
             | MirTy::Core(crate::hir::CoreType::Vec, _)
-            | MirTy::Core(crate::hir::CoreType::VecIter, _) => true,
+            | MirTy::Core(crate::hir::CoreType::VecIter, _)
+            | MirTy::Core(crate::hir::CoreType::HashMap, _)
+            | MirTy::Core(crate::hir::CoreType::KeysIter, _) => true,
             _ => false,
         })
     }
@@ -935,14 +1050,8 @@ impl<'a> FnLowerer<'a> {
         }
         match ty {
             MirTy::Struct(item, args) if !self.type_has_drop_impl(*item) => {
-                let fields = nominal_instance_fields(
-                    self.hir,
-                    self.tables,
-                    self.src,
-                    self.file,
-                    *item,
-                    args,
-                )?;
+                let fields =
+                    nominal_instance_fields(self.hir, self.tables, self.meta, *item, args)?;
                 let NominalFields::Struct(tys) = fields else {
                     return unsupported("struct item with enum fields shape", span);
                 };
@@ -986,14 +1095,14 @@ impl<'a> FnLowerer<'a> {
                 let hir::ImplItem::Fn { def, .. } = impl_member else {
                     continue;
                 };
-                if self.text(def.sig.name) != "drop" {
+                if self.meta.item_text(impl_item, def.sig.name) != "drop" {
                     continue;
                 }
                 let key = FnKey::ImplFn {
                     impl_item,
                     member: member as u32,
                 };
-                let symbol = key_symbol(self.hir, self.src, &key)?;
+                let symbol = key_symbol(self.hir, self.meta, &key)?;
                 return Ok(Some((key, symbol)));
             }
         }
@@ -1013,14 +1122,7 @@ impl<'a> FnLowerer<'a> {
                         self.discovered_callees.push(key);
                     }
                 }
-                match nominal_instance_fields(
-                    self.hir,
-                    self.tables,
-                    self.src,
-                    self.file,
-                    item,
-                    &args,
-                )? {
+                match nominal_instance_fields(self.hir, self.tables, self.meta, item, &args)? {
                     NominalFields::Struct(tys) => {
                         for t in &tys {
                             self.discover_drop_impls(t)?;
@@ -1381,7 +1483,7 @@ impl<'a> FnLowerer<'a> {
     }
 
     fn lower_body(&mut self) -> Result<MirBody, LowerError> {
-        let symbol = key_symbol(self.hir, self.src, &self.key)?;
+        let symbol = key_symbol(self.hir, self.meta, &self.key)?;
         let key = self.key.clone();
         let (sig, body_block, self_ty) = self.fn_parts()?;
         let sig_span = sig.span;
@@ -1814,11 +1916,26 @@ impl<'a> FnLowerer<'a> {
                     hir::ExprKind::Range { lo, hi, inclusive } => (*lo, *hi, *inclusive),
                     _ => {
                         // 0.1-A2 (C4.5f-2): `for x in v.iter()` — borrowing Vec iteration.
+                        // 0.1-A3 (f-3a): `for k in m.keys()` — borrowing key iteration.
                         let iter_ty = self.expr_mir_ty(*iter)?;
-                        if let MirTy::Core(crate::hir::CoreType::VecIter, args) = &iter_ty {
+                        if let MirTy::Core(
+                            core @ (crate::hir::CoreType::VecIter | crate::hir::CoreType::KeysIter),
+                            args,
+                        ) = &iter_ty
+                        {
                             let elem = args.first().cloned().unwrap_or(MirTy::Unit);
-                            return self
-                                .lower_for_over_vec_iter(*var, *local, *iter, *body, elem, span);
+                            let (core, next_rt) = match core {
+                                crate::hir::CoreType::VecIter => {
+                                    (crate::hir::CoreType::VecIter, RuntimeFn::VecIterNext)
+                                }
+                                _ => (
+                                    crate::hir::CoreType::KeysIter,
+                                    RuntimeFn::HashMapKeysIterNext,
+                                ),
+                            };
+                            return self.lower_for_over_iter(
+                                *var, *local, *iter, *body, elem, core, next_rt, span,
+                            );
                         }
                         return unsupported(
                             "for over a non-range, non-Vec iterator (a later increment)",
@@ -2019,7 +2136,21 @@ impl<'a> FnLowerer<'a> {
                 let ty = self.expr_mir_ty(expr)?;
                 if let UnOp::Ref { mutable } = op {
                     // C4.5b-2: `&expr` / `&mut expr` — borrow of a place, NOT a value read.
-                    let place = self.lower_place(*operand)?;
+                    // f-3a: a non-place operand (e.g. `&String::from("x")`) materializes into
+                    // a temp first, mirroring the method-receiver auto-borrow path.
+                    let place = match self.lower_place(*operand) {
+                        Ok(place) => place,
+                        Err(_) => {
+                            let inner_ty = self.expr_mir_ty(*operand)?;
+                            let value = self.lower_expr_to_operand(*operand)?;
+                            let temp = self.new_temp(inner_ty);
+                            self.emit(
+                                Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                                self.info(span),
+                            );
+                            Place::local(temp)
+                        }
+                    };
                     let dest = self.new_temp(ty.clone());
                     self.emit(
                         Statement::Assign(
@@ -2288,7 +2419,7 @@ impl<'a> FnLowerer<'a> {
                 }
                 let decl_names: Vec<String> = decl_fields
                     .iter()
-                    .map(|f| self.text(f.name).to_string())
+                    .map(|f| self.meta.item_text(*item, f.name).to_string())
                     .collect();
                 let mut ordered = Vec::new();
                 for name in &decl_names {
@@ -2308,7 +2439,10 @@ impl<'a> FnLowerer<'a> {
                     return unsupported("field access on non-struct item", span);
                 };
                 let name_text = self.text(*name);
-                let Some(index) = fields.iter().position(|f| self.text(f.name) == name_text) else {
+                let Some(index) = fields
+                    .iter()
+                    .position(|f| self.meta.item_text(item, f.name) == name_text)
+                else {
                     return unsupported("unknown field", span);
                 };
                 place.projection.push(Projection::Field(index as u32));
@@ -2488,7 +2622,14 @@ impl<'a> FnLowerer<'a> {
                 };
                 Ok(Operand::Const(Constant::Str(value)))
             }
-            Lit::Char => unsupported("char literal (C4.5)", span),
+            // f-3b: a Char literal is its Unicode scalar codepoint, typed Char.
+            Lit::Char => match literal::eval_lit_value(*lit, self.text(span)) {
+                Some(crate::literal::LitValue::Char(c)) => Ok(Operand::Const(Constant::Int(
+                    i128::from(u32::from(c)),
+                    MirTy::Char,
+                ))),
+                _ => unsupported("unparseable char literal", span),
+            },
         }
     }
 
@@ -2687,7 +2828,10 @@ impl<'a> FnLowerer<'a> {
                     return unsupported("field place on non-struct item", span);
                 };
                 let name_text = self.text(*name);
-                let Some(index) = fields.iter().position(|f| self.text(f.name) == name_text) else {
+                let Some(index) = fields
+                    .iter()
+                    .position(|f| self.meta.item_text(item, f.name) == name_text)
+                else {
                     return unsupported("unknown field", span);
                 };
                 place.projection.push(Projection::Field(index as u32));
@@ -2841,6 +2985,8 @@ impl<'a> FnLowerer<'a> {
                         (PrintKind::Bool, false) => RuntimeFn::PrintBool,
                         (PrintKind::Float, true) => RuntimeFn::PrintlnFloat64,
                         (PrintKind::Float, false) => RuntimeFn::PrintFloat64,
+                        (PrintKind::Char, true) => RuntimeFn::PrintlnChar,
+                        (PrintKind::Char, false) => RuntimeFn::PrintChar,
                     };
                     let after = self.new_block();
                     self.terminate(
@@ -2901,6 +3047,12 @@ impl<'a> FnLowerer<'a> {
                     self.emit_runtime_call(RuntimeFn::VecWithCapacity, ops, dest, span);
                     Ok(())
                 }
+                // 0.1-A3 (f-3a): HashMap construction. User-Drop K/V excluded at method
+                // dispatch (the constructor's dest type is checked there on first use).
+                Res::Builtin(Builtin::HashMapNew) => {
+                    self.emit_runtime_call(RuntimeFn::HashMapNew, vec![], dest, span);
+                    Ok(())
+                }
                 // A1 (CD-031): `panic(msg)` → an unconditional Trap carrying the message.
                 Res::Builtin(Builtin::Panic) => {
                     let message = match args.first() {
@@ -2923,12 +3075,72 @@ impl<'a> FnLowerer<'a> {
                     Ok(())
                 }
                 // A1: `assert(cond)` → trap AssertFailure when the condition is false.
+                // f-3b: `assert_eq(a, b)` / `assert_ne(a, b)` on comparable scalars — compare,
+                // trap AssertFailure on mismatch. The trap carries no message: the comparator
+                // matches compiler-generated traps by category fragment; the oracle's
+                // formatted left/right message is a diagnostic nicety (recorded cosmetic gap).
+                Res::Builtin(kind @ (Builtin::AssertEq | Builtin::AssertNe)) => {
+                    if args.len() != 2 {
+                        return unsupported("assert_eq/assert_ne arity", span);
+                    }
+                    let lhs_ty = self.expr_mir_ty(args[0])?;
+                    let cond = if Self::is_text_ty(&lhs_ty) {
+                        self.lower_string_comparison(BinOp::Eq, args[0], args[1], span)?
+                    } else {
+                        if ty_mentions_user_nominal(&lhs_ty) {
+                            return unsupported(
+                                "assert_eq/ne on a user-defined type dispatches through its \
+                                 Eq impl (a later increment)",
+                                span,
+                            );
+                        }
+                        let a = self.lower_expr_to_operand(args[0])?;
+                        let b = self.lower_expr_to_operand(args[1])?;
+                        let eq = self.new_temp(MirTy::Bool);
+                        self.emit(
+                            Statement::Assign(Place::local(eq), Rvalue::BinOp(MirBinOp::Eq, a, b)),
+                            self.info(span),
+                        );
+                        Operand::Copy(Place::local(eq))
+                    };
+                    // assert_eq passes on equal (1); assert_ne passes on unequal (0).
+                    let pass_key = if matches!(kind, Builtin::AssertEq) {
+                        1
+                    } else {
+                        0
+                    };
+                    let info = self.info(span);
+                    let ok_block = self.new_block();
+                    let fail_block = self.new_block();
+                    self.terminate(
+                        Terminator::SwitchInt {
+                            scrut: cond,
+                            arms: vec![(pass_key, ok_block)],
+                            otherwise: fail_block,
+                        },
+                        info,
+                        fail_block,
+                    );
+                    self.terminate(
+                        Terminator::Trap {
+                            info: TrapInfo {
+                                category: TrapCategory::AssertFailure,
+                                source: info,
+                            },
+                            message: None,
+                        },
+                        info,
+                        ok_block,
+                    );
+                    self.emit(
+                        Statement::Assign(dest, Rvalue::Use(Operand::Const(Constant::Unit))),
+                        info,
+                    );
+                    Ok(())
+                }
                 Res::Builtin(Builtin::Assert) => {
                     if args.len() != 1 {
-                        return unsupported(
-                            "assert arity (assert_eq/ne are a later sub-slice)",
-                            span,
-                        );
+                        return unsupported("assert arity", span);
                     }
                     let cond = self.lower_expr_to_operand(args[0])?;
                     let info = self.info(span);
@@ -3046,7 +3258,7 @@ impl<'a> FnLowerer<'a> {
                             span,
                         );
                     };
-                    let symbol = key_symbol(self.hir, self.src, &key)?;
+                    let symbol = key_symbol(self.hir, self.meta, &key)?;
                     self.discovered_callees.push(key);
                     let ops = args
                         .iter()
@@ -3124,7 +3336,7 @@ impl<'a> FnLowerer<'a> {
                 .collect::<Result<Vec<_>, _>>()?
         };
         let key = FnKey::Top(item, type_args.clone());
-        let symbol = key_symbol(self.hir, self.src, &key)?;
+        let symbol = key_symbol(self.hir, self.meta, &key)?;
         self.discovered_callees.push(key);
         Ok(Instance {
             item,
@@ -3157,7 +3369,7 @@ impl<'a> FnLowerer<'a> {
                 let hir::ImplItem::Fn { def, .. } = impl_member else {
                     continue;
                 };
-                if self.text(def.sig.name) != name {
+                if self.meta.item_text(impl_item, def.sig.name) != name {
                     continue;
                 }
                 if receiverless != def.sig.receiver.is_none() {
@@ -3181,7 +3393,7 @@ impl<'a> FnLowerer<'a> {
                 if let Res::Item(trait_item) = trait_ref.res {
                     let overridden = items.iter().any(|m| {
                         matches!(m, hir::ImplItem::Fn { def, .. }
-                            if self.text(def.sig.name) == name)
+                            if self.meta.item_text(impl_item, def.sig.name) == name)
                     });
                     if !overridden {
                         if let ItemKind::Trait {
@@ -3193,7 +3405,7 @@ impl<'a> FnLowerer<'a> {
                                 else {
                                     continue;
                                 };
-                                if self.text(sig.name) != name {
+                                if self.meta.item_text(trait_item, sig.name) != name {
                                     continue;
                                 }
                                 if receiverless != sig.receiver.is_none() {
@@ -3235,6 +3447,11 @@ impl<'a> FnLowerer<'a> {
         if let MirTy::Core(crate::hir::CoreType::Vec, elem_args) = &peeled_ty {
             let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
             return self.lower_vec_method_call(base, elem, name_span, args, dest, span);
+        }
+        // 0.1-A3 (f-3a): HashMap methods dispatch to the map RuntimeFn surface.
+        if let MirTy::Core(crate::hir::CoreType::HashMap, kv_args) = &peeled_ty {
+            let kv = kv_args.clone();
+            return self.lower_map_method_call(base, kv, name_span, args, dest, span);
         }
         // C4.5e-3: Option/Result inspection and extraction methods.
         if let MirTy::Enum(enum_ref @ (EnumRef::CoreOption | EnumRef::CoreResult), args) =
@@ -3306,7 +3523,7 @@ impl<'a> FnLowerer<'a> {
                 return unsupported("method-syntax call to a receiverless fn", span);
             }
         };
-        let symbol = key_symbol(self.hir, self.src, &key)?;
+        let symbol = key_symbol(self.hir, self.meta, &key)?;
         self.discovered_callees.push(key);
         let mut ops = vec![receiver_op];
         for &arg in args {
@@ -3350,6 +3567,8 @@ impl<'a> FnLowerer<'a> {
             (true, "clone") => (RuntimeFn::StringClone, Some(false)),
             (true, "contains") => (RuntimeFn::StringContains, Some(false)),
             (true, "push_str") => (RuntimeFn::StringPushStr, Some(true)),
+            (true, "push") => (RuntimeFn::StringPushChar, Some(true)),
+            (true, "pop") => (RuntimeFn::StringPopChar, Some(true)),
             (true, "clear") => (RuntimeFn::StringClear, Some(true)),
             (false, "len") => (RuntimeFn::StrLen, None),
             (false, "is_empty") => (RuntimeFn::StrIsEmpty, None),
@@ -3695,16 +3914,18 @@ impl<'a> FnLowerer<'a> {
     /// f-1 frame generations guard it if it ever escapes. `T: Copy` (V-COPY-1) was checked
     /// when `iter()` lowered. The iterator local is registered droppable (no-op glue).
     #[allow(clippy::too_many_arguments)]
-    fn lower_for_over_vec_iter(
+    fn lower_for_over_iter(
         &mut self,
         var: Span,
         var_local: crate::hir::LocalId,
         iter: ExprId,
         body: hir::BlockId,
         elem: MirTy,
+        iter_core: crate::hir::CoreType,
+        next_rt: RuntimeFn,
         span: Span,
     ) -> Result<(), LowerError> {
-        let iter_ty = MirTy::Core(crate::hir::CoreType::VecIter, vec![elem.clone()]);
+        let iter_ty = MirTy::Core(iter_core, vec![elem.clone()]);
         let elem_ref = MirTy::Ref {
             mutable: false,
             inner: Box::new(elem.clone()),
@@ -3752,7 +3973,7 @@ impl<'a> FnLowerer<'a> {
         );
         let nxt = self.new_temp(opt_ty);
         self.emit_runtime_call(
-            RuntimeFn::VecIterNext,
+            next_rt,
             vec![Operand::Copy(Place::local(iter_ref))],
             Place::local(nxt),
             span,
@@ -3849,6 +4070,115 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// 0.1-A3 (f-3a): lower a method call on a `HashMap<K, V>` receiver to the map RuntimeFn
+    /// surface. The A1 §5a honesty rule stands: no runtime op runs a user destructor —
+    /// user-`Drop` K/V types are excluded (`insert`'s replaced value is RETURNED and dropped
+    /// by the caller at a visible Drop, the `VecReplace` pattern; String/Vec K/V are fine
+    /// since their glue is unobservable buffer reclaim).
+    fn lower_map_method_call(
+        &mut self,
+        base: ExprId,
+        kv: Vec<MirTy>,
+        name_span: Span,
+        args: &[ExprId],
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let name = self.text(name_span).to_string();
+        let (k, v) = (
+            kv.first().cloned().unwrap_or(MirTy::Unit),
+            kv.get(1).cloned().unwrap_or(MirTy::Unit),
+        );
+        // Honesty exclusion: K/V with USER Drop impls would make map internals run
+        // destructors invisibly.
+        if self.ty_has_user_drop(&k) || self.ty_has_user_drop(&v) {
+            return unsupported(
+                "HashMap over user-Drop key/value types (reserved beyond 0.1-A3)",
+                span,
+            );
+        }
+        let (rt, recv_mut) = match name.as_str() {
+            "insert" => (RuntimeFn::HashMapInsert, true),
+            "get" => (RuntimeFn::HashMapGet, false),
+            "len" => (RuntimeFn::HashMapLen, false),
+            "is_empty" => (RuntimeFn::HashMapIsEmpty, false),
+            "contains_key" => (RuntimeFn::HashMapContainsKey, false),
+            "keys" => (RuntimeFn::HashMapKeysIterNew, false),
+            _ => return unsupported(format!("HashMap::{name} (reserved beyond 0.1-A3)"), span),
+        };
+        let recv = self.borrow_map_receiver(base, recv_mut, &k, &v, span)?;
+        let mut ops = vec![recv];
+        for &arg in args {
+            ops.push(self.lower_expr_to_operand(arg)?);
+        }
+        // `insert` returns the replaced `Option<V>` into `dest`; in statement position the
+        // discard-drop machinery (StmtKind::Expr) drops it at a visible Drop terminator —
+        // the VecReplace pattern, keeping destructors out of the runtime op.
+        self.emit_runtime_call(rt, ops, dest, span);
+        Ok(())
+    }
+
+    /// Does `ty` transitively contain a USER `Drop` impl (as opposed to the unobservable
+    /// String/Vec buffer glue)?
+    fn ty_has_user_drop(&self, ty: &MirTy) -> bool {
+        match ty {
+            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => {
+                if self.type_has_drop_impl(*item) {
+                    return true;
+                }
+                // Conservative: user nominals could nest droppables; check fields.
+                match nominal_instance_fields(
+                    self.hir,
+                    self.tables,
+                    self.meta,
+                    *item,
+                    match ty {
+                        MirTy::Struct(_, a) | MirTy::Enum(_, a) => a,
+                        _ => unreachable!(),
+                    },
+                ) {
+                    Ok(NominalFields::Struct(tys)) => tys.iter().any(|t| self.ty_has_user_drop(t)),
+                    Ok(NominalFields::Enum(vs)) => vs
+                        .iter()
+                        .any(|v| v.iter().any(|t| self.ty_has_user_drop(t))),
+                    Err(_) => true, // unresolvable: be conservative
+                }
+            }
+            MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Tuple(args) => {
+                args.iter().any(|t| self.ty_has_user_drop(t))
+            }
+            MirTy::Array(elem, _) => self.ty_has_user_drop(elem),
+            _ => false,
+        }
+    }
+
+    /// Build a `&HashMap`/`&mut HashMap` receiver operand.
+    fn borrow_map_receiver(
+        &mut self,
+        base: ExprId,
+        mutable: bool,
+        k: &MirTy,
+        v: &MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
+        if layers > 0 {
+            return self.lower_expr_to_operand(base);
+        }
+        let map_ty = MirTy::Core(crate::hir::CoreType::HashMap, vec![k.clone(), v.clone()]);
+        let place = self.place_or_temp(base, &map_ty, span)?;
+        let ref_ty = MirTy::Ref {
+            mutable,
+            inner: Box::new(map_ty),
+        };
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
+            self.info(span),
+        );
+        self.read_place(Place::local(temp), &ref_ty, span)
+    }
+
     /// Build a `&Vec`/`&mut Vec` receiver operand: pass a reference base through, or borrow an
     /// owned `Vec` place.
     fn borrow_vec_receiver(
@@ -3862,10 +4192,11 @@ impl<'a> FnLowerer<'a> {
         if layers > 0 {
             return self.lower_expr_to_operand(base);
         }
-        let place = self.lower_place(base)?;
+        let vec_ty = MirTy::Core(crate::hir::CoreType::Vec, vec![elem]);
+        let place = self.place_or_temp(base, &vec_ty, span)?;
         let ref_ty = MirTy::Ref {
             mutable,
-            inner: Box::new(MirTy::Core(crate::hir::CoreType::Vec, vec![elem])),
+            inner: Box::new(vec_ty),
         };
         let temp = self.new_temp(ref_ty.clone());
         self.emit(
@@ -3873,6 +4204,23 @@ impl<'a> FnLowerer<'a> {
             self.info(span),
         );
         self.read_place(Place::local(temp), &ref_ty, span)
+    }
+
+    /// A place for `base`, materializing non-place expressions (call results, literals) into
+    /// a temp — receivers and `&expr` operands borrow through this.
+    fn place_or_temp(&mut self, base: ExprId, ty: &MirTy, span: Span) -> Result<Place, LowerError> {
+        match self.lower_place(base) {
+            Ok(place) => Ok(place),
+            Err(_) => {
+                let value = self.lower_expr_to_operand(base)?;
+                let temp = self.new_temp(ty.clone());
+                self.emit(
+                    Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                    self.info(span),
+                );
+                Ok(Place::local(temp))
+            }
+        }
     }
 
     /// Build a `&String`/`&mut String` receiver operand: pass a reference base through, or
@@ -3888,7 +4236,7 @@ impl<'a> FnLowerer<'a> {
             // Already a reference to the String — pass it through.
             return self.lower_expr_to_operand(base);
         }
-        let place = self.lower_place(base)?;
+        let place = self.place_or_temp(base, &MirTy::String, span)?;
         let ref_ty = MirTy::Ref {
             mutable,
             inner: Box::new(MirTy::String),
@@ -3924,6 +4272,7 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(PrintKind, Operand), LowerError> {
         match ty {
             MirTy::Bool => Ok((PrintKind::Bool, value)),
+            MirTy::Char => Ok((PrintKind::Char, value)),
             MirTy::Float64 => Ok((PrintKind::Float, value)),
             MirTy::Int64 => Ok((PrintKind::Int, value)),
             MirTy::UInt64 => Ok((PrintKind::UInt, value)),
@@ -4240,14 +4589,7 @@ impl<'a> FnLowerer<'a> {
                 .cloned()
                 .unwrap_or(MirTy::Unit)]),
             EnumRef::User(item) => {
-                match nominal_instance_fields(
-                    self.hir,
-                    self.tables,
-                    self.src,
-                    self.file,
-                    item,
-                    scrut_args,
-                )? {
+                match nominal_instance_fields(self.hir, self.tables, self.meta, item, scrut_args)? {
                     NominalFields::Enum(variants) => {
                         Ok(variants.get(variant as usize).cloned().unwrap_or_default())
                     }
@@ -4465,7 +4807,7 @@ impl<'a> FnLowerer<'a> {
                 Ok(match &v.kind {
                     hir::VariantKind::Struct(fields) => fields
                         .iter()
-                        .map(|f| self.text(f.name).to_string())
+                        .map(|f| self.meta.item_text(*item, f.name).to_string())
                         .collect(),
                     _ => Vec::new(),
                 })
@@ -4505,5 +4847,6 @@ enum PrintKind {
     Int,
     UInt,
     Bool,
+    Char,
     Float,
 }

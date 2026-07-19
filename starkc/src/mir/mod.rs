@@ -34,7 +34,12 @@ pub const MIR_VERSION: &str = "0.1";
 /// `0.1-A2` (C4.5f-2, per CD-032's activation rule — dated enumeration in the amendment doc
 /// rev. 5): adds by-reference Vec iteration, `VecIterNew`/`VecIterNext` yielding
 /// `Option<&T>` for `T: Copy`.
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A2";
+///
+/// `0.1-A3` (C4.5f-3a/b, amendment rev. 6): the HashMap group (insertion-order per CD-009;
+/// user-`Drop` key/value types excluded so no runtime op ever runs a user destructor), plus
+/// the A1-approved-but-deferred Char ops (`StringPushChar`/`StringPopChar`,
+/// `PrintlnChar`/`PrintChar`).
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A3";
 
 // ------------------------------------------------------------------ identity --
 
@@ -111,7 +116,7 @@ pub struct LocalId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct BlockId(pub u32);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum LocalKind {
     /// `Local(0)`, written before `Return`.
     Return,
@@ -357,6 +362,23 @@ pub enum RuntimeFn {
     // and requires `T: Copy` (V-COPY-1). ---
     VecIterNew,
     VecIterNext,
+    // --- 0.1-A3 (C4.5f-3a): HashMap group. Insertion-order storage (CD-009); `Get` yields
+    // an interior `Option<&V>`; user-`Drop` key/value types are excluded at lowering so no
+    // runtime op ever runs a user destructor (`Insert` RETURNS the replaced `Option<V>` —
+    // the caller drops it at a visible Drop, the VecReplace pattern). ---
+    HashMapNew,
+    HashMapInsert,
+    HashMapGet,
+    HashMapLen,
+    HashMapIsEmpty,
+    HashMapContainsKey,
+    HashMapKeysIterNew,
+    HashMapKeysIterNext,
+    // --- 0.1-A3 (C4.5f-3b): the A1-approved Char ops, deferred from e-1 until Char lowered. ---
+    PrintlnChar,
+    PrintChar,
+    StringPushChar,
+    StringPopChar,
 }
 
 #[derive(Clone, Debug)]

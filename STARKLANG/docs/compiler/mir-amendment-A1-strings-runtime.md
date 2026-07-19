@@ -5,6 +5,9 @@ Status: **APPROVED under CE3 as an additive MIR v0.1 amendment, runtime surface 
 corrections, which this revision incorporates (see §11 revision log). Rev. 1's central design
 was approved in principle; rev. 2 resolved eight required corrections; rev. 3 resolves the
 final four. Implementation of the C4.5e main body may begin against this revision.
+**Current runtime surface after subsequent dated enumerations (§11): `0.1-A3`** (rev. 5
+activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char ops as
+`0.1-A3`).
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -385,11 +388,39 @@ pre-trap prefix, trap message):**
 ## 10. Explicitly out of A1
 
 `Ordering` as a runtime value and user-nominal `Eq`/`Ord` impl dispatch (own short design note
-when C4.5e reaches it); `HashMap`/`HashSet` ops; `CharsIter`/`SplitIter` lowering; `StringSubstring`
+when C4.5e reaches it); `HashMap`/`HashSet` ops (**`HashMap` since activated by the rev. 6
+`0.1-A3` dated enumeration** — keys-only iteration, no `values()`/`remove()`; `HashSet` remains
+reserved); `CharsIter`/`SplitIter` lowering; `StringSubstring`
 and other interior views into runtime containers (§5d, after C4.5f frame generations); file/provider
 I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
+
+**Rev. 6 — surface `0.1-A3` activation (2026-07-19, WP-C4.5f-3a/3b, per CD-032's
+dated-enumeration rule).** Activates the `HashMap<K, V>` group and the Char printing/String-Char
+ops:
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `HashMapNew` | `() -> Core(HashMap, [K, V])` | — | schematic `(K, V)` from destination; deterministic insertion order (CD-009) |
+| `HashMapInsert` | `(&mut HashMap<K,V>, K, V) -> Option<V>` | — | returns the displaced old value — the honesty rule's visible form: the runtime never runs a user destructor, the caller drops the returned `Option<V>` at a visible `Drop` |
+| `HashMapGet` | `(&HashMap<K,V>, &K) -> Option<&V>` | — | interior reference into the map local, frame-generation-guarded (C4.5f-1) |
+| `HashMapLen` | `(&HashMap<K,V>) -> UInt64` | — | |
+| `HashMapIsEmpty` | `(&HashMap<K,V>) -> Bool` | — | |
+| `HashMapContainsKey` | `(&HashMap<K,V>, &K) -> Bool` | — | |
+| `HashMapKeysIterNew` | `(&HashMap<K,V>) -> Core(KeysIter, [K])` | — | borrowed cursor over the map (NOT a snapshot — the map stays borrowed for the iteration) |
+| `HashMapKeysIterNext` | `(&mut Core(KeysIter,[K])) -> Option<&K>` | — | yields interior `&K` in insertion order; schematic `K` resolved from the `Core(KeysIter,[K])` operand |
+| `PrintlnChar` / `PrintChar` | `(Char) -> Unit` | — | `Char` is `Constant::Int` with `MirTy::Char` (Unicode scalar value) |
+| `StringPushChar` | `(&mut String, Char) -> Unit` | — | |
+| `StringPopChar` | `(&mut String) -> Option<Char>` | — | |
+
+Restrictions: user-`Drop` `K`/`V` are excluded from the HashMap surface (lowering refuses;
+element destruction paths through `HashMap` internals would otherwise hide destructors,
+violating §5a's honesty rule). `values()`, `remove()`, and `HashSet` remain reserved (§5d/§10).
+Schematic `(K, V)`: constructors from destination, methods from the first `&HashMap` operand,
+`HashMapKeysIterNext` from the `Core(KeysIter,[K])` operand.
+`MIR_RUNTIME_SURFACE = "0.1-A3"`; the surface gate (§6) and dump header (§7) carry it.
+Programs using none of these ops are unchanged.
 
 **Rev. 5 — surface `0.1-A2` activation (2026-07-19, WP-C4.5f-2, per CD-032's dated-enumeration
 rule).** Activates by-reference Vec iteration, the §5e carry-forward design:

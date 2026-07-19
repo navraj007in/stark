@@ -1,11 +1,39 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5f-2 (Vec iteration, surface 0.1-A2)
+Updated: 2026-07-19 after WP-C4.5f-3 — **WP-C4.5 EXIT SATISFIED** (surface 0.1-A3)
 
 ## Position
-Gate: C4  Next: WP-C4.5f-3 (multi-package symbols/linkage — the last structural f piece);
-remaining smaller items: Char/`assert_eq` (e-1 deferral), HashMap surface (`collection_iter__02`,
-the one corpus case still out). **16 of 17 frozen corpus cases differential-green.**
+Gate: C4  Next: WP-C4.6 (gate exit review). **WP-C4.5 "Complete Core Lowering" is COMPLETE:
+all 17 frozen corpus cases run differentially green through both interpreters**
+(`entire_frozen_corpus_agrees` — output, trap category, provenance, message, pre-trap stdout).
+Runtime surface `0.1-A3` (A1 rev. 6). Open non-blocking boundaries carried forward: DEV-067,
+DEV-069 (front-end multi-file spans), user-nominal `Eq`/`Ord` dispatch, generic impl/trait
+methods, reserved ops (`values()`/`remove()`/`HashSet`/`StringSubstring`/`VecGetRef`),
+assert-message fidelity.
 Blocked: none
+**WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
+- **f-3a HashMap surface (`0.1-A3`, amendment rev. 6):** `RuntimeFn` HashMap group
+  (New/Insert/Get/Len/IsEmpty/ContainsKey/KeysIterNew/KeysIterNext); insertion-ordered
+  (CD-009) `MirValue::Vec` of `[k,v]` aggregates; `insert` returns the displaced `Option<V>`
+  (honesty rule §5a — caller drops it at a visible Drop; user-`Drop` K/V refused); `get` →
+  interior `Option<&V>`; `keys()` a true borrowed cursor reusing the f-2 for-desugar;
+  schematic-(K,V) `map_runtime_sig`. **`collection_iter__02` differential-green.**
+- **f-3b Char + assert_eq/ne (rev. 6):** `MirTy::Char` (`Constant::Int` Unicode scalar),
+  `PrintlnChar`/`PrintChar`, `StringPushChar`/`StringPopChar`; `assert_eq`/`assert_ne` →
+  scalar `BinOp::Eq` or `StrEq`/`StrCmp` into conditional `Trap{AssertFailure}` (message
+  fidelity deferred with the e-1 boundary).
+- **f-3c multi-file lowering:** `ProgramMeta` interns all source files (FileId(0)=entry),
+  maps items to declaring file + module path; all cross-item name reads go against the owning
+  item's file; `synthetic_spans` for generated wrappers; **module-qualified canonical symbols**
+  (`helper::add_self@[]`) — package-stable linkage identity for C5. **Found DEV-069 (open,
+  front-end WP):** checker + HIR oracle read cross-file spans against the entry file
+  (cross-file methods/literals/field reads break); the differential test pins the
+  front-end-safe subset; MIR side is multi-file-clean.
+- **Exit-sweep fixes:** MIR-interp call args were bound positionally over locals `1..n`,
+  clobbering interleaved drop-flag locals for callees with droppable params (bit
+  `largest::<String>` in `struct_enum_trait__03`) — now bound by declared `Param(i)` kind
+  with arity checks; non-place method receivers/`&expr` (call results) materialize via
+  `place_or_temp`. 6 new differential tests + `entire_frozen_corpus_agrees` (all 17).
+  Workspace 707/0; fmt+clippy clean 1.93/1.97.
 **WP-C4.5f-2 done 2026-07-19** (by-reference Vec iteration, surface `0.1-A2` per CD-032's
 dated-enumeration rule, amendment rev. 5): `VecIterNew`/`VecIterNext -> Option<&T>` (`T: Copy`,
 V-COPY-1/MIR-0016); interpreter iterator = snapshot aggregate `[Vec, cursor]` in a frame local
@@ -794,7 +822,7 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-19 (post-WP-C4.5c):
+Open as of 2026-07-19 (post-WP-C4.5f-3):
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -804,7 +832,11 @@ Open as of 2026-07-19 (post-WP-C4.5c):
   classification (tooling exists; classification unscheduled).
 - DEV-067 — bounded generic parameters lose their bounds at intra-generic call sites (E0500)
   and behind `&T` receivers (E0302); over-rejection only, pre-existing, surfaced by WP-C4.5c's
-  differential tests. Owner: a later C4.5 increment (with generic method monomorphisation).
+  differential tests. Owner: a later C4.x increment (with generic method monomorphisation).
+- DEV-069 — front end + HIR interpreter are not multi-file-span-clean: cross-file spans are
+  read against the entry file, so cross-file methods mis-resolve, cross-file literals
+  mis-parse, and cross-file field reads fail; found by WP-C4.5f-3c's multi-file work. The MIR
+  lowering itself is multi-file-clean (`ProgramMeta`). Owner: a future front-end WP.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 

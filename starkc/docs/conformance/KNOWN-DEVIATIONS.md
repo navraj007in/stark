@@ -1860,6 +1860,34 @@ WP-C1.5)
 - **Regression evidence:** `tests/mir_differential.rs::user_copy_impl_struct_is_copy_in_mir`
   (Copy struct passed twice by value, field read afterwards; both engines agree). — closed.
 
+## DEV-069 — Front end + HIR interpreter are not multi-file-span-clean [OPEN, found WP-C4.5f-3c, 2026-07-19]
+
+- **What:** the type checker and the HIR reference interpreter resolve `Span`s against the
+  **entry file only**. In a multi-file program (`mod helper;` loading `helper.stark`), any
+  name, literal, or field whose span lies in a dependency file is read against the entry
+  file's text. Observed failure shapes, in increasing subtlety: (a) `TypeChecker::text`
+  panics "byte index N out of bounds" when the dependency file is longer than the entry
+  file; (b) cross-file **method** resolution reads garbage method names (e.g. method
+  `'\nfn '` not found); (c) cross-file **literals** fail to parse ("invalid literal");
+  (d) cross-file **field reads** resolve the wrong field name and report "use of moved or
+  invalid field" at runtime. All four were reproduced from one two-file program during
+  WP-C4.5f-3c.
+- **Scope:** front end + oracle only. The MIR lowering built in f-3c is multi-file-clean:
+  `ProgramMeta` interns every source file (`FileId(0)` = entry), maps each item to its
+  declaring file and module path, and reads every cross-item name against the owning item's
+  file. `resolve.rs`/`hir.rs` carry `synthetic_spans` for generated wrappers so lowering
+  never text-reads a synthetic span.
+- **Why open:** fixing the front end means threading per-item file identity through
+  `typecheck.rs`, `borrowck.rs`, and `interp.rs` — a front-end WP, out of WP-C4.5's
+  MIR scope. Until then the differential multi-file test pins the front-end-safe subset
+  (scalar free functions, literal-free dependency bodies, no cross-file methods/fields),
+  padded so dependency name spans stay in-bounds.
+- **Regression evidence (of the safe subset + MIR cleanliness):**
+  `tests/mir_differential.rs::multi_file_module_program_agrees_with_qualified_symbols`
+  (two-file program; module-qualified symbols `helper::add_self@[]`/`helper::add_both@[]`;
+  `files.len() >= 2`; differential output agreement). Widening that test tracks this
+  deviation's front-end fix.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1909,7 +1937,11 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 66 numbered deviations total (DEV-002 through DEV-068, DEV-001/DEV-003 retired).
+Current count: 67 numbered deviations total (DEV-002 through DEV-069, DEV-001/DEV-003 retired).
+DEV-069 (front end + HIR interpreter not multi-file-span-clean: cross-file spans read against
+the entry file, breaking cross-file methods/literals/field reads) was found during WP-C4.5f-3c's
+multi-file lowering work and remains **open**, owned by a future front-end WP — the MIR lowering
+itself is multi-file-clean via `ProgramMeta`.
 DEV-068 (user `impl Copy` structs always-Move in MIR lowering, rejecting valid programs at
 MIR verification) was surfaced by the external C4.5c-head review, confirmed empirically, and
 closed the same day in WP-C4.5e-0 (CD-030).
@@ -1966,9 +1998,11 @@ by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 — which WP-C2.6 had a
 decision ownership and C2.11 implementation ownership — were all **resolved by WP-C2.11**; see
 their individual entries. (A prior revision of this paragraph, written at WP-C2.6 time, still
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
-**Currently open (2026-07-19, post-DEV-060 closure):** DEV-005 (unowned), DEV-010
+**Currently open (2026-07-19, post-WP-C4.5f):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder). DEV-060 closed the same day it was made a C3-ENTRY blocker.
+remainder), DEV-067 (bounded-generic over-rejection, later C4.x increment), DEV-069
+(front-end multi-file span discipline, future front-end WP). DEV-060 closed the same day it
+was made a C3-ENTRY blocker.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping

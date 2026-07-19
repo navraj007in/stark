@@ -173,8 +173,24 @@ impl<'a> Interp<'a> {
     fn call(&mut self, body_index: usize, args: Vec<MirValue>) -> Result<MirValue, MirRunError> {
         let body = &self.program.bodies[body_index];
         let mut locals: Vec<Option<MirValue>> = vec![None; body.locals.len()];
-        for (i, value) in args.into_iter().enumerate() {
-            locals[1 + i] = Some(value);
+        // Bind arguments by their declared `Param(i)` kind — param locals are NOT
+        // contiguous when drop-flag locals are interleaved between them (C4.5d).
+        let mut args = args.into_iter();
+        for param in 0.. {
+            let Some(slot) = body
+                .locals
+                .iter()
+                .position(|decl| decl.kind == LocalKind::Param(param))
+            else {
+                break;
+            };
+            let Some(value) = args.next() else {
+                return self.internal("argument count does not match callee param locals");
+            };
+            locals[slot] = Some(value);
+        }
+        if args.next().is_some() {
+            return self.internal("argument count does not match callee param locals");
         }
         let generation = self.next_generation;
         self.next_generation += 1;
@@ -975,6 +991,9 @@ impl<'a> Interp<'a> {
         if is_vec_runtime(rt) {
             return self.run_vec_runtime(rt, args, call_info);
         }
+        if is_map_runtime(rt) {
+            return self.run_map_runtime(rt, args);
+        }
         let mut iter = args.into_iter();
         let arg = iter.next();
         let rest: Vec<MirValue> = iter.collect();
@@ -1073,6 +1092,36 @@ impl<'a> Interp<'a> {
             StringClear => {
                 self.mutate_string_ref(&first, |s| s.clear())?;
                 Ok(MirValue::Unit)
+            }
+            // 0.1-A3 (f-3b): Char ops. Char values are Unicode scalar codepoints in
+            // MirValue::Int.
+            PrintlnChar | PrintChar => {
+                let c = char_of(&first)?;
+                if matches!(rt, PrintlnChar) {
+                    let _ = writeln!(self.output, "{c}");
+                } else {
+                    let _ = write!(self.output, "{c}");
+                }
+                Ok(MirValue::Unit)
+            }
+            StringPushChar => {
+                let c = char_of(&rest.next())?;
+                self.mutate_string_ref(&first, |s| s.push(c))?;
+                Ok(MirValue::Unit)
+            }
+            StringPopChar => {
+                let mut popped: Option<char> = None;
+                self.mutate_string_ref(&first, |s| popped = s.pop())?;
+                Ok(match popped {
+                    Some(c) => MirValue::Enum {
+                        variant: 1,
+                        fields: vec![MirValue::Int(i128::from(u32::from(c)))],
+                    },
+                    None => MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    },
+                })
             }
             StrLen => Ok(MirValue::Int(self.as_str(&first)?.len() as i128)),
             StrIsEmpty => Ok(MirValue::Bool(self.as_str(&first)?.is_empty())),
@@ -1227,6 +1276,190 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// 0.1-A3 (C4.5f-3a): HashMap ops. The map value is an insertion-ordered pair vector
+    /// (`MirValue::Vec` of `Aggregate([k, v])`) per CD-009 — re-inserting an existing key
+    /// keeps its position; lookups are structural key comparison. `Get` and the keys
+    /// iterator hand out interior references (entry `[Index(i), Field(0|1)]`), guarded by
+    /// the f-1 frame generations.
+    fn run_map_runtime(
+        &mut self,
+        rt: RuntimeFn,
+        args: Vec<MirValue>,
+    ) -> Result<MirValue, MirRunError> {
+        use RuntimeFn::*;
+        let mut args = args.into_iter();
+        match rt {
+            HashMapNew => Ok(MirValue::Vec(Vec::new())),
+            HashMapInsert => {
+                let recv = args.next();
+                let key = args
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("HashMapInsert missing key".into()))?;
+                let value = args
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("HashMapInsert missing value".into()))?;
+                self.mutate_vec_ref(&recv, |entries| {
+                    for entry in entries.iter_mut() {
+                        if let MirValue::Aggregate(kv) = entry {
+                            if kv[0] == key {
+                                // CD-009: existing key keeps its position; old value returned.
+                                let old = std::mem::replace(&mut kv[1], value);
+                                return MirValue::Enum {
+                                    variant: 1,
+                                    fields: vec![old],
+                                };
+                            }
+                        }
+                    }
+                    entries.push(MirValue::Aggregate(vec![key, value]));
+                    MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    }
+                })
+            }
+            HashMapGet => {
+                let Some(MirValue::Ref {
+                    frame,
+                    generation,
+                    local,
+                    path,
+                }) = args.next()
+                else {
+                    return self.internal("HashMapGet expects a &HashMap reference");
+                };
+                self.check_ref_live(frame, generation)?;
+                let key = self.deref_key_arg(args.next())?;
+                let entries = match self.read_resolved(frame, local, &path)? {
+                    MirValue::Vec(entries) => entries,
+                    other => return self.internal(format!("HashMap referent is {other:?}")),
+                };
+                for (i, entry) in entries.iter().enumerate() {
+                    if let MirValue::Aggregate(kv) = entry {
+                        if kv[0] == key {
+                            let mut elem_path = path;
+                            elem_path.push(ConcreteProj::Index(i));
+                            elem_path.push(ConcreteProj::Field(1));
+                            return Ok(MirValue::Enum {
+                                variant: 1,
+                                fields: vec![MirValue::Ref {
+                                    frame,
+                                    generation,
+                                    local,
+                                    path: elem_path,
+                                }],
+                            });
+                        }
+                    }
+                }
+                Ok(MirValue::Enum {
+                    variant: 0,
+                    fields: Vec::new(),
+                })
+            }
+            HashMapLen => {
+                let recv = args.next();
+                Ok(MirValue::Int(self.read_vec_ref(&recv)?.len() as i128))
+            }
+            HashMapIsEmpty => {
+                let recv = args.next();
+                Ok(MirValue::Bool(self.read_vec_ref(&recv)?.is_empty()))
+            }
+            HashMapContainsKey => {
+                let recv = args.next();
+                let key = self.deref_key_arg(args.next())?;
+                let entries = self.read_vec_ref(&recv)?;
+                let found = entries
+                    .iter()
+                    .any(|e| matches!(e, MirValue::Aggregate(kv) if kv[0] == key));
+                Ok(MirValue::Bool(found))
+            }
+            HashMapKeysIterNew => {
+                // A TRUE borrowed cursor: [map-ref, cursor] — Next indexes the live map.
+                let map_ref = args
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("KeysIterNew missing receiver".into()))?;
+                Ok(MirValue::Aggregate(vec![map_ref, MirValue::Int(0)]))
+            }
+            HashMapKeysIterNext => {
+                let Some(MirValue::Ref {
+                    frame,
+                    generation,
+                    local,
+                    path,
+                }) = args.next()
+                else {
+                    return self.internal("KeysIterNext expects a &mut iterator reference");
+                };
+                self.check_ref_live(frame, generation)?;
+                let iter_value = self.read_resolved(frame, local, &path)?;
+                let MirValue::Aggregate(fields) = &iter_value else {
+                    return self.internal(format!("keys iterator referent is {iter_value:?}"));
+                };
+                let (map_ref, cursor) = match (fields.first(), fields.get(1)) {
+                    (Some(r @ MirValue::Ref { .. }), Some(MirValue::Int(c))) => (r.clone(), *c),
+                    other => {
+                        return self.internal(format!("malformed keys-iterator state {other:?}"))
+                    }
+                };
+                let MirValue::Ref {
+                    frame: mf,
+                    generation: mg,
+                    local: ml,
+                    path: mp,
+                } = map_ref
+                else {
+                    unreachable!("matched Ref above");
+                };
+                self.check_ref_live(mf, mg)?;
+                let len = match self.read_resolved(mf, ml, &mp)? {
+                    MirValue::Vec(entries) => entries.len(),
+                    other => return self.internal(format!("HashMap referent is {other:?}")),
+                };
+                if (cursor as usize) < len {
+                    let mut cursor_path = path;
+                    cursor_path.push(ConcreteProj::Field(1));
+                    self.write_resolved(frame, local, &cursor_path, MirValue::Int(cursor + 1))?;
+                    let mut key_path = mp;
+                    key_path.push(ConcreteProj::Index(cursor as usize));
+                    key_path.push(ConcreteProj::Field(0));
+                    Ok(MirValue::Enum {
+                        variant: 1,
+                        fields: vec![MirValue::Ref {
+                            frame: mf,
+                            generation: mg,
+                            local: ml,
+                            path: key_path,
+                        }],
+                    })
+                } else {
+                    Ok(MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    })
+                }
+            }
+            other => self.internal(format!("runtime {other:?} is not a HashMap op")),
+        }
+    }
+
+    /// A `&K` key argument, dereferenced to the key value for structural comparison.
+    fn deref_key_arg(&self, v: Option<MirValue>) -> Result<MirValue, MirRunError> {
+        match v {
+            Some(MirValue::Ref {
+                frame,
+                generation,
+                local,
+                path,
+            }) => {
+                self.check_ref_live(frame, generation)?;
+                self.read_resolved(frame, local, &path)
+            }
+            Some(other) => Ok(other),
+            None => self.internal("missing key argument"),
+        }
+    }
+
     fn read_vec_ref(&self, v: &Option<MirValue>) -> Result<Vec<MirValue>, MirRunError> {
         match v {
             Some(MirValue::Ref {
@@ -1354,6 +1587,34 @@ fn is_vec_runtime(rt: RuntimeFn) -> bool {
             | VecIterNew
             | VecIterNext
     )
+}
+
+fn is_map_runtime(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(
+        rt,
+        HashMapNew
+            | HashMapInsert
+            | HashMapGet
+            | HashMapLen
+            | HashMapIsEmpty
+            | HashMapContainsKey
+            | HashMapKeysIterNew
+            | HashMapKeysIterNext
+    )
+}
+
+/// A Char argument (a Unicode scalar codepoint carried as `MirValue::Int`).
+fn char_of(v: &Option<MirValue>) -> Result<char, MirRunError> {
+    match v {
+        Some(MirValue::Int(cp)) => u32::try_from(*cp)
+            .ok()
+            .and_then(char::from_u32)
+            .ok_or_else(|| MirRunError::Internal(format!("invalid Char codepoint {cp}"))),
+        other => Err(MirRunError::Internal(format!(
+            "expected a Char argument, got {other:?}"
+        ))),
+    }
 }
 
 fn int_arg(v: Option<MirValue>) -> Result<i128, MirRunError> {
