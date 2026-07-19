@@ -1,10 +1,12 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5e-0
+Updated: 2026-07-19 after MIR Amendment A1 approval (CD-031)
 
 ## Position
-Gate: C4  Next: WP-C4.5e main body (runtime values: String/str, Vec/slices, Option/Result
-combinators, panic/assert, widened RuntimeFn surface — note: string-literal/String value
-representation needs a CE3-shaped mir.md §5/§7 amendment before lowering starts)  Blocked: none
+Gate: C4  Next: WP-C4.5e main body (runtime values), now unblocked — MIR Amendment A1
+(CD-031, `mir-amendment-A1-strings-runtime.md`, runtime surface `0.1-A1`) is CE3-APPROVED and
+is the binding contract the implementation follows: `Constant::Str`, drop-elaborated
+String/Vec/VecIter, `Trap.message`, the versioned String/str/Vec/slice `RuntimeFn` appendix,
+`copy_types` + `MirProgram` surface fields, verifier codes MIR-0015/0016.  Blocked: none
 **WP-C4.5e-0 done 2026-07-19** (pre-runtime-values hardening, CD-030 review disposition):
 IndexProof definite-initialization dataflow (must-analysis + unique-definition rule; 4
 adversarial negatives incl. the review's one-branch example); V-REF-1/MIR-0014
@@ -638,6 +640,29 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   bound dispatch" (generic *methods*/impls and user-nominal Eq/Ord operator lowering remain
   later-increment work). The review's C4.5d checklist was already fully implemented by the
   WP-C4.5d commit it had not seen, except the two deferred items above.
+- CD-031 [2026-07-19, CE3 — owner-approved MIR v0.1 Amendment A1] Approved
+  `STARKLANG/docs/compiler/mir-amendment-A1-strings-runtime.md` (rev. 3) as a **narrow additive
+  amendment to MIR v0.1**, runtime surface `0.1-A1` — the contract prerequisite the C4.5e-main
+  body needs before lowering strings/collections. Additions, all additive (no existing construct
+  reinterpreted): `Constant::Str(String)` = a decoded immutable UTF-8 literal typed `&str`
+  (owned `String` only via runtime `StringFromStr`; literal identity unobservable);
+  `Terminator::Trap { message: Option<Operand> }` for `panic`/`assert` messages (participates in
+  every operand analysis, not just typing); `String`/`Vec`/`VecIter` become drop-elaborated
+  runtime values (**always** buffer-reclaim glue; element-destructor execution conditional on
+  `T`; `Vec<T>` element drop in **reverse index order**, matched empirically to the frozen oracle
+  `interp.rs::drop_value`); a versioned `RuntimeFn` appendix (30 ops lowered in C4.5e + a reserved
+  group activated later only by a dated enumeration bumping the surface id); one new in-memory
+  `TypeContext` field (`copy_types`) and two new `MirProgram` fields (`mir_version`/
+  `runtime_surface`, consumer-checked before any body); new verifier codes MIR-0015 (V-STR-1/2,
+  Trap.message typing), MIR-0016 (V-COPY-1: `VecIndexGet`/`VecIterNext` require `T: Copy`;
+  `VecClear` requires non-droppable `T`). Two owner-mandated honesty rules: no `RuntimeFn` ever
+  runs a user element destructor (those run only at visible `Drop` terminators — `clear()` on
+  droppable `T` lowers to a pop-and-drop loop; `v[i]=x` uses `VecReplace(...)->T` so the caller
+  drops the old value); and a backend doing explicit reverse-order element destruction must
+  suppress any automatic (Rust) element drop. Three rev cycles (rev. 1 direction approved; rev. 2
+  eight corrections; rev. 3 four final corrections) recorded in the doc's §11. `mir.md` §5/§7
+  carry pointers to the amendment; `MIR_VERSION` stays `0.1`. This decision approves the contract
+  only — no code is written by it; the C4.5e main body implements it next.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

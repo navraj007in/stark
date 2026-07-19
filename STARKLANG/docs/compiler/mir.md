@@ -164,6 +164,11 @@ MirBody {
 
 ## 5. Places, operands, rvalues
 
+**Amended by A1 (CD-031, runtime surface `0.1-A1`):** `Constant` gains a `Str(String)` form (a
+`&str`-typed decoded immutable UTF-8 literal); `String`/`Vec` become drop-elaborated runtime
+values; and `Terminator::Trap` gains an optional `message: Option<Operand>` (§6/§8). All
+additive within v0.1 — see `mir-amendment-A1-strings-runtime.md`.
+
 ```text
 Place    ::= Local . Projection*
 Projection ::= Field(u32)              -- struct/tuple field by index (declaration order)
@@ -264,6 +269,12 @@ TrapCategory ::= IntegerOverflow | DivideByZero | IndexOutOfBounds | CastFailure
   discipline to `Vec` with an explicit invalidation rule.
 
 ## 7. Runtime surface
+
+**Amended by A1 (CD-031):** the String/str/Vec/slice `RuntimeFn` groups are enumerated in
+`mir-amendment-A1-strings-runtime.md` §5 under runtime-surface identifier `0.1-A1`, stamped on
+each `MirProgram` (`mir_version`/`runtime_surface`) and rejected by any consumer that does not
+support it. Later reserved-op activation bumps `runtime_surface` via a dated reviewed
+enumeration; `MIR_VERSION` stays `0.1`.
 
 The `Runtime(RuntimeFn)` callee namespace covers the compiler-provided behavior the normative
 stdlib specifies but Core programs cannot express: I/O (`print`/`println` with the normative
