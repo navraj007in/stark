@@ -350,3 +350,59 @@ fn array_out_of_bounds_trap_agrees_with_provenance() {
         .to_string(),
     );
 }
+
+#[test]
+fn mut_self_receiver_mutates_caller_local() {
+    // C4.5b-2: the defining test for real references — a &mut self method mutates the
+    // CALLER's local across the frame boundary, twice, and reads observe both mutations.
+    differential(
+        "mutrecv.stark",
+        "struct Counter { value: Int32 } \
+         impl Counter { \
+             fn bump(&mut self) { self.value = self.value + 1; } \
+             fn get(&self) -> Int32 { self.value } \
+         } \
+         fn main() { \
+             let mut c = Counter { value: 10 }; \
+             c.bump(); \
+             c.bump(); \
+             println(c.get()); \
+             println(c.value); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn reference_arguments_and_derefs_agree() {
+    differential(
+        "refs.stark",
+        "fn read_it(r: &Int32) -> Int32 { *r + 1 } \
+         fn write_it(r: &mut Int32) { *r = *r * 2; } \
+         fn main() { \
+             let mut x = 20; \
+             println(read_it(&x)); \
+             write_it(&mut x); \
+             println(x); \
+             let r = &x; \
+             println(*r); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn reference_to_struct_field_agrees() {
+    differential(
+        "fieldref.stark",
+        "struct P { a: Int32, b: Int32 } \
+         fn bump(r: &mut Int32) { *r = *r + 100; } \
+         fn main() { \
+             let mut p = P { a: 1, b: 2 }; \
+             bump(&mut p.a); \
+             println(p.a); \
+             println(p.b); \
+         }"
+        .to_string(),
+    );
+}

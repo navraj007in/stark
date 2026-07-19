@@ -2,7 +2,7 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C4  Next: WP-C4.5b-2 (references, slices, &mut self — interp frame restructure)  Blocked: none
+Gate: C4  Next: WP-C4.5c (generics + full static dispatch)  Blocked: none
 C4.1-C4.4 done; WP-C4.5 split into increments (WP-C4.5.md). Done so far: C4.5a
 (methods/assoc-fns/trait dispatch incl. defaults; corpus __01 differential-green) and
 C4.5-contract-cleanup (CD-029: trap provenance through outcomes + differential span
@@ -1420,3 +1420,36 @@ ignored; fmt + clippy clean.
 FOLLOW-UP: C4.5b-2 (references/slices/&mut self) needs the MIR-interp frame restructure
 (cross-frame reference places) — the interim by-value reference model stays until then.
 NEXT: WP-C4.5b-2, then C4.5c generics per WP-C4.5.md's increment order.
+
+### C4.5b-2 — real references and the frame-stack MIR interpreter — 2026-07-19
+DONE: the interim by-value reference model is gone. MIR interpreter restructured onto an
+explicit frame stack; a reference value is a resolved (frame, local, concrete-projection-path);
+`Deref` re-anchors place resolution; index proofs resolve in the evaluating frame before any
+re-anchor; dangling-frame access is a loud Internal error (defense behind borrowck). Lowering:
+`Ty::Ref` converts to real `MirTy::Ref` (peel removed); `&expr`/`&mut expr` lower to `RefOf`
+(borrow of a place, never a value read); `*r` reads/writes via `Deref` projections; field
+access and method dispatch auto-deref through reference-typed bases; `&self`/`&mut self`
+receivers are real Ref-typed params (borrowed at call sites, forwarded when the receiver is
+already a reference). The &mut-self Unsupported is gone — a &mut self method now genuinely
+mutates the CALLER's local across the frame boundary (differential-verified). ORACLE FIX
+(DEV-066, the differential's second front-end find after DEV-065): borrowck consumed a
+reference on every deref-read (&mut T non-Copy → "use" became a move), rejecting the canonical
+`*r = *r + 1`; both deref paths now availability-check without consuming; the
+move-out-of-non-Copy-pointee rejection is unchanged.
+FILES: starkc/src/mir/interp.rs (frame restructure, rewritten), starkc/src/mir/lower.rs,
+starkc/src/borrowck.rs (DEV-066), starkc/tests/{mir_differential,mir_lowering}.rs,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-066; count 64),
+STARKLANG/docs/compiler/work-packages/WP-C4.5.md (b marked done; slices explicitly deferred to
+C4.5e where their consumers live), COMPILER-STATE.md.
+RULES: none — implements the approved contract's reference/Deref semantics; DEV-066 restores
+spec-legal programs (rejection-of-legal fix, no new acceptance beyond the spec).
+DECISIONS: none at CE level.
+EVIDENCE: differential 14/14 — all prior tests pass unchanged under the REAL reference model,
+plus 3 new: `&mut self` mutating the caller's local (read back both via method and direct
+field), `&`/`&mut` arguments with cross-frame writes and derefs, `&mut` to a struct FIELD
+(sibling field untouched). mir_lowering negative case swapped (mut-self now supported; `?`
+takes its place). Full workspace 646 passed / 0 failed / 2 ignored; fmt + clippy clean.
+FOLLOW-UP: none blocking. C4.5b complete.
+NEXT: WP-C4.5c — generics and full static dispatch (real Instance.type_args monomorphisation,
+deterministic dedup, named resource limit, operator dispatch on generic params, DEV-064's
+typecheck rejection).

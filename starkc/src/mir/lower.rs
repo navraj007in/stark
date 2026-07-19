@@ -396,12 +396,11 @@ impl<'a> FnLowerer<'a> {
                 ret: Box::new(self.mir_ty(ret, span)?),
             },
             Ty::Never => MirTy::Never,
-            // C4.5a interim reference model: references are modeled BY VALUE (the only refs
-            // the current subset produces are `&self` receivers and `self`-typed expressions
-            // inside method bodies). Real reference places land in C4.5d; until then a `&T`
-            // type converts to `T`, matching the by-value receiver passing in lower_body/
-            // lower_method_call. Documented in WP-C4.5a.
-            Ty::Ref { inner, .. } => self.mir_ty(inner, span)?,
+            // C4.5b-2: real reference types (the interim by-value peel is gone).
+            Ty::Ref { mutable, inner } => MirTy::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.mir_ty(inner, span)?),
+            },
             Ty::Param(name) if name == "Self" => match &self.self_subst {
                 Some(self_ty) => self_ty.clone(),
                 None => return unsupported("Self outside a method body", span),
@@ -450,6 +449,10 @@ impl<'a> FnLowerer<'a> {
                 },
                 _ => unsupported("field type path (C4.5)", span),
             },
+            hir::TypeKind::Ref { mutable, inner } => Ok(MirTy::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.hir_field_ty(*inner)?),
+            }),
             hir::TypeKind::Tuple(elems) => Ok(MirTy::Tuple(
                 elems
                     .iter()
@@ -643,14 +646,20 @@ impl<'a> FnLowerer<'a> {
         });
         let mut body_params: Vec<MirTy> = Vec::new();
         match (sig.receiver, self_ty.clone()) {
-            (Some(hir::Receiver::RefMut), _) => {
-                return unsupported("&mut self receiver (references land in C4.5d)", sig_span);
-            }
-            (Some(_), Some(recv_ty)) => {
-                // Interim by-value receiver model (C4.5a): `&self`/`self` receivers are passed
-                // by value. Observationally equivalent for the drop-free, mutation-free scalar
-                // subset (borrowck upstream forbids mutation through `&self`; TYPE-FN-001
-                // makes identity unobservable). Real references land in C4.5d.
+            (Some(receiver), Some(recv_self_ty)) => {
+                // C4.5b-2: real receivers. `&self`/`&mut self` locals are Ref-typed; `self`
+                // (by value) stays the plain type.
+                let recv_ty = match receiver {
+                    hir::Receiver::Ref => MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(recv_self_ty),
+                    },
+                    hir::Receiver::RefMut => MirTy::Ref {
+                        mutable: true,
+                        inner: Box::new(recv_self_ty),
+                    },
+                    hir::Receiver::Value => recv_self_ty,
+                };
                 self.locals.push(LocalDecl {
                     ty: recv_ty.clone(),
                     kind: LocalKind::Param(0),
@@ -1123,6 +1132,28 @@ impl<'a> FnLowerer<'a> {
             },
             hir::ExprKind::Unary { op, operand } => {
                 let ty = self.expr_mir_ty(expr)?;
+                if let UnOp::Ref { mutable } = op {
+                    // C4.5b-2: `&expr` / `&mut expr` — borrow of a place, NOT a value read.
+                    let place = self.lower_place(*operand)?;
+                    let dest = self.new_temp(ty.clone());
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(dest),
+                            Rvalue::RefOf {
+                                mutable: *mutable,
+                                place,
+                            },
+                        ),
+                        self.info(span),
+                    );
+                    return Ok(self.read_place(Place::local(dest), &ty));
+                }
+                if matches!(op, UnOp::Deref) {
+                    // `*r` as a value: place = r + Deref.
+                    let mut place = self.lower_place(*operand)?;
+                    place.projection.push(Projection::Deref);
+                    return Ok(self.read_place(place, &ty));
+                }
                 let inner = self.lower_expr_to_operand(*operand)?;
                 match op {
                     UnOp::Not => {
@@ -1364,8 +1395,8 @@ impl<'a> FnLowerer<'a> {
                 self.aggregate_to_temp(expr, AggKind::Struct(*item), ordered, span)
             }
             hir::ExprKind::Field { base, name, .. } => {
-                let base_ty = self.expr_mir_ty(*base)?;
-                let MirTy::Struct(item, _) = base_ty else {
+                let (mut place, peeled) = self.lower_place_autoderef(*base)?;
+                let MirTy::Struct(item, _) = peeled else {
                     return unsupported("field access on non-struct (C4.5)", span);
                 };
                 let ItemKind::Struct { fields, .. } = &self.hir.item(item).kind else {
@@ -1375,7 +1406,6 @@ impl<'a> FnLowerer<'a> {
                 let Some(index) = fields.iter().position(|f| self.text(f.name) == name_text) else {
                     return unsupported("unknown field", span);
                 };
-                let mut place = self.lower_place(*base)?;
                 place.projection.push(Projection::Field(index as u32));
                 let field_ty = self.expr_mir_ty(expr)?;
                 Ok(self.read_place(place, &field_ty))
@@ -1584,6 +1614,30 @@ impl<'a> FnLowerer<'a> {
         Ok(self.read_place(Place::local(dest), &ty))
     }
 
+    /// Peel reference layers off a type (for nominal lookup / field access through `&self`,
+    /// per Core's one-level method auto-deref — we peel all layers since Core never nests refs).
+    fn peel_refs(ty: MirTy) -> (MirTy, u32) {
+        let mut layers = 0;
+        let mut t = ty;
+        while let MirTy::Ref { inner, .. } = t {
+            t = *inner;
+            layers += 1;
+        }
+        (t, layers)
+    }
+
+    /// A place for `base`, auto-dereffed: if `base`'s type is a reference, the returned place
+    /// carries the needed `Deref` projections and the returned type is the referent.
+    fn lower_place_autoderef(&mut self, base: ExprId) -> Result<(Place, MirTy), LowerError> {
+        let base_ty = self.expr_mir_ty(base)?;
+        let (peeled, layers) = Self::peel_refs(base_ty);
+        let mut place = self.lower_place(base)?;
+        for _ in 0..layers {
+            place.projection.push(Projection::Deref);
+        }
+        Ok((place, peeled))
+    }
+
     /// Lower an expression used as an assignable/projectable place.
     fn lower_place(&mut self, expr: ExprId) -> Result<Place, LowerError> {
         let span = self.hir.expr(expr).span;
@@ -1599,8 +1653,8 @@ impl<'a> FnLowerer<'a> {
                 _ => unsupported("place form (C4.5)", span),
             },
             hir::ExprKind::Field { base, name, .. } => {
-                let base_ty = self.expr_mir_ty(*base)?;
-                let MirTy::Struct(item, _) = base_ty else {
+                let (mut place, peeled) = self.lower_place_autoderef(*base)?;
+                let MirTy::Struct(item, _) = peeled else {
                     return unsupported("field place on non-struct (C4.5)", span);
                 };
                 let ItemKind::Struct { fields, .. } = &self.hir.item(item).kind else {
@@ -1610,7 +1664,6 @@ impl<'a> FnLowerer<'a> {
                 let Some(index) = fields.iter().position(|f| self.text(f.name) == name_text) else {
                     return unsupported("unknown field", span);
                 };
-                let mut place = self.lower_place(*base)?;
                 place.projection.push(Projection::Field(index as u32));
                 Ok(place)
             }
@@ -1624,6 +1677,14 @@ impl<'a> FnLowerer<'a> {
                 Ok(place)
             }
             hir::ExprKind::Index { base, index } => self.lower_index_place(*base, *index, span),
+            hir::ExprKind::Unary {
+                op: UnOp::Deref,
+                operand,
+            } => {
+                let mut place = self.lower_place(*operand)?;
+                place.projection.push(Projection::Deref);
+                Ok(place)
+            }
             _ => unsupported("place expression (C4.5)", span),
         }
     }
@@ -1961,7 +2022,8 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<(), LowerError> {
         let base_ty = self.expr_mir_ty(base)?;
-        let nominal = match &base_ty {
+        let (peeled_ty, base_ref_layers) = Self::peel_refs(base_ty.clone());
+        let nominal = match &peeled_ty {
             MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => *item,
             other => {
                 return unsupported(
@@ -1974,26 +2036,39 @@ impl<'a> FnLowerer<'a> {
         let Some((key, receiver)) = self.find_impl_fn(nominal, &name_text, false) else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
         };
-        // Receiver operand FIRST (normative order), before arguments.
+        // Receiver operand FIRST (normative order), before arguments. C4.5b-2: real borrows.
         let receiver_op = match receiver {
-            Some(hir::Receiver::RefMut) => {
-                return unsupported("&mut self receiver (references land in C4.5d)", span);
-            }
-            Some(hir::Receiver::Ref) => {
-                // Interim by-value model for `&self` (see lower_body): COPY, never move —
-                // a borrow must not consume the receiver local.
-                match self.lower_place(base) {
-                    Ok(place) => Operand::Copy(place),
-                    Err(_) => {
-                        // Non-place receiver (e.g. a call result): materialize a temp.
-                        let value = self.lower_expr_to_operand(base)?;
-                        let temp = self.new_temp(base_ty.clone());
-                        self.emit(
-                            Statement::Assign(Place::local(temp), Rvalue::Use(value)),
-                            self.info(span),
-                        );
-                        Operand::Copy(Place::local(temp))
-                    }
+            Some(kind @ (hir::Receiver::Ref | hir::Receiver::RefMut)) => {
+                let mutable = matches!(kind, hir::Receiver::RefMut);
+                if base_ref_layers > 0 {
+                    // The receiver expression is already a reference (`self` inside a method
+                    // forwarding to a sibling): pass the reference value itself.
+                    self.lower_expr_to_operand(base)?
+                } else {
+                    // Borrow the receiver place (materialize a temp for non-place receivers,
+                    // e.g. a call result used as `make().method()`).
+                    let place = match self.lower_place(base) {
+                        Ok(place) => place,
+                        Err(_) => {
+                            let value = self.lower_expr_to_operand(base)?;
+                            let temp = self.new_temp(peeled_ty.clone());
+                            self.emit(
+                                Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                                self.info(span),
+                            );
+                            Place::local(temp)
+                        }
+                    };
+                    let ref_ty = MirTy::Ref {
+                        mutable,
+                        inner: Box::new(peeled_ty.clone()),
+                    };
+                    let temp = self.new_temp(ref_ty.clone());
+                    self.emit(
+                        Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
+                        self.info(span),
+                    );
+                    self.read_place(Place::local(temp), &ref_ty)
                 }
             }
             Some(hir::Receiver::Value) => self.lower_expr_to_operand(base)?,

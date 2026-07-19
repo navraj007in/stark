@@ -181,7 +181,12 @@ impl<'a> BorrowChecker<'a> {
                     .with_label("borrow this value instead of moving out of the reference"),
                 );
             }
-            self.check_expr(operand);
+            // DEV-066: reading through the reference must not consume it.
+            if let Some(place) = self.place_of(operand) {
+                self.check_place_available(&place, self.hir.expr(operand).span);
+            } else {
+                self.check_expr(operand);
+            }
             return;
         }
         self.check_expr(expr_id);
@@ -326,6 +331,18 @@ impl<'a> BorrowChecker<'a> {
                 }
             }
             hir::ExprKind::Unary { op, operand } => {
+                // DEV-066: `*r` USES the reference `r` by read — it must never consume it.
+                // Both `println(*r)`-style reads and `*r = v` writes were marking `r` moved
+                // (mutable references are non-Copy, so the generic path treated the use as a
+                // move), wrongly rejecting the canonical `*r = *r + 1` mutation pattern.
+                if matches!(op, UnOp::Deref) {
+                    if let Some(place) = self.place_of(*operand) {
+                        self.check_place_available(&place, self.hir.expr(*operand).span);
+                    } else {
+                        self.check_expr(*operand);
+                    }
+                    return;
+                }
                 if let UnOp::Ref { mutable } = op {
                     // Borrow creation!
                     if let Some(place) = self.place_of(*operand) {

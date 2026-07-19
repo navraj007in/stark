@@ -23,8 +23,14 @@ HIR/MIR differential agreement before the next begins.
    stands): methods, associated fns, trait dispatch with defaults, `FnKey` instances, Self
    substitution; interim by-value reference model documented; `&mut self` deferred to the
    references increment.
-3. **C4.5b — indexing and references:** `CheckIndex` proof tokens, arrays/slices, borrow
-   projections, real reference places (replacing the interim by-value model), `&mut self`.
+3. **C4.5b — indexing and references: DONE 2026-07-19** in two parts. b-1: `CheckIndex` proof
+   tokens for arrays (same-base verifier binding; OOB differential w/ provenance; DEV-065
+   oracle-message fix). b-2: real reference places — frame-stack MIR interpreter with
+   references as (frame, local, concrete-path), `RefOf`/`Deref` lowering with method
+   auto-deref, real `&self`/`&mut self` receivers (interim by-value model removed), verified
+   cross-frame mutation; DEV-066 (borrowck moved a reference on deref-read, rejecting
+   `*r = *r + 1`) found by the differential and fixed. **Slices deferred to C4.5e** where
+   their consumers (String/Vec views) live — nothing in the current workload reaches them.
 4. **C4.5c — generics and full static dispatch:** real `Instance.type_args` monomorphisation
    with deterministic deduplication and the named resource limit; generic fns/types; operator
    dispatch on generic parameters; DEV-064's rejection in typecheck.

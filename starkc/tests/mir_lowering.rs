@@ -267,10 +267,20 @@ fn unsupported_constructs_report_cleanly() {
             "C4.5",
         ),
         (
-            "mutrecv.stark",
-            "struct P { x: Int32 } \
-             impl P { fn bump(&mut self) { self.x = self.x + 1; } } \
-             fn main() { let mut p = P { x: 1 }; p.bump(); println(p.x); }",
+            "tryop.stark",
+            "fn half(n: Int32) -> Option<Int32> { \
+                 if n % 2 == 0 { Some(n / 2) } else { None } \
+             } \
+             fn chain(n: Int32) -> Option<Int32> { \
+                 let h = half(n)?; \
+                 Some(h + 1) \
+             } \
+             fn main() { \
+                 match chain(10) { \
+                     Some(v) => println(v), \
+                     None => println(0), \
+                 } \
+             }",
             "C4.5",
         ),
     ];

@@ -1791,6 +1791,28 @@ WP-C1.5)
   provenance` — both engines trap `IndexOutOfBounds` at the same source span, with the oracle
   message matching the category fragment. — closed.
 
+## DEV-066 — Reading through a reference wrongly moved the reference [CLOSED, C4.5b-2, 2026-07-19]
+
+- **Normative expectation:** dereferencing uses a reference by *read*; it never consumes the
+  reference. `*r = *r + 1` for `r: &mut Int32` — the canonical mutation-through-`&mut`
+  pattern — is legal Core (03-Type-System §References and Lifetimes).
+- **Previous behaviour (confirmed empirically):** any value use of `*r` marked `r` moved
+  (borrowck routed the deref operand through the generic consuming path; `&mut T` is
+  non-Copy, so the "use" became a move), and the subsequent write through `*r` failed with
+  `E0100 use of moved value 'r'`. Every write-after-read through a mutable reference — incl.
+  `fn write_it(r: &mut Int32) { *r = *r * 2; }` — was rejected. Method receivers were
+  unaffected (separate `method_receiver` path), which is why `&mut self` methods worked while
+  free functions taking `&mut T` did not.
+- **Found:** by the C4.5b-2 MIR differential — the new reference-argument tests failed at the
+  *front end*, not in MIR (the second oracle defect the differential infrastructure has
+  surfaced, after DEV-065).
+- **Fix:** both deref paths in `borrowck.rs` (`check_expr`'s unary arm and
+  `check_owned_value`'s deref branch) now availability-check the reference place without
+  consuming it. The existing move-out-of-non-Copy-pointee rejection is unchanged.
+- **Regression evidence:** `tests/mir_differential.rs::reference_arguments_and_derefs_agree`
+  and `::reference_to_struct_field_agrees` (both engines agree end-to-end on read + write +
+  re-read through `&`/`&mut`), plus `::mut_self_receiver_mutates_caller_local`. — closed.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1840,7 +1862,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 63 numbered deviations total (DEV-002 through DEV-065, DEV-001/DEV-003 retired).
+Current count: 64 numbered deviations total (DEV-002 through DEV-066, DEV-001/DEV-003 retired).
 DEV-061/062/063 (the function-value cluster: indirect calls not executable, fn values not Copy in
 borrowck, Option/Result combinators missing) were found 2026-07-19 during Gate C4 entry by
 executing CD-021 workload items 16-22 against the interpreter for the first time — exactly the
