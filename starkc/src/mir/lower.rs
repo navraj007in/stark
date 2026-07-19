@@ -785,6 +785,8 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?,
             ),
             Ty::Array(elem, len) => MirTy::Array(Box::new(self.mir_ty(elem, span)?), *len),
+            // 0.1-A6 (A4 slicing): unsized slice type — appears only behind Ref.
+            Ty::Slice(elem) => MirTy::Slice(Box::new(self.mir_ty(elem, span)?)),
             // A4: a `Range<T>` value is represented as the tuple `(start, end, inclusive)`. The
             // iteration site distinguishes it from a genuine 3-tuple by the iter's front-end
             // type (`Ty::Range`), so no nominal MIR identity is needed.
@@ -2237,6 +2239,21 @@ impl<'a> FnLowerer<'a> {
             hir::ExprKind::Unary { op, operand } => {
                 let ty = self.expr_mir_ty(expr)?;
                 if let UnOp::Ref { mutable } = op {
+                    // 0.1-A6 (A4 slicing): `&base[lo..hi]` — a slice view, not a place borrow.
+                    // Trap provenance is the INDEX expression's span (`a[1..9]`), matching the
+                    // oracle, not the enclosing `&…`.
+                    if let hir::ExprKind::Index { base, index } = &self.hir.expr(*operand).kind {
+                        if matches!(self.tables.expr_types.get(index), Some(Ty::Range(_))) {
+                            if *mutable {
+                                return unsupported(
+                                    "mutable slice views (&mut base[range]) are reserved",
+                                    span,
+                                );
+                            }
+                            let index_span = self.hir.expr(*operand).span;
+                            return self.lower_make_slice(*base, *index, index_span);
+                        }
+                    }
                     // C4.5b-2: `&expr` / `&mut expr` — borrow of a place, NOT a value read.
                     // f-3a: a non-place operand (e.g. `&String::from("x")`) materializes into
                     // a temp first, mirroring the method-receiver auto-borrow path.
@@ -3131,6 +3148,83 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// 0.1-A6 (A4 slicing): `&base[range]` — a shared slice view over an Array/Vec/slice
+    /// referent via `SliceNew`, which traps IndexOutOfBounds on a negative, inverted, or
+    /// out-of-range bound (06-Standard-Library behavioral requirement). Evaluation order:
+    /// base, then the range (lo before hi via the A4-2a range-tuple lowering).
+    fn lower_make_slice(
+        &mut self,
+        base: ExprId,
+        index: ExprId,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let (peeled, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
+        let elem = match &peeled {
+            MirTy::Array(elem, _) | MirTy::Slice(elem) => (**elem).clone(),
+            MirTy::Core(crate::hir::CoreType::Vec, args) => {
+                args.first().cloned().unwrap_or(MirTy::Unit)
+            }
+            other => return unsupported(format!("slicing {other:?}"), span),
+        };
+        // Base reference: pass an existing reference through (a `&[T]` re-slice or `&Vec`),
+        // else borrow the owned Array/Vec place (shared).
+        let base_ref = if layers > 0 {
+            self.lower_expr_to_operand(base)?
+        } else {
+            let place = self.place_or_temp(base, &peeled, span)?;
+            let ref_ty = MirTy::Ref {
+                mutable: false,
+                inner: Box::new(peeled.clone()),
+            };
+            let temp = self.new_temp(ref_ty.clone());
+            self.emit(
+                Statement::Assign(
+                    Place::local(temp),
+                    Rvalue::RefOf {
+                        mutable: false,
+                        place,
+                    },
+                ),
+                self.info(span),
+            );
+            self.read_place(Place::local(temp), &ref_ty, span)?
+        };
+        // The range tuple (start, end, inclusive) — materialize once, read its fields.
+        let range_ty = self.expr_mir_ty(index)?;
+        let bound_ty = match &range_ty {
+            MirTy::Tuple(fields) => fields.first().cloned().unwrap_or(MirTy::Int32),
+            other => return unsupported(format!("slice index is not a range: {other:?}"), span),
+        };
+        let range_op = self.lower_expr_to_operand(index)?;
+        let range_local = self.new_temp(range_ty);
+        self.emit(
+            Statement::Assign(Place::local(range_local), Rvalue::Use(range_op)),
+            self.info(span),
+        );
+        let field = |i: u32| Place {
+            local: range_local,
+            projection: vec![Projection::Field(i)],
+        };
+        let _ = &bound_ty;
+        let slice_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Slice(Box::new(elem))),
+        };
+        let dest = self.new_temp(slice_ty.clone());
+        self.emit_runtime_call(
+            RuntimeFn::SliceNew,
+            vec![
+                base_ref,
+                Operand::Copy(field(0)),
+                Operand::Copy(field(1)),
+                Operand::Copy(field(2)),
+            ],
+            Place::local(dest),
+            span,
+        );
+        self.read_place(Place::local(dest), &slice_ty, span)
+    }
+
     /// C4.5b-1: `base[index]` place with the CE3 proof-token discipline. Evaluation order:
     /// base before index (CD-007). Only fixed-length arrays here — Vec indexing stays on the
     /// runtime surface (mutable length, contract §6) and slices arrive with references
@@ -3142,6 +3236,37 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<Place, LowerError> {
         let base_ty = self.expr_mir_ty(base)?;
+        // 0.1-A6 (A4 slicing): `s[i]` on a `&[T]` — the indexable place is the slice referent
+        // (`s` + Deref); CheckIndex checks against the VIEW length at runtime.
+        if let MirTy::Ref { inner, .. } = &base_ty {
+            if matches!(**inner, MirTy::Slice(_)) {
+                let mut place = self.place_or_temp(base, &base_ty, span)?;
+                place.projection.push(Projection::Deref);
+                let index_op = self.lower_expr_to_operand(index)?;
+                self.locals.push(LocalDecl {
+                    ty: MirTy::Int64,
+                    kind: LocalKind::IndexProof,
+                });
+                let proof = LocalId((self.locals.len() - 1) as u32);
+                let after = self.new_block();
+                self.terminate(
+                    Terminator::Checked {
+                        op: CheckedOp::CheckIndex,
+                        args: vec![Operand::Copy(place.clone()), index_op],
+                        dest: proof,
+                        target: after,
+                        trap: TrapInfo {
+                            category: TrapCategory::IndexOutOfBounds,
+                            source: self.info(span),
+                        },
+                    },
+                    self.info(span),
+                    after,
+                );
+                place.projection.push(Projection::Index(proof));
+                return Ok(place);
+            }
+        }
         if !matches!(base_ty, MirTy::Array(..)) {
             return unsupported(
                 format!("indexing {base_ty:?} (Vec is runtime-surface; slices are C4.5b-2)"),
@@ -3890,6 +4015,19 @@ impl<'a> FnLowerer<'a> {
         if let MirTy::Core(crate::hir::CoreType::HashMap, kv_args) = &peeled_ty {
             let kv = kv_args.clone();
             return self.lower_map_method_call(base, kv, name_span, args, dest, span);
+        }
+        // 0.1-A6 (A4 slicing): slice methods — `len`/`is_empty` on a `&[T]` receiver.
+        if matches!(peeled_ty, MirTy::Slice(_)) {
+            let name = self.text(name_span);
+            let rt = match name {
+                "len" => RuntimeFn::SliceLen,
+                "is_empty" => RuntimeFn::SliceIsEmpty,
+                other => return unsupported(format!("slice method {other}"), span),
+            };
+            // The receiver expression is the `&[T]` value itself (peel found ref layers).
+            let recv = self.lower_expr_to_operand(base)?;
+            self.emit_runtime_call(rt, vec![recv], dest, span);
+            return Ok(());
         }
         // C4.5e-3: Option/Result inspection and extraction methods; A4: value combinators.
         if let MirTy::Enum(enum_ref @ (EnumRef::CoreOption | EnumRef::CoreResult), ty_args) =

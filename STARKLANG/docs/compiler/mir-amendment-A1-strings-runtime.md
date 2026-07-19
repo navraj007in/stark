@@ -5,10 +5,11 @@ Status: **APPROVED under CE3 as an additive MIR v0.1 amendment, runtime surface 
 corrections, which this revision incorporates (see §11 revision log). Rev. 1's central design
 was approved in principle; rev. 2 resolved eight required corrections; rev. 3 resolves the
 final four. Implementation of the C4.5e main body may begin against this revision.
-**Current runtime surface after subsequent dated enumerations (§11): `0.1-A5`** (rev. 5
+**Current runtime surface after subsequent dated enumerations (§11): `0.1-A6`** (rev. 5
 activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char ops as
 `0.1-A3`; rev. 8 activated checked interior Vec access as `0.1-A4`; rev. 9 activated string
-chars iteration as `0.1-A5`).
+chars iteration as `0.1-A5`; rev. 10 activated shared slice views as `0.1-A6`, completing the
+A4 `core-min` surface).
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -398,6 +399,25 @@ and other interior views into runtime containers (§5d, after C4.5f frame genera
 I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
+
+**Rev. 10 — surface `0.1-A6` activation (2026-07-20, WP-C4.6 A4 slicing, per CD-032's
+dated-enumeration rule; completes the A4 core-min surface).** Activates shared slice views:
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `SliceNew` | `(&(Array<T,N> \| Vec<T> \| [T]), I, I, Bool) -> &[T]` | **IndexOutOfBounds** | `I` is the range's integer element type (both bounds match); the Bool is the inclusive flag. Traps on a negative, inverted, or out-of-range bound (06-Standard-Library behavioral requirement), with the call site's provenance. Re-slicing a `&[T]` **composes** windows — a slice path never stacks two views. |
+| `SliceLen` | `(&[T]) -> UInt64` | — | view length |
+| `SliceIsEmpty` | `(&[T]) -> Bool` | — | |
+
+`&[T]` = `Ref { mutable: false, inner: Slice(T) }`. Interpreter representation: a slice value
+is a `Ref` whose path ends in a `Slice { start, len }` window step over the live Array/Vec
+referent (frame-generation guarded); a window followed by `Index(i)` composes to the absolute
+element `start + i`, and `s[i]` uses the ordinary `CheckIndex` proof discipline **checked
+against the VIEW length**. Slices are shared-only in this revision (`&mut base[range]` stays
+reserved); no writes route through a view. The oracle's three slice-bound error messages were
+aligned to the "out of bounds" family (the spec groups all bound failures as one trap; the
+fragment comparator requires it). `MIR_RUNTIME_SURFACE = "0.1-A6"`. **This completes the A4
+`core-min` runtime surface.**
 
 **Rev. 9 — surface `0.1-A5` activation (2026-07-20, WP-C4.6 A4-2d, per CD-032's
 dated-enumeration rule).** Activates string chars iteration:

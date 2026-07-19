@@ -39,7 +39,7 @@ pub const MIR_VERSION: &str = "0.1";
 /// user-`Drop` key/value types excluded so no runtime op ever runs a user destructor), plus
 /// the A1-approved-but-deferred Char ops (`StringPushChar`/`StringPopChar`,
 /// `PrintlnChar`/`PrintChar`).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A5";
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A6";
 
 // ------------------------------------------------------------------ identity --
 
@@ -383,6 +383,13 @@ pub enum RuntimeFn {
     // `CharsIterNext` yields `Option<Char>` by value. ---
     CharsIterNew,
     CharsIterNext,
+    // --- 0.1-A6 (C4.6 A4 slicing): slice views. `SliceNew(&base, lo, hi, inclusive) -> &[T]`
+    // creates a view over an Array/Vec/slice referent and TRAPS IndexOutOfBounds on a
+    // negative, inverted, or out-of-range bound (06-Standard-Library behavioral requirement);
+    // re-slicing composes. `SliceLen`/`SliceIsEmpty` read the view length. ---
+    SliceNew,
+    SliceLen,
+    SliceIsEmpty,
     // --- 0.1-A2 (C4.5f-2, CD-032): by-reference Vec iteration. The iterator borrows the
     // source Vec (borrowck forbids mutation while live); `VecIterNext` yields `Option<&T>`
     // and requires `T: Copy` (V-COPY-1). ---

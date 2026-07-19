@@ -4635,13 +4635,13 @@ impl<'a> Interpreter<'a> {
             return Err(RuntimeError::new("slice index must be a range", span));
         };
         let start = usize::try_from(start)
-            .map_err(|_| RuntimeError::new("slice start is negative", span))?;
-        let mut end =
-            usize::try_from(end).map_err(|_| RuntimeError::new("slice end is negative", span))?;
+            .map_err(|_| RuntimeError::new("slice range out of bounds (negative start)", span))?;
+        let mut end = usize::try_from(end)
+            .map_err(|_| RuntimeError::new("slice range out of bounds (negative end)", span))?;
         if inclusive {
-            end = end
-                .checked_add(1)
-                .ok_or_else(|| RuntimeError::new("slice range overflow", span))?;
+            end = end.checked_add(1).ok_or_else(|| {
+                RuntimeError::new("slice range out of bounds (inclusive end overflow)", span)
+            })?;
         }
         if start > end || end > length {
             return Err(RuntimeError::new("slice range out of bounds", span));

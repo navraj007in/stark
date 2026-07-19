@@ -40,6 +40,13 @@ pub enum ConcreteProj {
     Field(u32),
     Variant(u32, u32),
     Index(usize),
+    /// 0.1-A6 (A4 slicing): a sub-range view over an Array/Vec referent — `start` is the
+    /// absolute element offset in the underlying container, `len` the view length. Appears
+    /// only in `MirValue::Ref` paths (a `&[T]` value); re-slicing composes into one step.
+    Slice {
+        start: usize,
+        len: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -619,8 +626,35 @@ impl<'a> Interp<'a> {
                 "read of uninitialized/moved local _{local} (frame {frame})"
             ));
         };
-        for step in path {
+        let mut k = 0;
+        while k < path.len() {
+            let step = &path[k];
             value = match (step, value) {
+                // 0.1-A6 (A4 slicing): a Slice window either COMPOSES with a following Index
+                // (view-relative i becomes absolute start+i) or, when it ends the path, yields
+                // a cloned sub-view value (read-only — used for CheckIndex length reads).
+                (ConcreteProj::Slice { start, len }, MirValue::Aggregate(elems))
+                | (ConcreteProj::Slice { start, len }, MirValue::Vec(elems)) => {
+                    if let Some(ConcreteProj::Index(i)) = path.get(k + 1) {
+                        if *i >= *len {
+                            return self
+                                .internal("proven slice index out of bounds (verifier bug)");
+                        }
+                        k += 1; // consume the composed Index as well
+                        match elems.get(start + i) {
+                            Some(e) => e,
+                            None => return self.internal("slice window exceeds its base"),
+                        }
+                    } else {
+                        let sub = elems
+                            .get(*start..start + len)
+                            .ok_or_else(|| {
+                                MirRunError::Internal("slice window exceeds its base".into())
+                            })?
+                            .to_vec();
+                        return Ok(MirValue::Vec(sub));
+                    }
+                }
                 (ConcreteProj::Field(i), MirValue::Aggregate(fields)) => {
                     match fields.get(*i as usize) {
                         Some(f) => f,
@@ -649,6 +683,7 @@ impl<'a> Interp<'a> {
                     return self.internal(format!("projection {step:?} on value {value:?}"))
                 }
             };
+            k += 1;
         }
         if matches!(value, MirValue::Moved) {
             return self.internal(format!(
@@ -705,6 +740,13 @@ impl<'a> Interp<'a> {
                     elems.get_mut(*i).ok_or_else(|| {
                         MirRunError::Internal("proven index write out of bounds".into())
                     })?
+                }
+                // 0.1-A6: slice views are SHARED — no writes route through them (the front end
+                // rejects assignment through an immutable slice; loud failure if one slips by).
+                (ConcreteProj::Slice { .. }, _) => {
+                    return Err(MirRunError::Internal(
+                        "write through a shared slice view".into(),
+                    ))
                 }
                 (step, target) => {
                     return Err(MirRunError::Internal(format!(
@@ -951,6 +993,9 @@ impl<'a> Interp<'a> {
             CheckIndex => {
                 let len = match &args[0] {
                     MirValue::Aggregate(elems) => elems.len() as i128,
+                    // 0.1-A6: a slice-view base reads as a Vec sub-view; its len is the VIEW
+                    // length, so the proof bounds i against the view, not the base container.
+                    MirValue::Vec(elems) => elems.len() as i128,
                     other => {
                         return Err(MirRunError::Internal(format!(
                             "CheckIndex base is not an aggregate: {other:?}"
@@ -1041,6 +1086,9 @@ impl<'a> Interp<'a> {
         }
         if is_map_runtime(rt) {
             return self.run_map_runtime(rt, args);
+        }
+        if is_slice_runtime(rt) {
+            return self.run_slice_runtime(rt, args, call_info);
         }
         let mut iter = args.into_iter();
         let arg = iter.next();
@@ -1598,6 +1646,109 @@ impl<'a> Interp<'a> {
     }
 
     /// A `&K` key argument, dereferenced to the key value for structural comparison.
+    /// 0.1-A6 (A4 slicing): slice ops. A `&[T]` value is a `Ref` whose path ends with a
+    /// `ConcreteProj::Slice` window; `SliceNew` composes windows (re-slicing never stacks two
+    /// Slice steps) and TRAPS IndexOutOfBounds on a negative, inverted, or out-of-range bound
+    /// with the CALL SITE's provenance, per the 06-Standard-Library behavioral requirement.
+    fn run_slice_runtime(
+        &mut self,
+        rt: RuntimeFn,
+        args: Vec<MirValue>,
+        call_info: SourceInfo,
+    ) -> Result<MirValue, MirRunError> {
+        use RuntimeFn::*;
+        let mut args = args.into_iter();
+        let Some(MirValue::Ref {
+            frame,
+            generation,
+            local,
+            path,
+        }) = args.next()
+        else {
+            return self.internal("slice op expects a reference receiver");
+        };
+        self.check_ref_live(frame, generation)?;
+        match rt {
+            SliceNew => {
+                let oob = || MirRunError::Trap {
+                    category: TrapCategory::IndexOutOfBounds,
+                    source: call_info,
+                    message: None,
+                };
+                let int = |v: Option<MirValue>| -> Result<i128, MirRunError> {
+                    match v {
+                        Some(MirValue::Int(i)) => Ok(i),
+                        other => Err(MirRunError::Internal(format!(
+                            "SliceNew bound is not an integer: {other:?}"
+                        ))),
+                    }
+                };
+                let lo = int(args.next())?;
+                let hi = int(args.next())?;
+                let inclusive = match args.next() {
+                    Some(MirValue::Bool(b)) => b,
+                    other => {
+                        return self
+                            .internal(format!("SliceNew inclusive flag is not Bool: {other:?}"))
+                    }
+                };
+                if lo < 0 || hi < 0 {
+                    return Err(oob());
+                }
+                let start = lo as usize;
+                let end = if inclusive {
+                    hi as usize + 1
+                } else {
+                    hi as usize
+                };
+                // Window base: an existing Slice tail composes; otherwise the referent's length.
+                let (parent_path, window_start, base_len) = match path.last() {
+                    Some(ConcreteProj::Slice { start: s0, len: l0 }) => {
+                        (path[..path.len() - 1].to_vec(), *s0, *l0)
+                    }
+                    _ => {
+                        let len = match self.read_resolved(frame, local, &path)? {
+                            MirValue::Vec(elems) => elems.len(),
+                            MirValue::Aggregate(elems) => elems.len(),
+                            other => return self.internal(format!("sliced referent is {other:?}")),
+                        };
+                        (path, 0, len)
+                    }
+                };
+                if start > end || end > base_len {
+                    return Err(oob());
+                }
+                let mut new_path = parent_path;
+                new_path.push(ConcreteProj::Slice {
+                    start: window_start + start,
+                    len: end - start,
+                });
+                Ok(MirValue::Ref {
+                    frame,
+                    generation,
+                    local,
+                    path: new_path,
+                })
+            }
+            SliceLen | SliceIsEmpty => {
+                let len = match path.last() {
+                    Some(ConcreteProj::Slice { len, .. }) => *len,
+                    other => {
+                        return self.internal(format!(
+                            "slice receiver has no view window (path tail {other:?})"
+                        ))
+                    }
+                };
+                Ok(if matches!(rt, SliceLen) {
+                    MirValue::Int(len as i128)
+                } else {
+                    MirValue::Bool(len == 0)
+                })
+            }
+            other => self.internal(format!("runtime {other:?} is not a slice op")),
+        }
+    }
+
     fn deref_key_arg(&self, v: Option<MirValue>) -> Result<MirValue, MirRunError> {
         match v {
             Some(MirValue::Ref {
@@ -1743,6 +1894,11 @@ fn is_vec_runtime(rt: RuntimeFn) -> bool {
             | VecGetRef
             | VecGetMutRef
     )
+}
+
+fn is_slice_runtime(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(rt, SliceNew | SliceLen | SliceIsEmpty)
 }
 
 fn is_map_runtime(rt: RuntimeFn) -> bool {

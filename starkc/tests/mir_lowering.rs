@@ -177,7 +177,7 @@ fn golden_mini_dump() {
     // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
     // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
     let expected = "\
-// STARK MIR v0.1 (runtime-surface 0.1-A5)
+// STARK MIR v0.1 (runtime-surface 0.1-A6)
 
 fn main@[] {
   locals: _0: Unit [ret], _1: Unit [tmp], _2: Int32 [tmp], _3: Int64 [tmp]
@@ -442,7 +442,7 @@ fn string_literal_dump_round_trips_escapes() {
     let program = lower_ok(&front);
     let dump = program.dump();
     assert!(
-        dump.contains("(runtime-surface 0.1-A5)"),
+        dump.contains("(runtime-surface 0.1-A6)"),
         "dump header must carry the current runtime surface, got:\n{dump}"
     );
     assert!(

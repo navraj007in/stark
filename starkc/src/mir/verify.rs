@@ -671,6 +671,10 @@ impl<'a> BodyCx<'a> {
                     Callee::Runtime(rt) if is_map_runtime_fn(*rt) => {
                         self.map_runtime_sig(*rt, &arg_tys, dest_ty.as_ref(), bi)
                     }
+                    // 0.1-A6: slice ops are schematic in T (from the reference receiver).
+                    Callee::Runtime(rt) if is_slice_runtime_fn(*rt) => {
+                        self.slice_runtime_sig(*rt, &arg_tys, bi)
+                    }
                     Callee::Runtime(rt) => Some(runtime_sig(*rt)),
                 };
                 if let Some((params, ret)) = sig {
@@ -1301,6 +1305,87 @@ impl<'a> BodyCx<'a> {
         })
     }
 
+    /// 0.1-A6 (A4 slicing): slice ops, schematic in T. `SliceNew`'s receiver is a shared
+    /// reference to an Array/Vec/slice with element T; the bounds are a matching integer pair
+    /// plus the inclusive Bool; the result is `&[T]`. `SliceLen`/`SliceIsEmpty` read a `&[T]`.
+    fn slice_runtime_sig(
+        &mut self,
+        rt: RuntimeFn,
+        arg_tys: &[Option<MirTy>],
+        bi: u32,
+    ) -> Option<(Vec<MirTy>, MirTy)> {
+        use RuntimeFn::*;
+        let recv_ty = arg_tys.first().and_then(|o| o.as_ref());
+        let slice_ref = |t: &MirTy| MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Slice(Box::new(t.clone()))),
+        };
+        match rt {
+            SliceNew => {
+                let (recv, t) = match recv_ty {
+                    Some(r @ MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                        MirTy::Array(elem, _) | MirTy::Slice(elem) => (r.clone(), (**elem).clone()),
+                        MirTy::Core(crate::hir::CoreType::Vec, args) => {
+                            (r.clone(), args.first().cloned().unwrap_or(MirTy::Unit))
+                        }
+                        other => {
+                            self.err(
+                                "MIR-0012",
+                                bi,
+                                format!("SliceNew receiver is &{other:?}, not a sliceable"),
+                            );
+                            return None;
+                        }
+                    },
+                    _ => {
+                        self.err("MIR-0012", bi, "SliceNew receiver is not a reference");
+                        return None;
+                    }
+                };
+                // Bounds: a matching integer pair (the range's element type).
+                let bound = match arg_tys.get(1).and_then(|o| o.as_ref()) {
+                    Some(b) if is_integer(b) => b.clone(),
+                    Some(other) => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("SliceNew bound is {other:?}, not an integer"),
+                        );
+                        return None;
+                    }
+                    None => return None,
+                };
+                Some((vec![recv, bound.clone(), bound, MirTy::Bool], slice_ref(&t)))
+            }
+            SliceLen | SliceIsEmpty => {
+                let t = match recv_ty {
+                    Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                        MirTy::Slice(elem) => (**elem).clone(),
+                        other => {
+                            self.err(
+                                "MIR-0012",
+                                bi,
+                                format!("slice op receiver is &{other:?}, not &[T]"),
+                            );
+                            return None;
+                        }
+                    },
+                    _ => {
+                        self.err("MIR-0012", bi, "slice op receiver is not a reference");
+                        return None;
+                    }
+                };
+                let ret = if matches!(rt, SliceLen) {
+                    MirTy::UInt64
+                } else {
+                    MirTy::Bool
+                };
+                Some((vec![slice_ref(&t)], ret))
+            }
+            _ => unreachable!("non-slice op in slice_runtime_sig"),
+        }
+    }
+
     /// A1: precise droppability, mirroring lowering's `ty_needs_drop` so the verifier never
     /// rejects a valid lowering (String/Vec always; a nominal with an own `Drop` impl or a
     /// droppable field; recursion through aggregates). Distinct from the conservative
@@ -1857,6 +1942,11 @@ fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
     )
 }
 
+fn is_slice_runtime_fn(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(rt, SliceNew | SliceLen | SliceIsEmpty)
+}
+
 fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(
@@ -1941,6 +2031,9 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         HashMapNew | HashMapInsert | HashMapGet | HashMapLen | HashMapIsEmpty
         | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext => {
             unreachable!("HashMap ops resolve through map_runtime_sig, not runtime_sig")
+        }
+        SliceNew | SliceLen | SliceIsEmpty => {
+            unreachable!("slice ops resolve through slice_runtime_sig, not runtime_sig")
         }
     }
 }

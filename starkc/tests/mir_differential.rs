@@ -1670,3 +1670,68 @@ fn chars_iteration_agrees() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A4 slicing (surface 0.1-A6) ----
+
+/// Array and Vec slicing: `&a[lo..hi]` (exclusive + inclusive), `len`/`is_empty`, view-relative
+/// indexing, re-slicing composition, empty slices, and slice fn parameters all agree.
+#[test]
+fn slicing_operations_agree() {
+    differential(
+        "a4_slice.stark",
+        "fn total(s: &[Int32]) -> Int32 { \
+             let mut t = 0; \
+             let mut i = 0 as UInt64; \
+             while i < s.len() { t = t + s[i]; i = i + (1 as UInt64); } \
+             t \
+         } \
+         fn main() { \
+             let a = [10, 20, 30, 40, 50]; \
+             let s = &a[1..4]; \
+             println(s.len()); \
+             println(s[0]); \
+             println(s[2]); \
+             let t = &s[1..3]; \
+             println(t[0]); \
+             let u = &a[0..=2]; \
+             println(u.len()); \
+             println(total(&a[1..5])); \
+             let e = &a[2..2]; \
+             println(e.is_empty()); \
+             let mut v: Vec<Int32> = Vec::new(); \
+             v.push(7); v.push(8); v.push(9); \
+             let w = &v[1..3]; \
+             println(w[0] + w[1]); \
+         }"
+        .to_string(),
+    );
+}
+
+/// An out-of-range slice bound traps IndexOutOfBounds after identical pre-trap output.
+#[test]
+fn slice_out_of_range_traps_agree() {
+    differential(
+        "a4_slice_oob.stark",
+        "fn main() { let a = [1, 2, 3]; println(0); let s = &a[1..9]; println(s.len()); }"
+            .to_string(),
+    );
+}
+
+/// An inverted slice range traps IndexOutOfBounds.
+#[test]
+fn slice_inverted_range_traps_agree() {
+    differential(
+        "a4_slice_inv.stark",
+        "fn main() { let a = [1, 2, 3]; let s = &a[2..1]; println(s.len()); }".to_string(),
+    );
+}
+
+/// Indexing past the VIEW length (even where the base container is longer) traps.
+#[test]
+fn slice_index_checks_view_length_agree() {
+    differential(
+        "a4_slice_view.stark",
+        "fn main() { let a = [1, 2, 3, 4]; let s = &a[1..3]; println(s[0]); println(s[3]); }"
+            .to_string(),
+    );
+}

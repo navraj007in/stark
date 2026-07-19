@@ -1,18 +1,20 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.6 A4-2d — **C4 OPEN; A4 nearly done, only slicing left (CD-033)**
+Updated: 2026-07-20 after WP-C4.6 A4-2e — **C4 OPEN; A4 COMPLETE, five of seven classes done (CD-033)**
 
 ## Position
-Gate: C4  Next: **A4 slicing** (`&a[0..2]` — the last core-min surface piece; deferred since
-C4.5b, needs a slice value + range-bounds trap; owns its own sub-slice), then A2 (patterns;
-owns DEV-070), A1 (generic impls). Per the dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1).
-**A4 progress (all 2026-07-20):** A4-1 `size_of`/`align_of` + `unwrap_or`; A4-2a `map`/`and_then`/
-`map_err` combinators + Range-as-value (`Ty::Range` → MIR tuple `(start,end,inclusive)`, runtime
-inclusive branch); A4-2b `Vec::get`/`get_mut` → `VecGetRef`/`VecGetMutRef` (`Option<&T>`, never
-trap, no Copy req) at **`0.1-A4`** (A1 rev. 8); A4-2c `println(Ordering)` (discriminant switch,
-no new op); A4-2d `str::chars`/`String::chars` + `for c in s.chars()` → `CharsIterNew`/
-`CharsIterNext` (`Option<Char>` by value, `&str` snapshot) at **`0.1-A5`** (A1 rev. 9;
-`lower_for_over_iter` generalized to bind a by-value element). 9 A4 differential tests; workspace
-clean; clippy 1.93/1.97 clean.
+Gate: C4  Next: **A2** (general + nested pattern lowering; owns DEV-070), then A1 (generic
+impls) — the last two Class-A blockers. Per the dependency-aware order (A5+A7 → A6 → A3 → A4 →
+A2 → A1). **A4 COMPLETE (all 2026-07-20):** A4-1 `size_of`/`align_of` + `unwrap_or`; A4-2a
+`map`/`and_then`/`map_err` + Range-as-value (MIR tuple `(start,end,inclusive)`); A4-2b
+`Vec::get`/`get_mut` (`Option<&T>`, never trap) at `0.1-A4` (A1 rev. 8); A4-2c `println(Ordering)`
+(no new op); A4-2d `chars()` iteration (`Option<Char>` by value) at `0.1-A5` (A1 rev. 9);
+**A4-2e slicing** at **`0.1-A6`** (A1 rev. 10): `&base[range]` over Array/Vec/slice →
+trap-capable `SliceNew` (**runtime-surface only — no new MIR shape, no CE3 escalation**);
+re-slicing composes windows; `s[i]` via the existing CheckIndex proof discipline against the
+VIEW length; `SliceLen`/`SliceIsEmpty`; interp `ConcreteProj::Slice{start,len}` window on `Ref`
+paths; shared-only (`&mut base[range]` reserved); oracle slice-bound messages aligned to the
+"out of bounds" family. 13 A4 differential + 2 verifier tests; workspace 733/0; clippy
+1.93/1.97 clean.
 Progress: **A5, A7, A6, and A3 (Eq+Ord) DONE 2026-07-19.** A5: pure bitwise `MirBinOp`,
 `~` → `^ mask`, trapping `Shl`/`Shr`/`Pow`, new `TrapCategory::InvalidShift`. A7: `loop`-break
 value, `[v;n]` repeat, Unit value-position `if`/`while`/`for`. A6: Vec iteration → borrowed

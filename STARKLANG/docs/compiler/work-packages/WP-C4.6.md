@@ -183,7 +183,7 @@ required class is green.
 - A7 (expr forms): **DONE 2026-07-19** — see below
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
 - A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
-- A4 (core-min surface): **in progress** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, `0.1-A4`), A4-2c (println Ordering), A4-2d (chars, `0.1-A5`) all DONE 2026-07-20; **only slicing remains** — see below
+- A4 (core-min surface): **DONE 2026-07-20** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, `0.1-A4`), A4-2c (println Ordering), A4-2d (chars, `0.1-A5`), A4-2e (slicing, `0.1-A6`) — see below
 - A2 (patterns): _pending_
 - A1 (generic impls): _pending_
 
@@ -290,10 +290,23 @@ variant name via `Print(ln)Str`, closing the Display path A2 deferred. Evidence:
 a borrowed `&str` snapshot, sound because `Char` is `Copy`). `lower_for_over_iter` generalized to
 bind a by-value element. Evidence: `chars_iteration_agrees`.
 
-**Remaining A4 (pending):** array/Vec **slicing** (`&a[0..2]`) — the last core-min surface piece;
-deferred since C4.5b, it needs a slice value representation with the range-bounds trap
-(06-Standard-Library behavioral requirements). Larger than the other A4 pieces; owns its own
-sub-slice.
+**A4-2e (slicing) DONE 2026-07-20 — A4 COMPLETE** (surface `0.1-A6`, amendment A1 rev. 10).
+Shared slice views land entirely on the pre-authorized runtime-surface mechanism (a trap-capable
+`SliceNew`, like `VecIndexGet` — **no new MIR shape, no CE3 escalation needed**):
+`&base[lo..hi]`/`[lo..=hi]` over Array/Vec/slice → `SliceNew(&base, lo, hi, inclusive) -> &[T]`,
+trapping IndexOutOfBounds on a negative, inverted, or out-of-range bound (06 behavioral
+requirement) with the index expression's provenance; re-slicing **composes** windows;
+`len`/`is_empty` via `SliceLen`/`SliceIsEmpty`; `s[i]` reuses the ordinary **CheckIndex proof
+discipline checked against the VIEW length** (`s.Deref` base, no new machinery). Interpreter: a
+`&[T]` is a `Ref` whose path ends in a `ConcreteProj::Slice { start, len }` window over the live
+referent (frame-generation guarded); window+Index composes to the absolute element. Shared-only
+(`&mut base[range]` reserved); no writes through views. The oracle's three slice-bound messages
+were aligned to the "out of bounds" family (the spec groups all bound failures as one trap).
+`Ty::Slice` → `MirTy::Slice` mapping; the range tuple from A4-2a supplies the bounds uniformly
+for literal and value ranges. Evidence: `slicing_operations_agree` (len/index/re-slice/inclusive/
+empty/fn-param/Vec), `slice_out_of_range_traps_agree`, `slice_inverted_range_traps_agree`,
+`slice_index_checks_view_length_agree` (differential); `rejects_slice_new_with_bad_dest_type`,
+`rejects_slice_len_on_non_slice_receiver` (verifier).
 
 ### Original decision framing (retained for the record)
 

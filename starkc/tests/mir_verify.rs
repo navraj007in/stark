@@ -1145,3 +1145,78 @@ fn stale_reference_to_reused_frame_slot_fails_loudly() {
         },
     }
 }
+
+#[test]
+fn rejects_slice_new_with_bad_dest_type() {
+    // 0.1-A6: SliceNew's dest must be &[T] with T matching the receiver's element type.
+    use mir::RuntimeFn;
+    let arr = MirTy::Array(Box::new(MirTy::Int32), 3);
+    let arr_ref = MirTy::Ref {
+        mutable: false,
+        inner: Box::new(arr.clone()),
+    };
+    let wrong_slice = MirTy::Ref {
+        mutable: false,
+        inner: Box::new(MirTy::Slice(Box::new(MirTy::Bool))),
+    };
+    let b = body(
+        vec![
+            ret_local(),
+            local(arr),
+            local(arr_ref),
+            local(wrong_slice),
+            local(MirTy::Unit),
+        ],
+        vec![
+            BasicBlock {
+                statements: vec![(
+                    Statement::Assign(
+                        Place::local(LocalId(2)),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place: Place::local(LocalId(1)),
+                        },
+                    ),
+                    info(),
+                )],
+                terminator: (
+                    Terminator::Call {
+                        callee: Callee::Runtime(RuntimeFn::SliceNew),
+                        args: vec![
+                            Operand::Copy(Place::local(LocalId(2))),
+                            Operand::Const(Constant::Int(0, MirTy::Int32)),
+                            Operand::Const(Constant::Int(2, MirTy::Int32)),
+                            Operand::Const(Constant::Bool(false)),
+                        ],
+                        dest: Place::local(LocalId(3)),
+                        target: BlockId(1),
+                    },
+                    info(),
+                ),
+            },
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_slice_len_on_non_slice_receiver() {
+    use mir::RuntimeFn;
+    let b = body(
+        vec![ret_local(), local(MirTy::Int32), local(MirTy::UInt64)],
+        vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::SliceLen),
+                    args: vec![Operand::Copy(Place::local(LocalId(1)))],
+                    dest: Place::local(LocalId(2)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0012");
+}
