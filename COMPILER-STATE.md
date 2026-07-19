@@ -1,15 +1,22 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5f-3 — **WP-C4.5 EXIT SATISFIED** (surface 0.1-A3)
+Updated: 2026-07-19 after the WP-C4.6 gate-exit audit — **C4 OPEN, blockers recorded**
 
 ## Position
-Gate: C4  Next: WP-C4.6 (gate exit review). **WP-C4.5 "Complete Core Lowering" is COMPLETE:
-all 17 frozen corpus cases run differentially green through both interpreters**
-(`entire_frozen_corpus_agrees` — output, trap category, provenance, message, pre-trap stdout).
-Runtime surface `0.1-A3` (A1 rev. 6). Open non-blocking boundaries carried forward: DEV-067,
-DEV-069 (front-end multi-file spans), user-nominal `Eq`/`Ord` dispatch, generic impl/trait
-methods, reserved ops (`values()`/`remove()`/`HashSet`/`StringSubstring`/`VecGetRef`),
-assert-message fidelity.
-Blocked: none
+Gate: C4  Next: owner disposition of the WP-C4.6 Decision section, then Class-A blocker
+increments. **WP-C4.5 complete (all 17 corpus cases differential-green, surface 0.1-A3); the
+WP-C4.6 exit audit ran 2026-07-19** — full sweep of ~105 `unsupported` sites + 33 pipeline
+probes, written up in `STARKLANG/docs/compiler/work-packages/WP-C4.6.md`. Exit condition 1
+(corpus equivalence) SATISFIED; condition 3 (nothing carried silently) SATISFIED by the audit;
+condition 2 (every normative Core construct required by C5 lowers) **NOT satisfied — C4 stays
+open** per the roadmap rule. Seven blocker classes (A1 generic impls; A2 general patterns;
+A3 user Eq/Ord dispatch; A4 core-min stdlib ops incl. slices/chars/get/size_of; A5
+bit/shift/pow operators; A6 non-Copy Vec iteration; A7 small expr forms — ~5–7 sessions
+total), plus recorded front-end gaps (DEV-067, DEV-069, Box deref, Ordering/cmp surface).
+**Owner decision pending (CE-shaped, flagged not resolved): the reading of "required by C5"
+(full normative Core + core-min vs. named representative workload) and the C5 stdlib profile
+claim (core-min vs std-full); also the A3 `Ordering` design note (CE3, touches the runtime
+surface).**
+Blocked: WP-C4.6 closure on the owner decision above (Class-A work can proceed meanwhile).
 **WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
 - **f-3a HashMap surface (`0.1-A3`, amendment rev. 6):** `RuntimeFn` HashMap group
   (New/Insert/Get/Len/IsEmpty/ContainsKey/KeysIterNew/KeysIterNext); insertion-ordered
