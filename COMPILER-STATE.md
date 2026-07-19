@@ -1170,3 +1170,27 @@ FOLLOW-UP: DEV-064 owned by C4.5. Workload items 16-22 now have a working oracle
 values unsupported" rows are unaffected (spikes are frozen evidence).
 NEXT: WP-C4.1 — MIR design review (CE3): draft the backend-neutral verified MIR contract
 (STARKLANG/docs/compiler/mir.md) for owner review; the generated-Rust emitter consumes it.
+
+### WP-C4.1 — MIR contract drafted (CE3 review pending) — 2026-07-19
+DONE: drafted STARK MIR v0.1 (`STARKLANG/docs/compiler/mir.md`, status PROPOSED) covering every
+roadmap-required element: monomorphised-only instances with deterministic injective symbol
+naming; closed first-order MirTy set (no Param/Infer); return-place body model; places/
+projections with CheckIndex-dominates-Index discipline; total (never-trapping) rvalue set with
+every trapping operation as a Checked/Trap terminator carrying category + SourceInfo; no
+unwinding/cleanup edges anywhere (abort semantics); Drop as a *statement* with ordinary Bool
+drop-flag locals; direct/indirect/runtime callees (FnPtr constants per CD-021/CD-027, closed
+versioned RuntimeFn surface); mandatory per-statement provenance with explicit FileId (DEV-006
+lesson) and labeled synthetic origins; 13 verifier obligations mapped to WP-C4.3 with MIR-xxxx
+safe-failure diagnostics; deterministic versioned textual dump. Five judgment calls flagged for
+CE3 in §12. Created WP-C4.1.md.
+FILES: STARKLANG/docs/compiler/mir.md (new, PROPOSED),
+STARKLANG/docs/compiler/work-packages/WP-C4.1.md (new), COMPILER-STATE.md.
+RULES: none — non-normative implementation contract, explicitly subordinate to
+CORE-V1-ABSTRACT-MACHINE.md; binding only after CE3 approval.
+DECISIONS: none yet — CE3 review is the owner's; WP-C4.2 does not open against an unapproved
+contract.
+EVIDENCE: design-only; no code changed; workspace baseline 605/0/2 unchanged.
+FOLLOW-UP: on approval, record a CD entry flipping mir.md to APPROVED and open WP-C4.2 (scalar
+HIR→MIR lowering). DEV-064 fix must land in typecheck before instance collection can rely on
+full determination (C4.5 at latest).
+NEXT: CE3 owner review of mir.md §12's five questions; then WP-C4.2.
