@@ -1556,3 +1556,49 @@ fn option_result_unwrap_or_agree() {
         .to_string(),
     );
 }
+
+/// Option/Result `map` / `and_then` / `map_err` (function-value combinators) agree with the
+/// oracle, including the pass-through variant (`map` on an `Err`, `map_err` on an `Ok`).
+#[test]
+fn option_result_combinators_agree() {
+    differential(
+        "a4_combinators.stark",
+        "fn dbl(x: Int32) -> Int32 { x * 2 } \
+         fn to_opt(x: Int32) -> Option<Int32> { if x > 0 { Some(x + 100) } else { None } } \
+         fn to_res(x: Int32) -> Result<Int32, Int32> { if x > 0 { Ok(x + 100) } else { Err(9) } } \
+         fn neg(e: Int32) -> Int32 { 0 - e } \
+         fn main() { \
+             let a: Option<Int32> = Some(5); \
+             let b: Option<Int32> = None; \
+             println(a.map(dbl).unwrap_or(0)); \
+             println(b.map(dbl).unwrap_or(-1)); \
+             println(a.and_then(to_opt).unwrap_or(-2)); \
+             let r: Result<Int32, Int32> = Ok(7); \
+             let e: Result<Int32, Int32> = Err(3); \
+             println(r.map(dbl).unwrap_or(0)); \
+             println(e.map(dbl).unwrap_or(-4)); \
+             println(e.map_err(neg).unwrap_or(-5)); \
+             println(r.and_then(to_res).unwrap_or(-6)); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A range bound to a value and then iterated (`let r = 0..n; for i in r`) agrees with the
+/// oracle — exclusive, inclusive, and empty ranges, with the inclusive flag read at runtime.
+#[test]
+fn range_value_iteration_agrees() {
+    differential(
+        "a4_range.stark",
+        "fn main() { \
+             let r = 0..3; \
+             for i in r { println(i); } \
+             let ri = 1..=3; \
+             for j in ri { println(j * 10); } \
+             let empty = 5..5; \
+             for k in empty { println(99); } \
+             println(0); \
+         }"
+        .to_string(),
+    );
+}

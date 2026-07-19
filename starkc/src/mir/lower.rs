@@ -781,6 +781,13 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?,
             ),
             Ty::Array(elem, len) => MirTy::Array(Box::new(self.mir_ty(elem, span)?), *len),
+            // A4: a `Range<T>` value is represented as the tuple `(start, end, inclusive)`. The
+            // iteration site distinguishes it from a genuine 3-tuple by the iter's front-end
+            // type (`Ty::Range`), so no nominal MIR identity is needed.
+            Ty::Range(elem) => {
+                let e = self.mir_ty(elem, span)?;
+                MirTy::Tuple(vec![e.clone(), e, MirTy::Bool])
+            }
             Ty::Fn { params, ret } => MirTy::FnPtr {
                 params: params
                     .iter()
@@ -1973,6 +1980,13 @@ impl<'a> FnLowerer<'a> {
                                 *var, *local, *iter, *body, elem, core, next_rt, span,
                             );
                         }
+                        // A4: `for i in r` where `r` is a range VALUE (`Ty::Range`) — the
+                        // front-end type distinguishes it from a genuine 3-tuple. The inclusive
+                        // flag is a runtime field, so the loop condition branches on it.
+                        if matches!(self.tables.expr_types.get(iter), Some(Ty::Range(_))) {
+                            return self
+                                .lower_for_over_range_value(*var, *local, *iter, *body, span);
+                        }
                         return unsupported(
                             "for over a non-range, non-Vec iterator (a later increment)",
                             span,
@@ -2478,6 +2492,26 @@ impl<'a> FnLowerer<'a> {
                     .map(|&e| self.lower_expr_to_operand(e))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.aggregate_to_temp(expr, AggKind::Array(elem_ty), ops, span)
+            }
+            // A4: a range in value position (`let r = lo..hi`) builds the `(start, end,
+            // inclusive)` tuple. Evaluation order lo-then-hi, once each.
+            hir::ExprKind::Range { lo, hi, inclusive } => {
+                let lo_op = self.lower_expr_to_operand(*lo)?;
+                let hi_op = self.lower_expr_to_operand(*hi)?;
+                let ty = self.expr_mir_ty(expr)?;
+                let dest = self.new_temp(ty);
+                self.emit(
+                    Statement::Assign(
+                        Place::local(dest),
+                        Rvalue::Aggregate(
+                            AggKind::Tuple,
+                            vec![lo_op, hi_op, Operand::Const(Constant::Bool(*inclusive))],
+                        ),
+                    ),
+                    self.info(span),
+                );
+                let ty = self.locals[dest.0 as usize].ty.clone();
+                self.read_place(Place::local(dest), &ty, span)
             }
             // A7: `[value; count]` — value evaluated once, replicated `count` times (count is a
             // const carried by the array type; the value is `Copy`, so replicating the operand
@@ -4170,6 +4204,17 @@ impl<'a> FnLowerer<'a> {
                 );
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
             }
+            // A4: value combinators `map` / `and_then` (Option + Result) and `map_err` (Result).
+            "map" | "and_then" | "map_err" => {
+                if name == "map_err" && is_option {
+                    return unsupported("Option has no map_err", span);
+                }
+                let Some(&fn_expr) = call_args.first() else {
+                    return unsupported(format!("{name} expects one function argument"), span);
+                };
+                return self
+                    .lower_opt_res_combinator(&name, enum_ref, args, place, fn_expr, dest, span);
+            }
             _ => {
                 return unsupported(
                     format!("Option/Result method {name} (a later C4.5e sub-slice)"),
@@ -4177,6 +4222,145 @@ impl<'a> FnLowerer<'a> {
                 )
             }
         }
+        Ok(())
+    }
+
+    /// A4: emit an indirect call through a function-value operand, returning the result operand.
+    fn emit_fn_value_call(
+        &mut self,
+        fn_op: Operand,
+        arg: Operand,
+        ret_ty: MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let dest = self.new_temp(ret_ty);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::FnValue(fn_op),
+                args: vec![arg],
+                dest: Place::local(dest),
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+        let ty = self.locals[dest.0 as usize].ty.clone();
+        self.read_place(Place::local(dest), &ty, span)
+    }
+
+    /// A4: lower `Option`/`Result` `map` / `and_then` / `map_err`. Each switches on the active
+    /// variant, applies the function value `f` to the relevant payload, and rebuilds the result
+    /// enum — passing the other variant through unchanged. Every payload is moved exactly once
+    /// (into `f` or into the rebuilt variant), so no drop-of-unused arises; the non-droppable
+    /// gate is retained for parity with `unwrap`/`unwrap_or` until droppable Option/Result
+    /// value-methods are elaborated as a whole.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_opt_res_combinator(
+        &mut self,
+        name: &str,
+        enum_ref: EnumRef,
+        args: &[MirTy],
+        place: Place,
+        fn_expr: ExprId,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let is_option = matches!(enum_ref, EnumRef::CoreOption);
+        // Payload types of each variant before transformation.
+        let (ok_variant, ok_ty, other_variant, other_ty) = if is_option {
+            (
+                1u32,
+                args.first().cloned().unwrap_or(MirTy::Unit),
+                0u32,
+                MirTy::Unit,
+            )
+        } else {
+            (
+                0u32,
+                args.first().cloned().unwrap_or(MirTy::Unit),
+                1u32,
+                args.get(1).cloned().unwrap_or(MirTy::Unit),
+            )
+        };
+        // `map_err` transforms the ERROR (Result only); the others transform the ok payload.
+        let transform_err = name == "map_err";
+        let (xform_variant, xform_ty, passthru_variant, passthru_ty) = if transform_err {
+            (other_variant, other_ty.clone(), ok_variant, ok_ty.clone())
+        } else {
+            (ok_variant, ok_ty.clone(), other_variant, other_ty.clone())
+        };
+        if [&ok_ty, &other_ty]
+            .iter()
+            .any(|t| self.ty_needs_drop(t, span).unwrap_or(true))
+        {
+            return unsupported(
+                "Option/Result combinator on a droppable payload type (a later increment)",
+                span,
+            );
+        }
+        let fn_op = self.lower_expr_to_operand(fn_expr)?;
+        let fn_ret = match Self::peel_refs(self.expr_mir_ty(fn_expr)?).0 {
+            MirTy::FnPtr { ret, .. } => *ret,
+            other => {
+                return unsupported(format!("combinator argument is not a fn: {other:?}"), span)
+            }
+        };
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
+            self.info(span),
+        );
+        let xform_block = self.new_block();
+        let passthru_block = self.new_block();
+        let join = self.new_block();
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(disc)),
+                arms: vec![(u128::from(xform_variant), xform_block)],
+                otherwise: passthru_block,
+            },
+            self.info(span),
+            xform_block,
+        );
+        // Transform arm: move the relevant payload out, apply `f`.
+        let mut payload_place = place.clone();
+        payload_place
+            .projection
+            .push(Projection::VariantField(xform_variant, 0));
+        let payload = self.read_place(payload_place, &xform_ty, span)?;
+        let mapped = self.emit_fn_value_call(fn_op, payload, fn_ret.clone(), span)?;
+        // `and_then`'s `f` returns the whole result enum; `map`/`map_err` wrap it in the variant.
+        let xform_value = if name == "and_then" {
+            Rvalue::Use(mapped)
+        } else {
+            Rvalue::Aggregate(AggKind::EnumVariant(enum_ref, xform_variant), vec![mapped])
+        };
+        self.emit(
+            Statement::Assign(dest.clone(), xform_value),
+            self.info(span),
+        );
+        self.terminate(
+            Terminator::Goto { target: join },
+            self.info(span),
+            passthru_block,
+        );
+        // Pass-through arm: rebuild the untouched variant from its moved payload (Option's
+        // None has no payload).
+        let passthru_value = if is_option && passthru_variant == 0 {
+            Rvalue::Aggregate(AggKind::EnumVariant(enum_ref, 0), Vec::new())
+        } else {
+            let mut p = place;
+            p.projection
+                .push(Projection::VariantField(passthru_variant, 0));
+            let payload = self.read_place(p, &passthru_ty, span)?;
+            Rvalue::Aggregate(
+                AggKind::EnumVariant(enum_ref, passthru_variant),
+                vec![payload],
+            )
+        };
+        self.emit(Statement::Assign(dest, passthru_value), self.info(span));
+        self.terminate(Terminator::Goto { target: join }, self.info(span), join);
         Ok(())
     }
 
@@ -4340,6 +4524,162 @@ impl<'a> FnLowerer<'a> {
     /// The loop variable is a `&T` interior reference into the iterator's frame local; the
     /// f-1 frame generations guard it if it ever escapes. `T: Copy` (V-COPY-1) was checked
     /// when `iter()` lowered. The iterator local is registered droppable (no-op glue).
+    #[allow(clippy::too_many_arguments)]
+    /// A4: `for i in r` where `r` is a range VALUE. The range is the tuple `(start, end,
+    /// inclusive)`; `inclusive` is a runtime `Bool`, so the loop condition is
+    /// `i < end || (inclusive && i == end)`, lowered as a two-step branch (no boolean algebra).
+    fn lower_for_over_range_value(
+        &mut self,
+        var: Span,
+        var_local: crate::hir::LocalId,
+        iter: ExprId,
+        body: hir::BlockId,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let range_ty = self.expr_mir_ty(iter)?;
+        let elem_ty = match &range_ty {
+            MirTy::Tuple(fields) => fields.first().cloned().unwrap_or(MirTy::Unit),
+            other => return unsupported(format!("range value is not a tuple: {other:?}"), span),
+        };
+        // Materialize the range value once, then read start/end/inclusive from its fields.
+        let range_op = self.lower_expr_to_operand(iter)?;
+        let range_local = self.new_temp(range_ty);
+        self.emit(
+            Statement::Assign(Place::local(range_local), Rvalue::Use(range_op)),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        let field = |i: u32| Place {
+            local: range_local,
+            projection: vec![Projection::Field(i)],
+        };
+        let bound = self.new_temp(elem_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(bound), Rvalue::Use(Operand::Copy(field(1)))),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        let incl = self.new_temp(MirTy::Bool);
+        self.emit(
+            Statement::Assign(Place::local(incl), Rvalue::Use(Operand::Copy(field(2)))),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+        self.locals.push(LocalDecl {
+            ty: elem_ty.clone(),
+            kind: LocalKind::User(self.text(var).to_string()),
+        });
+        let induction = LocalId((self.locals.len() - 1) as u32);
+        self.local_map.insert(var_local.0, induction);
+        self.emit(
+            Statement::Assign(
+                Place::local(induction),
+                Rvalue::Use(Operand::Copy(field(0))),
+            ),
+            self.synthetic(span, SyntheticKind::ForLoopDesugar),
+        );
+
+        let header = self.new_block();
+        let check_eq = self.new_block();
+        let check_incl = self.new_block();
+        let body_block = self.new_block();
+        let latch = self.new_block();
+        let exit = self.new_block();
+        let syn = |s: &Self| s.synthetic(span, SyntheticKind::ForLoopDesugar);
+
+        self.terminate(Terminator::Goto { target: header }, syn(self), header);
+        // header: i < end ? body : check_eq
+        let lt = self.new_temp(MirTy::Bool);
+        self.emit(
+            Statement::Assign(
+                Place::local(lt),
+                Rvalue::BinOp(
+                    MirBinOp::Lt,
+                    Operand::Copy(Place::local(induction)),
+                    Operand::Copy(Place::local(bound)),
+                ),
+            ),
+            syn(self),
+        );
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(lt)),
+                arms: vec![(1, body_block)],
+                otherwise: check_eq,
+            },
+            syn(self),
+            check_eq,
+        );
+        // check_eq: i == end ? check_incl : exit
+        let eq = self.new_temp(MirTy::Bool);
+        self.emit(
+            Statement::Assign(
+                Place::local(eq),
+                Rvalue::BinOp(
+                    MirBinOp::Eq,
+                    Operand::Copy(Place::local(induction)),
+                    Operand::Copy(Place::local(bound)),
+                ),
+            ),
+            syn(self),
+        );
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(eq)),
+                arms: vec![(1, check_incl)],
+                otherwise: exit,
+            },
+            syn(self),
+            check_incl,
+        );
+        // check_incl: inclusive ? body : exit
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(incl)),
+                arms: vec![(1, body_block)],
+                otherwise: exit,
+            },
+            syn(self),
+            body_block,
+        );
+        self.loops.push(LoopTargets {
+            continue_target: latch,
+            break_target: exit,
+            scope_depth: self.scopes.len(),
+            value_target: None,
+        });
+        self.lower_block_value(body)?;
+        self.loops.pop();
+        self.terminate(Terminator::Goto { target: latch }, syn(self), latch);
+        // latch: i = i + 1 (checked), back to header.
+        let step = self.new_temp(elem_ty);
+        let copy_block = self.new_block();
+        let induction_ty = self.locals[induction.0 as usize].ty.clone();
+        self.terminate(
+            Terminator::Checked {
+                op: CheckedOp::Add,
+                args: vec![
+                    Operand::Copy(Place::local(induction)),
+                    Operand::Const(Constant::Int(1, induction_ty)),
+                ],
+                dest: step,
+                target: copy_block,
+                trap: TrapInfo {
+                    category: TrapCategory::IntegerOverflow,
+                    source: syn(self),
+                },
+            },
+            syn(self),
+            copy_block,
+        );
+        self.emit(
+            Statement::Assign(
+                Place::local(induction),
+                Rvalue::Use(Operand::Copy(Place::local(step))),
+            ),
+            syn(self),
+        );
+        self.terminate(Terminator::Goto { target: header }, syn(self), exit);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn lower_for_over_iter(
         &mut self,
