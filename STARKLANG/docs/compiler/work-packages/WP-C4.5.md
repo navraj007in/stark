@@ -137,11 +137,20 @@ HIR/MIR differential agreement before the next begins.
      field-precise verifier rejected as use-after-move on valid programs. Deferred per
      CD-030: frame-generation identities (owner C4.5f), projected-move take-and-poison
      (owner C4.5e proper). Workspace 675/0/2.
-7. **C4.5f — multi-package lowering:** package-stable canonical symbols
-   (`⟨package⟩::⟨module⟩::…`), cross-package instances and linkage. Also owns (CD-030
-   deferral): frame-generation identities in the MIR interpreter, so a dangling reference can
-   never silently alias a later frame reusing the same stack slot — do this before
-   cross-package call graphs grow the frame traffic.
+7. **C4.5f — multi-package lowering + interior references + Vec/String iteration:**
+   package-stable canonical symbols (`⟨package⟩::⟨module⟩::…`), cross-package instances and
+   linkage. Also owns:
+   - (CD-030 deferral) frame-generation identities in the MIR interpreter, so a dangling
+     reference can never silently alias a later frame reusing the same stack slot — do this
+     before cross-package call graphs grow the frame traffic.
+   - (CD-032) **Vec/collection iteration**, folded here from A1. STARK's `.iter()` is
+     by-reference (`value: &T`), i.e. an interior reference into a runtime container — the same
+     machinery as the reserved `VecGetRef`/`StringSubstring` views. Design carry-forward is in
+     the amendment §5e (interior-borrow cursor; snapshot-for-Copy interpreter representation;
+     non-Copy drop-elaborated iterator). Activated by a dated `0.1-A2` runtime-surface bump
+     (`VecIterNew`/`VecIterNext` in a by-reference `Option<&T>` form). Unblocks
+     `collection_iter__01`'s `for value in values.iter()` (its push/index/len half already
+     lowers under e-2).
 
 ## Differential-independence caveat (recorded per CD-029)
 

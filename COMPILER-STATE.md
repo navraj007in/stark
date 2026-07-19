@@ -1,17 +1,16 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5e-2 (Vec data surface)
+Updated: 2026-07-19 after CD-032 (A1 iteration folded into C4.5f)
 
 ## Position
-Gate: C4  Next: **owner decision needed on the A1 Vec-iteration gap** (see below) before the
-iteration sub-slice; meanwhile WP-C4.5e-3 can take Char + Char String ops, `assert_eq`/`ne`,
-Option/Result combinators, then C4.5f (multi-package + frame generations, which unblocks
-by-reference iteration).  Blocked: none
-**A1 GAP FLAGGED (owner decision):** STARK's `Vec::iter()` binds `value: &T` (by-reference),
-but Amendment A1 lowered `VecIterNext` as by-value `Option<T>` and *reserved* by-reference
-iteration to a C4.5f-dependent sub-slice. So `collection_iter__01`'s `for value in
-values.iter()` cannot lower yet (its push/index/len half does). Adding by-reference Vec
-iteration means interior references into a runtime container — needs an owner-reviewed
-`0.1-A2` surface bump. Not resolved unilaterally.
+Gate: C4  Next: WP-C4.5e-3 (Char + Char String ops, `assert_eq`/`ne`, Option/Result
+combinators) or WP-C4.5d-remainder; then C4.5f (multi-package + frame generations + **Vec/
+String iteration**, folded here per CD-032).  Blocked: none
+**A1 iteration gap RESOLVED — CD-032 (owner, 2026-07-19):** Vec iteration folds into C4.5f.
+STARK's `.iter()` binds `value: &T` (by-reference = an interior reference into a runtime
+container); A1's by-value `VecIterNext -> Option<T>` had no STARK trigger and is struck.
+Iteration (by-reference `Option<&T>`) activates via a future `0.1-A2` surface bump alongside
+the interior-reference/frame-generation work in C4.5f. `collection_iter__01`'s iteration half
+stays Unsupported until then.
 **WP-C4.5e-2 done 2026-07-19** (Vec data surface, A1/CD-031): `RuntimeFn` Vec group +
 `MirValue::Vec`; `Vec::new`/`with_capacity`, method dispatch (push/pop/remove/clear/len/
 is_empty), `v[i]` read → `VecIndexGet` (Copy T), `v[i]=x` → `VecReplace`+drop-old, `clear()`
@@ -688,6 +687,23 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   eight corrections; rev. 3 four final corrections) recorded in the doc's §11. `mir.md` §5/§7
   carry pointers to the amendment; `MIR_VERSION` stays `0.1`. This decision approves the contract
   only — no code is written by it; the C4.5e main body implements it next.
+
+- CD-032 [2026-07-19, owner decision — A1 iteration correction, folded into C4.5f] The
+  WP-C4.5e-2 implementation surfaced that Amendment A1's by-value `VecIterNext -> Option<T>`
+  ("the `for x in v` desugar") has **no STARK source trigger**: STARK has no by-value
+  `for x in v`; the only iteration form is `for x in v.iter()`, and `Vec::iter()` binds the
+  loop variable as `&T` (stdlib `iter(&self) -> VecIter<T>`). So all Vec/collection iteration
+  in STARK is **by-reference** — an interior reference into a runtime container, which is the
+  work A1 §5d already reserved and tied to C4.5f's frame-generation hardening. **Owner
+  decision: fold iteration into C4.5f.** A1's by-value iteration ops are struck from surface
+  `0.1-A1` (they were never added to the `RuntimeFn` enum, so `0.1-A1` as implemented is
+  unchanged — no bump); by-reference iteration (`VecIterNew`/`VecIterNext` yielding
+  `Option<&T>`) is a C4.5f deliverable activated by a future dated `0.1-A2` surface bump,
+  alongside `VecGetRef`/`StringSubstring` interior views and the frame-generation identities.
+  Amendment doc updated (rev. 4): §5c iteration rows struck, §5e reframed as the C4.5f
+  carry-forward design, rev-4 log added. No code change; strings (e-1) and the Vec data
+  surface (e-2) are untouched. `collection_iter__01`'s `for value in values.iter()` stays
+  clean-Unsupported until C4.5f; its push/index/len half lowers under e-2.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

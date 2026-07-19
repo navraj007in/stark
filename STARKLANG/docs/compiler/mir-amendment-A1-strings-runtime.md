@@ -199,8 +199,8 @@ until those semantics are specified; not lowered in C4.5e.
 | `VecReplace` | `(&mut Vec<T>, UInt64, T) -> T` | IndexOutOfBounds | **replaces `VecIndexSet`** (owner point 2). `v[i] = x` lowers to `old = VecReplace(&mut v, i, x); «drop old if T droppable»`, giving the caller the replaced value so install-then-destroy (CD-012 order) is representable for droppable `T` |
 | `VecRemove` | `(&mut Vec<T>, UInt64) -> T` | IndexOutOfBounds | returns the removed element (caller owns/drops it) |
 | `VecClear` | `(&mut Vec<T>) -> Unit` | — | **non-droppable `T` only** (V-COPY-1-adjacent, §6); buffer reset, no destructors. For droppable `T`, `clear()` lowers to an explicit pop-and-drop loop (§5a), not this op |
-| `VecIterNew` | `(&Vec<T>) -> Core(VecIter, [T])` | — | **interior-borrow** op (§5e); result is a **non-Copy** opaque `Core` iterator value |
-| `VecIterNext` | `(&mut Core(VecIter,[T])) -> Option<T>` | — | **requires `T: Copy`** (V-COPY-1, §6). `for x in v` desugar; element values are copies. By-reference / by-value-move iteration over non-Copy elements is reserved (§5d) |
+| ~~`VecIterNew`~~ | — | — | **MOVED to C4.5f / a future `0.1-A2` bump (CD-032).** See the §5e correction: STARK's `.iter()` is by-reference (`&T`), not the by-value `Option<T>` A1 originally specced here, so *all* Vec iteration is the reserved interior-reference form. Not part of surface `0.1-A1`. |
+| ~~`VecIterNext`~~ | — | — | **MOVED to C4.5f / `0.1-A2` (CD-032).** The by-value `Option<T>` form had no STARK source trigger (`for x in v` does not exist; `for x in v.iter()` binds `&T`). |
 
 ### 5d. Reserved — named, not lowered in C4.5e (owner point 8)
 
@@ -216,7 +216,23 @@ by-reference/by-value-move `Vec` iteration. Slice **indexing** needs no runtime 
 an unchanged reference already indexes through the existing `CheckIndex` proof discipline (base
 §6), which A1 does not alter.
 
-### 5e. `Vec` iteration as an interior borrow (owner point 2)
+### 5e. `Vec` iteration — CORRECTED and MOVED to C4.5f (CD-032)
+
+**Correction (CD-032, owner decision 2026-07-19, found in WP-C4.5e-2).** A1 rev. 1–3 specced a
+**by-value** `VecIterNext : (&mut Core(VecIter,[T])) -> Option<T>` as "the `for x in v` desugar."
+That form has **no STARK source trigger**: STARK has no by-value `for x in v`; the only iteration
+form is `for x in v.iter()`, and `Vec::iter()` binds the loop variable as `&T`
+(`03-Type-System`/stdlib: `iter(&self) -> VecIter<T>`, yielding `&T`). So **all** Vec iteration in
+STARK is **by-reference**, which is precisely an interior reference into a runtime container — the
+work A1 §5d already reserved and tied to the C4.5f frame-generation hardening.
+
+**Resolution:** Vec iteration (`VecIterNew`/`VecIterNext`, in a by-reference `Option<&T>` form) is
+**removed from surface `0.1-A1`** and **folded into C4.5f**, activated by a future dated
+`0.1-A2` surface bump alongside the interior-reference (`VecGetRef`) work. Surface `0.1-A1` as
+implemented in C4.5e never contained iteration ops. The design notes below (interior-borrow
+cursor, snapshot-for-Copy interpreter representation, non-Copy iterator, drop-elaborated cleanup)
+**carry forward to C4.5f** as the starting point for the by-reference `Option<&T>` design; they
+are retained here for reference, not as `0.1-A1` contract.
 
 `VecIterNew : (&Vec<T>) -> Core(VecIter, [T])` is an **interior-borrow** operation: the iterator
 borrows the source `Vec` for the duration of the loop.
@@ -254,11 +270,13 @@ borrows the source `Vec` for the duration of the loop.
   - *Vec constructors* (`VecNew`, `VecWithCapacity`): `T` = the destination place's element type
     (`MirTy::Core(Vec,[T])`); there is no Vec operand to read.
   - *Vec methods* (`VecPush`/`VecPop`/`VecLen`/`VecIsEmpty`/`VecIndexGet`/`VecReplace`/
-    `VecRemove`/`VecClear`/`VecIterNew`): `T` = the element type of the **first operand**, which
+    `VecRemove`/`VecClear`): `T` = the element type of the **first operand**, which
     must be `&Vec`/`&mut Vec`; every other operand and the destination is checked against it.
-  - *Iterator ops* (`VecIterNext`): `T` = the element type of the `Core(VecIter,[T])` operand.
-- **V-COPY-1 (new, code MIR-0016, owner point 5):** `VecIndexGet` and `VecIterNext` require their
-  resolved element `T` to be `Copy`. Verifier-enforced via a new additive in-memory
+  - *Iterator ops* (`VecIterNew`/`VecIterNext`): **C4.5f carry-forward (CD-032), not
+    `0.1-A1`.** When iteration lands: constructor `T` from the first `&Vec` operand, `VecIterNext`
+    `T` from the `Core(VecIter,[T])` operand.
+- **V-COPY-1 (new, code MIR-0016, owner point 5):** `VecIndexGet` (and, when iteration lands in
+  C4.5f, `VecIterNext`) require their resolved element `T` to be `Copy`. Verifier-enforced via a new additive in-memory
   `TypeContext::copy_types` set (which nominal instances carry an `impl Copy`; populated during
   lowering exactly like `drop_impls` under CD-029). `is_copy` over `MirTy` reads it; a non-Copy
   `T` at these ops is MIR-0016. (Primitives/refs/all-Copy aggregates resolve without the table.)
@@ -373,7 +391,17 @@ I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
 
-**Rev. 3 (this revision) — CE3-APPROVED.** Applied the four final owner corrections to rev. 2:
+**Rev. 4 — CD-032 (owner decision 2026-07-19, post-C4.5e-2).** Vec iteration corrected and
+moved out of surface `0.1-A1`. A1's by-value `VecIterNext -> Option<T>` had no STARK source
+trigger (STARK iteration is `for x in v.iter()`, binding `&T`), so all Vec iteration is
+by-reference — an interior reference into a runtime container. Iteration (a by-reference
+`Option<&T>` `VecIterNew`/`VecIterNext`) is **folded into C4.5f** and activated by a future
+`0.1-A2` surface bump alongside the interior-reference (`VecGetRef`) work; `0.1-A1` as
+implemented never contained iteration ops. §5c iteration rows struck; §5e reframed as the
+carry-forward design for C4.5f; the corrected surface remains `0.1-A1` (no bump — the removed
+ops were never implemented). Does not touch strings (e-1) or the Vec data surface (e-2).
+
+**Rev. 3 — CE3-APPROVED.** Applied the four final owner corrections to rev. 2:
 1. `VecClear` no longer hides element destructors: droppable `T` lowers `clear()` to an explicit
    pop-and-drop loop with visible `Drop` terminators; the `VecClear` `RuntimeFn` is restricted to
    non-droppable `T` and verifier-enforced (§5a, §5c, §6). The governing principle is stated
