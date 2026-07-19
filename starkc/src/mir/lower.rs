@@ -3970,16 +3970,10 @@ impl<'a> FnLowerer<'a> {
             }
             "len" => (RuntimeFn::VecLen, false),
             "is_empty" => (RuntimeFn::VecIsEmpty, false),
-            // 0.1-A2 (C4.5f-2): borrowing iteration; T must be Copy (V-COPY-1).
-            "iter" => {
-                if !self.is_copy(&elem) {
-                    return unsupported(
-                        "Vec iteration over a non-Copy element type (reserved beyond 0.1-A2)",
-                        span,
-                    );
-                }
-                (RuntimeFn::VecIterNew, false)
-            }
+            // 0.1-A3 (C4.6 A6): by-reference iteration via a TRUE borrowed cursor — Next indexes
+            // the live Vec and yields an interior `&T`, so the element type need NOT be Copy
+            // (the earlier snapshot representation required it; this does not).
+            "iter" => (RuntimeFn::VecIterNew, false),
             _ => return unsupported(format!("Vec::{name} (a later C4.5e sub-slice)"), span),
         };
         let recv = self.borrow_vec_receiver(base, recv_mut, elem.clone(), span)?;

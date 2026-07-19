@@ -181,7 +181,7 @@ required class is green.
 ### Class progress
 - A5 (bit/shift/pow): **DONE 2026-07-19** — see below
 - A7 (expr forms): **DONE 2026-07-19** — see below
-- A6 (non-Copy Vec iter): _pending_
+- A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
 - A3 Eq / Ord: _pending_
 - A4 (core-min surface): _pending_
 - A2 (patterns): _pending_
@@ -212,6 +212,19 @@ statements and yield `Unit`). `[value; count]` repeat replicates the once-evalua
 operand `count` times (count from the array type). `then`-only `if`, `while`, and `for` in
 value position lower for effects and yield `Unit`. Evidence: `loop_break_value_agree`,
 `repeat_and_unit_value_forms_agree` (2 differential). Workspace 713/0; clippy clean 1.93/1.97.
+
+### A6 — DONE 2026-07-19
+
+Vec iteration converted from the rev. 5 *snapshot* iterator (which forced `T: Copy`) to a
+**true borrowed cursor** identical to the HashMap `KeysIter`: `VecIterNew` keeps the `&Vec`
+reference (`[vec-ref, cursor]`) instead of snapshotting, and `VecIterNext` indexes the *live*
+Vec through it to hand out an interior `&T`, protected by the C4.5f-1 frame generations. The
+`T: Copy` gate (V-COPY-1/MIR-0016) is dropped from lowering and the verifier for
+`VecIterNew`/`VecIterNext`; `VecIndexGet` keeps it (it returns `T` by value). Signatures
+unchanged. `Vec<String>` iteration now lowers. Amendment rev. 7 records the representation
+change (no surface bump — stays `0.1-A3`). Evidence: `non_copy_vec_iteration_agrees`
+(1 differential; the existing `collection_iter__01`/`__02` corpus cases stay green under the
+new representation).
 
 ### Original decision framing (retained for the record)
 

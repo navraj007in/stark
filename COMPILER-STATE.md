@@ -1,20 +1,21 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.6 A5+A7 — **C4 OPEN, working the Class-A blockers (CD-033)**
+Updated: 2026-07-19 after WP-C4.6 A6 — **C4 OPEN, working the Class-A blockers (CD-033)**
 
 ## Position
-Gate: C4  Next: A6 (non-Copy Vec iteration), per CD-033's dependency-aware order. **WP-C4.5
-complete; the WP-C4.6 gate-exit audit ran and the owner disposed it as CD-033** (full normative
-Core + `core-min` reading; C4 stays open; all seven Class-A blockers required; dependency-aware
-order A5+A7 → A6 → A3 Eq/Ord → A4 → A2 → A1). Progress against that order:
-**A5 (bit/shift/pow) and A7 (value-position expr forms) DONE 2026-07-19.** A5: pure bitwise
-`MirBinOp`, `~` desugared to `^ mask`, trapping `Shl`/`Shr`/`Pow` with the NUM-SHIFT-001 count
-bound + `checked_pow`; new faithful `TrapCategory::InvalidShift` (bad count) vs `IntegerOverflow`
-(non-representable left shift), threaded via a `CheckedOutcome` category-override return. A7:
-`loop { break v; }` value via `LoopTargets.value_target`, `[v; n]` repeat, Unit-typed
-`if`/`while`/`for` in value position. 6 new differential tests; workspace 713/0; clippy clean
-1.93/1.97. Remaining Class-A blockers: A6, A3 (Eq then CE3 `Ordering` note then Ord), A4
-(`core-min` surface — dated amendment), A2 (patterns), A1 (generic impls). Front-end
-prerequisites still owned separately: DEV-067, DEV-069, Box deref, primitive `Ordering::cmp`.
+Gate: C4  Next: A3 (user Eq/Ord dispatch — Eq first, then the CE3 `Ordering` note, then Ord),
+per CD-033's dependency-aware order. **WP-C4.5 complete; the WP-C4.6 gate-exit audit ran and the
+owner disposed it as CD-033** (full normative Core + `core-min` reading; C4 stays open; all seven
+Class-A blockers required; order A5+A7 → A6 → A3 → A4 → A2 → A1). Progress:
+**A5, A7, and A6 DONE 2026-07-19.** A5: pure bitwise `MirBinOp`, `~` → `^ mask`, trapping
+`Shl`/`Shr`/`Pow` (NUM-SHIFT-001 bound + `checked_pow`), new `TrapCategory::InvalidShift` via a
+`CheckedOutcome` category override. A7: `loop { break v; }` value target, `[v; n]` repeat,
+Unit-typed value-position `if`/`while`/`for`. A6: Vec iteration converted from a `T: Copy`
+snapshot to a **borrowed cursor** (`[vec-ref, cursor]`, live-indexed like HashMap `KeysIter`);
+V-COPY-1 dropped for `VecIterNew`/`VecIterNext`; `Vec<String>` iteration lowers; amendment
+rev. 7 (no surface bump, stays `0.1-A3`). 7 new differential tests total; workspace 713/0;
+clippy clean 1.93/1.97. Remaining Class-A blockers: A3 (Eq → CE3 `Ordering` note → Ord),
+A4 (`core-min` surface — dated amendment), A2 (patterns), A1 (generic impls). Front-end
+prerequisites owned separately: DEV-067, DEV-069, Box deref, primitive `Ordering::cmp`.
 Blocked: WP-C4.6 closure on all required classes going green (Class-A work in progress).
 **WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
 - **f-3a HashMap surface (`0.1-A3`, amendment rev. 6):** `RuntimeFn` HashMap group

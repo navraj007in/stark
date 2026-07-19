@@ -1268,12 +1268,14 @@ impl<'a> Interp<'a> {
             // snapshot is sound because iteration is `T: Copy` and borrowck forbids mutating
             // the source Vec while the iterator lives (A1 §5e carry-forward).
             VecIterNew => {
-                let recv = args.next();
-                let elems = self.read_vec_ref(&recv)?;
-                Ok(MirValue::Aggregate(vec![
-                    MirValue::Vec(elems),
-                    MirValue::Int(0),
-                ]))
+                // A6: a TRUE borrowed cursor `[vec-ref, cursor]` — Next indexes the LIVE Vec
+                // through the reference and hands out an interior `&T`. No snapshot, so the
+                // element type need not be `Copy` (the borrow checker already forbids mutating
+                // the source Vec while the iterator lives).
+                let vec_ref = args
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("VecIterNew missing receiver".into()))?;
+                Ok(MirValue::Aggregate(vec![vec_ref, MirValue::Int(0)]))
             }
             VecIterNext => {
                 let Some(MirValue::Ref {
@@ -1290,24 +1292,38 @@ impl<'a> Interp<'a> {
                 let MirValue::Aggregate(fields) = &iter_value else {
                     return self.internal(format!("iterator referent is {iter_value:?}"));
                 };
-                let (len, cursor) = match (fields.first(), fields.get(1)) {
-                    (Some(MirValue::Vec(elems)), Some(MirValue::Int(c))) => (elems.len(), *c),
+                let (vec_ref, cursor) = match (fields.first(), fields.get(1)) {
+                    (Some(r @ MirValue::Ref { .. }), Some(MirValue::Int(c))) => (r.clone(), *c),
                     other => return self.internal(format!("malformed iterator state {other:?}")),
                 };
+                let MirValue::Ref {
+                    frame: vf,
+                    generation: vg,
+                    local: vl,
+                    path: vp,
+                } = vec_ref
+                else {
+                    unreachable!("matched Ref above");
+                };
+                self.check_ref_live(vf, vg)?;
+                let len = match self.read_resolved(vf, vl, &vp)? {
+                    MirValue::Vec(elems) => elems.len(),
+                    other => return self.internal(format!("Vec referent is {other:?}")),
+                };
                 if (cursor as usize) < len {
-                    // Bump the cursor in place, then hand out the interior reference.
-                    let mut cursor_path = path.clone();
+                    // Bump the cursor in place, then hand out an interior reference into the
+                    // live Vec (base + [Index(cursor)]), protected by the f-1 generation guard.
+                    let mut cursor_path = path;
                     cursor_path.push(ConcreteProj::Field(1));
                     self.write_resolved(frame, local, &cursor_path, MirValue::Int(cursor + 1))?;
-                    let mut elem_path = path;
-                    elem_path.push(ConcreteProj::Field(0));
+                    let mut elem_path = vp;
                     elem_path.push(ConcreteProj::Index(cursor as usize));
                     Ok(MirValue::Enum {
                         variant: 1,
                         fields: vec![MirValue::Ref {
-                            frame,
-                            generation,
-                            local,
+                            frame: vf,
+                            generation: vg,
+                            local: vl,
                             path: elem_path,
                         }],
                     })

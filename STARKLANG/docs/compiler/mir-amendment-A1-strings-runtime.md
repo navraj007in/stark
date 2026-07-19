@@ -252,9 +252,9 @@ borrows the source `Vec` for the duration of the loop.
   state); it moves under the ordinary verifier discipline.
 - **Cleanup:** the iterator is a runtime value and, like `String`/`Vec`, **always requires
   runtime drop glue** (§5a): the `for`-loop desugar drop-elaborates it, and its `Drop` terminator
-  releases the borrow/cursor. Because iteration is `T: Copy`, the iterator owns no droppable
-  elements, so its glue runs **no** element destructors — buffer/cursor release only,
-  unobservable.
+  releases the borrow/cursor. The iterator owns no elements (it borrows, never owns — see rev. 7,
+  which replaced the original `T: Copy` snapshot with a borrowed cursor), so its glue runs **no**
+  element destructors — cursor release only, unobservable.
 
 ## 6. Verifier rules
 
@@ -361,8 +361,10 @@ deterministic dump; escape-heavy literal (`"a\"b\\c\n\u{1F600}"`) round-trips du
 
 **Negative (verifier):** `Str` assigned to a `String` local (MIR-0004); `BinOp::Eq` on two
 `String` locals (MIR-0015/V-STR-2); `VecPush` element operand disagreeing with the vector element
-(MIR-0012 schematic); `VecPush` first operand not `&mut Vec` (MIR-0012); `VecIndexGet`/
-`VecIterNext` on a non-Copy element type (MIR-0016/V-COPY-1); `VecClear` on a **droppable** element
+(MIR-0012 schematic); `VecPush` first operand not `&mut Vec` (MIR-0012); `VecIndexGet`
+on a non-Copy element type (MIR-0016/V-COPY-1 — **note: `VecIterNew`/`VecIterNext` no longer
+carry this constraint since rev. 7 made Vec iteration a borrowed cursor**); `VecClear` on a
+**droppable** element
 type (MIR-0016, §6); `Trap.message` operand typed `Int32` (MIR-0015); a `DropFlag` local used as a
 `Trap.message` operand (MIR-0009, exercising §6a); a program stamped with an unsupported
 `runtime_surface` rejected before any body is verified (§6 surface-version gate).
@@ -395,6 +397,19 @@ and other interior views into runtime containers (§5d, after C4.5f frame genera
 I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
+
+**Rev. 7 — Vec iteration made a true borrowed cursor (2026-07-19, WP-C4.6 A6, CD-033).** No
+surface change (stays `0.1-A3`), no new ops. `VecIterNew`/`VecIterNext` are re-specified from the
+rev. 5 *snapshot* representation (an immutable copy of the Vec in a frame local, which forced
+`T: Copy`) to a **true borrowed cursor** identical to the HashMap `KeysIter`: the iterator value
+is `[vec-ref, cursor]`, and `VecIterNext` indexes the *live* Vec through the reference to hand
+out an interior `&T`, protected by the C4.5f-1 frame generations. Consequence: the `T: Copy`
+restriction (V-COPY-1/MIR-0016) on `VecIterNew`/`VecIterNext` is **dropped** — iterating a
+`Vec<String>` (or any non-Copy element) now lowers. The signatures are unchanged
+(`VecIterNew : (&Vec<T>) -> Core(VecIter,[T])`, `VecIterNext : (&mut Core(VecIter,[T])) ->
+Option<&T>`); only the interpreter representation and the Copy gate change. The borrow checker
+already forbids mutating the source Vec while the iterator is live, so the live-indexing read is
+sound. `VecIndexGet` keeps its `T: Copy` requirement (it returns `T` by value, not `&T`).
 
 **Rev. 6 — surface `0.1-A3` activation (2026-07-19, WP-C4.5f-3a/3b, per CD-032's
 dated-enumeration rule).** Activates the `HashMap<K, V>` group and the Char printing/String-Char

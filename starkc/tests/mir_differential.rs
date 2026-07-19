@@ -1383,3 +1383,27 @@ fn repeat_and_unit_value_forms_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A6: non-Copy Vec iteration (borrowed cursor) ----
+
+/// Iterating a `Vec<String>` by reference (`for s in v.iter()`) agrees with the oracle — the
+/// borrowed-cursor iterator hands out `&String` without requiring the element be Copy.
+#[test]
+fn non_copy_vec_iteration_agrees() {
+    differential(
+        "a6_noncopy_iter.stark",
+        "fn main() { \
+             let mut v: Vec<String> = Vec::new(); \
+             v.push(String::from(\"alpha\")); \
+             v.push(String::from(\"beta\")); \
+             v.push(String::from(\"gamma\")); \
+             let mut n = 0; \
+             for s in v.iter() { \
+                 println(s.as_str()); \
+                 n = n + s.len() as Int32; \
+             } \
+             println(n); \
+         }"
+        .to_string(),
+    );
+}

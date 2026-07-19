@@ -1138,13 +1138,7 @@ impl<'a> BodyCx<'a> {
                     format!("VecIndexGet requires a Copy element type, found {t:?}"),
                 );
             }
-            VecIterNew | VecIterNext if !self.mir_is_copy(&t) => {
-                self.err(
-                    "MIR-0016",
-                    bi,
-                    format!("Vec iteration requires a Copy element type, found {t:?}"),
-                );
-            }
+            // A6: Vec iteration is a borrowed cursor (no snapshot), so `T` need NOT be Copy.
             VecClear if self.mir_needs_drop(&t) => {
                 self.err(
                     "MIR-0016",
