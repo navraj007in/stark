@@ -1,9 +1,19 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.6 A1 — **ALL SEVEN CLASS-A BLOCKERS GREEN; C4 closure decision with the owner**
+Updated: 2026-07-20 after WP-C4.7-1 — **WP-C4.7 correction package under way (increment 1 of 9 done)**
 
 ## Position
-Gate: C4  Next: **WP-C4.7 (correction + re-audit closure package)** — the executor-grade plan
-is `STARKLANG/docs/compiler/work-packages/WP-C4.7.md`; work it increment by increment. C4 stays
+Gate: C4  Next: **WP-C4.7-2 (evidence symmetry: verifier negatives + unsupported fixtures)**.
+**WP-C4.7-1 DONE 2026-07-20** (doc/evidence reconciliation, no code): the WP-C4.6 A5 arithmetic
+additions are now recorded in `mir.md` as MIR **amendment A3** (`MirBinOp::BitAnd/BitOr/BitXor`
+pure; `CheckedOp::Pow`; `Shl`/`Shr` ACTIVE under NUM-SHIFT-001; `TrapCategory::InvalidShift` with
+the interpreter's category-override rule) — **awaiting post-hoc CE3 ratification by the owner**,
+since CD-033 approved the A5 class but the per-amendment recording was missed. Consequently
+C4.7-3's layout amendment is **renumbered A4** (`mir-amendment-A4-layout.md`). **DEV-074** opened
+and closed at creation (the A4-2e oracle slice-message alignment, previously recorded only in A1
+rev. 10); ledger count 71 → 72. A4's "complete" claim tightened everywhere to "MIR runtime
+surface" (front-end `core-min` holes are WP-C4.7-6).
+The executor-grade plan is
+`STARKLANG/docs/compiler/work-packages/WP-C4.7.md`; work it increment by increment. C4 stays
 OPEN until WP-C4.7 completes and the owner approves the fresh exit report (the Class-A
 requirement of CD-033 is met, but the external review + self-audit identified corrections
 required before an honest exit — most notably the type-erasing `size_of`/`align_of` lowering
@@ -842,6 +852,22 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   full lowering/verify/interp/dump coverage; the invalid-variant guard (v3 → MIR-0008) satisfies
   the CE3 requirement #8. Amendment doc `mir-amendment-A2-ordering.md` marked APPROVED.
 
+- CD-035 [2026-07-20, WP-C4.7-1 — **PROPOSED, awaiting owner CE3 ratification**] **MIR Amendment
+  A3 (arithmetic completion), recorded post-hoc.** CD-033 approved class A5 (bit/shift/pow
+  operators) and WP-C4.6 implemented it, but the `mir.md` versioning policy also requires each
+  additive *shape* amendment to be individually CE3-approved and recorded in the contract, and
+  that step was missed. The record now exists in `mir.md` §"A3 shape amendment": pure
+  `MirBinOp::BitAnd/BitOr/BitXor` (integer-only; same-width two's-complement results are always
+  representable, so no range check is owed and §5 totality holds; `~x` → `x ^ mask` rather than a
+  new `MirUnOp`), `CheckedOp::Pow` (NUM-INT-ARITH-001), `CheckedOp::Shl`/`Shr` activated
+  (NUM-SHIFT-001; no masking or count reduction), and `TrapCategory::InvalidShift` held distinct
+  from `IntegerOverflow`, with the reference interpreter's `CheckedOutcome::Trap(Some(cat))`
+  category override specified as a rule backends must reproduce. Additive; `MIR_VERSION` stays
+  `0.1` and no runtime-surface identifier changes (A3 adds no `RuntimeFn`). **The ask is
+  ratification of the record, not approval of new code — the code shipped in WP-C4.6 A5.**
+  Consequence if ratified: WP-C4.7-3's layout amendment is **A4** (`mir-amendment-A4-layout.md`),
+  renumbered from the plan's "A3" to avoid a collision.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
@@ -896,13 +922,13 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   extension code (Core-only scope), but WP-C9.1/C9.2 will need this as input later.
 
 ## Known deviations — open index
-Canonical ledger (full structured entries, all 66 numbered deviations):
+Canonical ledger (full structured entries, all 72 numbered deviations):
 `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. The per-deviation narrative that used to live in
 this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim in
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-19 (post-WP-C4.5f-3):
+Open as of 2026-07-20 (post-WP-C4.7-1); every C4.x item below is owned by a WP-C4.7 increment:
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -912,14 +938,24 @@ Open as of 2026-07-19 (post-WP-C4.5f-3):
   classification (tooling exists; classification unscheduled).
 - DEV-067 — bounded generic parameters lose their bounds at intra-generic call sites (E0500)
   and behind `&T` receivers (E0302); over-rejection only, pre-existing, surfaced by WP-C4.5c's
-  differential tests. Owner: a later C4.x increment (with generic method monomorphisation).
+  differential tests. Owner: **WP-C4.7-7**.
 - DEV-069 — front end + HIR interpreter are not multi-file-span-clean: cross-file spans are
   read against the entry file, so cross-file methods mis-resolve, cross-file literals
   mis-parse, and cross-file field reads fail; found by WP-C4.5f-3c's multi-file work. The MIR
-  lowering itself is multi-file-clean (`ProgramMeta`). Owner: a future front-end WP.
+  lowering itself is multi-file-clean (`ProgramMeta`). Owner: **WP-C4.7-4** (a C5 prerequisite
+  per CD-033).
+- DEV-071 — an all-three-variant `Ordering` match is wrongly flagged non-exhaustive
+  (exhaustiveness gap; over-rejection only). Owner: **WP-C4.7-7**.
+- DEV-072 — binding a non-Copy payload out of a shared borrow passes borrowck (under-rejection;
+  MIR refuses it, so the two engines disagree). Owner: **WP-C4.7-5**.
+- DEV-073 — the checker does not match GENERIC impls in operator-trait/iterable bound checks
+  (over-rejection; both engines reject consistently, MIR dispatch is instantiation-ready).
+  Owner: **WP-C4.7-5**.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
+Closed 2026-07-20: DEV-070 (WP-C4.6 A2, both engines); DEV-074 (numbered by WP-C4.7-1 and closed
+at creation — the A4-2e oracle slice-message alignment, a governance gap, not a code defect).
 Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
 CD-027 pre-C4.1 correction pass; DEV-064 (undetermined-generic rejection, WP-C4.5c, E0004);
 DEV-065/066 (C4.5b oracle fixes). See `KNOWN-DEVIATIONS.md`.
@@ -1719,3 +1755,38 @@ FOLLOW-UP: none blocking. C4.5b complete.
 NEXT: WP-C4.5c — generics and full static dispatch (real Instance.type_args monomorphisation,
 deterministic dedup, named resource limit, operator dispatch on generic params, DEV-064's
 typecheck rejection).
+
+### WP-C4.7-1 — documentation/evidence reconciliation (coding-session remainder) — 2026-07-20
+DONE: the three remaining C4.7-1 items from the plan (the doc half landed in the planning
+commit). (1) **MIR amendment A3 recorded in `mir.md`** — the WP-C4.6 A5 arithmetic additions,
+which CD-033 approved as a *class* but whose per-amendment recording the versioning policy
+requires and which was missed at implementation time: `MirBinOp::BitAnd/BitOr/BitXor` as PURE
+rvalues (same-width two's-complement results are always representable, so the §5 totality
+invariant holds; `~x` lowers to `x ^ mask` rather than adding a `MirUnOp`), `CheckedOp::Pow`
+(NUM-INT-ARITH-001, nonnegative exponent, checked intermediates), `CheckedOp::Shl`/`Shr`
+activated (NUM-SHIFT-001 count bound, no masking), and `TrapCategory::InvalidShift` kept
+DISTINCT from `IntegerOverflow` (a left shift still overflows on an unrepresentable result) with
+the reference interpreter's `CheckedOutcome::Trap(Some(cat))` override documented as the rule a
+backend must reproduce — it is the only category override in the evaluator. §5/§6 grammar blocks
+updated to match. (2) **DEV-074** numbered: the A4-2e alignment of the oracle's three
+slice-bound messages into the "out of bounds" family — an oracle *behavior* change that §0.5
+says needs a ledger entry, previously recorded only in A1 rev. 10. CLOSED at creation (the code
+is correct and spec-directed; the gap was governance). (3) A4's "complete" claim tightened to
+"MIR runtime surface" in `WP-C4.6.md` and A1 rev. 10, with the front-end `core-min` holes
+(`Box` deref, primitive `cmp`) pointed at WP-C4.7-6.
+FILES: STARKLANG/docs/compiler/mir.md (A3 amendment + grammar), mir-amendment-A1-strings-runtime.md
+(rev. 10 wording + DEV-074 pointer), work-packages/WP-C4.6.md (A4 wording), work-packages/
+WP-C4.7.md (tracker + A3→A4 renumber), starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-074;
+count 71 → 72; both enumerations), COMPILER-STATE.md (Position, open-deviation index refreshed
+to post-Class-A reality with C4.7 owners, count 66 → 72, this record).
+RULES: none — doc-only; no code, no test, no behavior change.
+DECISIONS: **two items for the owner.** (a) Post-hoc **CE3 ratification of MIR amendment A3** —
+the shape additions are already implemented and shipped; the ask is ratification of the record,
+not of new code. (b) **Amendment renumbering**: because this increment names the A5 arithmetic
+work "A3" (as WP-C4.7 §2 C4.7-1 directs), C4.7-3's layout amendment is renumbered **A4**
+(`mir-amendment-A4-layout.md`) — the plan as written would have produced two A3s.
+EVIDENCE: doc-only increment; full validation gate run anyway (workspace tests, fmt, clippy on
+1.93 and 1.97) to keep the per-increment discipline honest.
+FOLLOW-UP: none blocking.
+NEXT: WP-C4.7-2 — verifier negatives (5–6 hand-built `MirBody` cases) + clean-Unsupported
+fixtures for every recorded Class-A residual, each probed with `c46_probe` first.

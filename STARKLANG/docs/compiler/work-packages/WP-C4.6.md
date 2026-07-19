@@ -357,7 +357,7 @@ all-three-variant `Ordering` match is wrongly flagged non-exhaustive (exhaustive
 round-trip test uses an explicit-plus-wildcard match, which fully exercises the MIR path.
 DEV-070 remains open under A2 (enum `Eq`/`Ord` bodies that `match *self`).
 
-### A4 — core-min surface (in progress)
+### A4 — core-min MIR runtime surface (DONE 2026-07-20)
 
 Sub-sliced (like A1's e-1/e-2/e-3). **A4-1 DONE 2026-07-19** (no runtime-surface amendment
 needed): `size_of::<T>()` / `align_of::<T>()` lower to the fixed word constant the reference
@@ -390,6 +390,8 @@ a borrowed `&str` snapshot, sound because `Char` is `Copy`). `lower_for_over_ite
 bind a by-value element. Evidence: `chars_iteration_agrees`.
 
 **A4-2e (slicing) DONE 2026-07-20 — A4 COMPLETE** (surface `0.1-A6`, amendment A1 rev. 10).
+A4 completing means the **MIR runtime surface** for `core-min` is complete; the front-end
+`core-min` holes (`Box` deref, primitive `cmp`) are not part of A4 and are owned by WP-C4.7-6.
 Shared slice views land entirely on the pre-authorized runtime-surface mechanism (a trap-capable
 `SliceNew`, like `VecIndexGet` — **no new MIR shape, no CE3 escalation needed**):
 `&base[lo..hi]`/`[lo..=hi]` over Array/Vec/slice → `SliceNew(&base, lo, hi, inclusive) -> &[T]`,

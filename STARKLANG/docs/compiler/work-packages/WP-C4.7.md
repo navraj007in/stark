@@ -202,8 +202,9 @@ target-layout query from a MIR that discarded `T`.
 Steps:
 1. **Research first**: find what C2.9 actually decided about target results — search
    `COMPILER-STATE.md` and `STARKLANG/docs/spec/` for `C2.9` + `size_of`. Report findings.
-2. **Draft a CE3 amendment** (new file `STARKLANG/docs/compiler/mir-amendment-A3-layout.md`,
-   modeled on `mir-amendment-A2-ordering.md`): recommended design —
+2. **Draft a CE3 amendment** (new file `STARKLANG/docs/compiler/mir-amendment-A4-layout.md` —
+   **renumbered from A3**, because C4.7-1 recorded the WP-C4.6 A5 arithmetic work as MIR
+   amendment A3; modeled on `mir-amendment-A2-ordering.md`): recommended design —
    `Rvalue::LayoutQuery { kind: SizeOf | AlignOf, ty: MirTy }`, typed `UInt64`, evaluated by
    consumers via a layout service; the C4 reference interpreter's service returns the frozen
    reference-target answer (8 today — behavior unchanged, representation fixed); verifier
@@ -369,8 +370,13 @@ Order within the increment (each independently commit-able):
 
 ## 3. Increment status tracker
 
-- C4.7-1: **doc half DONE 2026-07-20** (state-file + ledger reconciliation, this plan);
-  remaining: mir.md A5 recording, DEV-074, A4 wording — _pending_
+- C4.7-1: **DONE 2026-07-20** — doc half (state-file + ledger reconciliation, this plan) plus the
+  coding-session remainder: `mir.md` **A3 shape amendment** recorded (bitwise/Pow/Shl/Shr/
+  `InvalidShift`, presented for post-hoc CE3 ratification), **DEV-074** numbered (closed at
+  creation; count 71 → 72; both enumerations), A4 wording tightened to "MIR runtime surface" in
+  `WP-C4.6.md` and A1 rev. 10. **Naming note:** the A5 work is recorded as MIR amendment **A3**
+  per this plan's §2 C4.7-1 wording, so C4.7-3's layout amendment is renumbered **A4**
+  (`mir-amendment-A4-layout.md`) to avoid two A3s.
 - C4.7-2: _pending_
 - C4.7-3: _pending_ (CE3 draft first)
 - C4.7-4: _pending_

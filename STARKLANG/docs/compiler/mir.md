@@ -10,9 +10,42 @@ v0.1 only when individually approved under CE3 and recorded in this contract. Af
 MIR shape change requires a MIR version bump.* This supersedes the earlier blanket "any shape
 change requires a version bump" reading. Amendments approved under this policy to date:
 **A1** (CD-031, `Constant::Str`, drop-elaborated `String`/`Vec`, `Trap.message`, runtime-surface
-`RuntimeFn` groups — `mir-amendment-A1-strings-runtime.md`) and **A2** (`EnumRef::CoreOrdering`,
-the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`). Both are
-additive and remain MIR v0.1.
+`RuntimeFn` groups — `mir-amendment-A1-strings-runtime.md`), **A2** (`EnumRef::CoreOrdering`,
+the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`), and **A3**
+(bitwise/shift/exponentiation arithmetic — recorded in full below). All are additive and remain
+MIR v0.1.
+
+**A3 shape amendment (WP-C4.6 A5, under CD-033; recorded 2026-07-20 by WP-C4.7-1 as **CD-035**,
+presented for post-hoc CE3 ratification).** CD-033 approved the A5 *class* of work (bitwise and shift
+operators, integer exponentiation) but the per-amendment recording this policy requires was
+missed at implementation time; this paragraph is that record. The amendment adds four shape
+variants, all additive:
+
+- **`MirBinOp::BitAnd | BitOr | BitXor`** — integer-only, both operands and the destination the
+  same integer type. These are **pure `Rvalue::BinOp`s, not `Checked` terminators**: for
+  same-width two's-complement operands the bitwise result is always representable in the operand
+  width, so no range check is owed and the §5 totality invariant is preserved. Unary `~x`
+  lowers to `x ^ mask` (the all-ones constant of the operand's width) rather than adding a
+  `MirUnOp` — a deliberate choice to keep the shape addition to the binary set.
+- **`CheckedOp::Pow`** — integer exponentiation (NUM-INT-ARITH-001). The exponent must be
+  nonnegative; each intermediate multiply is checked and the final value range-checked against
+  the destination type. A negative exponent and an unrepresentable result both trap as
+  `IntegerOverflow` (the terminator's own category).
+- **`CheckedOp::Shl | Shr`** — reserved in the original v0.1 draft, now **ACTIVE**. Per
+  NUM-SHIFT-001 the shift count must be nonnegative and strictly less than the bit width of the
+  left operand (= the destination type); there is no masking or count reduction. A left shift
+  additionally traps when its result is not representable in the destination type. Right shift
+  is arithmetic for signed destinations and logical for unsigned.
+- **`TrapCategory::InvalidShift`** — a shift count that is negative or ≥ the operand width.
+  Deliberately **distinct from `IntegerOverflow`**, which a left shift still raises when its
+  result is out of range, so the two failure modes remain separately observable to a backend and
+  to the differential comparator. Mechanically, a `Checked` terminator carries one category in
+  its `TrapInfo`; the reference interpreter's `CheckedOutcome::Trap(Some(category))` **overrides**
+  it for this case, which is the only category override in the evaluator. A backend must
+  reproduce the same override rule for `Shl`/`Shr`.
+
+No runtime-surface identifier changes: A3 adds no `RuntimeFn`, so `MIR_RUNTIME_SURFACE` is
+untouched by this amendment.
 
 This document is a **non-normative implementation contract**, not language specification. The
 language's runtime authority is `STARKLANG/docs/spec/CORE-V1-ABSTRACT-MACHINE.md` and the
@@ -197,7 +230,8 @@ Rvalue   ::= Use(Operand)
            | UnOp(op, Operand)                     -- non-trapping unaries (not, float neg)
            | BinOp(op, Operand, Operand)           -- non-trapping only: comparisons on
                                                    --   comparable primitives, Bool ops,
-                                                   --   float add/sub/mul (IEEE per CD-006)
+                                                   --   float add/sub/mul (IEEE per CD-006),
+                                                   --   integer bitwise and/or/xor (A3)
            | Aggregate(AggKind, Vec<Operand>)      -- struct/tuple/array/enum-variant construction
            | Discriminant(Place)                   -- read enum discriminant as an integer
            | RefOf { mutable, place }              -- take a reference
@@ -236,7 +270,7 @@ Terminator ::=
         --   observable state.
   | Checked { op: CheckedOp, args: Vec<Operand>, dest: Place | ProofLocal, target: BlockId,
               trap: TrapInfo }
-        -- trapping primitives: integer add/sub/mul/div/rem/neg, shifts,
+        -- trapping primitives: integer add/sub/mul/div/rem/neg, shifts, pow (A3),
         --   float div/rem (CD-006), numeric `as` casts, and CheckIndex (below).
         -- Exactly ONE normal successor (`target`); the failure outcome is an implicit
         --   abort described by `trap` — there is no unwind or recovery successor of any kind.
@@ -252,7 +286,8 @@ Callee ::= Instance(Instance)          -- direct, statically resolved (incl. tra
 
 TrapInfo ::= { category: TrapCategory, source: SourceInfo }
 TrapCategory ::= IntegerOverflow | DivideByZero | IndexOutOfBounds | CastFailure
-               | Panic | UnwrapNone | UnwrapErr | AssertFailure | …aligned with the
+               | Panic | UnwrapNone | UnwrapErr | AssertFailure
+               | InvalidShift (A3)   | …aligned with the
                  abstract machine's trap taxonomy
 ```
 

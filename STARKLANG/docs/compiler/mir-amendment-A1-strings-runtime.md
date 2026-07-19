@@ -416,8 +416,10 @@ element `start + i`, and `s[i]` uses the ordinary `CheckIndex` proof discipline 
 against the VIEW length**. Slices are shared-only in this revision (`&mut base[range]` stays
 reserved); no writes route through a view. The oracle's three slice-bound error messages were
 aligned to the "out of bounds" family (the spec groups all bound failures as one trap; the
-fragment comparator requires it). `MIR_RUNTIME_SURFACE = "0.1-A6"`. **This completes the A4
-`core-min` runtime surface.**
+fragment comparator requires it). `MIR_RUNTIME_SURFACE = "0.1-A6"`. **This completes the A4 `core-min` MIR *runtime surface*** —
+front-end `core-min` holes (`Box` deref, primitive `cmp`) are separate and owned by WP-C4.7-6.
+The message alignment described above is numbered **DEV-074** (closed at creation; see
+`KNOWN-DEVIATIONS.md`).
 
 **Rev. 9 — surface `0.1-A5` activation (2026-07-20, WP-C4.6 A4-2d, per CD-032's
 dated-enumeration rule).** Activates string chars iteration:

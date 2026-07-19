@@ -1974,6 +1974,30 @@ WP-C1.5)
 - **Repro:** `struct W<T> { v: T } impl<T> Eq for W<T> { fn eq(&self, o: &W<T>) -> Bool { true } }
   fn main() { let a = W { v: 1 }; if a == W { v: 2 } { println(1); } }` → E0500.
 
+## DEV-074 — HIR oracle slice-bound trap messages folded into the "out of bounds" family [CLOSED at creation, WP-C4.6 A4-2e, 2026-07-20; numbered by WP-C4.7-1]
+
+- **What:** during A4-2e (shared slice views) three HIR-interpreter slice-bound error messages
+  were rewritten so that every slice-bound failure reports as one message family:
+  `"slice start is negative"` → `"slice range out of bounds (negative start)"`,
+  `"slice end is negative"` → `"slice range out of bounds (negative end)"`, and
+  `"slice range overflow"` → `"slice range out of bounds (inclusive end overflow)"`
+  (`starkc/src/interp.rs`, commit `2a53c47`). This is an oracle **behavior** change (observable
+  message text) that §0.5's escalation boundary says must be documented by a ledger entry; it
+  was recorded only in `mir-amendment-A1-strings-runtime.md` rev. 10 at the time. This entry is
+  that record, written retroactively during WP-C4.7-1.
+- **Why it is correct, not a regression:** 06-Standard-Library and the abstract machine group
+  *all* slice-bound failures as a single trap (`IndexOutOfBounds`); the three prior messages
+  implied three distinct failure kinds that the language does not distinguish. The differential
+  comparator matches trap categories by message fragment (`oracle_fragment` in
+  `tests/mir_differential.rs`), so a single family is required for MIR and the oracle to agree
+  on a construct the spec says has one outcome. No trap category, provenance span, or exit
+  status changed — only the human-readable text, and only in the direction of the spec.
+- **Scope:** HIR interpreter (`interp.rs`) only. MIR side unaffected (compiler traps carry
+  `message: None` and compare by category).
+- **Status:** CLOSED at creation — the change is the intended behavior and is fully implemented;
+  the deviation being recorded is the *governance* gap (an oracle behavior change that went
+  unnumbered), not an outstanding code defect. See `mir-amendment-A1-strings-runtime.md` rev. 10.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2023,7 +2047,10 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 71 numbered deviations total (DEV-002 through DEV-073, DEV-001/DEV-003 retired).
+Current count: 72 numbered deviations total (DEV-002 through DEV-074, DEV-001/DEV-003 retired).
+DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
+WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
+WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
 DEV-069 (front end + HIR interpreter not multi-file-span-clean: cross-file spans read against
 the entry file, breaking cross-file methods/literals/field reads) was found during WP-C4.5f-3c's
 multi-file lowering work and remains **open**, owned by a future front-end WP — the MIR lowering
@@ -2088,7 +2115,7 @@ described them as open; corrected 2026-07-19 during the C3-entry governance-repa
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
 remainder), DEV-067 (WP-C4.7-7), DEV-069 (WP-C4.7-4 — a C5 multi-file prerequisite per
 CD-033), DEV-071 (WP-C4.7-7), DEV-072 (WP-C4.7-5), DEV-073 (WP-C4.7-5). DEV-070 was closed by
-WP-C4.6 A2 in both engines. DEV-060 closed the same day it was made a C3-ENTRY blocker.
+WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation. DEV-060 closed the same day it was made a C3-ENTRY blocker.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping
