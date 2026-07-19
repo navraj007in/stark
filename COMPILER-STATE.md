@@ -1,10 +1,15 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.6 A3 (Eq+Ord) — **C4 OPEN; A4 next (CD-033)**
+Updated: 2026-07-19 after WP-C4.6 A4-1 — **C4 OPEN; A4 in progress (CD-033)**
 
 ## Position
-Gate: C4  Next: **A4** (`core-min` runtime surface — chars/get/get_mut/slices/size_of/align_of/
-Range values/Option-Result combinators; needs a dated runtime-surface amendment, "prepare"-
-authorized by CD-033), per the dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1).
+Gate: C4  Next: **A4-2** — the remaining `core-min` surface: `map`/`and_then`/`map_err`
+combinators (no amendment), Range/RangeInclusive as bound values, and the interior-ref/iterator/
+slice surface (`Vec::get`/`get_mut`, `chars()`, slicing) which **needs the dated runtime-surface
+amendment** CD-033 pre-authorized; plus `println` of core-min types (Display, deferred from A2).
+Per the dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1). **A4-1 DONE 2026-07-19**:
+`size_of`/`align_of` → fixed word constant (oracle-matched, type erased, `UInt64`);
+`Option`/`Result` `unwrap_or` → discriminant-select (non-droppable payload only; droppable
+deferred). 2 differential tests; workspace clean; clippy 1.93/1.97 clean.
 Progress: **A5, A7, A6, and A3 (Eq+Ord) DONE 2026-07-19.** A5: pure bitwise `MirBinOp`,
 `~` → `^ mask`, trapping `Shl`/`Shr`/`Pow`, new `TrapCategory::InvalidShift`. A7: `loop`-break
 value, `[v;n]` repeat, Unit value-position `if`/`while`/`for`. A6: Vec iteration → borrowed
