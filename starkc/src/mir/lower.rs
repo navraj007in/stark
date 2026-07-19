@@ -66,8 +66,71 @@ pub fn lower_program(
     let mut program = MirProgram {
         files: vec![file.clone()],
         bodies: Vec::new(),
+        types: TypeContext::default(),
     };
     let file_id = FileId(0);
+
+    // Populate the nominal type context (struct fields, user-enum variant payloads) for every
+    // non-generic top-level nominal type, so the verifier/backends can resolve projections.
+    {
+        let probe = FnLowerer::new(hir, tables, &src, file_id, main);
+        for &item_id in &root_items {
+            match &hir.item(item_id).kind {
+                ItemKind::Struct {
+                    fields, generics, ..
+                } if generics.is_empty() => {
+                    let mut tys = Vec::new();
+                    let mut ok = true;
+                    for f in fields {
+                        // Field HIR types convert through the same path as everything else.
+                        match probe.hir_field_ty(f.ty) {
+                            Ok(t) => tys.push(t),
+                            Err(_) => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if ok {
+                        program.types.struct_fields.insert(item_id.0, tys);
+                    }
+                }
+                ItemKind::Enum {
+                    variants, generics, ..
+                } if generics.is_empty() => {
+                    let mut all = Vec::new();
+                    let mut ok = true;
+                    for v in variants {
+                        let payload: Vec<hir::TypeId> = match &v.kind {
+                            hir::VariantKind::Unit => Vec::new(),
+                            hir::VariantKind::Tuple(tys) => tys.clone(),
+                            hir::VariantKind::Struct(fields) => {
+                                fields.iter().map(|f| f.ty).collect()
+                            }
+                        };
+                        let mut tys = Vec::new();
+                        for ty_id in payload {
+                            match probe.hir_field_ty(ty_id) {
+                                Ok(t) => tys.push(t),
+                                Err(_) => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !ok {
+                            break;
+                        }
+                        all.push(tys);
+                    }
+                    if ok {
+                        program.types.enum_variants.insert(item_id.0, all);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 
     // Deterministic, deduplicating instance discovery (contract §2): worklist from `main`.
     let mut queued: BTreeMap<u32, ()> = BTreeMap::new();
@@ -237,6 +300,62 @@ impl<'a> FnLowerer<'a> {
             Ty::Never => MirTy::Never,
             _ => return unsupported(format!("type {ty:?} (C4.5)"), span),
         })
+    }
+
+    /// Convert an HIR type node (struct field / enum payload declarations) to a MirTy.
+    fn hir_field_ty(&self, ty_id: hir::TypeId) -> Result<MirTy, LowerError> {
+        let node = self.hir.ty(ty_id);
+        let span = node.span;
+        match &node.kind {
+            hir::TypeKind::Primitive(p) => self.mir_ty(&Ty::Primitive(*p), span),
+            hir::TypeKind::Path { res, args, .. } => match res {
+                Res::Item(item) => match &self.hir.item(*item).kind {
+                    ItemKind::Struct { .. } if args.is_none() => {
+                        Ok(MirTy::Struct(*item, Vec::new()))
+                    }
+                    ItemKind::Enum { .. } if args.is_none() => {
+                        Ok(MirTy::Enum(EnumRef::User(*item), Vec::new()))
+                    }
+                    _ => unsupported("field type form (C4.5)", span),
+                },
+                Res::CoreType(core) => {
+                    let inner = match args {
+                        Some(list) => list
+                            .args
+                            .iter()
+                            .map(|a| match a {
+                                hir::GenericArg::Type(t) => self.hir_field_ty(*t),
+                                _ => unsupported("field type argument (C4.5)", span),
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                        None => Vec::new(),
+                    };
+                    match core {
+                        crate::hir::CoreType::Option => Ok(MirTy::Enum(EnumRef::CoreOption, inner)),
+                        crate::hir::CoreType::Result => Ok(MirTy::Enum(EnumRef::CoreResult, inner)),
+                        _ => unsupported("core field type (C4.5)", span),
+                    }
+                }
+                _ => unsupported("field type path (C4.5)", span),
+            },
+            hir::TypeKind::Tuple(elems) => Ok(MirTy::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.hir_field_ty(*e))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )),
+            hir::TypeKind::Fn { params, ret } => Ok(MirTy::FnPtr {
+                params: params
+                    .iter()
+                    .map(|p| self.hir_field_ty(*p))
+                    .collect::<Result<Vec<_>, _>>()?,
+                ret: Box::new(match ret {
+                    Some(r) => self.hir_field_ty(*r)?,
+                    None => MirTy::Unit,
+                }),
+            }),
+            _ => unsupported("field type form (C4.5)", span),
+        }
     }
 
     fn expr_mir_ty(&self, expr: ExprId) -> Result<MirTy, LowerError> {

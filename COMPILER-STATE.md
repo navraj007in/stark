@@ -2,7 +2,12 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C4  Next: WP-C4.3 (MIR verifier)  Blocked: none
+Gate: C4  Next: WP-C4.4 (MIR interpreter, differential vs HIR oracle)  Blocked: none
+WP-C4.3 done 2026-07-19: `src/mir/verify.rs` implements all 13 contract §10 obligations with
+the MIR-xxxx internal namespace (first allocation, see Diagnostic codes); every lowered program
+verifies clean; 13 hand-crafted invalid bodies each rejected with their specific code; one
+unsafe-failure bug (panic on broken CFG edge in the move dataflow) caught by the negative suite
+and fixed. Workspace 625/0/2.
 WP-C4.2 done 2026-07-19: `starkc/src/mir/` implements the approved MIR v0.1 model (all CD-028
 shapes) + scalar-core lowering + deterministic dump; 5 frozen-corpus cases lower; fn-values,
 Option/Result-as-logical-enums, checked-terminator arithmetic all verified by tests (6 new,
@@ -715,6 +720,14 @@ involving nested modules and private items should assume this stricter model.
   track) — informative precedent for methodology, not a substitute (CD-004).
 
 ## Diagnostic codes allocated or changed
+- **MIR-0001..MIR-0013** [WP-C4.3, 2026-07-19] First allocation of the `MIR-xxxx`
+  compiler-internal namespace (charter §5.1): 0001 target OOB, 0002 local OOB, 0003 projection
+  type, 0004 assignment/operand type, 0005 call/checked signature, 0006 bare unsized, 0007
+  possibly-moved use, 0008 discriminant/variant misuse, 0009 drop/drop-flag, 0010 index-proof
+  discipline, 0011 FnPtr arithmetic/comparison, 0012 reserved (runtime-set violation —
+  structurally impossible while RuntimeFn is a closed enum; reserved for serialized MIR), 0013
+  invalid FileId in SourceInfo. These are internal invariant failures (lowering bugs), never
+  user-source diagnostics. Full map: `src/mir/verify.rs` header + WP-C4.3.md.
 - **E0008** [WP-C1.5] Integer literal out of range for its type (suffixed literal exceeds its
   suffix's representable range, or an unsuffixed literal exceeds `Int64`). See DEV-015.
 - **E0009** [WP-C1.5] Array repeat count (`[value; count]`) is not a compile-time constant
@@ -1268,3 +1281,33 @@ int ops are recorded Unsupported (contract's non-trapping BinOp set lacks int bi
 flag for the C4.5-era contract addendum + version note).
 NEXT: WP-C4.3 — MIR verifier (contract §10's 13 obligations, MIR-xxxx diagnostics, safe
 failure); then WP-C4.4 MIR interpreter differential vs the HIR oracle.
+
+### WP-C4.3 — MIR verifier — 2026-07-19
+DONE: implemented `starkc/src/mir/verify.rs` — all 13 contract §10 obligations over MirProgram:
+CFG/local/projection well-formedness with step-by-step place typing through a new
+lowering-populated TypeContext (struct fields + user-enum variant payloads added to MirProgram
+as an additive companion table; Option/Result payloads derived from type args); bidirectional
+aggregate checking; call/checked/runtime signature checking; V-MOVE-1 as a conservative
+whole-local any-path union-join fixpoint dataflow; drop-flag and index-proof (CE3 tokens)
+discipline; TYPE-FN-001 enforcement at MIR level (no arithmetic/comparison on FnPtr); V-SRC-1
+FileId validity. First MIR-xxxx namespace allocation recorded in the Diagnostic-codes section.
+Safe-failure hardening: the negative test suite caught the move dataflow PANICKING on a broken
+CFG edge (exactly the unsafe failure the contract forbids) — fixed to skip already-reported
+edges; report-and-continue everywhere.
+FILES: starkc/src/mir/verify.rs (new), starkc/src/mir/mod.rs (TypeContext + MirProgram.types),
+starkc/src/mir/lower.rs (type-context population + hir_field_ty), starkc/tests/mir_verify.rs
+(new, 14 tests), STARKLANG/docs/compiler/work-packages/WP-C4.3.md (new), COMPILER-STATE.md.
+RULES: none — verifier implements the approved contract; no Core semantics change.
+DECISIONS: none at CE level. MIR-0012 reserved rather than allocated (runtime-set violation is
+structurally impossible while RuntimeFn is a closed Rust enum; becomes real with serialized
+MIR).
+EVIDENCE: `cargo test --test mir_verify` 14/14 — positive: all 5 lowerable corpus cases + 3
+inline programs (fn-values, Option, structs) verify clean (lowering and verifier as two
+independent contract readings agreeing); negative: 13 hand-crafted invalid bodies each
+rejected with the specific MIR-xxxx code. Full workspace 625 passed / 0 failed / 2 ignored
+(611 → 625: 14 verifier tests). fmt + clippy -D warnings clean.
+FOLLOW-UP: V-MOVE-1 whole-local granularity documented as a refinement point (can reject
+over-clever legal MIR, never accepts moved-from reads); field-precise tracking when C4.5's
+partial moves need it. TypeContext addition noted as additive (no dump/shape change, no
+version bump) — fold into the contract text at the next version bump.
+NEXT: WP-C4.4 — MIR interpreter + differential harness vs the HIR oracle over corpus v1.0.0.

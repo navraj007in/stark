@@ -16,6 +16,7 @@
 //! - The textual dump is deterministic and versioned (`MIR_VERSION`).
 
 pub mod lower;
+pub mod verify;
 
 use crate::source::{SourceFile, Span};
 use std::fmt::Write as _;
@@ -351,12 +352,25 @@ pub enum Terminator {
 
 // ------------------------------------------------------------------- program --
 
+/// Nominal-type layout information the verifier and backends need to resolve projections:
+/// struct field types and user-enum variant payload types, keyed by `ItemId`. `Option`/
+/// `Result` payloads are derived from their type arguments directly (no table entry needed).
+/// An implementation companion to the contract's nominal types — not part of the dump, not a
+/// shape/version change.
+#[derive(Clone, Debug, Default)]
+pub struct TypeContext {
+    pub struct_fields: std::collections::BTreeMap<u32, Vec<MirTy>>,
+    pub enum_variants: std::collections::BTreeMap<u32, Vec<Vec<MirTy>>>,
+}
+
 #[derive(Clone, Debug)]
 pub struct MirProgram {
     /// Interned source files; `FileId` indexes here.
     pub files: Vec<Arc<SourceFile>>,
     /// Bodies sorted by canonical symbol (dump determinism).
     pub bodies: Vec<MirBody>,
+    /// Nominal layout info for projection typing (verifier/backends).
+    pub types: TypeContext,
 }
 
 // ---------------------------------------------------------------------- dump --
