@@ -283,19 +283,10 @@ fn unsupported_constructs_report_cleanly() {
             "A2",
         ),
         (
-            // `?` (e-3) lowers; matching on an owned Drop-bearing scrutinee (the Result carries
-            // a String) is still deferred to the match-drop increment.
-            "matchdrop.stark",
-            "fn get(n: Int32) -> Result<Int32, String> { \
-                 if n > 0 { Ok(n) } else { Err(String::from(\"neg\")) } \
-             } \
-             fn main() { \
-                 match get(1) { \
-                     Ok(v) => println(v), \
-                     Err(m) => println(m.as_str()), \
-                 } \
-             }",
-            "Drop-bearing scrutinee",
+            // Char literals + Char-dependent ops are deferred to a later C4.5e sub-slice.
+            "char.stark",
+            "fn main() { let c = 'a'; let mut s = String::new(); s.push(c); }",
+            "Char",
         ),
     ];
     for (name, src, needle) in cases {
@@ -436,10 +427,10 @@ fn drop_elaboration_emits_flags_drops_and_dtor_instances() {
     );
 }
 
-/// WP-C4.5d boundary: an owned Drop-bearing match scrutinee needs partial-drop of the
-/// unbound remainder — clean Unsupported until a later increment, never mislowered.
+/// Match-drop increment: an owned Drop-bearing match scrutinee now lowers (per-arm payload
+/// consumption + arm-scope drops) and verifies clean.
 #[test]
-fn match_on_droppable_scrutinee_reports_cleanly() {
+fn match_on_droppable_scrutinee_lowers_and_verifies() {
     let src = "struct Loud { id: Int32 } \
                impl Drop for Loud { fn drop(&mut self) { println(self.id); } } \
                enum Holder { Empty, Full(Loud) } \
@@ -451,14 +442,9 @@ fn match_on_droppable_scrutinee_reports_cleanly() {
                    } \
                }";
     let front = front_end_src("dropmatch.stark", src.to_string());
-    match lower_program(&front.hir, &front.tables, front.file.clone()) {
-        Ok(_) => panic!("match on droppable scrutinee must be Unsupported"),
-        Err(e) => assert!(
-            e.what.contains("C4.5"),
-            "unsupported reason should name the owner, got: {}",
-            e.what
-        ),
-    }
+    let program = lower_ok(&front);
+    assert_structural_invariants(&program);
+    starkc::mir::verify::verify_program(&program).expect("match-drop lowering verifies");
 }
 
 /// WP-C4.5e-1 (A1): a string literal lowers to `const "…"` with escapes round-tripped through

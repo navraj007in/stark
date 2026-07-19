@@ -976,3 +976,78 @@ fn try_propagation_chains_agree() {
         .to_string(),
     );
 }
+
+// ---- match-drop increment: match on owned Drop-bearing scrutinees ----
+
+/// The frozen `option_result__02` corpus case (`?` propagation + match over a
+/// `Result<Int32, String>`) now runs through both engines — the last runtime-values corpus
+/// case reachable without interior references.
+#[test]
+fn option_result_02_corpus_case_agrees() {
+    let path = corpus_dir().join("option_result__02_result_and_try_propagation.stark");
+    let source = std::fs::read_to_string(&path).unwrap();
+    differential(&path.to_string_lossy(), source);
+}
+
+/// Match on an owned Drop-bearing scrutinee: a bound payload drops at arm end; an unbound
+/// (Wild) payload also drops at arm end; a catch-all binding drops at arm end. All match the
+/// oracle's drop timing.
+#[test]
+fn match_drop_binding_and_wild_and_catchall_agree() {
+    let prelude = "struct Loud { id: Int32 } \
+                   impl Drop for Loud { fn drop(&mut self) { print(\"d\"); println(self.id); } } \
+                   enum E { A(Loud), B(Loud) } \
+                   fn make(tag: Int32, id: Int32) -> E { \
+                       if tag == 0 { E::A(Loud { id: id }) } else { E::B(Loud { id: id }) } \
+                   } ";
+    // Bound payload.
+    differential(
+        "match_bound.stark",
+        format!(
+            "{prelude} fn main() {{ println(1); \
+                 match make(0, 10) {{ E::A(x) => {{ println(2); }} E::B(y) => {{ println(3); }} }} \
+                 println(4); }}"
+        ),
+    );
+    // Unbound (Wild) payload still drops at arm end.
+    differential(
+        "match_wild.stark",
+        format!(
+            "{prelude} fn main() {{ println(1); \
+                 match make(0, 10) {{ E::A(_) => {{ println(2); }} E::B(y) => {{ println(3); }} }} \
+                 println(4); }}"
+        ),
+    );
+    // Catch-all binding drops the whole scrutinee at arm end.
+    differential(
+        "match_catchall.stark",
+        format!(
+            "{prelude} fn main() {{ println(1); \
+                 match make(1, 10) {{ E::A(x) => {{ println(2); }} other => {{ println(3); }} }} \
+                 println(4); }}"
+        ),
+    );
+}
+
+/// A match arm that consumes (moves) its bound payload into a call does not double-drop: the
+/// move clears the arm-scope drop, so only the callee's drop fires.
+#[test]
+fn match_arm_that_moves_binding_does_not_double_drop_agree() {
+    differential(
+        "match_move.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { print(\"d\"); println(self.id); } } \
+         enum E { A(Loud), B(Loud) } \
+         fn consume(v: Loud) { println(100); } \
+         fn make(id: Int32) -> E { E::A(Loud { id: id }) } \
+         fn main() { \
+             println(1); \
+             match make(7) { \
+                 E::A(x) => { consume(x); } \
+                 E::B(y) => { println(2); } \
+             } \
+             println(9); \
+         }"
+        .to_string(),
+    );
+}

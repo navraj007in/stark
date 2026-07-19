@@ -3824,16 +3824,9 @@ impl<'a> FnLowerer<'a> {
         let arms: Vec<_> = arms.iter().map(|a| (a.pat, a.body)).collect();
 
         let scrut_ty = self.expr_mir_ty(scrutinee)?;
-        // C4.5d boundary: an owned droppable scrutinee needs partial-drop of the unbound
-        // pattern remainder (the oracle's drop_unbound semantics) — a later C4.5 increment.
-        // Matching by reference stays fully supported (`&e` is not droppable).
-        if self.ty_needs_drop(&scrut_ty, span)? {
-            return unsupported(
-                "match on an owned Drop-bearing scrutinee (a later C4.5 increment)",
-                span,
-            );
-        }
-        // Materialize the scrutinee once.
+        // Materialize the scrutinee once. The initial move clears the source local's drop flag
+        // (if it was a registered droppable local), so the scrutinee temp — not the source — is
+        // what the arms consume; a temp is never auto-dropped, so no double-drop can occur.
         let scrut_local = self.new_temp(scrut_ty.clone());
         let scrut_value = self.lower_expr_to_operand(scrutinee)?;
         self.emit(
@@ -3843,9 +3836,15 @@ impl<'a> FnLowerer<'a> {
 
         let join = self.new_block();
         match &scrut_ty {
-            MirTy::Enum(enum_ref, _) => {
-                self.lower_enum_match(*enum_ref, scrut_local, &arms, dest, join, span)?
-            }
+            MirTy::Enum(enum_ref, args) => self.lower_enum_match(
+                *enum_ref,
+                args.clone(),
+                scrut_local,
+                &arms,
+                dest,
+                join,
+                span,
+            )?,
             MirTy::Bool
             | MirTy::Int8
             | MirTy::Int16
@@ -3951,9 +3950,11 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lower_enum_match(
         &mut self,
         enum_ref: EnumRef,
+        scrut_args: Vec<MirTy>,
         scrut: LocalId,
         arms: &[(hir::PatId, ExprId)],
         dest: Option<Place>,
@@ -4023,23 +4024,29 @@ impl<'a> FnLowerer<'a> {
         );
 
         if let Some((default_pat, default_body)) = default {
+            self.scopes.push(Vec::new());
+            let depth = self.scopes.len() - 1;
+            let scrut_ty = self.locals[scrut.0 as usize].ty.clone();
             if let hir::PatKind::Binding { name, local } = &self.hir.pat(default_pat).kind {
-                let ty = self.locals[scrut.0 as usize].ty.clone();
+                // Catch-all binding: move the whole scrutinee into the binding (Copy for a
+                // non-droppable scrutinee), and register it so it drops at arm end.
                 self.locals.push(LocalDecl {
-                    ty,
+                    ty: scrut_ty.clone(),
                     kind: LocalKind::User(self.text(*name).to_string()),
                 });
                 let bound = LocalId((self.locals.len() - 1) as u32);
                 self.local_map.insert(local.0, bound);
+                let value = self.read_place(Place::local(scrut), &scrut_ty, span)?;
                 self.emit(
-                    Statement::Assign(
-                        Place::local(bound),
-                        Rvalue::Use(Operand::Copy(Place::local(scrut))),
-                    ),
+                    Statement::Assign(Place::local(bound), Rvalue::Use(value)),
                     self.synthetic(span, SyntheticKind::MatchDesugar),
                 );
+                self.register_droppable_local(bound, &scrut_ty, true, span)?;
+            } else {
+                // Wildcard `_` catch-all: the scrutinee is dropped whole at arm end.
+                self.drop_whole_scrutinee_at_arm_end(scrut, &scrut_ty, span)?;
             }
-            self.lower_arm_into(default_body, &dest, join, span)?;
+            self.lower_arm_body_scoped(default_body, &dest, join, depth, span)?;
         } else {
             let next = self.new_block();
             self.terminate(
@@ -4050,59 +4057,254 @@ impl<'a> FnLowerer<'a> {
             self.blocks.pop();
         }
 
-        for plan in &plans {
-            self.current = plan.block;
-            // Bind payload fields.
-            match &self.hir.pat(plan.pat).kind {
-                hir::PatKind::TupleVariant { pats, .. } => {
-                    for (i, &sub) in pats.iter().enumerate() {
-                        self.bind_variant_field(
-                            enum_ref,
-                            scrut,
-                            plan.variant as u32,
-                            i as u32,
-                            sub,
-                            span,
-                        )?;
-                    }
-                }
-                hir::PatKind::Struct { fields, res, .. } => {
-                    let field_order = self.variant_field_order(res, plan.variant as u32)?;
-                    for field in fields {
-                        let name_text = self.text(field.name).to_string();
-                        let Some(index) = field_order.iter().position(|n| *n == name_text) else {
-                            return unsupported("unknown variant field", field.name);
-                        };
-                        match (field.pat, field.local) {
-                            (Some(sub), _) => self.bind_variant_field(
-                                enum_ref,
-                                scrut,
-                                plan.variant as u32,
-                                index as u32,
-                                sub,
-                                span,
-                            )?,
-                            (None, Some(local)) => {
-                                // Shorthand `{ radius }` binding.
-                                self.bind_projection_to_local(
-                                    enum_ref,
-                                    scrut,
-                                    plan.variant as u32,
-                                    index as u32,
-                                    self.text(field.name).to_string(),
-                                    local,
-                                    span,
-                                )?;
-                            }
-                            (None, None) => {}
-                        }
-                    }
-                }
-                hir::PatKind::Path { .. } => {}
-                _ => {}
-            }
-            self.lower_arm_into(plan.body, &dest, join, span)?;
+        let plans: Vec<_> = plans
+            .into_iter()
+            .map(|p| (p.variant, p.block, p.pat, p.body))
+            .collect();
+        for (variant, block, pat, body) in plans {
+            self.current = block;
+            self.scopes.push(Vec::new());
+            let depth = self.scopes.len() - 1;
+            // C4.5d match-drop: consume the active variant's payload — bound fields into
+            // registered binding locals, unbound droppable fields into registered temps — so
+            // the scrutinee is fully accounted for and everything drops at arm end.
+            self.consume_variant_payload(enum_ref, &scrut_args, scrut, variant as u32, pat, span)?;
+            self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
         }
+        Ok(())
+    }
+
+    /// The payload field types of one variant of a matched enum instance.
+    fn variant_payload_types(
+        &self,
+        enum_ref: EnumRef,
+        scrut_args: &[MirTy],
+        variant: u32,
+        span: Span,
+    ) -> Result<Vec<MirTy>, LowerError> {
+        match enum_ref {
+            EnumRef::CoreOption => Ok(if variant == 1 {
+                vec![scrut_args.first().cloned().unwrap_or(MirTy::Unit)]
+            } else {
+                Vec::new()
+            }),
+            EnumRef::CoreResult => Ok(vec![scrut_args
+                .get(variant as usize)
+                .cloned()
+                .unwrap_or(MirTy::Unit)]),
+            EnumRef::User(item) => {
+                match nominal_instance_fields(
+                    self.hir,
+                    self.tables,
+                    self.src,
+                    self.file,
+                    item,
+                    scrut_args,
+                )? {
+                    NominalFields::Enum(variants) => {
+                        Ok(variants.get(variant as usize).cloned().unwrap_or_default())
+                    }
+                    NominalFields::Struct(_) => {
+                        unsupported("enum instance resolved to struct fields", span)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Consume the active variant's payload of a match arm (C4.5d match-drop). Every payload
+    /// field is moved out of the scrutinee: a bound field into a registered binding local; an
+    /// unbound (Wild / unmentioned) droppable field into a registered temp so it drops at arm
+    /// end; an unbound non-droppable field is simply abandoned in the (never-dropped) scrutinee
+    /// temp.
+    fn consume_variant_payload(
+        &mut self,
+        enum_ref: EnumRef,
+        scrut_args: &[MirTy],
+        scrut: LocalId,
+        variant: u32,
+        pat: hir::PatId,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let payload_tys = self.variant_payload_types(enum_ref, scrut_args, variant, span)?;
+        match &self.hir.pat(pat).kind {
+            hir::PatKind::TupleVariant { pats, .. } => {
+                let pats = pats.clone();
+                for (i, sub) in pats.iter().enumerate() {
+                    let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
+                    self.consume_field(scrut, variant, i as u32, &field_ty, Some(*sub), span)?;
+                }
+            }
+            hir::PatKind::Struct { fields, res, .. } => {
+                let res = *res;
+                // Collect owned (name-span, sub-pat, shorthand-local) to release the HIR borrow.
+                let fields: Vec<(Span, Option<hir::PatId>, Option<crate::hir::LocalId>)> =
+                    fields.iter().map(|f| (f.name, f.pat, f.local)).collect();
+                let field_order = self.variant_field_order(&res, variant)?;
+                let mut mentioned = vec![false; payload_tys.len()];
+                for (name_span, field_pat, field_local) in &fields {
+                    let name_text = self.text(*name_span).to_string();
+                    let Some(index) = field_order.iter().position(|n| *n == name_text) else {
+                        return unsupported("unknown variant field", *name_span);
+                    };
+                    if index < mentioned.len() {
+                        mentioned[index] = true;
+                    }
+                    let field_ty = payload_tys.get(index).cloned().unwrap_or(MirTy::Unit);
+                    match (field_pat, field_local) {
+                        (Some(sub), _) => self.consume_field(
+                            scrut,
+                            variant,
+                            index as u32,
+                            &field_ty,
+                            Some(*sub),
+                            span,
+                        )?,
+                        (None, Some(local)) => self.bind_field_local(
+                            scrut,
+                            variant,
+                            index as u32,
+                            name_text,
+                            *local,
+                            &field_ty,
+                            span,
+                        )?,
+                        (None, None) => {}
+                    }
+                }
+                // Unmentioned droppable fields still drop at arm end.
+                for (i, ty) in payload_tys.iter().enumerate() {
+                    if !mentioned[i] {
+                        self.consume_field(scrut, variant, i as u32, ty, None, span)?;
+                    }
+                }
+            }
+            // Unit variant (`None`, `E::Empty`) — no payload.
+            hir::PatKind::Path { .. } => {}
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Consume one variant payload field given its sub-pattern (`None` = unbound/Wild).
+    fn consume_field(
+        &mut self,
+        scrut: LocalId,
+        variant: u32,
+        index: u32,
+        field_ty: &MirTy,
+        sub: Option<hir::PatId>,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        match sub.map(|s| &self.hir.pat(s).kind) {
+            Some(hir::PatKind::Binding { name, local }) => {
+                let (name, local) = (self.text(*name).to_string(), *local);
+                self.bind_field_local(scrut, variant, index, name, local, field_ty, span)
+            }
+            Some(hir::PatKind::Wild) | None => {
+                if self.ty_needs_drop(field_ty, span)? {
+                    self.discover_drop_impls(field_ty)?;
+                    let place = Place {
+                        local: scrut,
+                        projection: vec![Projection::VariantField(variant, index)],
+                    };
+                    let value = self.read_place(place, field_ty, span)?;
+                    let tmp = self.new_temp(field_ty.clone());
+                    self.emit(
+                        Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
+                        self.synthetic(span, SyntheticKind::MatchDesugar),
+                    );
+                    self.register_droppable_local(tmp, field_ty, false, span)?;
+                    self.set_flags_under(tmp.0, &[], true, span);
+                }
+                Ok(())
+            }
+            Some(_) => unsupported("nested pattern in match arm (C4.5)", span),
+        }
+    }
+
+    /// Move a variant payload field into a fresh drop-registered binding local.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_field_local(
+        &mut self,
+        scrut: LocalId,
+        variant: u32,
+        index: u32,
+        name: String,
+        hir_local: crate::hir::LocalId,
+        field_ty: &MirTy,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        self.locals.push(LocalDecl {
+            ty: field_ty.clone(),
+            kind: LocalKind::User(name),
+        });
+        let bound = LocalId((self.locals.len() - 1) as u32);
+        self.local_map.insert(hir_local.0, bound);
+        let place = Place {
+            local: scrut,
+            projection: vec![Projection::VariantField(variant, index)],
+        };
+        let value = self.read_place(place, field_ty, span)?;
+        self.emit(
+            Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+        );
+        // The binding owns the moved-in value (flag true) and drops at arm-scope end.
+        self.register_droppable_local(bound, field_ty, true, span)?;
+        Ok(())
+    }
+
+    /// Wildcard `_` catch-all: drop the whole scrutinee at arm end (move it into a registered
+    /// temp). No-op if the scrutinee isn't droppable.
+    fn drop_whole_scrutinee_at_arm_end(
+        &mut self,
+        scrut: LocalId,
+        scrut_ty: &MirTy,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if !self.ty_needs_drop(scrut_ty, span)? {
+            return Ok(());
+        }
+        self.discover_drop_impls(scrut_ty)?;
+        let value = self.read_place(Place::local(scrut), scrut_ty, span)?;
+        let tmp = self.new_temp(scrut_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+        );
+        self.register_droppable_local(tmp, scrut_ty, false, span)?;
+        self.set_flags_under(tmp.0, &[], true, span);
+        Ok(())
+    }
+
+    /// Lower a match arm body inside its drop scope: compute the arm value into `dest`, drop the
+    /// arm scope (bindings + unbound-payload temps), then jump to `join`.
+    fn lower_arm_body_scoped(
+        &mut self,
+        body: ExprId,
+        dest: &Option<Place>,
+        join: BlockId,
+        depth: usize,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        match dest {
+            Some(place) => {
+                let value = self.lower_expr_to_operand(body)?;
+                self.emit(
+                    Statement::Assign(place.clone(), Rvalue::Use(value)),
+                    self.info(span),
+                );
+            }
+            None => {
+                self.lower_expr_operand_or_unit(body)?;
+            }
+        }
+        self.emit_scope_drops_from(depth, span);
+        self.scopes.pop();
+        let dead = self.new_block();
+        self.terminate(Terminator::Goto { target: join }, self.info(span), dead);
+        self.blocks.pop();
         Ok(())
     }
 
@@ -4123,63 +4325,6 @@ impl<'a> FnLowerer<'a> {
             }
             _ => Ok(Vec::new()),
         }
-    }
-
-    fn bind_variant_field(
-        &mut self,
-        enum_ref: EnumRef,
-        scrut: LocalId,
-        variant: u32,
-        index: u32,
-        sub: hir::PatId,
-        span: Span,
-    ) -> Result<(), LowerError> {
-        match &self.hir.pat(sub).kind {
-            hir::PatKind::Binding { name, local } => {
-                let name_text = self.text(*name).to_string();
-                self.bind_projection_to_local(
-                    enum_ref, scrut, variant, index, name_text, *local, span,
-                )
-            }
-            hir::PatKind::Wild => Ok(()),
-            _ => unsupported("nested pattern (C4.5)", self.hir.pat(sub).span),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn bind_projection_to_local(
-        &mut self,
-        _enum_ref: EnumRef,
-        scrut: LocalId,
-        variant: u32,
-        index: u32,
-        name: String,
-        hir_local: crate::hir::LocalId,
-        span: Span,
-    ) -> Result<(), LowerError> {
-        let ty = self
-            .tables
-            .local_types
-            .get(&hir_local)
-            .cloned()
-            .unwrap_or(Ty::Error);
-        let mir_ty = self.mir_ty(&ty, span)?;
-        self.locals.push(LocalDecl {
-            ty: mir_ty.clone(),
-            kind: LocalKind::User(name),
-        });
-        let bound = LocalId((self.locals.len() - 1) as u32);
-        self.local_map.insert(hir_local.0, bound);
-        let mut place = Place::local(scrut);
-        place
-            .projection
-            .push(Projection::VariantField(variant, index));
-        let value = self.read_place(place, &mir_ty, span)?;
-        self.emit(
-            Statement::Assign(Place::local(bound), Rvalue::Use(value)),
-            self.synthetic(span, SyntheticKind::MatchDesugar),
-        );
-        Ok(())
     }
 
     fn lower_arm_into(

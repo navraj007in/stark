@@ -127,16 +127,26 @@ HIR/MIR differential agreement before the next begins.
      compare) and `unwrap` (`SwitchInt`; wrong variant → `Trap{UnwrapNone|UnwrapErr}`). User
      `as` cast fix carried from e-1. **`option_result__01` corpus case now differential-green**;
      4 new differential tests (`?` on Option+Result, chained propagation, unwrap-None trap).
-     **`option_result__02` stays blocked** — its `?` lowers, but the subsequent `match` over
-     `Result<Int32, String>` is a match on an owned Drop-bearing scrutinee (needs per-arm
-     payload-binding drops), which remains the deferred match-drop increment below. Deferred
-     with e-1: Char + Char String ops, `assert_eq`/`assert_ne`. Workspace 695/0/2.
+     **`option_result__02` stays blocked** on the match-drop increment below (its `?` lowers).
+     Deferred with e-1: Char + Char String ops, `assert_eq`/`assert_ne`. Workspace 695/0/2.
+   - **Match-drop increment — match on owned Drop-bearing scrutinees: DONE 2026-07-19.** Oracle
+     drop timing pinned empirically first: the matched arm consumes the scrutinee, and every
+     payload — bound, unbound (`_`), or catch-all-bound — drops at **arm end** (after the arm
+     body). Lowering rewrite (`lower_enum_match`): each arm is a drop scope; every payload
+     field is moved out of the (always-materialized temp) scrutinee — bound fields into
+     registered binding locals, unbound droppable fields into registered temps, an
+     unmentioned struct field likewise, a catch-all binding/`_` handling the whole value — so
+     the scrutinee shell is fully consumed (no double-drop) and everything drops at arm-scope
+     exit. A binding moved by the arm body clears its flag, so only the callee's drop fires
+     (tested). The blanket C4.5d restriction is removed. **`option_result__02` corpus case now
+     differential-green** — the last runtime-values corpus case reachable without interior
+     references. 4 new differential tests (bound/Wild/catch-all payload drop, move-no-double-
+     drop). Workspace 698/0/2.
    Also owns (accumulated boundaries): user-nominal
-   `Eq`/`Ord` operator dispatch (needs `Ordering` runtime values), match on owned
-   Drop-bearing scrutinees (`drop_unbound` partial drops; the match-drop increment — needed by
-   `option_result__02`), projected-move take-and-poison in
-   the MIR interp (CD-030 deferral), and the CE3-shaped mir.md §5/§7 amendment for
-   string-literal/String value representation, which must land before lowering starts.
+   `Eq`/`Ord` operator dispatch (needs `Ordering` runtime values), projected-move
+   take-and-poison in the MIR interp (CD-030 deferral), and the CE3-shaped mir.md §5/§7
+   amendment for string-literal/String value representation, which must land before lowering
+   starts.
    - **C4.5e-0 — pre-runtime-values hardening: DONE 2026-07-19 (CD-030,** disposition of the
      external C4.5c-head review). IndexProof definite-initialization dataflow: must-analysis
      (intersection joins, unique-definition rule) so every `Index(proof)` is definitely

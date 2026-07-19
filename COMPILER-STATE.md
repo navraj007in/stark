@@ -1,20 +1,26 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5e-3 (? operator + Option/Result methods)
+Updated: 2026-07-19 after match-drop increment
 
 ## Position
-Gate: C4  Next: match-drop increment (match on owned Drop-bearing scrutinee with per-arm
-payload-binding drops — unblocks `option_result__02`), or Char/`assert_eq` (e-1 deferral);
-then C4.5f (multi-package + frame generations + **Vec/String iteration**, folded per CD-032).
+Gate: C4  Next: Char + Char String ops + `assert_eq`/`assert_ne` (e-1 deferral, no blocker),
+then C4.5f (multi-package + frame generations + **Vec/String iteration** + interior refs,
+folded per CD-032 — unblocks `collection_iter__01/02` + interior string views). All 17 frozen
+corpus cases now lower/pass EXCEPT the two `collection_iter__*` (need C4.5f iteration).
 Blocked: none
-**WP-C4.5e-3 done 2026-07-19** (`?` + Option/Result methods): `ExprKind::Try` lowering
-(operand in a temp consumed by both switch arms — no drop owed; Ok/Some payload = expr value,
-None/Err early-returns the enclosing fn's Option/Result after dropping live scopes);
-`is_some`/`is_none`/`is_ok`/`is_err` (discriminant compare) + `unwrap` (SwitchInt; wrong
-variant → `Trap{UnwrapNone|UnwrapErr}`). **`option_result__01` corpus case
-differential-green.** `option_result__02` stays blocked on match-over-droppable-scrutinee (its
-`?` lowers; the trailing `match` on `Result<Int32,String>` needs per-arm payload-binding drops
-— the deferred match-drop increment). 4 new differential tests. Workspace 695/0/2; fmt+clippy
+**Match-drop increment done 2026-07-19** (match on owned Drop-bearing scrutinees): oracle drop
+timing pinned empirically (matched arm consumes the scrutinee; bound, unbound `_`, and
+catch-all payloads all drop at **arm end**). `lower_enum_match` rewritten — each arm a drop
+scope; every payload field moved out of the materialized-temp scrutinee (bound → registered
+binding local; unbound droppable → registered temp; catch-all → whole value), so the shell is
+fully consumed (no double-drop) and everything drops at arm-scope exit; a body-moved binding
+clears its flag so only the callee drops. Blanket C4.5d restriction removed. **`option_result__02`
+corpus case now differential-green.** 4 new differential tests. Workspace 698/0/2; fmt+clippy
 clean 1.93/1.97.
+**WP-C4.5e-3 done 2026-07-19** (`?` + Option/Result methods): `ExprKind::Try` lowering
+(operand in a temp consumed by both switch arms; Ok/Some payload = expr value, None/Err
+early-returns the enclosing fn's Option/Result after dropping live scopes);
+`is_some`/`is_none`/`is_ok`/`is_err` + `unwrap` (SwitchInt; wrong variant →
+`Trap{UnwrapNone|UnwrapErr}`). `option_result__01` corpus case differential-green.
 **A1 iteration gap RESOLVED — CD-032 (owner, 2026-07-19):** Vec iteration folds into C4.5f.
 STARK's `.iter()` binds `value: &T` (by-reference = an interior reference into a runtime
 container); A1's by-value `VecIterNext -> Option<T>` had no STARK trigger and is struck.
