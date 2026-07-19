@@ -1,12 +1,18 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after match-drop increment
+Updated: 2026-07-19 after WP-C4.5f-1 (frame generations + move poison)
 
 ## Position
-Gate: C4  Next: Char + Char String ops + `assert_eq`/`assert_ne` (e-1 deferral, no blocker),
-then C4.5f (multi-package + frame generations + **Vec/String iteration** + interior refs,
-folded per CD-032 — unblocks `collection_iter__01/02` + interior string views). All 17 frozen
-corpus cases now lower/pass EXCEPT the two `collection_iter__*` (need C4.5f iteration).
-Blocked: none
+Gate: C4  Next: WP-C4.5f-2 (interior references + Vec iteration via the `0.1-A2` surface bump
+— unblocks `collection_iter__01`); then f-3 multi-package symbols/linkage; Char/`assert_eq`
+(e-1 deferral) slots anywhere. All 17 frozen corpus cases lower/pass EXCEPT the two
+`collection_iter__*` (need f-2 iteration; `__02` also needs HashMap ops).  Blocked: none
+**WP-C4.5f-1 done 2026-07-19** (both CD-030 deferrals): `Frame.generation` (monotonic) +
+`MirValue::Ref` carries the pointee's generation; every deref and runtime-op ref helper
+validates (slot, generation) — stale references to reused frame slots fail loudly (adversarial
+hand-built MIR test: verifies by design, interpreter rejects). Projected `Move`s now TAKE with
+a `MirValue::Moved` poison; any read of the hole is a loud internal error; full suite green
+with the poison live confirms the tested subset never re-reads a moved place. Workspace
+699/0/2; fmt+clippy clean 1.93/1.97.
 **Match-drop increment done 2026-07-19** (match on owned Drop-bearing scrutinees): oracle drop
 timing pinned empirically (matched arm consumes the scrutinee; bound, unbound `_`, and
 catch-all payloads all drop at **arm end**). `lower_enum_match` rewritten — each arm a drop

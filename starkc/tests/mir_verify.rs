@@ -948,3 +948,156 @@ fn rejects_vec_clear_on_droppable_element() {
         .insert((0, Vec::new()), "Loud::Drop::drop@[]".to_string());
     expect_code(&program, "MIR-0016");
 }
+
+// ---- WP-C4.5f-1: frame-generation defense (CD-030 Finding 2) ----
+
+/// A verifier-passing but semantically bogus program: a function returns a reference to its
+/// own local (the verifier has no escape analysis — by design, borrowck upstream owns that),
+/// a second call then reuses the same frame slot, and the stale reference is dereferenced.
+/// Pre-C4.5f-1 the interpreter silently read the SECOND call's local (slot aliasing); with
+/// frame generations it must fail loudly, never alias.
+#[test]
+fn stale_reference_to_reused_frame_slot_fails_loudly() {
+    use starkc::mir::interp::{run_program, MirRunError};
+    use starkc::mir::{Rvalue, Terminator};
+
+    let ref_int = MirTy::Ref {
+        mutable: false,
+        inner: Box::new(MirTy::Int32),
+    };
+    // leak@[]: fn() -> &Int32 { let x = 7; &x }
+    let leak = MirBody {
+        instance: Instance {
+            item: starkc::hir::ItemId(1),
+            type_args: Vec::new(),
+            symbol: "leak@[]".to_string(),
+        },
+        params: Vec::new(),
+        ret: ref_int.clone(),
+        locals: vec![
+            LocalDecl {
+                ty: ref_int.clone(),
+                kind: LocalKind::Return,
+            },
+            local(MirTy::Int32),
+        ],
+        blocks: vec![block(
+            vec![
+                Statement::Assign(
+                    Place::local(LocalId(1)),
+                    Rvalue::Use(Operand::Const(Constant::Int(7, MirTy::Int32))),
+                ),
+                Statement::Assign(
+                    Place::local(LocalId(0)),
+                    Rvalue::RefOf {
+                        mutable: false,
+                        place: Place::local(LocalId(1)),
+                    },
+                ),
+            ],
+            Terminator::Return,
+        )],
+        entry: BlockId(0),
+    };
+    // clobber@[]: fn() { let y = 99; } — reuses leak's frame slot.
+    let clobber = MirBody {
+        instance: Instance {
+            item: starkc::hir::ItemId(2),
+            type_args: Vec::new(),
+            symbol: "clobber@[]".to_string(),
+        },
+        params: Vec::new(),
+        ret: MirTy::Unit,
+        locals: vec![ret_local(), local(MirTy::Int32)],
+        blocks: vec![block(
+            vec![
+                Statement::Assign(
+                    Place::local(LocalId(1)),
+                    Rvalue::Use(Operand::Const(Constant::Int(99, MirTy::Int32))),
+                ),
+                Statement::Assign(
+                    Place::local(LocalId(0)),
+                    Rvalue::Use(Operand::Const(Constant::Unit)),
+                ),
+            ],
+            Terminator::Return,
+        )],
+        entry: BlockId(0),
+    };
+    // main@[]: r = leak(); clobber(); read *r.
+    let main = MirBody {
+        instance: Instance {
+            item: starkc::hir::ItemId(0),
+            type_args: Vec::new(),
+            symbol: "main@[]".to_string(),
+        },
+        params: Vec::new(),
+        ret: MirTy::Unit,
+        locals: vec![
+            ret_local(),
+            local(ref_int.clone()),
+            local(MirTy::Unit),
+            local(MirTy::Int32),
+        ],
+        blocks: vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::Instance(Instance {
+                        item: starkc::hir::ItemId(1),
+                        type_args: Vec::new(),
+                        symbol: "leak@[]".to_string(),
+                    }),
+                    args: vec![],
+                    dest: Place::local(LocalId(1)),
+                    target: BlockId(1),
+                },
+            ),
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::Instance(Instance {
+                        item: starkc::hir::ItemId(2),
+                        type_args: Vec::new(),
+                        symbol: "clobber@[]".to_string(),
+                    }),
+                    args: vec![],
+                    dest: Place::local(LocalId(2)),
+                    target: BlockId(2),
+                },
+            ),
+            block(
+                vec![
+                    Statement::Assign(
+                        Place::local(LocalId(3)),
+                        Rvalue::Use(Operand::Copy(Place {
+                            local: LocalId(1),
+                            projection: vec![Projection::Deref],
+                        })),
+                    ),
+                    Statement::Assign(
+                        Place::local(LocalId(0)),
+                        Rvalue::Use(Operand::Const(Constant::Unit)),
+                    ),
+                ],
+                Terminator::Return,
+            ),
+        ],
+        entry: BlockId(0),
+    };
+    let program = program_with(vec![main, leak, clobber]);
+    let verified = verify_program(&program).expect("no escape analysis at MIR level — verifies");
+    match run_program(verified) {
+        Ok(exec) => panic!(
+            "stale reference silently aliased a reused frame (stdout {:?})",
+            exec.output
+        ),
+        Err(failure) => match failure.error {
+            MirRunError::Internal(message) => assert!(
+                message.contains("reused") || message.contains("dangling"),
+                "expected a dangling/reused-frame error, got: {message}"
+            ),
+            other => panic!("expected a loud Internal error, got {other:?}"),
+        },
+    }
+}

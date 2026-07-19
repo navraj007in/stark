@@ -163,9 +163,18 @@ HIR/MIR differential agreement before the next begins.
 7. **C4.5f — multi-package lowering + interior references + Vec/String iteration:**
    package-stable canonical symbols (`⟨package⟩::⟨module⟩::…`), cross-package instances and
    linkage. Also owns:
-   - (CD-030 deferral) frame-generation identities in the MIR interpreter, so a dangling
-     reference can never silently alias a later frame reusing the same stack slot — do this
-     before cross-package call graphs grow the frame traffic.
+   - **C4.5f-1 — frame generations + projected-move poison: DONE 2026-07-19** (both CD-030
+     deferrals). `Frame.generation` (monotonic, never reused) + `MirValue::Ref` carries the
+     pointee's generation; every deref and every `&String`/`&mut String`/`&Vec`/`&mut Vec`
+     runtime-op helper validates (slot, generation) — a stale reference to a reused frame slot
+     now fails loudly instead of silently aliasing (adversarial hand-built MIR test: verifier
+     passes it by design, the interpreter rejects with the generation mismatch). Projected
+     `Move`s now TAKE, leaving a `MirValue::Moved` poison; any later read of the hole is a
+     loud internal error (previously projected moves cloned, relying on the verifier alone);
+     the full suite staying green with the poison live confirms nothing in the tested subset
+     re-reads a moved place. Workspace 699/0/2.
+   - (CD-030 deferral — resolved by f-1 above) frame-generation identities in the MIR
+     interpreter, before cross-package call graphs grow the frame traffic.
    - (CD-032) **Vec/collection iteration**, folded here from A1. STARK's `.iter()` is
      by-reference (`value: &T`), i.e. an interior reference into a runtime container — the same
      machinery as the reserved `VecGetRef`/`StringSubstring` views. Design carry-forward is in

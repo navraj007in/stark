@@ -56,9 +56,14 @@ pub enum MirValue {
     },
     /// Index into `MirProgram::bodies`.
     FnPtr(usize),
-    /// A reference: a resolved path into some live frame (C4.5b-2).
+    /// A reference: a resolved path into some live frame (C4.5b-2). C4.5f-1: carries the
+    /// pointee frame's **generation** — frame slots are reused across calls, and a slot
+    /// index alone would let a stale reference silently alias a later frame (CD-030 review
+    /// finding). Every deref validates `frames[frame].generation == generation` and fails
+    /// loudly on mismatch.
     Ref {
         frame: usize,
+        generation: u64,
         local: u32,
         path: Vec<ConcreteProj>,
     },
@@ -72,6 +77,11 @@ pub enum MirValue {
     /// reverse index order, then buffer reclaimed — §5a). Opaque to projections: manipulated
     /// only through the Vec `RuntimeFn` surface.
     Vec(Vec<MirValue>),
+    /// C4.5f-1 (CD-030 deferral): the poison a projected `Move` leaves behind. Any read of a
+    /// `Moved` hole is a loud internal error — verifier-missed use-after-partial-move can
+    /// never silently observe the retained value (previously projected moves cloned, relying
+    /// on the verifier alone).
+    Moved,
 }
 
 #[derive(Debug)]
@@ -105,6 +115,8 @@ const FUEL: u64 = 50_000_000;
 
 struct Frame {
     locals: Vec<Option<MirValue>>,
+    /// C4.5f-1: unique, monotonically assigned identity — never reused, unlike the slot index.
+    generation: u64,
 }
 
 pub fn run_program(
@@ -127,6 +139,7 @@ pub fn run_program(
         program,
         by_symbol,
         frames: Vec::new(),
+        next_generation: 0,
         output: String::new(),
         fuel: FUEL,
     };
@@ -146,6 +159,8 @@ struct Interp<'a> {
     program: &'a MirProgram,
     by_symbol: HashMap<&'a str, usize>,
     frames: Vec<Frame>,
+    /// C4.5f-1: monotonic frame-generation counter (never reset, never reused).
+    next_generation: u64,
     output: String,
     fuel: u64,
 }
@@ -161,10 +176,25 @@ impl<'a> Interp<'a> {
         for (i, value) in args.into_iter().enumerate() {
             locals[1 + i] = Some(value);
         }
-        self.frames.push(Frame { locals });
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        self.frames.push(Frame { locals, generation });
         let result = self.run(body_index);
         self.frames.pop();
         result
+    }
+
+    /// C4.5f-1: a live-frame check by (slot, generation) — the defense-in-depth guarantee
+    /// that a stale reference fails loudly instead of silently aliasing a reused slot.
+    fn check_ref_live(&self, frame: usize, generation: u64) -> Result<(), MirRunError> {
+        match self.frames.get(frame) {
+            Some(f) if f.generation == generation => Ok(()),
+            Some(f) => self.internal(format!(
+                "dangling reference: frame slot {frame} was reused (generation {} != {})",
+                f.generation, generation
+            )),
+            None => self.internal(format!("dangling reference: frame {frame} no longer live")),
+        }
     }
 
     fn run(&mut self, body_index: usize) -> Result<MirValue, MirRunError> {
@@ -402,6 +432,7 @@ impl<'a> Interp<'a> {
                     };
                     let receiver = MirValue::Ref {
                         frame,
+                        generation: self.frames[frame].generation,
                         local,
                         path: path.clone(),
                     };
@@ -431,6 +462,7 @@ impl<'a> Interp<'a> {
                         };
                         let receiver = MirValue::Ref {
                             frame,
+                            generation: self.frames[frame].generation,
                             local,
                             path: path.clone(),
                         };
@@ -532,12 +564,13 @@ impl<'a> Interp<'a> {
                     match current {
                         MirValue::Ref {
                             frame: f,
+                            generation,
                             local: l,
                             path: p,
                         } => {
-                            if f >= self.frames.len() {
-                                return self.internal("dangling reference (frame no longer live)");
-                            }
+                            // C4.5f-1: slot AND generation must match — a reused slot is a
+                            // dangling reference, reported loudly, never silently aliased.
+                            self.check_ref_live(f, generation)?;
                             frame = f;
                             local = l;
                             path = p;
@@ -593,6 +626,11 @@ impl<'a> Interp<'a> {
                     return self.internal(format!("projection {step:?} on value {value:?}"))
                 }
             };
+        }
+        if matches!(value, MirValue::Moved) {
+            return self.internal(format!(
+                "read of a moved-out place _{local}{path:?} (C4.5f-1 poison)"
+            ));
         }
         Ok(value.clone())
     }
@@ -706,10 +744,17 @@ impl<'a> Interp<'a> {
                 };
                 MirValue::Int(i128::from(variant))
             }
-            // C4.5b-2: real reference creation.
+            // C4.5b-2: real reference creation (C4.5f-1: stamped with the pointee frame's
+            // generation).
             Rvalue::RefOf { place, .. } => {
                 let (frame, local, path) = self.resolve_place(here, place)?;
-                MirValue::Ref { frame, local, path }
+                let generation = self.frames[frame].generation;
+                MirValue::Ref {
+                    frame,
+                    generation,
+                    local,
+                    path,
+                }
             }
         })
     }
@@ -881,10 +926,20 @@ impl<'a> Interp<'a> {
                         )),
                     }
                 } else {
-                    // Projected move: read the sub-value (the verifier's whole-local
-                    // conservatism already guards double-use).
+                    // C4.5f-1: projected move TAKES — the sub-value is replaced with a
+                    // `Moved` poison so a verifier-missed later read explodes loudly instead
+                    // of silently observing a retained clone (CD-030 review warning; the
+                    // field-precise V-MOVE-1 is the primary guard, this is defense in depth).
                     let (f, l, p) = self.resolve_place(here, place)?;
-                    self.read_resolved(f, l, &p)
+                    let value = self.read_resolved(f, l, &p)?;
+                    if matches!(value, MirValue::Moved) {
+                        return self.internal(format!(
+                            "move from an already-moved place _{}{:?}",
+                            place.local.0, place.projection
+                        ));
+                    }
+                    self.write_resolved(f, l, &p, MirValue::Moved)?;
+                    Ok(value)
                 }
             }
             Operand::Const(constant) => Ok(match constant {
@@ -1113,7 +1168,13 @@ impl<'a> Interp<'a> {
 
     fn read_vec_ref(&self, v: &Option<MirValue>) -> Result<Vec<MirValue>, MirRunError> {
         match v {
-            Some(MirValue::Ref { frame, local, path }) => {
+            Some(MirValue::Ref {
+                frame,
+                generation,
+                local,
+                path,
+            }) => {
+                self.check_ref_live(*frame, *generation)?;
                 match self.read_resolved(*frame, *local, path)? {
                     MirValue::Vec(elems) => Ok(elems),
                     other => self.internal(format!("Vec ref referent is {other:?}")),
@@ -1131,9 +1192,16 @@ impl<'a> Interp<'a> {
         v: &Option<MirValue>,
         f: impl FnOnce(&mut Vec<MirValue>) -> R,
     ) -> Result<R, MirRunError> {
-        let Some(MirValue::Ref { frame, local, path }) = v else {
+        let Some(MirValue::Ref {
+            frame,
+            generation,
+            local,
+            path,
+        }) = v
+        else {
             return self.internal(format!("expected a &mut Vec argument, got {v:?}"));
         };
+        self.check_ref_live(*frame, *generation)?;
         let (frame, local, path) = (*frame, *local, path.clone());
         let mut vec = match self.read_resolved(frame, local, &path)? {
             MirValue::Vec(elems) => elems,
@@ -1155,7 +1223,13 @@ impl<'a> Interp<'a> {
     /// Resolve a `&String`/`&mut String` reference argument to a snapshot of the referent.
     fn read_string_ref(&self, v: &Option<MirValue>) -> Result<String, MirRunError> {
         match v {
-            Some(MirValue::Ref { frame, local, path }) => {
+            Some(MirValue::Ref {
+                frame,
+                generation,
+                local,
+                path,
+            }) => {
+                self.check_ref_live(*frame, *generation)?;
                 match self.read_resolved(*frame, *local, path)? {
                     MirValue::String(s) => Ok(s),
                     MirValue::Str(s) => Ok(s.to_string()),
@@ -1173,9 +1247,16 @@ impl<'a> Interp<'a> {
         v: &Option<MirValue>,
         f: impl FnOnce(&mut String),
     ) -> Result<(), MirRunError> {
-        let Some(MirValue::Ref { frame, local, path }) = v else {
+        let Some(MirValue::Ref {
+            frame,
+            generation,
+            local,
+            path,
+        }) = v
+        else {
             return self.internal(format!("expected a &mut String argument, got {v:?}"));
         };
+        self.check_ref_live(*frame, *generation)?;
         let (frame, local, path) = (*frame, *local, path.clone());
         let mut s = match self.read_resolved(frame, local, &path)? {
             MirValue::String(s) => s,
