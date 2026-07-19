@@ -4,8 +4,9 @@
 //! lower, `HIR interpreter output/failure == MIR interpreter output/failure`. The HIR
 //! interpreter is the semantic oracle (charter §1.6 rule 6); the MIR pipeline under test is
 //! lower → verify → execute. Success cases compare stdout byte-for-byte and exit status; trap
-//! cases require BOTH engines to trap, with the MIR trap category consistent with the oracle's
-//! trap message.
+//! cases require BOTH engines to trap with the MIR trap category consistent with the oracle's
+//! trap message, matching user-origin provenance, AND an identical pre-trap stdout prefix
+//! (C4.5e-0 — partial output before a failure is observable).
 //!
 //! Corpus cases come from the frozen `exec_snapshots` corpus (`corpus_version = 1.0.0`);
 //! inline programs cover scalar shapes the corpus reaches only via constructs the scalar core
@@ -13,7 +14,7 @@
 
 use starkc::diag::Severity;
 use starkc::interp;
-use starkc::mir::interp::{run_program, MirRunError};
+use starkc::mir::interp::{run_program, MirFailure, MirRunError};
 use starkc::mir::lower::lower_program;
 use starkc::mir::verify::verify_program;
 use starkc::mir::TrapCategory;
@@ -72,8 +73,8 @@ fn oracle_fragment(category: TrapCategory) -> &'static str {
 fn differential(name: &str, source: String) {
     let front = front_end(name, source);
 
-    // Oracle.
-    let oracle = interp::run(&front.hir, front.file.clone(), &front.tables);
+    // Oracle (failure carries the stdout accumulated before it — C4.5e-0).
+    let oracle = interp::run_with_partial_output(&front.hir, front.file.clone(), &front.tables);
 
     // MIR pipeline: lower -> verify -> execute.
     let program = match lower_program(&front.hir, &front.tables, front.file.clone()) {
@@ -98,7 +99,13 @@ fn differential(name: &str, source: String) {
                 "{name}: exit status mismatch"
             );
         }
-        (Err(oracle_err), Err(MirRunError::Trap { category, source })) => {
+        (
+            Err((oracle_err, oracle_partial)),
+            Err(MirFailure {
+                error: MirRunError::Trap { category, source },
+                output: mir_partial,
+            }),
+        ) => {
             assert!(
                 oracle_err.is_trap,
                 "{name}: oracle errored non-trap ({}) but MIR trapped {category:?}",
@@ -108,6 +115,12 @@ fn differential(name: &str, source: String) {
                 oracle_err.message.contains(oracle_fragment(category)),
                 "{name}: trap category mismatch — MIR {category:?} vs oracle message {:?}",
                 oracle_err.message
+            );
+            // C4.5e-0 (review Finding 3): output emitted BEFORE the trap is observable —
+            // two programs printing different prefixes before the same trap differ.
+            assert_eq!(
+                mir_partial, oracle_partial,
+                "{name}: PRE-TRAP STDOUT MISMATCH\n--- HIR oracle ---\n{oracle_partial}\n--- MIR ---\n{mir_partial}"
             );
             // Provenance (review correction): a right-category trap at the WRONG location is
             // a lowering bug the comparator must catch. User-origin traps must match the
@@ -128,15 +141,21 @@ fn differential(name: &str, source: String) {
                 starkc::mir::Origin::Synthetic(_) => {}
             }
         }
-        (Ok(exec), Err(mir_err)) => panic!(
-            "{name}: oracle succeeded (stdout {:?}) but MIR failed: {mir_err:?}",
-            exec.output
+        (Ok(exec), Err(mir_failure)) => panic!(
+            "{name}: oracle succeeded (stdout {:?}) but MIR failed: {:?} (partial stdout {:?})",
+            exec.output, mir_failure.error, mir_failure.output
         ),
-        (Err(oracle_err), Ok(mir_exec)) => panic!(
+        (Err((oracle_err, _)), Ok(mir_exec)) => panic!(
             "{name}: oracle trapped ({}) but MIR succeeded with stdout {:?} — A MISSED TRAP",
             oracle_err.message, mir_exec.output
         ),
-        (Err(oracle_err), Err(MirRunError::Internal(message))) => panic!(
+        (
+            Err((oracle_err, _)),
+            Err(MirFailure {
+                error: MirRunError::Internal(message),
+                ..
+            }),
+        ) => panic!(
             "{name}: MIR internal error ({message}) while oracle said: {}",
             oracle_err.message
         ),
@@ -233,10 +252,10 @@ fn division_by_zero_trap_agrees() {
 }
 
 #[test]
-fn mid_output_trap_agrees_on_failure_not_output() {
-    // A trap after partial output: both engines must trap; the comparator's contract is
-    // failure-equality (the oracle's Execution is consumed whole, so partial stdout before a
-    // trap is not observable through interp::run's error path — category equality is).
+fn mid_output_trap_agrees_on_failure_and_pre_trap_output() {
+    // A trap after partial output: both engines must trap with the same category AND have
+    // printed the same prefix before it (C4.5e-0 — `run_with_partial_output` /
+    // `MirFailure.output` made pre-trap stdout observable to the comparator).
     differential(
         "midtrap.stark",
         "fn main() { \
@@ -661,6 +680,45 @@ fn trap_aborts_without_drops_agree() {
          impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
          fn main() { \
              let a = Loud { id: 1 }; \
+             let zero = 0; \
+             println(1 / zero); \
+         }"
+        .to_string(),
+    );
+}
+
+// ---- WP-C4.5e-0: pre-runtime-values hardening ----
+
+/// DEV-068: a user struct with `impl Copy` is Copy — used twice and field-read after use,
+/// it must lower as copies (the field-precise verifier rejected the old always-Move
+/// classification as use-after-move, failing valid programs).
+#[test]
+fn user_copy_impl_struct_is_copy_in_mir() {
+    differential(
+        "user_copy.stark",
+        "struct Point { x: Int32, y: Int32 } \
+         impl Copy for Point {} \
+         fn take(p: Point) -> Int32 { p.x } \
+         fn main() { \
+             let p = Point { x: 1, y: 2 }; \
+             println(take(p)); \
+             println(take(p)); \
+             println(p.y); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Destructor output emitted before a later trap is part of the observable pre-trap prefix:
+/// a wrongly-placed or missing drop before a trap is now a comparator failure, not invisible.
+#[test]
+fn drop_output_before_a_trap_is_compared() {
+    differential(
+        "drop_then_trap.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         fn main() { \
+             { let a = Loud { id: 1 }; } \
              let zero = 0; \
              println(1 / zero); \
          }"

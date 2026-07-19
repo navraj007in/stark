@@ -1,9 +1,19 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5d
+Updated: 2026-07-19 after WP-C4.5e-0
 
 ## Position
-Gate: C4  Next: WP-C4.5e (runtime values: String/str, Vec/slices, Option/Result combinators,
-panic/assert, widened RuntimeFn surface)  Blocked: none
+Gate: C4  Next: WP-C4.5e main body (runtime values: String/str, Vec/slices, Option/Result
+combinators, panic/assert, widened RuntimeFn surface — note: string-literal/String value
+representation needs a CE3-shaped mir.md §5/§7 amendment before lowering starts)  Blocked: none
+**WP-C4.5e-0 done 2026-07-19** (pre-runtime-values hardening, CD-030 review disposition):
+IndexProof definite-initialization dataflow (must-analysis + unique-definition rule; 4
+adversarial negatives incl. the review's one-branch example); V-REF-1/MIR-0014
+write-through-shared-reference rejection (write-path place typing); pre-trap stdout now
+observable and compared by the differential (`run_with_partial_output` + `MirFailure`;
+drop-output-before-trap regression test); DEV-068 fixed (user `impl Copy` structs were
+always-Move → field-precise verifier rejected valid double-use programs). Deferred with
+owners per CD-030: frame generations (C4.5f), projected-move take-and-poison (C4.5e proper).
+Workspace 675/0/2.
 **WP-C4.5d done 2026-07-19** (ownership and Drop): droppable locals decompose into per-unit
 `DropFlag`-guarded drops (units = outermost dtor-bearing/enum/array sub-places through
 dtor-less structs/tuples — partial moves clear exactly the covered units); emission at scope
@@ -23,7 +33,8 @@ comparison; VerifiedMirProgram wrapper — run_program consumes proof-of-verific
 TypeContext amended into mir.md §2, still v0.1; canonical_float spec tests as the
 compensating control for the intentionally-shared formatter), C4.5b (indexing via CheckIndex
 proof tokens + real reference places; DEV-065/066 oracle fixes), and **C4.5c 2026-07-19**
-(generics + full static dispatch: checker-recorded instantiations in
+(external framing per CD-030: *top-level generic monomorphisation and static bound dispatch*
+— generic methods/impls stay later-increment work: checker-recorded instantiations in
 `TypeTables::generic_insts` with E0004 undetermined-rejection — DEV-064 closed; monomorphised
 `FnKey::Top(item, type_args)` instances, injective `name@[args]` symbols, named
 `LIMIT-MIR-MONO-INSTANCES`=512 limit negatively tested on polymorphic recursion; generic
@@ -607,6 +618,27 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   C4.5 increment ordering + honest maturity calibration (architecture ~90%, implementation
   breadth ~35-45%, validation ~70%) into WP-C4.5.md.
 
+- CD-030 [2026-07-19, owner-approved disposition of the external C4.5c-head review] The review
+  (written against `82211f6`, before WP-C4.5d landed) found three validation holes plus two
+  warnings. Disposition: **fold the load-bearing items into C4.5e as its entry step
+  (WP-C4.5e-0)** — (1) IndexProof definite-initialization dataflow (the global name→base map
+  alone accepted MIR whose check ran on only one branch; slices in C4.5e build directly on the
+  proof discipline), (3) V-REF-1 write-through-shared-reference rejection (MIR-0014), (4)
+  partial-output-before-trap comparison in the differential (C4.5e's panic/assert paths are
+  exactly where it matters; both engines now expose pre-failure stdout —
+  `interp::run_with_partial_output`, `MirFailure`), plus the review-warned user-`impl Copy`
+  misclassification, confirmed real (valid Copy-struct programs failed MIR verification as
+  use-after-move) and fixed as **DEV-068**. **Deferred with owners** (defense-in-depth only,
+  no observable-behavior risk in the current subset): frame-generation identities in the MIR
+  interpreter (owner: C4.5f, before cross-package call graphs grow frames) and
+  projected-move take-and-poison (owner: C4.5e proper, alongside the runtime values that make
+  aggregates bigger; the unit-flag design makes the current clone-not-take unobservable, and
+  the stale interp comment claiming whole-local verifier conservatism was corrected). Review's
+  wording caution accepted: C4.5c externally = "top-level generic monomorphisation and static
+  bound dispatch" (generic *methods*/impls and user-nominal Eq/Ord operator lowering remain
+  later-increment work). The review's C4.5d checklist was already fully implemented by the
+  WP-C4.5d commit it had not seen, except the two deferred items above.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
@@ -661,7 +693,7 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   extension code (Core-only scope), but WP-C9.1/C9.2 will need this as input later.
 
 ## Known deviations — open index
-Canonical ledger (full structured entries, all 65 numbered deviations):
+Canonical ledger (full structured entries, all 66 numbered deviations):
 `starkc/docs/conformance/KNOWN-DEVIATIONS.md`. The per-deviation narrative that used to live in
 this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim in
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the

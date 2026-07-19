@@ -1842,6 +1842,24 @@ WP-C1.5)
   and `::reference_to_struct_field_agrees` (both engines agree end-to-end on read + write +
   re-read through `&`/`&mut`), plus `::mut_self_receiver_mutates_caller_local`. — closed.
 
+## DEV-068 — User `impl Copy` structs classified as Move in MIR lowering [CLOSED, C4.5e-0, 2026-07-19]
+
+- **Normative expectation:** a nominal type with `impl Copy` is Copy (03-Type-System §Copy
+  and Drop); using such a value twice, or reading a field after passing it to a function, is
+  legal and must execute.
+- **Previous behaviour (confirmed empirically):** `mir/lower.rs::is_copy` returned `false`
+  for every user struct/enum regardless of Copy impls, so every use lowered as a `Move` —
+  and the C4.5d field-precise move verifier then *rejected* valid programs
+  (`MIR-0007 move from possibly-moved place`) that the HIR oracle accepts and runs. Latent
+  until the field-precise refinement made the verifier strict enough to notice; surfaced by
+  the external C4.5c-head review's warning (CD-030) and confirmed against the tree before
+  fixing.
+- **Fix:** `is_copy` consults `type_has_copy_impl` (same impl-search pattern as
+  `type_has_drop_impl`). Lowering trusts the impl's presence: the front end has already
+  enforced the all-Copy-fields and no-`Copy`+`Drop` rules for the impl to exist.
+- **Regression evidence:** `tests/mir_differential.rs::user_copy_impl_struct_is_copy_in_mir`
+  (Copy struct passed twice by value, field read afterwards; both engines agree). — closed.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1891,7 +1909,10 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 65 numbered deviations total (DEV-002 through DEV-067, DEV-001/DEV-003 retired).
+Current count: 66 numbered deviations total (DEV-002 through DEV-068, DEV-001/DEV-003 retired).
+DEV-068 (user `impl Copy` structs always-Move in MIR lowering, rejecting valid programs at
+MIR verification) was surfaced by the external C4.5c-head review, confirmed empirically, and
+closed the same day in WP-C4.5e-0 (CD-030).
 DEV-061/062/063 (the function-value cluster: indirect calls not executable, fn values not Copy in
 borrowck, Option/Result combinators missing) were found 2026-07-19 during Gate C4 entry by
 executing CD-021 workload items 16-22 against the interpreter for the first time — exactly the

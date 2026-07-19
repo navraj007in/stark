@@ -79,9 +79,29 @@ HIR/MIR differential agreement before the next begins.
    oracle defects (first increment where the differential matched the oracle on first run).
    Workspace 668/0/2.
 6. **C4.5e — runtime values:** String/str, Vec/slices, Option/Result combinators, panic/assert
-   paths, the widened `RuntimeFn` surface.
+   paths, the widened `RuntimeFn` surface. Also owns (accumulated boundaries): user-nominal
+   `Eq`/`Ord` operator dispatch (needs `Ordering` runtime values), match on owned
+   Drop-bearing scrutinees (`drop_unbound` partial drops), projected-move take-and-poison in
+   the MIR interp (CD-030 deferral), and the CE3-shaped mir.md §5/§7 amendment for
+   string-literal/String value representation, which must land before lowering starts.
+   - **C4.5e-0 — pre-runtime-values hardening: DONE 2026-07-19 (CD-030,** disposition of the
+     external C4.5c-head review). IndexProof definite-initialization dataflow: must-analysis
+     (intersection joins, unique-definition rule) so every `Index(proof)` is definitely
+     preceded by its `CheckIndex` on all paths — the prior global name→base map accepted
+     one-branch checks; 4 adversarial negatives. V-REF-1 (MIR-0014): writes crossing a
+     `Deref` require that layer `&mut` (write-path place typing; Call dests and Drop places
+     included). Pre-trap stdout is now observable and compared: oracle
+     `run_with_partial_output`, MIR `MirFailure { error, output }`, differential trap arm
+     asserts prefix equality (drop-output-before-trap regression). DEV-068 found via the
+     review's warning and fixed: user `impl Copy` structs were always-Move, which the
+     field-precise verifier rejected as use-after-move on valid programs. Deferred per
+     CD-030: frame-generation identities (owner C4.5f), projected-move take-and-poison
+     (owner C4.5e proper). Workspace 675/0/2.
 7. **C4.5f — multi-package lowering:** package-stable canonical symbols
-   (`⟨package⟩::⟨module⟩::…`), cross-package instances and linkage.
+   (`⟨package⟩::⟨module⟩::…`), cross-package instances and linkage. Also owns (CD-030
+   deferral): frame-generation identities in the MIR interpreter, so a dangling reference can
+   never silently alias a later frame reusing the same stack slot — do this before
+   cross-package call graphs grow the frame traffic.
 
 ## Differential-independence caveat (recorded per CD-029)
 

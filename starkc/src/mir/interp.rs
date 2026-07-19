@@ -81,6 +81,14 @@ pub struct MirExecution {
     pub status: u8,
 }
 
+/// A failed run, still carrying the stdout accumulated before the failure (C4.5e-0): the
+/// roadmap's comparator is output AND failure equality, so pre-trap output is observable.
+#[derive(Debug)]
+pub struct MirFailure {
+    pub error: MirRunError,
+    pub output: String,
+}
+
 const FUEL: u64 = 50_000_000;
 
 struct Frame {
@@ -89,7 +97,7 @@ struct Frame {
 
 pub fn run_program(
     verified: crate::mir::verify::VerifiedMirProgram<'_>,
-) -> Result<MirExecution, MirRunError> {
+) -> Result<MirExecution, MirFailure> {
     let program = verified.program();
     let by_symbol: HashMap<&str, usize> = program
         .bodies
@@ -98,7 +106,10 @@ pub fn run_program(
         .map(|(i, b)| (b.instance.symbol.as_str(), i))
         .collect();
     let Some(&main_index) = by_symbol.get("main@[]") else {
-        return Err(MirRunError::Internal("no main@[] instance".to_string()));
+        return Err(MirFailure {
+            error: MirRunError::Internal("no main@[] instance".to_string()),
+            output: String::new(),
+        });
     };
     let mut cx = Interp {
         program,
@@ -107,11 +118,16 @@ pub fn run_program(
         output: String::new(),
         fuel: FUEL,
     };
-    cx.call(main_index, Vec::new())?;
-    Ok(MirExecution {
-        output: cx.output,
-        status: 0,
-    })
+    match cx.call(main_index, Vec::new()) {
+        Ok(_) => Ok(MirExecution {
+            output: cx.output,
+            status: 0,
+        }),
+        Err(error) => Err(MirFailure {
+            error,
+            output: cx.output,
+        }),
+    }
 }
 
 struct Interp<'a> {

@@ -21,6 +21,7 @@
 //! V-FN-1     MIR-0011 (arithmetic/comparison on a FnPtr operand)
 //! V-RT-1     MIR-0012 (runtime callee signature mismatch)
 //! V-SRC-1    MIR-0013 (SourceInfo missing a valid FileId)
+//! V-REF-1    MIR-0014 (write crossing a Deref of a shared reference — C4.5e-0)
 //! MIR-0003   projection type mismatch (V-CFG-2's "projections type-correct step by step")
 //! ```
 //!
@@ -105,6 +106,7 @@ impl<'a> BodyCx<'a> {
         self.verify_drop_flags();
         self.verify_index_proofs();
         self.verify_index_bindings();
+        self.verify_proof_flow();
     }
 
     // ---- V-TY-3 + local sanity ----
@@ -172,8 +174,32 @@ impl<'a> BodyCx<'a> {
     }
 
     fn place_ty(&mut self, place: &Place, bi: u32) -> Option<MirTy> {
+        self.place_ty_impl(place, bi, false)
+    }
+
+    /// Type a place used as a *write destination*. V-REF-1 (C4.5e-0): a write crossing a
+    /// `Deref` requires that dereferenced layer to be `&mut` — mutation through a shared
+    /// reference is structurally invalid MIR regardless of what borrowck upstream promised.
+    fn place_ty_for_write(&mut self, place: &Place, bi: u32) -> Option<MirTy> {
+        self.place_ty_impl(place, bi, true)
+    }
+
+    fn place_ty_impl(&mut self, place: &Place, bi: u32, writing: bool) -> Option<MirTy> {
         let mut ty = self.local_ty(place.local, bi)?;
         for projection in &place.projection {
+            if writing {
+                if let (Projection::Deref, MirTy::Ref { mutable: false, .. }) = (projection, &ty) {
+                    self.err(
+                        "MIR-0014",
+                        bi,
+                        format!(
+                            "write through a shared reference (place rooted at _{})",
+                            place.local.0
+                        ),
+                    );
+                    return None;
+                }
+            }
             ty = match (projection, ty) {
                 (Projection::Field(i), MirTy::Struct(item, args)) => {
                     match self
@@ -321,7 +347,7 @@ impl<'a> BodyCx<'a> {
                 }
             }
         }
-        let Some(lhs_ty) = self.place_ty(place, bi) else {
+        let Some(lhs_ty) = self.place_ty_for_write(place, bi) else {
             return;
         };
         self.check_rvalue_against(&lhs_ty, rvalue, bi);
@@ -564,7 +590,7 @@ impl<'a> BodyCx<'a> {
                 self.check_target(*target, bi);
                 let arg_tys: Vec<Option<MirTy>> =
                     args.iter().map(|a| self.operand_ty(a, bi)).collect();
-                let dest_ty = self.place_ty(dest, bi);
+                let dest_ty = self.place_ty_for_write(dest, bi);
                 let sig: Option<(Vec<MirTy>, MirTy)> = match callee {
                     Callee::Instance(instance) => {
                         let sig = self.instance_sig(&instance.symbol);
@@ -620,7 +646,7 @@ impl<'a> BodyCx<'a> {
             }
             Terminator::Drop { place, target } => {
                 self.check_target(*target, bi);
-                if let Some(ty) = self.place_ty(place, bi) {
+                if let Some(ty) = self.place_ty_for_write(place, bi) {
                     if !may_need_drop(&ty) {
                         self.err(
                             "MIR-0009",
@@ -1043,6 +1069,160 @@ impl<'a> BodyCx<'a> {
                     );
                 }
                 _ => {}
+            }
+        }
+    }
+
+    // ---- V-IDX-1 definite initialization (C4.5e-0, review Finding 1) ----
+
+    /// Every `Index(proof)` use must be *definitely preceded* by its defining `CheckIndex`
+    /// on every execution path. The global name→base map (`verify_index_bindings`) alone
+    /// accepts MIR whose check runs on only one branch of a join. Must-analysis over the
+    /// CFG: `defined_in[b] = ⋂ preds' defined_out` (unvisited = top); a `CheckIndex`
+    /// terminator defines its dest for its (single) normal successor, so uses in the
+    /// defining block itself — which precede the terminator — correctly do not see it.
+    /// Also enforces exactly one `CheckIndex` definition site per proof local (lowering
+    /// mints a fresh proof local per check; a second site would let the same token witness
+    /// two different checks).
+    fn verify_proof_flow(&mut self) {
+        let has_proofs = self
+            .body
+            .locals
+            .iter()
+            .any(|d| matches!(d.kind, LocalKind::IndexProof));
+        if !has_proofs {
+            return;
+        }
+        // Unique-definition rule.
+        let mut def_counts: std::collections::HashMap<u32, usize> = Default::default();
+        for block in &self.body.blocks {
+            if let Terminator::Checked {
+                op: CheckedOp::CheckIndex,
+                dest,
+                ..
+            } = &block.terminator.0
+            {
+                *def_counts.entry(dest.0).or_insert(0) += 1;
+            }
+        }
+        for (local, count) in &def_counts {
+            if *count > 1 {
+                self.err(
+                    "MIR-0010",
+                    0,
+                    format!("proof local _{local} defined by {count} CheckIndex sites"),
+                );
+            }
+        }
+        // Must-dataflow to a fixpoint. `None` = top (unvisited).
+        let block_count = self.body.blocks.len();
+        let mut defined_in: Vec<Option<BTreeSet<u32>>> = vec![None; block_count];
+        let entry = self.body.entry.0 as usize;
+        if entry >= block_count {
+            return; // already reported by the CFG check
+        }
+        defined_in[entry] = Some(BTreeSet::new());
+        let mut work: VecDeque<usize> = VecDeque::new();
+        work.push_back(entry);
+        while let Some(bi) = work.pop_front() {
+            let Some(in_set) = defined_in[bi].clone() else {
+                continue;
+            };
+            let (successors, defines) = match &self.body.blocks[bi].terminator.0 {
+                Terminator::Goto { target } => (vec![*target], None),
+                Terminator::SwitchInt {
+                    arms, otherwise, ..
+                } => {
+                    let mut s: Vec<BlockId> = arms.iter().map(|(_, b)| *b).collect();
+                    s.push(*otherwise);
+                    (s, None)
+                }
+                Terminator::Call { target, .. } | Terminator::Drop { target, .. } => {
+                    (vec![*target], None)
+                }
+                Terminator::Checked {
+                    op, dest, target, ..
+                } => (
+                    vec![*target],
+                    matches!(op, CheckedOp::CheckIndex).then_some(dest.0),
+                ),
+                Terminator::Trap { .. } | Terminator::Return | Terminator::Unreachable => {
+                    (Vec::new(), None)
+                }
+            };
+            let mut out_set = in_set;
+            if let Some(d) = defines {
+                out_set.insert(d);
+            }
+            for succ in successors {
+                let s = succ.0 as usize;
+                if s >= block_count {
+                    continue; // broken edge, reported elsewhere
+                }
+                let updated = match &defined_in[s] {
+                    None => Some(out_set.clone()),
+                    Some(current) => {
+                        let met: BTreeSet<u32> = current.intersection(&out_set).copied().collect();
+                        (met != *current).then_some(met)
+                    }
+                };
+                if let Some(new_in) = updated {
+                    defined_in[s] = Some(new_in);
+                    work.push_back(s);
+                }
+            }
+        }
+        // Reporting pass: every Index(proof) used in a reachable block requires the proof
+        // definitely defined at block entry.
+        for (bi, block) in self.body.blocks.clone().iter().enumerate() {
+            let Some(in_set) = &defined_in[bi] else {
+                continue; // unreachable block
+            };
+            let in_set = in_set.clone();
+            let mut places: Vec<Place> = Vec::new();
+            for (stmt, _) in &block.statements {
+                if let Statement::Assign(place, rvalue) = stmt {
+                    places.push(place.clone());
+                    collect_rvalue_places(rvalue, &mut places);
+                }
+            }
+            match &block.terminator.0 {
+                Terminator::SwitchInt { scrut, .. } => collect_operand_place(scrut, &mut places),
+                Terminator::Call {
+                    callee, args, dest, ..
+                } => {
+                    if let Callee::FnValue(op) = callee {
+                        collect_operand_place(op, &mut places);
+                    }
+                    for arg in args {
+                        collect_operand_place(arg, &mut places);
+                    }
+                    places.push(dest.clone());
+                }
+                Terminator::Drop { place, .. } => places.push(place.clone()),
+                Terminator::Checked { args, .. } => {
+                    for arg in args {
+                        collect_operand_place(arg, &mut places);
+                    }
+                }
+                _ => {}
+            }
+            for place in &places {
+                for projection in &place.projection {
+                    if let Projection::Index(proof) = projection {
+                        if !in_set.contains(&proof.0) {
+                            self.err(
+                                "MIR-0010",
+                                bi as u32,
+                                format!(
+                                    "Index(proof _{}) is not definitely preceded by its \
+                                     CheckIndex on every path",
+                                    proof.0
+                                ),
+                            );
+                        }
+                    }
+                }
             }
         }
     }

@@ -612,3 +612,178 @@ fn rejects_read_of_moved_field_and_moved_container() {
         .insert((0, Vec::new()), vec![MirTy::Int32, MirTy::Int32]);
     expect_code(&program, "MIR-0007");
 }
+
+// ---- WP-C4.5e-0: IndexProof definite-initialization (review Finding 1) ----
+
+fn proof_flow_body(blocks: Vec<BasicBlock>, extra_locals: Vec<LocalDecl>) -> MirBody {
+    use starkc::mir::LocalKind;
+    let mut locals = vec![
+        ret_local(),
+        local(MirTy::Array(Box::new(MirTy::Int32), 3)), // _1: base array
+        LocalDecl {
+            ty: MirTy::Int64,
+            kind: LocalKind::IndexProof,
+        }, // _2: proof
+        local(MirTy::Int32),                            // _3: read dest
+    ];
+    locals.extend(extra_locals);
+    MirBody {
+        instance: Instance {
+            item: starkc::hir::ItemId(0),
+            type_args: Vec::new(),
+            symbol: "test@[]".to_string(),
+        },
+        params: Vec::new(),
+        ret: MirTy::Unit,
+        locals,
+        blocks,
+        entry: BlockId(0),
+    }
+}
+
+fn check_index_terminator(target: BlockId) -> Terminator {
+    use mir::{CheckedOp, TrapCategory, TrapInfo};
+    Terminator::Checked {
+        op: CheckedOp::CheckIndex,
+        args: vec![
+            Operand::Copy(Place::local(LocalId(1))),
+            Operand::Const(Constant::Int(0, MirTy::Int64)),
+        ],
+        dest: LocalId(2),
+        target,
+        trap: TrapInfo {
+            category: TrapCategory::IndexOutOfBounds,
+            source: info(),
+        },
+    }
+}
+
+fn indexed_read() -> Statement {
+    Statement::Assign(
+        Place::local(LocalId(3)),
+        Rvalue::Use(Operand::Copy(Place {
+            local: LocalId(1),
+            projection: vec![Projection::Index(LocalId(2))],
+        })),
+    )
+}
+
+/// Use precedes the defining CheckIndex within the very block that defines it (the
+/// definition is the terminator; statements run first).
+#[test]
+fn rejects_index_proof_use_before_its_check() {
+    let b = proof_flow_body(
+        vec![
+            block(vec![indexed_read()], check_index_terminator(BlockId(1))),
+            block(vec![], Terminator::Return),
+        ],
+        vec![],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0010");
+}
+
+/// The check runs on only one branch of a join; the use after the join is not definitely
+/// preceded by it (the review's exact malformed-MIR example).
+#[test]
+fn rejects_index_proof_defined_on_one_branch_only() {
+    let b = proof_flow_body(
+        vec![
+            // bb0: branch
+            block(
+                vec![],
+                Terminator::SwitchInt {
+                    scrut: Operand::Copy(Place::local(LocalId(4))),
+                    arms: vec![(1, BlockId(1))],
+                    otherwise: BlockId(2),
+                },
+            ),
+            // bb1: the only path with the check
+            block(vec![], check_index_terminator(BlockId(3))),
+            // bb2: skips the check
+            block(vec![], Terminator::Goto { target: BlockId(3) }),
+            // bb3: join, then use
+            block(vec![indexed_read()], Terminator::Return),
+        ],
+        vec![local(MirTy::Bool)], // _4: condition
+    );
+    expect_code(&program_with(vec![b]), "MIR-0010");
+}
+
+/// Two CheckIndex sites defining the same proof local: one token must witness exactly one
+/// check.
+#[test]
+fn rejects_index_proof_with_two_definition_sites() {
+    let b = proof_flow_body(
+        vec![
+            block(vec![], check_index_terminator(BlockId(1))),
+            block(vec![], check_index_terminator(BlockId(2))),
+            block(vec![indexed_read()], Terminator::Return),
+        ],
+        vec![],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0010");
+}
+
+/// A skip edge reaches the use block without passing the check (non-dominated use through
+/// a longer defining path).
+#[test]
+fn rejects_index_proof_use_reachable_by_a_skip_edge() {
+    let b = proof_flow_body(
+        vec![
+            // bb0: either into the checking chain or straight to the use
+            block(
+                vec![],
+                Terminator::SwitchInt {
+                    scrut: Operand::Copy(Place::local(LocalId(4))),
+                    arms: vec![(1, BlockId(1))],
+                    otherwise: BlockId(3),
+                },
+            ),
+            // bb1 → bb2: the checking chain
+            block(vec![], check_index_terminator(BlockId(2))),
+            block(vec![], Terminator::Goto { target: BlockId(3) }),
+            // bb3: use
+            block(vec![indexed_read()], Terminator::Return),
+        ],
+        vec![local(MirTy::Bool)], // _4: condition
+    );
+    expect_code(&program_with(vec![b]), "MIR-0010");
+}
+
+/// WP-C4.5e-0 (V-REF-1): assignment through a `&T` deref is structurally invalid MIR —
+/// mutation requires the dereferenced layer to be `&mut`, independent of upstream borrowck.
+#[test]
+fn rejects_write_through_shared_reference() {
+    let shared_ref = MirTy::Ref {
+        mutable: false,
+        inner: Box::new(MirTy::Int32),
+    };
+    let b = body(
+        vec![ret_local(), local(MirTy::Int32), local(shared_ref)],
+        vec![block(
+            vec![
+                Statement::Assign(
+                    Place::local(LocalId(1)),
+                    Rvalue::Use(Operand::Const(Constant::Int(1, MirTy::Int32))),
+                ),
+                Statement::Assign(
+                    Place::local(LocalId(2)),
+                    Rvalue::RefOf {
+                        mutable: false,
+                        place: Place::local(LocalId(1)),
+                    },
+                ),
+                // *shared = 2 — must be rejected.
+                Statement::Assign(
+                    Place {
+                        local: LocalId(2),
+                        projection: vec![Projection::Deref],
+                    },
+                    Rvalue::Use(Operand::Const(Constant::Int(2, MirTy::Int32))),
+                ),
+            ],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0014");
+}

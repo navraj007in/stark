@@ -842,6 +842,25 @@ pub fn run(
     })
 }
 
+/// Like [`run`], but a failure also carries the stdout accumulated before it. The MIR
+/// differential comparator (C4.5e-0) needs output equality on trap paths too — two programs
+/// printing different prefixes before the same trap are observably different.
+pub fn run_with_partial_output(
+    hir: &Hir,
+    file: Arc<SourceFile>,
+    tables: &TypeTables,
+) -> Result<Execution, (RuntimeError, String)> {
+    let mut interpreter = Interpreter::new(hir, file, tables);
+    match interpreter.run_main() {
+        Ok((status, stderr)) => Ok(Execution {
+            output: interpreter.output,
+            status,
+            stderr,
+        }),
+        Err(error) => Err((error, interpreter.output)),
+    }
+}
+
 /// Execute a specific zero-argument, receiverless function `item` as the
 /// program entry point instead of `main` — used by the test runner
 /// (`test_runner::run_test`) to invoke each discovered `test_*` function.

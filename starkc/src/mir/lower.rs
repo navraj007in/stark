@@ -749,7 +749,13 @@ impl<'a> FnLowerer<'a> {
     /// here because no scalar-core type requires drop).
     fn is_copy(&self, ty: &MirTy) -> bool {
         match ty {
-            MirTy::Struct(..) | MirTy::Enum(EnumRef::User(_), _) => false,
+            // C4.5e-0 (DEV-068): user nominals with an `impl Copy` are Copy — the front end
+            // has already validated the all-Copy-fields / no-Drop rules for the impl to
+            // exist, so lowering consults the impl's presence only. Without one they stay
+            // Move (an unmarked all-Copy-field struct is still Move in STARK).
+            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => {
+                self.type_has_copy_impl(*item)
+            }
             MirTy::Enum(_, args) => args.iter().all(|a| self.is_copy(a)),
             MirTy::Tuple(elems) => elems.iter().all(|e| self.is_copy(e)),
             MirTy::Array(elem, _) => self.is_copy(elem),
@@ -1237,6 +1243,26 @@ impl<'a> FnLowerer<'a> {
             info,
             join,
         );
+    }
+
+    fn type_has_copy_impl(&self, item: ItemId) -> bool {
+        self.hir.items.iter().any(|candidate| {
+            if let ItemKind::Impl {
+                trait_: Some(trait_ref),
+                self_ty,
+                ..
+            } = &candidate.kind
+            {
+                let is_copy = matches!(trait_ref.res, Res::CoreTrait(crate::hir::CoreTrait::Copy));
+                let matches_item = matches!(
+                    self.hir.ty(*self_ty).kind,
+                    hir::TypeKind::Path { res: Res::Item(impl_item), .. } if impl_item == item
+                );
+                is_copy && matches_item
+            } else {
+                false
+            }
+        })
     }
 
     fn type_has_drop_impl(&self, item: ItemId) -> bool {
