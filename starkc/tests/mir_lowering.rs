@@ -373,3 +373,81 @@ fn polymorphic_recursion_trips_the_named_instance_limit() {
         ),
     }
 }
+
+/// WP-C4.5d: drop elaboration structure — DropFlag locals exist for droppable locals, Drop
+/// terminators are emitted, the dtor instance is discovered and lowered, and the dtor
+/// symbol is registered in the type context for glue dispatch.
+#[test]
+fn drop_elaboration_emits_flags_drops_and_dtor_instances() {
+    let src = "struct Loud { id: Int32 } \
+               impl Drop for Loud { fn drop(&mut self) { println(self.id); } } \
+               fn main() { let a = Loud { id: 1 }; println(0); }";
+    let front = front_end_src("dropstruct.stark", src.to_string());
+    let program = lower_ok(&front);
+    assert_structural_invariants(&program);
+    starkc::mir::verify::verify_program(&program).expect("drop elaboration verifies");
+    let main = program
+        .bodies
+        .iter()
+        .find(|b| b.instance.symbol == "main@[]")
+        .expect("main body");
+    assert!(
+        main.locals
+            .iter()
+            .any(|d| matches!(d.kind, mir::LocalKind::DropFlag)),
+        "droppable local must get a DropFlag"
+    );
+    let has_drop_terminator = main
+        .blocks
+        .iter()
+        .any(|b| matches!(b.terminator.0, mir::Terminator::Drop { .. }));
+    assert!(
+        has_drop_terminator,
+        "scope exit must emit a Drop terminator"
+    );
+    assert!(
+        program
+            .bodies
+            .iter()
+            .any(|b| b.instance.symbol == "Loud::Drop::drop@[]"),
+        "the dtor instance must be discovered and lowered; symbols: {:?}",
+        program
+            .bodies
+            .iter()
+            .map(|b| &b.instance.symbol)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        program
+            .types
+            .drop_impls
+            .values()
+            .any(|s| s == "Loud::Drop::drop@[]"),
+        "the dtor symbol must be registered for glue dispatch"
+    );
+}
+
+/// WP-C4.5d boundary: an owned Drop-bearing match scrutinee needs partial-drop of the
+/// unbound remainder — clean Unsupported until a later increment, never mislowered.
+#[test]
+fn match_on_droppable_scrutinee_reports_cleanly() {
+    let src = "struct Loud { id: Int32 } \
+               impl Drop for Loud { fn drop(&mut self) { println(self.id); } } \
+               enum Holder { Empty, Full(Loud) } \
+               fn main() { \
+                   let h = Holder::Full(Loud { id: 1 }); \
+                   match h { \
+                       Holder::Full(v) => println(1), \
+                       Holder::Empty => println(0), \
+                   } \
+               }";
+    let front = front_end_src("dropmatch.stark", src.to_string());
+    match lower_program(&front.hir, &front.tables, front.file.clone()) {
+        Ok(_) => panic!("match on droppable scrutinee must be Unsupported"),
+        Err(e) => assert!(
+            e.what.contains("C4.5"),
+            "unsupported reason should name the owner, got: {}",
+            e.what
+        ),
+    }
+}

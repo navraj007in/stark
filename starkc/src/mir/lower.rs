@@ -1,17 +1,20 @@
-//! WP-C4.2 — typed HIR → MIR lowering, scalar core.
+//! WP-C4.2..C4.5d — typed HIR → MIR lowering.
 //!
-//! Lowers the scalar subset of Core v1 into STARK MIR v0.1 (see `mir.md`, APPROVED CD-028):
-//! literals and locals; unary/binary operations (trapping ones as `Checked` terminators,
-//! short-circuit `&&`/`||` as control flow); blocks and assignments (incl. compound);
-//! functions and direct calls (non-generic instances); function values and indirect calls
-//! (CD-021); `if`/`while`/`loop`/`for`-over-range, `break`/`continue`, `return`; tuples,
-//! arrays, structs, and basic enums (incl. `Option`/`Result` as logical enums per CD-028);
-//! shallow pattern matching via `Discriminant` + `SwitchInt`.
+//! Lowers the supported subset of Core v1 into STARK MIR v0.1 (see `mir.md`, APPROVED
+//! CD-028): literals and locals; unary/binary operations (trapping ones as `Checked`
+//! terminators, short-circuit `&&`/`||` as control flow); blocks and assignments (incl.
+//! compound); functions and direct calls, monomorphised generic instances (C4.5c), function
+//! values and indirect calls (CD-021); methods/associated fns/trait dispatch (C4.5a); array
+//! indexing via proof tokens and real references (C4.5b); `if`/`while`/`loop`/
+//! `for`-over-range, `break`/`continue`, `return`; tuples, arrays, structs, and enums
+//! (incl. `Option`/`Result` as logical enums per CD-028); shallow pattern matching via
+//! `Discriminant` + `SwitchInt`; ownership and drop elaboration (C4.5d) — per-unit
+//! `DropFlag`-guarded `Drop` terminators at scope/early exits, overwrite, discard, and
+//! `drop(x)`, with dtor instances discovered into the worklist.
 //!
 //! Everything outside the subset returns a clean `LowerError::Unsupported` naming the C4.5
 //! owner — no construct is silently mislowered (charter: nothing unsupported reaches a backend
-//! silently). Scalar-core restriction: any type that would require drop elaboration is
-//! unsupported here (C4.5 owns drops); consequently no `Drop` terminators are emitted yet.
+//! silently).
 //!
 //! Evaluation order (CD-007/CD-010) is preserved structurally: operands, call arguments, and
 //! aggregate fields are lowered left to right into temporaries; assignment lowers RHS before
@@ -172,6 +175,11 @@ pub fn lower_program(
     while let Some(key) = worklist.pop_front() {
         let mut lowerer = FnLowerer::new(hir, tables, &src, file_id, key.clone());
         let body = lowerer.lower_body()?;
+        // C4.5d: dtor symbols this body's drop glue dispatches through.
+        program
+            .types
+            .drop_impls
+            .append(&mut lowerer.drop_impl_symbols);
         for callee in lowerer.discovered_callees {
             let symbol = key_symbol(hir, &src, &callee)?;
             if queued.insert(symbol, ()).is_none() {
@@ -402,6 +410,11 @@ fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
                 Some(trait_ref) => {
                     let trait_name = match trait_ref.res {
                         Res::Item(t) => item_name_text(hir, src, t).unwrap_or("?"),
+                        // C4.5d: compiler-known trait impls (`impl Drop for T`) render their
+                        // source-level trait name — symbols stay injective and readable.
+                        Res::CoreTrait(_) => {
+                            &src[trait_ref.path.span.lo as usize..trait_ref.path.span.hi as usize]
+                        }
                         _ => "?",
                     };
                     Ok(format!("{type_name}::{trait_name}::{method}@[]"))
@@ -430,6 +443,23 @@ fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
 struct LoopTargets {
     continue_target: BlockId,
     break_target: BlockId,
+    /// Scope-stack depth at loop entry (C4.5d): `break`/`continue` drop every scope at this
+    /// depth or deeper before jumping out of / restarting the loop.
+    scope_depth: usize,
+}
+
+/// One drop-tracked unit of a droppable local (C4.5d): a sub-place (pure field path from the
+/// local root) that drops as a whole, guarded by its own `DropFlag`. Units are the outermost
+/// sub-places whose types stop static decomposition — a type with its own `Drop` impl, an
+/// enum (variant known only at runtime), or an array — reached by descending through
+/// dtor-less structs and tuples. A whole-value glue drop is observably the ordered sequence
+/// of its units' glue drops, which is what makes partial moves representable: moving one
+/// unit out clears exactly that unit's flag.
+#[derive(Clone)]
+struct DropUnit {
+    path: Vec<u32>,
+    ty: MirTy,
+    flag: LocalId,
 }
 
 struct FnLowerer<'a> {
@@ -450,6 +480,14 @@ struct FnLowerer<'a> {
     current_statements: Vec<(Statement, SourceInfo)>,
     loops: Vec<LoopTargets>,
     discovered_callees: Vec<FnKey>,
+    /// C4.5d: drop units per droppable user/param local, keyed by MIR local index.
+    drop_info: HashMap<u32, Vec<DropUnit>>,
+    /// C4.5d: lexical scope stack; each entry lists that scope's droppable locals in
+    /// declaration order (drops emit in reverse at scope exit).
+    scopes: Vec<Vec<LocalId>>,
+    /// C4.5d: `(item, args) → dtor instance symbol` for every `Drop` impl this body's glue
+    /// can reach; merged into `TypeContext::drop_impls` by `lower_program`.
+    drop_impl_symbols: BTreeMap<(u32, Vec<MirTy>), String>,
 }
 
 impl<'a> FnLowerer<'a> {
@@ -469,6 +507,9 @@ impl<'a> FnLowerer<'a> {
             current_statements: Vec::new(),
             loops: Vec::new(),
             discovered_callees: Vec::new(),
+            drop_info: HashMap::new(),
+            scopes: Vec::new(),
+            drop_impl_symbols: BTreeMap::new(),
         }
     }
 
@@ -718,27 +759,484 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    fn read_place(&self, place: Place, ty: &MirTy) -> Operand {
+    /// Read a place as an operand. C4.5d: a `Move` out of a drop-tracked local clears the
+    /// flags of every unit the moved place covers, so the value's drop responsibility
+    /// transfers with it (scope-exit drops are flag-guarded and skip it).
+    fn read_place(&mut self, place: Place, ty: &MirTy, span: Span) -> Result<Operand, LowerError> {
         if self.is_copy(ty) {
-            Operand::Copy(place)
-        } else {
-            Operand::Move(place)
+            return Ok(Operand::Copy(place));
+        }
+        if let Some(units) = self.drop_info.get(&place.local.0) {
+            let mut prefix: Vec<u32> = Vec::new();
+            for proj in &place.projection {
+                match proj {
+                    Projection::Field(i) => prefix.push(*i),
+                    _ => {
+                        return unsupported(
+                            "move through a non-field projection of a drop-tracked local (C4.5)",
+                            span,
+                        )
+                    }
+                }
+            }
+            // A place strictly inside a unit is inside a Drop-implementing value (or an
+            // enum/array unit): moving out of it is not legal Core; defense in depth here.
+            if units
+                .iter()
+                .any(|u| u.path.len() < prefix.len() && prefix[..u.path.len()] == u.path[..])
+            {
+                return unsupported("move out of a value whose type implements Drop", span);
+            }
+            self.set_flags_under(place.local.0, &prefix, false, span);
+        }
+        Ok(Operand::Move(place))
+    }
+
+    // ---- drop elaboration (C4.5d) ----
+
+    /// Does a value of `ty` require drop glue (its own or any transitive `Drop` impl)?
+    fn ty_needs_drop(&self, ty: &MirTy, span: Span) -> Result<bool, LowerError> {
+        Ok(match ty {
+            MirTy::Struct(item, args) => {
+                if self.type_has_drop_impl(*item) {
+                    if !args.is_empty() {
+                        return unsupported(
+                            "Drop impl on a generic nominal type (a later C4.5 increment)",
+                            span,
+                        );
+                    }
+                    true
+                } else {
+                    let fields = nominal_instance_fields(
+                        self.hir,
+                        self.tables,
+                        self.src,
+                        self.file,
+                        *item,
+                        args,
+                    )?;
+                    let NominalFields::Struct(tys) = fields else {
+                        return unsupported("struct item with enum fields shape", span);
+                    };
+                    let mut any = false;
+                    for t in &tys {
+                        any = any || self.ty_needs_drop(t, span)?;
+                    }
+                    any
+                }
+            }
+            MirTy::Enum(EnumRef::User(item), args) => {
+                if self.type_has_drop_impl(*item) {
+                    if !args.is_empty() {
+                        return unsupported(
+                            "Drop impl on a generic nominal type (a later C4.5 increment)",
+                            span,
+                        );
+                    }
+                    true
+                } else {
+                    let fields = nominal_instance_fields(
+                        self.hir,
+                        self.tables,
+                        self.src,
+                        self.file,
+                        *item,
+                        args,
+                    )?;
+                    let NominalFields::Enum(variants) = fields else {
+                        return unsupported("enum item with struct fields shape", span);
+                    };
+                    let mut any = false;
+                    for v in &variants {
+                        for t in v {
+                            any = any || self.ty_needs_drop(t, span)?;
+                        }
+                    }
+                    any
+                }
+            }
+            MirTy::Enum(_, args) => {
+                let mut any = false;
+                for t in args {
+                    any = any || self.ty_needs_drop(t, span)?;
+                }
+                any
+            }
+            MirTy::Tuple(elems) => {
+                let mut any = false;
+                for t in elems {
+                    any = any || self.ty_needs_drop(t, span)?;
+                }
+                any
+            }
+            MirTy::Array(elem, _) => self.ty_needs_drop(elem, span)?,
+            _ => false,
+        })
+    }
+
+    /// Decompose a droppable type into drop units: descend through dtor-less structs and
+    /// tuples; a type with its own `Drop` impl, an enum, or an array is one unit.
+    fn collect_drop_units(
+        &self,
+        ty: &MirTy,
+        path: &mut Vec<u32>,
+        out: &mut Vec<(Vec<u32>, MirTy)>,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if !self.ty_needs_drop(ty, span)? {
+            return Ok(());
+        }
+        match ty {
+            MirTy::Struct(item, args) if !self.type_has_drop_impl(*item) => {
+                let fields = nominal_instance_fields(
+                    self.hir,
+                    self.tables,
+                    self.src,
+                    self.file,
+                    *item,
+                    args,
+                )?;
+                let NominalFields::Struct(tys) = fields else {
+                    return unsupported("struct item with enum fields shape", span);
+                };
+                for (i, fty) in tys.iter().enumerate() {
+                    path.push(i as u32);
+                    self.collect_drop_units(fty, path, out, span)?;
+                    path.pop();
+                }
+            }
+            MirTy::Tuple(elems) => {
+                for (i, ety) in elems.iter().enumerate() {
+                    path.push(i as u32);
+                    self.collect_drop_units(ety, path, out, span)?;
+                    path.pop();
+                }
+            }
+            _ => out.push((path.clone(), ty.clone())),
+        }
+        Ok(())
+    }
+
+    /// Find `impl Drop for <item>`'s `drop` method, as a lowerable key + canonical symbol.
+    fn drop_impl_key(&self, item: ItemId) -> Result<Option<(FnKey, String)>, LowerError> {
+        for (idx, candidate) in self.hir.items.iter().enumerate() {
+            let ItemKind::Impl {
+                trait_: Some(trait_ref),
+                items,
+                ..
+            } = &candidate.kind
+            else {
+                continue;
+            };
+            if !matches!(trait_ref.res, Res::CoreTrait(crate::hir::CoreTrait::Drop)) {
+                continue;
+            }
+            let impl_item = ItemId(idx as u32);
+            if impl_self_item(self.hir, impl_item) != Some(item) {
+                continue;
+            }
+            for (member, impl_member) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_member else {
+                    continue;
+                };
+                if self.text(def.sig.name) != "drop" {
+                    continue;
+                }
+                let key = FnKey::ImplFn {
+                    impl_item,
+                    member: member as u32,
+                };
+                let symbol = key_symbol(self.hir, self.src, &key)?;
+                return Ok(Some((key, symbol)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Discover every dtor instance `ty`'s drop glue can invoke: record its symbol for the
+    /// type context and queue its body for lowering.
+    fn discover_drop_impls(&mut self, ty: &MirTy) -> Result<(), LowerError> {
+        match ty {
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                let (item, args) = (*item, args.clone());
+                if !self.drop_impl_symbols.contains_key(&(item.0, args.clone())) {
+                    if let Some((key, symbol)) = self.drop_impl_key(item)? {
+                        self.drop_impl_symbols
+                            .insert((item.0, args.clone()), symbol);
+                        self.discovered_callees.push(key);
+                    }
+                }
+                match nominal_instance_fields(
+                    self.hir,
+                    self.tables,
+                    self.src,
+                    self.file,
+                    item,
+                    &args,
+                )? {
+                    NominalFields::Struct(tys) => {
+                        for t in &tys {
+                            self.discover_drop_impls(t)?;
+                        }
+                    }
+                    NominalFields::Enum(variants) => {
+                        for v in &variants {
+                            for t in v {
+                                self.discover_drop_impls(t)?;
+                            }
+                        }
+                    }
+                }
+            }
+            MirTy::Enum(_, args) | MirTy::Tuple(args) => {
+                for t in args.clone() {
+                    self.discover_drop_impls(&t)?;
+                }
+            }
+            MirTy::Array(elem, _) => self.discover_drop_impls(&elem.clone())?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Register a droppable local: create per-unit flags initialized to `init`, record it in
+    /// `drop_info` and the current scope, and discover glue's dtor instances. No-op for
+    /// non-droppable types.
+    fn register_droppable_local(
+        &mut self,
+        mir_local: LocalId,
+        ty: &MirTy,
+        init: bool,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if !self.ty_needs_drop(ty, span)? {
+            return Ok(());
+        }
+        self.discover_drop_impls(ty)?;
+        let mut raw = Vec::new();
+        self.collect_drop_units(ty, &mut Vec::new(), &mut raw, span)?;
+        let mut units = Vec::new();
+        for (path, uty) in raw {
+            self.locals.push(LocalDecl {
+                ty: MirTy::Bool,
+                kind: LocalKind::DropFlag,
+            });
+            let flag = LocalId((self.locals.len() - 1) as u32);
+            self.emit(
+                Statement::Assign(
+                    Place::local(flag),
+                    Rvalue::Use(Operand::Const(Constant::Bool(init))),
+                ),
+                self.synthetic(span, SyntheticKind::DropFlagInit),
+            );
+            units.push(DropUnit {
+                path,
+                ty: uty,
+                flag,
+            });
+        }
+        self.drop_info.insert(mir_local.0, units);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.push(mir_local);
+        }
+        Ok(())
+    }
+
+    /// Emit flag assignments for every unit of `local` whose path starts with `prefix`.
+    fn set_flags_under(&mut self, local: u32, prefix: &[u32], value: bool, span: Span) {
+        let flags: Vec<LocalId> = match self.drop_info.get(&local) {
+            Some(units) => units
+                .iter()
+                .filter(|u| u.path.len() >= prefix.len() && u.path[..prefix.len()] == *prefix)
+                .map(|u| u.flag)
+                .collect(),
+            None => return,
+        };
+        for flag in flags {
+            self.emit(
+                Statement::Assign(
+                    Place::local(flag),
+                    Rvalue::Use(Operand::Const(Constant::Bool(value))),
+                ),
+                self.synthetic(span, SyntheticKind::DropFlagInit),
+            );
         }
     }
 
-    /// Scalar-core drop restriction: reject any local whose type could require dropping.
-    /// (String/Vec/Box etc. are already unsupported types here; user structs/enums of scalars
-    /// need no drop unless they have a Drop impl, which the scalar core rejects via this check.)
-    fn check_no_drop_needed(&self, ty: &MirTy, span: Span) -> Result<(), LowerError> {
-        match ty {
-            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => {
-                if self.type_has_drop_impl(*item) {
-                    return unsupported("Drop-implementing type (drop elaboration is C4.5)", span);
-                }
-                Ok(())
-            }
-            _ => Ok(()),
+    /// Emit `switch flag { true → Drop(place) }` for one unit of `local`.
+    fn emit_guarded_drop(&mut self, local: u32, unit: &DropUnit, span: Span) {
+        let info = self.synthetic(span, SyntheticKind::DropElaboration);
+        let drop_block = self.new_block();
+        let join = self.new_block();
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(unit.flag)),
+                arms: vec![(1, drop_block)],
+                otherwise: join,
+            },
+            info,
+            drop_block,
+        );
+        let place = Place {
+            local: LocalId(local),
+            projection: unit.path.iter().map(|&i| Projection::Field(i)).collect(),
+        };
+        self.terminate(
+            Terminator::Drop {
+                place,
+                target: join,
+            },
+            info,
+            join,
+        );
+    }
+
+    /// Emit flag-guarded drops for every scope at `from_depth` or deeper — innermost scope
+    /// first, locals in reverse declaration order, units in reverse order. Does not pop the
+    /// scope stack (early exits leave the stack intact for the code that follows).
+    fn emit_scope_drops_from(&mut self, from_depth: usize, span: Span) {
+        let plan: Vec<(u32, DropUnit)> = self.scopes[from_depth.min(self.scopes.len())..]
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev())
+            .flat_map(|local| {
+                self.drop_info
+                    .get(&local.0)
+                    .into_iter()
+                    .flat_map(|units| units.iter().rev())
+                    .map(|u| (local.0, u.clone()))
+            })
+            .collect();
+        for (local, unit) in plan {
+            self.emit_guarded_drop(local, &unit, span);
         }
+    }
+
+    /// C4.5d: assignment with overwrite drops. Per the abstract machine (CD-012), the new
+    /// value installs before the old is destroyed: any drop units the destination covers are
+    /// saved into temporaries (guarded by their flags), the store happens, the saved old
+    /// values drop (same guards, reverse order), and the flags flip true.
+    fn lower_overwriting_assign(
+        &mut self,
+        place: Place,
+        rhs_op: Operand,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let covered: Vec<DropUnit> = match self.drop_info.get(&place.local.0) {
+            Some(units) => {
+                let mut prefix: Vec<u32> = Vec::new();
+                let mut pure = true;
+                for proj in &place.projection {
+                    match proj {
+                        Projection::Field(i) => prefix.push(*i),
+                        _ => {
+                            pure = false;
+                            break;
+                        }
+                    }
+                }
+                if !pure {
+                    return unsupported(
+                        "assignment through a non-field projection of a drop-tracked local (C4.5)",
+                        span,
+                    );
+                }
+                units
+                    .iter()
+                    .filter(|u| {
+                        u.path.len() >= prefix.len() && u.path[..prefix.len()] == prefix[..]
+                    })
+                    .cloned()
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        if covered.is_empty() {
+            self.emit(
+                Statement::Assign(place, Rvalue::Use(rhs_op)),
+                self.info(span),
+            );
+            return Ok(());
+        }
+        let info = self.synthetic(span, SyntheticKind::DropElaboration);
+        // Save old unit values into temps, each guarded by its (still-old) flag.
+        let mut saved: Vec<(DropUnit, LocalId)> = Vec::new();
+        for unit in &covered {
+            let tmp = self.new_temp(unit.ty.clone());
+            let take_block = self.new_block();
+            let join = self.new_block();
+            self.terminate(
+                Terminator::SwitchInt {
+                    scrut: Operand::Copy(Place::local(unit.flag)),
+                    arms: vec![(1, take_block)],
+                    otherwise: join,
+                },
+                info,
+                take_block,
+            );
+            let unit_place = Place {
+                local: place.local,
+                projection: unit.path.iter().map(|&i| Projection::Field(i)).collect(),
+            };
+            self.emit(
+                Statement::Assign(Place::local(tmp), Rvalue::Use(Operand::Move(unit_place))),
+                info,
+            );
+            self.terminate(Terminator::Goto { target: join }, info, join);
+            saved.push((unit.clone(), tmp));
+        }
+        // Install the new value.
+        self.emit(
+            Statement::Assign(place.clone(), Rvalue::Use(rhs_op)),
+            self.info(span),
+        );
+        // Destroy the saved old values (reverse order), guarded by the same flags.
+        for (unit, tmp) in saved.iter().rev() {
+            let drop_block = self.new_block();
+            let join = self.new_block();
+            self.terminate(
+                Terminator::SwitchInt {
+                    scrut: Operand::Copy(Place::local(unit.flag)),
+                    arms: vec![(1, drop_block)],
+                    otherwise: join,
+                },
+                info,
+                drop_block,
+            );
+            self.terminate(
+                Terminator::Drop {
+                    place: Place::local(*tmp),
+                    target: join,
+                },
+                info,
+                join,
+            );
+        }
+        // The destination is now initialized.
+        for unit in &covered {
+            self.emit(
+                Statement::Assign(
+                    Place::local(unit.flag),
+                    Rvalue::Use(Operand::Const(Constant::Bool(true))),
+                ),
+                self.synthetic(span, SyntheticKind::DropFlagInit),
+            );
+        }
+        Ok(())
+    }
+
+    /// Drop a definitely-initialized temporary holding a discarded droppable value.
+    fn emit_temp_drop(&mut self, temp: LocalId, span: Span) {
+        let info = self.synthetic(span, SyntheticKind::DropElaboration);
+        let join = self.new_block();
+        self.terminate(
+            Terminator::Drop {
+                place: Place::local(temp),
+                target: join,
+            },
+            info,
+            join,
+        );
     }
 
     fn type_has_drop_impl(&self, item: ItemId) -> bool {
@@ -914,14 +1412,25 @@ impl<'a> FnLowerer<'a> {
             }
             (None, _) => {}
         }
+        // C4.5d: the fn-level scope owns receiver/params — they are initialized by the
+        // caller (flags start true) and drop at fn exit after the body's own scopes.
+        self.scopes.push(Vec::new());
+        if let (Some(hir::Receiver::Value), Some(recv_ty)) = (sig.receiver, self_ty.as_ref()) {
+            if let Some(recv_local) = sig.receiver_local {
+                let mir_local = *self.local_map.get(&recv_local.0).expect("receiver mapped");
+                let recv_ty = recv_ty.clone();
+                self.register_droppable_local(mir_local, &recv_ty, true, sig_span)?;
+            }
+        }
         for (param, ty) in sig.params.iter().zip(params_no_recv.iter()) {
-            self.check_no_drop_needed(ty, param.name)?;
             self.locals.push(LocalDecl {
                 ty: ty.clone(),
                 kind: LocalKind::Param(body_params.len() as u32),
             });
-            self.local_map
-                .insert(param.local.0, LocalId((self.locals.len() - 1) as u32));
+            let mir_local = LocalId((self.locals.len() - 1) as u32);
+            self.local_map.insert(param.local.0, mir_local);
+            let ty_cloned = ty.clone();
+            self.register_droppable_local(mir_local, &ty_cloned, true, param.name)?;
             body_params.push(ty.clone());
         }
         let params = body_params;
@@ -942,6 +1451,10 @@ impl<'a> FnLowerer<'a> {
                 self.synthetic(body_span, SyntheticKind::ReturnSlot),
             );
         }
+        // C4.5d: the fn-level (receiver/param) scope drops last, after the return value has
+        // moved into Local(0).
+        self.emit_scope_drops_from(self.scopes.len().saturating_sub(1), body_span);
+        self.scopes.pop();
         let exit_info = self.synthetic(body_span, SyntheticKind::ReturnSlot);
         let after = self.new_block();
         self.terminate(Terminator::Return, exit_info, after);
@@ -978,15 +1491,45 @@ impl<'a> FnLowerer<'a> {
     // ---- statements/blocks ----
 
     /// Lower a block; returns its tail value (if any). `None` also covers diverged paths.
+    /// C4.5d: each HIR block is a drop scope — its droppable locals drop at block exit in
+    /// reverse declaration order, after the tail value (if any) has moved out.
     fn lower_block_value(&mut self, block_id: hir::BlockId) -> Result<Option<Operand>, LowerError> {
+        self.scopes.push(Vec::new());
         let block = self.hir.block(block_id);
+        let block_span = block.span;
         for &stmt in &block.stmts {
             self.lower_stmt(stmt)?;
         }
-        match block.tail {
-            Some(tail) => self.lower_expr_operand_or_unit(tail),
-            None => Ok(None),
+        let mut tail_op = match block.tail {
+            Some(tail) => {
+                let op = self.lower_expr_operand_or_unit(tail)?;
+                // Materialize a place-reading tail into a temp before this scope's drops:
+                // the value (or copy) must be taken before the locals it may read from are
+                // destroyed or poisoned.
+                match op {
+                    Some(op @ (Operand::Copy(_) | Operand::Move(_)))
+                        if !self.scopes.last().map(Vec::is_empty).unwrap_or(true) =>
+                    {
+                        let ty = self.expr_mir_ty(tail)?;
+                        let tmp = self.new_temp(ty.clone());
+                        self.emit(
+                            Statement::Assign(Place::local(tmp), Rvalue::Use(op)),
+                            self.synthetic(block_span, SyntheticKind::DropElaboration),
+                        );
+                        Some(self.read_place(Place::local(tmp), &ty, block_span)?)
+                    }
+                    other => other,
+                }
+            }
+            None => None,
+        };
+        let depth = self.scopes.len() - 1;
+        self.emit_scope_drops_from(depth, block_span);
+        self.scopes.pop();
+        if let Some(op) = tail_op.take() {
+            return Ok(Some(op));
         }
+        Ok(None)
     }
 
     fn lower_stmt(&mut self, stmt_id: hir::StmtId) -> Result<(), LowerError> {
@@ -995,7 +1538,21 @@ impl<'a> FnLowerer<'a> {
         match &self.hir.stmt(stmt_id).kind {
             StmtKind::Empty => Ok(()),
             StmtKind::Expr { expr, .. } => {
-                self.lower_expr_operand_or_unit(*expr)?;
+                let op = self.lower_expr_operand_or_unit(*expr)?;
+                // C4.5d: a discarded droppable value drops immediately (abstract-machine
+                // temporary destruction; oracle-confirmed timing).
+                if let Some(op) = op {
+                    let ty = self.expr_mir_ty(*expr)?;
+                    if self.ty_needs_drop(&ty, span)? {
+                        self.discover_drop_impls(&ty)?;
+                        let tmp = self.new_temp(ty);
+                        self.emit(
+                            Statement::Assign(Place::local(tmp), Rvalue::Use(op)),
+                            self.synthetic(span, SyntheticKind::DropElaboration),
+                        );
+                        self.emit_temp_drop(tmp, span);
+                    }
+                }
                 Ok(())
             }
             StmtKind::Let {
@@ -1008,19 +1565,22 @@ impl<'a> FnLowerer<'a> {
                     .cloned()
                     .unwrap_or(Ty::Error);
                 let mir_ty = self.mir_ty(&ty, *name)?;
-                self.check_no_drop_needed(&mir_ty, *name)?;
                 self.locals.push(LocalDecl {
-                    ty: mir_ty,
+                    ty: mir_ty.clone(),
                     kind: LocalKind::User(self.text(*name).to_string()),
                 });
                 let mir_local = LocalId((self.locals.len() - 1) as u32);
                 self.local_map.insert(local.0, mir_local);
+                // C4.5d: flags start false (registered before the initializer, so an early
+                // exit inside it skips this local's drops) and flip true after init.
+                self.register_droppable_local(mir_local, &mir_ty, false, *name)?;
                 if let Some(init) = init {
                     let value = self.lower_expr_to_operand(*init)?;
                     self.emit(
                         Statement::Assign(Place::local(mir_local), Rvalue::Use(value)),
                         self.info(span),
                     );
+                    self.set_flags_under(mir_local.0, &[], true, *name);
                 }
                 Ok(())
             }
@@ -1040,6 +1600,9 @@ impl<'a> FnLowerer<'a> {
                         self.info(span),
                     );
                 }
+                // C4.5d: early return drops every live scope (innermost first) after the
+                // return value has moved into Local(0).
+                self.emit_scope_drops_from(0, span);
                 let dead = self.new_block();
                 self.terminate(Terminator::Return, self.info(span), dead);
                 Ok(())
@@ -1049,6 +1612,9 @@ impl<'a> FnLowerer<'a> {
                     return unsupported("break outside a loop", span);
                 };
                 let target = targets.break_target;
+                let depth = targets.scope_depth;
+                // C4.5d: leaving the loop drops every scope inside it.
+                self.emit_scope_drops_from(depth, span);
                 let dead = self.new_block();
                 self.terminate(Terminator::Goto { target }, self.info(span), dead);
                 Ok(())
@@ -1059,6 +1625,9 @@ impl<'a> FnLowerer<'a> {
                     return unsupported("continue outside a loop", span);
                 };
                 let target = targets.continue_target;
+                let depth = targets.scope_depth;
+                // C4.5d: restarting the loop drops the current iteration's scopes.
+                self.emit_scope_drops_from(depth, span);
                 let dead = self.new_block();
                 self.terminate(Terminator::Goto { target }, self.info(span), dead);
                 Ok(())
@@ -1139,6 +1708,7 @@ impl<'a> FnLowerer<'a> {
                 self.loops.push(LoopTargets {
                     continue_target: header,
                     break_target: exit,
+                    scope_depth: self.scopes.len(),
                 });
                 self.lower_block_value(*body)?;
                 self.loops.pop();
@@ -1156,6 +1726,7 @@ impl<'a> FnLowerer<'a> {
                 self.loops.push(LoopTargets {
                     continue_target: body_block,
                     break_target: exit,
+                    scope_depth: self.scopes.len(),
                 });
                 self.lower_block_value(*body)?;
                 self.loops.pop();
@@ -1230,6 +1801,7 @@ impl<'a> FnLowerer<'a> {
                 self.loops.push(LoopTargets {
                     continue_target: latch,
                     break_target: exit,
+                    scope_depth: self.scopes.len(),
                 });
                 self.lower_block_value(*body)?;
                 self.loops.pop();
@@ -1279,15 +1851,12 @@ impl<'a> FnLowerer<'a> {
                 let place = self.lower_place(*lhs)?;
                 match op {
                     AssignOp::Assign => {
-                        self.emit(
-                            Statement::Assign(place, Rvalue::Use(rhs_op)),
-                            self.info(span),
-                        );
+                        self.lower_overwriting_assign(place, rhs_op, span)?;
                         Ok(())
                     }
                     compound => {
                         let ty = self.expr_mir_ty(*lhs)?;
-                        let current = self.read_place(place.clone(), &ty);
+                        let current = self.read_place(place.clone(), &ty, span)?;
                         let bin = match compound {
                             AssignOp::AddAssign => BinOp::Add,
                             AssignOp::SubAssign => BinOp::Sub,
@@ -1333,7 +1902,7 @@ impl<'a> FnLowerer<'a> {
                         span,
                     })?;
                     let ty = self.locals[mir_local.0 as usize].ty.clone();
-                    Ok(self.read_place(Place::local(mir_local), &ty))
+                    self.read_place(Place::local(mir_local), &ty, span)
                 }
                 // A named function used as a function value (CD-021 item 16; generic fns
                 // monomorphise through the recorded instantiation, C4.5c / CD-021 item 21).
@@ -1372,13 +1941,13 @@ impl<'a> FnLowerer<'a> {
                         ),
                         self.info(span),
                     );
-                    return Ok(self.read_place(Place::local(dest), &ty));
+                    return self.read_place(Place::local(dest), &ty, span);
                 }
                 if matches!(op, UnOp::Deref) {
                     // `*r` as a value: place = r + Deref.
                     let mut place = self.lower_place(*operand)?;
                     place.projection.push(Projection::Deref);
-                    return Ok(self.read_place(place, &ty));
+                    return self.read_place(place, &ty, span);
                 }
                 let inner = self.lower_expr_to_operand(*operand)?;
                 match op {
@@ -1477,7 +2046,7 @@ impl<'a> FnLowerer<'a> {
                 let dest = self.new_temp(ty);
                 self.lower_call(expr, Some(Place::local(dest)))?;
                 let ty = self.locals[dest.0 as usize].ty.clone();
-                Ok(self.read_place(Place::local(dest), &ty))
+                self.read_place(Place::local(dest), &ty, span)
             }
             hir::ExprKind::If {
                 cond,
@@ -1517,7 +2086,7 @@ impl<'a> FnLowerer<'a> {
                 );
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 let ty = self.locals[dest.0 as usize].ty.clone();
-                Ok(self.read_place(Place::local(dest), &ty))
+                self.read_place(Place::local(dest), &ty, span)
             }
             hir::ExprKind::Block(block) => {
                 let value = self.lower_block_value(*block)?;
@@ -1612,7 +2181,7 @@ impl<'a> FnLowerer<'a> {
                                     span: field.name,
                                 })?;
                             let ty = self.locals[local.0 as usize].ty.clone();
-                            self.read_place(Place::local(local), &ty)
+                            self.read_place(Place::local(local), &ty, span)?
                         }
                     };
                     by_name.push((self.text(field.name).to_string(), value));
@@ -1644,7 +2213,7 @@ impl<'a> FnLowerer<'a> {
                 };
                 place.projection.push(Projection::Field(index as u32));
                 let field_ty = self.expr_mir_ty(expr)?;
-                Ok(self.read_place(place, &field_ty))
+                self.read_place(place, &field_ty, span)
             }
             hir::ExprKind::TupleField { base, index } => {
                 let idx: u32 = self.text(*index).parse().map_err(|_| LowerError {
@@ -1654,19 +2223,19 @@ impl<'a> FnLowerer<'a> {
                 let mut place = self.lower_place(*base)?;
                 place.projection.push(Projection::Field(idx));
                 let field_ty = self.expr_mir_ty(expr)?;
-                Ok(self.read_place(place, &field_ty))
+                self.read_place(place, &field_ty, span)
             }
             hir::ExprKind::Index { base, index } => {
                 let place = self.lower_index_place(*base, *index, span)?;
                 let elem_ty = self.expr_mir_ty(expr)?;
-                Ok(self.read_place(place, &elem_ty))
+                self.read_place(place, &elem_ty, span)
             }
             hir::ExprKind::Match { .. } => {
                 let ty = self.expr_mir_ty(expr)?;
                 let dest = self.new_temp(ty);
                 self.lower_match(expr, Some(Place::local(dest)))?;
                 let ty = self.locals[dest.0 as usize].ty.clone();
-                Ok(self.read_place(Place::local(dest), &ty))
+                self.read_place(Place::local(dest), &ty, span)
             }
             _ => unsupported("expression form (C4.5)", span),
         }
@@ -1840,14 +2409,13 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<Operand, LowerError> {
         let ty = self.expr_mir_ty(expr)?;
-        self.check_no_drop_needed(&ty, span)?;
         let dest = self.new_temp(ty);
         self.emit(
             Statement::Assign(Place::local(dest), Rvalue::Aggregate(kind, operands)),
             self.info(span),
         );
         let ty = self.locals[dest.0 as usize].ty.clone();
-        Ok(self.read_place(Place::local(dest), &ty))
+        self.read_place(Place::local(dest), &ty, span)
     }
 
     /// Peel reference layers off a type (for nominal lookup / field access through `&self`,
@@ -2052,6 +2620,29 @@ impl<'a> FnLowerer<'a> {
                             dest,
                             Rvalue::Aggregate(AggKind::EnumVariant(enum_ref, variant), ops),
                         ),
+                        self.info(span),
+                    );
+                    Ok(())
+                }
+                // C4.5d: explicit early destruction — `drop(x)` moves the value and runs
+                // its glue immediately (no-op for non-droppable types).
+                Res::Builtin(Builtin::Drop) => {
+                    if args.len() != 1 {
+                        return unsupported("drop() arity", span);
+                    }
+                    let ty = self.expr_mir_ty(args[0])?;
+                    let op = self.lower_expr_to_operand(args[0])?;
+                    if self.ty_needs_drop(&ty, span)? {
+                        self.discover_drop_impls(&ty)?;
+                        let tmp = self.new_temp(ty);
+                        self.emit(
+                            Statement::Assign(Place::local(tmp), Rvalue::Use(op)),
+                            self.info(span),
+                        );
+                        self.emit_temp_drop(tmp, span);
+                    }
+                    self.emit(
+                        Statement::Assign(dest, Rvalue::Use(Operand::Const(Constant::Unit))),
                         self.info(span),
                     );
                     Ok(())
@@ -2355,7 +2946,7 @@ impl<'a> FnLowerer<'a> {
                         Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
                         self.info(span),
                     );
-                    self.read_place(Place::local(temp), &ref_ty)
+                    self.read_place(Place::local(temp), &ref_ty, span)?
                 }
             }
             Some(hir::Receiver::Value) => self.lower_expr_to_operand(base)?,
@@ -2442,6 +3033,15 @@ impl<'a> FnLowerer<'a> {
         let arms: Vec<_> = arms.iter().map(|a| (a.pat, a.body)).collect();
 
         let scrut_ty = self.expr_mir_ty(scrutinee)?;
+        // C4.5d boundary: an owned droppable scrutinee needs partial-drop of the unbound
+        // pattern remainder (the oracle's drop_unbound semantics) — a later C4.5 increment.
+        // Matching by reference stays fully supported (`&e` is not droppable).
+        if self.ty_needs_drop(&scrut_ty, span)? {
+            return unsupported(
+                "match on an owned Drop-bearing scrutinee (a later C4.5 increment)",
+                span,
+            );
+        }
         // Materialize the scrutinee once.
         let scrut_local = self.new_temp(scrut_ty.clone());
         let scrut_value = self.lower_expr_to_operand(scrutinee)?;
@@ -2783,7 +3383,7 @@ impl<'a> FnLowerer<'a> {
         place
             .projection
             .push(Projection::VariantField(variant, index));
-        let value = self.read_place(place, &mir_ty);
+        let value = self.read_place(place, &mir_ty, span)?;
         self.emit(
             Statement::Assign(Place::local(bound), Rvalue::Use(value)),
             self.synthetic(span, SyntheticKind::MatchDesugar),

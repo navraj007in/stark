@@ -53,9 +53,31 @@ HIR/MIR differential agreement before the next begins.
    generic impl/trait methods are clean-Unsupported, owned by the increment that adds
    impl-level substitution. Workspace 658/0/2 (baseline re-measured: 646 at C4.5b-2, the
    recorded 640 was stale).
-5. **C4.5d — ownership and Drop:** field-sensitive initialization, partial moves, drop flags,
-   `Drop` terminator elaboration (reverse declaration order, exactly once), verifier's
-   field-precise move refinement.
+5. **C4.5d — ownership and Drop: DONE 2026-07-19.** Full drop elaboration over the current
+   subset, oracle-timing-confirmed before implementation (probe programs pinned scope order,
+   overwrite, discard, and early-exit timing empirically). Design: every droppable local
+   decomposes into **drop units** — outermost sub-places that stop static decomposition (own
+   `Drop` impl, enum, array) reached through dtor-less structs/tuples — each guarded by its
+   own `DropFlag`; moving a place clears exactly the units it covers, which is what makes
+   partial moves representable. Emission: scope exits (reverse declaration order), early
+   exits (`return` all scopes, `break`/`continue` to the loop's depth) after the
+   value-out move, assignment overwrite as install-then-destroy (CD-012: guarded save-old →
+   store → guarded drop-old → flags true), immediate drops for discarded values and the
+   `drop(x)` builtin; params/by-value receivers register flags-true at entry. Dtor instances
+   (`Loud::Drop::drop@[]` — `Res::CoreTrait` trait names now render in symbols) are
+   discovered into the worklist and registered in `TypeContext::drop_impls` for glue
+   dispatch. MIR interp: recursive glue on `Drop` terminators — own dtor via `&mut` ref
+   (mutations visible to the field destruction that follows, like the oracle), then
+   fields/payload reverse order, enums by runtime discriminant; whole-local drops poison the
+   slot. Verifier: V-MOVE-1 refined **field-precise** ((local, pure-Field-path) entries,
+   prefix-related conflict, subtree reinit; `Drop` of possibly-moved is legal — flag-guarded
+   conditional drops are that state by design), V-DROP-2 read half added (flags read only by
+   `SwitchInt` `Copy`). Traps abort without drops (differentially tested). Boundary, clean
+   Unsupported: match on an owned Drop-bearing scrutinee (needs the oracle's `drop_unbound`
+   partial-drop — C4.5e territory with the runtime values it needs), `Drop` impls on generic
+   nominals (needs generic impls). 5 differential + 2 lowering + 3 verifier tests; no new
+   oracle defects (first increment where the differential matched the oracle on first run).
+   Workspace 668/0/2.
 6. **C4.5e — runtime values:** String/str, Vec/slices, Option/Result combinators, panic/assert
    paths, the widened `RuntimeFn` surface.
 7. **C4.5f — multi-package lowering:** package-stable canonical symbols

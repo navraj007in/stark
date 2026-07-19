@@ -1,8 +1,21 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after WP-C4.5c
+Updated: 2026-07-19 after WP-C4.5d
 
 ## Position
-Gate: C4  Next: WP-C4.5d (ownership and Drop)  Blocked: none
+Gate: C4  Next: WP-C4.5e (runtime values: String/str, Vec/slices, Option/Result combinators,
+panic/assert, widened RuntimeFn surface)  Blocked: none
+**WP-C4.5d done 2026-07-19** (ownership and Drop): droppable locals decompose into per-unit
+`DropFlag`-guarded drops (units = outermost dtor-bearing/enum/array sub-places through
+dtor-less structs/tuples — partial moves clear exactly the covered units); emission at scope
+exits (reverse decl order), early exits, assignment overwrite (install-then-destroy per
+CD-012), discards, and the `drop(x)` builtin; dtor instances discovered + registered in
+`TypeContext::drop_impls`; MIR-interp recursive glue (own dtor through `&mut` ref, then
+fields/payload reverse, enums by runtime discriminant); verifier V-MOVE-1 refined
+field-precise with Drop-of-possibly-moved legal by design, V-DROP-2 read half added. Oracle
+drop timing pinned empirically before implementation; the differential then matched on first
+run (no new oracle defects — first increment where that happened). Boundaries (clean
+Unsupported): match on owned Drop-bearing scrutinee (C4.5e, needs drop_unbound), Drop impls
+on generic nominals (needs generic impls). Workspace 668/0/2.
 C4.1-C4.4 done; WP-C4.5 split into increments (WP-C4.5.md). Done so far: C4.5a
 (methods/assoc-fns/trait dispatch incl. defaults; corpus __01 differential-green),
 C4.5-contract-cleanup (CD-029: trap provenance through outcomes + differential span

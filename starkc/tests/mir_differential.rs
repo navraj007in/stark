@@ -518,3 +518,152 @@ fn monomorphised_generic_fn_value_agrees() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.5d: ownership and Drop ----
+
+/// Core drop timing, oracle-confirmed: parameter drop at callee exit, block-scope exit,
+/// assignment overwrite (install the new value, then destroy the old — CD-012),
+/// immediately-discarded values, explicit `drop(x)`, and fn-exit drops of what remains.
+#[test]
+fn drop_scope_overwrite_discard_and_builtin_agree() {
+    differential(
+        "drop_core.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         fn consume(v: Loud) { println(100); } \
+         fn make(id: Int32) -> Loud { Loud { id: id } } \
+         fn main() { \
+             let a = Loud { id: 1 }; \
+             let b = Loud { id: 2 }; \
+             consume(a); \
+             println(101); \
+             { \
+                 let c = Loud { id: 3 }; \
+                 println(102); \
+             } \
+             println(103); \
+             let mut d = Loud { id: 4 }; \
+             d = Loud { id: 5 }; \
+             println(104); \
+             Loud { id: 6 }; \
+             make(7); \
+             println(105); \
+             drop(b); \
+             println(106); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Conditional moves need runtime drop flags; partial moves drop only the remaining
+/// sibling units; a `Drop`-implementing value runs its own destructor before its fields
+/// (glue order); loop-body scopes drop per iteration and on `break`.
+#[test]
+fn conditional_partial_moves_and_loop_scopes_agree() {
+    differential(
+        "drop_flags.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         struct Pair { a: Loud, b: Loud } \
+         struct Nest { inner: Loud, tag: Int32 } \
+         impl Drop for Nest { fn drop(&mut self) { println(8000 + self.tag); } } \
+         fn consume(v: Loud) { println(100); } \
+         fn main() { \
+             let x = Loud { id: 1 }; \
+             let y = Loud { id: 2 }; \
+             let z = Loud { id: 3 }; \
+             println(200); \
+             let cond = true; \
+             if cond { consume(x); } \
+             println(201); \
+             let p = Pair { a: Loud { id: 10 }, b: Loud { id: 11 } }; \
+             println(202); \
+             consume(p.a); \
+             println(203); \
+             let n = Nest { inner: Loud { id: 20 }, tag: 99 }; \
+             println(204); \
+             let mut i = 0; \
+             while true { \
+                 let w = Loud { id: 30 + i }; \
+                 if i > 0 { break; } \
+                 i = i + 1; \
+             } \
+             println(205); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Early `return` drops live scopes after the return value moves out; a block tail moves
+/// its value out before the block's own drops; `if`-as-value creates only the taken arm.
+#[test]
+fn early_return_tail_moves_and_if_value_drops_agree() {
+    differential(
+        "drop_exits.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         struct Pair { a: Loud, b: Loud } \
+         fn pick(c: Bool) -> Loud { \
+             let inner = Loud { id: 50 }; \
+             if c { return Loud { id: 60 }; } \
+             println(300); \
+             inner \
+         } \
+         fn main() { \
+             let p = Pair { a: Loud { id: 1 }, b: Loud { id: 2 } }; \
+             println(301); \
+             let got = { \
+                 let t = Loud { id: 70 }; \
+                 println(302); \
+                 t \
+             }; \
+             println(303); \
+             let r1 = pick(true); \
+             println(304); \
+             let r2 = pick(false); \
+             println(305); \
+             let v = if true { Loud { id: 80 } } else { Loud { id: 81 } }; \
+             println(306); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Droppable payloads inside enums (user enum and Option) drop through runtime-variant
+/// glue; a generic struct instantiated with a droppable type decomposes into units through
+/// the instantiated field table.
+#[test]
+fn enum_payload_and_generic_nominal_drops_agree() {
+    differential(
+        "drop_enum_generic.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         enum Holder { Empty, Full(Loud) } \
+         struct Box2<T> { a: T, b: T } \
+         fn main() { \
+             let h = Holder::Full(Loud { id: 40 }); \
+             let e = Holder::Empty; \
+             let o = Some(Loud { id: 41 }); \
+             let g = Box2 { a: Loud { id: 42 }, b: Loud { id: 43 } }; \
+             println(400); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Traps abort WITHOUT running destructors (abstract machine): both engines trap with the
+/// same category and provenance, and neither runs the live local's destructor.
+#[test]
+fn trap_aborts_without_drops_agree() {
+    differential(
+        "drop_trap.stark",
+        "struct Loud { id: Int32 } \
+         impl Drop for Loud { fn drop(&mut self) { println(9000 + self.id); } } \
+         fn main() { \
+             let a = Loud { id: 1 }; \
+             let zero = 0; \
+             println(1 / zero); \
+         }"
+        .to_string(),
+    );
+}

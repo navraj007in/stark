@@ -25,13 +25,17 @@
 //! ```
 //!
 //! Scope notes (v0.1, honest limitations — refinements, not silent gaps):
-//! - V-MOVE-1 uses whole-local granularity with any-path (union) joins to a fixpoint: a `Move`
-//!   out of a projected place conservatively marks the whole local moved. Reinitialization by
-//!   whole-local assignment clears it. This can reject over-clever (but legal) MIR; it cannot
-//!   accept a genuinely moved-from read. Field-precise tracking is a later refinement.
-//! - Drop-flag "read only by SwitchInt" is enforced as: DropFlag locals never appear in any
-//!   statement rvalue other than their own `Const(true/false)` initialization, and never as
-//!   call/checked arguments; SwitchInt reads are permitted.
+//! - V-MOVE-1 (refined field-precise under C4.5d): entries are (local, pure-Field path);
+//!   places with non-Field projections are conservatively their whole local. Any-path
+//!   (union) joins to a fixpoint. A read conflicts with a moved entry when the paths are
+//!   prefix-related either way; assignment reinitializes the subtree it covers. `Drop` of a
+//!   possibly-moved place is NOT an error: flag-guarded conditional drops (contract §8) are
+//!   exactly that state by design, and the dataflow is flag-blind — the runtime flag guard
+//!   plus the differential corpus enforce exactly-once there.
+//! - Drop-flag "read only by SwitchInt" (V-DROP-2 read half) is enforced as: DropFlag locals
+//!   never appear in any statement rvalue other than their own `Const(true/false)`
+//!   initialization, and never as call/checked/drop operands; `SwitchInt` reads are
+//!   permitted.
 
 use super::*;
 use std::collections::{BTreeSet, VecDeque};
@@ -98,6 +102,7 @@ impl<'a> BodyCx<'a> {
             self.verify_block(bi as u32);
         }
         self.verify_moves();
+        self.verify_drop_flags();
         self.verify_index_proofs();
         self.verify_index_bindings();
     }
@@ -743,12 +748,20 @@ impl<'a> BodyCx<'a> {
         }
     }
 
-    // ---- V-MOVE-1: conservative any-path moved-local dataflow to a fixpoint ----
+    // ---- V-MOVE-1: any-path moved-place dataflow to a fixpoint (field-precise, C4.5d) ----
+    //
+    // Entries are (local, pure-Field path); a place with any non-Field projection is
+    // conservatively its whole local (path []). A read of place P conflicts with a moved
+    // entry M when the paths are prefix-related in either direction; assignment to D
+    // reinitializes every entry D covers. `Drop` consumes its place WITHOUT a
+    // possibly-moved error: flag-guarded conditional drops (contract §8) are exactly the
+    // designed possibly-moved-at-Drop state, invisible to a flag-blind dataflow — the
+    // runtime guard plus the differential corpus carry that obligation instead.
 
     fn verify_moves(&mut self) {
         let block_count = self.body.blocks.len();
-        // moved_in[b]: set of locals possibly moved on entry to b.
-        let mut moved_in: Vec<BTreeSet<u32>> = vec![BTreeSet::new(); block_count];
+        // moved_in[b]: set of places possibly moved on entry to b.
+        let mut moved_in: Vec<BTreeSet<(u32, Vec<u32>)>> = vec![BTreeSet::new(); block_count];
         let mut work: VecDeque<usize> = VecDeque::new();
         work.push_back(self.body.entry.0 as usize);
         let mut visited = vec![false; block_count];
@@ -765,7 +778,7 @@ impl<'a> BodyCx<'a> {
                     continue;
                 }
                 let before = moved_in[s].len();
-                moved_in[s].extend(moved_out.iter().copied());
+                moved_in[s].extend(moved_out.iter().cloned());
                 if !visited[s] || moved_in[s].len() != before {
                     visited[s] = true;
                     work.push_back(s);
@@ -782,27 +795,19 @@ impl<'a> BodyCx<'a> {
     }
 
     /// Simulate one block. Returns (moved-out set, successors). When `report`, emit MIR-0007
-    /// on any read of a possibly-moved local.
+    /// on any read of a possibly-moved place.
     fn flow_block(
         &mut self,
         bi: u32,
-        mut moved: BTreeSet<u32>,
+        mut moved: BTreeSet<(u32, Vec<u32>)>,
         report: bool,
-    ) -> (BTreeSet<u32>, Vec<BlockId>) {
+    ) -> (BTreeSet<(u32, Vec<u32>)>, Vec<BlockId>) {
         // Collect the reads/writes/moves per statement in order.
         let block = self.body.blocks[bi as usize].clone();
         for (stmt, _) in &block.statements {
             if let Statement::Assign(place, rvalue) = stmt {
                 self.flow_rvalue(rvalue, &mut moved, bi, report);
-                if place.projection.is_empty() {
-                    moved.remove(&place.local.0); // whole-local reinitialization
-                } else if report && moved.contains(&place.local.0) {
-                    self.err(
-                        "MIR-0007",
-                        bi,
-                        format!("write through possibly-moved local _{}", place.local.0),
-                    );
-                }
+                self.flow_reinit(place, &mut moved, bi, report);
             }
         }
         let mut successors = Vec::new();
@@ -829,20 +834,12 @@ impl<'a> BodyCx<'a> {
                 for arg in args {
                     self.flow_operand(arg, &mut moved, bi, report);
                 }
-                if dest.projection.is_empty() {
-                    moved.remove(&dest.local.0);
-                }
+                self.flow_reinit(dest, &mut moved, bi, report);
                 successors.push(*target);
             }
             Terminator::Drop { place, target } => {
-                if report && moved.contains(&place.local.0) {
-                    self.err(
-                        "MIR-0007",
-                        bi,
-                        format!("Drop of possibly-moved local _{}", place.local.0),
-                    );
-                }
-                moved.insert(place.local.0);
+                // No possibly-moved error (see the pass header note); the drop consumes.
+                moved.insert(moved_key(place));
                 successors.push(*target);
             }
             Terminator::Checked {
@@ -851,7 +848,8 @@ impl<'a> BodyCx<'a> {
                 for arg in args {
                     self.flow_operand(arg, &mut moved, bi, report);
                 }
-                moved.remove(&dest.0);
+                let dest_local = dest.0;
+                moved.retain(|(l, _)| *l != dest_local);
                 successors.push(*target);
             }
             Terminator::Trap { .. } | Terminator::Return | Terminator::Unreachable => {}
@@ -859,7 +857,67 @@ impl<'a> BodyCx<'a> {
         (moved, successors)
     }
 
-    fn flow_rvalue(&mut self, rvalue: &Rvalue, moved: &mut BTreeSet<u32>, bi: u32, report: bool) {
+    /// A read of `place` conflicts with a moved entry when the field paths are
+    /// prefix-related in either direction (reading a moved value, a field of a moved value,
+    /// or a container with a moved field).
+    fn flow_read(
+        &mut self,
+        place: &Place,
+        moved: &BTreeSet<(u32, Vec<u32>)>,
+        bi: u32,
+        report: bool,
+        what: &str,
+    ) {
+        if !report {
+            return;
+        }
+        let (local, path) = moved_key(place);
+        let conflict = moved
+            .iter()
+            .any(|(l, m)| *l == local && paths_prefix_related(m, &path));
+        if conflict {
+            self.err(
+                "MIR-0007",
+                bi,
+                format!("{what} possibly-moved place _{local}{path:?}"),
+            );
+        }
+    }
+
+    /// Assignment to `place` reinitializes every moved entry it covers; writing a field
+    /// inside a still-moved container is an error.
+    fn flow_reinit(
+        &mut self,
+        place: &Place,
+        moved: &mut BTreeSet<(u32, Vec<u32>)>,
+        bi: u32,
+        report: bool,
+    ) {
+        let (local, path) = moved_key(place);
+        if report {
+            let inside_moved = moved
+                .iter()
+                .any(|(l, m)| *l == local && m.len() < path.len() && path[..m.len()] == m[..]);
+            if inside_moved {
+                self.err(
+                    "MIR-0007",
+                    bi,
+                    format!("write through possibly-moved place _{local}"),
+                );
+            }
+        }
+        moved.retain(|(l, m)| {
+            *l != local || !(m.len() >= path.len() && m[..path.len()] == path[..])
+        });
+    }
+
+    fn flow_rvalue(
+        &mut self,
+        rvalue: &Rvalue,
+        moved: &mut BTreeSet<(u32, Vec<u32>)>,
+        bi: u32,
+        report: bool,
+    ) {
         match rvalue {
             Rvalue::Use(op) => self.flow_operand(op, moved, bi, report),
             Rvalue::UnOp(_, op) => self.flow_operand(op, moved, bi, report),
@@ -873,40 +931,119 @@ impl<'a> BodyCx<'a> {
                 }
             }
             Rvalue::Discriminant(place) | Rvalue::RefOf { place, .. } => {
-                if report && moved.contains(&place.local.0) {
-                    self.err(
-                        "MIR-0007",
-                        bi,
-                        format!("read of possibly-moved local _{}", place.local.0),
-                    );
-                }
+                self.flow_read(place, moved, bi, report, "read of");
             }
         }
     }
 
-    fn flow_operand(&mut self, op: &Operand, moved: &mut BTreeSet<u32>, bi: u32, report: bool) {
+    fn flow_operand(
+        &mut self,
+        op: &Operand,
+        moved: &mut BTreeSet<(u32, Vec<u32>)>,
+        bi: u32,
+        report: bool,
+    ) {
         match op {
             Operand::Copy(place) => {
-                if report && moved.contains(&place.local.0) {
-                    self.err(
-                        "MIR-0007",
-                        bi,
-                        format!("copy from possibly-moved local _{}", place.local.0),
-                    );
-                }
+                self.flow_read(place, moved, bi, report, "copy from");
             }
             Operand::Move(place) => {
-                if report && moved.contains(&place.local.0) {
-                    self.err(
-                        "MIR-0007",
-                        bi,
-                        format!("move from possibly-moved local _{}", place.local.0),
-                    );
-                }
-                // Whole-local granularity: a projected move conservatively moves the local.
-                moved.insert(place.local.0);
+                self.flow_read(place, moved, bi, report, "move from");
+                moved.insert(moved_key(place));
             }
             Operand::Const(_) => {}
+        }
+    }
+
+    // ---- V-DROP-2 read half: drop flags are read only by SwitchInt ----
+
+    /// A `DropFlag` local may appear only as (a) the destination of its own
+    /// `Const(true/false)` assignment (write half, enforced in `verify_assign`) and (b) a
+    /// `SwitchInt` scrutinee `Copy`. Any other appearance — statement rvalue operand,
+    /// call/checked argument, drop place, projection base — is MIR-0009.
+    fn verify_drop_flags(&mut self) {
+        let is_flag = |body: &MirBody, local: u32| {
+            matches!(
+                body.locals.get(local as usize).map(|d| &d.kind),
+                Some(LocalKind::DropFlag)
+            )
+        };
+        for (bi, block) in self.body.blocks.clone().iter().enumerate() {
+            let bi = bi as u32;
+            let flag_operand = |this: &mut Self, op: &Operand, what: &str| {
+                if let Operand::Copy(place) | Operand::Move(place) = op {
+                    if is_flag(this.body, place.local.0) {
+                        this.err(
+                            "MIR-0009",
+                            bi,
+                            format!("drop-flag _{} read as {what}", place.local.0),
+                        );
+                    }
+                }
+            };
+            for (stmt, _) in &block.statements {
+                if let Statement::Assign(_, rvalue) = stmt {
+                    match rvalue {
+                        Rvalue::Use(op) | Rvalue::UnOp(_, op) => {
+                            flag_operand(self, op, "a statement operand")
+                        }
+                        Rvalue::BinOp(_, a, b) => {
+                            flag_operand(self, a, "a statement operand");
+                            flag_operand(self, b, "a statement operand");
+                        }
+                        Rvalue::Aggregate(_, ops) => {
+                            for op in ops {
+                                flag_operand(self, op, "an aggregate operand");
+                            }
+                        }
+                        Rvalue::Discriminant(place) | Rvalue::RefOf { place, .. } => {
+                            if is_flag(self.body, place.local.0) {
+                                self.err(
+                                    "MIR-0009",
+                                    bi,
+                                    format!("drop-flag _{} used as a place", place.local.0),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            match &block.terminator.0 {
+                Terminator::SwitchInt {
+                    scrut: Operand::Move(place),
+                    ..
+                } if is_flag(self.body, place.local.0) => {
+                    // The one permitted read form is a Copy of the bare flag local.
+                    let local = place.local.0;
+                    self.err(
+                        "MIR-0009",
+                        bi,
+                        format!("drop-flag _{local} consumed by Move"),
+                    );
+                }
+                Terminator::Call { callee, args, .. } => {
+                    if let Callee::FnValue(op) = callee {
+                        flag_operand(self, op, "an indirect callee");
+                    }
+                    for arg in args {
+                        flag_operand(self, arg, "a call argument");
+                    }
+                }
+                Terminator::Checked { args, .. } => {
+                    for arg in args {
+                        flag_operand(self, arg, "a checked argument");
+                    }
+                }
+                Terminator::Drop { place, .. } if is_flag(self.body, place.local.0) => {
+                    let local = place.local.0;
+                    self.err(
+                        "MIR-0009",
+                        bi,
+                        format!("drop-flag _{local} used as a Drop place"),
+                    );
+                }
+                _ => {}
+            }
         }
     }
 
@@ -1076,6 +1213,24 @@ fn is_numeric(ty: &MirTy) -> bool {
 /// Can a value of this type ever require dropping? (Conservative: user nominals yes — the
 /// scalar core never emits Drop, and C4.5's elaboration will refine this with real Drop-impl
 /// knowledge; primitives/fn-values/refs never need dropping.)
+/// Dataflow key of a place: its pure-Field path, or the whole local (path `[]`) when any
+/// non-Field projection is involved (conservative).
+fn moved_key(place: &Place) -> (u32, Vec<u32>) {
+    let mut path = Vec::new();
+    for proj in &place.projection {
+        match proj {
+            Projection::Field(i) => path.push(*i),
+            _ => return (place.local.0, Vec::new()),
+        }
+    }
+    (place.local.0, path)
+}
+
+fn paths_prefix_related(a: &[u32], b: &[u32]) -> bool {
+    let n = a.len().min(b.len());
+    a[..n] == b[..n]
+}
+
 fn may_need_drop(ty: &MirTy) -> bool {
     match ty {
         MirTy::Struct(..) | MirTy::Enum(..) | MirTy::String | MirTy::Core(..) => true,

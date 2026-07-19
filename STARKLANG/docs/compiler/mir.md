@@ -95,7 +95,10 @@ CD-029; the MIR version remains v0.1. *Implementation note (WP-C4.5c):* because 
 in monomorphised-only MIR is an instance, the context's entries are keyed per
 `(ItemId, type arguments)` — `Pair<Int32>` and `Pair<Bool>` are distinct entries; non-generic
 nominals key with an empty argument vector. This realizes the paragraph above for generic
-nominals and is not a shape/version change.
+nominals and is not a shape/version change. *Implementation note (WP-C4.5d):* the in-memory
+context additionally carries the destructor instance symbol per nominal instance with an own
+`Drop` impl (`drop_impls`), which is how `Drop`-terminator glue dispatches destructors —
+same in-memory-companion status, not dump-serialized, no version change.
 
 ## 3. MIR types (`MirTy`)
 

@@ -367,6 +367,10 @@ pub enum Terminator {
 pub struct TypeContext {
     pub struct_fields: std::collections::BTreeMap<(u32, Vec<MirTy>), Vec<MirTy>>,
     pub enum_variants: std::collections::BTreeMap<(u32, Vec<MirTy>), Vec<Vec<MirTy>>>,
+    /// C4.5d: destructor instance symbol per nominal instance with an own `Drop` impl —
+    /// how `Drop`-terminator glue (interpreter now, backends later) dispatches destructors.
+    /// Populated for every nominal reachable through a lowered `Drop`'s glue.
+    pub drop_impls: std::collections::BTreeMap<(u32, Vec<MirTy>), String>,
 }
 
 #[derive(Clone, Debug)]

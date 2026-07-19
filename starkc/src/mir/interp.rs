@@ -21,6 +21,10 @@
 //!   CheckIndex bounds). A trap ABORTS with category AND provenance (CD-029) — no unwinding.
 //! - `Move` operands *take* whole-local values (poisoning the slot) so verifier-missed
 //!   use-after-move explodes loudly; projected/deref reads copy.
+//! - `Drop` terminators (C4.5d) run recursive drop glue: the type's own destructor instance
+//!   through an `&mut` reference (mutations stay visible to what follows), then fields or the
+//!   runtime-discriminant variant payload in reverse declaration order; whole-local drops
+//!   poison the slot afterwards.
 //! - Float printing calls `crate::interp::canonical_float` — the oracle's own formatter
 //!   (shared by design; compensating spec tests live in `tests/canonical_float.rs`).
 //! - A fuel guard turns runaway loops from lowering bugs into clean internal errors.
@@ -209,9 +213,18 @@ impl<'a> Interp<'a> {
                     self.write_place(here, dest, result)?;
                     block = *target;
                 }
-                Terminator::Drop { place: _, target } => {
-                    // No Drop elaboration is emitted before C4.5d; executing one on the
-                    // drop-free subset is a nop. C4.5d gives this destructor dispatch.
+                Terminator::Drop { place, target } => {
+                    // C4.5d: run the place's drop glue — its own destructor instance (if
+                    // the type has a Drop impl), then its fields/payload in reverse
+                    // declaration order. A destructor that traps aborts (no unwind edge).
+                    let ty = self.place_ty(body, place)?;
+                    let (f, l, p) = self.resolve_place(here, place)?;
+                    self.drop_in_place(f, l, p, &ty)?;
+                    if place.projection.is_empty() {
+                        // Whole-local drop: poison the slot so verifier-missed
+                        // use-after-drop explodes loudly (same discipline as Move).
+                        self.frames[here].locals[place.local.0 as usize] = None;
+                    }
                     block = *target;
                 }
                 Terminator::Checked {
@@ -256,6 +269,164 @@ impl<'a> Interp<'a> {
                 }
             }
         }
+    }
+
+    // ---- drop glue (C4.5d) ----
+
+    /// Syntactic type of a place: local type refined through the projections, resolved via
+    /// the program's type context (the same derivation the verifier types places with).
+    fn place_ty(&self, body: &MirBody, place: &Place) -> Result<MirTy, MirRunError> {
+        let mut ty = body
+            .locals
+            .get(place.local.0 as usize)
+            .map(|d| d.ty.clone())
+            .ok_or_else(|| MirRunError::Internal("place local out of bounds".into()))?;
+        for proj in &place.projection {
+            ty = match (proj, ty) {
+                (Projection::Field(i), MirTy::Struct(item, args)) => self
+                    .program
+                    .types
+                    .struct_fields
+                    .get(&(item.0, args))
+                    .and_then(|fields| fields.get(*i as usize))
+                    .cloned()
+                    .ok_or_else(|| {
+                        MirRunError::Internal(format!("no field type for struct #{}", item.0))
+                    })?,
+                (Projection::Field(i), MirTy::Tuple(elems)) => elems
+                    .get(*i as usize)
+                    .cloned()
+                    .ok_or_else(|| MirRunError::Internal("tuple field out of bounds".into()))?,
+                (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => self
+                    .variant_payload_tys(&enum_ref, &args, *v)?
+                    .get(*i as usize)
+                    .cloned()
+                    .ok_or_else(|| MirRunError::Internal("variant field out of bounds".into()))?,
+                (Projection::Deref, MirTy::Ref { inner, .. }) => *inner,
+                (Projection::Index(_), MirTy::Array(elem, _))
+                | (Projection::Index(_), MirTy::Slice(elem)) => *elem,
+                (proj, ty) => {
+                    return self.internal(format!("place typing: {proj:?} on {ty:?}"));
+                }
+            };
+        }
+        Ok(ty)
+    }
+
+    fn variant_payload_tys(
+        &self,
+        enum_ref: &EnumRef,
+        args: &[MirTy],
+        variant: u32,
+    ) -> Result<Vec<MirTy>, MirRunError> {
+        match enum_ref {
+            EnumRef::CoreOption => Ok(if variant == 1 {
+                vec![args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| MirRunError::Internal("Option without argument".into()))?]
+            } else {
+                Vec::new()
+            }),
+            EnumRef::CoreResult => Ok(vec![args
+                .get(variant as usize)
+                .cloned()
+                .ok_or_else(|| MirRunError::Internal("Result variant out of range".into()))?]),
+            EnumRef::User(item) => self
+                .program
+                .types
+                .enum_variants
+                .get(&(item.0, args.to_vec()))
+                .and_then(|variants| variants.get(variant as usize))
+                .cloned()
+                .ok_or_else(|| {
+                    MirRunError::Internal(format!("no variant table for enum #{}", item.0))
+                }),
+        }
+    }
+
+    /// Recursive drop glue for the value at (frame, local, path): call the type's own
+    /// destructor instance through an `&mut` reference (mutations stay visible to the field
+    /// destruction that follows, matching the oracle), then destroy fields/payload in
+    /// reverse declaration order.
+    fn drop_in_place(
+        &mut self,
+        frame: usize,
+        local: u32,
+        path: Vec<ConcreteProj>,
+        ty: &MirTy,
+    ) -> Result<(), MirRunError> {
+        match ty {
+            MirTy::Struct(item, args) => {
+                if let Some(symbol) = self.program.types.drop_impls.get(&(item.0, args.clone())) {
+                    let Some(&idx) = self.by_symbol.get(symbol.as_str()) else {
+                        return self.internal(format!("dtor instance {symbol} not lowered"));
+                    };
+                    let receiver = MirValue::Ref {
+                        frame,
+                        local,
+                        path: path.clone(),
+                    };
+                    self.call(idx, vec![receiver])?;
+                }
+                let fields = self
+                    .program
+                    .types
+                    .struct_fields
+                    .get(&(item.0, args.clone()))
+                    .cloned()
+                    .ok_or_else(|| {
+                        MirRunError::Internal(format!("no field table for struct #{}", item.0))
+                    })?;
+                for (i, fty) in fields.iter().enumerate().rev() {
+                    let mut p = path.clone();
+                    p.push(ConcreteProj::Field(i as u32));
+                    self.drop_in_place(frame, local, p, fty)?;
+                }
+            }
+            MirTy::Enum(enum_ref, args) => {
+                if let EnumRef::User(item) = enum_ref {
+                    if let Some(symbol) = self.program.types.drop_impls.get(&(item.0, args.clone()))
+                    {
+                        let Some(&idx) = self.by_symbol.get(symbol.as_str()) else {
+                            return self.internal(format!("dtor instance {symbol} not lowered"));
+                        };
+                        let receiver = MirValue::Ref {
+                            frame,
+                            local,
+                            path: path.clone(),
+                        };
+                        self.call(idx, vec![receiver])?;
+                    }
+                }
+                let value = self.read_resolved(frame, local, &path)?;
+                let MirValue::Enum { variant, .. } = value else {
+                    return self.internal("Drop glue: enum-typed place holds a non-enum value");
+                };
+                let payload = self.variant_payload_tys(enum_ref, args, variant)?;
+                for (i, fty) in payload.iter().enumerate().rev() {
+                    let mut p = path.clone();
+                    p.push(ConcreteProj::Variant(variant, i as u32));
+                    self.drop_in_place(frame, local, p, fty)?;
+                }
+            }
+            MirTy::Tuple(elems) => {
+                for (i, ety) in elems.iter().enumerate().rev() {
+                    let mut p = path.clone();
+                    p.push(ConcreteProj::Field(i as u32));
+                    self.drop_in_place(frame, local, p, ety)?;
+                }
+            }
+            MirTy::Array(elem, len) => {
+                for i in (0..*len).rev() {
+                    let mut p = path.clone();
+                    p.push(ConcreteProj::Index(i as usize));
+                    self.drop_in_place(frame, local, p, elem)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     // ---- place resolution (C4.5b-2) ----

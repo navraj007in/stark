@@ -474,3 +474,141 @@ fn rejects_index_proof_bound_to_a_different_base() {
     };
     expect_code(&program_with(vec![b]), "MIR-0010");
 }
+
+/// WP-C4.5d (V-DROP-2 read half): a drop flag may be read only as a SwitchInt scrutinee —
+/// any other read (here: a call argument) is rejected.
+#[test]
+fn rejects_drop_flag_read_outside_switchint() {
+    let b = body(
+        vec![
+            ret_local(),
+            LocalDecl {
+                ty: MirTy::Bool,
+                kind: LocalKind::DropFlag,
+            },
+            local(MirTy::Unit),
+        ],
+        vec![
+            block(
+                vec![Statement::Assign(
+                    Place::local(LocalId(1)),
+                    Rvalue::Use(Operand::Const(Constant::Bool(true))),
+                )],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::PrintlnBool),
+                    args: vec![Operand::Copy(Place::local(LocalId(1)))],
+                    dest: Place::local(LocalId(2)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0009");
+}
+
+/// WP-C4.5d (V-MOVE-1 field precision): moving one field leaves sibling fields readable —
+/// the partial-move MIR the drop elaboration emits must verify clean.
+#[test]
+fn partial_move_of_one_field_leaves_sibling_readable() {
+    let item = starkc::hir::ItemId(0);
+    let struct_ty = MirTy::Struct(item, Vec::new());
+    let b = body(
+        vec![
+            ret_local(),
+            local(struct_ty.clone()),
+            local(MirTy::Int32),
+            local(MirTy::Int32),
+        ],
+        vec![block(
+            vec![
+                Statement::Assign(
+                    Place::local(LocalId(1)),
+                    Rvalue::Aggregate(
+                        starkc::mir::AggKind::Struct(item),
+                        vec![
+                            Operand::Const(Constant::Int(1, MirTy::Int32)),
+                            Operand::Const(Constant::Int(2, MirTy::Int32)),
+                        ],
+                    ),
+                ),
+                // move .0 out, then read .1 — legal with field precision.
+                Statement::Assign(
+                    Place::local(LocalId(2)),
+                    Rvalue::Use(Operand::Move(Place {
+                        local: LocalId(1),
+                        projection: vec![Projection::Field(0)],
+                    })),
+                ),
+                Statement::Assign(
+                    Place::local(LocalId(3)),
+                    Rvalue::Use(Operand::Copy(Place {
+                        local: LocalId(1),
+                        projection: vec![Projection::Field(1)],
+                    })),
+                ),
+            ],
+            Terminator::Return,
+        )],
+    );
+    let mut program = program_with(vec![b]);
+    program
+        .types
+        .struct_fields
+        .insert((0, Vec::new()), vec![MirTy::Int32, MirTy::Int32]);
+    if let Err(errors) = verify_program(&program) {
+        panic!("partial move should verify clean, got:\n{errors:#?}");
+    }
+}
+
+/// WP-C4.5d (V-MOVE-1 field precision): reading the moved field itself — or the whole
+/// containing value — is still rejected.
+#[test]
+fn rejects_read_of_moved_field_and_moved_container() {
+    let item = starkc::hir::ItemId(0);
+    let struct_ty = MirTy::Struct(item, Vec::new());
+    let b = body(
+        vec![
+            ret_local(),
+            local(struct_ty.clone()),
+            local(MirTy::Int32),
+            local(MirTy::Int32),
+        ],
+        vec![block(
+            vec![
+                Statement::Assign(
+                    Place::local(LocalId(1)),
+                    Rvalue::Aggregate(
+                        starkc::mir::AggKind::Struct(item),
+                        vec![
+                            Operand::Const(Constant::Int(1, MirTy::Int32)),
+                            Operand::Const(Constant::Int(2, MirTy::Int32)),
+                        ],
+                    ),
+                ),
+                Statement::Assign(
+                    Place::local(LocalId(2)),
+                    Rvalue::Use(Operand::Move(Place {
+                        local: LocalId(1),
+                        projection: vec![Projection::Field(0)],
+                    })),
+                ),
+                // read of the moved field: conflict.
+                Statement::Assign(
+                    Place::local(LocalId(3)),
+                    Rvalue::Use(Operand::Copy(Place {
+                        local: LocalId(1),
+                        projection: vec![Projection::Field(0)],
+                    })),
+                ),
+            ],
+            Terminator::Return,
+        )],
+    );
+    let mut program = program_with(vec![b]);
+    program
+        .types
+        .struct_fields
+        .insert((0, Vec::new()), vec![MirTy::Int32, MirTy::Int32]);
+    expect_code(&program, "MIR-0007");
+}
