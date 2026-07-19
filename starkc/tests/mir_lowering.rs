@@ -1,0 +1,286 @@
+//! WP-C4.2 — scalar HIR→MIR lowering tests.
+//!
+//! Verifies against real programs (including frozen exec_snapshots corpus cases,
+//! `corpus_version = 1.0.0`): that the scalar subset lowers, that the dump is deterministic,
+//! that structural contract invariants hold on every produced body (single sealed terminator
+//! per block, `SourceInfo` present with a valid `FileId` on every statement and terminator —
+//! V-SRC-1's data prerequisite), and that out-of-subset constructs are reported as clean
+//! `Unsupported` errors naming C4.5 rather than mislowered (charter: nothing unsupported
+//! reaches a backend silently). Execution-level differential validation is WP-C4.4 (the MIR
+//! interpreter), not this file.
+
+use starkc::diag::Severity;
+use starkc::mir::{self, lower::lower_program};
+use starkc::parser::{parse, ParseMode};
+use starkc::resolve::resolve;
+use starkc::source::SourceFile;
+use starkc::typecheck;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+fn corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/exec_snapshots")
+}
+
+struct Front {
+    hir: starkc::hir::Hir,
+    file: Arc<SourceFile>,
+    tables: starkc::typecheck::TypeTables,
+}
+
+fn front_end_src(name: &str, source: String) -> Front {
+    let file = Arc::new(SourceFile::new(name, source));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{name}: parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{name}: resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    let errors: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{name}: typecheck: {errors:?}");
+    Front {
+        hir,
+        file,
+        tables: checked.tables,
+    }
+}
+
+fn front_end_corpus(name: &str) -> Front {
+    let path = corpus_dir().join(format!("{name}.stark"));
+    let source = std::fs::read_to_string(&path).unwrap();
+    front_end_src(&path.to_string_lossy(), source)
+}
+
+/// Contract structural invariants every lowered program must satisfy (pre-verifier, WP-C4.3
+/// builds the real verifier on top of these).
+fn assert_structural_invariants(program: &mir::MirProgram) {
+    assert!(!program.files.is_empty(), "file table must not be empty");
+    for body in &program.bodies {
+        assert!(
+            !body.blocks.is_empty(),
+            "{}: body must have at least one block",
+            body.instance.symbol
+        );
+        assert!(
+            (body.entry.0 as usize) < body.blocks.len(),
+            "{}: entry block in bounds",
+            body.instance.symbol
+        );
+        for (bi, block) in body.blocks.iter().enumerate() {
+            // Every statement and the terminator carry SourceInfo with a valid FileId.
+            for (_, info) in &block.statements {
+                assert!(
+                    (info.file.0 as usize) < program.files.len(),
+                    "{} bb{bi}: statement SourceInfo has invalid FileId",
+                    body.instance.symbol
+                );
+            }
+            let (_, term_info) = &block.terminator;
+            assert!(
+                (term_info.file.0 as usize) < program.files.len(),
+                "{} bb{bi}: terminator SourceInfo has invalid FileId",
+                body.instance.symbol
+            );
+            // Terminator targets are in bounds.
+            let mut targets: Vec<mir::BlockId> = Vec::new();
+            match &block.terminator.0 {
+                mir::Terminator::Goto { target } => targets.push(*target),
+                mir::Terminator::SwitchInt {
+                    arms, otherwise, ..
+                } => {
+                    targets.extend(arms.iter().map(|(_, b)| *b));
+                    targets.push(*otherwise);
+                }
+                mir::Terminator::Call { target, .. }
+                | mir::Terminator::Drop { target, .. }
+                | mir::Terminator::Checked { target, .. } => targets.push(*target),
+                mir::Terminator::Trap { .. }
+                | mir::Terminator::Return
+                | mir::Terminator::Unreachable => {}
+            }
+            for target in targets {
+                assert!(
+                    (target.0 as usize) < body.blocks.len(),
+                    "{} bb{bi}: terminator target bb{} out of bounds",
+                    body.instance.symbol,
+                    target.0
+                );
+            }
+        }
+        // No Param/Infer types can exist by construction (MirTy has no such variants) —
+        // monomorphised-only holds structurally (V-TY-2).
+    }
+}
+
+fn lower_ok(front: &Front) -> mir::MirProgram {
+    match lower_program(&front.hir, &front.tables, front.file.clone()) {
+        Ok(program) => program,
+        Err(e) => panic!("lowering failed: {} @ {:?}", e.what, e.span),
+    }
+}
+
+/// Frozen-corpus scalar cases that must lower. (Cases using methods, strings, `?`, casts, or
+/// collections are C4.5 scope and are covered by the unsupported test below.)
+const LOWERABLE_CORPUS: &[&str] = &[
+    "expr_stmt__01_arithmetic_and_precedence",
+    "expr_stmt__03_loops_break_continue",
+    "primitive__01_integer_widths_and_overflow_traps",
+    "primitive__02_integer_overflow_traps",
+    "struct_enum_trait__02_enum_and_pattern_match",
+];
+
+#[test]
+fn scalar_corpus_cases_lower_with_contract_invariants() {
+    for name in LOWERABLE_CORPUS {
+        let front = front_end_corpus(name);
+        let program = lower_ok(&front);
+        assert_structural_invariants(&program);
+        assert!(
+            program
+                .bodies
+                .iter()
+                .any(|b| b.instance.symbol.starts_with("main@")),
+            "{name}: lowered program must contain main"
+        );
+    }
+}
+
+#[test]
+fn dump_is_deterministic_and_versioned() {
+    let front = front_end_corpus("expr_stmt__03_loops_break_continue");
+    let first = lower_ok(&front).dump();
+    let second = lower_ok(&front).dump();
+    assert_eq!(first, second, "dump must be deterministic across runs");
+    assert!(
+        first.starts_with(&format!("// STARK MIR v{}\n", mir::MIR_VERSION)),
+        "dump must carry the MIR version header"
+    );
+}
+
+/// Golden end-to-end mini-dump: pins the concrete shape reviewers approved (Checked terminator
+/// with trap category, runtime println call, return-place convention). Deliberately tiny so
+/// the golden stays reviewable; broad coverage is structural, not golden-based.
+#[test]
+fn golden_mini_dump() {
+    let front = front_end_src("mini.stark", "fn main() { println(2 + 3); }".to_string());
+    let program = lower_ok(&front);
+    let dump = program.dump();
+    // Note the real shapes this pins: integer literals default to Int32 (Core inference), the
+    // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
+    // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
+    let expected = "\
+// STARK MIR v0.1
+
+fn main@[] {
+  locals: _0: Unit [ret], _1: Unit [tmp], _2: Int32 [tmp], _3: Int64 [tmp]
+  bb0:
+    _2 = checked Add(const 2Int32, const 3Int32) -> bb1 trap:IntegerOverflow  // mini.stark:1:21
+  bb1:
+    _3 = checked Cast(copy _2) -> bb2 trap:CastFailure  // mini.stark:1:13
+  bb2:
+    _1 = call runtime:PrintlnInt64(copy _3) -> bb3  // mini.stark:1:13
+  bb3:
+    _0 = const ()  // mini.stark:1:11 synthetic:ReturnSlot
+    return  // mini.stark:1:11 synthetic:ReturnSlot
+  bb4:
+    unreachable  // mini.stark:1:11 synthetic:ReturnSlot
+}
+";
+    assert_eq!(dump, expected, "golden mini-dump changed:\n{dump}");
+}
+
+/// Function values and indirect calls (CD-021 items 16/17) lower to FnPtr constants and
+/// FnValue callees.
+#[test]
+fn function_values_lower_to_fnptr_and_indirect_calls() {
+    let front = front_end_src(
+        "fnval.stark",
+        "fn double(x: Int32) -> Int32 { x * 2 } \
+         fn main() { let f: fn(Int32) -> Int32 = double; println(f(21)); }"
+            .to_string(),
+    );
+    let program = lower_ok(&front);
+    assert_structural_invariants(&program);
+    let dump = program.dump();
+    assert!(
+        dump.contains("const fnptr double@[]"),
+        "expected a FnPtr constant in:\n{dump}"
+    );
+    assert!(
+        dump.contains("call fnvalue("),
+        "expected an indirect FnValue call in:\n{dump}"
+    );
+    assert!(
+        program
+            .bodies
+            .iter()
+            .any(|b| b.instance.symbol == "double@[]"),
+        "instance discovery must include the fn-value target"
+    );
+}
+
+/// Option/Result lower as logical enums (CD-028 required change #2): construction is an
+/// EnumVariant aggregate and matching goes through Discriminant + SwitchInt — no runtime call.
+#[test]
+fn option_lowers_as_logical_enum() {
+    let front = front_end_src(
+        "opt.stark",
+        "fn pick(flag: Bool) -> Option<Int32> { if flag { Some(7) } else { None } } \
+         fn main() { \
+             match pick(true) { \
+                 Some(v) => println(v), \
+                 None => println(0), \
+             } \
+         }"
+        .to_string(),
+    );
+    let program = lower_ok(&front);
+    assert_structural_invariants(&program);
+    let dump = program.dump();
+    assert!(
+        dump.contains("aggregate Option::v1") && dump.contains("aggregate Option::v0"),
+        "Option construction must be EnumVariant aggregates:\n{dump}"
+    );
+    assert!(
+        dump.contains("discriminant("),
+        "Option matching must read a discriminant:\n{dump}"
+    );
+}
+
+/// Out-of-subset constructs are clean Unsupported errors naming the owning follow-up — never
+/// silent mislowering.
+#[test]
+fn unsupported_constructs_report_cleanly() {
+    let cases = [
+        (
+            "generic.stark",
+            "fn id<T>(x: T) -> T { x } fn main() { println(id(1)); }",
+            "generic",
+        ),
+        (
+            "string.stark",
+            "fn main() { let s = String::from(\"hi\"); println(s.as_str()); }",
+            "C4.5",
+        ),
+        (
+            "method.stark",
+            "struct P { x: Int32 } impl P { fn get(&self) -> Int32 { self.x } } \
+             fn main() { let p = P { x: 1 }; println(p.get()); }",
+            "C4.5",
+        ),
+    ];
+    for (name, src, needle) in cases {
+        let front = front_end_src(name, src.to_string());
+        match lower_program(&front.hir, &front.tables, front.file.clone()) {
+            Ok(_) => panic!("{name}: expected Unsupported, but lowering succeeded"),
+            Err(e) => assert!(
+                e.what.contains(needle),
+                "{name}: unsupported reason should mention {needle:?}, got: {}",
+                e.what
+            ),
+        }
+    }
+}

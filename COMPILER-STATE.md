@@ -2,7 +2,11 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C4 (MIR contract approved)  Next: WP-C4.2 (typed HIR → MIR lowering, scalar core)  Blocked: none
+Gate: C4  Next: WP-C4.3 (MIR verifier)  Blocked: none
+WP-C4.2 done 2026-07-19: `starkc/src/mir/` implements the approved MIR v0.1 model (all CD-028
+shapes) + scalar-core lowering + deterministic dump; 5 frozen-corpus cases lower; fn-values,
+Option/Result-as-logical-enums, checked-terminator arithmetic all verified by tests (6 new,
+workspace 611/0/2). Out-of-subset constructs report clean Unsupported naming C4.5.
 MIR v0.1 contract APPROVED under CE3 (CD-028, approve-with-required-changes — Drop terminator,
 Option/Result as logical enums, index-proof tokens; all applied). `mir.md` is the binding
 implementation contract; changes to its shape need a new CE3 review + version bump.
@@ -1227,3 +1231,40 @@ NEXT: WP-C4.2 — typed HIR → MIR lowering, scalar core (literals/locals, unar
 blocks/assignments, functions/calls, if/loops/break/continue/return, tuples/arrays/structs/
 basic enums, pattern matching without advanced drop elaboration), with every MIR instruction
 carrying real or labeled-synthetic SourceInfo.
+
+### WP-C4.2 — Typed HIR → MIR lowering, scalar core — 2026-07-19
+DONE: implemented the MIR v0.1 data model (`starkc/src/mir/mod.rs`) exactly per the approved
+contract — Drop as terminator, logical Option/Result enums (EnumRef::CoreOption/CoreResult),
+IndexProof local kind, Checked with one normal successor + TrapInfo, closed RuntimeFn surface,
+interned FileId + SourceInfo on every statement/terminator, versioned deterministic dump — and
+the scalar-core lowering (`src/mir/lower.rs`): monomorphised-only deterministic deduplicated
+instance discovery from main; trapping ops as Checked terminators (int arith/neg, float
+div/rem) with float add/sub/mul + comparisons as total rvalues; short-circuit &&/|| as CFG;
+if/while/loop/for-range (labeled synthetic provenance)/break/continue/return; direct calls;
+FnPtr constants + FnValue indirect calls (CD-021 items 16/17); tuples/arrays/structs
+(written-order eval, decl-order aggregation); user enums incl. unit variants + struct-variant
+literals; Option/Result construction as logical-enum aggregates and matching via
+Discriminant+SwitchInt with VariantField binding; println/print via runtime surface with
+uniform checked widening casts. Scalar-core drop restriction: Drop-impl types are Unsupported
+(C4.5 owns elaboration). New `pub mod mir` in lib.rs.
+FILES: starkc/src/mir/mod.rs (new), starkc/src/mir/lower.rs (new), starkc/src/lib.rs,
+starkc/tests/mir_lowering.rs (new, 6 tests), STARKLANG/docs/compiler/work-packages/WP-C4.2.md
+(new), COMPILER-STATE.md.
+RULES: none — implementation of the approved contract; no Core semantics change; front-end
+checks not bypassed (lowering consumes fully-checked typed HIR + TypeTables).
+DECISIONS: none at CE level.
+EVIDENCE: `cargo test --test mir_lowering` 6/6 (corpus scalar cases expr_stmt__01/__03,
+primitive__01/__02, struct_enum_trait__02 lower with structural invariants — sealed
+single-terminator blocks, in-bounds targets, valid FileId everywhere; dump deterministic +
+versioned; golden mini-dump pinning Checked-Add/Cast/runtime-call/return-place shapes;
+fn-value + indirect-call lowering incl. instance discovery of the target; Option lowers as
+aggregate+discriminant with no runtime call; generics/strings/methods report clean Unsupported
+naming C4.5). Full workspace 611 passed / 0 failed / 2 ignored (605 → 611). fmt + clippy
+-D warnings clean.
+FOLLOW-UP: golden documents that unsuffixed int literals infer Int32 and println's Int64
+runtime signature forces an explicit (infallible, still Checked) widening cast — revisit cast
+uniformity only via a contract version bump. Bool matches without a default arm and bitwise
+int ops are recorded Unsupported (contract's non-trapping BinOp set lacks int bitwise ops —
+flag for the C4.5-era contract addendum + version note).
+NEXT: WP-C4.3 — MIR verifier (contract §10's 13 obligations, MIR-xxxx diagnostics, safe
+failure); then WP-C4.4 MIR interpreter differential vs the HIR oracle.

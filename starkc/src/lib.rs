@@ -24,6 +24,7 @@ pub mod interp;
 pub mod lexer;
 pub mod literal;
 pub mod lsp;
+pub mod mir;
 pub mod onnx;
 pub mod options;
 pub mod package;
