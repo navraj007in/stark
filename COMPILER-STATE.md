@@ -2,12 +2,14 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C3  Next: WP-C3.2 / WP-C3.3 (backend spikes)  Blocked: none
-C3-ENTRY closed 2026-07-19; WP-C3.1 done — `NATIVE-CORE-ARCHITECTURE.md` written, 23-item
-workload frozen, measurement framework defined, leading hypothesis SELECT-GENERATED (to be
-falsified by the spikes; CE5 selection is the owner's at WP-C3.4). Native backend selection
-status: SPIKING. Next: implement the generated-Rust spike (WP-C3.2) and direct-Cranelift spike
-(WP-C3.3), then WP-C3.4 selects.
+Gate: C3  Next: WP-C3.3 (direct Cranelift spike)  Blocked: none
+C3-ENTRY closed 2026-07-19; WP-C3.1 done (`NATIVE-CORE-ARCHITECTURE.md`, 23-item workload frozen,
+measurement framework, leading hypothesis SELECT-GENERATED). WP-C3.2 done — generated-Rust spike
+(`starkc/tests/spike_genrust.rs`, isolated per charter §2.2) lowers 4/17 frozen corpus cases and
+matches the interpreter exactly, incl. trap→abort parity; report at
+`starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md`. Native backend selection status:
+SPIKING. Next: WP-C3.3 (direct Cranelift spike, same workload + measurements), then WP-C3.4
+selects under CE5 (owner).
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
@@ -616,9 +618,18 @@ involving nested modules and private items should assume this stricter model.
   frozen `exec_snapshots` corpus v1.0.0 (semantic oracle), items 11-23 specified reference
   programs. Two properties (fn-value Eq/Ord/Hash participation, monomorphised-generic fn-value
   identity) must be settled from the frozen spec or by CE1/CE2 before selection (CD-022).
+- Spike evidence so far:
+  - **WP-C3.2 generated-Rust (done):** 4/17 frozen corpus cases lower and match the interpreter
+    exactly (arithmetic/precedence, loops/for/break/continue, multi-width ints, Int8-overflow
+    trap→abort parity); 0 semantic mismatches on supported cases; 13/17 cleanly reported
+    unsupported; mean rustc 87 ms/case. Liabilities unresolved (not falsified): rustc
+    build-dependency weight, compile-time scaling, exe size, debug-info trap mapping, and the
+    unsupported breadth (aggregates/generics/traits/refs/Drop/fn-values). Report:
+    `starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md`; artifact `tests/spike_genrust.rs`
+    (isolated, disposable).
+  - **WP-C3.3 direct Cranelift:** not yet run.
 - Evidence: see CD-002 for the closest existing evidence (old Gate 6/7 tensor/ONNX-deployment
-  track) — informative precedent for methodology, not a substitute (CD-004). Fresh evidence
-  comes from the C3.2/C3.3 spikes.
+  track) — informative precedent for methodology, not a substitute (CD-004).
 
 ## Diagnostic codes allocated or changed
 - **E0008** [WP-C1.5] Integer literal out of range for its type (suffixed literal exceeds its
@@ -937,3 +948,36 @@ WP-C3.4 selection (CD-022).
 NEXT: WP-C3.2 (generated Rust/C spike) and WP-C3.3 (direct Cranelift spike) — each implements
 the reachable workload subset and reports every measurement dimension + unsupported constructs;
 then WP-C3.4 selects under CE5.
+
+### WP-C3.2 — Generated-Rust backend spike — 2026-07-19
+DONE: built and ran the generated-Rust backend spike (Candidate A). Isolated HIR→Rust lowerer +
+compile/run/diff harness in `starkc/tests/spike_genrust.rs` (charter §2.2 — NOT wired into
+`stark build`, adds nothing to the library surface, disposable). Lowers a supported subset
+(integer primitives i8..u64 + Bool, trap-checked arithmetic, comparisons/logic, let/mut/assign,
+if/while/loop/for/break/continue, block-tail values, non-generic fns + calls, print/println)
+from typed HIR to Rust, compiles with rustc, runs, compares stdout+exit-status to the interpreter
+oracle over the frozen exec_snapshots corpus v1.0.0. Wrote the spike report
+`starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md` (new spikes/ dir) with every WP-C3.2
+measurement record + the NATIVE-CORE-ARCHITECTURE.md §7 dimension mapping. Created WP-C3.2.md.
+RESULT: 4/17 corpus cases lowered and matched exactly (arithmetic/precedence,
+loops/for/break/continue, multi-width ints, Int8-overflow trap→abort parity); 0 semantic
+mismatches on supported cases; 13/17 cleanly reported unsupported with reasons; mean rustc
+compile 87 ms/case. Candidate liabilities (rustc dep weight, compile-time scaling, exe size,
+debug-info trap mapping, unsupported breadth) neither falsified nor cleared — that needs the
+C3.3 spike + a breadth run.
+FILES: starkc/tests/spike_genrust.rs (new), starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md
+(new), STARKLANG/docs/compiler/work-packages/WP-C3.2.md (new), COMPILER-STATE.md.
+RULES: none — spike/evidence only. The spike does NOT bypass front-end checks (it consumes
+already-validated typed HIR) and does NOT select a backend (WP-C3.4/CE5). No Core semantics,
+compiler, or interpreter change.
+DECISIONS: none at CE level. Native-backend-selection status stays SPIKING.
+EVIDENCE: `cargo test --test spike_genrust` 2 passed; full workspace
+`cargo test --workspace --all-targets --all-features` 599 passed / 0 failed / 2 ignored (597 +
+the 2 spike tests); `cargo fmt --all -- --check` and `cargo clippy --test spike_genrust
+--all-features -- -D warnings` clean. Coverage table reproduced via `-- --nocapture`.
+FOLLOW-UP: WP-C3.3 direct-Cranelift spike must run before any candidate comparison; dimensions
+3/5/11/12/13 (exe size, runtime perf, monomorphisation, trait dispatch, ref/slice/Drop ABI) need
+a breadth run on both candidates. The two open fn-value properties (CD-022) still pending
+pre-C3.4.
+NEXT: WP-C3.3 — direct Cranelift spike over the same frozen workload with the same measurement
+record; then WP-C3.4 selects under CE5.
