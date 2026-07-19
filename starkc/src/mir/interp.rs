@@ -62,15 +62,23 @@ pub enum MirValue {
         local: u32,
         path: Vec<ConcreteProj>,
     },
+    /// A `&str` value (A1). Self-contained: a literal, or a read-only snapshot produced by
+    /// `StringAsStr` (§5b — sound because the view is read-only and str identity is
+    /// unobservable). `Rc` is an unobservable cheap-copy convenience.
+    Str(std::rc::Rc<str>),
+    /// An owned `String` value (A1). Non-Copy; drop-elaborated (buffer reclaim is a no-op).
+    String(String),
 }
 
 #[derive(Debug)]
 pub enum MirRunError {
     /// A language trap: category AND provenance (CD-029 — category alone made the
-    /// differential blind to wrong-location traps).
+    /// differential blind to wrong-location traps) AND the resolved user message when one
+    /// exists (A1/CD-031 — `panic(msg)` carries it; compiler-generated traps carry `None`).
     Trap {
         category: TrapCategory,
         source: SourceInfo,
+        message: Option<String>,
     },
     /// A bug in lowering/verification/interpretation — never a language-level outcome.
     Internal(String),
@@ -264,15 +272,23 @@ impl<'a> Interp<'a> {
                             return Err(MirRunError::Trap {
                                 category: trap.category,
                                 source: trap.source,
+                                message: None,
                             })
                         }
                     }
                 }
-                Terminator::Trap { info } => {
+                Terminator::Trap { info, message } => {
+                    // A1: resolve the optional `&str` message before aborting (it participates
+                    // in evaluation like any operand).
+                    let resolved = match message {
+                        Some(op) => Some(self.eval_str_operand(here, op)?),
+                        None => None,
+                    };
                     return Err(MirRunError::Trap {
                         category: info.category,
                         source: info.source,
-                    })
+                        message: resolved,
+                    });
                 }
                 Terminator::Return => {
                     return match self.frames[here].locals[0].take() {
@@ -843,6 +859,7 @@ impl<'a> Interp<'a> {
                 Constant::Float(f, _) => MirValue::Float(*f),
                 Constant::Bool(b) => MirValue::Bool(*b),
                 Constant::Unit => MirValue::Unit,
+                Constant::Str(s) => MirValue::Str(std::rc::Rc::from(s.as_str())),
                 Constant::FnPtr(instance) => match self.by_symbol.get(instance.symbol.as_str()) {
                     Some(&idx) => MirValue::FnPtr(idx),
                     None => {
@@ -858,7 +875,9 @@ impl<'a> Interp<'a> {
 
     fn run_runtime(&mut self, rt: RuntimeFn, args: Vec<MirValue>) -> Result<MirValue, MirRunError> {
         use RuntimeFn::*;
-        let arg = args.into_iter().next();
+        let mut iter = args.into_iter();
+        let arg = iter.next();
+        let rest: Vec<MirValue> = iter.collect();
         match (rt, arg) {
             (PrintlnInt64 | PrintlnUInt64, Some(MirValue::Int(v))) => {
                 if matches!(rt, PrintlnUInt64) {
@@ -893,7 +912,136 @@ impl<'a> Interp<'a> {
                 let _ = write!(self.output, "{}", crate::interp::canonical_float(f));
                 Ok(MirValue::Unit)
             }
-            (rt, arg) => self.internal(format!("runtime {rt:?} with argument {arg:?}")),
+            // --- A1 str/String ops. `arg` holds the reconstructed first argument; the closure
+            // below re-materializes the full list when an op needs more than one. ---
+            (rt, arg) => self.run_string_runtime(rt, arg, rest),
+        }
+    }
+
+    /// A1 String/str runtime ops. `first` is the (already-popped) first argument; `rest` is the
+    /// remainder. `&str` operands arrive as `Str` values (lowering inserts `StringAsStr` for
+    /// `String` sources, §5b); `&String`/`&mut String` operands arrive as `Ref`s into a live
+    /// frame, read/mutated in place here.
+    fn run_string_runtime(
+        &mut self,
+        rt: RuntimeFn,
+        first: Option<MirValue>,
+        rest: Vec<MirValue>,
+    ) -> Result<MirValue, MirRunError> {
+        use RuntimeFn::*;
+        let mut rest = rest.into_iter();
+        match rt {
+            PrintlnStr | PrintStr => {
+                let s = self.as_str(&first)?;
+                if matches!(rt, PrintlnStr) {
+                    let _ = writeln!(self.output, "{s}");
+                } else {
+                    let _ = write!(self.output, "{s}");
+                }
+                Ok(MirValue::Unit)
+            }
+            StringNew => Ok(MirValue::String(String::new())),
+            StringFromStr => Ok(MirValue::String(self.as_str(&first)?.to_string())),
+            StrToString => Ok(MirValue::String(self.as_str(&first)?.to_string())),
+            StringClone => {
+                let s = self.read_string_ref(&first)?;
+                Ok(MirValue::String(s))
+            }
+            StringAsStr => {
+                // Interior reference → read-only snapshot (§5b).
+                let s = self.read_string_ref(&first)?;
+                Ok(MirValue::Str(std::rc::Rc::from(s.as_str())))
+            }
+            StringLen => {
+                let s = self.read_string_ref(&first)?;
+                Ok(MirValue::Int(s.len() as i128))
+            }
+            StringIsEmpty => {
+                let s = self.read_string_ref(&first)?;
+                Ok(MirValue::Bool(s.is_empty()))
+            }
+            StringContains => {
+                let s = self.read_string_ref(&first)?;
+                let pat = self.as_str(&rest.next())?.to_string();
+                Ok(MirValue::Bool(s.contains(&pat)))
+            }
+            StringPushStr => {
+                let suffix = self.as_str(&rest.next())?.to_string();
+                self.mutate_string_ref(&first, |s| s.push_str(&suffix))?;
+                Ok(MirValue::Unit)
+            }
+            StringClear => {
+                self.mutate_string_ref(&first, |s| s.clear())?;
+                Ok(MirValue::Unit)
+            }
+            StrLen => Ok(MirValue::Int(self.as_str(&first)?.len() as i128)),
+            StrIsEmpty => Ok(MirValue::Bool(self.as_str(&first)?.is_empty())),
+            StrEq => {
+                let a = self.as_str(&first)?.to_string();
+                let b = self.as_str(&rest.next())?.to_string();
+                Ok(MirValue::Bool(a == b))
+            }
+            StrCmp => {
+                let a = self.as_str(&first)?.to_string();
+                let b = self.as_str(&rest.next())?.to_string();
+                let ord = match a.cmp(&b) {
+                    std::cmp::Ordering::Less => -1,
+                    std::cmp::Ordering::Equal => 0,
+                    std::cmp::Ordering::Greater => 1,
+                };
+                Ok(MirValue::Int(ord))
+            }
+            other => self.internal(format!("runtime {other:?} (string group) unhandled")),
+        }
+    }
+
+    /// The content of a `&str` argument (a `Str` value; a `String`/`Ref` is a lowering bug).
+    fn as_str(&self, v: &Option<MirValue>) -> Result<std::rc::Rc<str>, MirRunError> {
+        match v {
+            Some(MirValue::Str(s)) => Ok(s.clone()),
+            other => self.internal(format!("expected a &str argument, got {other:?}")),
+        }
+    }
+
+    /// Resolve a `&String`/`&mut String` reference argument to a snapshot of the referent.
+    fn read_string_ref(&self, v: &Option<MirValue>) -> Result<String, MirRunError> {
+        match v {
+            Some(MirValue::Ref { frame, local, path }) => {
+                match self.read_resolved(*frame, *local, path)? {
+                    MirValue::String(s) => Ok(s),
+                    MirValue::Str(s) => Ok(s.to_string()),
+                    other => self.internal(format!("String ref referent is {other:?}")),
+                }
+            }
+            Some(MirValue::String(s)) => Ok(s.clone()),
+            other => self.internal(format!("expected a &String argument, got {other:?}")),
+        }
+    }
+
+    /// Mutate the `String` behind a `&mut String` reference argument in place.
+    fn mutate_string_ref(
+        &mut self,
+        v: &Option<MirValue>,
+        f: impl FnOnce(&mut String),
+    ) -> Result<(), MirRunError> {
+        let Some(MirValue::Ref { frame, local, path }) = v else {
+            return self.internal(format!("expected a &mut String argument, got {v:?}"));
+        };
+        let (frame, local, path) = (*frame, *local, path.clone());
+        let mut s = match self.read_resolved(frame, local, &path)? {
+            MirValue::String(s) => s,
+            other => return self.internal(format!("&mut String referent is {other:?}")),
+        };
+        f(&mut s);
+        self.write_resolved(frame, local, &path, MirValue::String(s))
+    }
+
+    /// Resolve a `&str` operand (a `Str` value) to its content — used for `Trap.message`.
+    fn eval_str_operand(&mut self, here: usize, op: &Operand) -> Result<String, MirRunError> {
+        match self.eval_operand(here, op)? {
+            MirValue::Str(s) => Ok(s.to_string()),
+            MirValue::String(s) => Ok(s),
+            other => self.internal(format!("trap message operand is {other:?}")),
         }
     }
 }

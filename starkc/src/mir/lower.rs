@@ -93,6 +93,8 @@ pub fn lower_program(
         files: vec![file.clone()],
         bodies: Vec::new(),
         types: TypeContext::default(),
+        mir_version: MIR_VERSION.to_string(),
+        runtime_surface: MIR_RUNTIME_SURFACE.to_string(),
     };
     let file_id = FileId(0);
 
@@ -580,6 +582,9 @@ impl<'a> FnLowerer<'a> {
                 Primitive::Float64 => MirTy::Float64,
                 Primitive::Bool => MirTy::Bool,
                 Primitive::Unit => MirTy::Unit,
+                // A1 (CD-031): first-class text types.
+                Primitive::String => MirTy::String,
+                Primitive::Str => MirTy::Str,
                 _ => return unsupported(format!("type {p:?} (C4.5)"), span),
             },
             Ty::Struct(item, args) => MirTy::Struct(
@@ -876,6 +881,10 @@ impl<'a> FnLowerer<'a> {
                 any
             }
             MirTy::Array(elem, _) => self.ty_needs_drop(elem, span)?,
+            // A1 (CD-031): String always requires runtime drop glue (buffer reclaim). It is a
+            // leaf drop unit — `collect_drop_units`' `_` arm makes it one, and the interp's
+            // `drop_in_place` `_` arm reclaims it (unobservable, no user code).
+            MirTy::String => true,
             _ => false,
         })
     }
@@ -2027,6 +2036,16 @@ impl<'a> FnLowerer<'a> {
                 BinOp::And | BinOp::Or => self.lower_short_circuit(*op, *lhs, *rhs, span),
                 _ => {
                     let lhs_ty = self.expr_mir_ty(*lhs)?;
+                    // A1 (CD-031): String/str comparison routes through StrEq/StrCmp, never a
+                    // structural BinOp (V-STR-2). Handled before eager operand lowering so the
+                    // operands are borrowed as `&str`, not moved.
+                    if matches!(
+                        op,
+                        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                    ) && Self::is_text_ty(&lhs_ty)
+                    {
+                        return self.lower_string_comparison(*op, *lhs, *rhs, span);
+                    }
                     let lhs_op = self.lower_expr_to_operand(*lhs)?;
                     let rhs_op = self.lower_expr_to_operand(*rhs)?;
                     match op {
@@ -2263,6 +2282,14 @@ impl<'a> FnLowerer<'a> {
                 let ty = self.locals[dest.0 as usize].ty.clone();
                 self.read_place(Place::local(dest), &ty, span)
             }
+            // A numeric `as` cast — a checked terminator (all casts are checked; widening
+            // never traps, narrowing traps CastFailure on overflow).
+            hir::ExprKind::Cast { expr: inner, .. } => {
+                let inner = *inner;
+                let to = self.expr_mir_ty(expr)?;
+                let value = self.lower_expr_to_operand(inner)?;
+                self.cast_to_temp(value, to, span)
+            }
             _ => unsupported("expression form (C4.5)", span),
         }
     }
@@ -2291,7 +2318,16 @@ impl<'a> FnLowerer<'a> {
                     })?;
                 Ok(Operand::Const(Constant::Float(value, ty)))
             }
-            Lit::Str { .. } => unsupported("string literal (C4.5)", span),
+            // A1 (CD-031): a decoded UTF-8 `&str` literal.
+            Lit::Str { .. } => {
+                let value = match literal::eval_lit_value(*lit, self.text(span)) {
+                    Some(crate::literal::LitValue::Str(s)) => s,
+                    _ => {
+                        return unsupported("unparseable string literal", span);
+                    }
+                };
+                Ok(Operand::Const(Constant::Str(value)))
+            }
             Lit::Char => unsupported("char literal (C4.5)", span),
         }
     }
@@ -2604,8 +2640,37 @@ impl<'a> FnLowerer<'a> {
                         return unsupported("print/println arity", span);
                     }
                     let arg_ty = self.expr_mir_ty(args[0])?;
-                    let value = self.lower_expr_to_operand(args[0])?;
                     let is_println = matches!(builtin, Builtin::Println);
+                    // A1 (CD-031): printing a `&str` / `String` routes to Print(ln)Str, after
+                    // an implicit `as_str` for an owned/borrowed String.
+                    let peeled = Self::peel_refs(arg_ty.clone()).0;
+                    if matches!(peeled, MirTy::Str | MirTy::String) {
+                        let str_op = if matches!(peeled, MirTy::String) {
+                            let recv = self.borrow_string_receiver(args[0], false, span)?;
+                            let str_ty = MirTy::Ref {
+                                mutable: false,
+                                inner: Box::new(MirTy::Str),
+                            };
+                            let tmp = self.new_temp(str_ty.clone());
+                            self.emit_runtime_call(
+                                RuntimeFn::StringAsStr,
+                                vec![recv],
+                                Place::local(tmp),
+                                span,
+                            );
+                            self.read_place(Place::local(tmp), &str_ty, span)?
+                        } else {
+                            self.lower_expr_to_operand(args[0])?
+                        };
+                        let rt = if is_println {
+                            RuntimeFn::PrintlnStr
+                        } else {
+                            RuntimeFn::PrintStr
+                        };
+                        self.emit_runtime_call(rt, vec![str_op], dest, span);
+                        return Ok(());
+                    }
+                    let value = self.lower_expr_to_operand(args[0])?;
                     let (runtime, widened) = self.widen_for_print(value, &arg_ty, span)?;
                     let runtime = match (runtime, is_println) {
                         (PrintKind::Int, true) => RuntimeFn::PrintlnInt64,
@@ -2647,6 +2712,78 @@ impl<'a> FnLowerer<'a> {
                             Rvalue::Aggregate(AggKind::EnumVariant(enum_ref, variant), ops),
                         ),
                         self.info(span),
+                    );
+                    Ok(())
+                }
+                // A1 (CD-031): owned String construction.
+                Res::Builtin(Builtin::StringNew) => {
+                    self.emit_runtime_call(RuntimeFn::StringNew, vec![], dest, span);
+                    Ok(())
+                }
+                Res::Builtin(Builtin::StringFrom) => {
+                    let ops = args
+                        .iter()
+                        .map(|&a| self.lower_expr_to_operand(a))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    self.emit_runtime_call(RuntimeFn::StringFromStr, ops, dest, span);
+                    Ok(())
+                }
+                // A1 (CD-031): `panic(msg)` → an unconditional Trap carrying the message.
+                Res::Builtin(Builtin::Panic) => {
+                    let message = match args.first() {
+                        Some(&arg) => Some(self.str_operand_for(arg, span)?),
+                        None => None,
+                    };
+                    let info = self.info(span);
+                    let dead = self.new_block();
+                    self.terminate(
+                        Terminator::Trap {
+                            info: TrapInfo {
+                                category: TrapCategory::Panic,
+                                source: info,
+                            },
+                            message,
+                        },
+                        info,
+                        dead,
+                    );
+                    Ok(())
+                }
+                // A1: `assert(cond)` → trap AssertFailure when the condition is false.
+                Res::Builtin(Builtin::Assert) => {
+                    if args.len() != 1 {
+                        return unsupported(
+                            "assert arity (assert_eq/ne are a later sub-slice)",
+                            span,
+                        );
+                    }
+                    let cond = self.lower_expr_to_operand(args[0])?;
+                    let info = self.info(span);
+                    let ok_block = self.new_block();
+                    let fail_block = self.new_block();
+                    self.terminate(
+                        Terminator::SwitchInt {
+                            scrut: cond,
+                            arms: vec![(1, ok_block)],
+                            otherwise: fail_block,
+                        },
+                        info,
+                        fail_block,
+                    );
+                    self.terminate(
+                        Terminator::Trap {
+                            info: TrapInfo {
+                                category: TrapCategory::AssertFailure,
+                                source: info,
+                            },
+                            message: None,
+                        },
+                        info,
+                        ok_block,
+                    );
+                    self.emit(
+                        Statement::Assign(dest, Rvalue::Use(Operand::Const(Constant::Unit))),
+                        info,
                     );
                     Ok(())
                 }
@@ -2917,6 +3054,10 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         let base_ty = self.expr_mir_ty(base)?;
         let (peeled_ty, base_ref_layers) = Self::peel_refs(base_ty.clone());
+        // A1 (CD-031): methods on the runtime text types dispatch to the RuntimeFn surface.
+        if matches!(peeled_ty, MirTy::String | MirTy::Str) {
+            return self.lower_string_method_call(base, &peeled_ty, name_span, args, dest, span);
+        }
         let nominal = match &peeled_ty {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 // C4.5c boundary: methods on a *generic* nominal instantiation need
@@ -3002,6 +3143,170 @@ impl<'a> FnLowerer<'a> {
             after,
         );
         Ok(())
+    }
+
+    /// A1 (CD-031): lower a method call on a `String`/`str` receiver to the RuntimeFn surface.
+    fn lower_string_method_call(
+        &mut self,
+        base: ExprId,
+        peeled_ty: &MirTy,
+        name_span: Span,
+        args: &[ExprId],
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let name = self.text(name_span).to_string();
+        let is_string = matches!(peeled_ty, MirTy::String);
+        // (runtime fn, receiver mutability). str methods take the `&str` value directly.
+        let (rt, recv_mut) = match (is_string, name.as_str()) {
+            (true, "as_str") => (RuntimeFn::StringAsStr, Some(false)),
+            (true, "len") => (RuntimeFn::StringLen, Some(false)),
+            (true, "is_empty") => (RuntimeFn::StringIsEmpty, Some(false)),
+            (true, "clone") => (RuntimeFn::StringClone, Some(false)),
+            (true, "contains") => (RuntimeFn::StringContains, Some(false)),
+            (true, "push_str") => (RuntimeFn::StringPushStr, Some(true)),
+            (true, "clear") => (RuntimeFn::StringClear, Some(true)),
+            (false, "len") => (RuntimeFn::StrLen, None),
+            (false, "is_empty") => (RuntimeFn::StrIsEmpty, None),
+            (false, "to_string") => (RuntimeFn::StrToString, None),
+            _ => {
+                return unsupported(
+                    format!("method {name} on {peeled_ty:?} (a later C4.5e sub-slice)"),
+                    span,
+                )
+            }
+        };
+        // Receiver operand.
+        let recv_op = match recv_mut {
+            Some(mutable) => self.borrow_string_receiver(base, mutable, span)?,
+            None => self.lower_expr_to_operand(base)?, // `&str` value, passed through
+        };
+        let mut ops = vec![recv_op];
+        for &arg in args {
+            ops.push(self.lower_expr_to_operand(arg)?);
+        }
+        self.emit_runtime_call(rt, ops, dest, span);
+        Ok(())
+    }
+
+    /// Is `ty` a `String` or a `str` behind any reference depth (A1 comparison routing)?
+    fn is_text_ty(ty: &MirTy) -> bool {
+        matches!(Self::peel_refs(ty.clone()).0, MirTy::String | MirTy::Str)
+    }
+
+    /// A `&str` operand for `expr` (an owned/borrowed `String` is converted via `StringAsStr`).
+    fn str_operand_for(&mut self, expr: ExprId, span: Span) -> Result<Operand, LowerError> {
+        let peeled = Self::peel_refs(self.expr_mir_ty(expr)?).0;
+        if matches!(peeled, MirTy::Str) {
+            return self.lower_expr_to_operand(expr);
+        }
+        // String / &String → borrow then snapshot to &str.
+        let recv = self.borrow_string_receiver(expr, false, span)?;
+        let str_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Str),
+        };
+        let tmp = self.new_temp(str_ty.clone());
+        self.emit_runtime_call(RuntimeFn::StringAsStr, vec![recv], Place::local(tmp), span);
+        self.read_place(Place::local(tmp), &str_ty, span)
+    }
+
+    /// Lower a `String`/`str` comparison to `StrEq`/`StrCmp` (A1). `==`/`!=` use `StrEq`;
+    /// ordered comparisons derive from `StrCmp`'s −1/0/+1 against zero.
+    fn lower_string_comparison(
+        &mut self,
+        op: BinOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let a = self.str_operand_for(lhs, span)?;
+        let b = self.str_operand_for(rhs, span)?;
+        match op {
+            BinOp::Eq | BinOp::Ne => {
+                let eq = self.new_temp(MirTy::Bool);
+                self.emit_runtime_call(RuntimeFn::StrEq, vec![a, b], Place::local(eq), span);
+                if matches!(op, BinOp::Eq) {
+                    self.read_place(Place::local(eq), &MirTy::Bool, span)
+                } else {
+                    let neq = self.new_temp(MirTy::Bool);
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(neq),
+                            Rvalue::UnOp(MirUnOp::Not, Operand::Copy(Place::local(eq))),
+                        ),
+                        self.info(span),
+                    );
+                    Ok(Operand::Copy(Place::local(neq)))
+                }
+            }
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                let cmp = self.new_temp(MirTy::Int64);
+                self.emit_runtime_call(RuntimeFn::StrCmp, vec![a, b], Place::local(cmp), span);
+                let mir_op = match op {
+                    BinOp::Lt => MirBinOp::Lt,
+                    BinOp::Le => MirBinOp::Le,
+                    BinOp::Gt => MirBinOp::Gt,
+                    BinOp::Ge => MirBinOp::Ge,
+                    _ => unreachable!(),
+                };
+                let dest = self.new_temp(MirTy::Bool);
+                self.emit(
+                    Statement::Assign(
+                        Place::local(dest),
+                        Rvalue::BinOp(
+                            mir_op,
+                            Operand::Copy(Place::local(cmp)),
+                            Operand::Const(Constant::Int(0, MirTy::Int64)),
+                        ),
+                    ),
+                    self.info(span),
+                );
+                Ok(Operand::Copy(Place::local(dest)))
+            }
+            _ => unsupported("non-comparison string binop", span),
+        }
+    }
+
+    /// Build a `&String`/`&mut String` receiver operand: pass a reference base through, or
+    /// borrow an owned `String` place.
+    fn borrow_string_receiver(
+        &mut self,
+        base: ExprId,
+        mutable: bool,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
+        if layers > 0 {
+            // Already a reference to the String — pass it through.
+            return self.lower_expr_to_operand(base);
+        }
+        let place = self.lower_place(base)?;
+        let ref_ty = MirTy::Ref {
+            mutable,
+            inner: Box::new(MirTy::String),
+        };
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
+            self.info(span),
+        );
+        self.read_place(Place::local(temp), &ref_ty, span)
+    }
+
+    /// Emit a `Call` to a runtime op with a fresh successor block.
+    fn emit_runtime_call(&mut self, rt: RuntimeFn, ops: Vec<Operand>, dest: Place, span: Span) {
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Runtime(rt),
+                args: ops,
+                dest,
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
     }
 
     fn widen_for_print(

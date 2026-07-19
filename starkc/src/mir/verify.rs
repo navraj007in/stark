@@ -22,6 +22,9 @@
 //! V-RT-1     MIR-0012 (runtime callee signature mismatch)
 //! V-SRC-1    MIR-0013 (SourceInfo missing a valid FileId)
 //! V-REF-1    MIR-0014 (write crossing a Deref of a shared reference — C4.5e-0)
+//! V-STR-1/2  MIR-0015 (invalid Str constant / String|str in a structural op / bad Trap msg — A1)
+//! V-COPY-1   MIR-0016 (Copy-only runtime op on a non-Copy element type — A1; Vec ops land e-2)
+//! V-SURFACE-1 MIR-0017 (unsupported mir_version/runtime_surface — A1, program-level gate)
 //! MIR-0003   projection type mismatch (V-CFG-2's "projections type-correct step by step")
 //! ```
 //!
@@ -66,6 +69,20 @@ impl<'a> VerifiedMirProgram<'a> {
 
 pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Vec<MirError>> {
     let mut errors = Vec::new();
+    // A1 (CD-031) surface-version gate: reject an unsupported MIR version or runtime surface
+    // BEFORE consuming any body. The per-program fields are authoritative (not the global
+    // constants, which are only what a same-build producer stamped).
+    if program.mir_version != MIR_VERSION || program.runtime_surface != MIR_RUNTIME_SURFACE {
+        return Err(vec![MirError {
+            code: "MIR-0017",
+            message: format!(
+                "unsupported MIR surface: program is v{}/{}, this build supports v{}/{}",
+                program.mir_version, program.runtime_surface, MIR_VERSION, MIR_RUNTIME_SURFACE
+            ),
+            symbol: String::new(),
+            block: 0,
+        }]);
+    }
     for body in &program.bodies {
         let mut cx = BodyCx {
             program,
@@ -293,6 +310,11 @@ impl<'a> BodyCx<'a> {
                 Constant::Int(_, ty) | Constant::Float(_, ty) => ty.clone(),
                 Constant::Bool(_) => MirTy::Bool,
                 Constant::Unit => MirTy::Unit,
+                // A1: a string literal is a `&str`.
+                Constant::Str(_) => MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Str),
+                },
                 Constant::FnPtr(instance) => match self.instance_sig(&instance.symbol) {
                     Some((params, ret)) => MirTy::FnPtr {
                         params,
@@ -369,6 +391,14 @@ impl<'a> BodyCx<'a> {
                     self.err("MIR-0011", bi, "unary operation on a FnPtr operand");
                     return;
                 }
+                if is_stringish(&ty) {
+                    self.err(
+                        "MIR-0015",
+                        bi,
+                        "unary operation on a String/str operand (V-STR-2)",
+                    );
+                    return;
+                }
                 match op {
                     MirUnOp::Not => {
                         if ty != MirTy::Bool {
@@ -394,6 +424,16 @@ impl<'a> BodyCx<'a> {
                         "MIR-0011",
                         bi,
                         "binary operation on a FnPtr operand (TYPE-FN-001)",
+                    );
+                    return;
+                }
+                // A1 V-STR-2: String/str equality/ordering routes through StrEq/StrCmp, never
+                // a structural BinOp.
+                if is_stringish(&lt) || is_stringish(&rt) {
+                    self.err(
+                        "MIR-0015",
+                        bi,
+                        "binary operation on a String/str operand (V-STR-2)",
                     );
                     return;
                 }
@@ -770,7 +810,27 @@ impl<'a> BodyCx<'a> {
                     }
                 }
             }
-            Terminator::Trap { .. } | Terminator::Return | Terminator::Unreachable => {}
+            // A1: a `Trap` message, when present, must type as `&str` (MIR-0015).
+            Terminator::Trap {
+                message: Some(op), ..
+            } => {
+                if let Some(ty) = self.operand_ty(op, bi) {
+                    let expected = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(MirTy::Str),
+                    };
+                    if ty != expected {
+                        self.err(
+                            "MIR-0015",
+                            bi,
+                            format!("Trap message must be &str, found {ty:?}"),
+                        );
+                    }
+                }
+            }
+            Terminator::Trap { message: None, .. }
+            | Terminator::Return
+            | Terminator::Unreachable => {}
         }
     }
 
@@ -878,7 +938,13 @@ impl<'a> BodyCx<'a> {
                 moved.retain(|(l, _)| *l != dest_local);
                 successors.push(*target);
             }
-            Terminator::Trap { .. } | Terminator::Return | Terminator::Unreachable => {}
+            // A1: the Trap message participates in move dataflow (V-MOVE-1).
+            Terminator::Trap {
+                message: Some(op), ..
+            } => self.flow_operand(op, &mut moved, bi, report),
+            Terminator::Trap { message: None, .. }
+            | Terminator::Return
+            | Terminator::Unreachable => {}
         }
         (moved, successors)
     }
@@ -1060,6 +1126,10 @@ impl<'a> BodyCx<'a> {
                         flag_operand(self, arg, "a checked argument");
                     }
                 }
+                // A1: the Trap message participates in drop-flag discipline (V-DROP-2).
+                Terminator::Trap {
+                    message: Some(op), ..
+                } => flag_operand(self, op, "a trap message"),
                 Terminator::Drop { place, .. } if is_flag(self.body, place.local.0) => {
                     let local = place.local.0;
                     self.err(
@@ -1205,6 +1275,9 @@ impl<'a> BodyCx<'a> {
                         collect_operand_place(arg, &mut places);
                     }
                 }
+                Terminator::Trap {
+                    message: Some(op), ..
+                } => collect_operand_place(op, &mut places),
                 _ => {}
             }
             for place in &places {
@@ -1277,6 +1350,9 @@ impl<'a> BodyCx<'a> {
                         collect_operand_place(arg, &mut places);
                     }
                 }
+                Terminator::Trap {
+                    message: Some(op), ..
+                } => collect_operand_place(op, &mut places),
                 _ => {}
             }
         }
@@ -1445,12 +1521,47 @@ fn variant_payload(
     }
 }
 
+/// A1 V-STR-2: is `ty` a `String`, or a `str` behind any depth of reference? Such operands
+/// must not appear in structural `BinOp`/`UnOp` — comparisons route through `StrEq`/`StrCmp`.
+fn is_stringish(ty: &MirTy) -> bool {
+    match ty {
+        MirTy::String | MirTy::Str => true,
+        MirTy::Ref { inner, .. } => is_stringish(inner),
+        _ => false,
+    }
+}
+
 fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
+    use RuntimeFn::*;
+    let str_ref = || MirTy::Ref {
+        mutable: false,
+        inner: Box::new(MirTy::Str),
+    };
+    let string_ref = |mutable| MirTy::Ref {
+        mutable,
+        inner: Box::new(MirTy::String),
+    };
     match rt {
-        RuntimeFn::PrintlnInt64 | RuntimeFn::PrintInt64 => (vec![MirTy::Int64], MirTy::Unit),
-        RuntimeFn::PrintlnUInt64 | RuntimeFn::PrintUInt64 => (vec![MirTy::UInt64], MirTy::Unit),
-        RuntimeFn::PrintlnBool | RuntimeFn::PrintBool => (vec![MirTy::Bool], MirTy::Unit),
-        RuntimeFn::PrintlnFloat64 | RuntimeFn::PrintFloat64 => (vec![MirTy::Float64], MirTy::Unit),
+        PrintlnInt64 | PrintInt64 => (vec![MirTy::Int64], MirTy::Unit),
+        PrintlnUInt64 | PrintUInt64 => (vec![MirTy::UInt64], MirTy::Unit),
+        PrintlnBool | PrintBool => (vec![MirTy::Bool], MirTy::Unit),
+        PrintlnFloat64 | PrintFloat64 => (vec![MirTy::Float64], MirTy::Unit),
+        // --- A1 (CD-031) String/str surface ---
+        PrintlnStr | PrintStr => (vec![str_ref()], MirTy::Unit),
+        StringNew => (vec![], MirTy::String),
+        StringFromStr => (vec![str_ref()], MirTy::String),
+        StringLen => (vec![string_ref(false)], MirTy::UInt64),
+        StringIsEmpty => (vec![string_ref(false)], MirTy::Bool),
+        StringPushStr => (vec![string_ref(true), str_ref()], MirTy::Unit),
+        StringClear => (vec![string_ref(true)], MirTy::Unit),
+        StringAsStr => (vec![string_ref(false)], str_ref()),
+        StringClone => (vec![string_ref(false)], MirTy::String),
+        StringContains => (vec![string_ref(false), str_ref()], MirTy::Bool),
+        StrLen => (vec![str_ref()], MirTy::UInt64),
+        StrIsEmpty => (vec![str_ref()], MirTy::Bool),
+        StrToString => (vec![str_ref()], MirTy::String),
+        StrEq => (vec![str_ref(), str_ref()], MirTy::Bool),
+        StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
     }
 }
 

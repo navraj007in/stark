@@ -130,6 +130,8 @@ fn program_with(bodies: Vec<MirBody>) -> MirProgram {
         files: vec![Arc::new(SourceFile::new("hand.stark", ""))],
         bodies,
         types: TypeContext::default(),
+        mir_version: mir::MIR_VERSION.to_string(),
+        runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
     }
 }
 
@@ -786,4 +788,60 @@ fn rejects_write_through_shared_reference() {
         )],
     );
     expect_code(&program_with(vec![b]), "MIR-0014");
+}
+
+// ---- WP-C4.5e-1: A1 string/surface verifier rules ----
+
+/// A1 V-STR-2 (MIR-0015): a structural BinOp on `String`/`str` operands is invalid — string
+/// comparison must route through StrEq/StrCmp.
+#[test]
+fn rejects_binop_on_string_operands() {
+    let b = body(
+        vec![ret_local(), local(MirTy::String), local(MirTy::Bool)],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(2)),
+                Rvalue::BinOp(
+                    mir::MirBinOp::Eq,
+                    Operand::Copy(Place::local(LocalId(1))),
+                    Operand::Copy(Place::local(LocalId(1))),
+                ),
+            )],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0015");
+}
+
+/// A1 (MIR-0015): a `Trap` message operand must be `&str`.
+#[test]
+fn rejects_non_str_trap_message() {
+    use mir::{TrapCategory, TrapInfo};
+    let b = body(
+        vec![ret_local(), local(MirTy::Int32)],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(1)),
+                Rvalue::Use(Operand::Const(Constant::Int(7, MirTy::Int32))),
+            )],
+            Terminator::Trap {
+                info: TrapInfo {
+                    category: TrapCategory::Panic,
+                    source: info(),
+                },
+                message: Some(Operand::Copy(Place::local(LocalId(1)))),
+            },
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0015");
+}
+
+/// A1 V-SURFACE-1 (MIR-0017): a program stamped with an unsupported runtime surface is
+/// rejected before any body is verified.
+#[test]
+fn rejects_unsupported_runtime_surface() {
+    let b = body(vec![ret_local()], vec![block(vec![], Terminator::Return)]);
+    let mut program = program_with(vec![b]);
+    program.runtime_surface = "0.1-A999".to_string();
+    expect_code(&program, "MIR-0017");
 }

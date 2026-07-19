@@ -156,8 +156,12 @@ fn dump_is_deterministic_and_versioned() {
     let second = lower_ok(&front).dump();
     assert_eq!(first, second, "dump must be deterministic across runs");
     assert!(
-        first.starts_with(&format!("// STARK MIR v{}\n", mir::MIR_VERSION)),
-        "dump must carry the MIR version header"
+        first.starts_with(&format!(
+            "// STARK MIR v{} (runtime-surface {})\n",
+            mir::MIR_VERSION,
+            mir::MIR_RUNTIME_SURFACE
+        )),
+        "dump must carry the MIR version + runtime-surface header"
     );
 }
 
@@ -173,7 +177,7 @@ fn golden_mini_dump() {
     // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
     // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
     let expected = "\
-// STARK MIR v0.1
+// STARK MIR v0.1 (runtime-surface 0.1-A1)
 
 fn main@[] {
   locals: _0: Unit [ret], _1: Unit [tmp], _2: Int32 [tmp], _3: Int64 [tmp]
@@ -267,8 +271,9 @@ fn unsupported_constructs_report_cleanly() {
             "C4.5e",
         ),
         (
-            "string.stark",
-            "fn main() { let s = String::from(\"hi\"); println(s.as_str()); }",
+            // Vec is a later C4.5e sub-slice (e-2); strings (e-1) now lower.
+            "vec.stark",
+            "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); println(v.len()); }",
             "C4.5",
         ),
         (
@@ -450,4 +455,22 @@ fn match_on_droppable_scrutinee_reports_cleanly() {
             e.what
         ),
     }
+}
+
+/// WP-C4.5e-1 (A1): a string literal lowers to `const "…"` with escapes round-tripped through
+/// the dump, and the dump carries the runtime-surface header.
+#[test]
+fn string_literal_dump_round_trips_escapes() {
+    let src = "fn main() { println(\"a\\\"b\\\\c\\n\"); }";
+    let front = front_end_src("strdump.stark", src.to_string());
+    let program = lower_ok(&front);
+    let dump = program.dump();
+    assert!(
+        dump.contains("(runtime-surface 0.1-A1)"),
+        "dump header must carry the A1 runtime surface, got:\n{dump}"
+    );
+    assert!(
+        dump.contains("const \"a\\\"b\\\\c\\n\""),
+        "string literal must render with round-tripped escapes, got:\n{dump}"
+    );
 }

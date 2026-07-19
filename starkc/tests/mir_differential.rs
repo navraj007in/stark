@@ -102,7 +102,12 @@ fn differential(name: &str, source: String) {
         (
             Err((oracle_err, oracle_partial)),
             Err(MirFailure {
-                error: MirRunError::Trap { category, source },
+                error:
+                    MirRunError::Trap {
+                        category,
+                        source,
+                        message,
+                    },
                 output: mir_partial,
             }),
         ) => {
@@ -111,11 +116,20 @@ fn differential(name: &str, source: String) {
                 "{name}: oracle errored non-trap ({}) but MIR trapped {category:?}",
                 oracle_err.message
             );
-            assert!(
-                oracle_err.message.contains(oracle_fragment(category)),
-                "{name}: trap category mismatch — MIR {category:?} vs oracle message {:?}",
-                oracle_err.message
-            );
+            // A user message (panic) is compared exactly against the oracle's message; a
+            // compiler-generated trap (no message) uses the category-fragment check.
+            match &message {
+                Some(m) => assert_eq!(
+                    m, &oracle_err.message,
+                    "{name}: trap message mismatch — MIR {m:?} vs oracle {:?}",
+                    oracle_err.message
+                ),
+                None => assert!(
+                    oracle_err.message.contains(oracle_fragment(category)),
+                    "{name}: trap category mismatch — MIR {category:?} vs oracle message {:?}",
+                    oracle_err.message
+                ),
+            }
             // C4.5e-0 (review Finding 3): output emitted BEFORE the trap is observable —
             // two programs printing different prefixes before the same trap differ.
             assert_eq!(
@@ -721,6 +735,94 @@ fn drop_output_before_a_trap_is_compared() {
              { let a = Loud { id: 1 }; } \
              let zero = 0; \
              println(1 / zero); \
+         }"
+        .to_string(),
+    );
+}
+
+// ---- WP-C4.5e-1: strings (Amendment A1) ----
+
+/// The two frozen String-based ownership_drop corpus cases now run through both engines —
+/// the first String-dependent corpus cases to go differential-green (A1 §9).
+#[test]
+fn ownership_drop_corpus_string_cases_agree() {
+    for name in [
+        "ownership_drop__01_move_and_drop_order",
+        "ownership_drop__02_shared_borrow_does_not_move",
+    ] {
+        let path = corpus_dir().join(format!("{name}.stark"));
+        let source = std::fs::read_to_string(&path).unwrap();
+        differential(&path.to_string_lossy(), source);
+    }
+}
+
+/// String construction, `as_str`, `push_str`, `len`, and `&str`/`String` printing agree.
+#[test]
+fn string_construction_and_methods_agree() {
+    differential(
+        "strings.stark",
+        "fn main() { \
+             let mut s = String::from(\"foo\"); \
+             s.push_str(\"bar\"); \
+             println(s.as_str()); \
+             println(s.len()); \
+             println(\"literal\"); \
+             println(s.is_empty()); \
+         }"
+        .to_string(),
+    );
+}
+
+/// String/str equality and ordering route through StrEq/StrCmp and agree with the oracle's
+/// content comparison.
+#[test]
+fn string_comparison_agrees() {
+    differential(
+        "strcmp.stark",
+        "fn main() { \
+             let a = String::from(\"apple\"); \
+             let b = String::from(\"banana\"); \
+             println(a.as_str() == b.as_str()); \
+             println(a.as_str() != b.as_str()); \
+             println(a.as_str() == \"apple\"); \
+             println(\"apple\" < \"banana\"); \
+             println(\"banana\" >= \"apple\"); \
+         }"
+        .to_string(),
+    );
+}
+
+/// `panic(msg)` after partial output: both engines trap `Panic` with the SAME message and the
+/// SAME pre-trap stdout (A1 Trap.message + the C4.5e-0 pre-trap comparator).
+#[test]
+fn panic_with_message_after_output_agrees() {
+    differential(
+        "panicmsg.stark",
+        "fn main() { println(1); println(2); panic(\"boom\"); }".to_string(),
+    );
+}
+
+/// `assert(false)` traps AssertFailure (no message); `assert(true)` is a no-op.
+#[test]
+fn assert_agrees() {
+    differential(
+        "assert.stark",
+        "fn main() { assert(1 + 1 == 2); println(1); assert(1 > 2); println(2); }".to_string(),
+    );
+}
+
+/// A `String` field makes its struct droppable; the user Drop impl reading `self.label.as_str()`
+/// runs in the right order, and the String field's own (unobservable) drop follows.
+#[test]
+fn struct_with_string_field_drops_agree() {
+    differential(
+        "stringfield.stark",
+        "struct Tag { label: String } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.label.as_str()); } } \
+         fn main() { \
+             let a = Tag { label: String::from(\"alpha\") }; \
+             let b = Tag { label: String::from(\"beta\") }; \
+             println(0); \
          }"
         .to_string(),
     );

@@ -1,12 +1,22 @@
 # STARK Compiler STATE
-Updated: 2026-07-19 after MIR Amendment A1 approval (CD-031)
+Updated: 2026-07-19 after WP-C4.5e-1 (strings)
 
 ## Position
-Gate: C4  Next: WP-C4.5e main body (runtime values), now unblocked — MIR Amendment A1
-(CD-031, `mir-amendment-A1-strings-runtime.md`, runtime surface `0.1-A1`) is CE3-APPROVED and
-is the binding contract the implementation follows: `Constant::Str`, drop-elaborated
-String/Vec/VecIter, `Trap.message`, the versioned String/str/Vec/slice `RuntimeFn` appendix,
-`copy_types` + `MirProgram` surface fields, verifier codes MIR-0015/0016.  Blocked: none
+Gate: C4  Next: WP-C4.5e-2 (Vec/slices: Vec runtime surface + Vec drop with reverse-index
+element order + iteration; then Char + Char-dependent String ops, Option/Result combinators)
+Blocked: none
+**WP-C4.5e-1 done 2026-07-19** (strings, implementing Amendment A1/CD-031): A1 shape
+foundation landed (`MIR_RUNTIME_SURFACE`, `MirProgram.mir_version`/`runtime_surface`,
+`Constant::Str`, `Trap.message`, `TypeContext.copy_types`, String/str `RuntimeFn` group, dump
+header + `const "…"`). String literals, `String::new`/`from`, String/str method dispatch,
+`&str`/`String` print, String/str comparison via `StrEq`/`StrCmp` (V-STR-2), `panic(msg)`/
+`assert(cond)` traps, String as a droppable leaf unit, and user `as` casts (were unlowered)
+all lower; verifier surface gate (MIR-0017) + V-STR-1/2 (MIR-0015) + Trap.message threaded
+through every operand analysis; MIR interp gained `Str`/`String` values, in-place `&mut String`
+mutation, snapshot `as_str`, and trap-message comparison. **The two frozen `ownership_drop__*`
+corpus cases are differential-green** (first String-dependent corpus cases). Deferred to later
+e sub-slices: Char + Char String ops, `assert_eq`/`assert_ne`. Workspace 684/0/2; fmt+clippy
+clean on 1.93 and 1.97.
 **WP-C4.5e-0 done 2026-07-19** (pre-runtime-values hardening, CD-030 review disposition):
 IndexProof definite-initialization dataflow (must-analysis + unique-definition rule; 4
 adversarial negatives incl. the review's one-branch example); V-REF-1/MIR-0014

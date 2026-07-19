@@ -27,6 +27,11 @@ use std::sync::Arc;
 /// accept; mismatch is a hard error.
 pub const MIR_VERSION: &str = "0.1";
 
+/// Runtime-surface revision (Amendment A1, CD-031). Additive `RuntimeFn`/String/Vec growth
+/// bumps this, not `MIR_VERSION`. Stamped onto every `MirProgram`; a consumer rejects a
+/// program whose `runtime_surface` it does not support before consuming any body.
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A1";
+
 // ------------------------------------------------------------------ identity --
 
 /// Interned source-file identity. MIR must never carry a file-less span (V-SRC-1).
@@ -199,6 +204,10 @@ pub enum Constant {
     Unit,
     /// A function value: a bare instance reference (TYPE-FN-001 — Copy, no comparisons).
     FnPtr(Instance),
+    /// A decoded immutable UTF-8 string literal (A1/CD-031). Denotes a `&str`
+    /// (`Ref { mutable: false, inner: Str }`); identity is unobservable. Content is the
+    /// resolved literal, never the source spelling; MUST be valid UTF-8 (V-STR-1).
+    Str(String),
 }
 
 #[derive(Clone, Debug)]
@@ -308,6 +317,24 @@ pub enum RuntimeFn {
     PrintUInt64,
     PrintBool,
     PrintFloat64,
+    // --- A1 (CD-031), C4.5e-1: String/str surface. Char-dependent ops (PrintlnChar/PrintChar,
+    // StringPushChar/StringPopChar) are added with Char lowering in a later C4.5e sub-slice. ---
+    PrintlnStr,
+    PrintStr,
+    StringNew,
+    StringFromStr,
+    StringLen,
+    StringIsEmpty,
+    StringPushStr,
+    StringClear,
+    StringAsStr,
+    StringClone,
+    StringContains,
+    StrLen,
+    StrIsEmpty,
+    StrToString,
+    StrEq,
+    StrCmp,
 }
 
 #[derive(Clone, Debug)]
@@ -348,6 +375,10 @@ pub enum Terminator {
     },
     Trap {
         info: TrapInfo,
+        /// Optional user message (A1/CD-031): `panic(msg)` / failed `assert*` carry a `&str`
+        /// operand; compiler-generated traps carry `None`. Participates in every operand
+        /// analysis, not only typing.
+        message: Option<Operand>,
     },
     Return,
     Unreachable,
@@ -371,6 +402,10 @@ pub struct TypeContext {
     /// how `Drop`-terminator glue (interpreter now, backends later) dispatches destructors.
     /// Populated for every nominal reachable through a lowered `Drop`'s glue.
     pub drop_impls: std::collections::BTreeMap<(u32, Vec<MirTy>), String>,
+    /// A1 (CD-031): nominal instances carrying an `impl Copy`. `is_copy`/V-COPY-1 read it;
+    /// populated during lowering like `drop_impls`. (The runtime-glue drop of String/Vec is
+    /// recognized structurally, not via a table entry.)
+    pub copy_types: std::collections::BTreeSet<(u32, Vec<MirTy>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -381,6 +416,11 @@ pub struct MirProgram {
     pub bodies: Vec<MirBody>,
     /// Nominal layout info for projection typing (verifier/backends).
     pub types: TypeContext,
+    /// A1 (CD-031): the MIR shape version this program was produced against (`MIR_VERSION`).
+    pub mir_version: String,
+    /// A1 (CD-031): the runtime-surface revision (`MIR_RUNTIME_SURFACE`). A consumer rejects a
+    /// program whose surface it does not support before consuming any body (V-SURFACE-1).
+    pub runtime_surface: String,
 }
 
 // ---------------------------------------------------------------------- dump --
@@ -390,7 +430,11 @@ impl MirProgram {
     /// input; consumed by tests, review, and the C4.4 differential harness.
     pub fn dump(&self) -> String {
         let mut out = String::new();
-        let _ = writeln!(out, "// STARK MIR v{MIR_VERSION}");
+        let _ = writeln!(
+            out,
+            "// STARK MIR v{} (runtime-surface {})",
+            self.mir_version, self.runtime_surface
+        );
         for body in &self.bodies {
             let _ = writeln!(out);
             let _ = writeln!(out, "fn {} {{", body.instance.symbol);
@@ -493,7 +537,10 @@ impl MirProgram {
                 target.0,
                 trap.category
             ),
-            Terminator::Trap { info } => format!("trap {:?}", info.category),
+            Terminator::Trap { info, message } => match message {
+                Some(op) => format!("trap {:?} msg({})", info.category, dump_operand(op)),
+                None => format!("trap {:?}", info.category),
+            },
             Terminator::Return => "return".to_string(),
             Terminator::Unreachable => "unreachable".to_string(),
         }
@@ -626,6 +673,7 @@ fn dump_operand(op: &Operand) -> String {
             Constant::Bool(v) => format!("const {v}"),
             Constant::Unit => "const ()".to_string(),
             Constant::FnPtr(instance) => format!("const fnptr {}", instance.symbol),
+            Constant::Str(s) => format!("const \"{}\"", s.escape_default()),
         },
     }
 }

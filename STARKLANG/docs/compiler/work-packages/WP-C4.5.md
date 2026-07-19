@@ -78,8 +78,29 @@ HIR/MIR differential agreement before the next begins.
    nominals (needs generic impls). 5 differential + 2 lowering + 3 verifier tests; no new
    oracle defects (first increment where the differential matched the oracle on first run).
    Workspace 668/0/2.
-6. **C4.5e — runtime values:** String/str, Vec/slices, Option/Result combinators, panic/assert
-   paths, the widened `RuntimeFn` surface. Also owns (accumulated boundaries): user-nominal
+6. **C4.5e — runtime values (implements Amendment A1, CD-031):** String/str, Vec/slices,
+   Option/Result combinators, panic/assert paths, the widened `RuntimeFn` surface. Sequenced
+   into sub-slices.
+   - **C4.5e-1 — strings + panic/assert: DONE 2026-07-19.** A1 shape foundation
+     (`MIR_RUNTIME_SURFACE`, `MirProgram.mir_version`/`runtime_surface`, `Constant::Str`,
+     `Trap.message`, `TypeContext.copy_types`, String/str `RuntimeFn` group, dump header +
+     `const "…"` escaping). Lowering: string literals → `Constant::Str`; `String::new`/`from`;
+     String/str method dispatch (`as_str`/`len`/`is_empty`/`push_str`/`clear`/`clone`/
+     `contains`, str `len`/`is_empty`/`to_string`); `&str`/`String` printing; String/str
+     comparison → `StrEq`/`StrCmp` (V-STR-2 keeps structural BinOp off strings); `panic(msg)`
+     → `Trap{Panic, Some(msg)}`, `assert(cond)` → conditional `Trap{AssertFailure}`; String is
+     a droppable **leaf unit** (buffer reclaim, unobservable); user `as` casts (were never
+     lowered — needed by `s.len() as Int32`). Verifier: surface gate (MIR-0017), string
+     `runtime_sig`, V-STR-1/2 (MIR-0015), Trap.message threaded through move/proof/drop-flag/
+     typing analyses. Interp: `MirValue::Str`/`String`, string runtime ops (`&mut String`
+     mutated in place through the reference; `as_str` returns a read-only snapshot per §5b),
+     `Trap.message` resolved into `MirRunError::Trap.message` and compared by the differential
+     (panic messages compared exactly, compiler traps by category fragment). **The two frozen
+     `ownership_drop__*` corpus cases are now differential-green** — the first String-dependent
+     corpus cases to pass. 6 differential + 3 verifier + 1 dump test. Deferred to later e
+     sub-slices: Char + Char-dependent String ops (`push`/`pop`, Print(ln)Char), `assert_eq`/
+     `assert_ne` formatting. Workspace 684/0/2.
+   Also owns (accumulated boundaries): user-nominal
    `Eq`/`Ord` operator dispatch (needs `Ordering` runtime values), match on owned
    Drop-bearing scrutinees (`drop_unbound` partial drops), projected-move take-and-poison in
    the MIR interp (CD-030 deferral), and the CE3-shaped mir.md §5/§7 amendment for
