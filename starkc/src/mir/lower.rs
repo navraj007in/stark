@@ -550,6 +550,17 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
     }
 }
 
+/// A2/DEV-070: how a `match` treats its scrutinee.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatchMode {
+    /// Owned scrutinee, consumed by the match (C4.5d): temp materialization, move-out
+    /// bindings, unbound-droppable temps, arm-end drops.
+    Consuming,
+    /// Scrutinee read through a shared reference (`match *self`): matched in place — no move,
+    /// no poison, no drops; bindings must be `Copy` (read by copy).
+    ByRef,
+}
+
 struct LoopTargets {
     continue_target: BlockId,
     break_target: BlockId,
@@ -5306,6 +5317,22 @@ impl<'a> FnLowerer<'a> {
 
     // ---- match ----
 
+    /// A2/DEV-070: does this scrutinee expression read a place THROUGH a shared reference
+    /// (`match *self`, `match self.state` behind `&self`)? Such a match must not move from —
+    /// and poison — the borrowed place; it matches by reference instead (`MatchMode::ByRef`).
+    fn scrutinee_reads_through_ref(&self, expr: ExprId) -> bool {
+        match &self.hir.expr(expr).kind {
+            hir::ExprKind::Unary {
+                op: UnOp::Deref, ..
+            } => true,
+            hir::ExprKind::Field { base, .. } | hir::ExprKind::TupleField { base, .. } => {
+                matches!(self.tables.expr_types.get(base), Some(Ty::Ref { .. }))
+                    || self.scrutinee_reads_through_ref(*base)
+            }
+            _ => false,
+        }
+    }
+
     fn lower_match(&mut self, expr: ExprId, dest: Option<Place>) -> Result<(), LowerError> {
         let span = self.hir.expr(expr).span;
         let hir::ExprKind::Match { scrutinee, arms } = &self.hir.expr(expr).kind else {
@@ -5315,22 +5342,42 @@ impl<'a> FnLowerer<'a> {
         let arms: Vec<_> = arms.iter().map(|a| (a.pat, a.body)).collect();
 
         let scrut_ty = self.expr_mir_ty(scrutinee)?;
-        // Materialize the scrutinee once. The initial move clears the source local's drop flag
-        // (if it was a registered droppable local), so the scrutinee temp — not the source — is
-        // what the arms consume; a temp is never auto-dropped, so no double-drop can occur.
-        let scrut_local = self.new_temp(scrut_ty.clone());
-        let scrut_value = self.lower_expr_to_operand(scrutinee)?;
-        self.emit(
-            Statement::Assign(Place::local(scrut_local), Rvalue::Use(scrut_value)),
-            self.synthetic(span, SyntheticKind::MatchDesugar),
-        );
+        // A2/DEV-070: a scrutinee read through a shared reference is matched BY REFERENCE — no
+        // move, no poison, no arm-end drops; the referent stays owned by the caller. Consumption
+        // depends on the scrutinee, not on a blanket rule (CE3 requirement): owned scrutinees
+        // keep the C4.5d consuming semantics below. User-`Drop` scrutinee types stay unsupported
+        // by-ref (the oracle's legacy clone would run the dtor on the clone; front-end move-
+        // out-of-borrow checking is the real fix and is recorded as a front-end gap).
+        let by_ref = self.scrutinee_reads_through_ref(scrutinee);
+        let (scrut_place, mode) = if by_ref {
+            if self.ty_has_user_drop(&scrut_ty) {
+                return unsupported(
+                    "match through a reference on a user-Drop type (front-end move-out-of-borrow gap)",
+                    span,
+                );
+            }
+            (self.lower_place(scrutinee)?, MatchMode::ByRef)
+        } else {
+            // Materialize the scrutinee once. The initial move clears the source local's drop
+            // flag (if it was a registered droppable local), so the scrutinee temp — not the
+            // source — is what the arms consume; a temp is never auto-dropped, so no
+            // double-drop can occur.
+            let scrut_local = self.new_temp(scrut_ty.clone());
+            let scrut_value = self.lower_expr_to_operand(scrutinee)?;
+            self.emit(
+                Statement::Assign(Place::local(scrut_local), Rvalue::Use(scrut_value)),
+                self.synthetic(span, SyntheticKind::MatchDesugar),
+            );
+            (Place::local(scrut_local), MatchMode::Consuming)
+        };
 
         let join = self.new_block();
         match &scrut_ty {
             MirTy::Enum(enum_ref, args) => self.lower_enum_match(
                 *enum_ref,
                 args.clone(),
-                scrut_local,
+                scrut_place,
+                mode,
                 &arms,
                 dest,
                 join,
@@ -5344,7 +5391,8 @@ impl<'a> FnLowerer<'a> {
             | MirTy::UInt8
             | MirTy::UInt16
             | MirTy::UInt32
-            | MirTy::UInt64 => self.lower_int_match(scrut_local, &arms, dest, join, span)?,
+            | MirTy::UInt64
+            | MirTy::Char => self.lower_int_match(scrut_place, &arms, dest, join, span)?,
             _ => return unsupported("match scrutinee type (C4.5)", span),
         }
         self.current = join;
@@ -5353,7 +5401,7 @@ impl<'a> FnLowerer<'a> {
 
     fn lower_int_match(
         &mut self,
-        scrut: LocalId,
+        scrut: Place,
         arms: &[(hir::PatId, ExprId)],
         dest: Option<Place>,
         join: BlockId,
@@ -5382,6 +5430,12 @@ impl<'a> FnLowerer<'a> {
                                     span: pat_span,
                                 })? as u128
                         }
+                        // A2: a Char literal pattern is its Unicode scalar codepoint (the same
+                        // representation Char literals lower to as expressions).
+                        Lit::Char => match literal::eval_lit_value(*lit, self.text(pat_span)) {
+                            Some(crate::literal::LitValue::Char(c)) => u128::from(u32::from(c)),
+                            _ => return unsupported("unparseable char literal pattern", pat_span),
+                        },
                         _ => return unsupported("literal pattern form (C4.5)", pat_span),
                     };
                     cases.push((value, pat, body));
@@ -5407,7 +5461,7 @@ impl<'a> FnLowerer<'a> {
             .collect();
         self.terminate(
             Terminator::SwitchInt {
-                scrut: Operand::Copy(Place::local(scrut)),
+                scrut: Operand::Copy(scrut.clone()),
                 arms: switch_arms,
                 otherwise: default_block,
             },
@@ -5415,9 +5469,10 @@ impl<'a> FnLowerer<'a> {
             default_block,
         );
 
-        // Default arm (binding binds the scrutinee).
+        // Default arm (binding binds the scrutinee — always Copy for scalar scrutinees).
+        // A ByRef place is a deref of a ref-to-scalar; peeling recovers the scalar type.
         if let hir::PatKind::Binding { name, local } = &self.hir.pat(default_pat).kind {
-            let ty = self.locals[scrut.0 as usize].ty.clone();
+            let ty = Self::peel_refs(self.locals[scrut.local.0 as usize].ty.clone()).0;
             self.locals.push(LocalDecl {
                 ty,
                 kind: LocalKind::User(self.text(*name).to_string()),
@@ -5427,7 +5482,7 @@ impl<'a> FnLowerer<'a> {
             self.emit(
                 Statement::Assign(
                     Place::local(bound),
-                    Rvalue::Use(Operand::Copy(Place::local(scrut))),
+                    Rvalue::Use(Operand::Copy(scrut.clone())),
                 ),
                 self.synthetic(span, SyntheticKind::MatchDesugar),
             );
@@ -5442,11 +5497,13 @@ impl<'a> FnLowerer<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn lower_enum_match(
         &mut self,
         enum_ref: EnumRef,
         scrut_args: Vec<MirTy>,
-        scrut: LocalId,
+        scrut: Place,
+        mode: MatchMode,
         arms: &[(hir::PatId, ExprId)],
         dest: Option<Place>,
         join: BlockId,
@@ -5454,10 +5511,7 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         let disc = self.new_temp(MirTy::Int64);
         self.emit(
-            Statement::Assign(
-                Place::local(disc),
-                Rvalue::Discriminant(Place::local(scrut)),
-            ),
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(scrut.clone())),
             self.synthetic(span, SyntheticKind::MatchDesugar),
         );
 
@@ -5521,25 +5575,35 @@ impl<'a> FnLowerer<'a> {
         if let Some((default_pat, default_body)) = default {
             self.scopes.push(Vec::new());
             let depth = self.scopes.len() - 1;
-            let scrut_ty = self.locals[scrut.0 as usize].ty.clone();
+            let scrut_ty = MirTy::Enum(enum_ref, scrut_args.clone());
             if let hir::PatKind::Binding { name, local } = &self.hir.pat(default_pat).kind {
-                // Catch-all binding: move the whole scrutinee into the binding (Copy for a
-                // non-droppable scrutinee), and register it so it drops at arm end.
+                // Catch-all binding: bind the whole scrutinee. Consuming: move it in and
+                // register it to drop at arm end. ByRef: the whole value must be Copy to bind
+                // (a non-Copy whole-value binding would move out of the borrow).
+                if mode == MatchMode::ByRef && !self.is_copy(&scrut_ty) {
+                    return unsupported(
+                        "binding a non-Copy scrutinee through a shared reference",
+                        span,
+                    );
+                }
                 self.locals.push(LocalDecl {
                     ty: scrut_ty.clone(),
                     kind: LocalKind::User(self.text(*name).to_string()),
                 });
                 let bound = LocalId((self.locals.len() - 1) as u32);
                 self.local_map.insert(local.0, bound);
-                let value = self.read_place(Place::local(scrut), &scrut_ty, span)?;
+                let value = self.read_place(scrut.clone(), &scrut_ty, span)?;
                 self.emit(
                     Statement::Assign(Place::local(bound), Rvalue::Use(value)),
                     self.synthetic(span, SyntheticKind::MatchDesugar),
                 );
-                self.register_droppable_local(bound, &scrut_ty, true, span)?;
-            } else {
+                if mode == MatchMode::Consuming {
+                    self.register_droppable_local(bound, &scrut_ty, true, span)?;
+                }
+            } else if mode == MatchMode::Consuming {
                 // Wildcard `_` catch-all: the scrutinee is dropped whole at arm end.
-                self.drop_whole_scrutinee_at_arm_end(scrut, &scrut_ty, span)?;
+                // (ByRef: the referent stays owned by the caller — nothing to drop.)
+                self.drop_whole_scrutinee_at_arm_end(scrut.clone(), &scrut_ty, span)?;
             }
             self.lower_arm_body_scoped(default_body, &dest, join, depth, span)?;
         } else {
@@ -5563,7 +5627,15 @@ impl<'a> FnLowerer<'a> {
             // C4.5d match-drop: consume the active variant's payload — bound fields into
             // registered binding locals, unbound droppable fields into registered temps — so
             // the scrutinee is fully accounted for and everything drops at arm end.
-            self.consume_variant_payload(enum_ref, &scrut_args, scrut, variant as u32, pat, span)?;
+            self.consume_variant_payload(
+                enum_ref,
+                &scrut_args,
+                scrut.clone(),
+                mode,
+                variant as u32,
+                pat,
+                span,
+            )?;
             self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
         }
         Ok(())
@@ -5607,11 +5679,13 @@ impl<'a> FnLowerer<'a> {
     /// unbound (Wild / unmentioned) droppable field into a registered temp so it drops at arm
     /// end; an unbound non-droppable field is simply abandoned in the (never-dropped) scrutinee
     /// temp.
+    #[allow(clippy::too_many_arguments)]
     fn consume_variant_payload(
         &mut self,
         enum_ref: EnumRef,
         scrut_args: &[MirTy],
-        scrut: LocalId,
+        scrut: Place,
+        mode: MatchMode,
         variant: u32,
         pat: hir::PatId,
         span: Span,
@@ -5622,7 +5696,15 @@ impl<'a> FnLowerer<'a> {
                 let pats = pats.clone();
                 for (i, sub) in pats.iter().enumerate() {
                     let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
-                    self.consume_field(scrut, variant, i as u32, &field_ty, Some(*sub), span)?;
+                    self.consume_field(
+                        scrut.clone(),
+                        mode,
+                        variant,
+                        i as u32,
+                        &field_ty,
+                        Some(*sub),
+                        span,
+                    )?;
                 }
             }
             hir::PatKind::Struct { fields, res, .. } => {
@@ -5643,7 +5725,8 @@ impl<'a> FnLowerer<'a> {
                     let field_ty = payload_tys.get(index).cloned().unwrap_or(MirTy::Unit);
                     match (field_pat, field_local) {
                         (Some(sub), _) => self.consume_field(
-                            scrut,
+                            scrut.clone(),
+                            mode,
                             variant,
                             index as u32,
                             &field_ty,
@@ -5651,7 +5734,8 @@ impl<'a> FnLowerer<'a> {
                             span,
                         )?,
                         (None, Some(local)) => self.bind_field_local(
-                            scrut,
+                            scrut.clone(),
+                            mode,
                             variant,
                             index as u32,
                             name_text,
@@ -5662,10 +5746,10 @@ impl<'a> FnLowerer<'a> {
                         (None, None) => {}
                     }
                 }
-                // Unmentioned droppable fields still drop at arm end.
+                // Unmentioned droppable fields still drop at arm end (Consuming only).
                 for (i, ty) in payload_tys.iter().enumerate() {
                     if !mentioned[i] {
-                        self.consume_field(scrut, variant, i as u32, ty, None, span)?;
+                        self.consume_field(scrut.clone(), mode, variant, i as u32, ty, None, span)?;
                     }
                 }
             }
@@ -5677,9 +5761,11 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Consume one variant payload field given its sub-pattern (`None` = unbound/Wild).
+    #[allow(clippy::too_many_arguments)]
     fn consume_field(
         &mut self,
-        scrut: LocalId,
+        scrut: Place,
+        mode: MatchMode,
         variant: u32,
         index: u32,
         field_ty: &MirTy,
@@ -5689,15 +5775,16 @@ impl<'a> FnLowerer<'a> {
         match sub.map(|s| &self.hir.pat(s).kind) {
             Some(hir::PatKind::Binding { name, local }) => {
                 let (name, local) = (self.text(*name).to_string(), *local);
-                self.bind_field_local(scrut, variant, index, name, local, field_ty, span)
+                self.bind_field_local(scrut, mode, variant, index, name, local, field_ty, span)
             }
             Some(hir::PatKind::Wild) | None => {
-                if self.ty_needs_drop(field_ty, span)? {
+                // ByRef: nothing is consumed — the referent keeps ownership of every payload.
+                if mode == MatchMode::Consuming && self.ty_needs_drop(field_ty, span)? {
                     self.discover_drop_impls(field_ty)?;
-                    let place = Place {
-                        local: scrut,
-                        projection: vec![Projection::VariantField(variant, index)],
-                    };
+                    let mut place = scrut;
+                    place
+                        .projection
+                        .push(Projection::VariantField(variant, index));
                     let value = self.read_place(place, field_ty, span)?;
                     let tmp = self.new_temp(field_ty.clone());
                     self.emit(
@@ -5713,11 +5800,15 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
-    /// Move a variant payload field into a fresh drop-registered binding local.
+    /// Bind a variant payload field to a fresh binding local. Consuming: move it in and
+    /// register it to drop at arm end. ByRef: the field must be `Copy` (read by copy; a
+    /// non-Copy binding would move out of the borrow — a front-end move-out-of-borrow gap,
+    /// recorded, keeps such programs out of MIR).
     #[allow(clippy::too_many_arguments)]
     fn bind_field_local(
         &mut self,
-        scrut: LocalId,
+        scrut: Place,
+        mode: MatchMode,
         variant: u32,
         index: u32,
         name: String,
@@ -5725,23 +5816,31 @@ impl<'a> FnLowerer<'a> {
         field_ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
+        if mode == MatchMode::ByRef && !self.is_copy(field_ty) {
+            return unsupported(
+                "binding a non-Copy payload through a shared reference (front-end move-out-of-borrow gap)",
+                span,
+            );
+        }
         self.locals.push(LocalDecl {
             ty: field_ty.clone(),
             kind: LocalKind::User(name),
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(hir_local.0, bound);
-        let place = Place {
-            local: scrut,
-            projection: vec![Projection::VariantField(variant, index)],
-        };
+        let mut place = scrut;
+        place
+            .projection
+            .push(Projection::VariantField(variant, index));
         let value = self.read_place(place, field_ty, span)?;
         self.emit(
             Statement::Assign(Place::local(bound), Rvalue::Use(value)),
             self.synthetic(span, SyntheticKind::MatchDesugar),
         );
-        // The binding owns the moved-in value (flag true) and drops at arm-scope end.
-        self.register_droppable_local(bound, field_ty, true, span)?;
+        // Consuming: the binding owns the moved-in value (flag true), drops at arm-scope end.
+        if mode == MatchMode::Consuming {
+            self.register_droppable_local(bound, field_ty, true, span)?;
+        }
         Ok(())
     }
 
@@ -5749,7 +5848,7 @@ impl<'a> FnLowerer<'a> {
     /// temp). No-op if the scrutinee isn't droppable.
     fn drop_whole_scrutinee_at_arm_end(
         &mut self,
-        scrut: LocalId,
+        scrut: Place,
         scrut_ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
@@ -5757,7 +5856,7 @@ impl<'a> FnLowerer<'a> {
             return Ok(());
         }
         self.discover_drop_impls(scrut_ty)?;
-        let value = self.read_place(Place::local(scrut), scrut_ty, span)?;
+        let value = self.read_place(scrut, scrut_ty, span)?;
         let tmp = self.new_temp(scrut_ty.clone());
         self.emit(
             Statement::Assign(Place::local(tmp), Rvalue::Use(value)),

@@ -1,10 +1,18 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.6 A4-2e — **C4 OPEN; A4 COMPLETE, five of seven classes done (CD-033)**
+Updated: 2026-07-20 after WP-C4.6 A2-1 — **C4 OPEN; DEV-070 CLOSED (both engines), A2 in progress**
 
 ## Position
-Gate: C4  Next: **A2** (general + nested pattern lowering; owns DEV-070), then A1 (generic
-impls) — the last two Class-A blockers. Per the dependency-aware order (A5+A7 → A6 → A3 → A4 →
-A2 → A1). **A4 COMPLETE (all 2026-07-20):** A4-1 `size_of`/`align_of` + `unwrap_or`; A4-2a
+Gate: C4  Next: **A2-2** (tuple/array scrutinees, nested patterns, String/Float literal
+patterns), then A1 (generic impls). **A2-1 DONE 2026-07-20 — DEV-070 closed in BOTH engines:**
+oracle `Receiver::Ref` bound `self` to a value clone (same bug class as the Eq/Ord-dispatch
+correction; `*self` failed before any match ran) → now binds `Value::Ref(place)`; MIR gained
+`MatchMode::ByRef` (scrutinee read through a shared ref matched IN PLACE — Copy payloads bound
+by copy, unbound payloads untouched, no arm-end drops; owned scrutinees keep C4.5d consuming
+semantics — consumption per scrutinee, no blanket borrow rule, per CE3). Char literal patterns
+(codepoint SwitchInt). Guards: user-Drop scrutinee / non-Copy bound payload through a ref stay
+Unsupported — the latter recorded as **DEV-072** (front end passes a move-out-of-borrow;
+oracle's legacy clone masked it). CE3 regression matrix in 6 differential tests; workspace
+739/0; clippy 1.93/1.97 clean. **A4 COMPLETE (all 2026-07-20):** A4-1 `size_of`/`align_of` + `unwrap_or`; A4-2a
 `map`/`and_then`/`map_err` + Range-as-value (MIR tuple `(start,end,inclusive)`); A4-2b
 `Vec::get`/`get_mut` (`Option<&T>`, never trap) at `0.1-A4` (A1 rev. 8); A4-2c `println(Ordering)`
 (no new op); A4-2d `chars()` iteration (`Option<Char>` by value) at `0.1-A5` (A1 rev. 9);

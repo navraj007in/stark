@@ -620,7 +620,9 @@ impl<'a> BodyCx<'a> {
                     | MirTy::UInt8
                     | MirTy::UInt16
                     | MirTy::UInt32
-                    | MirTy::UInt64 => {}
+                    | MirTy::UInt64
+                    // A2: Char literal patterns switch on the Unicode scalar codepoint.
+                    | MirTy::Char => {}
                     other => self.err(
                         "MIR-0004",
                         bi,

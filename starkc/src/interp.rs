@@ -2862,7 +2862,9 @@ impl<'a> Interpreter<'a> {
         &mut self,
         callable: Callable,
         receiver_place: Place,
-        receiver_value: Value,
+        // Kept for call-site symmetry (nominal lookup resolves from it); the `&self` binding
+        // itself is a genuine reference since DEV-070's fix, so the clone is no longer bound.
+        _receiver_value: Value,
         args: Vec<Value>,
         span: Span,
     ) -> Result<Value, RuntimeError> {
@@ -2874,7 +2876,14 @@ impl<'a> Interpreter<'a> {
             // non-Copy receivers, including partial moves out of fields) instead of re-evaluating
             // the receiver expression — the source of the confirmed double-evaluation bug.
             hir::Receiver::Value => self.take_place(&receiver_place, span)?,
-            hir::Receiver::Ref => receiver_value,
+            // DEV-070 (A2): a `&self` receiver binds a genuine REFERENCE to the caller's place,
+            // not a value clone — the same fix the correction brief applied to `Eq::eq`/
+            // `Ord::cmp` dispatch (Issue 2). With the clone, `*self` failed "cannot dereference
+            // non-reference"; field reads worked only via the deref-normalizing place walk.
+            // Observationally equivalent otherwise: the referent cannot be mutated while the
+            // method runs (shared borrow, single-threaded), and the old clone was discarded
+            // without STARK drop effects. (`&mut self` keeps its take/write-back model.)
+            hir::Receiver::Ref => Value::Ref(receiver_place.clone()),
             hir::Receiver::RefMut => self
                 .place_slot_mut(&receiver_place, span)?
                 .take()

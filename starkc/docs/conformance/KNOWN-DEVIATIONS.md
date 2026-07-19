@@ -1888,7 +1888,7 @@ WP-C1.5)
   `files.len() >= 2`; differential output agreement). Widening that test tracks this
   deviation's front-end fix.
 
-## DEV-070 — `match` on a scrutinee behind a shared reference moves it out [OPEN, found WP-C4.6 A3, 2026-07-19]
+## DEV-070 — `match` on a scrutinee behind a shared reference moves it out [CLOSED, WP-C4.6 A2, 2026-07-20]
 
 - **What:** `lower_match` always materializes the scrutinee by value
   (`lower_expr_to_operand(scrutinee)` → an `Operand::Move` for a non-`Copy` enum), then the
@@ -1910,6 +1910,35 @@ WP-C1.5)
   `user_struct_eq_dispatch_agrees`, whose `eq` body reads `self.id`/`other.id` fields rather
   than matching). Enum `Eq` impls whose body matches `*self` are blocked on this deviation, not
   on A3's dispatch mechanism.
+- **CLOSED (WP-C4.6 A2, 2026-07-20), both engines.** Root cause was in BOTH interpreters:
+  (a) **oracle** — `Receiver::Ref` bound `self` to a value CLONE, not `Value::Ref(place)`
+  (the same bug class the correction brief fixed for `Eq::eq`/`Ord::cmp` dispatch, Issue 2),
+  so `*self` failed "cannot dereference non-reference" before any match ran; fixed by binding
+  a genuine reference (observationally equivalent otherwise — the referent cannot mutate
+  during the call and the old clone was discarded without STARK drop effects). (b) **MIR** —
+  `lower_match` gained `MatchMode::ByRef`: a scrutinee read through a shared reference is
+  matched IN PLACE (discriminant on the place; `Copy` payloads bound by copy; unbound payloads
+  untouched — the referent keeps ownership; no arm-end drops), while owned scrutinees keep the
+  C4.5d consuming semantics — per the CE3 rule, consumption depends on the scrutinee, never a
+  blanket "all matches borrow". Guards: a user-`Drop` scrutinee type and a non-Copy BOUND
+  payload through a reference stay clean-Unsupported (see DEV-072 — the front end fails to
+  reject that move-out-of-borrow).
+- **Regression evidence (the CE3 matrix):** `match_deref_self_twice_fieldless_agree`,
+  `match_deref_self_copy_payload_agree`, `match_deref_self_noncopy_wildcard_agree`,
+  `match_copy_scrutinee_reusable_agree`, `match_owned_drop_scrutinee_still_consumes_agree`.
+
+## DEV-072 — Binding a non-Copy payload through a shared reference passes borrowck [OPEN, found WP-C4.6 A2, 2026-07-20]
+
+- **What:** `match *self { Holder::Val(s) => … }` inside a `&self` method, where the payload
+  is non-`Copy` (e.g. `String`), passes the front end — but binding `s` moves the payload out
+  of a shared borrow, which the ownership rules forbid (MOVE/OWN rules; a shared borrow never
+  transfers ownership). The oracle's legacy clone semantics masked it (the clone was consumed,
+  not the referent).
+- **Scope:** front-end borrow checking (move-out-of-borrow through match bindings unchecked).
+  MIR keeps such programs clean-Unsupported ("binding a non-Copy payload through a shared
+  reference"), so nothing mislowers. Owner: front end.
+- **Repro:** `enum Holder { Empty, Val(String) }` +
+  `impl Holder { fn peek(&self) -> Int32 { match *self { Holder::Val(s) => 1, Holder::Empty => 0 } } }`.
 
 ## DEV-071 — `match` on `Ordering` with all three variants is flagged non-exhaustive [OPEN, found WP-C4.6 A3-Ord, 2026-07-19]
 
@@ -1976,7 +2005,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 69 numbered deviations total (DEV-002 through DEV-071, DEV-001/DEV-003 retired).
+Current count: 70 numbered deviations total (DEV-002 through DEV-072, DEV-001/DEV-003 retired).
 DEV-069 (front end + HIR interpreter not multi-file-span-clean: cross-file spans read against
 the entry file, breaking cross-file methods/literals/field reads) was found during WP-C4.5f-3c's
 multi-file lowering work and remains **open**, owned by a future front-end WP — the MIR lowering

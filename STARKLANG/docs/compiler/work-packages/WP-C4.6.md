@@ -184,8 +184,28 @@ required class is green.
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
 - A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
 - A4 (core-min surface): **DONE 2026-07-20** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, `0.1-A4`), A4-2c (println Ordering), A4-2d (chars, `0.1-A5`), A4-2e (slicing, `0.1-A6`) — see below
-- A2 (patterns): _pending_
+- A2 (patterns): **in progress** — A2-1 (DEV-070 both-engine fix + Char literal patterns) DONE 2026-07-20; A2-2 (tuple/array scrutinees, nested patterns, String/Float literal patterns) pending — see below
 - A1 (generic impls): _pending_
+
+### A2-1 — DEV-070 fix (both engines) + Char literal patterns, DONE 2026-07-20
+
+**DEV-070 root cause was in BOTH interpreters.** Oracle: `Receiver::Ref` bound `self` to a
+value CLONE (not `Value::Ref(place)` — the same bug class the correction brief fixed for
+`Eq`/`Ord` dispatch), so `match *self` failed "cannot dereference non-reference" before any
+match ran; fixed by binding a genuine reference (observationally equivalent otherwise). MIR:
+`lower_match` gained **`MatchMode::ByRef`** — a scrutinee read through a shared reference
+(`match *self`, `match self.field` behind `&self`; detected syntactically) is matched IN
+PLACE: discriminant on the place, `Copy` payloads bound by copy, unbound payloads untouched
+(the referent keeps ownership), no arm-end drops. Owned scrutinees keep the C4.5d consuming
+semantics — consumption depends on the scrutinee, never a blanket "all matches borrow" (the
+CE3 rule). Guards: user-`Drop` scrutinee types and non-Copy BOUND payloads through a
+reference stay clean-Unsupported — the latter is **DEV-072** (front end fails to reject that
+move-out-of-borrow; the oracle's legacy clone masked it). Char literal patterns lower as
+codepoint `SwitchInt` cases (verifier now accepts a Char scrutinee). Evidence — the CE3
+regression matrix: `match_deref_self_twice_fieldless_agree`, `match_deref_self_copy_payload_agree`,
+`match_deref_self_noncopy_wildcard_agree`, `match_copy_scrutinee_reusable_agree`,
+`match_owned_drop_scrutinee_still_consumes_agree`, plus `char_literal_patterns_agree`.
+DEV-070 CLOSED; DEV-072 opened (front-end owner).
 
 ### A5 + A7 — DONE 2026-07-19
 

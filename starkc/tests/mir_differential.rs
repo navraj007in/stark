@@ -1735,3 +1735,93 @@ fn slice_index_checks_view_length_agree() {
             .to_string(),
     );
 }
+
+// ---- WP-C4.6 A2 (increment 1): DEV-070 non-consuming match + Char literal patterns ----
+// CE3-required regression matrix (CD-033 §5): match-through-reference must not move from and
+// poison the borrowed place, WITHOUT a blanket "all matches borrow" rule — consumption depends
+// on the scrutinee and pattern semantics.
+
+/// (1) The same `&self` method containing `match *self`, called twice — the borrowed place
+/// survives the first call. (2a) fieldless enum behind a shared reference.
+#[test]
+fn match_deref_self_twice_fieldless_agree() {
+    differential(
+        "a2_m1.stark",
+        "enum Color { Red, Green, Blue } \
+         impl Color { fn ord(&self) -> Int32 { \
+             match *self { Color::Red => 0, Color::Green => 1, Color::Blue => 2, } } } \
+         fn main() { let a = Color::Green; println(a.ord()); println(a.ord()); }"
+            .to_string(),
+    );
+}
+
+/// (2b) payload-bearing enum behind a shared reference: Copy payloads bind by copy; the
+/// referent is reusable across calls.
+#[test]
+fn match_deref_self_copy_payload_agree() {
+    differential(
+        "a2_m2.stark",
+        "enum Holder { Empty, Val(Int32) } \
+         impl Holder { fn get(&self) -> Int32 { \
+             match *self { Holder::Val(x) => x, Holder::Empty => -1, } } } \
+         fn main() { let h = Holder::Val(42); println(h.get()); println(h.get()); }"
+            .to_string(),
+    );
+}
+
+/// (2c) a NON-Copy payload behind a shared reference stays untouched under a wildcard
+/// sub-pattern — the referent keeps ownership, nothing drops in the arm, twice-callable.
+#[test]
+fn match_deref_self_noncopy_wildcard_agree() {
+    differential(
+        "a2_m6.stark",
+        "enum Holder { Empty, Val(String) } \
+         impl Holder { fn tag(&self) -> Int32 { \
+             match *self { Holder::Val(_) => 1, Holder::Empty => 0, } } } \
+         fn main() { let h = Holder::Val(String::from(\"y\")); println(h.tag()); println(h.tag()); }"
+            .to_string(),
+    );
+}
+
+/// (3) Copy scrutinees remain reusable after being matched.
+#[test]
+fn match_copy_scrutinee_reusable_agree() {
+    differential(
+        "a2_m4.stark",
+        "fn main() { let n = 2; \
+             match n { 1 => println(10), _ => println(20), } \
+             match n { 2 => println(30), _ => println(40), } \
+             println(n); }"
+            .to_string(),
+    );
+}
+
+/// (4) owned non-Copy scrutinees still follow the consuming C4.5d semantics: the matched
+/// payload drops at arm end, exactly once.
+#[test]
+fn match_owned_drop_scrutinee_still_consumes_agree() {
+    differential(
+        "a2_m5.stark",
+        "enum E { A(Tag), B } \
+         struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         fn main() { let e = E::A(Tag { id: 7 }); \
+             match e { E::A(t) => println(100), E::B => println(200), } \
+             println(300); }"
+            .to_string(),
+    );
+}
+
+/// Char literal patterns switch on the Unicode scalar codepoint.
+#[test]
+fn char_literal_patterns_agree() {
+    differential(
+        "a2_char_pat.stark",
+        "fn main() { \
+             let c = 'b'; \
+             match c { 'a' => println(1), 'b' => println(2), _ => println(0), } \
+             match 'z' { 'z' => println(3), _ => println(4), } \
+         }"
+        .to_string(),
+    );
+}
