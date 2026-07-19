@@ -1158,6 +1158,21 @@ impl<'a> BodyCx<'a> {
             VecLen => (vec![vec_ref(&t, false)], uint64),
             VecIsEmpty => (vec![vec_ref(&t, false)], MirTy::Bool),
             VecIndexGet => (vec![vec_ref(&t, false), uint64], t.clone()),
+            // 0.1-A4: checked interior access → Option<&T>/Option<&mut T> (no Copy requirement).
+            VecGetRef => (
+                vec![vec_ref(&t, false), uint64],
+                opt(&MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(t.clone()),
+                }),
+            ),
+            VecGetMutRef => (
+                vec![vec_ref(&t, true), uint64],
+                opt(&MirTy::Ref {
+                    mutable: true,
+                    inner: Box::new(t.clone()),
+                }),
+            ),
             VecReplace => (vec![vec_ref(&t, true), uint64, t.clone()], t.clone()),
             VecRemove => (vec![vec_ref(&t, true), uint64], t.clone()),
             VecClear => (vec![vec_ref(&t, true)], MirTy::Unit),
@@ -1837,6 +1852,8 @@ fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
             | VecClear
             | VecIterNew
             | VecIterNext
+            | VecGetRef
+            | VecGetMutRef
     )
 }
 
@@ -1905,7 +1922,8 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         ),
         // Vec ops are schematic in T — resolved by `vec_runtime_sig`, never this fixed table.
         VecNew | VecWithCapacity | VecPush | VecPop | VecLen | VecIsEmpty | VecIndexGet
-        | VecReplace | VecRemove | VecClear | VecIterNew | VecIterNext => {
+        | VecReplace | VecRemove | VecClear | VecIterNew | VecIterNext | VecGetRef
+        | VecGetMutRef => {
             unreachable!("Vec ops resolve through vec_runtime_sig, not runtime_sig")
         }
         HashMapNew | HashMapInsert | HashMapGet | HashMapLen | HashMapIsEmpty

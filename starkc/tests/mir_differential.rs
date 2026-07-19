@@ -1602,3 +1602,27 @@ fn range_value_iteration_agrees() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A4-2b: Vec::get / get_mut (surface 0.1-A4) ----
+
+/// `Vec::get`/`get_mut` return `Option<&T>`/`Option<&mut T>` and never trap on out-of-bounds
+/// (they return `None`); `get_mut` mutates through the reference; the element type need not be
+/// Copy. All agree with the oracle.
+#[test]
+fn vec_get_and_get_mut_agree() {
+    differential(
+        "a4_vecget.stark",
+        "fn main() { \
+             let mut v: Vec<Int32> = Vec::new(); \
+             v.push(10); v.push(20); v.push(30); \
+             match v.get(1 as UInt64) { Some(x) => println(*x), None => println(-1), } \
+             match v.get(5 as UInt64) { Some(x) => println(*x), None => println(-1), } \
+             match v.get_mut(0 as UInt64) { Some(x) => { *x = 99; }, None => { } } \
+             match v.get(0 as UInt64) { Some(x) => println(*x), None => println(-1), } \
+             let mut s: Vec<String> = Vec::new(); \
+             s.push(String::from(\"hi\")); \
+             match s.get(0 as UInt64) { Some(x) => println(x.as_str()), None => println(\"none\"), } \
+         }"
+        .to_string(),
+    );
+}

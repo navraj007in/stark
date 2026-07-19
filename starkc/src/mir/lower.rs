@@ -4438,6 +4438,11 @@ impl<'a> FnLowerer<'a> {
             // the live Vec and yields an interior `&T`, so the element type need NOT be Copy
             // (the earlier snapshot representation required it; this does not).
             "iter" => (RuntimeFn::VecIterNew, false),
+            // 0.1-A4 (C4.6 A4-2b): checked interior access — `Option<&T>`/`Option<&mut T>`,
+            // returns `None` on out-of-bounds (never traps). Any element type (yields a
+            // reference, not a value).
+            "get" => (RuntimeFn::VecGetRef, false),
+            "get_mut" => (RuntimeFn::VecGetMutRef, true),
             _ => return unsupported(format!("Vec::{name} (a later C4.5e sub-slice)"), span),
         };
         let recv = self.borrow_vec_receiver(base, recv_mut, elem.clone(), span)?;
@@ -4861,7 +4866,7 @@ impl<'a> FnLowerer<'a> {
         // destructors invisibly.
         if self.ty_has_user_drop(&k) || self.ty_has_user_drop(&v) {
             return unsupported(
-                "HashMap over user-Drop key/value types (reserved beyond 0.1-A3)",
+                "HashMap over user-Drop key/value types (reserved — std-full)",
                 span,
             );
         }
@@ -4872,7 +4877,7 @@ impl<'a> FnLowerer<'a> {
             "is_empty" => (RuntimeFn::HashMapIsEmpty, false),
             "contains_key" => (RuntimeFn::HashMapContainsKey, false),
             "keys" => (RuntimeFn::HashMapKeysIterNew, false),
-            _ => return unsupported(format!("HashMap::{name} (reserved beyond 0.1-A3)"), span),
+            _ => return unsupported(format!("HashMap::{name} (reserved — std-full)"), span),
         };
         let recv = self.borrow_map_receiver(base, recv_mut, &k, &v, span)?;
         let mut ops = vec![recv];

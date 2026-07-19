@@ -5,9 +5,9 @@ Status: **APPROVED under CE3 as an additive MIR v0.1 amendment, runtime surface 
 corrections, which this revision incorporates (see §11 revision log). Rev. 1's central design
 was approved in principle; rev. 2 resolved eight required corrections; rev. 3 resolves the
 final four. Implementation of the C4.5e main body may begin against this revision.
-**Current runtime surface after subsequent dated enumerations (§11): `0.1-A3`** (rev. 5
+**Current runtime surface after subsequent dated enumerations (§11): `0.1-A4`** (rev. 5
 activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char ops as
-`0.1-A3`).
+`0.1-A3`; rev. 8 activated checked interior Vec access — `Vec::get`/`get_mut` — as `0.1-A4`).
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -397,6 +397,22 @@ and other interior views into runtime containers (§5d, after C4.5f frame genera
 I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
+
+**Rev. 8 — surface `0.1-A4` activation (2026-07-20, WP-C4.6 A4-2b, per CD-032's
+dated-enumeration rule; the A4 runtime-surface amendment CD-033 pre-authorized).** Activates
+checked interior Vec access:
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `VecGetRef` | `(&Vec<T>, UInt64) -> Option<&T>` | — | **never traps** — returns `None` on out-of-bounds (distinct from the trapping `VecIndexGet`/`v[i]`); interior borrow into the live Vec; no `T: Copy` requirement (yields a reference, not a value) |
+| `VecGetMutRef` | `(&mut Vec<T>, UInt64) -> Option<&mut T>` | — | as above, mutable interior borrow |
+
+`T` resolves from the first `&Vec` operand (as for the other Vec methods). Interpreter
+representation: index the live Vec through the receiver reference and hand out `Some(&v[i])`
+(interior `&T`/`&mut T`, protected by the C4.5f-1 frame generations) or `None`.
+`MIR_RUNTIME_SURFACE = "0.1-A4"`; the surface gate (§6) and dump header (§7) carry it. Programs
+using neither op are unchanged. Remaining A4 core-min surface still to activate under this or a
+following revision: `str::chars` iteration and array/Vec slicing.
 
 **Rev. 7 — Vec iteration made a true borrowed cursor (2026-07-19, WP-C4.6 A6, CD-033).** No
 surface change (stays `0.1-A3`), no new ops. `VecIterNew`/`VecIterNext` are re-specified from the

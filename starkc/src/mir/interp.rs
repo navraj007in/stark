@@ -1263,6 +1263,44 @@ impl<'a> Interp<'a> {
                 }
                 self.mutate_vec_ref(&recv, |v| v.remove(i))
             }
+            // 0.1-A4 (A4-2b): `get`/`get_mut` — checked interior access, NEVER traps. Return an
+            // interior reference into the live Vec at `i` as `Some(&v[i])`, or `None` when out
+            // of bounds. Mirrors HashMapGet; the mutability is a static property of the ref type.
+            VecGetRef | VecGetMutRef => {
+                let Some(MirValue::Ref {
+                    frame,
+                    generation,
+                    local,
+                    path,
+                }) = args.next()
+                else {
+                    return self.internal("VecGet(Mut)Ref expects a &Vec reference");
+                };
+                self.check_ref_live(frame, generation)?;
+                let i = int_arg(args.next())? as usize;
+                let len = match self.read_resolved(frame, local, &path)? {
+                    MirValue::Vec(elems) => elems.len(),
+                    other => return self.internal(format!("Vec referent is {other:?}")),
+                };
+                if i < len {
+                    let mut elem_path = path;
+                    elem_path.push(ConcreteProj::Index(i));
+                    Ok(MirValue::Enum {
+                        variant: 1,
+                        fields: vec![MirValue::Ref {
+                            frame,
+                            generation,
+                            local,
+                            path: elem_path,
+                        }],
+                    })
+                } else {
+                    Ok(MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    })
+                }
+            }
             // --- 0.1-A2 (C4.5f-2): by-reference iteration. The iterator value is an opaque
             // two-field aggregate [snapshot Vec, Int cursor] living in a frame local; `Next`
             // hands out interior references into THAT local (base + [Field(0), Index(i)]),
@@ -1650,6 +1688,8 @@ fn is_vec_runtime(rt: RuntimeFn) -> bool {
             | VecClear
             | VecIterNew
             | VecIterNext
+            | VecGetRef
+            | VecGetMutRef
     )
 }
 

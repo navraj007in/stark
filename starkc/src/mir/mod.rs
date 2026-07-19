@@ -39,7 +39,7 @@ pub const MIR_VERSION: &str = "0.1";
 /// user-`Drop` key/value types excluded so no runtime op ever runs a user destructor), plus
 /// the A1-approved-but-deferred Char ops (`StringPushChar`/`StringPopChar`,
 /// `PrintlnChar`/`PrintChar`).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A3";
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A4";
 
 // ------------------------------------------------------------------ identity --
 
@@ -373,6 +373,11 @@ pub enum RuntimeFn {
     VecReplace,
     VecRemove,
     VecClear,
+    // --- 0.1-A4 (C4.6 A4-2b): checked interior access — `get`/`get_mut` return `Option<&T>`/
+    // `Option<&mut T>` and DO NOT trap on out-of-bounds (they return `None`), distinct from the
+    // trapping `VecIndexGet`/`v[i]`. The reference is an interior borrow into the live Vec. ---
+    VecGetRef,
+    VecGetMutRef,
     // --- 0.1-A2 (C4.5f-2, CD-032): by-reference Vec iteration. The iterator borrows the
     // source Vec (borrowck forbids mutation while live); `VecIterNext` yields `Option<&T>`
     // and requires `T: Copy` (V-COPY-1). ---

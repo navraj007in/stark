@@ -183,7 +183,7 @@ required class is green.
 - A7 (expr forms): **DONE 2026-07-19** — see below
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
 - A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
-- A4 (core-min surface): **in progress** — A4-1 (size_of/align_of, unwrap_or) DONE 2026-07-19; A4-2 (Vec::get/get_mut, chars, slices — needs the dated runtime-surface amendment) + combinators (map/and_then/map_err) + Range-as-value pending — see below
+- A4 (core-min surface): **in progress** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, surface `0.1-A4`) all DONE 2026-07-20; remaining: chars iteration, slices, println of core-min types (incl. Ordering) — see below
 - A2 (patterns): _pending_
 - A1 (generic impls): _pending_
 
@@ -268,11 +268,23 @@ via a discriminant switch, default evaluated once before the switch (non-droppab
 for now — a droppable payload/default needs drop-of-unused elaboration, deferred). Evidence:
 `size_of_align_of_agree`, `option_result_unwrap_or_agree`.
 
-**Remaining A4 (pending):** `map`/`and_then`/`map_err` combinators (fn-value calls, no
-amendment); Range/RangeInclusive as first-class bound values; and the interior-ref/iterator/slice
-surface — `Vec::get`/`get_mut` (`Option<&T>`), `chars()` iteration, array/Vec slicing — which
-**needs the dated runtime-surface amendment** CD-033 pre-authorized (A4-2). `println` of the
-core-min types (the Display path deferred from A2) also lands here.
+**A4-2a DONE 2026-07-20** (no amendment): Option/Result `map`/`and_then`/`map_err` (function-value
+combinators — discriminant switch + `f` applied to the payload, other variant passed through;
+every payload moved once, so no drop-of-unused; non-droppable gate retained); Range/RangeInclusive
+as first-class bound values (`Ty::Range` → the MIR tuple `(start, end, inclusive)`; `for i in r`
+over a range value runs a counting loop branching on the runtime inclusive flag). Evidence:
+`option_result_combinators_agree`, `range_value_iteration_agrees`.
+
+**A4-2b DONE 2026-07-20** (surface `0.1-A4`, amendment A1 rev. 8 — the dated runtime-surface
+amendment CD-033 pre-authorized): `Vec::get`/`get_mut` → `VecGetRef`/`VecGetMutRef`
+(`Option<&T>`/`Option<&mut T>`, **never trap** — `None` on out-of-bounds, distinct from the
+trapping `v[i]`; interior borrow, no `T: Copy` requirement). `MIR_RUNTIME_SURFACE = "0.1-A4"`.
+Evidence: `vec_get_and_get_mut_agree`.
+
+**Remaining A4 (pending):** `str::chars()` iteration and array/Vec slicing (both extend surface
+`0.1-A4`/a later revision); `println` of the core-min types including `Ordering` (the Display path
+deferred from A2 — lowerable without a new runtime op via a discriminant switch over string
+literals).
 
 ### Original decision framing (retained for the record)
 
