@@ -2,14 +2,14 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C3  Next: WP-C3.3 (direct Cranelift spike)  Blocked: none
-C3-ENTRY closed 2026-07-19; WP-C3.1 done (`NATIVE-CORE-ARCHITECTURE.md`, 23-item workload frozen,
-measurement framework, leading hypothesis SELECT-GENERATED). WP-C3.2 done — generated-Rust spike
-(`starkc/tests/spike_genrust.rs`, isolated per charter §2.2) lowers 4/17 frozen corpus cases and
-matches the interpreter exactly, incl. trap→abort parity; report at
-`starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md`. Native backend selection status:
-SPIKING. Next: WP-C3.3 (direct Cranelift spike, same workload + measurements), then WP-C3.4
-selects under CE5 (owner).
+Gate: C3  Next: WP-C3.4 (backend selection, CE5 owner decision)  Blocked: none
+C3-ENTRY closed 2026-07-19; WP-C3.1 (workload freeze + framework), WP-C3.2 (generated-Rust spike,
+4/17 corpus match), and WP-C3.3 (direct Cranelift spike, 3/17 corpus match) all done — both spikes
+match the interpreter exactly on their supported subset incl. trap→abort parity, both isolated per
+charter §2.2. Reports: `starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md`,
+`WP-C3.3-direct-cranelift.md`. Native backend selection status: SPIKING. Next: WP-C3.4 compares
+interpreter / generated-Rust / direct and selects (SELECT-GENERATED / SELECT-DIRECT / REVISE /
+BLOCKED) under CE5 — **owner decision**.
 Mandatory compiler path: Core=CORE-V1-SEMANTIC-FOUNDATION-FROZEN-WITH-LISTED-DEVIATIONS (C2
 closed, see starkc/docs/compiler/C2-exit-report.md)  MIR=blocked (behind C3)  Native=blocked
 (behind C3, mandatory per CD-004 — C3 selects how, not whether)
@@ -627,7 +627,23 @@ involving nested modules and private items should assume this stricter model.
     unsupported breadth (aggregates/generics/traits/refs/Drop/fn-values). Report:
     `starkc/docs/compiler/spikes/WP-C3.2-generated-rust.md`; artifact `tests/spike_genrust.rs`
     (isolated, disposable).
-  - **WP-C3.3 direct Cranelift:** not yet run.
+  - **WP-C3.3 direct Cranelift (done):** 3/17 frozen corpus cases lower and match the interpreter
+    exactly (arithmetic, loops/for/break/continue, Int8-overflow trap→abort parity); 0 semantic
+    mismatches; 14/17 unsupported (same families as C3.2 plus unsigned ints — spike is
+    signed-only, hence 3 vs C3.2's 4). Produces a real standalone native executable (Cranelift
+    object + `cc` link). Codegen ~2 ms/case (phase-only), link ~47 ms/case; **defensible
+    end-to-end ~49 ms vs rustc ~87 ms ≈ 1.8× on this tiny workload — explicitly NOT a general
+    performance multiple** (charter caution; see the report's timing caveat — the raw 2-vs-87
+    codegen ratio is not like-for-like). No rustc build dependency. Finding: Cranelift 0.133 needs
+    rustc ≥1.94 (>1.93 here) → pinned 0.110, an MSRV-churn maintenance cost. Higher glue than
+    generated-Rust (we own CFG/SSA/overflow/Drop/layout); weaker out-of-box debug-info; but the
+    bigger beneficiary of the mandatory MIR (MIR ≈ Cranelift's own block/terminator model).
+    Report: `starkc/docs/compiler/spikes/WP-C3.3-direct-cranelift.md`; artifact
+    `tests/spike_cranelift.rs` + dev-only Cranelift deps (isolated, disposable).
+- Both spikes done; the tradeoff is symmetric and matches the §4 hypothesis: generated-Rust =
+  low glue + free cross-platform/debug-info + heavy rustc dep; direct = fast builds + no rustc +
+  ABI control + biggest MIR beneficiary, but much more backend engineering. Neither falsified nor
+  cleared; WP-C3.4 selects.
 - Evidence: see CD-002 for the closest existing evidence (old Gate 6/7 tensor/ONNX-deployment
   track) — informative precedent for methodology, not a substitute (CD-004).
 
@@ -981,3 +997,36 @@ a breadth run on both candidates. The two open fn-value properties (CD-022) stil
 pre-C3.4.
 NEXT: WP-C3.3 — direct Cranelift spike over the same frozen workload with the same measurement
 record; then WP-C3.4 selects under CE5.
+
+### WP-C3.3 — Direct (Cranelift) backend spike — 2026-07-19
+DONE: built and ran the direct Cranelift backend spike (Candidate B). Isolated HIR→Cranelift-IR
+lowerer + object-emission + `cc`-link + run/diff harness in `starkc/tests/spike_cranelift.rs`
+(charter §2.2 — NOT wired into `stark build`, disposable). Same frozen workload subset as C3.2.
+Produces a real standalone native executable. Added Cranelift dev-dependencies (pinned 0.110 for
+rustc-1.93 compat, with a necessity note in Cargo.toml; dev-only, not the shipped surface).
+Object emission (not JIT) → no `unsafe` (crate forbids it). Wrote report
+`starkc/docs/compiler/spikes/WP-C3.3-direct-cranelift.md` with the head-to-head table vs C3.2 and
+an explicit timing caveat. Created WP-C3.3.md. Native-backend-selection section updated with both
+spikes' results.
+RESULT: 3/17 corpus cases matched the interpreter exactly (arithmetic, loops/for/break/continue,
+Int8-overflow trap→abort parity); 0 semantic mismatches; 14/17 unsupported (same families as C3.2
+plus unsigned ints). Timing: Cranelift codegen ~2 ms/case (phase-only, from built IR, no
+parse/typecheck/link), `cc` link ~47 ms/case; end-to-end ~49 ms vs rustc ~87 ms ≈ 1.8× on 3
+trivial programs — flagged as NOT a general multiple (charter caution). No rustc build dep.
+MSRV-churn finding (0.133→rustc 1.94). Higher glue than generated-Rust; weaker debug-info;
+biggest MIR beneficiary.
+FILES: starkc/tests/spike_cranelift.rs (new), starkc/docs/compiler/spikes/
+WP-C3.3-direct-cranelift.md (new), STARKLANG/docs/compiler/work-packages/WP-C3.3.md (new),
+starkc/Cargo.toml (dev-deps), COMPILER-STATE.md.
+RULES: none — spike/evidence only, no front-end bypass, no backend selection (WP-C3.4/CE5), no
+Core/compiler/interpreter change. Cranelift is a dev-dependency only (charter §1.10 note in
+Cargo.toml).
+DECISIONS: none at CE level. Native-backend-selection stays SPIKING.
+EVIDENCE: `cargo test --test spike_cranelift` 1 passed; full workspace 600 passed / 0 failed / 2
+ignored (599 + the cranelift spike); `cargo fmt --all -- --check` + `cargo clippy --test
+spike_cranelift --all-features -- -D warnings` clean. Coverage + timings via `-- --nocapture`.
+FOLLOW-UP: WP-C3.4 needs a breadth run (aggregates/generics/traits/refs/Drop/fn-values) on both
+candidates and exe-size/startup/runtime measurement before a confident selection; the two open
+fn-value properties (CD-022) still pending pre-selection.
+NEXT: WP-C3.4 — backend and runtime architecture selection under CE5 (owner decision):
+SELECT-GENERATED / SELECT-DIRECT / REVISE / BLOCKED.

@@ -15,6 +15,22 @@ sha2 = { version = "0.11.0", default-features = false }
 # opt-in Gate 5 fixtures. Does not expand the compiler's dependency surface.
 sha2 = { version = "0.11.0", default-features = false }
 
+# --- WP-C3.3 direct-backend spike (Gate C3), DISPOSABLE dev-only dependency ---
+# Necessity: the direct native-backend spike (tests/spike_cranelift.rs) needs a simple direct
+#   code generator to compare against the generated-Rust spike (WP-C3.2). Cranelift is the
+#   roadmap's named candidate (COMPILER-ROADMAP.md WP-C3.3).
+# Scope: dev-dependencies only -- NOT part of the shipped compiler's dependency surface
+#   (charter §1.10). Object-file emission is used (not JIT), so no `unsafe` is introduced in
+#   crate code (the crate forbids it); linking is done by the host `cc`.
+# Maintenance/licence: Cranelift is Apache-2.0 (with LLVM exception), Bytecode Alliance,
+#   actively maintained. These lines are removed when Gate C3 selects a backend (WP-C3.4); the
+#   spike is not production architecture (charter §2.2).
+cranelift-codegen = "0.110"
+cranelift-frontend = "0.110"
+cranelift-module = "0.110"
+cranelift-object = "0.110"
+target-lexicon = "0.12"
+
 [lints.rust]
 unsafe_code = "forbid"
 
