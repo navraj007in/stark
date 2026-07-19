@@ -1651,3 +1651,22 @@ fn println_ordering_agrees() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.6 A4-2d: str/String chars() iteration (surface 0.1-A5) ----
+
+/// `for c in s.chars()` over a `String` and a `str` literal yields each Char in order, agreeing
+/// with the oracle.
+#[test]
+fn chars_iteration_agrees() {
+    differential(
+        "a4_chars.stark",
+        "fn main() { \
+             let s = String::from(\"hello\"); \
+             let mut n = 0; \
+             for c in s.chars() { println(c); n = n + 1; } \
+             println(n); \
+             for c in \"hi!\".chars() { println(c); } \
+         }"
+        .to_string(),
+    );
+}

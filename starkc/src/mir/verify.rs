@@ -1920,6 +1920,18 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
             vec![string_ref(true)],
             MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char]),
         ),
+        // 0.1-A5 (A4-2d): string chars iteration (fixed types — no schematic param).
+        CharsIterNew => (
+            vec![str_ref()],
+            MirTy::Core(crate::hir::CoreType::CharsIter, Vec::new()),
+        ),
+        CharsIterNext => (
+            vec![MirTy::Ref {
+                mutable: true,
+                inner: Box::new(MirTy::Core(crate::hir::CoreType::CharsIter, Vec::new())),
+            }],
+            MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char]),
+        ),
         // Vec ops are schematic in T — resolved by `vec_runtime_sig`, never this fixed table.
         VecNew | VecWithCapacity | VecPush | VecPop | VecLen | VecIsEmpty | VecIndexGet
         | VecReplace | VecRemove | VecClear | VecIterNew | VecIterNext | VecGetRef

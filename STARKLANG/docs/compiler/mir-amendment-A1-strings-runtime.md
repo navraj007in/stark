@@ -5,9 +5,10 @@ Status: **APPROVED under CE3 as an additive MIR v0.1 amendment, runtime surface 
 corrections, which this revision incorporates (see §11 revision log). Rev. 1's central design
 was approved in principle; rev. 2 resolved eight required corrections; rev. 3 resolves the
 final four. Implementation of the C4.5e main body may begin against this revision.
-**Current runtime surface after subsequent dated enumerations (§11): `0.1-A4`** (rev. 5
+**Current runtime surface after subsequent dated enumerations (§11): `0.1-A5`** (rev. 5
 activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char ops as
-`0.1-A3`; rev. 8 activated checked interior Vec access — `Vec::get`/`get_mut` — as `0.1-A4`).
+`0.1-A3`; rev. 8 activated checked interior Vec access as `0.1-A4`; rev. 9 activated string
+chars iteration as `0.1-A5`).
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -397,6 +398,20 @@ and other interior views into runtime containers (§5d, after C4.5f frame genera
 I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
+
+**Rev. 9 — surface `0.1-A5` activation (2026-07-20, WP-C4.6 A4-2d, per CD-032's
+dated-enumeration rule).** Activates string chars iteration:
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `CharsIterNew` | `(&str) -> Core(CharsIter, [])` | — | borrowed snapshot over the string's chars (`Char` is `Copy`, so the snapshot matches the oracle's borrowed `CharsIter`); a `String` receiver is converted to `&str` first |
+| `CharsIterNext` | `(&mut Core(CharsIter,[])) -> Option<Char>` | — | yields each `Char` in source order, by value |
+
+Interpreter representation: the iterator is `Aggregate([Str-snapshot, cursor])` in a frame
+local; `Next` reads the cursor-th char and advances. `MIR_RUNTIME_SURFACE = "0.1-A5"`; the
+surface gate (§6) and dump header (§7) carry it. `str::chars`/`String::chars` and
+`for c in s.chars()` lower against these ops. Array/Vec slicing remains the last core-min
+surface piece still to activate.
 
 **Rev. 8 — surface `0.1-A4` activation (2026-07-20, WP-C4.6 A4-2b, per CD-032's
 dated-enumeration rule; the A4 runtime-surface amendment CD-033 pre-authorized).** Activates

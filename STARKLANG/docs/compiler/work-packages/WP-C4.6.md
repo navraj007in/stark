@@ -183,7 +183,7 @@ required class is green.
 - A7 (expr forms): **DONE 2026-07-19** — see below
 - A6 (non-Copy Vec iter): **DONE 2026-07-19** — see below
 - A3 (Eq + Ord): **DONE 2026-07-19** (Ord under CE3-approved Amendment A2) — see below
-- A4 (core-min surface): **in progress** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, surface `0.1-A4`) all DONE 2026-07-20; remaining: chars iteration, slices, println of core-min types (incl. Ordering) — see below
+- A4 (core-min surface): **in progress** — A4-1 (size_of/align_of, unwrap_or), A4-2a (map/and_then/map_err, Range-as-value), A4-2b (Vec::get/get_mut, `0.1-A4`), A4-2c (println Ordering), A4-2d (chars, `0.1-A5`) all DONE 2026-07-20; **only slicing remains** — see below
 - A2 (patterns): _pending_
 - A1 (generic impls): _pending_
 
@@ -281,10 +281,19 @@ amendment CD-033 pre-authorized): `Vec::get`/`get_mut` → `VecGetRef`/`VecGetMu
 trapping `v[i]`; interior borrow, no `T: Copy` requirement). `MIR_RUNTIME_SURFACE = "0.1-A4"`.
 Evidence: `vec_get_and_get_mut_agree`.
 
-**Remaining A4 (pending):** `str::chars()` iteration and array/Vec slicing (both extend surface
-`0.1-A4`/a later revision); `println` of the core-min types including `Ordering` (the Display path
-deferred from A2 — lowerable without a new runtime op via a discriminant switch over string
-literals).
+**A4-2c DONE 2026-07-20** (no new op): `println(Ordering)` → discriminant switch printing the
+variant name via `Print(ln)Str`, closing the Display path A2 deferred. Evidence:
+`println_ordering_agrees`.
+
+**A4-2d DONE 2026-07-20** (surface `0.1-A5`, amendment A1 rev. 9): `str::chars`/`String::chars`
++ `for c in s.chars()` → `CharsIterNew`/`CharsIterNext` (`Option<Char>` by value; the iterator is
+a borrowed `&str` snapshot, sound because `Char` is `Copy`). `lower_for_over_iter` generalized to
+bind a by-value element. Evidence: `chars_iteration_agrees`.
+
+**Remaining A4 (pending):** array/Vec **slicing** (`&a[0..2]`) — the last core-min surface piece;
+deferred since C4.5b, it needs a slice value representation with the range-bounds trap
+(06-Standard-Library behavioral requirements). Larger than the other A4 pieces; owns its own
+sub-slice.
 
 ### Original decision framing (retained for the record)
 

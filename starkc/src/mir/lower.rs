@@ -759,6 +759,10 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::VecIter, inner)
             }
+            // 0.1-A5 (A4-2d): the string chars iterator (no type args).
+            Ty::Core(crate::hir::CoreType::CharsIter, _) => {
+                MirTy::Core(crate::hir::CoreType::CharsIter, Vec::new())
+            }
             // 0.1-A3 (f-3a): HashMap and its keys iterator.
             Ty::Core(crate::hir::CoreType::HashMap, args) => {
                 let inner = args
@@ -1967,17 +1971,38 @@ impl<'a> FnLowerer<'a> {
                         ) = &iter_ty
                         {
                             let elem = args.first().cloned().unwrap_or(MirTy::Unit);
-                            let (core, next_rt) = match core {
-                                crate::hir::CoreType::VecIter => {
-                                    (crate::hir::CoreType::VecIter, RuntimeFn::VecIterNext)
-                                }
-                                _ => (
-                                    crate::hir::CoreType::KeysIter,
-                                    RuntimeFn::HashMapKeysIterNext,
-                                ),
+                            let elem_ref = MirTy::Ref {
+                                mutable: false,
+                                inner: Box::new(elem),
+                            };
+                            let next_rt = match core {
+                                crate::hir::CoreType::VecIter => RuntimeFn::VecIterNext,
+                                _ => RuntimeFn::HashMapKeysIterNext,
                             };
                             return self.lower_for_over_iter(
-                                *var, *local, *iter, *body, elem, core, next_rt, span,
+                                *var,
+                                *local,
+                                *iter,
+                                *body,
+                                iter_ty.clone(),
+                                elem_ref,
+                                next_rt,
+                                span,
+                            );
+                        }
+                        // 0.1-A5 (C4.6 A4-2d): `for c in s.chars()` — `Char` by VALUE (not a
+                        // reference). The iterator is a borrowed snapshot over the string's
+                        // chars; `Next` yields `Option<Char>`.
+                        if matches!(iter_ty, MirTy::Core(crate::hir::CoreType::CharsIter, _)) {
+                            return self.lower_for_over_iter(
+                                *var,
+                                *local,
+                                *iter,
+                                *body,
+                                iter_ty,
+                                MirTy::Char,
+                                RuntimeFn::CharsIterNext,
+                                span,
                             );
                         }
                         // A4: `for i in r` where `r` is a range VALUE (`Ty::Range`) — the
@@ -3973,6 +3998,12 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         let name = self.text(name_span).to_string();
         let is_string = matches!(peeled_ty, MirTy::String);
+        // 0.1-A5 (A4-2d): `chars()` on `str`/`String` → a `CharsIter` over a `&str` snapshot.
+        if name == "chars" {
+            let str_op = self.str_operand_for(base, span)?;
+            self.emit_runtime_call(RuntimeFn::CharsIterNew, vec![str_op], dest, span);
+            return Ok(());
+        }
         // (runtime fn, receiver mutability). str methods take the `&str` value directly.
         let (rt, recv_mut) = match (is_string, name.as_str()) {
             (true, "as_str") => (RuntimeFn::StringAsStr, Some(false)),
@@ -4697,16 +4728,13 @@ impl<'a> FnLowerer<'a> {
         var_local: crate::hir::LocalId,
         iter: ExprId,
         body: hir::BlockId,
-        elem: MirTy,
-        iter_core: crate::hir::CoreType,
+        iter_ty: MirTy,
+        elem_ref: MirTy,
         next_rt: RuntimeFn,
         span: Span,
     ) -> Result<(), LowerError> {
-        let iter_ty = MirTy::Core(iter_core, vec![elem.clone()]);
-        let elem_ref = MirTy::Ref {
-            mutable: false,
-            inner: Box::new(elem.clone()),
-        };
+        // `elem_ref` is the type the loop variable binds to and the `Next` Option's payload:
+        // `&T` for Vec/HashMap iteration, `Char` (by value) for `chars()`.
         let opt_ty = MirTy::Enum(EnumRef::CoreOption, vec![elem_ref.clone()]);
 
         // Materialize the iterator into a registered droppable local.

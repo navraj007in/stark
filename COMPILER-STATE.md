@@ -1,18 +1,18 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.6 A4-2b — **C4 OPEN; A4 in progress (CD-033)**
+Updated: 2026-07-20 after WP-C4.6 A4-2d — **C4 OPEN; A4 nearly done, only slicing left (CD-033)**
 
 ## Position
-Gate: C4  Next: **A4 remainder** — `str::chars()` iteration, array/Vec slicing, and `println`
-of core-min types incl. `Ordering` (Display, deferred from A2; lowerable without a new op via a
-discriminant switch over string literals). Then A2 (patterns; owns DEV-070), A1 (generic impls).
-Per the dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1). **A4 progress (all 2026-07-20):**
-A4-1 `size_of`/`align_of` (fixed word constant, oracle-matched) + `unwrap_or` (discriminant-select,
-non-droppable); A4-2a `map`/`and_then`/`map_err` combinators (fn-value calls, no amendment) +
-Range-as-value (`Ty::Range` → MIR tuple `(start,end,inclusive)`, `for` over a range value branches
-on the runtime inclusive flag); A4-2b `Vec::get`/`get_mut` → `VecGetRef`/`VecGetMutRef`
-(`Option<&T>`/`Option<&mut T>`, never trap, interior borrow, no Copy requirement) at
-**surface `0.1-A4`** (amendment A1 rev. 8, the dated runtime-surface amendment CD-033
-pre-authorized). 6 A4 differential tests; workspace clean; clippy 1.93/1.97 clean.
+Gate: C4  Next: **A4 slicing** (`&a[0..2]` — the last core-min surface piece; deferred since
+C4.5b, needs a slice value + range-bounds trap; owns its own sub-slice), then A2 (patterns;
+owns DEV-070), A1 (generic impls). Per the dependency-aware order (A5+A7 → A6 → A3 → A4 → A2 → A1).
+**A4 progress (all 2026-07-20):** A4-1 `size_of`/`align_of` + `unwrap_or`; A4-2a `map`/`and_then`/
+`map_err` combinators + Range-as-value (`Ty::Range` → MIR tuple `(start,end,inclusive)`, runtime
+inclusive branch); A4-2b `Vec::get`/`get_mut` → `VecGetRef`/`VecGetMutRef` (`Option<&T>`, never
+trap, no Copy req) at **`0.1-A4`** (A1 rev. 8); A4-2c `println(Ordering)` (discriminant switch,
+no new op); A4-2d `str::chars`/`String::chars` + `for c in s.chars()` → `CharsIterNew`/
+`CharsIterNext` (`Option<Char>` by value, `&str` snapshot) at **`0.1-A5`** (A1 rev. 9;
+`lower_for_over_iter` generalized to bind a by-value element). 9 A4 differential tests; workspace
+clean; clippy 1.93/1.97 clean.
 Progress: **A5, A7, A6, and A3 (Eq+Ord) DONE 2026-07-19.** A5: pure bitwise `MirBinOp`,
 `~` → `^ mask`, trapping `Shl`/`Shr`/`Pow`, new `TrapCategory::InvalidShift`. A7: `loop`-break
 value, `[v;n]` repeat, Unit value-position `if`/`while`/`for`. A6: Vec iteration → borrowed

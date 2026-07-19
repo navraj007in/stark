@@ -1188,6 +1188,58 @@ impl<'a> Interp<'a> {
                 };
                 Ok(MirValue::Int(ord))
             }
+            // 0.1-A5 (A4-2d): `chars()` iteration. The iterator snapshots the string's chars
+            // (Char is Copy, so a snapshot matches the oracle's borrowed `CharsIter`); it lives
+            // as `Aggregate([Str(snapshot), Int(cursor)])`. `Next` yields `Option<Char>`.
+            CharsIterNew => {
+                let s = self.as_str(&first)?.to_string();
+                Ok(MirValue::Aggregate(vec![
+                    MirValue::Str(std::rc::Rc::from(s.as_str())),
+                    MirValue::Int(0),
+                ]))
+            }
+            CharsIterNext => {
+                let Some(MirValue::Ref {
+                    frame,
+                    generation,
+                    local,
+                    path,
+                }) = first
+                else {
+                    return self.internal("CharsIterNext expects a &mut iterator reference");
+                };
+                self.check_ref_live(frame, generation)?;
+                let iter_value = self.read_resolved(frame, local, &path)?;
+                let MirValue::Aggregate(fields) = &iter_value else {
+                    return self.internal(format!("chars iterator referent is {iter_value:?}"));
+                };
+                let (snapshot, cursor) = match (fields.first(), fields.get(1)) {
+                    (Some(MirValue::Str(s)), Some(MirValue::Int(c))) => (s.clone(), *c as usize),
+                    other => {
+                        return self.internal(format!("malformed chars-iterator state {other:?}"))
+                    }
+                };
+                match snapshot.chars().nth(cursor) {
+                    Some(ch) => {
+                        let mut cursor_path = path;
+                        cursor_path.push(ConcreteProj::Field(1));
+                        self.write_resolved(
+                            frame,
+                            local,
+                            &cursor_path,
+                            MirValue::Int(cursor as i128 + 1),
+                        )?;
+                        Ok(MirValue::Enum {
+                            variant: 1,
+                            fields: vec![MirValue::Int(i128::from(u32::from(ch)))],
+                        })
+                    }
+                    None => Ok(MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    }),
+                }
+            }
             other => self.internal(format!("runtime {other:?} (string group) unhandled")),
         }
     }
