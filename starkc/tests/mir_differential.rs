@@ -314,3 +314,39 @@ fn trait_dispatch_default_and_override_agree() {
         .to_string(),
     );
 }
+
+#[test]
+fn array_indexing_reads_writes_and_loops_agree() {
+    differential(
+        "arrays.stark",
+        "fn main() { \
+             let mut a = [10, 20, 30, 40]; \
+             println(a[0] + a[3]); \
+             a[1] = 99; \
+             println(a[1]); \
+             let mut sum = 0; \
+             let mut i = 0; \
+             while i < 4 { \
+                 sum = sum + a[i]; \
+                 i = i + 1; \
+             } \
+             println(sum); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn array_out_of_bounds_trap_agrees_with_provenance() {
+    // The OOB read must trap in BOTH engines with IndexOutOfBounds and the SAME source span
+    // (this also exercises the DEV-065 oracle message fix: \"index out of bounds\").
+    differential(
+        "oob.stark",
+        "fn main() { \
+             let a = [1, 2, 3]; \
+             let i = 7; \
+             println(a[i]); \
+         }"
+        .to_string(),
+    );
+}

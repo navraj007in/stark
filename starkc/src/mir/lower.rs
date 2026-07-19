@@ -1390,6 +1390,11 @@ impl<'a> FnLowerer<'a> {
                 let field_ty = self.expr_mir_ty(expr)?;
                 Ok(self.read_place(place, &field_ty))
             }
+            hir::ExprKind::Index { base, index } => {
+                let place = self.lower_index_place(*base, *index, span)?;
+                let elem_ty = self.expr_mir_ty(expr)?;
+                Ok(self.read_place(place, &elem_ty))
+            }
             hir::ExprKind::Match { .. } => {
                 let ty = self.expr_mir_ty(expr)?;
                 let dest = self.new_temp(ty);
@@ -1618,8 +1623,64 @@ impl<'a> FnLowerer<'a> {
                 place.projection.push(Projection::Field(idx));
                 Ok(place)
             }
+            hir::ExprKind::Index { base, index } => self.lower_index_place(*base, *index, span),
             _ => unsupported("place expression (C4.5)", span),
         }
+    }
+
+    /// C4.5b-1: `base[index]` place with the CE3 proof-token discipline. Evaluation order:
+    /// base before index (CD-007). Only fixed-length arrays here — Vec indexing stays on the
+    /// runtime surface (mutable length, contract §6) and slices arrive with references
+    /// (C4.5b-2).
+    fn lower_index_place(
+        &mut self,
+        base: ExprId,
+        index: ExprId,
+        span: Span,
+    ) -> Result<Place, LowerError> {
+        let base_ty = self.expr_mir_ty(base)?;
+        if !matches!(base_ty, MirTy::Array(..)) {
+            return unsupported(
+                format!("indexing {base_ty:?} (Vec is runtime-surface; slices are C4.5b-2)"),
+                span,
+            );
+        }
+        let base_place = match self.lower_place(base) {
+            Ok(place) => place,
+            Err(_) => {
+                let value = self.lower_expr_to_operand(base)?;
+                let temp = self.new_temp(base_ty.clone());
+                self.emit(
+                    Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                    self.info(span),
+                );
+                Place::local(temp)
+            }
+        };
+        let index_op = self.lower_expr_to_operand(index)?;
+        self.locals.push(LocalDecl {
+            ty: MirTy::Int64,
+            kind: LocalKind::IndexProof,
+        });
+        let proof = LocalId((self.locals.len() - 1) as u32);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Checked {
+                op: CheckedOp::CheckIndex,
+                args: vec![Operand::Copy(base_place.clone()), index_op],
+                dest: proof,
+                target: after,
+                trap: TrapInfo {
+                    category: TrapCategory::IndexOutOfBounds,
+                    source: self.info(span),
+                },
+            },
+            self.info(span),
+            after,
+        );
+        let mut place = base_place;
+        place.projection.push(Projection::Index(proof));
+        Ok(place)
     }
 
     // ---- calls ----

@@ -2,7 +2,7 @@
 Updated: 2026-07-19 after CD-022 follow-up amendment
 
 ## Position
-Gate: C4  Next: WP-C4.5b (indexing + references)  Blocked: none
+Gate: C4  Next: WP-C4.5b-2 (references, slices, &mut self — interp frame restructure)  Blocked: none
 C4.1-C4.4 done; WP-C4.5 split into increments (WP-C4.5.md). Done so far: C4.5a
 (methods/assoc-fns/trait dispatch incl. defaults; corpus __01 differential-green) and
 C4.5-contract-cleanup (CD-029: trap provenance through outcomes + differential span
@@ -1393,3 +1393,30 @@ failed / 2 ignored; fmt + clippy clean. Differential claim now stated in qualifi
 FOLLOW-UP: generated-Rust backend must consume VerifiedMirProgram when it lands (C5).
 NEXT: WP-C4.5b — indexing and references (CheckIndex proof tokens, arrays/slices, real
 reference places replacing the interim by-value model, &mut self).
+
+### C4.5b-1 — array indexing with CheckIndex proof tokens — 2026-07-19
+DONE: first real exercise of the CE3 proof-token discipline end to end. Lowering: `base[index]`
+(reads, writes, loop-indexed access) emits `Checked { CheckIndex, args: [Copy(base_place),
+index] }` defining an IndexProof local consumed by `Index(proof)` projections; base evaluated
+before index (CD-007); non-place bases materialize a temp; Vec indexing stays runtime-surface,
+slices deferred to C4.5b-2. Verifier: NEW same-base binding pass (`verify_index_bindings`) —
+every Index(proof)'s place prefix must equal the base its CheckIndex bound (proof→base map;
+place prefix equality; the exact rule CD-028's revision demanded beyond dominance), plus
+CheckIndex arg typing (base must be Copy(place) of indexable type, index integer). Interp:
+CheckIndex evaluates bounds and defines the proof as the checked index; place reads/writes
+resolve proofs (writes pre-resolve before the mutable walk). ORACLE FIX (DEV-065, found by the
+differential's category↔message mapping need): array OOB reported "use of moved or invalid
+field" — now projection-kind-aware "index out of bounds"; diagnostics-only.
+FILES: starkc/src/mir/{lower,verify,interp}.rs, starkc/src/mir/mod.rs (PartialEq on
+Place/Projection), starkc/src/interp.rs (DEV-065), starkc/tests/{mir_differential,mir_verify}.rs,
+starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-065 closed; count 63), COMPILER-STATE.md.
+RULES: none — implements the approved contract; DEV-065 is diagnostics-only (no
+accepted/rejected or trap-behaviour change).
+DECISIONS: none at CE level.
+EVIDENCE: differential 11/11 (new: array reads/writes/loop-sum agree; OOB trap agrees in
+category AND exact source span through the fixed oracle message); verifier 15/15 (new negative:
+proof bound to base _1 used to index _2 → MIR-0010). Full workspace 643 passed / 0 failed / 2
+ignored; fmt + clippy clean.
+FOLLOW-UP: C4.5b-2 (references/slices/&mut self) needs the MIR-interp frame restructure
+(cross-frame reference places) — the interim by-value reference model stays until then.
+NEXT: WP-C4.5b-2, then C4.5c generics per WP-C4.5.md's increment order.

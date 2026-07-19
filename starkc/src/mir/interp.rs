@@ -399,9 +399,31 @@ impl<'a> Interp<'a> {
                     }
                 })
             }
-            CheckIndex => Err(MirRunError::Internal(
-                "CheckIndex is not lowered in the scalar core".into(),
-            )),
+            CheckIndex => {
+                let len = match &args[0] {
+                    MirValue::Aggregate(elems) => elems.len() as i128,
+                    other => {
+                        return Err(MirRunError::Internal(format!(
+                            "CheckIndex base is not an aggregate: {other:?}"
+                        )))
+                    }
+                };
+                let index = match &args[1] {
+                    MirValue::Int(i) => *i,
+                    other => {
+                        return Err(MirRunError::Internal(format!(
+                            "CheckIndex index is not an integer: {other:?}"
+                        )))
+                    }
+                };
+                if index >= 0 && index < len {
+                    // The proof VALUE is the checked index (interp-internal representation of
+                    // the opaque token; MIR-level opacity is the verifier's concern).
+                    Ok(Some(MirValue::Int(index)))
+                } else {
+                    Ok(None) // IndexOutOfBounds trap
+                }
+            }
         }
     }
 
@@ -464,6 +486,24 @@ impl<'a> Interp<'a> {
                         None => return self.internal("field projection out of bounds"),
                     }
                 }
+                (Projection::Index(proof), MirValue::Aggregate(elems)) => {
+                    let index = match locals.get(proof.0 as usize).and_then(|s| s.as_ref()) {
+                        Some(MirValue::Int(i)) => *i as usize,
+                        other => {
+                            return self.internal(format!(
+                                "index proof _{} unavailable: {other:?}",
+                                proof.0
+                            ))
+                        }
+                    };
+                    match elems.into_iter().nth(index) {
+                        Some(e) => e,
+                        None => {
+                            return self
+                                .internal("proven index out of bounds (verifier/lowering bug)")
+                        }
+                    }
+                }
                 (Projection::VariantField(v, i), MirValue::Enum { variant, fields }) => {
                     if variant != *v {
                         return self.internal("VariantField read from a different active variant");
@@ -491,6 +531,24 @@ impl<'a> Interp<'a> {
             locals[place.local.0 as usize] = Some(value);
             return Ok(());
         }
+        // Pre-resolve index proofs (immutable reads) before taking the mutable walk borrow.
+        let mut resolved_indices: Vec<Option<usize>> = Vec::with_capacity(place.projection.len());
+        for projection in &place.projection {
+            resolved_indices.push(match projection {
+                Projection::Index(proof) => {
+                    match locals.get(proof.0 as usize).and_then(|s| s.as_ref()) {
+                        Some(MirValue::Int(i)) => Some(*i as usize),
+                        other => {
+                            return Err(MirRunError::Internal(format!(
+                                "index proof _{} unavailable for write: {other:?}",
+                                proof.0
+                            )))
+                        }
+                    }
+                }
+                _ => None,
+            });
+        }
         let slot = locals
             .get_mut(place.local.0 as usize)
             .and_then(|s| s.as_mut())
@@ -501,11 +559,18 @@ impl<'a> Interp<'a> {
                 ))
             })?;
         let mut target = slot;
-        for projection in &place.projection {
+        for (k, projection) in place.projection.iter().enumerate() {
             target = match (projection, target) {
                 (Projection::Field(i), MirValue::Aggregate(fields)) => fields
                     .get_mut(*i as usize)
                     .ok_or_else(|| MirRunError::Internal("field write out of bounds".into()))?,
+                (Projection::Index(_), MirValue::Aggregate(elems)) => {
+                    let index = resolved_indices[k]
+                        .ok_or_else(|| MirRunError::Internal("unresolved index proof".into()))?;
+                    elems.get_mut(index).ok_or_else(|| {
+                        MirRunError::Internal("proven index write out of bounds".into())
+                    })?
+                }
                 (Projection::VariantField(v, i), MirValue::Enum { variant, fields }) => {
                     if *variant != *v {
                         return Err(MirRunError::Internal(

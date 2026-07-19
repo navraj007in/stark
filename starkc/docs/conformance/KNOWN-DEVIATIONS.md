@@ -1771,6 +1771,26 @@ WP-C1.5)
   coercions before native lowering depends on full determination. Deliberately not fixed in
   the CD-027 correction pass to keep that pass to its three authorized items. — open.
 
+## DEV-065 — Array index OOB reported "use of moved or invalid field" [CLOSED, C4.5b-1, 2026-07-19]
+
+- **Normative expectation:** out-of-bounds indexing is the language's index-out-of-bounds
+  **trap** (`CORE-V1-ABSTRACT-MACHINE`; TrapCategory `IndexOutOfBounds`); its runtime message
+  should identify it as such.
+- **Previous behaviour (confirmed empirically):** `a[i]` with `i` out of range trapped with
+  `"use of moved or invalid field"` — the generic place-projection failure message
+  (`interp.rs::place_value`/`place_value_mut` used one message for every failed projection).
+  Trap *behaviour* was correct; the *diagnostic* was misleading for the most common trap a
+  user can hit, and made the HIR↔MIR trap-category correspondence unmappable.
+- **Found:** while building C4.5b-1's MIR indexing differential (the comparator needed a
+  category↔message mapping for `IndexOutOfBounds` and the oracle had none).
+- **Fix:** projection-kind-aware failure message (`projection_failure_message`): `Index`/
+  `MapIndex` projections report `"index out of bounds"`; field projections keep the moved-field
+  message. Diagnostics-only change: no accepted/rejected program change, no trap-behaviour
+  change; no corpus snapshot referenced the old message.
+- **Regression evidence:** `tests/mir_differential.rs::array_out_of_bounds_trap_agrees_with_
+  provenance` — both engines trap `IndexOutOfBounds` at the same source span, with the oracle
+  message matching the category fragment. — closed.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -1820,7 +1840,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 62 numbered deviations total (DEV-002 through DEV-064, DEV-001/DEV-003 retired).
+Current count: 63 numbered deviations total (DEV-002 through DEV-065, DEV-001/DEV-003 retired).
 DEV-061/062/063 (the function-value cluster: indirect calls not executable, fn values not Copy in
 borrowck, Option/Result combinators missing) were found 2026-07-19 during Gate C4 entry by
 executing CD-021 workload items 16-22 against the interpreter for the first time — exactly the

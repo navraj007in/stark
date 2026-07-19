@@ -99,6 +99,7 @@ impl<'a> BodyCx<'a> {
         }
         self.verify_moves();
         self.verify_index_proofs();
+        self.verify_index_bindings();
     }
 
     // ---- V-TY-3 + local sanity ----
@@ -647,6 +648,29 @@ impl<'a> BodyCx<'a> {
                         }
                         if args.len() != 2 {
                             self.err("MIR-0005", bi, "CheckIndex expects (base, index)");
+                        } else {
+                            match &args[0] {
+                                Operand::Copy(base_place) => {
+                                    match self.place_ty(base_place, bi) {
+                                        Some(MirTy::Array(..) | MirTy::Slice(_)) | None => {}
+                                        Some(other) => self.err(
+                                            "MIR-0010",
+                                            bi,
+                                            format!("CheckIndex base has non-indexable type {other:?}"),
+                                        ),
+                                    }
+                                }
+                                _ => self.err(
+                                    "MIR-0010",
+                                    bi,
+                                    "CheckIndex base must be Copy(place) so the proof can bind base identity",
+                                ),
+                            }
+                            if let Some(t) = &arg_tys[1] {
+                                if !is_integer(t) {
+                                    self.err("MIR-0010", bi, "CheckIndex index must be an integer");
+                                }
+                            }
                         }
                     }
                     CheckedOp::Cast => {
@@ -883,6 +907,84 @@ impl<'a> BodyCx<'a> {
 
     // ---- V-IDX-2: proof locals appear only as CheckIndex dests / Index projections ----
 
+    /// V-IDX-1 same-base rule (CE3-revised design): every `Index(proof)` projection's place
+    /// prefix must equal the base place its `CheckIndex` bound. Dominance of an ordinary local
+    /// is insufficient; the binding is to base identity.
+    fn verify_index_bindings(&mut self) {
+        use std::collections::HashMap;
+        // proof local -> bound base place (from its CheckIndex definition).
+        let mut bound: HashMap<u32, Place> = HashMap::new();
+        for block in &self.body.blocks {
+            if let Terminator::Checked {
+                op: CheckedOp::CheckIndex,
+                args,
+                dest,
+                ..
+            } = &block.terminator.0
+            {
+                if let Some(Operand::Copy(base)) = args.first() {
+                    bound.insert(dest.0, base.clone());
+                }
+            }
+        }
+        // Every place used anywhere: check each Index projection against the binding.
+        let mut places: Vec<Place> = Vec::new();
+        for block in &self.body.blocks {
+            for (stmt, _) in &block.statements {
+                if let Statement::Assign(place, rvalue) = stmt {
+                    places.push(place.clone());
+                    collect_rvalue_places(rvalue, &mut places);
+                }
+            }
+            match &block.terminator.0 {
+                Terminator::SwitchInt { scrut, .. } => collect_operand_place(scrut, &mut places),
+                Terminator::Call {
+                    callee, args, dest, ..
+                } => {
+                    if let Callee::FnValue(op) = callee {
+                        collect_operand_place(op, &mut places);
+                    }
+                    for arg in args {
+                        collect_operand_place(arg, &mut places);
+                    }
+                    places.push(dest.clone());
+                }
+                Terminator::Drop { place, .. } => places.push(place.clone()),
+                Terminator::Checked { args, .. } => {
+                    for arg in args {
+                        collect_operand_place(arg, &mut places);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut violations: Vec<String> = Vec::new();
+        for place in &places {
+            for (k, projection) in place.projection.iter().enumerate() {
+                if let Projection::Index(proof) = projection {
+                    let prefix = Place {
+                        local: place.local,
+                        projection: place.projection[..k].to_vec(),
+                    };
+                    match bound.get(&proof.0) {
+                        Some(base) if *base == prefix => {}
+                        Some(base) => violations.push(format!(
+                            "Index(proof _{}) used on {:?} but the proof binds base {:?}",
+                            proof.0, prefix, base
+                        )),
+                        None => violations.push(format!(
+                            "Index(proof _{}) has no defining CheckIndex in this body",
+                            proof.0
+                        )),
+                    }
+                }
+            }
+        }
+        for message in violations {
+            self.err("MIR-0010", 0, message);
+        }
+    }
+
     fn verify_index_proofs(&mut self) {
         for (bi, block) in self.body.blocks.clone().iter().enumerate() {
             for (stmt, _) in &block.statements {
@@ -1011,5 +1113,27 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         RuntimeFn::PrintlnUInt64 | RuntimeFn::PrintUInt64 => (vec![MirTy::UInt64], MirTy::Unit),
         RuntimeFn::PrintlnBool | RuntimeFn::PrintBool => (vec![MirTy::Bool], MirTy::Unit),
         RuntimeFn::PrintlnFloat64 | RuntimeFn::PrintFloat64 => (vec![MirTy::Float64], MirTy::Unit),
+    }
+}
+
+fn collect_operand_place(op: &Operand, out: &mut Vec<Place>) {
+    if let Operand::Copy(place) | Operand::Move(place) = op {
+        out.push(place.clone());
+    }
+}
+
+fn collect_rvalue_places(rvalue: &Rvalue, out: &mut Vec<Place>) {
+    match rvalue {
+        Rvalue::Use(op) | Rvalue::UnOp(_, op) => collect_operand_place(op, out),
+        Rvalue::BinOp(_, a, b) => {
+            collect_operand_place(a, out);
+            collect_operand_place(b, out);
+        }
+        Rvalue::Aggregate(_, ops) => {
+            for op in ops {
+                collect_operand_place(op, out);
+            }
+        }
+        Rvalue::Discriminant(place) | Rvalue::RefOf { place, .. } => out.push(place.clone()),
     }
 }

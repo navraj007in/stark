@@ -163,7 +163,7 @@ pub struct SourceInfo {
 
 // ------------------------------------------------------- places and operands --
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Projection {
     /// Struct/tuple field by declaration-order index.
     Field(u32),
@@ -174,7 +174,7 @@ pub enum Projection {
     Index(LocalId),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Place {
     pub local: LocalId,
     pub projection: Vec<Projection>,

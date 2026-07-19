@@ -415,3 +415,62 @@ fn rejects_enum_aggregate_arity_mismatch() {
     );
     expect_code(&program_with(vec![b]), "MIR-0008");
 }
+
+#[test]
+fn rejects_index_proof_bound_to_a_different_base() {
+    // The CE3 same-base rule: a proof produced by CheckIndex on _1 may not index _2.
+    use mir::{CheckedOp, TrapCategory, TrapInfo};
+    let arr = MirTy::Array(Box::new(MirTy::Int32), 3);
+    let b = MirBody {
+        instance: Instance {
+            item: starkc::hir::ItemId(0),
+            type_args: Vec::new(),
+            symbol: "test@[]".to_string(),
+        },
+        params: Vec::new(),
+        ret: MirTy::Unit,
+        locals: vec![
+            ret_local(),
+            local(arr.clone()), // _1: the checked base
+            local(arr),         // _2: a DIFFERENT array
+            LocalDecl {
+                ty: MirTy::Int64,
+                kind: LocalKind::IndexProof,
+            }, // _3: proof bound to _1
+            local(MirTy::Int32), // _4: read dest
+        ],
+        blocks: vec![
+            BasicBlock {
+                statements: Vec::new(),
+                terminator: (
+                    Terminator::Checked {
+                        op: CheckedOp::CheckIndex,
+                        args: vec![
+                            Operand::Copy(Place::local(LocalId(1))),
+                            Operand::Const(Constant::Int(0, MirTy::Int64)),
+                        ],
+                        dest: LocalId(3),
+                        target: BlockId(1),
+                        trap: TrapInfo {
+                            category: TrapCategory::IndexOutOfBounds,
+                            source: info(),
+                        },
+                    },
+                    info(),
+                ),
+            },
+            block(
+                vec![Statement::Assign(
+                    Place::local(LocalId(4)),
+                    Rvalue::Use(Operand::Copy(Place {
+                        local: LocalId(2), // WRONG base: proof binds _1
+                        projection: vec![Projection::Index(LocalId(3))],
+                    })),
+                )],
+                Terminator::Return,
+            ),
+        ],
+        entry: BlockId(0),
+    };
+    expect_code(&program_with(vec![b]), "MIR-0010");
+}

@@ -742,6 +742,16 @@ enum Projection {
     MapIndex(usize),
 }
 
+/// DEV-065: an out-of-range `Index` projection is the language's index-out-of-bounds TRAP
+/// (CORE-V1-ABSTRACT-MACHINE), not a moved-field condition — the generic message was
+/// misleading for the most common trap a user can hit.
+fn projection_failure_message(projection: &Projection) -> &'static str {
+    match projection {
+        Projection::Index(_) | Projection::MapIndex(_) => "index out of bounds",
+        Projection::Field(_) => "use of moved or invalid field",
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct Place {
     frame: usize,
@@ -5017,7 +5027,7 @@ impl<'a> Interpreter<'a> {
         for projection in &place.projections {
             value = project(value, projection)
                 .and_then(Option::as_ref)
-                .ok_or_else(|| RuntimeError::new("use of moved or invalid field", span))?;
+                .ok_or_else(|| RuntimeError::new(projection_failure_message(projection), span))?;
         }
         Ok(value)
     }
@@ -5034,7 +5044,7 @@ impl<'a> Interpreter<'a> {
         for projection in &place.projections {
             value = project_mut(value, projection)
                 .and_then(Option::as_mut)
-                .ok_or_else(|| RuntimeError::new("use of moved or invalid field", span))?;
+                .ok_or_else(|| RuntimeError::new(projection_failure_message(projection), span))?;
         }
         Ok(value)
     }
