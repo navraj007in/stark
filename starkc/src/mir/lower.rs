@@ -73,7 +73,7 @@ pub fn lower_program(
     // Populate the nominal type context (struct fields, user-enum variant payloads) for every
     // non-generic top-level nominal type, so the verifier/backends can resolve projections.
     {
-        let probe = FnLowerer::new(hir, tables, &src, file_id, main);
+        let probe = FnLowerer::new(hir, tables, &src, file_id, FnKey::Top(main));
         for &item_id in &root_items {
             match &hir.item(item_id).kind {
                 ItemKind::Struct {
@@ -132,20 +132,20 @@ pub fn lower_program(
         }
     }
 
-    // Deterministic, deduplicating instance discovery (contract §2): worklist from `main`.
-    let mut queued: BTreeMap<u32, ()> = BTreeMap::new();
+    // Deterministic, deduplicating instance discovery (contract §2): worklist from `main`,
+    // keyed by canonical symbol (top fns, impl methods/assoc fns, trait defaults — C4.5a).
+    let mut queued: BTreeMap<String, ()> = BTreeMap::new();
     let mut worklist = VecDeque::new();
-    queued.insert(main.0, ());
-    worklist.push_back(main);
+    let main_key = FnKey::Top(main);
+    queued.insert(key_symbol(hir, &src, &main_key)?, ());
+    worklist.push_back(main_key);
     let mut bodies = Vec::new();
-    while let Some(item_id) = worklist.pop_front() {
-        let ItemKind::Fn(def) = &hir.item(item_id).kind else {
-            continue;
-        };
-        let mut lowerer = FnLowerer::new(hir, tables, &src, file_id, item_id);
-        let body = lowerer.lower_fn(def)?;
+    while let Some(key) = worklist.pop_front() {
+        let mut lowerer = FnLowerer::new(hir, tables, &src, file_id, key.clone());
+        let body = lowerer.lower_body()?;
         for callee in lowerer.discovered_callees {
-            if queued.insert(callee.0, ()).is_none() {
+            let symbol = key_symbol(hir, &src, &callee)?;
+            if queued.insert(symbol, ()).is_none() {
                 worklist.push_back(callee);
             }
         }
@@ -158,6 +158,101 @@ pub fn lower_program(
 
 // ------------------------------------------------------------------ fn lowering --
 
+/// Identity of a lowerable function body (C4.5a). Canonical symbols derive from this key;
+/// discovery deduplicates by symbol.
+#[derive(Clone, Debug)]
+pub enum FnKey {
+    /// Top-level `fn`.
+    Top(ItemId),
+    /// A method or associated function inside an `impl` block (`items[member]`).
+    ImplFn { impl_item: ItemId, member: u32 },
+    /// An un-overridden trait default method, monomorphised for one implementing nominal type.
+    TraitDefault {
+        trait_item: ItemId,
+        member: u32,
+        self_item: ItemId,
+    },
+}
+
+fn item_name_text<'a>(hir: &Hir, src: &'a str, item: ItemId) -> Option<&'a str> {
+    let span = match &hir.item(item).kind {
+        ItemKind::Fn(def) => def.sig.name,
+        ItemKind::Struct { name, .. }
+        | ItemKind::Enum { name, .. }
+        | ItemKind::Trait { name, .. } => *name,
+        _ => return None,
+    };
+    Some(&src[span.lo as usize..span.hi as usize])
+}
+
+fn impl_self_item(hir: &Hir, impl_item: ItemId) -> Option<ItemId> {
+    let ItemKind::Impl { self_ty, .. } = &hir.item(impl_item).kind else {
+        return None;
+    };
+    match &hir.ty(*self_ty).kind {
+        hir::TypeKind::Path {
+            res: Res::Item(item),
+            ..
+        } => Some(*item),
+        _ => None,
+    }
+}
+
+/// Deterministic canonical symbol for a body (contract §2: injective for identical inputs;
+/// not a stable external ABI).
+fn key_symbol(hir: &Hir, src: &str, key: &FnKey) -> Result<String, LowerError> {
+    let span0 = Span { lo: 0, hi: 0 };
+    match key {
+        FnKey::Top(item) => {
+            let name = item_name_text(hir, src, *item).ok_or_else(|| LowerError {
+                what: "unnamed top-level fn".into(),
+                span: span0,
+            })?;
+            Ok(format!("{name}@[]"))
+        }
+        FnKey::ImplFn { impl_item, member } => {
+            let ItemKind::Impl { trait_, items, .. } = &hir.item(*impl_item).kind else {
+                return unsupported("FnKey::ImplFn on non-impl", span0);
+            };
+            let self_item = impl_self_item(hir, *impl_item).ok_or_else(|| LowerError {
+                what: "impl self type is not a nominal item".into(),
+                span: span0,
+            })?;
+            let type_name = item_name_text(hir, src, self_item).unwrap_or("?");
+            let hir::ImplItem::Fn { def, .. } = &items[*member as usize] else {
+                return unsupported("FnKey::ImplFn member is not a fn", span0);
+            };
+            let method = &src[def.sig.name.lo as usize..def.sig.name.hi as usize];
+            match trait_ {
+                None => Ok(format!("{type_name}::{method}@[]")),
+                Some(trait_ref) => {
+                    let trait_name = match trait_ref.res {
+                        Res::Item(t) => item_name_text(hir, src, t).unwrap_or("?"),
+                        _ => "?",
+                    };
+                    Ok(format!("{type_name}::{trait_name}::{method}@[]"))
+                }
+            }
+        }
+        FnKey::TraitDefault {
+            trait_item,
+            member,
+            self_item,
+        } => {
+            let trait_name = item_name_text(hir, src, *trait_item).unwrap_or("?");
+            let type_name = item_name_text(hir, src, *self_item).unwrap_or("?");
+            let ItemKind::Trait { items, .. } = &hir.item(*trait_item).kind else {
+                return unsupported("FnKey::TraitDefault on non-trait", span0);
+            };
+            let hir::TraitItem::Method { sig, .. } = &items[*member as usize] else {
+                return unsupported("FnKey::TraitDefault member is not a method", span0);
+            };
+            let method = &src[sig.name.lo as usize..sig.name.hi as usize];
+            Ok(format!("{trait_name}::{method}@[{type_name}]"))
+        }
+    }
+}
+
 struct LoopTargets {
     continue_target: BlockId,
     break_target: BlockId,
@@ -168,24 +263,27 @@ struct FnLowerer<'a> {
     tables: &'a TypeTables,
     src: &'a str,
     file: FileId,
-    item: ItemId,
+    key: FnKey,
+    /// Concrete `Self` type for method/trait-default bodies (C4.5a).
+    self_subst: Option<MirTy>,
     locals: Vec<LocalDecl>,
     local_map: HashMap<u32, LocalId>,
     blocks: Vec<Option<BasicBlock>>,
     current: BlockId,
     current_statements: Vec<(Statement, SourceInfo)>,
     loops: Vec<LoopTargets>,
-    discovered_callees: Vec<ItemId>,
+    discovered_callees: Vec<FnKey>,
 }
 
 impl<'a> FnLowerer<'a> {
-    fn new(hir: &'a Hir, tables: &'a TypeTables, src: &'a str, file: FileId, item: ItemId) -> Self {
+    fn new(hir: &'a Hir, tables: &'a TypeTables, src: &'a str, file: FileId, key: FnKey) -> Self {
         FnLowerer {
             hir,
             tables,
             src,
             file,
-            item,
+            key,
+            self_subst: None,
             locals: Vec::new(),
             local_map: HashMap::new(),
             blocks: vec![None],
@@ -298,6 +396,16 @@ impl<'a> FnLowerer<'a> {
                 ret: Box::new(self.mir_ty(ret, span)?),
             },
             Ty::Never => MirTy::Never,
+            // C4.5a interim reference model: references are modeled BY VALUE (the only refs
+            // the current subset produces are `&self` receivers and `self`-typed expressions
+            // inside method bodies). Real reference places land in C4.5d; until then a `&T`
+            // type converts to `T`, matching the by-value receiver passing in lower_body/
+            // lower_method_call. Documented in WP-C4.5a.
+            Ty::Ref { inner, .. } => self.mir_ty(inner, span)?,
+            Ty::Param(name) if name == "Self" => match &self.self_subst {
+                Some(self_ty) => self_ty.clone(),
+                None => return unsupported("Self outside a method body", span),
+            },
             _ => return unsupported(format!("type {ty:?} (C4.5)"), span),
         })
     }
@@ -336,6 +444,10 @@ impl<'a> FnLowerer<'a> {
                         _ => unsupported("core field type (C4.5)", span),
                     }
                 }
+                Res::SelfType => match &self.self_subst {
+                    Some(self_ty) => Ok(self_ty.clone()),
+                    None => unsupported("Self type outside a method context", span),
+                },
                 _ => unsupported("field type path (C4.5)", span),
             },
             hir::TypeKind::Tuple(elems) => Ok(MirTy::Tuple(
@@ -430,45 +542,144 @@ impl<'a> FnLowerer<'a> {
 
     // ---- function ----
 
-    fn lower_fn(&mut self, def: &hir::FnDef) -> Result<MirBody, LowerError> {
-        let sig_span = def.sig.span;
-        if !def.sig.generics.is_empty() {
-            return unsupported("generic function (monomorphisation is C4.5)", sig_span);
+    /// Concrete MirTy for a nominal item (struct or enum).
+    fn nominal_ty(&self, item: ItemId, span: Span) -> Result<MirTy, LowerError> {
+        match &self.hir.item(item).kind {
+            ItemKind::Struct { .. } => Ok(MirTy::Struct(item, Vec::new())),
+            ItemKind::Enum { .. } => Ok(MirTy::Enum(EnumRef::User(item), Vec::new())),
+            _ => unsupported("nominal item is neither struct nor enum", span),
         }
-        if def.sig.receiver.is_some() {
-            return unsupported("method (C4.5)", sig_span);
+    }
+
+    /// Resolve this lowerer's `FnKey` to (signature, body block, receiver self-type).
+    fn fn_parts(&self) -> Result<(&'a hir::FnSig, hir::BlockId, Option<MirTy>), LowerError> {
+        let span0 = Span { lo: 0, hi: 0 };
+        match &self.key {
+            FnKey::Top(item) => match &self.hir.item(*item).kind {
+                ItemKind::Fn(def) => Ok((&def.sig, def.body, None)),
+                _ => unsupported("FnKey::Top on non-fn", span0),
+            },
+            FnKey::ImplFn { impl_item, member } => {
+                let ItemKind::Impl { items, .. } = &self.hir.item(*impl_item).kind else {
+                    return unsupported("FnKey::ImplFn on non-impl", span0);
+                };
+                let hir::ImplItem::Fn { def, .. } = &items[*member as usize] else {
+                    return unsupported("impl member is not a fn", span0);
+                };
+                let self_item = impl_self_item(self.hir, *impl_item).ok_or_else(|| LowerError {
+                    what: "impl self type is not nominal".into(),
+                    span: span0,
+                })?;
+                let self_ty = self.nominal_ty(self_item, span0)?;
+                Ok((&def.sig, def.body, Some(self_ty)))
+            }
+            FnKey::TraitDefault {
+                trait_item,
+                member,
+                self_item,
+            } => {
+                let ItemKind::Trait { items, .. } = &self.hir.item(*trait_item).kind else {
+                    return unsupported("FnKey::TraitDefault on non-trait", span0);
+                };
+                let hir::TraitItem::Method {
+                    sig,
+                    body: Some(body),
+                } = &items[*member as usize]
+                else {
+                    return unsupported("trait member has no default body", span0);
+                };
+                let self_ty = self.nominal_ty(*self_item, span0)?;
+                Ok((sig, *body, Some(self_ty)))
+            }
         }
-        let name = self.text(def.sig.name).to_string();
+    }
 
-        let (param_tys, ret_ty) = self
-            .tables
-            .fn_types
-            .get(&self.item)
-            .cloned()
-            .unwrap_or((Vec::new(), Ty::Primitive(Primitive::Unit)));
-        let ret = self.mir_ty(&ret_ty, sig_span)?;
-        let params = param_tys
-            .iter()
-            .map(|t| self.mir_ty(t, sig_span))
-            .collect::<Result<Vec<_>, _>>()?;
+    fn lower_body(&mut self) -> Result<MirBody, LowerError> {
+        let symbol = key_symbol(self.hir, self.src, &self.key)?;
+        let key = self.key.clone();
+        let (sig, body_block, self_ty) = self.fn_parts()?;
+        let sig_span = sig.span;
+        if !sig.generics.is_empty() {
+            return unsupported("generic function (monomorphisation is C4.5b+)", sig_span);
+        }
+        self.self_subst = self_ty.clone();
 
-        // Local 0 = return place; then params; then user locals/temps as encountered.
+        // Signature types: top fns use the checker's grounded fn_types; methods derive from
+        // the HIR signature (concrete for impls; Self-substituted for trait defaults).
+        let (params_no_recv, ret) = match (&key, self_ty.as_ref()) {
+            (FnKey::Top(item), _) => {
+                let (param_tys, ret_ty) = self
+                    .tables
+                    .fn_types
+                    .get(item)
+                    .cloned()
+                    .unwrap_or((Vec::new(), Ty::Primitive(Primitive::Unit)));
+                let ret = self.mir_ty(&ret_ty, sig_span)?;
+                let params = param_tys
+                    .iter()
+                    .map(|t| self.mir_ty(t, sig_span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (params, ret)
+            }
+            _ => {
+                let params = sig
+                    .params
+                    .iter()
+                    .map(|p| self.hir_field_ty(p.ty))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ret = match &sig.ret {
+                    hir::RetTy::Unit => MirTy::Unit,
+                    hir::RetTy::Ty(t) => self.hir_field_ty(*t)?,
+                    hir::RetTy::Never(_) => return unsupported("never-returning method", sig_span),
+                };
+                (params, ret)
+            }
+        };
+
+        // Local 0 = return place; then the receiver (if any); then params.
         self.locals.push(LocalDecl {
             ty: ret.clone(),
             kind: LocalKind::Return,
         });
-        for (i, (param, ty)) in def.sig.params.iter().zip(params.iter()).enumerate() {
+        let mut body_params: Vec<MirTy> = Vec::new();
+        match (sig.receiver, self_ty.clone()) {
+            (Some(hir::Receiver::RefMut), _) => {
+                return unsupported("&mut self receiver (references land in C4.5d)", sig_span);
+            }
+            (Some(_), Some(recv_ty)) => {
+                // Interim by-value receiver model (C4.5a): `&self`/`self` receivers are passed
+                // by value. Observationally equivalent for the drop-free, mutation-free scalar
+                // subset (borrowck upstream forbids mutation through `&self`; TYPE-FN-001
+                // makes identity unobservable). Real references land in C4.5d.
+                self.locals.push(LocalDecl {
+                    ty: recv_ty.clone(),
+                    kind: LocalKind::Param(0),
+                });
+                if let Some(recv_local) = sig.receiver_local {
+                    self.local_map
+                        .insert(recv_local.0, LocalId((self.locals.len() - 1) as u32));
+                }
+                body_params.push(recv_ty);
+            }
+            (Some(_), None) => {
+                return unsupported("receiver without a self type", sig_span);
+            }
+            (None, _) => {}
+        }
+        for (param, ty) in sig.params.iter().zip(params_no_recv.iter()) {
             self.check_no_drop_needed(ty, param.name)?;
             self.locals.push(LocalDecl {
                 ty: ty.clone(),
-                kind: LocalKind::Param(i as u32),
+                kind: LocalKind::Param(body_params.len() as u32),
             });
             self.local_map
                 .insert(param.local.0, LocalId((self.locals.len() - 1) as u32));
+            body_params.push(ty.clone());
         }
+        let params = body_params;
 
-        let body_span = self.hir.block(def.body).span;
-        let tail = self.lower_block_value(def.body)?;
+        let body_span = self.hir.block(body_block).span;
+        let tail = self.lower_block_value(body_block)?;
         if let Some(op) = tail {
             self.emit(
                 Statement::Assign(Place::local(LocalId(0)), Rvalue::Use(op)),
@@ -497,11 +708,16 @@ impl<'a> FnLowerer<'a> {
             .drain(..)
             .map(|b| b.expect("every allocated block must be sealed"))
             .collect();
+        let instance_item = match &self.key {
+            FnKey::Top(item) => *item,
+            FnKey::ImplFn { impl_item, .. } => *impl_item,
+            FnKey::TraitDefault { trait_item, .. } => *trait_item,
+        };
         Ok(MirBody {
             instance: Instance {
-                item: self.item,
+                item: instance_item,
                 type_args: Vec::new(),
-                symbol: format!("{name}@[]"),
+                symbol,
             },
             params,
             ret,
@@ -882,7 +1098,7 @@ impl<'a> FnLowerer<'a> {
                             span,
                         );
                     }
-                    self.discovered_callees.push(*item);
+                    self.discovered_callees.push(FnKey::Top(*item));
                     let name = self.text(def.sig.name).to_string();
                     Ok(Operand::Const(Constant::FnPtr(Instance {
                         item: *item,
@@ -1422,6 +1638,13 @@ impl<'a> FnLowerer<'a> {
             None => Place::local(self.new_temp(MirTy::Unit)),
         };
 
+        // C4.5a: method call — `receiver.method(args)`.
+        if let hir::ExprKind::Field { base, name, .. } = &self.hir.expr(callee).kind {
+            let base = *base;
+            let name_span = *name;
+            return self.lower_method_call(base, name_span, &args, dest, span);
+        }
+
         match &self.hir.expr(callee).kind {
             hir::ExprKind::Path { res, .. } => match res {
                 Res::Builtin(builtin @ (Builtin::Println | Builtin::Print)) => {
@@ -1483,7 +1706,7 @@ impl<'a> FnLowerer<'a> {
                     if !def.sig.generics.is_empty() {
                         return unsupported("generic call (monomorphisation is C4.5)", span);
                     }
-                    self.discovered_callees.push(*item);
+                    self.discovered_callees.push(FnKey::Top(*item));
                     let name = self.text(def.sig.name).to_string();
                     let ops = args
                         .iter()
@@ -1523,6 +1746,41 @@ impl<'a> FnLowerer<'a> {
                     );
                     Ok(())
                 }
+                // C4.5a: associated function (`Point::new(3, 4)`).
+                Res::AssociatedFn(nominal, name_span) => {
+                    let nominal = *nominal;
+                    let name_text = self.text(*name_span).to_string();
+                    let Some((key, _receiver)) =
+                        self.find_impl_fn(nominal, &name_text, /*receiverless=*/ true)
+                    else {
+                        return unsupported(
+                            format!("associated function {name_text} not found"),
+                            span,
+                        );
+                    };
+                    let symbol = key_symbol(self.hir, self.src, &key)?;
+                    self.discovered_callees.push(key);
+                    let ops = args
+                        .iter()
+                        .map(|&a| self.lower_expr_to_operand(a))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let after = self.new_block();
+                    self.terminate(
+                        Terminator::Call {
+                            callee: Callee::Instance(Instance {
+                                item: nominal,
+                                type_args: Vec::new(),
+                                symbol,
+                            }),
+                            args: ops,
+                            dest,
+                            target: after,
+                        },
+                        self.info(span),
+                        after,
+                    );
+                    Ok(())
+                }
                 // Indirect call through a function value (CD-021 item 17).
                 Res::Local(_) | Res::SelfValue(_) => {
                     let fn_op = self.lower_expr_to_operand(callee)?;
@@ -1547,6 +1805,163 @@ impl<'a> FnLowerer<'a> {
             },
             _ => unsupported("indirect callee expression (C4.5)", span),
         }
+    }
+
+    /// C4.5a method resolution: inherent impls first, then trait impls, then trait defaults —
+    /// mirroring `typecheck::resolve_method`'s precedence for the non-generic subset. When
+    /// `receiverless`, only receiverless fns match (associated-function position).
+    fn find_impl_fn(
+        &self,
+        nominal: ItemId,
+        name: &str,
+        receiverless: bool,
+    ) -> Option<(FnKey, Option<hir::Receiver>)> {
+        let mut inherent: Option<(FnKey, Option<hir::Receiver>)> = None;
+        let mut via_trait: Option<(FnKey, Option<hir::Receiver>)> = None;
+        let mut via_default: Option<(FnKey, Option<hir::Receiver>)> = None;
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let ItemKind::Impl { trait_, items, .. } = &item.kind else {
+                continue;
+            };
+            let impl_item = ItemId(idx as u32);
+            if impl_self_item(self.hir, impl_item) != Some(nominal) {
+                continue;
+            }
+            for (member, impl_member) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_member else {
+                    continue;
+                };
+                if self.text(def.sig.name) != name {
+                    continue;
+                }
+                if receiverless != def.sig.receiver.is_none() {
+                    continue;
+                }
+                let hit = (
+                    FnKey::ImplFn {
+                        impl_item,
+                        member: member as u32,
+                    },
+                    def.sig.receiver,
+                );
+                if trait_.is_none() {
+                    inherent.get_or_insert(hit);
+                } else {
+                    via_trait.get_or_insert(hit);
+                }
+            }
+            // Trait defaults: only when this impl does NOT override the method.
+            if let Some(trait_ref) = trait_ {
+                if let Res::Item(trait_item) = trait_ref.res {
+                    let overridden = items.iter().any(|m| {
+                        matches!(m, hir::ImplItem::Fn { def, .. }
+                            if self.text(def.sig.name) == name)
+                    });
+                    if !overridden {
+                        if let ItemKind::Trait {
+                            items: trait_items, ..
+                        } = &self.hir.item(trait_item).kind
+                        {
+                            for (member, trait_member) in trait_items.iter().enumerate() {
+                                let hir::TraitItem::Method { sig, body: Some(_) } = trait_member
+                                else {
+                                    continue;
+                                };
+                                if self.text(sig.name) != name {
+                                    continue;
+                                }
+                                if receiverless != sig.receiver.is_none() {
+                                    continue;
+                                }
+                                via_default.get_or_insert((
+                                    FnKey::TraitDefault {
+                                        trait_item,
+                                        member: member as u32,
+                                        self_item: nominal,
+                                    },
+                                    sig.receiver,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        inherent.or(via_trait).or(via_default)
+    }
+
+    /// Lower `receiver.method(args)` — evaluation order: receiver first (CD-007/CD-010).
+    fn lower_method_call(
+        &mut self,
+        base: ExprId,
+        name_span: Span,
+        args: &[ExprId],
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let base_ty = self.expr_mir_ty(base)?;
+        let nominal = match &base_ty {
+            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => *item,
+            other => {
+                return unsupported(
+                    format!("method call on non-nominal receiver {other:?} (C4.5b+)"),
+                    span,
+                )
+            }
+        };
+        let name_text = self.text(name_span).to_string();
+        let Some((key, receiver)) = self.find_impl_fn(nominal, &name_text, false) else {
+            return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
+        };
+        // Receiver operand FIRST (normative order), before arguments.
+        let receiver_op = match receiver {
+            Some(hir::Receiver::RefMut) => {
+                return unsupported("&mut self receiver (references land in C4.5d)", span);
+            }
+            Some(hir::Receiver::Ref) => {
+                // Interim by-value model for `&self` (see lower_body): COPY, never move —
+                // a borrow must not consume the receiver local.
+                match self.lower_place(base) {
+                    Ok(place) => Operand::Copy(place),
+                    Err(_) => {
+                        // Non-place receiver (e.g. a call result): materialize a temp.
+                        let value = self.lower_expr_to_operand(base)?;
+                        let temp = self.new_temp(base_ty.clone());
+                        self.emit(
+                            Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                            self.info(span),
+                        );
+                        Operand::Copy(Place::local(temp))
+                    }
+                }
+            }
+            Some(hir::Receiver::Value) => self.lower_expr_to_operand(base)?,
+            None => {
+                return unsupported("method-syntax call to a receiverless fn", span);
+            }
+        };
+        let symbol = key_symbol(self.hir, self.src, &key)?;
+        self.discovered_callees.push(key);
+        let mut ops = vec![receiver_op];
+        for &arg in args {
+            ops.push(self.lower_expr_to_operand(arg)?);
+        }
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Instance(Instance {
+                    item: nominal,
+                    type_args: Vec::new(),
+                    symbol,
+                }),
+                args: ops,
+                dest,
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+        Ok(())
     }
 
     fn widen_for_print(

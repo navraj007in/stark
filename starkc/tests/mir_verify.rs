@@ -48,6 +48,7 @@ fn every_lowerable_program_verifies_clean() {
         "expr_stmt__03_loops_break_continue",
         "primitive__01_integer_widths_and_overflow_traps",
         "primitive__02_integer_overflow_traps",
+        "struct_enum_trait__01_struct_construction_and_methods",
         "struct_enum_trait__02_enum_and_pattern_match",
     ];
     for name in corpus {

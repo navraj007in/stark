@@ -131,6 +131,7 @@ fn frozen_corpus_scalar_cases_agree() {
         "expr_stmt__03_loops_break_continue",
         "primitive__01_integer_widths_and_overflow_traps",
         "primitive__02_integer_overflow_traps",
+        "struct_enum_trait__01_struct_construction_and_methods",
         "struct_enum_trait__02_enum_and_pattern_match",
     ] {
         let path = corpus_dir().join(format!("{name}.stark"));
@@ -242,6 +243,54 @@ fn recursion_and_calls_agree() {
                  println(fib(i)); \
                  i = i + 1; \
              } \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn methods_and_associated_fns_agree() {
+    differential(
+        "methods.stark",
+        "struct Counter { value: Int32 } \
+         impl Counter { \
+             fn fresh(start: Int32) -> Counter { Counter { value: start } } \
+             fn doubled(&self) -> Int32 { self.value * 2 } \
+             fn consumed(self) -> Int32 { self.value + 1 } \
+         } \
+         fn main() { \
+             let c = Counter::fresh(20); \
+             println(c.doubled()); \
+             println(c.doubled()); \
+             println(c.consumed()); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn trait_dispatch_default_and_override_agree() {
+    differential(
+        "traits.stark",
+        "trait Describe { \
+             fn id(&self) -> Int32; \
+             fn twice(&self) -> Int32 { self.id() * 2 } \
+         } \
+         struct A { n: Int32 } \
+         struct B { n: Int32 } \
+         impl Describe for A { \
+             fn id(&self) -> Int32 { self.n } \
+         } \
+         impl Describe for B { \
+             fn id(&self) -> Int32 { self.n } \
+             fn twice(&self) -> Int32 { self.id() * 10 } \
+         } \
+         fn main() { \
+             let a = A { n: 3 }; \
+             let b = B { n: 4 }; \
+             println(a.twice()); \
+             println(b.twice()); \
+             println(a.id()); \
          }"
         .to_string(),
     );

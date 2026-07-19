@@ -129,6 +129,7 @@ const LOWERABLE_CORPUS: &[&str] = &[
     "expr_stmt__03_loops_break_continue",
     "primitive__01_integer_widths_and_overflow_traps",
     "primitive__02_integer_overflow_traps",
+    "struct_enum_trait__01_struct_construction_and_methods",
     "struct_enum_trait__02_enum_and_pattern_match",
 ];
 
@@ -266,9 +267,10 @@ fn unsupported_constructs_report_cleanly() {
             "C4.5",
         ),
         (
-            "method.stark",
-            "struct P { x: Int32 } impl P { fn get(&self) -> Int32 { self.x } } \
-             fn main() { let p = P { x: 1 }; println(p.get()); }",
+            "mutrecv.stark",
+            "struct P { x: Int32 } \
+             impl P { fn bump(&mut self) { self.x = self.x + 1; } } \
+             fn main() { let mut p = P { x: 1 }; p.bump(); println(p.x); }",
             "C4.5",
         ),
     ];
