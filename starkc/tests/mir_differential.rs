@@ -1626,3 +1626,28 @@ fn vec_get_and_get_mut_agree() {
         .to_string(),
     );
 }
+
+/// `println(Ordering)` prints the variant name (`Less`/`Equal`/`Greater`), agreeing with the
+/// oracle's Display. (Amendment A2 deferred this to A4; lowered without a runtime op.)
+#[test]
+fn println_ordering_agrees() {
+    differential(
+        "a4_print_ord.stark",
+        "struct P { x: Int32 } \
+         impl Ord for P { \
+             fn cmp(&self, o: &P) -> Ordering { \
+                 if self.x < o.x { Ordering::Less } \
+                 else if self.x > o.x { Ordering::Greater } \
+                 else { Ordering::Equal } \
+             } \
+         } \
+         fn main() { \
+             let a = P { x: 1 }; \
+             let b = P { x: 2 }; \
+             println(a.cmp(&b)); \
+             println(b.cmp(&a)); \
+             println(a.cmp(&a)); \
+         }"
+        .to_string(),
+    );
+}

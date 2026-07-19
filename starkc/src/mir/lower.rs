@@ -3221,6 +3221,11 @@ impl<'a> FnLowerer<'a> {
                         self.emit_runtime_call(rt, vec![str_op], dest, span);
                         return Ok(());
                     }
+                    // A4: `println(Ordering)` (Display, deferred from Amendment A2). No runtime
+                    // op — a discriminant switch prints the variant name via `Print(ln)Str`.
+                    if matches!(peeled, MirTy::Enum(EnumRef::CoreOrdering, _)) {
+                        return self.lower_print_ordering(args[0], is_println, dest, span);
+                    }
                     let value = self.lower_expr_to_operand(args[0])?;
                     let (runtime, widened) = self.widen_for_print(value, &arg_ty, span)?;
                     let runtime = match (runtime, is_println) {
@@ -5035,6 +5040,57 @@ impl<'a> FnLowerer<'a> {
             self.info(span),
             after,
         );
+    }
+
+    /// A4: `print`/`println` of an `Ordering` value — a discriminant switch that prints the
+    /// variant name (`Less`/`Equal`/`Greater`) via `Print(ln)Str`. No runtime op is added.
+    fn lower_print_ordering(
+        &mut self,
+        arg: ExprId,
+        is_println: bool,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let ord_ty = MirTy::Enum(EnumRef::CoreOrdering, Vec::new());
+        let place = self.place_or_temp(arg, &ord_ty, span)?;
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(place)),
+            self.info(span),
+        );
+        let rt = if is_println {
+            RuntimeFn::PrintlnStr
+        } else {
+            RuntimeFn::PrintStr
+        };
+        let less = self.new_block();
+        let equal = self.new_block();
+        let greater = self.new_block();
+        let join = self.new_block();
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(disc)),
+                arms: vec![(0, less), (1, equal), (2, greater)],
+                otherwise: join,
+            },
+            self.info(span),
+            less,
+        );
+        // Each variant block prints its name and jumps to `join`. `terminate` seals the current
+        // block and advances to the next; after the switch, `current == less`.
+        for (name, next) in [("Less", equal), ("Equal", greater), ("Greater", join)] {
+            self.terminate(
+                Terminator::Call {
+                    callee: Callee::Runtime(rt),
+                    args: vec![Operand::Const(Constant::Str(name.to_string()))],
+                    dest: dest.clone(),
+                    target: join,
+                },
+                self.info(span),
+                next,
+            );
+        }
+        Ok(())
     }
 
     fn widen_for_print(
