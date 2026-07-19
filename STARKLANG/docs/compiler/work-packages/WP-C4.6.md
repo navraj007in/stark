@@ -278,6 +278,14 @@ Per CD-033: "C4 closes only when all required classes are green and no normative
 met; whether the enumerated front-end deviations block closure (they cap which normative
 programs REACH MIR) is the owner's call.
 
+**Disposition (2026-07-20): C4 stays OPEN pending `WP-C4.7.md`** — a correction + re-audit
+closure package created after an external review and self-audit identified pre-exit
+corrections: the type-erasing `size_of`/`align_of` lowering vs. the spec's "target-layout
+queries" classification (both engines share the placeholder; the erasure blocks C5), the
+front-end deviations above, evidence-symmetry gaps (verifier negatives, unsupported
+fixtures), and documentation reconciliation (a stale `COMPILER-STATE.md` position block, the
+unrecorded A5 shape amendment in `mir.md`). The final C4 exit report is WP-C4.7-9.
+
 ### A5 + A7 — DONE 2026-07-19
 
 **A5 (bitwise / shift / power).** `MirBinOp::BitAnd`/`BitOr`/`BitXor` are pure (for same-width

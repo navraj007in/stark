@@ -1,0 +1,385 @@
+# WP-C4.7 — C4 Correction + Re-audit Closure Package (executor plan)
+
+Gate: C4 (stays OPEN until this WP completes and the owner approves the fresh exit report).
+Origin: the WP-C4.6 Class-A campaign completed all seven classes (see `WP-C4.6.md`), but an
+external review plus self-audit identified corrections required before an honest exit. This
+document is the **complete execution plan**, written so any session can pick up any increment
+without prior context. Read §0 and §1 before touching code.
+
+---
+
+## 0. Rules of engagement (do not skip)
+
+1. **One increment per go-ahead.** The owner approves work increment-by-increment. Do ONE
+   numbered increment (C4.7-1, C4.7-2, …), commit it, push, verify CI, report, STOP — unless
+   the owner explicitly says to continue or "finish all".
+2. **Validation gate for every increment** (all from `starkc/`, NOT the repo root — `cargo fmt`
+   fails at the root):
+   ```bash
+   cd starkc
+   cargo fmt
+   cargo test --workspace          # must be zero failures
+   cargo clippy --workspace --all-targets                      # 0 warnings
+   rustup run 1.97.0 cargo clippy --workspace --all-targets    # 0 warnings (CI parity)
+   ```
+3. **Commit per increment**, push, then verify CI:
+   ```bash
+   gh run list --limit 1 --json status,conclusion --jq '.[0]'
+   ```
+   Poll until `completed`/`success`. Commit messages end with the Co-Authored-By line the
+   session harness specifies.
+4. **Docs move with code, same commit**: update `COMPILER-STATE.md` (Position header + a
+   dated record), this file's increment status, `KNOWN-DEVIATIONS.md` (entry + tail count +
+   the "Currently open" enumeration — there are TWO lists; update BOTH), and any amendment
+   doc touched. Then run the cross-reference sweep: grep every identifier you changed across
+   `COMPILER-STATE.md`, `WP-C4.6.md`, `WP-C4.7.md`, `KNOWN-DEVIATIONS.md`,
+   `STARKLANG/docs/compiler/mir.md`, and the amendment docs; fix every stale count/claim in
+   the same commit.
+5. **Escalation boundary (CE rule).** These require OWNER approval before implementation —
+   draft the decision document, present it, STOP:
+   - Any new `MirTy`/`Rvalue`/`Terminator`/`Constant`/`CheckedOp`/`TrapCategory`/`EnumRef`
+     variant or any other MIR **shape** change (the C4-open policy in `mir.md` requires
+     per-amendment CE3 approval + recording in `mir.md`). Increment C4.7-3 hits this.
+   - Any change to the `MIR_RUNTIME_SURFACE` version or new `RuntimeFn` (dated enumeration
+     revision in `mir-amendment-A1-strings-runtime.md` §11 — follow the rev. 5–10 format).
+   - Any change to normative spec files under `STARKLANG/docs/spec/`.
+   - Any behavior change to the HIR oracle beyond a bug-fix that a DEV entry documents.
+6. **The oracle is the semantics authority.** Before implementing any behavior with
+   observable ordering (drops, evaluation order), pin the oracle's behavior EMPIRICALLY first
+   with probe programs, then implement MIR to match. Never guess.
+7. **Never edit `STARKLANG/docs/spec/STARK-Core-v1.md`** (generated). Edit the numbered
+   source docs and regenerate with `python3 STARKLANG/tools/build-core-spec.py` — only if an
+   increment requires spec edits (C4.7-3 may, with owner approval).
+
+## 1. Repo execution knowledge (learned the hard way — read before coding)
+
+### Probe harnesses (both committed)
+- `starkc/examples/c46_probe.rs` — full pipeline on a file:
+  `cargo run --example c46_probe -- path.stark` prints one of `PARSE-ERR` / `RESOLVE-ERR` /
+  `TYPECHECK-ERR` (front-end scope) / `LOWER-UNSUPPORTED` (MIR gap) / `VERIFY-ERR` /
+  `MIR-RUN-ERR` / `OK: ran, stdout=…`.
+- `starkc/examples/oracle_run.rs` — HIR oracle only: `ORACLE-OK`/`ORACLE-ERR`.
+- Use both on every new construct: a case must be **typecheck-clean AND oracle-supported**
+  before its MIR gap counts as MIR work. Front-end failures are front-end increments.
+
+### The differential harness (`starkc/tests/mir_differential.rs`)
+- `differential(name, source)` runs oracle vs lower→verify→MIR-run and compares: stdout,
+  exit status, trap category (via `oracle_fragment` message-fragment mapping at the top of
+  the file — extend it if you add a `TrapCategory`), **exact user-origin trap provenance
+  spans**, and pre-trap stdout prefix.
+- Provenance gotcha: the oracle attributes traps to the INNER expression span (e.g.
+  `a[1..9]`, not `&a[1..9]`). If a provenance assert fails ±1 byte, your lowering used the
+  wrong expr's span.
+- Trap-message rule: compiler traps carry `message: None` and compare by category fragment;
+  only `panic(msg)` compares messages exactly.
+
+### Front-end quirks to ROUTE AROUND in test programs (do not fight them)
+- Integer literals don't coerce to `UInt64` params: write `v.get(0 as UInt64)`,
+  `i = i + (1 as UInt64)`.
+- All-three-variant `Ordering` matches are wrongly non-exhaustive (DEV-071): use two variants
+  + `_` until C4.7-7 fixes it.
+- Generic impls don't satisfy operator/iterable bounds (DEV-073): don't write `a == b` on
+  `W<Int32>` with `impl<T> Eq for W<T>`, or `for x in it` on a generic iterator struct, in
+  tests that must pass — until C4.7-5 fixes it.
+- `enum` `Eq` bodies can now `match *self` (DEV-070 is fixed), but binding a NON-Copy payload
+  through `&self` is front-end-accepted-but-MIR-rejected (DEV-072) until C4.7-5.
+
+### Lowering machinery map (`starkc/src/mir/lower.rs`, ~7k lines)
+- `FnKey::{Top, ImplFn, TraitDefault}` all carry concrete type args; bodies lower once per
+  key via a worklist (`discovered_callees`); `key_symbol` names instances
+  (`Stack::push_item@[Int32]`). `param_subst: HashMap<String, MirTy>` is the active generic
+  substitution; `impl_generic_subst(impl_item, type_args)` derives it for impls by aligning
+  the impl's WRITTEN self-type args (bare param names only) with the instantiation.
+- Block emission: `self.emit(stmt, info)` appends to the current block;
+  `self.terminate(term, info, next)` SEALS the current block and makes `next` current. Every
+  allocated block must be sealed or lowering panics "every allocated block must be sealed".
+  The `lower_arm_body_scoped` pattern allocates a dead block after a `Goto` then
+  `self.blocks.pop()`s it.
+- Places: `place_or_temp(expr, ty, span)` materializes non-place expressions (call results)
+  — use it for any receiver/borrow of an arbitrary expression. `read_place` picks
+  `Operand::Copy` vs `Move` by `is_copy`.
+- Match machinery: `lower_match` decides `MatchMode::{Consuming, ByRef}`
+  (`scrutinee_reads_through_ref`); FLAT enum arms go to the drop-elaborated
+  `lower_enum_match` (C4.5d semantics); scalars to `lower_int_match`; everything else to the
+  recursive `lower_general_match` (`emit_pattern_test` + `bind_pattern`), which currently
+  REQUIRES a drop-free scrutinee in Consuming mode.
+- Drop elaboration: `register_droppable_local`, `ty_needs_drop`, `collect_drop_units`,
+  `discover_drop_impls` (dtor instances keyed `(item, args)` in
+  `TypeContext::drop_impls`). Runtime types (String/Vec/HashMap/iterators) are leaf units.
+- Runtime surface: `RuntimeFn` in `mod.rs`; verifier signatures in `verify.rs` —
+  fixed table `runtime_sig` + schematic `vec_runtime_sig`/`map_runtime_sig`/
+  `slice_runtime_sig`; interp dispatch `run_runtime` → `run_{string,vec,map,slice}_runtime`.
+  Adding a RuntimeFn touches ALL FOUR places + `is_*_runtime(_fn)` guards + a surface bump.
+- Surface bumps change the dump header: update the two golden strings in
+  `tests/mir_lowering.rs` (`// STARK MIR v0.1 (runtime-surface 0.1-AX)` and the
+  `dump.contains(...)` assert).
+
+### Editing discipline
+- Prefer exact-string Edit calls. For python patch scripts: assert `count(old) == 1` per
+  replacement and write the file only at the end (a failed assert then leaves the file
+  untouched). `cargo fmt` reflows aggressively — re-read actual text after fmt before
+  further patching.
+
+---
+
+## 2. Increments
+
+Status legend: each increment gets `_pending_` → `DONE <date>` edited into this section.
+
+### C4.7-1 — Documentation/evidence reconciliation — DONE 2026-07-20 (partially, see below)
+
+DONE in the planning commit: `COMPILER-STATE.md` stale A3-era position block neutralized
+(the "A4/A2/A1 remain / DEV-070 open / Blocked:" paragraph); `KNOWN-DEVIATIONS.md`
+"Currently open" enumeration refreshed to post-Class-A reality with C4.7 owners.
+
+REMAINING (finish as the first coding increment):
+1. **Record A5's shape additions in `mir.md`** (policy: every additive shape amendment must
+   be recorded in the contract). Add, next to the existing A1/A2 amendment notes, an "A3
+   shape amendment (WP-C4.6 A5, CD-033)" paragraph covering: `MirBinOp::BitAnd/BitOr/BitXor`
+   (pure, integer-only, result-typed as operands), `CheckedOp::Pow` (NUM-INT-ARITH-001
+   nonnegative exponent, checked intermediate multiplies), `CheckedOp::Shl/Shr` semantics now
+   ACTIVE (NUM-SHIFT-001 count bound), and `TrapCategory::InvalidShift` (distinct from
+   IntegerOverflow; category-override via the interpreter's `CheckedOutcome`). Present the
+   paragraph to the owner in the increment report for post-hoc CE3 ratification (CD-033
+   approved the A5 *class*; the per-amendment recording was missed).
+2. **DEV-074**: number the oracle slice-bound message alignment (three messages folded into
+   the "out of bounds" family during A4-2e, documented only in amendment A1 rev. 10). Ledger
+   entry: what/why (spec groups all slice-bound failures as one trap; the differential
+   fragment comparator requires it), CLOSED-at-creation status, pointer to rev. 10. Bump the
+   tail count 71 → 72 and add to BOTH open/closed enumerations appropriately.
+3. **Tighten the A4 wording** in `WP-C4.6.md`: where it says the A4 surface "completes the
+   core-min runtime surface", add "(the MIR runtime surface; front-end core-min holes —
+   `Box` deref, primitive `cmp` — are C4.7-6)".
+Validation: doc-only; run the §0.4 sweep; no test changes. Single commit.
+
+### C4.7-2 — Evidence symmetry: verifier negatives + unsupported fixtures  _pending_
+
+Goal: every Class-A class has hand-built verifier negatives, and every recorded residual is
+pinned by a clean-Unsupported fixture (per CD-033's evidence rule).
+
+**A. Verifier negatives** — add to `starkc/tests/mir_verify.rs`, modeled on
+`rejects_invalid_core_ordering_variant` / `rejects_slice_new_with_bad_dest_type` (hand-built
+`MirBody` via the file's `body`/`block`/`local`/`expect_code` helpers):
+1. `rejects_bitwise_binop_on_floats` — `Rvalue::BinOp(MirBinOp::BitAnd, Float64, Float64)`
+   → expect `MIR-0004` ("bitwise BinOp on").
+2. `rejects_pow_on_non_integer_dest` — `CheckedOp::Pow` with a Float64 dest → `MIR-0004`.
+3. `rejects_vec_get_ref_with_wrong_dest` — `RuntimeFn::VecGetRef` on `&Vec<Int32>` with dest
+   typed `Option<&Bool>` → `MIR-0005` (arg/sig mismatch path in `vec_runtime_sig`).
+4. `rejects_chars_iter_next_on_non_iterator` — `CharsIterNext` with an `Int32` operand →
+   `MIR-0005` (fixed-table sig).
+5. `rejects_switch_on_float` — `SwitchInt` scrutinee `Float64` → `MIR-0004` (guards the A2
+   Char-scrutinee widening from over-widening).
+6. `rejects_impl_symbol_mismatch` is NOT needed (symbols aren't verifier-checked); instead:
+   `rejects_call_arity_against_instance` already exists — verify; if not, skip with a note.
+
+**B. Unsupported fixtures** — extend `unsupported_constructs_report_cleanly` in
+`starkc/tests/mir_lowering.rs` (each entry: name, source, expected message NEEDLE — keep
+needles loose, one distinctive word):
+1. Droppable scrutinee + nested pattern: `match Some((String::from("x"), 1)) { Some((s, n)) => … }`
+   → needle `"A2 residual"`.
+2. Method-own generics: `impl Holder { fn map<U>(…) }` … careful: needs a call site; use a
+   non-generic nominal with `fn conv<U: …>`-shape? If the front end rejects independently,
+   drop this fixture and note it. Probe FIRST with c46_probe.
+3. Non-bare impl self args: `impl<T> Wrap for Holder<Vec<T>>`-shape — probe first; front end
+   may reject; if it reaches lowering → needle `"non-parameter self argument"`.
+4. Droppable Iterator Item: Iterator impl with `next() -> Option<String>` + `for` →
+   needle `"droppable Item"`.
+5. Mutable slice view: `&mut a[0..2]` → needle `"mutable slice"`.
+6. `unwrap_or` on droppable payload: `Option<String>::unwrap_or(String::new())` →
+   needle `"droppable payload"`.
+For every fixture: run c46_probe FIRST; if the front end rejects the program, the fixture
+can't live in mir_lowering — record which in the increment report instead of forcing it.
+Validation gate + docs + commit.
+
+### C4.7-3 — Type-preserving layout queries (`size_of`/`align_of`)  _pending_  ⚠ CE3
+
+Problem: 06-Standard-Library classifies them as **"target-layout queries"** ("C2.9 completes
+the target results"), but A4-1 lowered both to `Const 8` with the queried type ERASED, and
+the HIR oracle also returns 8 for every type (`src/interp.rs`, `Builtin::SizeOf | AlignOf`).
+The differential passes only because both share the placeholder. A C5 backend cannot answer a
+target-layout query from a MIR that discarded `T`.
+
+Steps:
+1. **Research first**: find what C2.9 actually decided about target results — search
+   `COMPILER-STATE.md` and `STARKLANG/docs/spec/` for `C2.9` + `size_of`. Report findings.
+2. **Draft a CE3 amendment** (new file `STARKLANG/docs/compiler/mir-amendment-A3-layout.md`,
+   modeled on `mir-amendment-A2-ordering.md`): recommended design —
+   `Rvalue::LayoutQuery { kind: SizeOf | AlignOf, ty: MirTy }`, typed `UInt64`, evaluated by
+   consumers via a layout service; the C4 reference interpreter's service returns the frozen
+   reference-target answer (8 today — behavior unchanged, representation fixed); verifier
+   checks dest ty `UInt64`; dump as `layout_size_of(<ty>)` / `layout_align_of(<ty>)`.
+   Include: why a RuntimeFn is NOT suitable (erases T unless made schematic in a way the
+   surface tables don't support), backend note (C5.1 substitutes its real layout), and the
+   §7 dump grammar addition. **STOP and present for owner approval before any code.**
+3. After approval: implement in `mod.rs` (Rvalue + dump), `lower.rs` (the
+   `Res::Builtin(SizeOf|AlignOf)` arm in `lower_call` — currently emits `Const 8`; keep the
+   `expr_mir_ty`-independent `UInt64` dest), `verify.rs` (Rvalue typing arm), `interp.rs`
+   (`eval_rvalue` arm returning the reference answer via one `fn reference_layout(ty) -> (u64, u64)`
+   so C5 has a single override point). Oracle: LEAVE returning 8 (same value) — no oracle
+   change needed. Differential test: `size_of_align_of_agree` already exists; add a dump
+   golden showing the type is preserved.
+Validation gate + docs (mir.md amendment note per policy) + commit.
+
+### C4.7-4 — DEV-069: front-end multi-file span discipline  _pending_  (largest; C5 prerequisite)
+
+Problem (full detail in the DEV-069 ledger entry): the type checker and HIR oracle resolve
+`Span`s against the ENTRY file only. Cross-file methods mis-resolve, cross-file literals
+mis-parse, cross-file field reads fail, and `TypeChecker::text` can panic out-of-bounds. MIR
+lowering is already multi-file-clean via `ProgramMeta` (each item knows its declaring file;
+`meta.item_text(item, span)` reads in the owning file) — use it as the model.
+
+Approach (front end):
+1. Reproduce first: `starkc/tests/mir_differential.rs::multi_file_module_program_agrees_with_qualified_symbols`
+   is pinned to the front-end-safe subset; write throwaway two-file probes (tempdir, like
+   that test does) for each failure shape: cross-file method call, cross-file literal,
+   cross-file field read.
+2. The resolver already tracks which file each item came from (ProgramMeta::build derives
+   it — study `lower.rs` `ProgramMeta` + `hir.rs` `synthetic_spans`). Thread the same
+   item→file mapping through `typecheck.rs`, `borrowck.rs`, and `interp.rs`: every
+   `self.text(span)` / literal-parse / field-name read must resolve the span against the
+   file OWNING the item being read, not `self.file`. Grep for `.text(` and `src[` uses in
+   those three files; classify each read by "whose span is this" before changing anything.
+3. Expect this to be wide but mechanical. Do it in TWO commits: (a) typecheck+borrowck,
+   (b) oracle — each with the probes re-run.
+4. Then WIDEN the multi-file differential test past the safe subset (cross-file struct +
+   Drop impl + methods + literals — the original pre-narrowing content is described in the
+   test's NOTE comment) and mark DEV-069 CLOSED (ledger + both enumerations + count).
+Validation gate + docs + commit(s).
+
+### C4.7-5 — DEV-072 + DEV-073 (front-end typecheck/borrowck)  _pending_
+
+**DEV-072** (borrowck): reject moving a non-Copy value out of a shared borrow via match
+bindings. Repro in the ledger entry. Where: `borrowck.rs` — pattern-binding handling must
+treat a binding of a non-Copy payload whose scrutinee place crosses a shared `Deref` as a
+move-out-of-borrow error (there is existing move-out-of-borrow machinery for direct
+expressions; extend it to match bindings). After the fix: the MIR guard message
+("binding a non-Copy payload through a shared reference") becomes unreachable-by-checked-
+programs — KEEP the guard (defense in depth) but update its comment. Add front-end negative
+tests (existing borrowck test file conventions) + keep
+`match_deref_self_noncopy_wildcard_agree` green (wildcards must STAY legal).
+
+**DEV-073** (typecheck): make generic impls satisfy operator-trait/iterable bounds.
+Where: `typecheck.rs` `require_operator_bound` and the for-loop iterable check — both
+currently match impls only for exact non-generic self types. Extend the impl search to unify
+the impl's written self type (bare-param generic head) with the concrete nominal
+instantiation (the method-resolution path already does this — find and reuse its matching,
+don't reinvent). After the fix, ADD the two differential tests that were removed for this
+reason: user Eq on `W<Int32>` via `impl<T> Eq for W<T>` (see WP-C4.6 A1 section), and a
+generic user-iterator for-loop (`Repeat<T>`). MIR side is already instantiation-ready — no
+lowering changes expected; if lowering breaks, that's a real finding, report it.
+Close both DEVs in the ledger. Validation gate + docs + commit.
+
+### C4.7-6 — Front-end `core-min` completions  _pending_
+
+1. **`Box<T>` deref**: `*Box::new(5)` fails E0001 "cannot dereference non-reference". Spec:
+   06 defines `Box::new`/`into_inner` (implementation-provided Core type). Scope: typecheck
+   deref of `Ty::Core(Box, [T])` → `T`; oracle deref/auto-deref of the Box value; MIR: probe
+   what's needed (likely `Ty::Core(Box,_)` → a MirTy representation + deref semantics —
+   if a new MirTy/runtime-op is needed, that's a CE3/surface stop per §0.5; report before
+   implementing the MIR half).
+2. **Primitive `cmp`/`Ordering` surface**: `3.cmp(&5)` fails E0304. Add `cmp` to the
+   checker's primitive-method surface returning `Core(Ordering)`; oracle: evaluate via the
+   existing `Value::Ordering`; MIR: lower primitive `.cmp` to the existing comparison +
+   `CoreOrdering` construction (no new ops — a small lowering arm; pattern after
+   `lower_user_ord`'s discriminant machinery in reverse).
+3. **`Vec::get` literal typing**: `v.get(0)` fails (UInt64 vs Int32 literal). Root cause:
+   integer-literal defaulting against an expected `UInt64` param — find where method-arg
+   unification runs vs literal defaulting in `typecheck.rs`; the fix should make an
+   un-suffixed integer literal adopt the expected primitive integer type (this likely also
+   fixes `i + 1` against UInt64 and array-index ergonomics — run the full suite to see what
+   it unlocks; remove now-unneeded `as UInt64` casts from tests ONLY if the owner agrees the
+   semantics change is spec-clean — check 03's literal-inference rules first; if 03 forbids
+   it, record as spec-conformant behavior instead and close the item as "not a bug").
+Each with front-end tests + differential where MIR is touched. Validation gate + docs + commit.
+
+### C4.7-7 — DEV-067 + DEV-071  _pending_
+
+**DEV-071** (exhaustiveness): register the prelude `Ordering` variant set
+(`Less/Equal/Greater`) with the checker's usefulness/exhaustiveness algorithm so an
+all-three-variant match is exhaustive. Then update
+`ordering_value_round_trips_through_match_agree` to use three explicit arms (drop the
+wildcard workaround) and remove the §1 quirk note here and in the harness comments.
+
+**DEV-067** (bounded generics): bounds lost at intra-generic call sites (E0500) and behind
+`&T` receivers (E0302). Repro: ledger entry + probe
+`fn call_speak<T: Speak>(t: &T) -> Int32 { t.speak() }`. Where: `typecheck.rs` — when the
+receiver type resolves to `Ty::Param(name)` (or `&Param`), method lookup must consult the
+param's declared bounds (trait list) instead of failing; operator bounds similarly at
+intra-generic call sites. After the fix, add differential coverage: a generic fn calling a
+bound method through `&T`, instantiated twice. Close both DEVs. Validation gate + docs + commit.
+
+### C4.7-8 — Remaining normative MIR residuals  _pending_  (split into 8a/8b as needed)
+
+Order within the increment (each independently commit-able):
+1. **Droppable Option/Result `unwrap_or`/combinators**: the discarded branch's value needs a
+   drop. For `unwrap_or`: in the Some/Ok arm the DEFAULT is unused → move it to a
+   drop-registered temp in that arm; in the None/Err arm the default is consumed. Follow the
+   arm-scoped pattern of `lower_enum_match` (scopes.push / register / emit_scope_drops).
+   Same treatment for `map`/`and_then`/`map_err` payload+fn cases (the fn value is Copy;
+   only payloads matter). Differential tests with `Drop`-impl payloads printing from dtors —
+   PIN THE ORACLE'S DROP TIMING FIRST (§0.6).
+2. **Droppable Iterator Item**: per-iteration scope around the loop-var binding in
+   `lower_for_over_user_iter` (scopes.push before the bind, register the binding local
+   flags-true, emit_scope_drops at the latch AND at break/exit paths — study how
+   `lower_arm_body_scoped` + `LoopTargets.scope_depth` interact; `break` already drops
+   scopes deeper than the loop's `scope_depth`, so pushing the scope AFTER `loops.push`
+   gives correct break behavior). Oracle-pin first.
+3. **Droppable scrutinee + nested patterns**: generalize consumption in
+   `lower_general_match`. Design: in Consuming mode over a droppable scrutinee, after tests
+   pass, recursively move EVERY droppable leaf of the scrutinee that the pattern reaches:
+   bound leaves → registered binding locals (flags true); tested-but-unbound droppable
+   sub-places (wildcards, unmentioned struct fields, enum shells whose payload was extracted)
+   → registered temps, mirroring `consume_variant_payload`'s flat rules recursively. The
+   scrutinee temp itself is never auto-dropped (it was fully decomposed). Pin oracle timing
+   for a two-level case FIRST (`Some((TagA, TagB))` with printing dtors, matched by
+   `Some((a, _))` — which dtor fires when?). This is the hardest piece; budget a session.
+4. **Method-own generic parameters** (`fn map<U>`): needs checker-recorded per-call-site
+   instantiations for METHODS (the C4.5c `generic_insts` machinery records top-level fn
+   uses; extend recording to method calls, keyed by the method-call expr), then a
+   `FnKey::ImplFn` extension carrying method-level args alongside impl-level args — this is
+   a FnKey shape change: check whether `mir.md` describes FnKey (it's lowering-internal;
+   if not contract-visible, no CE3 needed — verify, state your conclusion in the report).
+5. **Non-bare impl heads** (`impl<T> Holder<Vec<T>>`): extend `impl_generic_subst` to unify
+   the written self args STRUCTURALLY against the instantiation (reuse `bind_written_ty`,
+   which already walks written-HIR-vs-MirTy) instead of requiring bare params.
+6. **Mutable slice views** (`&mut base[range]`): decide with the owner whether required for
+   C4 exit (REF-SLICE-001 allows views; 06's behavioral requirements mention slicing
+   generally). If yes: `SliceNewMut` runtime op (surface bump, dated revision), `&mut [T]`
+   dest, `write_resolved` through a Slice window (currently rejected — lift for mutable
+   views only), borrowck implications probed first. If no: record the deferral in the exit
+   report with the owner's dated decision.
+
+### C4.7-9 — Fresh audit + the real C4 exit report  _pending_
+
+1. Re-run the unsupported-site sweep exactly as WP-C4.6's audit did: enumerate every
+   `unsupported(` in `lower.rs`, partition defensive-vs-construct, probe every construct
+   candidate with c46_probe + oracle_run, classify against 02/03/06 + core-min.
+2. Verify the 17-case frozen corpus still passes (`entire_frozen_corpus_agrees`) plus the
+   full differential suite.
+3. Write the exit report as a new final section of `WP-C4.6.md`: exit conditions 1–3
+   re-evaluated, every remaining rejection classified (defensive / spec-conformant /
+   deferred-with-owner-decision), deviation ledger state, and the recommendation.
+4. Present to the owner for the C4 closure decision. Do NOT close the gate yourself.
+5. Owner-table items to include: post-hoc CE3 ratification of the A5 shape additions
+   (C4.7-1), the three A4 surface bumps executed under one pre-authorization (revs 8–10),
+   whether to add frozen-corpus cases for Class-A constructs (corpus_version bump is
+   governance-controlled), and the mutable-slice / literal-typing decisions from C4.7-6/8.
+
+---
+
+## 3. Increment status tracker
+
+- C4.7-1: **doc half DONE 2026-07-20** (state-file + ledger reconciliation, this plan);
+  remaining: mir.md A5 recording, DEV-074, A4 wording — _pending_
+- C4.7-2: _pending_
+- C4.7-3: _pending_ (CE3 draft first)
+- C4.7-4: _pending_
+- C4.7-5: _pending_
+- C4.7-6: _pending_
+- C4.7-7: _pending_
+- C4.7-8: _pending_
+- C4.7-9: _pending_ (last)
+
+Recommended execution order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9. Increments 1–2 are
+low-risk warm-ups; 3 requires an owner stop; 4 is the largest front-end change; 8.3 is the
+hardest MIR change. 5/6/7 are independent of each other and of 8 — reorder if the owner asks.

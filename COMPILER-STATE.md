@@ -2,9 +2,13 @@
 Updated: 2026-07-20 after WP-C4.6 A1 — **ALL SEVEN CLASS-A BLOCKERS GREEN; C4 closure decision with the owner**
 
 ## Position
-Gate: C4  Next: **owner's C4 closure decision** — see `WP-C4.6.md` "Gate closure input" (the
-Class-A requirement of CD-033 is met; the enumerated front-end deviations and clean-Unsupported
-MIR residuals are the owner's call on whether they block closure). **A1 DONE 2026-07-20**, the
+Gate: C4  Next: **WP-C4.7 (correction + re-audit closure package)** — the executor-grade plan
+is `STARKLANG/docs/compiler/work-packages/WP-C4.7.md`; work it increment by increment. C4 stays
+OPEN until WP-C4.7 completes and the owner approves the fresh exit report (the Class-A
+requirement of CD-033 is met, but the external review + self-audit identified corrections
+required before an honest exit — most notably the type-erasing `size_of`/`align_of` lowering
+vs. the spec's "target-layout queries" classification, DEV-069 as a C5 prerequisite, and the
+front-end deviations DEV-067/071/072/073 + Box deref + primitive `cmp`). **A1 DONE 2026-07-20**, the
 last Class-A blocker: `FnKey::ImplFn`/`TraitDefault` carry the instantiation's type args
 (symbols render them — `Stack::push_item@[Int32]`); impl-generic substitution aligns the
 impl's written self-type args (bare params) with the instantiation; covered: methods on
@@ -38,12 +42,11 @@ discriminant-compare; v3-variant → MIR-0008; generic-nominal comparison stays 
 `mir.md` records the C4-open additive-amendment versioning policy + `CoreOrdering` in `EnumRef`.
 13 new differential + 2 verifier tests across the session; workspace 720/0; clippy clean
 1.93/1.97.
-**Open deviations found this session:** DEV-070 (owned by A2 — `match *self` on a shared-ref
-scrutinee moves+poisons; blocks realistic enum Eq/Ord bodies, not A3 dispatch), DEV-071
-(front-end — all-variant `Ordering` match wrongly non-exhaustive). Remaining Class-A blockers:
-A4 (next), A2 (patterns; owns DEV-070), A1 (generic impls). Front-end prereqs owned separately:
-DEV-067, DEV-069, Box deref, primitive `Ordering::cmp`, DEV-071.
-Blocked: WP-C4.6 closure on all required classes going green (A5/A7/A6/A3 done; A4/A2/A1 remain).
+(Historical note, superseded: DEV-070 was CLOSED by A2 on 2026-07-20; A4/A2/A1 all completed
+2026-07-20 — see the Position header above. Open front-end deviations as of 2026-07-20:
+DEV-067, DEV-069, DEV-071, DEV-072, DEV-073, plus Box deref, primitive `Ordering::cmp`, and
+the `Vec::get` literal-typing quirk — all inventoried in `WP-C4.6.md` "Gate closure input"
+and owned by `WP-C4.7.md`.)
 **WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
 - **f-3a HashMap surface (`0.1-A3`, amendment rev. 6):** `RuntimeFn` HashMap group
   (New/Insert/Get/Len/IsEmpty/ContainsKey/KeysIterNew/KeysIterNext); insertion-ordered

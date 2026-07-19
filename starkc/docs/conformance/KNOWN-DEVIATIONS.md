@@ -2084,11 +2084,11 @@ by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 — which WP-C2.6 had a
 decision ownership and C2.11 implementation ownership — were all **resolved by WP-C2.11**; see
 their individual entries. (A prior revision of this paragraph, written at WP-C2.6 time, still
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
-**Currently open (2026-07-19, post-WP-C4.5f):** DEV-005 (unowned), DEV-010
+**Currently open (2026-07-20, post-WP-C4.6 Class-A completion):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-067 (bounded-generic over-rejection, later C4.x increment), DEV-069
-(front-end multi-file span discipline, future front-end WP). DEV-060 closed the same day it
-was made a C3-ENTRY blocker.
+remainder), DEV-067 (WP-C4.7-7), DEV-069 (WP-C4.7-4 — a C5 multi-file prerequisite per
+CD-033), DEV-071 (WP-C4.7-7), DEV-072 (WP-C4.7-5), DEV-073 (WP-C4.7-5). DEV-070 was closed by
+WP-C4.6 A2 in both engines. DEV-060 closed the same day it was made a C3-ENTRY blocker.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping
