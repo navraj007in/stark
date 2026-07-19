@@ -913,3 +913,66 @@ fn vec_index_out_of_bounds_traps_agree() {
         .to_string(),
     );
 }
+
+// ---- WP-C4.5e-3: `?` operator + Option/Result methods ----
+
+/// The frozen `option_result__01` corpus case (Option construction, match, is_some/is_none)
+/// now runs through both engines.
+#[test]
+fn option_result_01_corpus_case_agrees() {
+    let path = corpus_dir().join("option_result__01_option_construction_and_match.stark");
+    let source = std::fs::read_to_string(&path).unwrap();
+    differential(&path.to_string_lossy(), source);
+}
+
+/// `?` propagation on Option and Result (non-droppable payloads), plus `is_ok`/`is_err`/
+/// `is_some`/`is_none`/`unwrap`.
+#[test]
+fn try_operator_and_inspection_methods_agree() {
+    differential(
+        "tryops.stark",
+        "fn checked(n: Int32) -> Result<Int32, Int32> { \
+             if n > 0 { Ok(n) } else { Err(0 - n) } \
+         } \
+         fn doubled(n: Int32) -> Result<Int32, Int32> { let v = checked(n)?; Ok(v * 2) } \
+         fn half(n: Int32) -> Option<Int32> { if n % 2 == 0 { Some(n / 2) } else { None } } \
+         fn add_one(n: Int32) -> Option<Int32> { let h = half(n)?; Some(h + 1) } \
+         fn main() { \
+             println(doubled(5).is_ok()); \
+             println(doubled(5).unwrap()); \
+             println(doubled(-3).is_err()); \
+             println(add_one(10).unwrap()); \
+             println(add_one(7).is_none()); \
+         }"
+        .to_string(),
+    );
+}
+
+/// `unwrap` on `None` traps `UnwrapNone` after partial output; both engines agree on category
+/// and pre-trap prefix.
+#[test]
+fn unwrap_none_traps_agree() {
+    differential(
+        "unwrapnone.stark",
+        "fn half(n: Int32) -> Option<Int32> { if n % 2 == 0 { Some(n / 2) } else { None } } \
+         fn main() { println(1); println(half(7).unwrap()); }"
+            .to_string(),
+    );
+}
+
+/// `?` early-returns `Err(e)` all the way out, propagating through a caller that itself uses
+/// `?`; the returned error is inspected by the outer function.
+#[test]
+fn try_propagation_chains_agree() {
+    differential(
+        "trychain.stark",
+        "fn a(n: Int32) -> Result<Int32, Int32> { if n > 0 { Ok(n) } else { Err(0 - n) } } \
+         fn b(n: Int32) -> Result<Int32, Int32> { let x = a(n)?; Ok(x + 1) } \
+         fn c(n: Int32) -> Result<Int32, Int32> { let y = b(n)?; Ok(y * 2) } \
+         fn main() { \
+             println(c(3).unwrap()); \
+             println(c(-4).is_err()); \
+         }"
+        .to_string(),
+    );
+}

@@ -119,9 +119,22 @@ HIR/MIR differential agreement before the next begins.
      `for value in values.iter()` therefore stays clean-Unsupported; its push/index/len half
      lowers. Resolving whether/how A1 adds by-reference Vec iteration (interior references into
      runtime containers) needs an owner-reviewed surface bump (`0.1-A2`). Workspace 691/0/2.
+   - **C4.5e-3 — `?` operator + Option/Result methods: DONE 2026-07-19.** `ExprKind::Try`
+     lowering: operand into a temp (not scope-registered — both switch arms consume it, so no
+     drop owed), `Discriminant` + `SwitchInt`; Ok/Some payload becomes the expression value,
+     None/Err propagates as an early return of the enclosing fn's own Option/Result (drops live
+     scopes first). Option/Result methods `is_some`/`is_none`/`is_ok`/`is_err` (discriminant
+     compare) and `unwrap` (`SwitchInt`; wrong variant → `Trap{UnwrapNone|UnwrapErr}`). User
+     `as` cast fix carried from e-1. **`option_result__01` corpus case now differential-green**;
+     4 new differential tests (`?` on Option+Result, chained propagation, unwrap-None trap).
+     **`option_result__02` stays blocked** — its `?` lowers, but the subsequent `match` over
+     `Result<Int32, String>` is a match on an owned Drop-bearing scrutinee (needs per-arm
+     payload-binding drops), which remains the deferred match-drop increment below. Deferred
+     with e-1: Char + Char String ops, `assert_eq`/`assert_ne`. Workspace 695/0/2.
    Also owns (accumulated boundaries): user-nominal
    `Eq`/`Ord` operator dispatch (needs `Ordering` runtime values), match on owned
-   Drop-bearing scrutinees (`drop_unbound` partial drops), projected-move take-and-poison in
+   Drop-bearing scrutinees (`drop_unbound` partial drops; the match-drop increment — needed by
+   `option_result__02`), projected-move take-and-poison in
    the MIR interp (CD-030 deferral), and the CE3-shaped mir.md §5/§7 amendment for
    string-literal/String value representation, which must land before lowering starts.
    - **C4.5e-0 — pre-runtime-values hardening: DONE 2026-07-19 (CD-030,** disposition of the

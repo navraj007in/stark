@@ -2344,8 +2344,96 @@ impl<'a> FnLowerer<'a> {
                 let value = self.lower_expr_to_operand(inner)?;
                 self.cast_to_temp(value, to, span)
             }
+            // C4.5e-3: the `?` try operator on Option/Result.
+            hir::ExprKind::Try(inner) => self.lower_try(*inner, span),
             _ => unsupported("expression form (C4.5)", span),
         }
+    }
+
+    /// C4.5e-3: lower `e?`. The operand is materialized into a temp (not a scope-registered
+    /// local — both switch arms consume it, so no drop elaboration is owed). The Some/Ok
+    /// payload becomes the expression's value; None/Err propagates as an early return of the
+    /// enclosing function's own Option/Result, after dropping live scopes.
+    fn lower_try(&mut self, inner: ExprId, span: Span) -> Result<Operand, LowerError> {
+        let inner_ty = self.expr_mir_ty(inner)?;
+        let (enum_ref, ok_variant, payload_ty) = match &inner_ty {
+            MirTy::Enum(er @ EnumRef::CoreOption, args) => {
+                (*er, 1u32, args.first().cloned().unwrap_or(MirTy::Unit))
+            }
+            MirTy::Enum(er @ EnumRef::CoreResult, args) => {
+                (*er, 0u32, args.first().cloned().unwrap_or(MirTy::Unit))
+            }
+            other => {
+                return unsupported(format!("`?` on a non-Option/Result type {other:?}"), span)
+            }
+        };
+        // The enclosing function's return type (Local(0)) — the propagated shape.
+        let ret_ty = self.locals[0].ty.clone();
+
+        let scrut = self.new_temp(inner_ty.clone());
+        let value = self.lower_expr_to_operand(inner)?;
+        self.emit(
+            Statement::Assign(Place::local(scrut), Rvalue::Use(value)),
+            self.info(span),
+        );
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(
+                Place::local(disc),
+                Rvalue::Discriminant(Place::local(scrut)),
+            ),
+            self.info(span),
+        );
+        let ok_block = self.new_block();
+        let err_block = self.new_block();
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(disc)),
+                arms: vec![(u128::from(ok_variant), ok_block)],
+                otherwise: err_block,
+            },
+            self.info(span),
+            err_block,
+        );
+
+        // Err/None path: build the propagated return value, drop scopes, return.
+        let propagated = match enum_ref {
+            EnumRef::CoreOption => {
+                // None (variant 0, no payload).
+                Rvalue::Aggregate(AggKind::EnumVariant(EnumRef::CoreOption, 0), Vec::new())
+            }
+            EnumRef::CoreResult => {
+                // Err(payload) — move the Err payload (variant 1, field 0) out of scrut.
+                let err_payload = Operand::Move(Place {
+                    local: scrut,
+                    projection: vec![Projection::VariantField(1, 0)],
+                });
+                Rvalue::Aggregate(
+                    AggKind::EnumVariant(EnumRef::CoreResult, 1),
+                    vec![err_payload],
+                )
+            }
+            EnumRef::User(_) => unreachable!("? only on Option/Result"),
+        };
+        // The propagated value must match the function's return type nominally; both share the
+        // logical-enum representation, so the aggregate types against ret_ty directly.
+        let _ = &ret_ty;
+        self.emit(
+            Statement::Assign(Place::local(LocalId(0)), propagated),
+            self.info(span),
+        );
+        self.emit_scope_drops_from(0, span);
+        // Seal the err block with Return and continue lowering in the Ok/Some block (Return
+        // has no CFG edge, so `ok_block` is only the continuation point, not a successor).
+        self.terminate(Terminator::Return, self.info(span), ok_block);
+
+        // Ok/Some path: the expression's value is the payload.
+        let payload_place = Place {
+            local: scrut,
+            projection: vec![Projection::VariantField(ok_variant, 0)],
+        };
+        let out = self.read_place(payload_place, &payload_ty, span)?;
+        Ok(out)
     }
 
     fn lower_lit(&mut self, expr: ExprId, lit: &Lit) -> Result<Operand, LowerError> {
@@ -3130,6 +3218,13 @@ impl<'a> FnLowerer<'a> {
             let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
             return self.lower_vec_method_call(base, elem, name_span, args, dest, span);
         }
+        // C4.5e-3: Option/Result inspection and extraction methods.
+        if let MirTy::Enum(enum_ref @ (EnumRef::CoreOption | EnumRef::CoreResult), args) =
+            &peeled_ty
+        {
+            return self
+                .lower_option_result_method_call(base, *enum_ref, args, name_span, dest, span);
+        }
         let nominal = match &peeled_ty {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 // C4.5c boundary: methods on a *generic* nominal instantiation need
@@ -3338,6 +3433,123 @@ impl<'a> FnLowerer<'a> {
             }
             _ => unsupported("non-comparison string binop", span),
         }
+    }
+
+    /// C4.5e-3: lower `is_some`/`is_none`/`is_ok`/`is_err`/`unwrap` on an Option/Result
+    /// receiver. Inspection reads the discriminant; `unwrap` switches on it, extracting the
+    /// payload on the expected variant and trapping otherwise.
+    fn lower_option_result_method_call(
+        &mut self,
+        base: ExprId,
+        enum_ref: EnumRef,
+        args: &[MirTy],
+        name_span: Span,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let name = self.text(name_span).to_string();
+        let is_option = matches!(enum_ref, EnumRef::CoreOption);
+        // (ok discriminant, trap for the wrong variant on unwrap).
+        let (ok_variant, unwrap_trap) = if is_option {
+            (1u32, TrapCategory::UnwrapNone)
+        } else {
+            (0u32, TrapCategory::UnwrapErr)
+        };
+        let place = self.materialize_enum_receiver(base, &enum_ref, args, span)?;
+
+        match name.as_str() {
+            "is_some" | "is_ok" => self.emit_discriminant_eq(place, ok_variant, dest, span),
+            "is_none" | "is_err" => {
+                let other = if ok_variant == 1 { 0 } else { 1 };
+                self.emit_discriminant_eq(place, other, dest, span);
+            }
+            "unwrap" => {
+                let payload_ty = args.first().cloned().unwrap_or(MirTy::Unit);
+                let disc = self.new_temp(MirTy::Int64);
+                self.emit(
+                    Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
+                    self.info(span),
+                );
+                let ok_block = self.new_block();
+                let trap_block = self.new_block();
+                self.terminate(
+                    Terminator::SwitchInt {
+                        scrut: Operand::Copy(Place::local(disc)),
+                        arms: vec![(u128::from(ok_variant), ok_block)],
+                        otherwise: trap_block,
+                    },
+                    self.info(span),
+                    trap_block,
+                );
+                let info = self.info(span);
+                self.terminate(
+                    Terminator::Trap {
+                        info: TrapInfo {
+                            category: unwrap_trap,
+                            source: info,
+                        },
+                        message: None,
+                    },
+                    info,
+                    ok_block,
+                );
+                let mut payload_place = place;
+                payload_place
+                    .projection
+                    .push(Projection::VariantField(ok_variant, 0));
+                let value = self.read_place(payload_place, &payload_ty, span)?;
+                self.emit(Statement::Assign(dest, Rvalue::Use(value)), self.info(span));
+            }
+            _ => {
+                return unsupported(
+                    format!("Option/Result method {name} (a later C4.5e sub-slice)"),
+                    span,
+                )
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit `dest = (discriminant(place) == variant)`.
+    fn emit_discriminant_eq(&mut self, place: Place, variant: u32, dest: Place, span: Span) {
+        let disc = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(Place::local(disc), Rvalue::Discriminant(place)),
+            self.info(span),
+        );
+        self.emit(
+            Statement::Assign(
+                dest,
+                Rvalue::BinOp(
+                    MirBinOp::Eq,
+                    Operand::Copy(Place::local(disc)),
+                    Operand::Const(Constant::Int(i128::from(variant), MirTy::Int64)),
+                ),
+            ),
+            self.info(span),
+        );
+    }
+
+    /// A place holding the Option/Result receiver, auto-dereffed. A place-expression base is
+    /// used directly; a value-expression base (e.g. a call result) is materialized into a temp.
+    fn materialize_enum_receiver(
+        &mut self,
+        base: ExprId,
+        enum_ref: &EnumRef,
+        args: &[MirTy],
+        span: Span,
+    ) -> Result<Place, LowerError> {
+        if let Ok((place, _)) = self.lower_place_autoderef(base) {
+            return Ok(place);
+        }
+        let ty = MirTy::Enum(*enum_ref, args.to_vec());
+        let op = self.lower_expr_to_operand(base)?;
+        let temp = self.new_temp(ty);
+        self.emit(
+            Statement::Assign(Place::local(temp), Rvalue::Use(op)),
+            self.info(span),
+        );
+        Ok(Place::local(temp))
     }
 
     /// A1 (CD-031), C4.5e-2: lower a method call on a `Vec<T>` receiver to the Vec RuntimeFn

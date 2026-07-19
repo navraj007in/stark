@@ -283,21 +283,19 @@ fn unsupported_constructs_report_cleanly() {
             "A2",
         ),
         (
-            "tryop.stark",
-            "fn half(n: Int32) -> Option<Int32> { \
-                 if n % 2 == 0 { Some(n / 2) } else { None } \
-             } \
-             fn chain(n: Int32) -> Option<Int32> { \
-                 let h = half(n)?; \
-                 Some(h + 1) \
+            // `?` (e-3) lowers; matching on an owned Drop-bearing scrutinee (the Result carries
+            // a String) is still deferred to the match-drop increment.
+            "matchdrop.stark",
+            "fn get(n: Int32) -> Result<Int32, String> { \
+                 if n > 0 { Ok(n) } else { Err(String::from(\"neg\")) } \
              } \
              fn main() { \
-                 match chain(10) { \
-                     Some(v) => println(v), \
-                     None => println(0), \
+                 match get(1) { \
+                     Ok(v) => println(v), \
+                     Err(m) => println(m.as_str()), \
                  } \
              }",
-            "C4.5",
+            "Drop-bearing scrutinee",
         ),
     ];
     for (name, src, needle) in cases {
