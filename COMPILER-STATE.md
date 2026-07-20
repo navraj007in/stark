@@ -1,10 +1,27 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-6.1 — **`Box<T>` lands on the MIR runtime surface (`0.1-A7`)**
+Updated: 2026-07-20 after WP-C4.7-6.3 — **integer literals adopt their expected type; C4.7-6 COMPLETE**
 
 ## Position
-Gate: C4  Next: **WP-C4.7-6.3** (integer-literal expected typing — owner-decided: fix it), then
-**DEV-075** (Char gets `Ord`, `Bool` does not; needs normative spec edits + regeneration), then
-C4.7-8 (MIR residuals; **8.1 is blocked on DEV-076**) and C4.7-9 (fresh audit + exit report).
+Gate: C4  Next: **DEV-075** (Char gets `Ord`, `Bool` does not; owner-specified, and it needs
+normative spec edits + a spec regeneration), then C4.7-8 (MIR residuals; **8.1 is blocked on
+DEV-076**) and C4.7-9 (fresh audit + exit report).
+**WP-C4.7-6.3 DONE 2026-07-20 (owner-decided: a real conformance defect, fix it) — DEV-078.**
+An unsuffixed integer literal now ADOPTS an expected integer type. 03 says expected types flow
+inward from annotations, **function parameters**, fields and assignment destinations, and that
+step 5 defaults only an **unconstrained** literal — the checker was committing every literal to
+`Int32` at the literal itself, before any expectation could reach it, so `v.get(0)`,
+`takes_u64(0)`, `let a: UInt64 = 9` and a `UInt64` field initializer were all rejected. Fixed as
+**general inference**, not a `Vec::get` special case: literals take integer-KINDED inference
+variables, unification carries the expectation in, and step 5 is a real defaulting pass running
+after all bodies and before the deferred bound checks. Binding range-checks (`takes_u8(300)` is
+E0008); the kind restriction stops a literal standing in for a `Bool`; and because this is
+propagation rather than coercion, a suffixed literal (`0i32`) and a typed `Int32` value both still
+fail against `UInt64`. Method receivers and cast operands settle eagerly (they branch on a
+concrete type with nothing later to wait for). **Subtlety:** a literal variable is often bound to
+ANOTHER variable (`MyOpt::Some2(7)`), so defaulting must resolve first and default the end of the
+chain — defaulting only variables absent from the substitution left such chains unbound, and they
+escaped to MIR as `type Infer(N)`. Unnecessary `as UInt64` casts removed from the corpus.
+Workspace 778/0/2; clippy clean 1.93/1.97.
 **WP-C4.7-6.1 DONE 2026-07-20 (owner-decided, option (a)).** `Box<T>` reaches MIR as an OPAQUE
 OWNING runtime type: `RuntimeFn::BoxNew`/`BoxIntoInner`, surface **`0.1-A6` → `0.1-A7`** (A1
 amendment rev. 11), `MirTy::Core(Box, [T])` — **no new `MirTy`**, and deliberately NOT lowered
@@ -2249,3 +2266,55 @@ FOLLOW-UP: none for Box.
 NEXT: WP-C4.7-6.3 (integer-literal expected typing — owner-decided to fix), then DEV-075
 (Char/Bool ordering + the normative primitive trait/operator matrix, which requires spec edits and
 regenerating the compiled spec).
+
+### WP-C4.7-6.3 — expected typing of integer literals (DEV-078) — 2026-07-20
+DONE, per the owner's decision that this is a real Core conformance defect rather than
+spec-conformant behaviour. The evidence for that reading is 03-Type-System stating it twice:
+expected types "flow inward from explicit annotations, **function parameters**, return types,
+assignment destinations, aggregate fields, …", and solving step 5 defaults only "an
+**unconstrained** integer literal". A literal in a `UInt64` parameter position is constrained, so
+defaulting must not apply.
+PREVIOUS BEHAVIOUR: the checker assigned `Int32`/`Int64` **at the literal**, before any
+expectation could reach it. `takes_u64(0)`, `v.get(0)`, `let a: UInt64 = 9`, and a `UInt64`
+struct-field initializer were all `E0001 expected 'UInt64', found 'Int32'`. It had been recorded
+as a "`Vec::get` literal-typing quirk", which understated it — nothing about it was specific to
+`Vec::get`, and the `0 as UInt64` workaround had been trained into the corpus and into WP-C4.7
+§1's guidance for test authors.
+IMPLEMENTED as general expected-type inference: an unsuffixed literal takes a fresh
+**integer-kinded** inference variable; ordinary unification carries the expected type in; and
+03's step 5 becomes a real pass (`default_unconstrained_int_literals`) that runs after every body
+is checked and before the deferred bound checks. Binding a literal variable **range-checks** the
+value (`takes_u8(300)` → E0008 at compile time, not truncation). The kind restriction is what
+keeps this from being an implicit-conversion hole: the variable unifies only with primitive
+integer types (plus `!` for the never-coercion rule and error-recovery types), so an integer
+literal cannot satisfy a `Bool` parameter. And because this is propagation rather than coercion —
+03's step 4 confines coercions to explicit coercion sites — a SUFFIXED literal (`0i32`) and a
+TYPED value (`x: Int32`) both still fail against `UInt64`, which is the whole point.
+TWO PLACES MUST SETTLE A LITERAL EAGERLY, because they branch on a concrete type and have no
+later constraint to wait for: method-call receivers (`3.cmp(&5)` — otherwise "method call on
+non-struct/enum type '_infer_N'") and cast operands (`5 as UInt8` — otherwise "casts are permitted
+only between numeric types").
+SUBTLETY WORTH RECORDING: a literal variable is frequently unified with ANOTHER variable rather
+than a concrete type — `MyOpt::Some2(7)` unifies it with the enum's element variable. Defaulting
+only variables absent from the substitution therefore left such chains unbound while they LOOKED
+constrained, and they surfaced as `type Infer(N)` at MIR lowering. Defaulting resolves first and
+defaults the end of the chain.
+FILES: starkc/src/typecheck.rs (literal site, integer-kinded binding, defaulting pass, eager
+settle at receivers/casts, array-repeat count), starkc/src/literal.rs
+(`primitive_int_range_contains`), starkc/tests/{gate2_valid,mir_differential}.rs,
+KNOWN-DEVIATIONS.md (DEV-078 closed; count 75 → 76), COMPILER-STATE.md.
+RULES: 03-Type-System's inference algorithm (inward expected types; step 5 defaulting; step 4
+coercion confinement). No spec text changed — the spec already required this.
+DECISIONS: implements the owner's 6.3 decision; no new CE-level decision.
+EVIDENCE: `unsuffixed_integer_literals_adopt_the_expected_integer_type` (parameter, annotation,
+struct field, and the TYPE-INFER-001 later-use case `let index = 0; v.get(index)`);
+`integer_literal_typing_negatives_still_fail` (range, suffix, typed value, non-integer kind — four
+different reasons, all of which must keep failing); `expected_typed_integer_literals_agree`
+(differential — adopted widths are observable at runtime through `UInt64` arithmetic and indexing,
+so checker-side agreement alone would not be evidence). Unnecessary `as UInt64` casts removed from
+the differential corpus; casts of genuinely typed values retained. Workspace 778 passed / 0 failed
+/ 2 ignored (+3); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: WP-C4.7 §1's "integer literals don't coerce to `UInt64`" guidance is now obsolete and
+has been struck.
+NEXT: DEV-075 (Char/Bool ordering + the normative primitive trait/operator matrix — requires spec
+source edits and regenerating the compiled spec).

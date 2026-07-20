@@ -2173,6 +2173,47 @@ WP-C1.5)
   receiver) but a different operation and a separate fix. DEV-076 (`unwrap_or`) remains OPEN and
   is WP-C4.7-8.1's blocking prerequisite.
 
+## DEV-078 — Unsuffixed integer literals never adopt an expected integer type [CLOSED, WP-C4.7-6.3, 2026-07-20]
+
+- **Normative expectation:** 03-Type-System's inference algorithm states that expected types
+  "flow inward from explicit annotations, **function parameters**, return types, assignment
+  destinations, aggregate fields, branch/arm unification, and an enclosing call's expected
+  result", and that solving step 5 defaults "an **unconstrained** integer literal to `Int32` when
+  representable, otherwise `Int64`". A literal in a `UInt64` parameter position is *constrained*,
+  so defaulting must not apply to it — it adopts `UInt64`.
+- **Previous behaviour:** the checker assigned every unsuffixed integer literal `Int32`/`Int64`
+  **at the literal itself**, before any expectation could reach it. Every use of an integer
+  literal where a non-`Int32` integer type was expected was rejected `E0001 type mismatch:
+  expected 'UInt64', found 'Int32'` — `v.get(0)`, `takes_u64(0)`, `let a: UInt64 = 9`, and a
+  `UInt64` struct-field initializer alike. The workaround (`0 as UInt64`) appears throughout the
+  test corpus and in WP-C4.7 §1's guidance to test authors.
+- **User impact:** an over-rejection affecting ordinary code, and one that trained casts into the
+  codebase. It was originally recorded as a "`Vec::get` literal-typing quirk", which understated
+  it: nothing about it is specific to `Vec::get`.
+- **Resolution (WP-C4.7-6.3, owner-decided).** Implemented as **general expected-type inference**,
+  not a special case. An unsuffixed integer literal now takes a fresh *integer-kinded* inference
+  variable; ordinary unification carries the expected type into it; and 03's step 5 is a real
+  defaulting pass (`default_unconstrained_int_literals`) that runs after every body is checked and
+  before the deferred bound checks. Binding such a variable range-checks the value, so
+  `takes_u8(300)` is `E0008` at compile time. The variable is integer-KINDED: it unifies only with
+  primitive integer types (plus `!` and error-recovery), so an integer literal cannot stand in for
+  a `Bool`. It is expected-type propagation, **not a coercion** — 03's step 4 confines coercions
+  to explicit coercion sites — so a suffixed literal (`0i32`) and a typed value (`x: Int32`) both
+  still fail against a `UInt64` parameter.
+- **Places that must settle a literal eagerly** (they branch on a concrete type and have no later
+  constraint to wait for): method-call receivers (`3.cmp(&5)`) and cast operands (`5 as UInt8`).
+- **Subtlety worth recording:** a literal variable is often unified with *another* variable rather
+  than a concrete type (`MyOpt::Some2(7)` unifies it with the enum's element variable). Defaulting
+  therefore has to RESOLVE first and default the end of the chain; defaulting only variables
+  absent from the substitution left such chains unbound and they surfaced as `type Infer(N)` at
+  MIR lowering.
+- **Regression evidence:** `gate2_valid.rs::unsuffixed_integer_literals_adopt_the_expected_integer_type`
+  (parameter, annotation, struct field, and the TYPE-INFER-001 later-use case) and
+  `::integer_literal_typing_negatives_still_fail` (range, suffix, typed value, non-integer kind);
+  `mir_differential.rs::expected_typed_integer_literals_agree` (the adopted widths are observable
+  at runtime, so both engines must agree). Unnecessary `as UInt64` casts were removed from the
+  differential corpus; casts of genuinely typed values were retained.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2222,7 +2263,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 75 numbered deviations total (DEV-002 through DEV-077, DEV-001/DEV-003 retired).
+Current count: 76 numbered deviations total (DEV-002 through DEV-078, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2291,7 +2332,8 @@ described them as open; corrected 2026-07-19 during the C3-entry governance-repa
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
 remainder), DEV-075 (owner-specified 2026-07-20; see the DEV-075 increment), DEV-076
 (WP-C4.7-8.1 blocking prerequisite — an oracle SOUNDNESS defect). DEV-077 (the same family, in
-`Box::into_inner`) was found and CLOSED by WP-C4.7-6.1. DEV-070 was closed by
+`Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
+never adopting an expected integer type) was closed by WP-C4.7-6.3. DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);

@@ -1641,13 +1641,13 @@ fn vec_get_and_get_mut_agree() {
         "fn main() { \
              let mut v: Vec<Int32> = Vec::new(); \
              v.push(10); v.push(20); v.push(30); \
-             match v.get(1 as UInt64) { Some(x) => println(*x), None => println(-1), } \
-             match v.get(5 as UInt64) { Some(x) => println(*x), None => println(-1), } \
-             match v.get_mut(0 as UInt64) { Some(x) => { *x = 99; }, None => { } } \
-             match v.get(0 as UInt64) { Some(x) => println(*x), None => println(-1), } \
+             match v.get(1) { Some(x) => println(*x), None => println(-1), } \
+             match v.get(5) { Some(x) => println(*x), None => println(-1), } \
+             match v.get_mut(0) { Some(x) => { *x = 99; }, None => { } } \
+             match v.get(0) { Some(x) => println(*x), None => println(-1), } \
              let mut s: Vec<String> = Vec::new(); \
              s.push(String::from(\"hi\")); \
-             match s.get(0 as UInt64) { Some(x) => println(x.as_str()), None => println(\"none\"), } \
+             match s.get(0) { Some(x) => println(x.as_str()), None => println(\"none\"), } \
          }"
         .to_string(),
     );
@@ -1707,8 +1707,8 @@ fn slicing_operations_agree() {
         "a4_slice.stark",
         "fn total(s: &[Int32]) -> Int32 { \
              let mut t = 0; \
-             let mut i = 0 as UInt64; \
-             while i < s.len() { t = t + s[i]; i = i + (1 as UInt64); } \
+             let mut i = 0; \
+             while i < s.len() { t = t + s[i]; i = i + 1; } \
              t \
          } \
          fn main() { \
@@ -2213,6 +2213,34 @@ fn box_recursive_type_agrees() {
                  Some(b) => { let n = b.into_inner(); println(n.value); } \
                  None => { println(-1); } \
              } \
+         }"
+        .to_string(),
+    );
+}
+
+/// WP-C4.7-6.3: expected-type propagation into unsuffixed integer literals must produce the same
+/// RUNTIME values in both engines — the widths a literal adopts are observable through `UInt64`
+/// arithmetic and through `Vec::get`'s indexing, so this is not merely a checker-side property.
+#[test]
+fn expected_typed_integer_literals_agree() {
+    differential(
+        "lit_expected.stark",
+        "fn takes_u64(n: UInt64) -> UInt64 { n + 1 } \
+         struct S { n: UInt64 } \
+         fn main() { \
+             println(takes_u64(0)); \
+             println(takes_u64(41)); \
+             let s = S { n: 3 }; \
+             println(s.n); \
+             let a: UInt64 = 9; \
+             println(a); \
+             let mut v: Vec<Int32> = Vec::new(); \
+             v.push(7); \
+             v.push(8); \
+             let index = 1; \
+             match v.get(index) { Some(x) => println(*x), None => println(-1), } \
+             let unconstrained = 5; \
+             println(unconstrained); \
          }"
         .to_string(),
     );

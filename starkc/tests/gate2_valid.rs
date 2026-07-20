@@ -1398,3 +1398,87 @@ fn box_deref_is_rejected() {
         "*box must remain unsupported in Core v1, got {diagnostics:?}"
     );
 }
+
+/// WP-C4.7-6.3: an unsuffixed integer literal in a position with an expected integer type ADOPTS
+/// that type when its value is representable. 03-Type-System's solver flows expected types inward
+/// from annotations, function parameters, fields and assignment destinations, and only defaults
+/// "an **unconstrained** integer literal" to `Int32`/`Int64` — step 5, after that flow. The
+/// checker used to skip to the default, committing every literal to `Int32`, so `v.get(0)` failed
+/// "expected 'UInt64', found 'Int32'".
+///
+/// This is expected-type propagation, NOT a coercion (03 confines coercions to explicit coercion
+/// sites), which is why the negative cases below still hold.
+#[test]
+fn unsuffixed_integer_literals_adopt_the_expected_integer_type() {
+    let accepted = [
+        // A function parameter.
+        "fn takes_u64(n: UInt64) -> UInt64 { n }\n\
+         fn main() -> Unit { println(takes_u64(0)); }\n",
+        // An annotated local and a struct field.
+        "struct S { n: UInt64 }\n\
+         fn main() -> Unit { let s = S { n: 3 }; println(s.n); let a: UInt64 = 9; println(a); }\n",
+        // TYPE-INFER-001: a LATER use constrains an unannotated local, so `index` is UInt64.
+        "fn main() -> Unit {\n\
+             let mut v: Vec<Int32> = Vec::new();\n\
+             v.push(7);\n\
+             let index = 0;\n\
+             match v.get(index) { Some(x) => println(*x), None => println(-1), }\n\
+         }\n",
+    ];
+    for source in accepted {
+        let diagnostics = analyze("lit_ok.stark", source.to_string());
+        assert!(
+            !diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "expected-type propagation should accept this, got {diagnostics:?}\n{source}"
+        );
+    }
+}
+
+/// The three negatives that keep the rule above from becoming an implicit-conversion hole. Each
+/// is a DIFFERENT reason, and all three must keep failing.
+#[test]
+fn integer_literal_typing_negatives_still_fail() {
+    // Out of the expected type's range — rejected at compile time, not truncated.
+    let out_of_range = "fn takes_u8(n: UInt8) -> UInt8 { n }\n\
+                        fn main() -> Unit { println(takes_u8(300)); }\n";
+    let diagnostics = analyze("lit_range.stark", out_of_range.to_string());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0008")),
+        "a literal outside the expected type's range must be rejected, got {diagnostics:?}"
+    );
+
+    // An explicit suffix is authoritative: Core has no implicit numeric conversion.
+    let suffixed = "fn takes_u64(n: UInt64) -> UInt64 { n }\n\
+                    fn main() -> Unit { println(takes_u64(0i32)); }\n";
+    let diagnostics = analyze("lit_suffix.stark", suffixed.to_string());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0001")),
+        "a suffixed literal must not adopt a different type, got {diagnostics:?}"
+    );
+
+    // A TYPED VALUE is never converted — only the literal itself is retyped.
+    let typed_value = "fn takes_u64(n: UInt64) -> UInt64 { n }\n\
+                       fn main() -> Unit { let x: Int32 = 5; println(takes_u64(x)); }\n";
+    let diagnostics = analyze("lit_typed.stark", typed_value.to_string());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0001")),
+        "an Int32 value must not pass as UInt64, got {diagnostics:?}"
+    );
+
+    // An integer literal is integer-KINDED: it may not stand in for a non-integer type.
+    let non_integer = "fn takes_bool(b: Bool) -> Bool { b }\n\
+                       fn main() -> Unit { println(takes_bool(1)); }\n";
+    let diagnostics = analyze("lit_kind.stark", non_integer.to_string());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0001")),
+        "an integer literal must not satisfy a Bool parameter, got {diagnostics:?}"
+    );
+}

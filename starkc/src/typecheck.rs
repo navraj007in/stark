@@ -129,6 +129,15 @@ pub struct TypeChecker<'a> {
     file: Arc<SourceFile>,
     diags: Vec<Diagnostic>,
     subst: HashMap<TypeVarId, Ty>,
+    /// WP-C4.7-6.3: inference variables introduced for UNSUFFIXED integer literals, with the
+    /// literal's value and span. 03-Type-System's solver defaults "an **unconstrained** integer
+    /// literal" to `Int32`/`Int64` — step 5, *after* expected types have flowed inward from
+    /// annotations, parameters, fields and so on (the paragraph above the numbered steps). The
+    /// checker used to skip straight to the default, committing every literal to `Int32` before
+    /// any expectation could apply, so `takes_u64(0)` was rejected "expected 'UInt64', found
+    /// 'Int32'". These vars are integer-KINDED: they unify only with primitive integer types,
+    /// and binding one range-checks the value.
+    int_literal_vars: HashMap<TypeVarId, (i128, Span)>,
     var_count: u32,
 
     // Side tables
@@ -240,6 +249,7 @@ pub fn analyze_with_options(
         options,
         diags: Vec::new(),
         subst: HashMap::new(),
+        int_literal_vars: HashMap::new(),
         var_count: 0,
         expr_types: HashMap::new(),
         local_types: HashMap::new(),
@@ -1025,13 +1035,124 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// WP-C4.7-6.3: gate binding an integer-literal inference var.
+    ///
+    /// Returns `Ok(true)` if the binding may proceed. An integer literal is not a wildcard: it
+    /// may adopt any primitive INTEGER type whose range holds its value, and nothing else. This
+    /// is expected-type propagation, not a coercion — 03's step 4 confines coercions to explicit
+    /// coercion sites — so it does not open an implicit-conversion hole: only the literal itself
+    /// is retyped, never a typed value.
+    fn bind_int_literal_var(&mut self, id: TypeVarId, other: &Ty, span: Span) -> Result<bool, ()> {
+        let Some(&(value, lit_span)) = self.int_literal_vars.get(&id) else {
+            return Ok(true);
+        };
+        // Binding to another variable keeps it open; the eventual concrete binding is checked.
+        // `!` coerces to every type (the never-coercion rule) and `Ty::Error` is recovery — both
+        // pass through untouched rather than being reported as a literal-typing failure.
+        if matches!(other, Ty::Infer(_) | Ty::Never | Ty::Error) {
+            return Ok(true);
+        }
+        let Ty::Primitive(primitive) = other else {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "type mismatch: expected '{}', found an integer literal",
+                        self.ty_to_string(other)
+                    ),
+                    span,
+                )
+                .with_code("E0001"),
+            );
+            return Ok(false);
+        };
+        if !is_integer_primitive(*primitive) {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "type mismatch: expected '{}', found an integer literal",
+                        self.ty_to_string(other)
+                    ),
+                    span,
+                )
+                .with_code("E0001"),
+            );
+            return Ok(false);
+        }
+        if !literal::primitive_int_range_contains(*primitive, value) {
+            self.diags.push(
+                Diagnostic::error(
+                    format!(
+                        "integer literal out of range for '{}'",
+                        self.ty_to_string(other)
+                    ),
+                    lit_span,
+                )
+                .with_code("E0008"),
+            );
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// WP-C4.7-6.3: force an integer literal's type NOW, for the places that cannot wait for the
+    /// deferred defaulting pass because they must branch on a concrete type — chiefly method
+    /// resolution, where `3.cmp(&5)` needs a real receiver type to find candidates. Returns the
+    /// type unchanged when it is not an open integer-literal variable.
+    fn default_int_literal_now(&mut self, ty: &Ty) -> Ty {
+        let resolved = self.resolve(ty);
+        let Ty::Infer(id) = resolved else {
+            return resolved;
+        };
+        let Some(&(value, _)) = self.int_literal_vars.get(&id) else {
+            return resolved;
+        };
+        let primitive = if i32::try_from(value).is_ok() {
+            Primitive::Int32
+        } else {
+            Primitive::Int64
+        };
+        let concrete = Ty::Primitive(primitive);
+        self.subst.insert(id, concrete.clone());
+        concrete
+    }
+
+    /// WP-C4.7-6.3: 03-Type-System solving step 5 — "default an **unconstrained** integer literal
+    /// to `Int32` when representable, otherwise `Int64`". Runs after all bodies are checked, so
+    /// every expected type has had its chance to constrain the literal first. A literal that a
+    /// later use constrained (TYPE-INFER-001 permits that for an unannotated local) is already
+    /// bound and is left alone.
+    fn default_unconstrained_int_literals(&mut self) {
+        // RESOLVE first, then default the END of the chain. A literal variable is frequently
+        // bound to ANOTHER variable rather than to a concrete type — `MyOpt::Some2(7)` unifies
+        // the literal with the enum's own element variable — and that made the literal look
+        // "constrained" while the chain terminated at an unbound, non-literal variable. Such a
+        // chain used to escape defaulting entirely and surface as `type Infer(N)` at MIR
+        // lowering, which is precisely the failure this ordering prevents.
+        let pending: Vec<(TypeVarId, i128)> = self
+            .int_literal_vars
+            .iter()
+            .filter_map(|(&id, &(value, _))| match self.resolve(&Ty::Infer(id)) {
+                Ty::Infer(open) => Some((open, value)),
+                _ => None,
+            })
+            .collect();
+        for (id, value) in pending {
+            let primitive = if i32::try_from(value).is_ok() {
+                Primitive::Int32
+            } else {
+                Primitive::Int64
+            };
+            self.subst.insert(id, Ty::Primitive(primitive));
+        }
+    }
+
     fn unify(&mut self, t1: Ty, t2: Ty, span: Span) -> Result<(), ()> {
         let t1 = self.resolve(&t1);
         let t2 = self.resolve(&t2);
 
         match (t1, t2) {
             (Ty::Infer(id1), Ty::Infer(id2)) if id1 == id2 => Ok(()),
-            (Ty::Infer(id), other) => {
+            (Ty::Infer(id), other) | (other, Ty::Infer(id)) => {
                 if self.occurs_in(id, &other) {
                     self.diags.push(
                         Diagnostic::error("recursive type inference mismatch", span)
@@ -1039,15 +1160,7 @@ impl<'a> TypeChecker<'a> {
                     );
                     return Err(());
                 }
-                self.subst.insert(id, other);
-                Ok(())
-            }
-            (other, Ty::Infer(id)) => {
-                if self.occurs_in(id, &other) {
-                    self.diags.push(
-                        Diagnostic::error("recursive type inference mismatch", span)
-                            .with_code("E0001"),
-                    );
+                if !self.bind_int_literal_var(id, &other, span)? {
                     return Err(());
                 }
                 self.subst.insert(id, other);
@@ -2478,6 +2591,12 @@ impl<'a> TypeChecker<'a> {
 
         self.file = root_file;
 
+        // WP-C4.7-6.3: 03's solving step 5 — default any still-unconstrained integer literal —
+        // runs HERE: after every body has been checked (so every expected type has had its
+        // chance to constrain a literal) but BEFORE the deferred bound checks below, which must
+        // see a concrete type rather than an open variable.
+        self.default_unconstrained_int_literals();
+
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
         for (concrete_ty, bounds_list, span, enclosing) in bounds {
@@ -3567,14 +3686,24 @@ impl<'a> TypeChecker<'a> {
                         }
                         Ty::Primitive(convert_int_suffix(*s))
                     } else {
+                        // WP-C4.7-6.3: an UNSUFFIXED literal takes a fresh integer-kinded
+                        // inference variable instead of committing to `Int32` here. Expected
+                        // types flow inward from annotations, parameters, fields and assignment
+                        // destinations (03-Type-System), and only a literal still unconstrained
+                        // after that is defaulted — step 5, applied in
+                        // `default_unconstrained_int_literals`. Committing at this point was the
+                        // whole defect: it made `takes_u64(0)` "expected 'UInt64', found 'Int32'".
                         match value {
-                            Some(value) if i32::try_from(value).is_ok() => {
-                                Ty::Primitive(Primitive::Int32)
-                            }
                             Some(value) if i64::try_from(value).is_ok() => {
-                                Ty::Primitive(Primitive::Int64)
+                                let var = self.new_type_var();
+                                if let Ty::Infer(id) = var {
+                                    self.int_literal_vars.insert(id, (value, expr.span));
+                                }
+                                var
                             }
                             Some(_) => {
+                                // Beyond `Int64`'s range there is no representable type to adopt,
+                                // so this is an error here rather than at binding time.
                                 self.diags.push(
                                     Diagnostic::error(
                                         "integer literal out of range for 'Int64'",
@@ -3856,7 +3985,11 @@ impl<'a> TypeChecker<'a> {
                 self.allow_half_type = true;
                 let target = self.convert_hir_type(*ty);
                 self.allow_half_type = saved;
-                let source_resolved = self.resolve(&source);
+                // WP-C4.7-6.3: `5 as UInt8` — the cast's SOURCE must be concrete to classify as
+                // numeric. A literal operand has no other constraint (a cast does not propagate
+                // its target inward: per 03, casts are explicit conversions, not expectations),
+                // so settle it to its default width here.
+                let source_resolved = self.default_int_literal_now(&source);
                 let target_resolved = self.resolve(&target);
                 if !matches!(source_resolved, Ty::Error)
                     && !matches!(target_resolved, Ty::Error)
@@ -4251,7 +4384,13 @@ impl<'a> TypeChecker<'a> {
                 let val_ty = self.check_expr(*value);
                 let count_ty = self.check_expr(*count);
                 let count_ty = self.resolve(&count_ty);
+                // WP-C4.7-6.3: an unsuffixed literal count is an integer-kinded inference var
+                // here, not yet a concrete `Int32`. It is integer BY CONSTRUCTION (only integer
+                // literals get these vars), so accept it and let defaulting settle the width.
+                let count_is_int_literal =
+                    matches!(&count_ty, Ty::Infer(id) if self.int_literal_vars.contains_key(id));
                 if !matches!(&count_ty, Ty::Primitive(p) if is_integer(*p))
+                    && !count_is_int_literal
                     && !matches!(count_ty, Ty::Error)
                 {
                     self.diags.push(
@@ -5584,7 +5723,10 @@ impl<'a> TypeChecker<'a> {
         call_span: Span,
     ) -> Ty {
         let base_ty = self.check_expr(base_expr);
-        let resolved_base = self.resolve(&base_ty);
+        // WP-C4.7-6.3: method resolution must branch on a CONCRETE receiver type, and a literal
+        // receiver (`3.cmp(&5)`) has no other constraint to wait for — settle it here rather than
+        // failing with "method call on non-struct/enum type '_infer_N'".
+        let resolved_base = self.default_int_literal_now(&base_ty);
         let name_str = self.text(name_span).to_string();
 
         if self.options.tensor() && name_str == "refine" {
@@ -7131,6 +7273,21 @@ fn convert_float_suffix(suffix: crate::lexer::FloatSuffix) -> Primitive {
         crate::lexer::FloatSuffix::F32 => Primitive::Float32,
         crate::lexer::FloatSuffix::F64 => Primitive::Float64,
     }
+}
+
+/// WP-C4.7-6.3: the primitive integer types an unsuffixed integer literal may adopt.
+fn is_integer_primitive(p: Primitive) -> bool {
+    matches!(
+        p,
+        Primitive::Int8
+            | Primitive::Int16
+            | Primitive::Int32
+            | Primitive::Int64
+            | Primitive::UInt8
+            | Primitive::UInt16
+            | Primitive::UInt32
+            | Primitive::UInt64
+    )
 }
 
 fn is_numeric(p: Primitive) -> bool {

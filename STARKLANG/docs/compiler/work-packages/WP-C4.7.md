@@ -74,8 +74,9 @@ without prior context. Read §0 and §1 before touching code.
   only `panic(msg)` compares messages exactly.
 
 ### Front-end quirks to ROUTE AROUND in test programs (do not fight them)
-- Integer literals don't coerce to `UInt64` params: write `v.get(0 as UInt64)`,
-  `i = i + (1 as UInt64)`.
+- ~~Integer literals don't coerce to `UInt64` params~~ — **fixed by C4.7-6.3 (DEV-078)**: an
+  unsuffixed literal adopts an expected integer type, so `v.get(0)` and `i = i + 1` are correct.
+  A suffixed literal and a typed value still do not convert.
 - ~~All-three-variant `Ordering` matches are wrongly non-exhaustive (DEV-071)~~ — **fixed by
   C4.7-7**; write all three variants, no wildcard needed.
 - ~~Generic impls don't satisfy operator/iterable bounds (DEV-073)~~ — **fixed by C4.7-5**;
@@ -425,7 +426,10 @@ Order within the increment (each independently commit-able):
   (E0101), recursing through nested/shorthand patterns; wildcards and Copy bindings stay legal
   (pinned); MIR guard kept as defense in depth with an updated message. 2 differential + 2
   front-end tests; workspace 763/0/2.
-- C4.7-6: **6.1 + 6.2 DONE 2026-07-20; 6.3 next (owner decided: fix it).** 6.1 landed per the
+- C4.7-6: **COMPLETE 2026-07-20 (6.1 + 6.2 + 6.3).** 6.3 (DEV-078): unsuffixed integer literals
+  adopt an expected integer type, implemented as general inference (integer-kinded variables +
+  a real step-5 defaulting pass), with range-checking on binding and the suffix/typed-value/kind
+  negatives all still failing. Workspace 778/0/2. Earlier: 6.1 landed per the
   owner's option (a): `Box<T>` as an opaque owning runtime type, `BoxNew`/`BoxIntoInner`, surface
   `0.1-A7` (A1 rev. 11), no new `MirTy`, drop via the existing `Drop` glue. The audit's "`Box`
   deref" entry is corrected — `*box` is spec-conformant to reject and is now pinned negatively.

@@ -148,6 +148,25 @@ pub fn int_suffix_range_contains(suffix: IntSuffix, value: i128) -> bool {
     }
 }
 
+/// WP-C4.7-6.3: whether a primitive INTEGER type's range holds `value`. The suffix-keyed
+/// function above answers the same question for an explicitly suffixed literal; this one is for
+/// an unsuffixed literal adopting an expected type. Non-integer primitives answer `false` — they
+/// hold no integer literal at all.
+pub fn primitive_int_range_contains(primitive: crate::ast::Primitive, value: i128) -> bool {
+    use crate::ast::Primitive;
+    match primitive {
+        Primitive::Int8 => i8::try_from(value).is_ok(),
+        Primitive::Int16 => i16::try_from(value).is_ok(),
+        Primitive::Int32 => i32::try_from(value).is_ok(),
+        Primitive::Int64 => i64::try_from(value).is_ok(),
+        Primitive::UInt8 => u8::try_from(value).is_ok(),
+        Primitive::UInt16 => u16::try_from(value).is_ok(),
+        Primitive::UInt32 => u32::try_from(value).is_ok(),
+        Primitive::UInt64 => u64::try_from(value).is_ok(),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
