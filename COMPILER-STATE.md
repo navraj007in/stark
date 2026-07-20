@@ -1,14 +1,30 @@
 # STARK Compiler STATE
-Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN.** The owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all validation green.
+Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5-ENTRY.md APPROVED (CD-042).** The
+owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both
+engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all
+validation green. The Gate C5 entry plan (`STARKLANG/docs/compiler/work-packages/
+WP-C5-ENTRY.md`) is now approved at its recommended §19 choices; WP-C5.1 (runtime ABI and layout
+design) is cleared to begin.
 
 ## Position
-Gate: **C5 (native compilation) — OPEN.** Gate **C4 CLOSED 2026-07-21** by owner directive, after
-the last blocker (DEV-089) was resolved rather than deferred. The full WP-C4.7 close-out landed in
-two directives: the first (CD-038/039/040) implemented DEV-086, deferred DEV-083, ratified surface
-revs 11/12, and refreshed the corpus to 1.2.0; the second (this one) resolved DEV-089 and the two
-residual over-rejections. Final validation: workspace tests green, `cargo fmt` clean, `cargo
-clippy` clean on 1.93 and 1.97, corpus 1.2.0 lock integrity green, frozen-corpus + differential
-suites green.
+Gate: **C5 (native compilation) — OPEN, entry plan APPROVED (CD-042).** Gate **C4 CLOSED
+2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved rather than
+deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
+implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
+1.2.0; the second (this one) resolved DEV-089 and the two residual over-rejections. Final
+validation: workspace tests green, `cargo fmt` clean, `cargo clippy` clean on 1.93 and 1.97, corpus
+1.2.0 lock integrity green, frozen-corpus + differential suites green.
+
+**WP-C5-ENTRY.md APPROVED 2026-07-21 (CD-042).** The Gate C5 implementation-ready plan is checked
+into `STARKLANG/docs/compiler/work-packages/WP-C5-ENTRY.md` and approved at its recommended
+decision-table choices: generated Rust backend consuming verified MIR (per CD-026), debug-only
+profile, concrete-monomorphised-instances-only generics, `MaybeUninit<ManuallyDrop<T>>`-style
+non-`Copy` storage with explicit MIR-directed Drop glue, isolated unsafe helpers only, Cargo
+invoked internally by `stark build`, local/pinned generated dependencies, and Native Provider ABI
+v0.1 specified in WP-C5.1c without execution being required for the MVP. Next: WP-C5.1a
+(representation decision write-up already covered by the entry plan's §6-10) proceeds straight to
+WP-C5.1b (backend/runtime skeleton) once the frozen C5 reference workspace (§4) is named and its
+HIR/MIR baseline snapshot is green.
 
 **DEV-089 — RESOLVED by implementing user `Display` dispatch in both engines** (owner decision,
 2026-07-21). `print`/`println`/`eprint`/`eprintln` are generic `<T: Display>` functions that
@@ -1260,6 +1276,23 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   Additive: `MIR_VERSION` stays `0.1`, runtime surface stays `0.1-A6`. Alternatives (a) record as
   a deviation, (b) real numbers now, and (c) defer to C5 were presented and declined — (c) would
   have needed a MIR version bump, since C4 exit freezes v0.1 for backend consumption.
+
+- CD-042 [2026-07-21, owner CE4 decision] **`WP-C5-ENTRY.md` APPROVED at its recommended choices;
+  WP-C5.1 implementation cleared to begin.** The entry plan (`STARKLANG/docs/compiler/
+  work-packages/WP-C5-ENTRY.md`) freezes the Gate C5 supported subset, the generated-Rust
+  representation contract, the ownership/move/Drop strategy, the `LayoutQuery` strategy, the
+  minimal runtime and Native Provider ABI v0.1 scope, the generated-crate topology, `stark build`
+  behaviour, the C5.1-C5.6 work-package sequence, the native differential test matrix, stop/
+  escalation rules, and the Gate C5 exit-report format. Owner accepted the §19 decision table as
+  drafted (generated Rust backend, debug-only profile, concrete-monomorphised-instances-only
+  generics, `MaybeUninit<ManuallyDrop<T>>`-style non-`Copy` storage, explicit MIR-directed Drop
+  glue with no automatic Rust `Drop`, isolated unsafe helpers only, Cargo invoked internally by
+  `stark build`, local/pinned generated dependencies, Native Provider ABI v0.1 specified but not
+  required to execute in the MVP). Status flipped `PROPOSED` → `APPROVED` in the entry-plan
+  document itself. Outstanding before WP-C5.1a code lands: name the frozen C5 reference workspace
+  (§4), record its green HIR/MIR baseline snapshot, and record the first host target and Rust
+  toolchain versions — these are execution-time deliverables of WP-C5.1a/b, not additional
+  approval gates.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
