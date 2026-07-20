@@ -2543,8 +2543,7 @@ described them as open; corrected 2026-07-19 during the C3-entry governance-repa
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
 remainder), DEV-083 (found by WP-C4.7-8.5; narrow over-rejection), DEV-086 (found by the
 WP-C4.7-9 audit; needs a CE3 constant-index projection form). Both are over-rejections with both
-engines consistent, unassigned, C4-exit-report input. DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half of WP-C4.7-8.1
-remains open as a clean `Unsupported`, not as a deviation. DEV-077 (the same family, in
+engines consistent, unassigned, C4-exit-report input. DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half landed in WP-C4.7-8.1. DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)
 was closed by the WP-C4.7 DEV-075 increment under an owner specification decision, which also

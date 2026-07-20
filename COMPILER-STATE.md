@@ -2,8 +2,19 @@
 Updated: 2026-07-20 after WP-C4.7-8.6 — **exclusive slice views land (`0.1-A8`); 8.5 and 8.4 remain**
 
 ## Position
-Gate: C4  Next: **write the C4.7-9 exit report** for the owner's decision. The audit sweep itself
-is DONE and its findings are fixed (below); what remains is the report document.
+Gate: C4  **WP-C4.7 IS COMPLETE. The C4 exit report is written and awaiting the owner's decision**
+— `WP-C4.6.md`, final section "Gate C4 Exit Report (WP-C4.7-9)". It supersedes that document's
+2026-07-19 Verdict. **This session does not close the gate.**
+Recommendation in the report: **close C4, conditional on the owner disposing of DEV-086 and
+DEV-083 by explicit dated decision** rather than leaving them undisposed. Exit conditions 1 and 3
+are satisfied outright; condition 2 is satisfied except for those two over-rejections, which are
+recorded, bounded, consistent across engines, and blocked on DECISIONS (a CE3 shape question and a
+method-resolution design question) rather than on effort. The report also states the
+counter-argument plainly: the defect-discovery rate has not visibly plateaued — 13 defects found
+in this package, 11 of them in already-signed-off code — which is a fact about risk into C5.
+Owner decision table (report §6): DEV-086, DEV-083, post-hoc ratification of surface revs 11/12
+(`0.1-A7`/`0.1-A8`), whether to grow the frozen corpus (a `corpus_version` bump is
+governance-controlled and was deliberately not touched), and gate closure itself.
 **WP-C4.7-9 AUDIT SWEEP DONE 2026-07-20 — and it found six more items, as forecast.** Every
 `unsupported(` site in `lower.rs` was enumerated, partitioned defensive-vs-construct, and each
 construct candidate probed against BOTH engines. Owner-directed fixes for four of them landed:
@@ -2874,3 +2885,35 @@ FOLLOW-UP: DEV-083, DEV-086 — both over-rejections, both consistent across eng
 an owner decision rather than more implementation.
 NEXT: write the C4.7-9 exit report as a new final section of `WP-C4.6.md` and present it. The gate
 decision is the owner's; this session does not close it.
+
+### WP-C4.7-9 — the Gate C4 exit report — 2026-07-20
+DONE: the report is written as the final section of `WP-C4.6.md`, superseding that document's
+2026-07-19 Verdict. Presented to the owner; **the gate is not closed by this session**.
+VERDICT AS WRITTEN: conditions 1 (corpus equivalence) and 3 (nothing carried silently) are
+SATISFIED outright. Condition 2 (every normative Core construct lowers) is satisfied EXCEPT for
+DEV-086 and DEV-083 — both over-rejections, both consistent across engines, neither closable by
+more implementation of the same kind: one needs a CE3 constant-index projection form, the other a
+method-resolution design decision under TYPE-METHOD-001.
+RECOMMENDATION: close C4 **conditional on the owner disposing of those two by explicit dated
+decision** (implement in C5.x, or defer with the deferral recorded) rather than leaving them
+undisposed. Recording them WITH a disposition is what makes carrying them forward honest rather
+than silent — which is exactly what CD-033's condition 3 asks for.
+THE COUNTER-ARGUMENT, STATED IN THE REPORT RATHER THAN OMITTED: today's sweep found six items
+after four increments had already "finished" the residual list, and 11 of this package's 13
+defects were in signed-off code. The defect-discovery rate has **not visibly plateaued**. Two
+things argue against another round now — the sweep was systematic rather than opportunistic
+(every `unsupported(` site, both engines), and the two survivors are analysed and decision-blocked
+rather than effort-blocked — but the risk statement belongs in front of the owner, not buried.
+WHAT THE REPORT CLASSIFIES: every remaining rejection, in four buckets — spec-conformant (with the
+authority cited, including the corrected "Box deref" audit error), CD-033-reserved std-full,
+defensive guards (incl. the two deliberately-retained unreachable ones), and the two open
+deviations. Plus the ledger state (84 numbered; 16 closed by this package; the three SOUNDNESS
+defects called out separately) and the contract/spec changes (amendments A3/A4, surface
+`0.1-A6` → `0.1-A8`, and the new normative `PRIM-TRAIT-001`).
+FILES: STARKLANG/docs/compiler/work-packages/WP-C4.6.md (the report),
+starkc/docs/conformance/KNOWN-DEVIATIONS.md (one stale line about 8.1's MIR half corrected),
+COMPILER-STATE.md, WP-C4.7.md.
+EVIDENCE CITED: workspace 798/0/2, 114 differential tests, frozen corpus green, fmt + clippy clean
+on 1.93 and 1.97.
+NEXT: **the owner's decision.** Report §6 is the decision table: DEV-086, DEV-083, post-hoc
+ratification of surface revs 11/12, frozen-corpus growth, and gate closure.

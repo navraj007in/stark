@@ -503,7 +503,10 @@ Order within the increment (each independently commit-able):
 - **C4.7-8: COMPLETE.** All implementation work in WP-C4.7 is done; only C4.7-9 remains.
   The only remaining clean-`Unsupported` entry is `HashMap::values` (std-full, CD-033-reserved). (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
-- C4.7-9: _pending_ (last)
+- **C4.7-9: DONE 2026-07-20.** Audit sweep (every `unsupported(` site, both engines) found six
+  further items — four fixed under owner direction, two recorded (DEV-083, DEV-086). Exit report
+  written as the final section of `WP-C4.6.md` and presented. **WP-C4.7 IS COMPLETE.** The gate
+  decision is the owner's.
 
 Recommended execution order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9. Increments 1–2 are
 low-risk warm-ups; 3 requires an owner stop; 4 is the largest front-end change; 8.3 is the

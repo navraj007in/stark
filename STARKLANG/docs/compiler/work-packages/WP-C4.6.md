@@ -449,3 +449,174 @@ C4 **OPEN** (CD-033). All Class-A classes required; none carried silently. Work 
 the dependency-aware order under the Class progress tracker above.
 
 Probe harness: `starkc/examples/c46_probe.rs` (committed); probe sources are inlined above.
+
+---
+
+# Gate C4 Exit Report (WP-C4.7-9, 2026-07-20)
+
+**This report is written for the owner's decision. It does not close the gate.**
+
+It supersedes the "Verdict" section at the top of this document, which recorded the state on
+2026-07-19 when seven Class-A blockers were open.
+
+## 1. What happened between the two verdicts
+
+The 2026-07-19 audit found seven Class-A blocker classes and C4 stayed open. WP-C4.6 closed all
+seven. An external review plus a self-audit then identified corrections needed before an honest
+exit, and WP-C4.7 executed them: nine planned increments, several sub-split, plus four owner
+decisions taken mid-flight and a final audit sweep.
+
+The single most important fact for judging this report: **WP-C4.7 found 13 defects, and 11 of
+them were in code that had already been signed off** — by C4.5d, by WP-C4.6's Class-A campaign, or
+by earlier gates. They were not found by reading. They were found by two disciplines the plan
+imposed: pinning the oracle's behaviour empirically before writing lowering, and building the
+construct that makes a latent defect reachable.
+
+Several were structurally invisible beforehand:
+
+- **DEV-080** (drop order) could not be observed while **DEV-079** (a verifier false-positive)
+  rejected every program that would have exposed it.
+- **DEV-081** (shorthand bindings never dropped) was a *leak*: no verifier rule broken, no
+  assertion tripped, invisible unless a destructor prints.
+- **DEV-082** (a method call consuming a slice receiver) was harmless for `&[T]` because shared
+  references are `Copy`; it became a bug only once exclusive slice views existed.
+- **DEV-076** (`unwrap_or` double-drop) was masked because MIR refused the construct, so the
+  differential never compared the two engines on it.
+
+The corpus was green throughout all of that.
+
+## 2. Exit conditions, re-evaluated
+
+### Condition 1 — the corpus runs equivalently through both interpreters: **SATISFIED**
+
+`entire_frozen_corpus_agrees` passes over all 17 frozen cases (`corpus_version = 1.0.0`),
+comparing stdout, exit status, trap category, exact user-origin trap provenance, and pre-trap
+output. The differential suite is now **114 tests**; the workspace is **798 passed / 0 failed /
+2 ignored**, `fmt` clean, `clippy` clean on both 1.93 and 1.97 (CI parity).
+
+Stronger than in July: the corpus is unchanged, but the differential around it grew by ~40 tests
+covering exactly the constructs this work package touched, with **drop ORDER** — not merely drop
+occurrence — as the assertion wherever destructors are involved.
+
+### Condition 2 — every normative Core construct required by C5 has verified MIR lowering: **SATISFIED, with two recorded exceptions the owner must rule on**
+
+Every Class-A residual recorded by WP-C4.6 is closed. The audit re-swept every `unsupported(`
+site in `lower.rs`, partitioned defensive-vs-construct, and probed each construct candidate
+against BOTH engines. What remains is classified exhaustively in §3.
+
+The two exceptions are **DEV-083** and **DEV-086**. Both are over-rejections, both are consistent
+across engines (nothing mislowers), and neither can be closed by implementation alone — DEV-086
+needs a CE3 shape decision, DEV-083 needs a method-resolution design decision. They are the
+honest reason this condition is "satisfied with exceptions" rather than "satisfied".
+
+### Condition 3 — remaining unsupported normative constructs are recorded, not carried silently: **SATISFIED**
+
+§3 is that record. Every entry is either spec-conformant to reject, explicitly reserved by
+CD-033, or an open deviation with a ledger number and a named owner decision.
+
+## 3. Classification of every remaining rejection
+
+### 3a. Spec-conformant rejections — correct behaviour, pinned by negative tests
+
+| Construct | Authority |
+| --- | --- |
+| `*Box::new(5)` | Core v1 has **no `Deref` trait**; TYPE-METHOD-002 peels only `&`/`&mut`; 06 gives `Box` exactly `new`/`into_inner`. The WP-C4.6 audit's "Box deref" entry was **wrong** and is corrected. |
+| `false < true`, `Bool::cmp` | `PRIM-TRAIT-001` (added by this work package): `Bool` is `Eq`+`Hash`, not `Ord`. |
+| `1.5.cmp(&2.5)`, `T: Ord` at a float | `PRIM-TRAIT-001` + CD-015: primitive floats implement no `Eq`/`Ord`/`Hash`. The comparison **operators** remain available (IEEE, CD-006). |
+| `println(p)` on a `Display`-less type | 06: `Display` is not a syntax hook. Previously an over-acceptance (DEV-084). |
+| Or-patterns `A(n) \| B(n)` | **Not in 02's `Pattern` grammar** (`02:284-291`). The parse error is correct. |
+| `takes_u64(0i32)`, `takes_u64(x: Int32)` | Core has no implicit numeric conversion; a suffix is authoritative (DEV-078's negatives). |
+
+### 3b. Explicitly reserved by CD-033 — std-full, not required for exit
+
+`HashMap::values`, `HashMap::remove`, `HashSet`, `Vec::contains`, `String::insert`. All reject
+cleanly; `core-min` is the C5 baseline per CD-033.
+
+### 3c. Defensive guards — unreachable for checked programs
+
+The large majority of the ~170 `unsupported(` sites. They name internal invariants
+("`FnKey::ImplFn` on non-impl", "variant pattern on non-enum", "not a call"). Two are deliberately
+retained though now unreachable, with comments saying so: the `MatchMode::ByRef` non-`Copy`
+binding guard (DEV-072 closed it upstream) and the droppable-`unwrap_or` place assertion. The
+charter's rule is that nothing unsupported reaches a backend silently; an unreachable guard costs
+nothing, a missing one mislowers.
+
+### 3d. Open deviations — **the owner's decision**
+
+| ID | What | Why not fixed here |
+| --- | --- | --- |
+| **DEV-086** | Droppable elements in array patterns; by-value array iteration over a non-`Copy` element | Needs a **constant-index projection form**. An array element place requires `Projection::Index(ProofLocal)`, and only `CheckIndex` mints a proof — which reads the array, so moving one element poisons the whole local for V-MOVE-1. `Index` *must* collapse to the whole local: a dynamic proof names no statically-known sub-place. This is a **MIR shape change requiring CE3** (§0.5). The contract already points this way — §6 says the proof discipline "covers fixed-length `Array` (verifier may validate against the compile-time length)" — but that is not authorisation. |
+| **DEV-083** | A concrete position in an impl head cannot match an unresolved receiver type argument | Needs speculative binding of inference variables during candidate search, which can select the wrong impl. That is a semantics change under TYPE-METHOD-001, not a bug fix, and needs its own design and evidence. Narrow: requires a generic impl AND a concrete head position AND an unresolved receiver argument. Workaround: annotate the receiver. |
+
+Both are **over-rejections**. No invalid program is accepted; both engines agree; nothing
+mislowers.
+
+Also open, none C4-owned: DEV-005 (unowned since C1), DEV-010/012 (WP-C8.x), DEV-011
+(unscheduled), DEV-017 (partial, unscheduled).
+
+## 4. Deviation ledger state
+
+**84 numbered deviations** (DEV-002…DEV-086; DEV-001/003 retired). WP-C4.7 opened 13 and closed
+11 of its own, plus DEV-069 and DEV-067/071/072/073 carried in from WP-C4.6.
+
+Closed by WP-C4.7: DEV-067, 069, 071, 072, 073, 074, 075, 076, 077, 078, 079, 080, 081, 082, 084,
+085. Opened and left open: DEV-083, DEV-086.
+
+Three were **soundness** defects, not over/under-rejections:
+- **DEV-076** — `unwrap_or` destroyed the payload twice and the discarded default never.
+- **DEV-077** — `Box::into_inner` destroyed the payload twice.
+- **DEV-081** — shorthand struct bindings were never destroyed at all.
+
+All three came from the same root shape: a consuming operation implemented against a *clone* of
+its receiver.
+
+## 5. Contract and spec changes made by WP-C4.7
+
+| Change | Authority |
+| --- | --- |
+| MIR **amendment A3** (bitwise/`Pow`/shift/`InvalidShift`) recorded | CD-035 — post-hoc record of WP-C4.6 A5, ratified by the owner |
+| MIR **amendment A4** (`Rvalue::LayoutQuery`) | CD-036 — owner-approved under CE3 |
+| Runtime surface `0.1-A6` → **`0.1-A8`** | A1 rev. 11 (`Box`), rev. 12 (exclusive slices) |
+| **`PRIM-TRAIT-001`** — normative primitive trait/operator matrix in 06, cross-referenced from 03 | Owner specification decision (DEV-075). Compiled spec regenerated; fixture corpus re-extracted |
+
+`MIR_VERSION` remains `0.1`. Every shape change was additive and individually approved.
+
+## 6. Owner decision table
+
+1. **DEV-086** — approve a constant-index projection form (CE3), defer with a dated decision, or
+   direct another approach.
+2. **DEV-083** — schedule the method-resolution design, or defer with a dated decision.
+3. **Post-hoc ratification** of the runtime-surface bumps executed in this package: revs 11 and 12
+   (`0.1-A7`, `0.1-A8`). Revs 8–10 were executed under CD-033's pre-authorisation; 11 and 12 were
+   executed under explicit owner instructions in-session and should be ratified in the record.
+4. **Frozen-corpus growth** — whether to add cases for the Class-A and WP-C4.7 constructs. A
+   `corpus_version` bump is governance-controlled, so this session did not touch it. The
+   differential covers these constructs; the *frozen corpus* does not.
+5. **Gate C4 closure** itself.
+
+## 7. Recommendation
+
+**Close Gate C4, conditional on the owner disposing of DEV-086 and DEV-083 by explicit dated
+decision** (either "implement in C5.x" or "defer, recorded") rather than leaving them
+undisposed.
+
+Reasoning. Conditions 1 and 3 are satisfied outright. Condition 2 is satisfied except for two
+over-rejections that are recorded, bounded, consistent across engines, and — critically — cannot
+be closed by more implementation of the same kind: one needs a contract decision, the other a
+design decision. That is precisely the situation CD-033's condition 3 anticipates ("recorded as a
+gate blocker rather than carried forward silently"), and recording them *with* an owner
+disposition is what makes carrying them forward honest rather than silent.
+
+**The counter-argument the owner should weigh.** Today's audit found six items after four
+increments had already "finished" the residual list, and eleven of this package's thirteen defects
+were in signed-off code. A reasonable person could conclude the sweep is not yet exhausting the
+defect supply and ask for another pass. Two things argue against another round *now*: the sweep
+was systematic rather than opportunistic this time (every `unsupported(` site, both engines), and
+the remaining two items are qualitatively different from what was found — they are known,
+analysed, and blocked on decisions rather than on effort. But the honest summary is that **the
+defect-discovery rate has not yet visibly plateaued**, and that is a fact about risk into C5, not
+a reason to reopen Class A.
+
+**What I would not do:** close the gate while treating DEV-086 and DEV-083 as ordinary open
+deviations. They are the two things standing between "every normative Core construct lowers" and
+the exit condition as written.
