@@ -467,7 +467,12 @@ Order within the increment (each independently commit-able):
   the call**, not at scope exit — that is the timing the MIR half must match. The MIR half stays a
   clean `Unsupported`: moving a payload out of a drop-tracked local via `VariantField` hits the
   C4.5d guard and needs `lower_enum_match`'s drop-flag machinery.
-- C4.7-8: _pending_ — **8.1 MIR half unblocked** (oracle `unwrap_or` double-drop); 8.4/8.5
+- **C4.7-8.1: COMPLETE 2026-07-20** (MIR half). Droppable `unwrap_or` lowers; the discarded value
+  is destroyed AT THE CALL, and a `Result`'s displaced `Err` payload with it. The C4.5d
+  drop-tracked-local guard was cleared by reusing `lower_match`'s discipline — materialize the
+  receiver into a temp, whose move clears the source's flags. Non-droppable lowering unchanged
+  byte-for-byte. 3 differential tests; the stale Unsupported fixture removed.
+- C4.7-8: _pending_ — 8.2/8.3 remain (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)
 

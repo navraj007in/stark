@@ -4882,16 +4882,66 @@ impl<'a> FnLowerer<'a> {
             // (the discarded branch's value), owned by a later increment.
             "unwrap_or" => {
                 let payload_ty = args.first().cloned().unwrap_or(MirTy::Unit);
-                if self.ty_needs_drop(&payload_ty, span)? {
-                    return unsupported(
-                        "unwrap_or on a droppable payload type (a later increment)",
-                        span,
-                    );
+                // WP-C4.7-8.1: droppable payloads/defaults are supported. `unwrap_or` DISCARDS
+                // exactly one of two values, and the discarded one owes a destructor. The
+                // oracle's timing was pinned empirically first (§0.6), and DEV-076 had to be
+                // fixed before this could be written at all — the oracle used to double-drop the
+                // payload and never drop the default, so matching it would have encoded a double
+                // drop into the backend contract.
+                //
+                // Pinned semantics: the default is evaluated ONCE before the switch (Core has no
+                // laziness, so it is evaluated whether or not it is used); on Some/Ok the payload
+                // is yielded and the default is dropped **at the call site**, not at end of
+                // scope; on None/Err the default is yielded, and a `Result`'s displaced `Err`
+                // payload is dropped there.
+                let payload_needs_drop = self.ty_needs_drop(&payload_ty, span)?;
+                let err_ty = if is_option {
+                    MirTy::Unit
+                } else {
+                    args.get(1).cloned().unwrap_or(MirTy::Unit)
+                };
+                let err_needs_drop = !is_option && self.ty_needs_drop(&err_ty, span)?;
+                let consuming = payload_needs_drop || err_needs_drop;
+                if payload_needs_drop {
+                    self.discover_drop_impls(&payload_ty)?;
                 }
+                if err_needs_drop {
+                    self.discover_drop_impls(&err_ty)?;
+                }
+                // Consuming a payload out of a DROP-TRACKED local through a `VariantField`
+                // projection is refused outright (C4.5d). `lower_match` solved this by
+                // materializing the scrutinee into a fresh temp: the move clears the source
+                // local's drop flags, and a temp is never auto-dropped, so ownership transfers
+                // exactly once. Reuse that, rather than inventing a second discipline.
+                let place = if consuming {
+                    let recv_ty = MirTy::Enum(enum_ref, args.to_vec());
+                    let value = self.read_place(place, &recv_ty, span)?;
+                    let temp = self.new_temp(recv_ty);
+                    self.emit(
+                        Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                        self.info(span),
+                    );
+                    Place::local(temp)
+                } else {
+                    place
+                };
                 let Some(&default_expr) = call_args.first() else {
                     return unsupported("unwrap_or expects one argument", span);
                 };
                 let default_op = self.lower_expr_to_operand(default_expr)?;
+                // A droppable default needs a named temp so the unused-path drop has a place to
+                // name; a non-droppable one is used directly, keeping the common lowering
+                // byte-identical to before this change.
+                let default_op = if payload_needs_drop {
+                    let temp = self.new_temp(payload_ty.clone());
+                    self.emit(
+                        Statement::Assign(Place::local(temp), Rvalue::Use(default_op)),
+                        self.info(span),
+                    );
+                    Operand::Move(Place::local(temp))
+                } else {
+                    default_op
+                };
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
@@ -4909,8 +4959,9 @@ impl<'a> FnLowerer<'a> {
                     self.info(span),
                     ok_block,
                 );
-                // Ok/Some arm: move the payload into dest.
-                let mut payload_place = place;
+                // Ok/Some arm: move the payload into dest, then DROP THE UNUSED DEFAULT here —
+                // the oracle destroys it at the call, not at end of scope.
+                let mut payload_place = place.clone();
                 payload_place
                     .projection
                     .push(Projection::VariantField(ok_variant, 0));
@@ -4919,12 +4970,33 @@ impl<'a> FnLowerer<'a> {
                     Statement::Assign(dest.clone(), Rvalue::Use(payload)),
                     self.info(span),
                 );
+                if payload_needs_drop {
+                    let Operand::Move(default_place) = &default_op else {
+                        return unsupported("droppable unwrap_or default is not a place", span);
+                    };
+                    let temp = default_place.local;
+                    self.emit_temp_drop(temp, span);
+                }
                 self.terminate(
                     Terminator::Goto { target: join },
                     self.info(span),
                     else_block,
                 );
-                // None/Err arm: the default.
+                // None/Err arm: yield the default. A `Result`'s displaced `Err` payload is
+                // discarded exactly as the default is on the other path, so it drops here.
+                if err_needs_drop {
+                    let mut err_place = place;
+                    err_place
+                        .projection
+                        .push(Projection::VariantField(1 - ok_variant, 0));
+                    let err_val = self.read_place(err_place, &err_ty, span)?;
+                    let err_temp = self.new_temp(err_ty.clone());
+                    self.emit(
+                        Statement::Assign(Place::local(err_temp), Rvalue::Use(err_val)),
+                        self.info(span),
+                    );
+                    self.emit_temp_drop(err_temp, span);
+                }
                 self.emit(
                     Statement::Assign(dest, Rvalue::Use(default_op)),
                     self.info(span),

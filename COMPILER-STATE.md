@@ -1,11 +1,21 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-8.1a — **DEV-076 closed; every remaining open deviation is long-standing/unscheduled**
+Updated: 2026-07-20 after WP-C4.7-8.1 — **droppable `unwrap_or` lowers; C4.7-8.1 COMPLETE**
 
 ## Position
-Gate: C4  Next: **the MIR half of C4.7-8.1** (droppable `unwrap_or` lowering — now unblocked, and
-it needs the drop-flag machinery `lower_enum_match` uses), then 8.2/8.3, then **C4.7-9** (fresh
-audit + exit report). 8.4/8.5 were reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is
-an owner decision.
+Gate: C4  Next: **C4.7-8.2** (droppable `Iterator` Item — per-iteration scope around the loop-var
+binding), then **8.3** (droppable scrutinee + nested patterns, the hardest piece), then **C4.7-9**
+(fresh audit + exit report). 8.4/8.5 were reclassified front-end-first by C4.7-2; 8.6 (mutable
+slices) is an owner decision.
+**WP-C4.7-8.1 COMPLETE 2026-07-20 (MIR half).** `unwrap_or` over a droppable payload/default now
+lowers, matching the timing pinned against the corrected oracle: the DISCARDED value is destroyed
+**at the call**, not at scope exit — on `Some`/`Ok` the payload is yielded and the default dropped
+there; on `None` the default is yielded; on `Err` the default is yielded and the displaced error
+payload dropped. The blocker was that consuming a payload out of a **drop-tracked** local through
+a `VariantField` projection is refused outright (C4.5d). The fix is the one `lower_match` already
+uses: materialize the receiver into a fresh temp first — the move clears the source's drop flags,
+and a temp is never auto-dropped, so ownership transfers exactly once. Reusing that discipline
+rather than inventing a second one is what made this small. Non-droppable lowering is unchanged
+byte-for-byte. Workspace 785/0/2.
 **WP-C4.7-8.1a DONE 2026-07-20 — DEV-076 CLOSED (oracle half).** `Option`/`Result::unwrap_or`
 double-dropped the payload and never dropped the discarded default — a SOUNDNESS defect, same
 root cause as DEV-077: it was handled on the borrowing method path, which operates on a CLONE, so
@@ -2447,3 +2457,41 @@ differential is unchanged and no test needed rewriting.
 FOLLOW-UP: the MIR half of C4.7-8.1.
 NEXT: droppable `unwrap_or` lowering via the drop-flag machinery, then 8.2 (droppable Iterator
 Item) and 8.3 (droppable scrutinee + nested patterns, the hardest piece).
+
+### WP-C4.7-8.1 — droppable `unwrap_or` lowering (MIR half) — 2026-07-20
+DONE: C4.7-8.1 complete. The oracle half landed as 8.1a (DEV-076); this is the lowering, written
+against the corrected oracle rather than against the double drop it used to exhibit.
+SEMANTICS IMPLEMENTED (pinned empirically first, per §0.6): `unwrap_or` discards exactly one of
+two values and the discarded one owes a destructor — Core has no laziness, so the default is
+evaluated whether or not it is used, which is exactly why it always owes one. The discarded value
+is destroyed **at the call**, not at end of scope. On `Some`/`Ok`: yield the payload, drop the
+default there. On `None`: yield the default. On `Err`: yield the default and drop the displaced
+error payload — the case with no `Option` analogue, and the one most likely to be missed.
+THE BLOCKER AND ITS RESOLUTION: a first attempt (reverted in 8.1a rather than shipped half-built)
+died on the C4.5d guard "move through a non-field projection of a drop-tracked local" — consuming
+a payload out of a drop-tracked local via `VariantField` is refused outright. `lower_match` had
+already solved exactly this: it materializes the scrutinee into a fresh temp, whose initial move
+clears the SOURCE local's drop flags, and a temp is never auto-dropped, so ownership transfers
+exactly once with no double-drop possible. Reusing that discipline — rather than inventing a
+second one for `unwrap_or` — is what turned this from a redesign into a few lines, and it keeps
+one drop-elaboration story in the lowering instead of two.
+SCOPE DISCIPLINE: the temp materialization and the default temp are introduced ONLY when a
+droppable type is actually involved; the non-droppable path lowers byte-for-byte as before, so
+no existing golden or corpus expectation moved.
+FILES: starkc/src/mir/lower.rs, starkc/tests/mir_differential.rs (+3),
+starkc/tests/mir_lowering.rs (the now-stale `unwrap_or` Unsupported fixture REMOVED — a residual
+fixture that no longer describes a residual is worse than none), COMPILER-STATE.md, WP-C4.7.md.
+RULES: EXEC-ONCE-001 / DROP-ORDER-001. No spec change; no MIR shape or runtime-surface change —
+this is lowering only, using `Drop` terminators that already exist.
+DECISIONS: none at CE level.
+EVIDENCE: `droppable_unwrap_or_drop_timing_agrees` (both `Some` and `None` paths, with the
+printed ORDER as the assertion — `100 2 200 1 300` then `400 3 500`, so the default's destruction
+at the call is what is being checked, not merely that it happens);
+`droppable_result_unwrap_or_drops_the_error_payload_agrees` (both type arguments carry
+destructors, so neither can hide; pins `9` dropping at the call and reverse-order scope exit);
+`droppable_unwrap_or_with_runtime_type_agrees` (`String` payload — the runtime-type drop path
+rather than a user `Drop` impl). Workspace 785 passed / 0 failed / 2 ignored (+3); fmt clean;
+clippy clean on 1.93 and 1.97.
+FOLLOW-UP: none for 8.1.
+NEXT: C4.7-8.2 — droppable `Iterator` Item (per-iteration scope around the loop-variable binding;
+oracle-pin first), then 8.3.

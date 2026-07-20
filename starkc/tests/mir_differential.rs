@@ -2300,3 +2300,78 @@ fn char_ordering_is_scalar_value_not_collation_agrees() {
         .to_string(),
     );
 }
+
+/// WP-C4.7-8.1: `unwrap_or` with a DROPPABLE payload/default. The construct discards exactly one
+/// of two values, and the discarded one owes a destructor — Core has no laziness, so the default
+/// is evaluated whether or not it is used, which is precisely why it always owes one.
+///
+/// The timing is the assertion, and it is not the obvious answer: the discarded value is
+/// destroyed **at the `unwrap_or` call**, not at end of scope. This was pinned against the oracle
+/// before the lowering was written (§0.6) — and DEV-076 had to be fixed first, because the oracle
+/// used to destroy the payload twice and the default never, so matching it would have written a
+/// double drop into the backend contract.
+#[test]
+fn droppable_unwrap_or_drop_timing_agrees() {
+    differential(
+        "unwrap_or_drop.stark",
+        "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         fn main() { \
+             println(100); \
+             let some = Some(Tag { id: 1 }); \
+             let taken = some.unwrap_or(Tag { id: 2 }); \
+             println(200); \
+             println(taken.id); \
+             println(300); \
+             let none: Option<Tag> = None; \
+             let defaulted = none.unwrap_or(Tag { id: 3 }); \
+             println(400); \
+             println(defaulted.id); \
+             println(500); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The `Result` form, including the case with no `Option` analogue: on `Err` the default is
+/// yielded and the DISPLACED ERROR PAYLOAD is destroyed at the call, discarded exactly as the
+/// default is on the other path. Both type arguments carry destructors so neither can hide.
+#[test]
+fn droppable_result_unwrap_or_drops_the_error_payload_agrees() {
+    differential(
+        "unwrap_or_res.stark",
+        "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         fn ok_case() -> Result<Tag, Tag> { Ok(Tag { id: 1 }) } \
+         fn err_case() -> Result<Tag, Tag> { Err(Tag { id: 9 }) } \
+         fn main() { \
+             println(100); \
+             let a = ok_case().unwrap_or(Tag { id: 2 }); \
+             println(200); \
+             println(a.id); \
+             println(300); \
+             let b = err_case().unwrap_or(Tag { id: 3 }); \
+             println(400); \
+             println(b.id); \
+             println(500); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A `String` payload — the runtime-type drop path rather than a user `Drop` impl. No destructor
+/// output to observe, so this pins that the buffer reclaim happens without a double free and that
+/// the two engines agree on the value.
+#[test]
+fn droppable_unwrap_or_with_runtime_type_agrees() {
+    differential(
+        "unwrap_or_string.stark",
+        "fn main() { \
+             let present: Option<String> = Some(String::from(\"hi\")); \
+             println(present.unwrap_or(String::from(\"fallback\"))); \
+             let absent: Option<String> = None; \
+             println(absent.unwrap_or(String::from(\"fallback\"))); \
+         }"
+        .to_string(),
+    );
+}

@@ -266,6 +266,11 @@ fn unsupported_constructs_report_cleanly() {
     // `cargo run --example c46_probe` (LOWER-UNSUPPORTED) and `--example oracle_run` (ORACLE-OK)
     // before being added.
     //
+    // REMOVED by WP-C4.7-8.1: the `unwrap_or`-on-a-droppable-payload fixture. That construct now
+    // LOWERS (drop-of-the-discarded-value elaboration), so it is covered by
+    // `mir_differential.rs::droppable_unwrap_or_drop_timing_agrees` instead — a residual fixture
+    // that no longer describes a residual is worse than no fixture.
+    //
     // NOT pinnable here, and deliberately so: the two remaining recorded residuals — method-own
     // generic parameters (`impl Holder { fn first<U>(&self, a: U, b: U) -> U }`) and non-bare
     // impl heads (`impl<T> Wrap for Holder<Vec<T>>`) — never REACH lowering. They fail in the
@@ -318,18 +323,6 @@ fn unsupported_constructs_report_cleanly() {
             "mutslice.stark",
             "fn main() { let mut a = [1, 2, 3]; let s = &mut a[0..2]; println(s.len()); }",
             "mutable slice",
-        ),
-        (
-            // A4-1 residual: `unwrap_or` over a droppable payload — in the Some/Ok arm the
-            // default is UNUSED and owes a drop, which needs arm-scoped drop elaboration.
-            // Owner: WP-C4.7-8.1.
-            "unwraporrdrop.stark",
-            "fn main() { \
-                 let o: Option<String> = Some(String::from(\"hi\")); \
-                 let s = o.unwrap_or(String::from(\"no\")); \
-                 println(s); \
-             }",
-            "droppable payload",
         ),
     ];
     for (name, src, needle) in cases {
