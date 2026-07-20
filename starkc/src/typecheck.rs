@@ -5974,27 +5974,46 @@ impl<'a> TypeChecker<'a> {
     /// WP-C2.2 (DEV-031): recover the `Iterator::Item` associated type for a nominal user
     /// iterator so a `for` loop can type its binding from the trait implementation.
     fn user_iterator_item_type(&mut self, iter_ty: &Ty) -> Option<Ty> {
-        let associated_type = self.hir.items.iter().find_map(|item| {
-            let hir::ItemKind::Impl {
-                trait_: Some(trait_ref),
-                self_ty,
-                items,
-                ..
-            } = &item.kind
-            else {
-                return None;
-            };
-            if !matches!(trait_ref.res, Res::CoreTrait(hir::CoreTrait::Iterator))
-                || !self.types_equal(&self.type_from_hir_without_diagnostics(*self_ty), iter_ty)
-            {
-                return None;
-            }
-            items.iter().find_map(|item| match item {
-                hir::ImplItem::AssocType { name, ty } if self.text(*name) == "Item" => Some(*ty),
-                _ => None,
-            })
-        })?;
-        Some(self.convert_hir_type(associated_type))
+        // DEV-073 (WP-C4.7-5): a GENERIC `Iterator` impl must be recognized for a concrete
+        // instantiation — `impl<T> Iterator for Repeat<T>` makes `Repeat<Int32>` iterable. Like
+        // the operator-bound check, this used to demand an EXACT type match against an impl self
+        // type whose generic arguments had been dropped, so `for x in r` on any generic user
+        // iterator was rejected E0001. Matching now goes through `match_impl_type`, and the
+        // resulting substitution is applied to the associated `Item` — `type Item = T` on
+        // `Repeat<Int32>` must yield `Int32`, not a dangling `Ty::Param`.
+        // DEV-069: impl/assoc-type names are read against the declaring impl's own file.
+        let (associated_type, map) =
+            self.hir.items.iter().enumerate().find_map(|(idx, item)| {
+                let impl_id = ItemId(idx as u32);
+                let hir::ItemKind::Impl {
+                    trait_: Some(trait_ref),
+                    self_ty,
+                    items,
+                    generics,
+                    ..
+                } = &item.kind
+                else {
+                    return None;
+                };
+                if !matches!(trait_ref.res, Res::CoreTrait(hir::CoreTrait::Iterator)) {
+                    return None;
+                }
+                let map = self.match_impl_type(
+                    &self.impl_self_ty_with_args(impl_id, *self_ty),
+                    iter_ty,
+                    generics,
+                )?;
+                items.iter().find_map(|item| match item {
+                    hir::ImplItem::AssocType { name, ty }
+                        if self.item_text(impl_id, *name) == "Item" =>
+                    {
+                        Some((*ty, map.clone()))
+                    }
+                    _ => None,
+                })
+            })?;
+        let item_ty = self.convert_hir_type(associated_type);
+        Some(self.instantiate_ty(&item_ty, &map))
     }
 
     fn core_method_signature(&mut self, receiver: &Ty, name: &str) -> Option<(Vec<Ty>, Ty, bool)> {
@@ -6746,18 +6765,36 @@ impl<'a> TypeChecker<'a> {
                             .any(|bound| self.text(bound.path.span) == required)
                 })
             }),
-            Ty::Struct(..) | Ty::Enum(..) => self.hir.items.iter().any(|item| {
-                let hir::ItemKind::Impl {
-                    trait_: Some(trait_ref),
-                    self_ty,
-                    ..
-                } = &item.kind
-                else {
-                    return false;
-                };
-                self.text(trait_ref.path.span) == required
-                    && self.types_equal(&self.type_from_hir_without_diagnostics(*self_ty), ty)
-            }),
+            // DEV-073 (WP-C4.7-5): a GENERIC impl satisfies a concrete instantiation's bound —
+            // `impl<T> Eq for W<T>` satisfies `W<Int32>: Eq`. This used to demand
+            // `types_equal(impl_self_ty, ty)`, an EXACT match, so the impl's written self type
+            // `W<T>` never equalled `W<Int32>` and every operator on a generic nominal was
+            // rejected E0500. The fix reuses `match_impl_type` — the same one-way unification
+            // method resolution already uses for exactly this question, so operator bounds and
+            // method calls now agree by construction instead of by coincidence.
+            // DEV-069: the trait name written on each impl is read against that impl's own file.
+            Ty::Struct(..) | Ty::Enum(..) => {
+                self.hir.items.iter().enumerate().any(|(idx, item)| {
+                    let impl_id = ItemId(idx as u32);
+                    let hir::ItemKind::Impl {
+                        trait_: Some(trait_ref),
+                        self_ty,
+                        generics,
+                        ..
+                    } = &item.kind
+                    else {
+                        return false;
+                    };
+                    self.item_text(impl_id, trait_ref.path.span) == required
+                        && self
+                            .match_impl_type(
+                                &self.impl_self_ty_with_args(impl_id, *self_ty),
+                                ty,
+                                generics,
+                            )
+                            .is_some()
+                })
+            }
             Ty::Core(core_type, args) if required == "Eq" || required == "Ord" => {
                 matches!(
                     core_type,
@@ -6769,6 +6806,51 @@ impl<'a> TypeChecker<'a> {
             }
             Ty::Infer(_) | Ty::Error => true,
             _ => false,
+        }
+    }
+
+    /// DEV-073 (WP-C4.7-5): convert an impl's WRITTEN self type while PRESERVING its generic
+    /// arguments, with type parameters kept as `Ty::Param` so `match_impl_type` can unify them
+    /// against a concrete instantiation.
+    ///
+    /// This exists because `type_from_hir_without_diagnostics` deliberately drops generic
+    /// arguments (`Ty::Struct(item, Vec::new())`). That was invisible while the only consumers
+    /// compared NON-generic nominals — `struct P` converts to `Struct(id, [])` either way — and
+    /// was the actual reason generic impls failed bound checks: the impl's `W<T>` converted to
+    /// `W<>`, whose argument count never matched `W<Int32>`'s.
+    ///
+    /// `item` is the impl whose self type this is; its spans (parameter names) belong to that
+    /// impl's own file (DEV-069).
+    fn impl_self_ty_with_args(&self, item: ItemId, id: TypeId) -> Ty {
+        match &self.hir.ty(id).kind {
+            hir::TypeKind::Primitive(primitive) => Ty::Primitive(*primitive),
+            hir::TypeKind::Path { res, args, .. } => {
+                let converted: Vec<Ty> = args.as_ref().map_or_else(Vec::new, |list| {
+                    list.args
+                        .iter()
+                        .map(|arg| match arg {
+                            hir::GenericArg::Type(ty) => self.impl_self_ty_with_args(item, *ty),
+                            _ => Ty::Error,
+                        })
+                        .collect()
+                });
+                match res {
+                    Res::Item(nominal) => match &self.hir.item(*nominal).kind {
+                        hir::ItemKind::Struct { .. } => Ty::Struct(*nominal, converted),
+                        hir::ItemKind::Enum { .. } => Ty::Enum(*nominal, converted),
+                        _ => Ty::Error,
+                    },
+                    Res::TypeParam => {
+                        Ty::Param(self.item_text(item, self.hir.ty(id).span).to_string())
+                    }
+                    _ => Ty::Error,
+                }
+            }
+            hir::TypeKind::Ref { mutable, inner } => Ty::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.impl_self_ty_with_args(item, *inner)),
+            },
+            _ => Ty::Error,
         }
     }
 

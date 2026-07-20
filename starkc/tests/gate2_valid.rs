@@ -1216,3 +1216,86 @@ fn alias_cycles_direct_value_recursion_and_bare_unsized_types_are_rejected() {
         );
     }
 }
+
+/// DEV-072 (WP-C4.7-5): binding a non-`Copy` payload out of a scrutinee read THROUGH a reference
+/// moves ownership out of a borrow, which the ownership rules forbid. This passed the front end
+/// before — patterns were not inspected at the `match` at all — while MIR lowering refused it, so
+/// the two engines disagreed about whether the program was legal. The oracle's legacy clone
+/// semantics hid the unsoundness at runtime by consuming the clone rather than the referent.
+#[test]
+fn binding_a_non_copy_payload_through_a_reference_is_rejected() {
+    let source = "\
+        enum Holder { Empty, Val(String) }\n\
+        impl Holder {\n\
+            fn peek(&self) -> Int32 {\n\
+                match *self {\n\
+                    Holder::Val(s) => 1,\n\
+                    Holder::Empty => 0,\n\
+                }\n\
+            }\n\
+        }\n\
+        fn main() -> Unit {\n\
+            let h = Holder::Val(String::from(\"x\"));\n\
+            println(h.peek());\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("moveoutofborrow.stark", source);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0101")),
+        "expected E0101 (move out of a borrow via a match binding), got {diagnostics:?}"
+    );
+}
+
+/// The complementary POSITIVE cases, which must keep compiling: matching by reference is legal —
+/// it is only *taking ownership* that is not. A wildcard binds nothing, and a `Copy` payload is
+/// copied rather than moved. Without these, the fix above could be "correct" by rejecting all
+/// by-reference matching, which would break far more than it fixed.
+#[test]
+fn matching_through_a_reference_without_taking_ownership_is_accepted() {
+    let wildcard = "\
+        enum Holder { Empty, Val(String) }\n\
+        impl Holder {\n\
+            fn peek(&self) -> Int32 {\n\
+                match *self {\n\
+                    Holder::Val(_) => 1,\n\
+                    Holder::Empty => 0,\n\
+                }\n\
+            }\n\
+        }\n\
+        fn main() -> Unit {\n\
+            let h = Holder::Val(String::from(\"x\"));\n\
+            println(h.peek());\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("wildcard_ok.stark", wildcard);
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "a wildcard binds nothing and must stay legal, got {diagnostics:?}"
+    );
+
+    let copy_payload = "\
+        enum Tag { None, Num(Int32) }\n\
+        impl Tag {\n\
+            fn value(&self) -> Int32 {\n\
+                match *self {\n\
+                    Tag::Num(n) => n,\n\
+                    Tag::None => 0,\n\
+                }\n\
+            }\n\
+        }\n\
+        fn main() -> Unit {\n\
+            let t = Tag::Num(9);\n\
+            println(t.value());\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("copy_ok.stark", copy_payload);
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "a Copy payload is copied, not moved, and must stay legal, got {diagnostics:?}"
+    );
+}

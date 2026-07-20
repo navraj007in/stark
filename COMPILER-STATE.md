@@ -1,9 +1,29 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-3 — **WP-C4.7 correction package under way (3 of 9 increments done)**
+Updated: 2026-07-20 after WP-C4.7-5 — **WP-C4.7 correction package under way (5 of 9 increments done)**
 
 ## Position
-Gate: C4  Next: **WP-C4.7-4 (DEV-069 front-end multi-file span discipline — the largest increment
-and a C5 prerequisite)**.
+Gate: C4  Next: **WP-C4.7-6 (front-end `core-min` completions: `Box` deref, primitive `cmp`, and
+the literal-typing question — 6.3 is an OWNER DECISION)**.
+**WP-C4.7-5 DONE 2026-07-20 — DEV-072 and DEV-073 CLOSED.**
+*DEV-073* root cause sat one level below the two failing checks: `type_from_hir_without_diagnostics`
+DROPS generic arguments, which was invisible while its only consumers compared non-generic
+nominals but meant an impl's written `W<T>` became `W<>` and could never match `W<Int32>`. New
+`impl_self_ty_with_args` preserves them, and both the operator-bound and for-loop-iterable checks
+now unify through **`match_impl_type`** — the same one-way unification method resolution already
+used, which is exactly why method calls on generic nominals worked while operators and `for` loops
+on the same types did not. The iterable half also substitutes the associated `Item`
+(`type Item = T` on `Repeat<Int32>` → `Int32`). **MIR needed no change** — A1 had already made
+dispatch instantiation-ready, confirmed by the two differential tests this deviation had blocked.
+*DEV-072*: borrowck's `match` handling inspected no patterns at all; it now mirrors MIR's
+`scrutinee_reads_through_ref` exactly (so the engines agree by construction, which is what the
+deviation was) and reports E0101 for any non-`Copy` binding under it, recursing through nested
+and shorthand patterns. Wildcards, literals, and `Copy` bindings stay legal and are pinned by
+positive tests — matching by reference is fine, only taking ownership is not. The MIR guard is
+kept as documented defense in depth. Workspace 763/0/2; clippy clean 1.93/1.97.
+**WP-C4.7-4 DONE 2026-07-20 — DEV-069 CLOSED** (multi-file span discipline; one root cause, not
+four bugs: all three engines read spans against a single "current file", right for the item being
+CHECKED and wrong for every item LOOKED UP. `item_text` + a per-body file swap in the oracle,
+which had three body-execution funnels, not one). See the dated record.
 **WP-C4.7-3 DONE 2026-07-20 — MIR amendment A4 (CD-036), owner-approved under CE3 as drafted.**
 `Rvalue::LayoutQuery { kind: SizeOf|AlignOf, ty: MirTy }` (pure, dest `UInt64`) replaces WP-C4.6
 A4-1's type-ERASING lowering of `size_of`/`align_of` to `Const 8`. 06 classifies these as
@@ -971,7 +991,7 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-20 (post-WP-C4.7-4); every C4.x item below is owned by a WP-C4.7 increment:
+Open as of 2026-07-20 (post-WP-C4.7-5); every C4.x item below is owned by a WP-C4.7 increment:
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -984,18 +1004,15 @@ Open as of 2026-07-20 (post-WP-C4.7-4); every C4.x item below is owned by a WP-C
   differential tests. Owner: **WP-C4.7-7**.
 - DEV-071 — an all-three-variant `Ordering` match is wrongly flagged non-exhaustive
   (exhaustiveness gap; over-rejection only). Owner: **WP-C4.7-7**.
-- DEV-072 — binding a non-Copy payload out of a shared borrow passes borrowck (under-rejection;
-  MIR refuses it, so the two engines disagree). Owner: **WP-C4.7-5**.
-- DEV-073 — the checker does not match GENERIC impls in operator-trait/iterable bound checks
-  (over-rejection; both engines reject consistently, MIR dispatch is instantiation-ready).
-  Owner: **WP-C4.7-5**.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
 Closed 2026-07-20: DEV-070 (WP-C4.6 A2, both engines); DEV-074 (numbered by WP-C4.7-1 and closed
 at creation — the A4-2e oracle slice-message alignment, a governance gap, not a code defect);
 **DEV-069** (WP-C4.7-4 — per-item file resolution in typecheck/borrowck/oracle; this also
-DISCHARGES CD-033's C5 multi-file prerequisite).
+DISCHARGES CD-033's C5 multi-file prerequisite); **DEV-072** and **DEV-073** (WP-C4.7-5 —
+move-out-of-borrow via match bindings, now rejected E0101; generic impls matched through
+`match_impl_type` for operator and iterable bounds).
 Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
 CD-027 pre-C4.1 correction pass; DEV-064 (undetermined-generic rejection, WP-C4.5c, E0004);
 DEV-065/066 (C4.5b oracle fixes). See `KNOWN-DEVIATIONS.md`.
@@ -1962,3 +1979,60 @@ pass. Workspace 759 passed / 0 failed / 2 ignored (+3); fmt clean; clippy clean 
 FOLLOW-UP: none. C5 may now claim normal multi-file support.
 NEXT: WP-C4.7-5 — DEV-072 (borrowck: move-out-of-shared-borrow via match bindings) and DEV-073
 (typecheck: generic impls satisfying operator/iterable bounds).
+
+### WP-C4.7-5 — DEV-072 + DEV-073 (front-end typecheck/borrowck) — 2026-07-20
+DONE: both deviations CLOSED. They are opposite failures — one over-rejection, one
+under-rejection — and both came down to the front end and MIR answering the same question with
+different machinery.
+**DEV-073 (over-rejection, typecheck).** The visible symptoms were `impl<T> Eq for W<T>` not
+satisfying `W<Int32>: Eq` (E0500) and `impl<T> Iterator for Repeat<T>` not making `Repeat<Int32>`
+iterable (E0001). The root cause sat one level below both checks:
+`type_from_hir_without_diagnostics` **drops generic arguments** (`Ty::Struct(item, Vec::new())`).
+That is invisible while the only consumers compare NON-generic nominals — `struct P` converts to
+`Struct(id, [])` either way — but it meant an impl's written `W<T>` converted to `W<>`, whose
+argument count could never equal `W<Int32>`'s, so the exact-match test failed for every generic
+impl. Fix: a new `impl_self_ty_with_args(impl_item, ty)` that preserves the arguments and keeps
+parameters as `Ty::Param`, with both checks unifying through **`match_impl_type`** — the same
+one-way unification METHOD RESOLUTION already used for this exact question. That asymmetry is why
+method calls on generic nominals had always worked while operators and `for` loops on the same
+types did not; the two paths now agree by construction. The iterable half additionally applies
+the resulting substitution to the associated type, so `type Item = T` on `Repeat<Int32>` yields
+`Int32` instead of a dangling parameter.
+**MIR needed no change at all** — WP-C4.6 A1 had already made dispatch instantiation-ready, and
+both programs lowered and ran correctly the moment the checker admitted them. The plan predicted
+this and flagged that a lowering break would be a real finding; there was none.
+**DEV-072 (under-rejection, borrowck).** `borrowck.rs`'s `match` handling inspected no patterns
+whatsoever, so binding a non-`Copy` payload out of a scrutinee read through a reference — a move
+out of a borrow — passed the front end while MIR refused it. The two engines disagreed about
+whether the program was legal, and the oracle's legacy clone semantics hid the unsoundness at
+runtime by consuming the clone rather than the referent. Fix: borrowck now classifies the
+scrutinee with `scrutinee_reads_through_ref`, a deliberate mirror of MIR lowering's function of
+the same name (so the classification cannot drift again), and walks each arm's pattern
+recursively — nested tuple/array/struct patterns and shorthand struct-field bindings included —
+reporting E0101 for any non-`Copy` binding. Shared and mutable derefs both count.
+What stays LEGAL mattered as much as what does not: wildcards, literals, and unit-variant paths
+bind nothing, and `Copy` bindings copy rather than move. A fix that rejected all by-reference
+matching would have been "correct" against the repro while breaking far more than it repaired, so
+both positives are pinned by tests. The MIR guard is KEPT as defense in depth, with its message
+updated to say it is unreachable for checked programs — the charter's rule is that nothing
+unsupported reaches a backend silently, and an unreachable guard costs nothing.
+FILES: starkc/src/typecheck.rs (`impl_self_ty_with_args`, operator-bound + iterable checks),
+starkc/src/borrowck.rs (`scrutinee_reads_through_ref`, `reject_moves_out_of_borrow`),
+starkc/src/mir/lower.rs (guard comment only), starkc/tests/{mir_differential,gate2_valid}.rs,
+KNOWN-DEVIATIONS.md (both closed, both enumerations), WP-C4.7.md (tracker + the now-stale §1
+quirk notes struck), COMPILER-STATE.md.
+RULES: 03-Type-System operator traits and the `Iterator` for-protocol (DEV-073); the ownership
+rule that a borrow never transfers ownership (DEV-072). No spec text changed.
+DECISIONS: none at CE level.
+EVIDENCE: `mir_differential.rs::generic_impl_eq_dispatch_agrees` and
+`::generic_user_iterator_for_loop_agrees` — the two tests DEV-073 had blocked, added back per the
+plan; `gate2_valid.rs::binding_a_non_copy_payload_through_a_reference_is_rejected` (E0101) and
+`::matching_through_a_reference_without_taking_ownership_is_accepted` (wildcard + Copy positives);
+`match_deref_self_noncopy_wildcard_agree` still green unchanged. Workspace 763 passed / 0 failed /
+2 ignored (+4); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: none.
+NEXT: WP-C4.7-6 — front-end `core-min` completions. 6.1 `Box<T>` deref (report before implementing
+the MIR half if it needs a new MirTy/runtime op — §0.5 stop), 6.2 primitive `cmp`/`Ordering`,
+6.3 the integer-literal-typing question, which is an **OWNER DECISION** (check 03's literal
+inference rules first; if 03 forbids the coercion, record as spec-conformant and close as
+"not a bug").

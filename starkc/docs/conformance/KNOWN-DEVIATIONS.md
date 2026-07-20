@@ -1945,13 +1945,14 @@ WP-C1.5)
   untouched — the referent keeps ownership; no arm-end drops), while owned scrutinees keep the
   C4.5d consuming semantics — per the CE3 rule, consumption depends on the scrutinee, never a
   blanket "all matches borrow". Guards: a user-`Drop` scrutinee type and a non-Copy BOUND
-  payload through a reference stay clean-Unsupported (see DEV-072 — the front end fails to
+  payload through a reference stay clean-Unsupported (see DEV-072, since CLOSED — the front end
+  failed to
   reject that move-out-of-borrow).
 - **Regression evidence (the CE3 matrix):** `match_deref_self_twice_fieldless_agree`,
   `match_deref_self_copy_payload_agree`, `match_deref_self_noncopy_wildcard_agree`,
   `match_copy_scrutinee_reusable_agree`, `match_owned_drop_scrutinee_still_consumes_agree`.
 
-## DEV-072 — Binding a non-Copy payload through a shared reference passes borrowck [OPEN, found WP-C4.6 A2, 2026-07-20]
+## DEV-072 — Binding a non-Copy payload through a shared reference passes borrowck [CLOSED, WP-C4.7-5, 2026-07-20]
 
 - **What:** `match *self { Holder::Val(s) => … }` inside a `&self` method, where the payload
   is non-`Copy` (e.g. `String`), passes the front end — but binding `s` moves the payload out
@@ -1963,6 +1964,26 @@ WP-C1.5)
   reference"), so nothing mislowers. Owner: front end.
 - **Repro:** `enum Holder { Empty, Val(String) }` +
   `impl Holder { fn peek(&self) -> Int32 { match *self { Holder::Val(s) => 1, Holder::Empty => 0 } } }`.
+- **Resolution (WP-C4.7-5, 2026-07-20).** `borrowck.rs`'s `match` handling did not inspect
+  patterns at all. It now classifies the scrutinee with `scrutinee_reads_through_ref` — a
+  deliberate mirror of MIR lowering's function of the same name, so the two engines classify
+  by-reference matching identically **by construction** rather than by coincidence, which is
+  precisely what this deviation was — and walks each arm's pattern (recursively, including
+  nested tuple/array/struct patterns and shorthand struct-field bindings), reporting **E0101**
+  for any binding whose type is non-`Copy`. Both shared and mutable derefs count: ownership
+  cannot be moved out of either.
+  What stays legal is as important as what does not: wildcards, literals, and unit-variant path
+  patterns bind nothing, and `Copy` bindings copy rather than move — matching by reference is
+  fine, only *taking ownership* is not. A fix that rejected all by-reference matching would have
+  broken far more than it repaired, so both positive cases are pinned by tests.
+  The MIR guard is **kept as defense in depth** (its message now says so): it is unreachable for
+  checked programs, but the charter's rule is that nothing unsupported reaches a backend
+  silently, and an unreachable guard costs nothing while a missing one would mislower a move out
+  of a borrow.
+- **Regression evidence:** `tests/gate2_valid.rs::binding_a_non_copy_payload_through_a_reference_is_rejected`
+  (E0101) and `::matching_through_a_reference_without_taking_ownership_is_accepted` (wildcard and
+  `Copy`-payload positives); `mir_differential.rs::match_deref_self_noncopy_wildcard_agree`
+  continues to pass unchanged.
 
 ## DEV-071 — `match` on `Ordering` with all three variants is flagged non-exhaustive [OPEN, found WP-C4.6 A3-Ord, 2026-07-19]
 
@@ -1980,7 +2001,7 @@ WP-C1.5)
 - **Consequence for A3-Ord:** none for the dispatch/round-trip mechanism; only cosmetic (users
   must add a `_` arm to an all-variants `Ordering` match until fixed).
 
-## DEV-073 — Checker does not match GENERIC impls for operator/iterable bounds [OPEN, found WP-C4.6 A1, 2026-07-20]
+## DEV-073 — Checker does not match GENERIC impls for operator/iterable bounds [CLOSED, WP-C4.7-5, 2026-07-20]
 
 - **What:** the front end's bound-satisfaction checks do not recognize a generic impl as
   satisfying a concrete instantiation's bound: (a) `impl<T> Eq for W<T>` does not satisfy
@@ -1997,6 +2018,23 @@ WP-C1.5)
   instantiation-aware). Owner: front end.
 - **Repro:** `struct W<T> { v: T } impl<T> Eq for W<T> { fn eq(&self, o: &W<T>) -> Bool { true } }
   fn main() { let a = W { v: 1 }; if a == W { v: 2 } { println(1); } }` → E0500.
+- **Resolution (WP-C4.7-5, 2026-07-20).** The root cause was one level below the two failing
+  checks: `type_from_hir_without_diagnostics` **drops generic arguments**
+  (`Ty::Struct(item, Vec::new())`). That was invisible while its only consumers compared
+  NON-generic nominals — `struct P` converts to `Struct(id, [])` either way — but it meant an
+  impl's written `W<T>` converted to `W<>`, whose argument count could never match `W<Int32>`'s,
+  so the exact-match test in both checks failed for every generic impl. A new
+  `impl_self_ty_with_args(impl_item, ty)` preserves the arguments and keeps type parameters as
+  `Ty::Param`, and both checks now unify through **`match_impl_type`** — the same one-way
+  unification method resolution already used for this exact question, which is why method calls
+  on generic nominals had always worked while operators and `for` loops on the same types did
+  not. The iterable half additionally applies the resulting substitution to the associated
+  `Item`, so `type Item = T` on `Repeat<Int32>` yields `Int32` rather than a dangling parameter.
+- **MIR impact: none.** WP-C4.6 A1 had already made dispatch instantiation-ready; both programs
+  lowered and ran correctly the moment the checker admitted them, with no lowering change —
+  confirmed by the two differential tests below, which are the ones this deviation had blocked.
+- **Regression evidence:** `mir_differential.rs::generic_impl_eq_dispatch_agrees` and
+  `::generic_user_iterator_for_loop_agrees`.
 
 ## DEV-074 — HIR oracle slice-bound trap messages folded into the "out of bounds" family [CLOSED at creation, WP-C4.6 A4-2e, 2026-07-20; numbered by WP-C4.7-1]
 
@@ -2138,9 +2176,10 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-067 (WP-C4.7-7), DEV-071 (WP-C4.7-7), DEV-072 (WP-C4.7-5), DEV-073 (WP-C4.7-5). DEV-070 was closed by
+remainder), DEV-067 (WP-C4.7-7), DEV-071 (WP-C4.7-7). DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
-WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite. DEV-060 closed the same day it was made a C3-ENTRY blocker.
+WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
+closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching). DEV-060 closed the same day it was made a C3-ENTRY blocker.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping

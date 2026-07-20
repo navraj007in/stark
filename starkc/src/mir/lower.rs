@@ -6450,9 +6450,15 @@ impl<'a> FnLowerer<'a> {
         match &self.hir.pat(pat).kind {
             hir::PatKind::Wild | hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => Ok(()),
             hir::PatKind::Binding { name, local } => {
+                // DEV-072 CLOSED (WP-C4.7-5): borrowck now rejects this in the front end
+                // (E0101), using the SAME by-reference classification as `lower_match`, so a
+                // checked program can no longer reach here. The guard is kept deliberately as
+                // defense in depth — the charter's rule is that nothing unsupported reaches a
+                // backend silently, and a guard that is unreachable-by-construction costs
+                // nothing while a missing one would mislower a move out of a borrow.
                 if mode == MatchMode::ByRef && !self.is_copy(ty) {
                     return unsupported(
-                        "binding a non-Copy payload through a shared reference (front-end move-out-of-borrow gap)",
+                        "binding a non-Copy payload through a shared reference (unreachable for checked programs since DEV-072; defense in depth)",
                         pat_span,
                     );
                 }

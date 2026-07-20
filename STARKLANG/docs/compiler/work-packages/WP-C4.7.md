@@ -78,11 +78,12 @@ without prior context. Read §0 and §1 before touching code.
   `i = i + (1 as UInt64)`.
 - All-three-variant `Ordering` matches are wrongly non-exhaustive (DEV-071): use two variants
   + `_` until C4.7-7 fixes it.
-- Generic impls don't satisfy operator/iterable bounds (DEV-073): don't write `a == b` on
-  `W<Int32>` with `impl<T> Eq for W<T>`, or `for x in it` on a generic iterator struct, in
-  tests that must pass — until C4.7-5 fixes it.
-- `enum` `Eq` bodies can now `match *self` (DEV-070 is fixed), but binding a NON-Copy payload
-  through `&self` is front-end-accepted-but-MIR-rejected (DEV-072) until C4.7-5.
+- ~~Generic impls don't satisfy operator/iterable bounds (DEV-073)~~ — **fixed by C4.7-5**;
+  `a == b` on `W<Int32>` with `impl<T> Eq for W<T>` and `for x in it` on a generic iterator
+  struct both work now.
+- ~~Binding a NON-Copy payload through `&self` is front-end-accepted-but-MIR-rejected
+  (DEV-072)~~ — **fixed by C4.7-5**: both engines now reject it (E0101). Wildcards and `Copy`
+  payload bindings under a by-reference scrutinee remain legal, as they always were.
 
 ### Lowering machinery map (`starkc/src/mir/lower.rs`, ~7k lines)
 - `FnKey::{Top, ImplFn, TraitDefault}` all carry concrete type args; bodies lower once per
@@ -416,7 +417,14 @@ Order within the increment (each independently commit-able):
   so a typecheck-only commit would have left them red. 3 new tests + the multi-file differential
   WIDENED off its safe subset (cross-file struct/methods/literal/field/Drop, exact output
   pinned). Workspace 759/0/2.
-- C4.7-5: _pending_
+- C4.7-5: **DONE 2026-07-20 — DEV-072 + DEV-073 CLOSED.** DEV-073's real root cause was
+  `type_from_hir_without_diagnostics` dropping generic args (invisible for non-generic nominals);
+  new `impl_self_ty_with_args` + `match_impl_type` in BOTH the operator-bound and iterable checks,
+  with `Item` substitution for the latter. **MIR unchanged, as the plan predicted.** DEV-072:
+  borrowck mirrors MIR's `scrutinee_reads_through_ref` and rejects non-Copy bindings under it
+  (E0101), recursing through nested/shorthand patterns; wildcards and Copy bindings stay legal
+  (pinned); MIR guard kept as defense in depth with an updated message. 2 differential + 2
+  front-end tests; workspace 763/0/2.
 - C4.7-6: _pending_
 - C4.7-7: _pending_
 - C4.7-8: _pending_

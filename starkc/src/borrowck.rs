@@ -209,6 +209,96 @@ impl<'a> BorrowChecker<'a> {
         self.check_expr(expr_id);
     }
 
+    /// Whether a match scrutinee is read through a reference. Deliberately IDENTICAL to MIR
+    /// lowering's `scrutinee_reads_through_ref` (`mir/lower.rs`), so the two engines classify
+    /// by-reference matching the same way by construction rather than by coincidence — the
+    /// disagreement between them is exactly what DEV-072 was.
+    ///
+    /// Both shared and mutable derefs count: ownership cannot be moved out of either.
+    fn scrutinee_reads_through_ref(&self, expr: ExprId) -> bool {
+        match &self.hir.expr(expr).kind {
+            hir::ExprKind::Unary {
+                op: crate::ast::UnOp::Deref,
+                ..
+            } => true,
+            hir::ExprKind::Field { base, .. } | hir::ExprKind::TupleField { base, .. } => {
+                matches!(self.expr_types.get(base), Some(Ty::Ref { .. }))
+                    || self.scrutinee_reads_through_ref(*base)
+            }
+            _ => false,
+        }
+    }
+
+    /// DEV-072: report every binding in `pat` that would move a non-`Copy` value out of a
+    /// borrowed scrutinee. Wildcards, literals, and path (unit-variant) patterns bind nothing
+    /// and stay legal — matching by reference is fine, it is only *taking ownership* that is
+    /// not — as does any `Copy` binding, which copies rather than moves.
+    fn reject_moves_out_of_borrow(&mut self, pat: hir::PatId) {
+        let node = self.hir.pat(pat);
+        let span = node.span;
+        match &node.kind {
+            hir::PatKind::Wild | hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => {}
+            hir::PatKind::Binding { local, .. } => {
+                let is_non_copy = self
+                    .local_types
+                    .get(local)
+                    .is_some_and(|ty| !self.is_copy_type(ty));
+                if is_non_copy {
+                    self.push_diag(
+                        Diagnostic::error(
+                            format!(
+                                "cannot move out of a borrow: binding '{}' would take ownership \
+                                 of a non-Copy value read through a reference",
+                                self.text(span)
+                            ),
+                            span,
+                        )
+                        .with_code("E0101")
+                        .with_label("bind by reference or match a Copy field instead"),
+                    );
+                }
+            }
+            hir::PatKind::TupleVariant { pats, .. }
+            | hir::PatKind::Tuple(pats)
+            | hir::PatKind::Array(pats) => {
+                for pat in pats {
+                    self.reject_moves_out_of_borrow(*pat);
+                }
+            }
+            hir::PatKind::Struct { fields, .. } => {
+                for field in fields {
+                    match (field.pat, field.local) {
+                        (Some(pat), _) => self.reject_moves_out_of_borrow(pat),
+                        // Shorthand `Point { x }` binds without a sub-pattern node.
+                        (None, Some(local)) => {
+                            let is_non_copy = self
+                                .local_types
+                                .get(&local)
+                                .is_some_and(|ty| !self.is_copy_type(ty));
+                            if is_non_copy {
+                                self.push_diag(
+                                    Diagnostic::error(
+                                        format!(
+                                            "cannot move out of a borrow: binding '{}' would \
+                                             take ownership of a non-Copy field read through a \
+                                             reference",
+                                            self.text(field.name)
+                                        ),
+                                        field.name,
+                                    )
+                                    .with_code("E0101")
+                                    .with_label("bind by reference or match a Copy field instead"),
+                                );
+                            }
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+            hir::PatKind::Error => {}
+        }
+    }
+
     fn is_copy_type(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Primitive(primitive) => !matches!(
@@ -509,6 +599,19 @@ impl<'a> BorrowChecker<'a> {
             }
             hir::ExprKind::Match { scrutinee, arms } => {
                 self.check_expr(*scrutinee);
+                // DEV-072 (WP-C4.7-5): a scrutinee read THROUGH a reference is matched by
+                // reference — binding a non-`Copy` payload out of it would move ownership out of
+                // a borrow, which the ownership rules forbid (a borrow never transfers
+                // ownership). Nothing checked this before: patterns were not inspected here at
+                // all, so `match *self { Holder::Val(s) => … }` in a `&self` method passed the
+                // front end, and only MIR lowering refused it — the two engines disagreed about
+                // whether the program was legal. The oracle's legacy clone semantics masked the
+                // unsoundness at runtime (the CLONE was consumed, not the referent).
+                if self.scrutinee_reads_through_ref(*scrutinee) {
+                    for arm in arms {
+                        self.reject_moves_out_of_borrow(arm.pat);
+                    }
+                }
                 let moved_before = self.moved_places.clone();
                 let mut merged_moved = HashSet::new();
                 for arm in arms {

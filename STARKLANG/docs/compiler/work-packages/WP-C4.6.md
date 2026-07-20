@@ -204,7 +204,8 @@ PLACE: discriminant on the place, `Copy` payloads bound by copy, unbound payload
 (the referent keeps ownership), no arm-end drops. Owned scrutinees keep the C4.5d consuming
 semantics — consumption depends on the scrutinee, never a blanket "all matches borrow" (the
 CE3 rule). Guards: user-`Drop` scrutinee types and non-Copy BOUND payloads through a
-reference stay clean-Unsupported — the latter is **DEV-072** (front end fails to reject that
+reference stay clean-Unsupported — the latter is **DEV-072**, since CLOSED by WP-C4.7-5 (front
+end failed to reject that
 move-out-of-borrow; the oracle's legacy clone masked it). Char literal patterns lower as
 codepoint `SwitchInt` cases (verifier now accepts a Char scrutinee). Evidence — the CE3
 regression matrix: `match_deref_self_twice_fieldless_agree`, `match_deref_self_copy_payload_agree`,
@@ -252,7 +253,8 @@ substitution). Runtime container types (`Vec<T>` etc.) now convert in field/sign
 position. `*h.get()` (deref of a call result) materializes through `place_or_temp`.
 Residuals, all clean-Unsupported: a method's OWN generic parameters (`fn map<U>`); non-bare
 written self arguments (`impl<T> Holder<Vec<T>>`); a user Iterator yielding a droppable Item
-(needs per-iteration drop elaboration). **Found DEV-073** (front end): the checker does not
+(needs per-iteration drop elaboration). **Found DEV-073** (front end; CLOSED by WP-C4.7-5): the
+checker did not
 match GENERIC impls in operator-trait/iterable bound checks (`impl<T> Eq for W<T>` ⊬
 `W<Int32>: Eq`; `impl<T> Iterator for Repeat<T>` not recognized by for-loops) — both engines
 reject consistently, so no differential divergence; the MIR dispatch is instantiation-ready
@@ -272,8 +274,10 @@ front-end gaps carried past the exit, none silent:**
   sites), DEV-069 (multi-file span discipline — **closed by WP-C4.7-4, 2026-07-20**; was a
   prerequisite for the C5 multi-file claim per
   CD-033), DEV-071 (Ordering exhaustiveness), DEV-072 (move-out-of-borrow via match bindings
-  passes borrowck), DEV-073 (generic impls unmatched in operator/iterable bound checks),
-  `Box` deref, primitive `Ordering::cmp` surface, `Vec::get` literal-typing quirk.
+  passes borrowck — **closed by WP-C4.7-5, 2026-07-20**), DEV-073 (generic impls unmatched in
+  operator/iterable bound checks — **closed by WP-C4.7-5, 2026-07-20**),
+  `Box` deref, primitive `Ordering::cmp` surface, `Vec::get` literal-typing quirk (all three
+  owned by WP-C4.7-6).
 - std-full ops explicitly reserved per CD-033: `HashSet`, `HashMap::values`/`remove`,
   `Vec::contains`.
 Per CD-033: "C4 closes only when all required classes are green and no normative Core or

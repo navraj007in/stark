@@ -1996,3 +1996,45 @@ fn user_iterator_for_loop_agrees() {
             .to_string(),
     );
 }
+
+/// DEV-073 (WP-C4.7-5): a GENERIC impl satisfies a concrete instantiation's operator bound —
+/// `impl<T> Eq for W<T>` makes `W<Int32> == W<Int32>` legal. The checker used to reject this
+/// (E0500) because it demanded an exact match against an impl self type whose generic arguments
+/// had been dropped, so this test could not exist. MIR dispatch was already instantiation-ready
+/// from WP-C4.6 A1 and needed no change — which is what this test confirms.
+#[test]
+fn generic_impl_eq_dispatch_agrees() {
+    differential(
+        "generic_eq.stark",
+        "struct W<T> { v: T } \
+         impl<T> Eq for W<T> { fn eq(&self, other: &W<T>) -> Bool { true } } \
+         fn main() { \
+             let a = W { v: 1 }; \
+             let b = W { v: 2 }; \
+             if a == b { println(1); } else { println(0); } \
+         }"
+        .to_string(),
+    );
+}
+
+/// DEV-073, the iterable half: `impl<T> Iterator for Repeat<T>` makes `Repeat<Int32>` usable in a
+/// `for` loop, with the associated `Item = T` substituted to the instantiation's `Int32`. Also
+/// rejected (E0001) before the fix.
+#[test]
+fn generic_user_iterator_for_loop_agrees() {
+    differential(
+        "generic_iter.stark",
+        "struct Repeat<T> { item: T, left: Int32 } \
+         impl<T> Iterator for Repeat<T> { \
+             type Item = T; \
+             fn next(&mut self) -> Option<T> { \
+                 if self.left == 0 { None } else { self.left = self.left - 1; Some(self.item) } \
+             } \
+         } \
+         fn main() { \
+             let mut r = Repeat { item: 7, left: 3 }; \
+             for x in r { println(x); } \
+         }"
+        .to_string(),
+    );
+}
