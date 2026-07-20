@@ -5984,6 +5984,15 @@ mod tests {
     use crate::resolve::resolve;
     use crate::typecheck;
 
+    /// Type-check only, returning the diagnostics — for tests that assert a REJECTION rather
+    /// than an execution result.
+    fn type_diagnostics(source: &str) -> Vec<crate::diag::Diagnostic> {
+        let file = Arc::new(SourceFile::new("test.stark", source));
+        let (ast, _) = parse(&file, ParseMode::Program);
+        let (hir, _) = resolve(&ast, file.clone());
+        typecheck::analyze(&hir, file).diagnostics
+    }
+
     fn execute(source: &str) -> Result<Execution, RuntimeError> {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, parse_diags) = parse(&file, ParseMode::Program);
@@ -7291,17 +7300,28 @@ mod tests {
         assert_eq!(execution.output, "Some(0.1)\nOk(0.1)\n");
     }
 
+    /// WP-C4.7-9 audit: this test used to print a bare `struct` and assert the debug-ish form
+    /// `{x: 0.1}`. That relied on an OVER-ACCEPTANCE — 06-Standard-Library says `Display` is not
+    /// a syntax hook and user types must implement it, so `println(p)` on a `Display`-less struct
+    /// is now a compile-time error, and the reference interpreter no longer invents a format for
+    /// one. Its original subject (a `Float32` nested in an aggregate keeps `f32` round-trip
+    /// digits) is unchanged and covered by the `Option`/`Result` and tuple siblings above and
+    /// below, which exercise the same `Display for Value` width-selection path.
     #[test]
-    fn float32_nested_in_struct_uses_float32_round_trip_digits() {
-        let execution = execute(
+    fn printing_a_struct_without_a_display_impl_is_rejected() {
+        let diagnostics = type_diagnostics(
             "struct Point { x: Float32 } \
              fn main() { \
                  let p = Point { x: 0.1f32 }; \
                  println(p); \
              }",
-        )
-        .unwrap();
-        assert_eq!(execution.output, "{x: 0.1}\n");
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("does not implement 'Display'")),
+            "expected a Display rejection, got {diagnostics:?}"
+        );
     }
 
     /// A Float32 arithmetic result must keep its width tag through the operation (not just at

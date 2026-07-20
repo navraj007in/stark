@@ -2835,3 +2835,52 @@ fn method_own_generics_agree() {
         .to_string(),
     );
 }
+
+/// WP-C4.7-9 audit: `for x in a` over a fixed-length ARRAY. The checker accepted it and the
+/// oracle ran it while MIR refused — an internal inconsistency rather than a language boundary,
+/// which is exactly the shape the audit exists to find. Lowered as a counting loop reading one
+/// element per iteration through the ordinary `CheckIndex` proof discipline.
+#[test]
+fn for_over_array_agrees() {
+    differential(
+        "for_array.stark",
+        "fn main() { \
+             let a = [1, 2, 3]; \
+             let mut total = 0; \
+             for x in a { println(x); total = total + x; } \
+             println(total); \
+         }"
+        .to_string(),
+    );
+    // break/continue through the array loop, and a single-element array (boundary).
+    differential(
+        "for_array_control.stark",
+        "fn main() { \
+             let a = [10, 20, 30, 40]; \
+             for x in a { if x == 30 { break; } if x == 20 { continue; } println(x); } \
+             let one = [7]; \
+             for y in one { println(y); } \
+         }"
+        .to_string(),
+    );
+}
+
+/// WP-C4.7-9 audit: a trait DEFAULT method with its own generic parameters. WP-C4.7-8.4 gave the
+/// selected-impl path fresh per-call-site variables; the trait-default path had the same gap in
+/// the checker AND no `method_args` on `FnKey::TraitDefault` in lowering. Two instantiations, so
+/// the monomorphisation is exercised rather than just the acceptance.
+#[test]
+fn trait_default_method_own_generics_agree() {
+    differential(
+        "trait_default_generic.stark",
+        "trait Speak { fn say<U>(&self, x: U) -> U { x } } \
+         struct D { n: Int32 } \
+         impl Speak for D {} \
+         fn main() { \
+             let d = D { n: 1 }; \
+             println(d.say(5)); \
+             println(d.say(true)); \
+         }"
+        .to_string(),
+    );
+}

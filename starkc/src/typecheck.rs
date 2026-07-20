@@ -138,6 +138,9 @@ pub struct TypeChecker<'a> {
     /// 'Int32'". These vars are integer-KINDED: they unify only with primitive integer types,
     /// and binding one range-checks the value.
     int_literal_vars: HashMap<TypeVarId, (i128, Span)>,
+    /// WP-C4.7-9 audit: deferred `print`/`println` argument types, checked for `Display` after
+    /// inference settles (the argument may still be a variable while the body is being checked).
+    display_checks: Vec<(Ty, Span)>,
     var_count: u32,
 
     // Side tables
@@ -250,6 +253,7 @@ pub fn analyze_with_options(
         diags: Vec::new(),
         subst: HashMap::new(),
         int_literal_vars: HashMap::new(),
+        display_checks: Vec::new(),
         var_count: 0,
         expr_types: HashMap::new(),
         local_types: HashMap::new(),
@@ -2597,6 +2601,27 @@ impl<'a> TypeChecker<'a> {
         // see a concrete type rather than an open variable.
         self.default_unconstrained_int_literals();
 
+        // WP-C4.7-9 audit: `print`/`println` require a `Display`-able argument.
+        let display = std::mem::take(&mut self.display_checks);
+        for (ty, span) in display {
+            let resolved = self.resolve(&ty);
+            if matches!(resolved, Ty::Error) || ty_contains_infer(&resolved) {
+                continue; // already failed, or undetermined — no cascade
+            }
+            if !self.type_is_displayable(&resolved) {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!(
+                            "type '{}' cannot be printed: it does not implement 'Display'",
+                            self.ty_to_string(&resolved)
+                        ),
+                        span,
+                    )
+                    .with_code("E0500"),
+                );
+            }
+        }
+
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
         for (concrete_ty, bounds_list, span, enclosing) in bounds {
@@ -4042,6 +4067,19 @@ impl<'a> TypeChecker<'a> {
                     } else {
                         let callee_ty = self.check_expr(*callee);
                         let arg_tys: Vec<Ty> = args.iter().map(|&a| self.check_expr(a)).collect();
+                        // WP-C4.7-9 audit: `print`/`println` type their argument as a fresh
+                        // inference variable, so they accepted ANY type — including a user struct
+                        // with no `Display` impl. 06-Standard-Library says `Display` is not a
+                        // syntax hook and user types must implement it, so that was an
+                        // over-acceptance: the checker admitted a program the oracle then
+                        // rendered in an unspecified debug-ish form and MIR refused outright.
+                        // Deferred to Pass 3 so inference has settled first.
+                        if matches!(builtin, Builtin::Print | Builtin::Println) {
+                            if let (Some(ty), Some(arg)) = (arg_tys.first(), args.first()) {
+                                self.display_checks
+                                    .push((ty.clone(), self.hir.expr(*arg).span));
+                            }
+                        }
                         match self.resolve(&callee_ty) {
                             Ty::Fn { params, ret } => {
                                 if params.len() != arg_tys.len() {
@@ -5920,7 +5958,39 @@ impl<'a> TypeChecker<'a> {
             None
         };
 
-        if let Some((sig, map, impl_self_ty)) = default_fallback {
+        if let Some((sig, mut map, impl_self_ty)) = default_fallback {
+            // WP-C4.7-9 audit: a TRAIT-DEFAULT method may declare its own generic parameters
+            // too (`02:64`). WP-C4.7-8.4 gave the selected-impl path fresh per-call-site
+            // variables for those; this path had the same gap, so `d.say(5)` on an
+            // un-overridden `fn say<U>(&self, x: U) -> U` still failed with `U` rigid.
+            if let Some(args) = turbofish {
+                self.validate_generic_arity(sig.generics.len(), args.args.len(), call_span);
+                for (param, arg) in sig.generics.iter().zip(&args.args) {
+                    let ty = match arg {
+                        hir::GenericArg::Type(ty) => self.convert_hir_type(*ty),
+                        _ => Ty::Error,
+                    };
+                    map.insert(self.text(param.name).to_string(), ty);
+                }
+            } else {
+                for param in &sig.generics {
+                    let infer = self.new_type_var();
+                    map.insert(self.text(param.name).to_string(), infer);
+                }
+            }
+            // Record this call site's method-level instantiation for MIR monomorphisation, as
+            // the selected-impl path does.
+            if !sig.generics.is_empty() {
+                let ordered: Vec<Ty> = sig
+                    .generics
+                    .iter()
+                    .map(|param| {
+                        let name = self.text(param.name).to_string();
+                        map.get(&name).cloned().unwrap_or(Ty::Error)
+                    })
+                    .collect();
+                self.generic_insts.insert(call_expr, ordered);
+            }
             if matches!(sig.receiver, Some(hir::Receiver::RefMut))
                 && !self.is_mutable_place(base_expr)
             {
@@ -7474,6 +7544,27 @@ fn direct_value_cycle(
     });
     active.remove(&current);
     found
+}
+
+impl<'a> TypeChecker<'a> {
+    /// WP-C4.7-9 audit: whether a value of this type can be given to `print`/`println` — a
+    /// standard-library `Display` type, or a user nominal with its own `Display` impl.
+    fn type_is_displayable(&self, ty: &Ty) -> bool {
+        if standard_display_type(ty) {
+            return true;
+        }
+        match ty {
+            // Containers print elementwise in the reference implementation.
+            Ty::Core(CoreType::Option | CoreType::Result | CoreType::Vec, args) => {
+                args.iter().all(|a| self.type_is_displayable(a))
+            }
+            Ty::Tuple(elems) => elems.iter().all(|e| self.type_is_displayable(e)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => self.type_is_displayable(elem),
+            Ty::Struct(..) | Ty::Enum(..) => self.ty_satisfies_operator_bound(ty, "Display"),
+            Ty::Param(_) => true, // discharged by the caller's own bound
+            _ => false,
+        }
+    }
 }
 
 fn standard_display_type(ty: &Ty) -> bool {

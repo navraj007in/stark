@@ -1547,3 +1547,40 @@ fn floats_compare_but_do_not_satisfy_ord_bounds() {
         "Float64 must not satisfy a T: Ord bound, got {diagnostics:?}"
     );
 }
+
+/// WP-C4.7-9 audit: `print`/`println` typed their argument as a fresh inference variable and so
+/// accepted ANY type, including a user struct with no `Display` impl. 06-Standard-Library says
+/// `Display` is not a syntax hook and user types must implement it, so that was an
+/// over-acceptance — the checker admitted a program the oracle rendered in an unspecified
+/// debug-ish form and MIR refused outright. Three engines, three answers, for a program the spec
+/// says is invalid.
+#[test]
+fn printing_requires_display() {
+    let no_impl = "struct P { x: Int32 }\n\
+                   fn main() -> Unit { let p = P { x: 1 }; println(p); }\n";
+    let diagnostics = analyze("no_display.stark", no_impl.to_string());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("does not implement 'Display'")),
+        "printing a Display-less struct must be rejected, got {diagnostics:?}"
+    );
+
+    // The standard displayable types, and containers of them, must keep working — the check has
+    // to reject the missing impl, not printing in general.
+    let ok = "fn main() -> Unit {\n\
+        println(1);\n\
+        println(true);\n\
+        println('c');\n\
+        println(\"s\");\n\
+        println(1.5);\n\
+        let o: Option<Int32> = Some(3);\n\
+        println(o);\n\
+        println((1, true));\n\
+    }\n";
+    let diagnostics = analyze("display_ok.stark", ok.to_string());
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "standard displayable types must still print, got {diagnostics:?}"
+    );
+}

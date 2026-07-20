@@ -473,6 +473,10 @@ pub enum FnKey {
         member: u32,
         self_item: ItemId,
         self_args: Vec<MirTy>,
+        /// WP-C4.7-9 audit: the DEFAULT METHOD's own generic arguments for this instantiation
+        /// (empty when it declares none) — the `TraitDefault` counterpart of
+        /// `ImplFn::method_args`.
+        method_args: Vec<MirTy>,
     },
 }
 
@@ -584,9 +588,22 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             member,
             self_item,
             self_args,
+            method_args,
         } => {
             let trait_name = item_name_text(hir, meta, *trait_item).unwrap_or("?");
             let type_name = item_name_text(hir, meta, *self_item).unwrap_or("?");
+            let method_text = if method_args.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "::<{}>",
+                    method_args
+                        .iter()
+                        .map(super::dump_ty)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
             let ItemKind::Trait { items, .. } = &hir.item(*trait_item).kind else {
                 return unsupported("FnKey::TraitDefault on non-trait", span0);
             };
@@ -596,7 +613,9 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             let method = meta.item_text(*trait_item, sig.name);
             let prefix = meta.symbol_prefix(*self_item);
             if self_args.is_empty() {
-                Ok(format!("{trait_name}::{method}@[{prefix}{type_name}]"))
+                Ok(format!(
+                    "{trait_name}::{method}@[{prefix}{type_name}]{method_text}"
+                ))
             } else {
                 let args_text = self_args
                     .iter()
@@ -604,7 +623,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                     .collect::<Vec<_>>()
                     .join(", ");
                 Ok(format!(
-                    "{trait_name}::{method}@[{prefix}{type_name}<{args_text}>]"
+                    "{trait_name}::{method}@[{prefix}{type_name}<{args_text}>]{method_text}"
                 ))
             }
         }
@@ -1626,6 +1645,7 @@ impl<'a> FnLowerer<'a> {
                 member,
                 self_item,
                 self_args,
+                ..
             } => {
                 let ItemKind::Trait { items, .. } = &self.hir.item(*trait_item).kind else {
                     return unsupported("FnKey::TraitDefault on non-trait", span0);
@@ -1909,9 +1929,19 @@ impl<'a> FnLowerer<'a> {
                         sig_span,
                     );
                 }
-                _ => {
+                // WP-C4.7-9 audit: a trait DEFAULT method's own generic parameters substitute
+                // from the key's `method_args`, exactly as an impl method's do.
+                FnKey::TraitDefault { method_args, .. }
+                    if method_args.len() == sig.generics.len() =>
+                {
+                    for (param, ty) in sig.generics.iter().zip(method_args.iter()) {
+                        self.param_subst
+                            .insert(self.text(param.name).to_string(), ty.clone());
+                    }
+                }
+                FnKey::TraitDefault { .. } => {
                     return unsupported(
-                        "trait-default method with its own generic parameters (a later increment)",
+                        "generic trait-default method instantiated with the wrong number of type arguments",
                         sig_span,
                     );
                 }
@@ -2427,6 +2457,14 @@ impl<'a> FnLowerer<'a> {
                         if matches!(self.tables.expr_types.get(iter), Some(Ty::Range(_))) {
                             return self
                                 .lower_for_over_range_value(*var, *local, *iter, *body, span);
+                        }
+                        // WP-C4.7-9 audit: `for x in a` over a fixed-length ARRAY. The checker
+                        // accepts it and the oracle runs it, so MIR refusing it was an internal
+                        // inconsistency, not a language boundary.
+                        if let MirTy::Array(elem, len) = &iter_ty {
+                            let (elem, len) = ((**elem).clone(), *len);
+                            return self
+                                .lower_for_over_array(*var, *local, *iter, *body, elem, len, span);
                         }
                         return unsupported(
                             "for over a non-range, non-Vec iterator (a later increment)",
@@ -4458,6 +4496,8 @@ impl<'a> FnLowerer<'a> {
                                         member: member as u32,
                                         self_item: nominal,
                                         self_args: type_args.to_vec(),
+                                        // Filled by the CALL SITE, like `ImplFn::method_args`.
+                                        method_args: Vec::new(),
                                     },
                                     sig.receiver,
                                 ));
@@ -4587,27 +4627,38 @@ impl<'a> FnLowerer<'a> {
         // call, so they come from the checker's recording keyed by this call expression. The
         // recorded types are grounded but may still mention the ENCLOSING body's parameters, so
         // the active substitution applies — the same treatment top-level generic calls get.
+        let recorded_method_args = match self.tables.generic_insts.get(&call_expr) {
+            Some(tys) => tys
+                .iter()
+                .map(|t| self.mir_ty(t, span))
+                .collect::<Result<Vec<_>, _>>()?,
+            None => Vec::new(),
+        };
         let key = match key {
             FnKey::ImplFn {
                 impl_item,
                 member,
                 type_args,
                 ..
-            } => {
-                let method_args = match self.tables.generic_insts.get(&call_expr) {
-                    Some(tys) => tys
-                        .iter()
-                        .map(|t| self.mir_ty(t, span))
-                        .collect::<Result<Vec<_>, _>>()?,
-                    None => Vec::new(),
-                };
-                FnKey::ImplFn {
-                    impl_item,
-                    member,
-                    type_args,
-                    method_args,
-                }
-            }
+            } => FnKey::ImplFn {
+                impl_item,
+                member,
+                type_args,
+                method_args: recorded_method_args,
+            },
+            FnKey::TraitDefault {
+                trait_item,
+                member,
+                self_item,
+                self_args,
+                ..
+            } => FnKey::TraitDefault {
+                trait_item,
+                member,
+                self_item,
+                self_args,
+                method_args: recorded_method_args,
+            },
             other => other,
         };
         // Receiver operand FIRST (normative order), before arguments. C4.5b-2: real borrows.
@@ -5630,6 +5681,150 @@ impl<'a> FnLowerer<'a> {
     /// A1: `for x in it` over a USER `Iterator` impl — desugar to a loop of `it.next()`
     /// instance calls (`&mut self`), switching on the returned `Option<Item>` discriminant and
     /// binding the loop variable BY VALUE from the `Some` payload (matching the oracle).
+    #[allow(clippy::too_many_arguments)]
+    /// WP-C4.7-9 audit: `for x in a` over a fixed-length array — a counting loop that reads one
+    /// element per iteration through the ordinary `CheckIndex` proof discipline.
+    ///
+    /// Elements are read by COPY. Iterating by value out of an array would move each element out
+    /// of the same local, and `Projection::Index` necessarily collapses to the whole local in the
+    /// verifier's move dataflow (a dynamic proof names no statically-known sub-place), so the
+    /// next iteration's `CheckIndex` would read a possibly-moved place. That is the same root
+    /// cause recorded for droppable array PATTERNS, and it needs a constant-index projection
+    /// form (a CE3 shape change) rather than a workaround here — so a droppable element type is
+    /// a clean, precise `Unsupported`.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_for_over_array(
+        &mut self,
+        var: Span,
+        var_local: crate::hir::LocalId,
+        iter: ExprId,
+        body: hir::BlockId,
+        elem: MirTy,
+        len: u64,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if !self.is_copy(&elem) {
+            return unsupported(
+                "for over an array with a non-Copy element type (needs a constant-index projection form; CE3)",
+                span,
+            );
+        }
+        let info = self.synthetic(span, SyntheticKind::ForLoopDesugar);
+        // The array itself, materialized once (EXEC-FOR-001: the iterable evaluates once).
+        let arr_ty = MirTy::Array(Box::new(elem.clone()), len);
+        let arr_place = self.place_or_temp(iter, &arr_ty, span)?;
+        // Counter.
+        let idx = self.new_temp(MirTy::Int64);
+        self.emit(
+            Statement::Assign(
+                Place::local(idx),
+                Rvalue::Use(Operand::Const(Constant::Int(0, MirTy::Int64))),
+            ),
+            info,
+        );
+        let header = self.new_block();
+        let body_block = self.new_block();
+        let exit = self.new_block();
+        self.terminate(Terminator::Goto { target: header }, info, header);
+        // header: `idx < len` ?
+        let cond = self.new_temp(MirTy::Bool);
+        self.emit(
+            Statement::Assign(
+                Place::local(cond),
+                Rvalue::BinOp(
+                    MirBinOp::Lt,
+                    Operand::Copy(Place::local(idx)),
+                    Operand::Const(Constant::Int(i128::from(len), MirTy::Int64)),
+                ),
+            ),
+            info,
+        );
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(cond)),
+                arms: vec![(1, body_block)],
+                otherwise: exit,
+            },
+            info,
+            body_block,
+        );
+        // body: bind `var` to `arr[idx]` (proof-checked), run the body, increment, loop.
+        self.locals.push(LocalDecl {
+            ty: MirTy::Int64,
+            kind: LocalKind::IndexProof,
+        });
+        let proof = LocalId((self.locals.len() - 1) as u32);
+        let after_check = self.new_block();
+        self.terminate(
+            Terminator::Checked {
+                op: CheckedOp::CheckIndex,
+                args: vec![
+                    Operand::Copy(arr_place.clone()),
+                    Operand::Copy(Place::local(idx)),
+                ],
+                dest: proof,
+                target: after_check,
+                trap: TrapInfo {
+                    category: TrapCategory::IndexOutOfBounds,
+                    source: info,
+                },
+            },
+            info,
+            after_check,
+        );
+        let mut elem_place = arr_place;
+        elem_place.projection.push(Projection::Index(proof));
+        self.locals.push(LocalDecl {
+            ty: elem.clone(),
+            kind: LocalKind::User(self.text(var).to_string()),
+        });
+        let bound = LocalId((self.locals.len() - 1) as u32);
+        self.local_map.insert(var_local.0, bound);
+        self.emit(
+            Statement::Assign(Place::local(bound), Rvalue::Use(Operand::Copy(elem_place))),
+            info,
+        );
+        // `continue` must reach the INCREMENT, not the header — jumping straight back would
+        // re-test the same index forever. So the loop's continue target is a latch block that
+        // increments and then falls into the header. (Caught by the control-flow test: without
+        // it, `continue` spun until the interpreter's fuel ran out.)
+        let latch = self.new_block();
+        let scope_depth = self.scopes.len();
+        self.loops.push(LoopTargets {
+            continue_target: latch,
+            break_target: exit,
+            scope_depth,
+            value_target: None,
+        });
+        self.scopes.push(Vec::new());
+        self.lower_block_value(body)?;
+        self.emit_scope_drops_from(scope_depth, span);
+        self.scopes.pop();
+        self.loops.pop();
+        self.terminate(Terminator::Goto { target: latch }, info, latch);
+        // latch: idx += 1 — a checked add, like every other integer arithmetic in MIR.
+        let after_incr = self.new_block();
+        self.terminate(
+            Terminator::Checked {
+                op: CheckedOp::Add,
+                args: vec![
+                    Operand::Copy(Place::local(idx)),
+                    Operand::Const(Constant::Int(1, MirTy::Int64)),
+                ],
+                dest: idx,
+                target: after_incr,
+                trap: TrapInfo {
+                    category: TrapCategory::IntegerOverflow,
+                    source: info,
+                },
+            },
+            info,
+            after_incr,
+        );
+        self.terminate(Terminator::Goto { target: header }, info, exit);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn lower_for_over_user_iter(
         &mut self,
@@ -7081,10 +7276,39 @@ impl<'a> FnLowerer<'a> {
                 }
                 Ok(())
             }
-            hir::PatKind::Array(_) => unsupported(
-                "droppable array scrutinee under a nested pattern (recorded residual)",
-                pat_span,
-            ),
+            // Array patterns are normative (`02:291`) and decompose exactly like tuples: each
+            // element position is a sub-place, and whatever the pattern does not bind is
+            // discarded and owes a destructor. `array_elem_place` mints the index proof an
+            // element place needs — the same helper the binding walk uses.
+            hir::PatKind::Array(pats) => {
+                let pats = pats.clone();
+                let elem_ty = match ty {
+                    MirTy::Array(elem, _) => (**elem).clone(),
+                    _ => return unsupported("array pattern on non-array", pat_span),
+                };
+                if self.ty_needs_drop(&elem_ty, span)? {
+                    // RECORDED RESIDUAL (WP-C4.7-9 audit). Array element places are reached
+                    // through `Projection::Index(ProofLocal)`, and the only way to mint a proof
+                    // is a `CheckIndex` terminator — which READS the array to validate the bound.
+                    // Moving one element out therefore poisons the whole local for V-MOVE-1
+                    // (`Index` collapses to the whole local in `moved_key`, necessarily: a
+                    // dynamic proof names no statically-known sub-place), so the NEXT element's
+                    // `CheckIndex` reads a possibly-moved place. This is not a missing arm; it
+                    // needs a CONSTANT-index projection form that carries no proof — which the
+                    // contract does not have, and adding one is a MIR shape change requiring
+                    // CE3 approval (§0.5). Non-droppable array patterns are unaffected and
+                    // lower normally.
+                    return unsupported(
+                        "droppable element in an array pattern (needs a constant-index projection form; CE3)",
+                        pat_span,
+                    );
+                }
+                for (i, &sub) in pats.iter().enumerate() {
+                    let sub_place = self.array_elem_place(place, ty, i, span)?;
+                    self.consume_unbound_leaves(sub, &sub_place, &elem_ty, span)?;
+                }
+                Ok(())
+            }
             hir::PatKind::Error => Ok(()),
         }
     }

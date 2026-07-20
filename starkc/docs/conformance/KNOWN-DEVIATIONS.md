@@ -2369,6 +2369,62 @@ WP-C1.5)
   identically (the checker refuses before either interpreter sees it). Owner: unassigned;
   C4-exit-report input.
 
+## DEV-084 — `print`/`println` accepted any type, including one with no `Display` impl [CLOSED, WP-C4.7-9 audit, 2026-07-20]
+
+- **What:** `print`/`println` typed their argument as a fresh inference variable, so they accepted
+  **any** type. 06-Standard-Library states `Display` is not a syntax hook and that user types must
+  implement it, so this was an over-acceptance.
+- **Three engines, three answers, for a program the spec says is invalid:** the checker accepted
+  `println(p)` on a `Display`-less struct; the HIR oracle rendered it in an unspecified debug-ish
+  form (`{x: 1}`); MIR refused it outright ("print/println of this type"). None of the three was
+  wrong in isolation — the CHECKER was, by admitting it at all.
+- **Resolution (WP-C4.7-9 audit):** the argument type is recorded and checked after inference
+  settles (deferred to the same pass as the trait-bound checks, so an argument still under
+  inference is not judged early). A standard `Display` type, a container of displayable types, or
+  a nominal with its own `Display` impl passes; anything else is E0500.
+- **Test impact, recorded because it is a behaviour change:** one interpreter test
+  (`float32_nested_in_struct_uses_float32_round_trip_digits`) printed a bare struct to observe
+  `Float32` digits and depended on the over-acceptance. It now asserts the REJECTION; its original
+  subject — a `Float32` nested in an aggregate keeps `f32` round-trip digits — is unchanged and
+  already covered by the `Option`/`Result` and tuple siblings exercising the same
+  width-selection path.
+- **Regression evidence:** `gate2_valid.rs::printing_requires_display` (rejection, plus the
+  standard displayable types and containers still printing) and
+  `interp.rs::printing_a_struct_without_a_display_impl_is_rejected`.
+
+## DEV-085 — `for` over a fixed-length array was unsupported in MIR only [CLOSED, WP-C4.7-9 audit, 2026-07-20]
+
+- **What:** the checker accepted `for x in a` over an array and the HIR oracle executed it, while
+  MIR refused ("for over a non-range, non-Vec iterator"). An internal inconsistency between
+  engines, not a language boundary.
+- **Resolution:** lowered as a counting loop reading one element per iteration through the
+  ordinary `CheckIndex` proof discipline. Elements are read by COPY; a non-`Copy` element type is
+  a precise `Unsupported` for the reason recorded in DEV-086.
+- **A bug this found in its own implementation:** `continue` initially targeted the loop header
+  directly, skipping the counter increment and spinning forever (the MIR interpreter's fuel limit
+  caught it). The continue target is now a latch block that increments first. The control-flow
+  test that exposed it was written before the fix, not after.
+- **Regression evidence:** `mir_differential.rs::for_over_array_agrees` (values and a running
+  total; plus `break`/`continue` and a single-element array).
+
+## DEV-086 — Droppable elements in array patterns and by-value array iteration [OPEN, found WP-C4.7-9 audit, 2026-07-20]
+
+- **What:** an array element place is reached through `Projection::Index(ProofLocal)`, and the
+  only way to mint a proof is a `CheckIndex` terminator — which READS the array to validate the
+  bound. Moving one element out therefore poisons the whole local for V-MOVE-1 (`Index` must
+  collapse to the whole local in `moved_key`: a dynamic proof names no statically-known
+  sub-place), so the next element's `CheckIndex` reads a possibly-moved place.
+- **Consequence:** two constructs stay cleanly `Unsupported` — a droppable element in an array
+  pattern (`Some([a, _])` over `[Tag; 2]`) and `for` over an array with a non-`Copy` element type.
+  Non-droppable array patterns and `Copy`-element iteration are unaffected and lower normally.
+- **Why it is NOT fixed here:** the fix is a **constant-index projection form** that carries no
+  proof — the MIR contract has none, and adding one is a shape change requiring CE3 approval
+  (WP-C4.7 §0.5). The contract already anticipates the direction: §6 notes the proof discipline
+  "covers fixed-length `Array` (verifier may validate against the compile-time length)", so a
+  constant form is a natural extension rather than a new mechanism — but it is the owner's call.
+- **Impact:** over-rejection only; both engines are consistent (MIR refuses cleanly, nothing
+  mislowers). Owner: unassigned; C4-exit-report input.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2418,7 +2474,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 81 numbered deviations total (DEV-002 through DEV-083, DEV-001/DEV-003 retired).
+Current count: 84 numbered deviations total (DEV-002 through DEV-086, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2485,8 +2541,9 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-083 (found by WP-C4.7-8.5; narrow over-rejection, unassigned, C4-exit-report
-input). DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half of WP-C4.7-8.1
+remainder), DEV-083 (found by WP-C4.7-8.5; narrow over-rejection), DEV-086 (found by the
+WP-C4.7-9 audit; needs a CE3 constant-index projection form). Both are over-rejections with both
+engines consistent, unassigned, C4-exit-report input. DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half of WP-C4.7-8.1
 remains open as a clean `Unsupported`, not as a deviation. DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)

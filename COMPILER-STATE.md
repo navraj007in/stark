@@ -2,8 +2,21 @@
 Updated: 2026-07-20 after WP-C4.7-8.6 — **exclusive slice views land (`0.1-A8`); 8.5 and 8.4 remain**
 
 ## Position
-Gate: C4  Next: **C4.7-9** — the fresh audit and exit report. **All implementation work in
-WP-C4.7 is complete.** The report is written for the owner, who alone closes the gate.
+Gate: C4  Next: **write the C4.7-9 exit report** for the owner's decision. The audit sweep itself
+is DONE and its findings are fixed (below); what remains is the report document.
+**WP-C4.7-9 AUDIT SWEEP DONE 2026-07-20 — and it found six more items, as forecast.** Every
+`unsupported(` site in `lower.rs` was enumerated, partitioned defensive-vs-construct, and each
+construct candidate probed against BOTH engines. Owner-directed fixes for four of them landed:
+**DEV-084** (`print`/`println` accepted ANY type — three engines gave three answers for a program
+06 says is invalid; the CHECKER was the wrong one and now rejects), **DEV-085** (`for` over an
+array: checker accepted, oracle ran, MIR alone refused — now lowers), the **trait-default method
+with own generics** gap that WP-C4.7-8.4 left behind (both the checker's default-fallback path and
+`FnKey::TraitDefault::method_args`), and the **droppable array pattern**, which turned out to need
+a CE3 shape change and is recorded precisely instead (**DEV-086**).
+Correctly reserved, not blockers: `HashMap::values`, `Vec::contains`, `String::insert` (std-full,
+CD-033); or-patterns (**not in 02's Pattern grammar** — the parse error is correct).
+Workspace 798/0/2. Frozen corpus green.
+
 **WP-C4.7-8.4 DONE 2026-07-20 — method-own generic parameters, the last implementation item.**
 Two halves had to meet: the checker instantiated only the IMPL's parameters, leaving a method's
 own `U` a rigid `Ty::Param` no argument could unify with; and MIR could not monomorphise a method
@@ -2805,3 +2818,59 @@ clean on 1.93 and 1.97.
 FOLLOW-UP: none.
 NEXT: **C4.7-9** — re-run the unsupported-site sweep over every `unsupported(` site, re-verify the
 frozen corpus, and write the exit report for the owner's decision.
+
+### WP-C4.7-9 (audit sweep) — six further findings; four fixed, two recorded — 2026-07-20
+DONE: the sweep. Every `unsupported(` site in `lower.rs` enumerated, partitioned
+defensive-vs-construct, and each construct candidate probed with `c46_probe` AND `oracle_run`.
+The forecast that the audit would find more was correct.
+FIXED UNDER THE OWNER'S DIRECTION ("fix 1, 2, 4 and the checker rejection for 3"):
+- **DEV-084 — `print`/`println` accepted any type.** They typed their argument as a fresh
+  inference variable, so a `Display`-less user struct was accepted. Three engines gave three
+  answers for a program 06 says is invalid: the checker accepted it, the oracle rendered an
+  unspecified `{x: 1}`, MIR refused. The CHECKER was the wrong one, and the fix is a rejection,
+  not an implementation — deferred to the same pass as the bound checks so an argument still
+  under inference is not judged early. One interpreter test depended on the over-acceptance and
+  now asserts the rejection; its real subject (`Float32` digits nested in an aggregate) was
+  already covered by its `Option`/`Result` and tuple siblings.
+- **DEV-085 — `for` over a fixed-length array.** Checker accepted, oracle ran, MIR alone refused:
+  an internal inconsistency, not a language boundary. Lowered as a counting loop reading one
+  element per iteration through the ordinary `CheckIndex` proof discipline. **Its own
+  implementation had a bug the test caught:** `continue` first targeted the loop header directly,
+  skipping the increment and spinning until the interpreter's fuel ran out. The continue target
+  is now a latch that increments first — and the control-flow test that exposed it was written
+  before the fix, not retrofitted after.
+- **Trait-default methods with own generic parameters.** WP-C4.7-8.4 fixed the selected-impl path
+  and left this one: the checker's default-fallback did not instantiate the method's own
+  parameters, and `FnKey::TraitDefault` had no `method_args`. Both now match the `ImplFn`
+  treatment.
+RECORDED, NOT FIXED:
+- **DEV-086 — droppable elements in array patterns, and by-value array iteration.** An array
+  element place needs `Projection::Index(ProofLocal)`, and the only way to mint a proof is a
+  `CheckIndex` that READS the array. Moving one element out poisons the whole local for V-MOVE-1
+  (`Index` must collapse to the whole local — a dynamic proof names no statically-known
+  sub-place), so the next element's check reads a possibly-moved place. The fix is a
+  **constant-index projection form**, a MIR shape change requiring CE3 (§0.5), so it is recorded
+  rather than invented. The contract already points that way — §6 says the proof discipline
+  "covers fixed-length `Array` (verifier may validate against the compile-time length)" — but it
+  is the owner's call. Non-droppable array patterns and `Copy`-element iteration are unaffected.
+- **DEV-083** (from 8.5) remains open on the same footing.
+CORRECTLY RESERVED, not blockers: `HashMap::values`, `Vec::contains`, `String::insert` — std-full,
+explicitly reserved by CD-033. Or-patterns (`A(n) | B(n)`) are **not in 02's Pattern grammar**
+(`02:284-291`), so the parse error is correct behaviour, not a gap.
+FILES: starkc/src/typecheck.rs (Display check + trait-default method generics),
+starkc/src/mir/lower.rs (`lower_for_over_array`, `FnKey::TraitDefault::method_args`, array-pattern
+residual), starkc/src/interp.rs (the repurposed test + a `type_diagnostics` helper),
+starkc/tests/{mir_differential,gate2_valid}.rs, KNOWN-DEVIATIONS.md (DEV-084/085 closed, DEV-086
+opened; count 81 → 84), COMPILER-STATE.md, WP-C4.7.md.
+RULES: 06 (`Display` is not a syntax hook), EXEC-FOR-001, 02:284-291 (Pattern grammar),
+02:64/02:120 (generic method signatures). No spec text changed.
+DECISIONS: none at CE level; DEV-086 is flagged AS a CE3 question rather than resolved.
+EVIDENCE: `for_over_array_agrees` (values, running total, `break`/`continue`, single-element
+array), `trait_default_method_own_generics_agree` (two instantiations),
+`printing_requires_display` (rejection plus the standard displayable types still printing),
+`printing_a_struct_without_a_display_impl_is_rejected`. Frozen corpus green. Workspace 798 passed
+/ 0 failed / 2 ignored (+4); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: DEV-083, DEV-086 — both over-rejections, both consistent across engines, both needing
+an owner decision rather than more implementation.
+NEXT: write the C4.7-9 exit report as a new final section of `WP-C4.6.md` and present it. The gate
+decision is the owner's; this session does not close it.
