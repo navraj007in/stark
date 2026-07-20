@@ -446,6 +446,9 @@ line | source code line
 - E0101: Borrow check failed
 - E0102: Lifetime violation
 - E0103: Dangling reference
+- E0104: By-value iteration over a fixed-length array with a non-`Copy` element type is not yet
+  supported (deferred feature — consuming each element moves it out of a place named by a
+  runtime loop index; iterate over a borrow instead. `Copy` arrays iterate normally.)
 
 #### Name Resolution Errors (E0200-E0299)
 - E0200: Undefined variable

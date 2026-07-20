@@ -1583,4 +1583,96 @@ fn printing_requires_display() {
         !diagnostics.iter().any(|d| d.severity == Severity::Error),
         "standard displayable types must still print, got {diagnostics:?}"
     );
+
+    // DEV-089: a user struct WITH a coherent `Display` impl must be accepted (the checker must
+    // reject only the missing-impl case, never a type that has implemented `Display`).
+    let with_impl = "struct P { x: Int32 }\n\
+                     impl Display for P { fn fmt(&self) -> String { String::from(\"P\") } }\n\
+                     fn main() -> Unit { let p = P { x: 1 }; println(p); }\n";
+    let diagnostics = analyze("display_user_impl.stark", with_impl.to_string());
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "a user type with a Display impl must be printable, got {diagnostics:?}"
+    );
+}
+
+/// DEV-090 (WP-C4.7 close-out §6): by-value iteration over a fixed-length array with a non-`Copy`
+/// element type is rejected in the front end (E0104), deterministically, before either engine —
+/// consuming each element moves it out of a place named by a runtime loop index, which no static
+/// constant-index projection can name, and copying it instead would double-free. `Copy`-element
+/// array iteration is unaffected.
+#[test]
+fn rejects_by_value_iteration_over_non_copy_array() {
+    let non_copy = "fn main() -> Unit {\n\
+        let arr = [String::from(\"a\"), String::from(\"b\")];\n\
+        for s in arr { println(s); }\n\
+    }\n";
+    let diagnostics = analyze("noncopy_iter.stark", non_copy.to_string());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0104")),
+        "by-value iteration over a non-Copy array element must be rejected with E0104, got \
+         {diagnostics:?}"
+    );
+}
+
+#[test]
+fn accepts_by_value_iteration_over_copy_array() {
+    let copy = "fn main() -> Unit {\n\
+        let arr = [1, 2, 3];\n\
+        for x in arr { println(x); }\n\
+    }\n";
+    let diagnostics = analyze("copy_iter.stark", copy.to_string());
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "by-value iteration over a Copy array must be accepted, got {diagnostics:?}"
+    );
+}
+
+/// DEV-088 (WP-C4.7 close-out §7): using a `const` declared in another file is rejected in the
+/// type checker (E0215), deterministically, before either engine — the oracle would read the
+/// initializer's literal against the wrong file's text and MIR does not lower a const in value
+/// position at all. Same-file const use is unaffected. Module loading is filesystem-based, so
+/// this test materializes a two-file package in a unique temp directory.
+#[test]
+fn cross_file_const_use_is_rejected() {
+    let dir = std::env::temp_dir().join(format!(
+        "stark_xfile_const_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("helper.stark"), "pub const BIG: Int32 = 31415;\n").unwrap();
+    let main_path = dir.join("main.stark");
+    std::fs::write(
+        &main_path,
+        "mod helper;\nfn main() -> Unit { println(helper::BIG); }\n",
+    )
+    .unwrap();
+
+    let source = std::fs::read_to_string(&main_path).unwrap();
+    let file = Arc::new(SourceFile::new(
+        main_path.to_string_lossy().into_owned(),
+        source,
+    ));
+    let (ast, parse_diags) = parse(&file, ParseMode::Program);
+    assert!(parse_diags.is_empty(), "parse: {parse_diags:?}");
+    let (hir, resolve_diags) = resolve(&ast, file.clone());
+    assert!(
+        !resolve_diags.iter().any(|d| d.severity == Severity::Error),
+        "resolve: {resolve_diags:?}"
+    );
+    let diagnostics = typecheck::check(&hir, file);
+    std::fs::remove_dir_all(&dir).ok();
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0215") && d.message.contains("another file")),
+        "cross-file const use must be rejected with E0215, got {diagnostics:?}"
+    );
 }

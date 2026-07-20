@@ -2308,11 +2308,12 @@ impl<'a> Interpreter<'a> {
             Builtin::Print | Builtin::Println => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                self.output
-                    .push_str(&self.format_runtime_value(&deref, span)?);
+                let (text, arg_place) = self.display_text(deref, span)?;
+                self.output.push_str(&text);
                 if builtin == Builtin::Println {
                     self.output.push('\n');
                 }
+                self.finish_display(arg_place, span)?;
                 Ok(Value::Unit)
             }
             Builtin::Panic => {
@@ -2606,12 +2607,16 @@ impl<'a> Interpreter<'a> {
                 FloatWidth::F64,
             )),
             // -- Phase 4E: stderr --
-            Builtin::Eprint => {
-                eprint!("{}", string_arg(args.pop(), span)?);
-                Ok(Value::Unit)
-            }
-            Builtin::Eprintln => {
-                eprintln!("{}", string_arg(args.pop(), span)?);
+            Builtin::Eprint | Builtin::Eprintln => {
+                let value = args.pop().unwrap_or(Value::Unit);
+                let deref = self.deref_value(value, span)?;
+                let (text, arg_place) = self.display_text(deref, span)?;
+                if builtin == Builtin::Eprintln {
+                    eprintln!("{text}");
+                } else {
+                    eprint!("{text}");
+                }
+                self.finish_display(arg_place, span)?;
                 Ok(Value::Unit)
             }
             // -- Phase 4E: Random --
@@ -5192,6 +5197,68 @@ impl<'a> Interpreter<'a> {
             .collect::<Vec<_>>()
             .join(", ");
         Ok(format!("[{rendered}]"))
+    }
+
+    /// DEV-089 (WP-C4.7 close-out): render a by-value `print`/`println`/`eprint`/`eprintln`
+    /// argument through its language-level `Display`. A user nominal (struct/enum) that has its
+    /// own coherent `Display` impl runs that impl's `fmt(&self) -> String`, and the returned
+    /// String's bytes are what is printed — the internal aggregate/debug rendering
+    /// (`format_runtime_value`) is NOT language-level `Display` and no longer reaches a user
+    /// type here (the checker's E0500 guarantees any type printed either is a standard `Display`
+    /// type or has an impl). Standard-library display types keep their built-in formatting,
+    /// which is observationally identical to their canonical `Display`.
+    ///
+    /// Ownership: the argument arrives owned (moved into the call). `fmt` borrows it via `&self`
+    /// (the canonical receiver). The returned bytes must be SUBMITTED to the output stream before
+    /// the by-value argument is destroyed (§2.4/§2.6), so this returns the rendered text plus the
+    /// still-live temp place holding the argument; the caller submits the bytes, then calls
+    /// `finish_display` to run the argument's destructor (ordinary by-value call ownership). If
+    /// `fmt` traps, the `?` propagates and the argument is not dropped (traps abort; destructors
+    /// do not run).
+    fn display_text(
+        &mut self,
+        value: Value,
+        span: Span,
+    ) -> Result<(String, Option<Place>), RuntimeError> {
+        if let Value::Struct { item, .. } | Value::Enum { item, .. } = &value {
+            let item = *item;
+            if let Some(callable) =
+                self.find_method(Some(item), "fmt", Some(Res::CoreTrait(CoreTrait::Display)))
+            {
+                // Give the by-value argument its own storage so `&self` can borrow it.
+                let place = self.promote_to_owned_temp_place(value, span)?;
+                let receiver_value = self.clone_place_value(&place, span)?;
+                let result = self.call_user_method(
+                    callable,
+                    place.clone(),
+                    receiver_value,
+                    Vec::new(),
+                    span,
+                );
+                let text = match result? {
+                    Value::String(text) => text,
+                    _ => {
+                        return Err(RuntimeError::new(
+                            "Display::fmt did not return a String",
+                            span,
+                        ))
+                    }
+                };
+                return Ok((text, Some(place)));
+            }
+        }
+        Ok((self.format_runtime_value(&value, span)?, None))
+    }
+
+    /// DEV-089: destroy a `print`/`println` by-value argument AFTER its formatted bytes have been
+    /// submitted. A no-op for the standard-formatting path (which leaves no live temp).
+    fn finish_display(&mut self, arg_place: Option<Place>, span: Span) -> Result<(), RuntimeError> {
+        if let Some(place) = arg_place {
+            if let Ok(arg) = self.take_place(&place, span) {
+                self.drop_value(arg)?;
+            }
+        }
+        Ok(())
     }
 
     fn place_value(&self, place: &Place, span: Span) -> Result<&Value, RuntimeError> {

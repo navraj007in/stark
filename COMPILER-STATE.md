@@ -1,33 +1,46 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after the WP-C4.7 close-out — **DEV-086 implemented, DEV-083 deferred, surface ratified, corpus 1.2.0 — but the bounded validation surfaced DEV-089, so C4 is NOT closed**
+Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN.** The owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all validation green.
 
 ## Position
-Gate: C4  **NOT CLOSED — see below.** The owner's close-out directive (CD-038/039/040) was executed
-in full: **DEV-086 implemented** (`Projection::ConstIndex`, MIR amendment A5, plus the typed
-move/drop paths the same decision required), **DEV-083 explicitly deferred** to
-`WP-C6.x Method Resolution Completion`, **runtime-surface revs 11/12 ratified**, and the **corpus
-refreshed to 1.2.0** with the six specified workloads. Bounded validation: **802/0/2**, fmt clean,
-clippy clean on 1.93 and 1.97, corpus and frozen-corpus differential green.
-**The gate is NOT closed, because that same bounded pass surfaced a new ENGINE DIVERGENCE —
-`DEV-089`** — and §6 of the directive says to stop and report on exactly that rather than proceed.
-`println(p)` where `P` HAS a `Display` impl: the checker accepts, the HIR oracle runs it but prints
-its own debug form (`{x: 1}`) **ignoring the user's `Display::fmt`**, and MIR refuses to lower it.
-Two problems in one: an engine divergence, and an oracle-correctness question about whether `println`
-should dispatch to `Display::fmt` at all. Neither a soundness defect nor invalid MIR — nothing
-mislowers, MIR refuses cleanly — but it is a divergence, and it only became visible because
-DEV-084 narrowed the checker so that "type with an impl" stopped being indistinguishable from
-"type without one". **The stopping rule's third clause ("no known … engine divergence remains") is
-not currently satisfied.** Owner decision needed on DEV-089 before closure.
-(Previously: **WP-C4.7 IS COMPLETE. The C4 exit report is written and awaiting the owner's
-decision.**)
+Gate: **C5 (native compilation) — OPEN.** Gate **C4 CLOSED 2026-07-21** by owner directive, after
+the last blocker (DEV-089) was resolved rather than deferred. The full WP-C4.7 close-out landed in
+two directives: the first (CD-038/039/040) implemented DEV-086, deferred DEV-083, ratified surface
+revs 11/12, and refreshed the corpus to 1.2.0; the second (this one) resolved DEV-089 and the two
+residual over-rejections. Final validation: workspace tests green, `cargo fmt` clean, `cargo
+clippy` clean on 1.93 and 1.97, corpus 1.2.0 lock integrity green, frozen-corpus + differential
+suites green.
+
+**DEV-089 — RESOLVED by implementing user `Display` dispatch in both engines** (owner decision,
+2026-07-21). `print`/`println`/`eprint`/`eprintln` are generic `<T: Display>` functions that
+dispatch to the argument's own `Display::fmt`. Spec: **PRINT-DISPLAY-001** (06-Standard-Library,
+nine-point contract); prelude + IO signatures and STD-FORMAT-001 updated to match. Oracle:
+`display_text`/`finish_display` run the impl and destroy the by-value argument after its bytes are
+submitted. MIR: `lower_print_display` — a static `Callee::Instance` call to `fmt`, then the
+existing `StringAsStr` + `Print(ln)Str` surface, then visible `Drop`s. **No new MIR shape, no new
+`RuntimeFn`, no runtime-surface bump** (`MIR_RUNTIME_SURFACE` stays `0.1-A8`). Eight differential
+tests + checker positive/negative coverage.
+
+**Two residual over-rejections made consistent and deferred** (not gate blockers under the
+six-clause rule): **DEV-090** (split from DEV-086) — by-value iteration over a non-`Copy` array
+element now rejected in the front end (`E0104`, `borrowck.rs`) before either engine, deferred to a
+later language-completion package; **DEV-088 use-site** — using a `const` declared in another file
+now rejected in the checker (`E0215`) before either engine, deferred to the front-end/multi-file
+completion package with DEV-083. Both reject at a single deterministic point rather than diverging
+between engines. The six-clause stopping rule (CD-040(c)) now holds in full — clause 3 ("no known
+engine divergence remains") satisfied by DEV-089's resolution.
+
+(Previously: C4 NOT CLOSED pending the DEV-089 decision; the bounded validation had surfaced it as
+an engine divergence and §6 required stop-and-report.)
 **Frozen corpus grown to `corpus_version` 1.1.0 (CD-037, owner-directed, ADDITIVE)** — five new
 cases covering every construct the Class-A campaign and WP-C4.7 added; 22 cases, all agreeing
 across both engines. Writing them found and closed **DEV-087** (the oracle treated a slice
 reference as non-`Copy`, so passing one to a function consumed it) — the fourth defect in this
 package that lived only in the gap between two engines. Decision-table item 4 is now discharged;
 items 1, 2, 3 and 5 remain with the owner.
-Report: `WP-C4.6.md`, final section "Gate C4 Exit Report (WP-C4.7-9)". It supersedes that
-document's 2026-07-19 Verdict. **This session does not close the gate.**
+Report: `WP-C4.6.md`, final section "Gate C4 Closure (WP-C4.7 close-out, 2026-07-21)", which
+records the closure under CD-041 and supersedes both the 2026-07-19 Verdict and the earlier
+"Gate C4 Exit Report (WP-C4.7-9)" recommendation. **The gate is now CLOSED (see the Position
+header); the text below this line is the historical pre-closure record.**
 Recommendation in the report: **close C4, conditional on the owner disposing of DEV-086 and
 DEV-083 by explicit dated decision** rather than leaving them undisposed. Exit conditions 1 and 3
 are satisfied outright; condition 2 is satisfied except for those two over-rejections, which are
@@ -1135,6 +1148,36 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   ratification of the record, not approval of new code — the code shipped in WP-C4.6 A5.**
   Consequence if ratified: WP-C4.7-3's layout amendment is **A4** (`mir-amendment-A4-layout.md`),
   renumbered from the plan's "A3" to avoid a collision.
+
+- CD-041 [2026-07-21, owner decision — DEV-089 close-out + Gate C4 closure] **User `Display`
+  dispatch through `print`/`println`/`eprint`/`eprintln`, in both engines; then close C4, open C5.**
+  The owner ruled that a user type's own `Display::fmt` must execute (06 treats `Display` as an
+  ordinary trait, not a syntax hook), rejecting both the previous oracle debug rendering and the
+  MIR refusal. **(a) Spec:** `print`/`println`/`eprint`/`eprintln` respecified as
+  implementation-provided generic `<T: Display>` functions; **PRINT-DISPLAY-001** (06-Standard-
+  Library) states the nine-point contract (evaluate arg once; select the unique coherent `Display`
+  by ordinary resolution; invoke `fmt` once; print exactly the returned bytes; `*ln` appends one
+  `0x0A`; destroy the formatting `String` after submission; the argument follows by-value call
+  ownership; a trap in `fmt` propagates with no newline/partial result; no fallback for a type
+  lacking `Display` — E0500). STD-FORMAT-001 and the prelude/IO signatures updated; compiled spec
+  and fixtures regenerated (manifest in sync, 112 blocks). **(b) Oracle:** `display_text` +
+  `finish_display` run the impl and drop the by-value argument after its bytes are submitted; the
+  internal aggregate rendering is retained only as a diagnostic facility. **(c) MIR:**
+  `lower_print_display` emits an ordinary static `Callee::Instance` call to the selected `fmt`,
+  then the existing `StringAsStr` + `Print(ln)Str` runtime ops, then visible `Drop`s of the
+  formatting `String` and the argument. **No new MIR shape, no new `RuntimeFn`, no runtime-surface
+  bump** (`MIR_RUNTIME_SURFACE` stays `0.1-A8`); `fmt` is a normal instance call so user code,
+  traps and provenance stay visible. Generic user types and `T: Display`-bounded generic functions
+  are supported at their monomorphised instances. **(d) DEV-090** (split from DEV-086): by-value
+  iteration over a non-`Copy` array element is rejected in the front end (`E0104`, `borrowck.rs`);
+  full ownership-transferring non-`Copy` array iteration is an accepted limitation outside the C5
+  baseline, scheduled later. **(e) DEV-088 use-site:** using a `const` declared in another file is
+  rejected in the checker (`E0215`), deferred to the front-end/multi-file completion package with
+  DEV-083. **(f) Closure:** the six-clause stopping rule (CD-040(c)) now holds in full — clause 3
+  satisfied by DEV-089's resolution — so **Gate C4 is CLOSED and Gate C5 (native compilation) is
+  OPEN**, 2026-07-21. Evidence: `mir_differential.rs::dev089_*` (8 tests),
+  `gate2_valid.rs::printing_requires_display` / `::rejects_by_value_iteration_over_non_copy_array`
+  / `::accepts_by_value_iteration_over_copy_array` / `::cross_file_const_use_is_rejected`.
 
 - CD-038 [2026-07-20, CE3 — owner-approved MIR Amendment A5] **`Projection::ConstIndex(u64)`.**
   A statically known array element: valid only on `Array<T, N>`, the verifier checks `index < N`

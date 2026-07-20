@@ -3774,6 +3774,31 @@ impl<'a> TypeChecker<'a> {
                             ret: Box::new(instantiated_sig.ret),
                         }
                     } else if let Some(const_ty) = self.const_types.get(item_id) {
+                        // DEV-088 (WP-C4.7 close-out §7): USING a `const` declared in a different
+                        // file is not yet supported and is rejected HERE, deterministically,
+                        // before either engine runs. The oracle would evaluate the initializer's
+                        // literal against the USE site's file (wrong text → "invalid literal" at
+                        // runtime) while MIR does not lower a const in value position at all; a
+                        // static rejection forecloses that inconsistency. Same-file `const` use is
+                        // unaffected. Ownership-transferring cross-file constant use is deferred to
+                        // the front-end/multi-file completion package (recorded in
+                        // KNOWN-DEVIATIONS.md alongside DEV-083).
+                        let const_file = self.hir.item_files.get(item_id);
+                        let cross_file =
+                            const_file.is_some_and(|declaring| declaring.name != self.file.name);
+                        if cross_file {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    "using a `const` declared in another file is not yet supported",
+                                    expr.span,
+                                )
+                                .with_code("E0215")
+                                .with_label(
+                                    "move the constant into this file, or inline its value, until \
+                                     cross-file constant use is implemented",
+                                ),
+                            );
+                        }
                         const_ty.clone()
                     } else {
                         // Struct or Enum as expression (error in E02xx, but Ty::Error here)

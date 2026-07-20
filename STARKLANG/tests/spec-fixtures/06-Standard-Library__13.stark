@@ -1,8 +1,8 @@
-// Standard streams
-fn print(text: &str)
-fn println(text: &str)
-fn eprint(text: &str)     // stderr
-fn eprintln(text: &str)   // stderr
+// Standard streams (implementation-provided generic functions, not syntax hooks)
+fn print<T: Display>(value: T)
+fn println<T: Display>(value: T)
+fn eprint<T: Display>(value: T)     // stderr
+fn eprintln<T: Display>(value: T)   // stderr
 
 // Simple file operations
 struct File { /* implementation-defined */ }

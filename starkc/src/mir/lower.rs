@@ -3858,6 +3858,13 @@ impl<'a> FnLowerer<'a> {
                     if matches!(peeled, MirTy::Enum(EnumRef::CoreOrdering, _)) {
                         return self.lower_print_ordering(args[0], is_println, dest, span);
                     }
+                    // DEV-089: a user nominal (struct/enum) with its own `Display` impl prints
+                    // through that impl — an ordinary static call to the selected `Display::fmt`,
+                    // whose returned `String` is what is printed. The checker's E0500 guarantees
+                    // any non-standard type reaching here has such an impl.
+                    if matches!(peeled, MirTy::Struct(..) | MirTy::Enum(EnumRef::User(_), _)) {
+                        return self.lower_print_display(args[0], &arg_ty, is_println, dest, span);
+                    }
                     let value = self.lower_expr_to_operand(args[0])?;
                     let (runtime, widened) = self.widen_for_print(value, &arg_ty, span)?;
                     let runtime = match (runtime, is_println) {
@@ -6452,6 +6459,149 @@ impl<'a> FnLowerer<'a> {
                 },
                 self.info(span),
                 next,
+            );
+        }
+        Ok(())
+    }
+
+    /// DEV-089 (WP-C4.7 close-out, §4): lower `print`/`println` of a user nominal that has its
+    /// own `Display` impl. Emitted as ordinary visible MIR — a static `Callee::Instance` call to
+    /// the selected `Display::fmt` (so user code, traps and provenance stay visible), then the
+    /// existing `StringAsStr` + `Print(ln)Str` runtime surface, then a visible `Drop` of the
+    /// formatting `String` and (for an owned by-value argument) the argument itself. No new MIR
+    /// shape, no new `RuntimeFn`, no runtime-surface bump.
+    fn lower_print_display(
+        &mut self,
+        arg: ExprId,
+        arg_ty: &MirTy,
+        is_println: bool,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let (peeled, ref_layers) = Self::peel_refs(arg_ty.clone());
+        let (nominal, nominal_args) = match &peeled {
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                (*item, args.clone())
+            }
+            other => return unsupported(format!("Display print on non-nominal {other:?}"), span),
+        };
+        let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args) else {
+            return unsupported("Display::fmt not found for printed type", span);
+        };
+        if !matches!(receiver, Some(hir::Receiver::Ref)) {
+            // The canonical `Display::fmt` is `&self`. Anything else is outside this path.
+            return unsupported("Display::fmt with a non-&self receiver", span);
+        }
+
+        // The by-value argument gets its own storage so `&self` can borrow it and its destructor
+        // runs at the call (ordinary by-value call ownership). A `&self`/`&mut self` argument
+        // expression (`println(&x)`) is already a reference we do not own — borrow through it and
+        // owe no drop.
+        let (recv_op, owned_arg) = if ref_layers > 0 {
+            (self.lower_expr_to_operand(arg)?, None)
+        } else {
+            let value = self.lower_expr_to_operand(arg)?;
+            let arg_tmp = self.new_temp(peeled.clone());
+            self.emit(
+                Statement::Assign(Place::local(arg_tmp), Rvalue::Use(value)),
+                self.info(span),
+            );
+            let ref_ty = MirTy::Ref {
+                mutable: false,
+                inner: Box::new(peeled.clone()),
+            };
+            let ref_tmp = self.new_temp(ref_ty.clone());
+            self.emit(
+                Statement::Assign(
+                    Place::local(ref_tmp),
+                    Rvalue::RefOf {
+                        mutable: false,
+                        place: Place::local(arg_tmp),
+                    },
+                ),
+                self.info(span),
+            );
+            (
+                self.read_place(Place::local(ref_tmp), &ref_ty, span)?,
+                Some(arg_tmp),
+            )
+        };
+
+        // Ordinary static call to the selected `Display::fmt(&self) -> String`.
+        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        self.discovered_callees.push(key);
+        let str_result = self.new_temp(MirTy::String);
+        let after_fmt = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Instance(Instance {
+                    item: nominal,
+                    type_args: nominal_args.clone(),
+                    symbol,
+                }),
+                args: vec![recv_op],
+                dest: Place::local(str_result),
+                target: after_fmt,
+            },
+            self.info(span),
+            after_fmt,
+        );
+
+        // `String::as_str` then the existing `Print(ln)Str` runtime op.
+        let str_ref_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::String),
+        };
+        let str_ref = self.new_temp(str_ref_ty);
+        self.emit(
+            Statement::Assign(
+                Place::local(str_ref),
+                Rvalue::RefOf {
+                    mutable: false,
+                    place: Place::local(str_result),
+                },
+            ),
+            self.info(span),
+        );
+        let as_str_ty = MirTy::Ref {
+            mutable: false,
+            inner: Box::new(MirTy::Str),
+        };
+        let as_str = self.new_temp(as_str_ty.clone());
+        self.emit_runtime_call(
+            RuntimeFn::StringAsStr,
+            vec![Operand::Copy(Place::local(str_ref))],
+            Place::local(as_str),
+            span,
+        );
+        let str_op = self.read_place(Place::local(as_str), &as_str_ty, span)?;
+        let rt = if is_println {
+            RuntimeFn::PrintlnStr
+        } else {
+            RuntimeFn::PrintStr
+        };
+        self.emit_runtime_call(rt, vec![str_op], dest, span);
+
+        // Visible Drop of the formatting String (after its bytes were submitted), then of the
+        // by-value argument (its destructor is observable; the oracle drops it here too).
+        let after_str_drop = self.new_block();
+        self.terminate(
+            Terminator::Drop {
+                place: Place::local(str_result),
+                target: after_str_drop,
+            },
+            self.info(span),
+            after_str_drop,
+        );
+        if let Some(arg_tmp) = owned_arg {
+            let after_arg_drop = self.new_block();
+            self.terminate(
+                Terminator::Drop {
+                    place: Place::local(arg_tmp),
+                    target: after_arg_drop,
+                },
+                self.info(span),
+                after_arg_drop,
             );
         }
         Ok(())

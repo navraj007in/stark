@@ -30,6 +30,6 @@ enum Result<T, E> {
 }
 
 // Essential functions
-fn print(value: &str)
-fn println(value: &str)
+fn print<T: Display>(value: T)
+fn println<T: Display>(value: T)
 fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never Type)

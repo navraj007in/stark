@@ -91,8 +91,8 @@ enum Result<T, E> {
 }
 
 // Essential functions
-fn print(value: &str)
-fn println(value: &str)
+fn print<T: Display>(value: T)
+fn println<T: Display>(value: T)
 fn panic(message: &str) -> !    // Never returns; see 03-Type-System.md (Never Type)
 ```
 
@@ -541,11 +541,11 @@ once, and returns `min + state % (max-min)`, hence `min` is inclusive and
 
 ### Basic IO Operations
 ```stark
-// Standard streams
-fn print(text: &str)
-fn println(text: &str)
-fn eprint(text: &str)     // stderr
-fn eprintln(text: &str)   // stderr
+// Standard streams (implementation-provided generic functions, not syntax hooks)
+fn print<T: Display>(value: T)
+fn println<T: Display>(value: T)
+fn eprint<T: Display>(value: T)     // stderr
+fn eprintln<T: Display>(value: T)   // stderr
 
 // Simple file operations
 struct File { /* implementation-defined */ }
@@ -583,11 +583,43 @@ number of bytes accepted; callers must handle a short write. Dropping an open
 file attempts close but cannot surface a new language trap.
 
 **STD-FORMAT-001.** `Display::fmt` returns valid UTF-8 and is ordinary trait
-dispatch. `print`/`eprint` append exactly the argument bytes; `println`/
-`eprintln` append those bytes followed by byte `0x0A`, independent of host
-newline convention. Successful calls preserve program order. The process
-contract flushes submitted stdout/stderr before reporting normal return or a
-language trap; a stream write/flush failure is a host/process failure.
+dispatch. `print`/`eprint` append exactly the bytes produced by the argument's
+`Display` (see PRINT-DISPLAY-001); `println`/`eprintln` append those bytes
+followed by byte `0x0A`, independent of host newline convention. Successful
+calls preserve program order. The process contract flushes submitted
+stdout/stderr before reporting normal return or a language trap; a stream
+write/flush failure is a host/process failure.
+
+**PRINT-DISPLAY-001.** `print`, `println`, `eprint`, and `eprintln` are
+implementation-provided generic functions with the signatures
+`fn print<T: Display>(value: T)` (and the `println`/`eprint`/`eprintln`
+analogues). They are **not** syntax hooks: printing dispatches through the
+argument's `Display` implementation by ordinary trait resolution. For a call
+`print(value)` (and analogues):
+
+1. Evaluate the argument exactly once.
+2. Select the unique coherent `Display` implementation for the argument's type
+   using ordinary trait resolution.
+3. Invoke `Display::fmt` exactly once.
+4. Print exactly the UTF-8 bytes of the returned `String`.
+5. `println`/`eprintln` then append exactly one byte `0x0A`.
+6. Destroy the formatting `String` at the call, after its bytes have been
+   submitted.
+7. The source argument follows ordinary by-value call ownership semantics (it
+   is consumed by the call; its destructor, if any, runs after the formatted
+   bytes are submitted).
+8. If `fmt` traps, the trap propagates normally; no newline and no partial
+   formatting result is printed beyond output already produced by user code
+   before the trap.
+9. There is no fallback debug or structural rendering for a type lacking
+   `Display`; such a program is rejected by the checker (E0500).
+
+An implementation MAY keep built-in fast paths for the primitive and standard
+`Display` types (integers, floats, `Bool`, `Char`, `String`, `str`, `Unit`,
+`Ordering`, and the containers of them enumerated below), provided their output
+is observationally identical to the canonical `Display` implementation. A
+type's internal debug/structural rendering, if any, is a diagnostic facility
+and is not the language-level `Display`.
 
 Canonical standard `Display` implementations are byte-exact:
 

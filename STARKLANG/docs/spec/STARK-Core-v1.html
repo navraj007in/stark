@@ -2429,6 +2429,11 @@ compile-time constant expression</li>
 <li>E0101: Borrow check failed</li>
 <li>E0102: Lifetime violation</li>
 <li>E0103: Dangling reference</li>
+<li>E0104: By-value iteration over a fixed-length array with a
+non-<code>Copy</code> element type is not yet supported (deferred
+feature — consuming each element moves it out of a place named by a
+runtime loop index; iterate over a borrow instead. <code>Copy</code>
+arrays iterate normally.)</li>
 </ul>
 <h4 id="name-resolution-errors-e0200-e0299">Name Resolution Errors
 (E0200-E0299)</h4>
@@ -3495,8 +3500,8 @@ enum Result&lt;T, E&gt; {
 }
 
 // Essential functions
-fn print(value: &amp;str)
-fn println(value: &amp;str)
+fn print&lt;T: Display&gt;(value: T)
+fn println&lt;T: Display&gt;(value: T)
 fn panic(message: &amp;str) -&gt; !    // Never returns; see 03-Type-System.md (Never Type)</code></pre>
 <h3 id="core-trait-profile">Core Trait Profile</h3>
 <p><strong>STD-TRAIT-001.</strong> The required Core trait identities
@@ -3962,11 +3967,11 @@ once, and returns <code>min + state % (max-min)</code>, hence
 range traps without advancing.</p>
 <h2 id="io-module-stdio">IO Module (std::io)</h2>
 <h3 id="basic-io-operations">Basic IO Operations</h3>
-<pre class="stark"><code>// Standard streams
-fn print(text: &amp;str)
-fn println(text: &amp;str)
-fn eprint(text: &amp;str)     // stderr
-fn eprintln(text: &amp;str)   // stderr
+<pre class="stark"><code>// Standard streams (implementation-provided generic functions, not syntax hooks)
+fn print&lt;T: Display&gt;(value: T)
+fn println&lt;T: Display&gt;(value: T)
+fn eprint&lt;T: Display&gt;(value: T)     // stderr
+fn eprintln&lt;T: Display&gt;(value: T)   // stderr
 
 // Simple file operations
 struct File { /* implementation-defined */ }
@@ -4005,13 +4010,52 @@ bytes accepted; callers must handle a short write. Dropping an open file
 attempts close but cannot surface a new language trap.</p>
 <p><strong>STD-FORMAT-001.</strong> <code>Display::fmt</code> returns
 valid UTF-8 and is ordinary trait dispatch.
-<code>print</code>/<code>eprint</code> append exactly the argument
-bytes; <code>println</code>/ <code>eprintln</code> append those bytes
-followed by byte <code>0x0A</code>, independent of host newline
-convention. Successful calls preserve program order. The process
-contract flushes submitted stdout/stderr before reporting normal return
-or a language trap; a stream write/flush failure is a host/process
-failure.</p>
+<code>print</code>/<code>eprint</code> append exactly the bytes produced
+by the argument’s <code>Display</code> (see PRINT-DISPLAY-001);
+<code>println</code>/<code>eprintln</code> append those bytes followed
+by byte <code>0x0A</code>, independent of host newline convention.
+Successful calls preserve program order. The process contract flushes
+submitted stdout/stderr before reporting normal return or a language
+trap; a stream write/flush failure is a host/process failure.</p>
+<p><strong>PRINT-DISPLAY-001.</strong> <code>print</code>,
+<code>println</code>, <code>eprint</code>, and <code>eprintln</code> are
+implementation-provided generic functions with the signatures
+<code>fn print&lt;T: Display&gt;(value: T)</code> (and the
+<code>println</code>/<code>eprint</code>/<code>eprintln</code>
+analogues). They are <strong>not</strong> syntax hooks: printing
+dispatches through the argument’s <code>Display</code> implementation by
+ordinary trait resolution. For a call <code>print(value)</code> (and
+analogues):</p>
+<ol type="1">
+<li>Evaluate the argument exactly once.</li>
+<li>Select the unique coherent <code>Display</code> implementation for
+the argument’s type using ordinary trait resolution.</li>
+<li>Invoke <code>Display::fmt</code> exactly once.</li>
+<li>Print exactly the UTF-8 bytes of the returned
+<code>String</code>.</li>
+<li><code>println</code>/<code>eprintln</code> then append exactly one
+byte <code>0x0A</code>.</li>
+<li>Destroy the formatting <code>String</code> at the call, after its
+bytes have been submitted.</li>
+<li>The source argument follows ordinary by-value call ownership
+semantics (it is consumed by the call; its destructor, if any, runs
+after the formatted bytes are submitted).</li>
+<li>If <code>fmt</code> traps, the trap propagates normally; no newline
+and no partial formatting result is printed beyond output already
+produced by user code before the trap.</li>
+<li>There is no fallback debug or structural rendering for a type
+lacking <code>Display</code>; such a program is rejected by the checker
+(E0500).</li>
+</ol>
+<p>An implementation MAY keep built-in fast paths for the primitive and
+standard <code>Display</code> types (integers, floats,
+<code>Bool</code>, <code>Char</code>, <code>String</code>,
+<code>str</code>, <code>Unit</code>, <code>Ordering</code>, and the
+containers of them enumerated below), provided their output is
+observationally identical to the canonical <code>Display</code>
+implementation. A type’s internal debug/structural rendering, if any, is
+a diagnostic facility and is not the language-level
+<code>Display</code>.</p>
 <p>Canonical standard <code>Display</code> implementations are
 byte-exact:</p>
 <ul>

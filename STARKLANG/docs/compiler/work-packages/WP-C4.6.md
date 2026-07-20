@@ -627,3 +627,62 @@ a reason to reopen Class A.
 **What I would not do:** close the gate while treating DEV-086 and DEV-083 as ordinary open
 deviations. They are the two things standing between "every normative Core construct lowers" and
 the exit condition as written.
+
+---
+
+# Gate C4 Closure (WP-C4.7 close-out, 2026-07-21)
+
+This section records the owner's close-out directive being executed to completion and the gate
+being closed under it. It supersedes §7's *recommendation* above: the owner ruled on every open
+item, so the recommendation is now a decision.
+
+## The three items that stood between the exit report and closure — all disposed
+
+- **DEV-089 — RESOLVED by implementing user `Display` dispatch in both engines** (owner decision,
+  2026-07-21). `println`/`print`/`eprint`/`eprintln` are generic `<T: Display>` functions that
+  dispatch to the argument's own `Display::fmt`; the previous oracle behaviour (debug rendering
+  `{x: 1}`) and the MIR refusal are both gone. Spec: **PRINT-DISPLAY-001** in 06-Standard-Library
+  gives the nine-point contract; STD-FORMAT-001 and the prelude/IO signatures updated to match.
+  Oracle: `display_text`/`finish_display` run the impl and destroy the by-value argument after the
+  bytes are submitted. MIR: `lower_print_display` emits a static `Callee::Instance` call to `fmt`,
+  the existing `StringAsStr` + `Print(ln)Str` surface, then visible `Drop`s — **no new MIR shape,
+  no new `RuntimeFn`, no runtime-surface bump** (`MIR_RUNTIME_SURFACE` stays `0.1-A8`). Eight
+  differential tests (struct, enum, once-with-side-effect, dynamic String, generic fn, generic
+  nominal, drop timing, trap-in-`fmt`) plus checker positive/negative coverage.
+
+- **DEV-090 (split from DEV-086) — non-`Copy` array iteration rejected in the front end** (owner §6).
+  `E0104` in `borrowck.rs`, before either engine, with a borrow-instead diagnostic; `Copy`-element
+  iteration unaffected. Full ownership-transferring non-`Copy` array iteration is an explicitly
+  accepted limitation outside the C5 baseline, scheduled for a later language-completion package.
+
+- **DEV-088 — cross-file `const` USE rejected deterministically in the checker** (owner §7). `E0215`
+  before either engine, replacing an inconsistency where the oracle failed during interpretation
+  (data-dependently) and MIR during lowering. Same-file const use unaffected. Deferred to the same
+  front-end/multi-file completion package as DEV-083.
+
+## The six-clause stopping rule (CD-040(c)), re-evaluated at closure
+
+1. **Accepted programs produce valid verified MIR** — holds; workspace + differential + frozen
+   corpus 1.2.0 green.
+2. **Unsupported programs reject cleanly** — holds, and is now *stronger*: the two remaining narrow
+   over-rejections (DEV-088 use-site, DEV-090) reject at a single deterministic front-end point
+   instead of diverging between engines.
+3. **No known mislowering, ownership unsoundness, or engine divergence remains** — now **satisfied**.
+   DEV-089 was the one known divergence; it is resolved. No known item remains.
+4. **MIR contains the concepts C5 needs** — holds (unchanged; DEV-089 added no MIR shape).
+5. **The required C5/Core baseline lowers** — holds.
+6. **Remaining narrow front-end over-rejections are documented and scheduled** — holds: DEV-083,
+   DEV-088 (use-site), DEV-090 are each recorded with a dated disposition and an owning future
+   package, and remain visible in release/conformance reporting.
+
+All six clauses hold. **Condition 3 does not silently waive Condition 2**: DEV-083, DEV-088's
+use-site, and DEV-090 are recorded as explicit scope decisions outside the mandatory C5 lowering
+baseline, not as exemptions.
+
+## Verdict: **Gate C4 CLOSED, Gate C5 OPEN** (2026-07-21)
+
+The C4 comparator holds across the frozen corpus and the differential suite; every normative Core
+construct C5 needs lowers; the one known engine divergence is resolved; and the residual narrow
+over-rejections are consistently rejected, documented, and scheduled. Native-backend work (C5)
+begins. The deferred items (DEV-083, DEV-088 use-site, DEV-090) travel forward in the ledger and
+in conformance reporting until their completion packages close them.

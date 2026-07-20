@@ -2957,3 +2957,145 @@ fn droppable_array_pattern_agrees() {
         .to_string(),
     );
 }
+
+// ---- DEV-089 (WP-C4.7 close-out): user `Display` controls print/println ----
+
+#[test]
+fn dev089_user_struct_display_agrees() {
+    // Required test 1 + 3: a user struct's `Display` output differs from its structural form.
+    differential(
+        "dev089_struct.stark",
+        "struct P { x: Int32 } \
+         impl Display for P { fn fmt(&self) -> String { String::from(\"P\") } } \
+         fn main() { \
+             let p = P { x: 1 }; \
+             println(p); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn dev089_user_enum_display_agrees() {
+    // Required test 2: a user enum's `Display`.
+    differential(
+        "dev089_enum.stark",
+        "enum Color { Red, Green } \
+         impl Display for Color { \
+             fn fmt(&self) -> String { \
+                 match *self { Color::Red => String::from(\"red\"), Color::Green => String::from(\"green\") } \
+             } \
+         } \
+         fn main() { \
+             println(Color::Red); \
+             println(Color::Green); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn dev089_display_called_once_with_side_effect_agrees() {
+    // Required tests 4 + 5: `fmt` runs exactly once, and its side effect is observable in order.
+    differential(
+        "dev089_once.stark",
+        "struct C { n: Int32 } \
+         impl Display for C { \
+             fn fmt(&self) -> String { println(\"fmt-called\"); String::from(\"C\") } \
+         } \
+         fn main() { \
+             let c = C { n: 5 }; \
+             println(c); \
+             println(\"done\"); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn dev089_dynamically_constructed_string_agrees() {
+    // Required test 6: `fmt` returns a dynamically built String (push_str), not a literal.
+    differential(
+        "dev089_dynamic.stark",
+        "struct Tag { n: Int32 } \
+         impl Display for Tag { \
+             fn fmt(&self) -> String { \
+                 let mut s = String::from(\"tag-\"); \
+                 s.push_str(\"x\"); \
+                 s \
+             } \
+         } \
+         fn main() { \
+             println(Tag { n: 7 }); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn dev089_generic_function_with_display_bound_agrees() {
+    // Required test 7: a generic function `show<T: Display>(v: T)` printing its parameter.
+    differential(
+        "dev089_generic_fn.stark",
+        "struct P { x: Int32 } \
+         impl Display for P { fn fmt(&self) -> String { String::from(\"P\") } } \
+         fn show<T: Display>(v: T) { println(v); } \
+         fn main() { \
+             show(P { x: 1 }); \
+             show(42); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn dev089_generic_nominal_display_agrees() {
+    // Required test 8: a `Display` impl on a generic nominal, printed at a concrete instance.
+    differential(
+        "dev089_generic_nominal.stark",
+        "struct Wrap<T> { value: T } \
+         impl<T> Display for Wrap<T> { fn fmt(&self) -> String { String::from(\"wrap\") } } \
+         fn main() { \
+             let w: Wrap<Int32> = Wrap { value: 5 }; \
+             println(w); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn dev089_formatter_result_and_argument_drop_timing_agrees() {
+    // Required test 9: drop ordering — the argument's destructor runs AFTER its formatted bytes
+    // are printed and BEFORE the following statement (ordinary by-value call ownership).
+    differential(
+        "dev089_drop_timing.stark",
+        "struct D { x: Int32 } \
+         impl Display for D { fn fmt(&self) -> String { String::from(\"D\") } } \
+         impl Drop for D { fn drop(&mut self) { println(\"drop-D\"); } } \
+         fn main() { \
+             let d = D { x: 1 }; \
+             println(d); \
+             println(\"after\"); \
+         }"
+        .to_string(),
+    );
+}
+
+#[test]
+fn dev089_trap_inside_fmt_agrees() {
+    // Required test 10: a trap inside `fmt` propagates as a trap in both engines, with the
+    // pre-trap prefix identical and no formatted/newline output for the trapping call.
+    differential(
+        "dev089_trap.stark",
+        "struct Boom { x: Int32 } \
+         impl Display for Boom { \
+             fn fmt(&self) -> String { let z = 0; println(1 / z); String::from(\"unreached\") } \
+         } \
+         fn main() { \
+             println(\"before\"); \
+             println(Boom { x: 1 }); \
+             println(\"after\"); \
+         }"
+        .to_string(),
+    );
+}

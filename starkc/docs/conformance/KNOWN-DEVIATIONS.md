@@ -2444,10 +2444,11 @@ WP-C1.5)
 - **NARROWED, not fully closed — by-value iteration over a non-`Copy` array element.** The loop
   index is a runtime counter, so no `ConstIndex` names the element being consumed and V-MOVE-1 has
   nothing precise to track. Reading by copy instead would be **unsound**: the array would still own
-  the element and destroy it again — a double free for a `String` in a real backend. It is refused
-  cleanly with that reason. Closing it needs loop unrolling (only sane for small `N`) or
-  runtime-indexed drop flags, which is a separate design question, not an extension of A5.
-  `Copy`-element array iteration is unaffected and lowers normally.
+  the element and destroy it again — a double free for a `String` in a real backend. `Copy`-element
+  array iteration is unaffected and lowers normally. **This residual was split out into DEV-090**
+  (WP-C4.7 close-out §6): it now rejects in the front end (`E0104`) before either engine, and full
+  ownership-transferring non-`Copy` array iteration is deferred to a later language-completion
+  package. See DEV-090.
 - **Regression evidence:** `mir_differential.rs::droppable_array_pattern_agrees` (wildcard, both
   bound, a discriminating three-element case, and a `String` element);
   `mir_verify.rs::rejects_const_index_out_of_bounds`, `::rejects_const_index_on_non_array`,
@@ -2475,7 +2476,7 @@ WP-C1.5)
   through, and array iteration), which runs in `exec_snapshots` and in
   `entire_frozen_corpus_agrees`.
 
-## DEV-088 — Cross-file `const` initializers are evaluated against the entry file [PARTIAL, WP-C4.7 post-exit, 2026-07-20]
+## DEV-088 — Cross-file `const`: declaration fixed; USE now deterministically rejected [DECL RESOLVED / USE DEFERRED with a deterministic rejection, WP-C4.7 close-out §7, 2026-07-21]
 
 - **What:** `check_constants` evaluated every `const` initializer with the interpreter still
   pointed at the ENTRY file, so a constant declared in a dependency had its literal read from the
@@ -2483,45 +2484,94 @@ WP-C1.5)
   `E0215 constant evaluation failed: invalid literal`. Same per-item file discipline as DEV-069;
   constants were a fourth site that closure missed, because no test or corpus case had a
   cross-file constant.
-- **Fixed here:** declaration-time evaluation now runs against the declaring file, so the spurious
-  E0215 is gone.
-- **STILL OPEN:** *using* a cross-file constant. The oracle re-reads the constant's literal at the
-  USE site against the wrong file (`"invalid literal"` at runtime), and MIR does not lower a
-  cross-file constant use at all ("use of a non-function item as a function"). Both engines fail,
-  so there is no divergence and nothing mislowers — a clean over-rejection.
-- **Found by:** writing the `multi_file__01` corpus case. Per the owner's scope-discipline
-  instruction the case was reduced to its actual subject (cross-file structs, methods, trait
-  default + override, cross-file `Drop`, provenance) and the constant removed, rather than chasing
-  the finding. Both engines agree on the reduced case.
-- **Assessment against the C5 baseline:** a cross-file `const` is ordinary Core and C5's
-  multi-file claim should cover it, but it is an over-rejection with obvious workarounds and no
-  soundness impact. Recommended for the same front-end completion package as DEV-083.
+- **Declaration-time: RESOLVED.** Evaluation now runs against the declaring file, so the spurious
+  E0215 during the const pre-pass is gone.
+- **USE site (`helper::N` referenced from another file): DEFERRED, with a deterministic
+  rejection.** The oracle's use-site evaluation reads the constant's literal against the USE
+  file's text (`"invalid literal"` at runtime) UNLESS the const's value was already cached by an
+  earlier same-file touch — so the failure was even data-dependent — while MIR does not lower a
+  `const` in value position at all ("use of a non-function item as a function"). The owner's §7
+  instruction was to reject unsupported cross-file constant use **deterministically, before
+  either engine**, rather than let one engine fail during interpretation and the other during
+  lowering.
+- **Resolution (owner §7, this close-out).** Using a `const` whose declaring file differs from the
+  use site's file is now rejected in the type checker (`E0215`, "using a `const` declared in
+  another file is not yet supported") — a single deterministic front-end error that forecloses
+  the inconsistency. **Same-file `const` use is unaffected**, and a cross-file *function* that
+  reads a same-file `const` internally is unaffected (the use is same-file). MIR's separate
+  inability to lower ANY `const` in value position is a distinct clean over-rejection, latent (no
+  corpus/differential case exercises it) and likewise deferred.
+- **Found by:** writing the `multi_file__01` corpus case. Per scope discipline the case was
+  reduced to its actual subject (cross-file structs, methods, trait default + override, cross-file
+  `Drop`, provenance) and the constant removed. Both engines agree on the reduced case.
+- **DISPOSITION (owner §7):** do not implement cross-file constant use during C4. Deferred to the
+  same front-end/multi-file completion package as **DEV-083**. Must remain visible in the deviation
+  ledger and release/conformance reporting until implemented. No further cross-file-constant
+  implementation campaign is required for C4.
+- **Regression evidence:** `gate2_valid.rs::cross_file_const_use_is_rejected`.
 
-## DEV-089 — `println` of a user type with a `Display` impl: oracle ignores the impl, MIR refuses [OPEN, found by the WP-C4.7 bounded validation, 2026-07-20]
+## DEV-089 — `println` of a user type with a `Display` impl now dispatches to that impl in both engines [CLOSED, WP-C4.7 close-out, 2026-07-21]
 
-- **What:** for a user nominal that DOES implement `Display`, the three components disagree:
-  - **checker** — accepts (correct: DEV-084 made the check "has a `Display` impl", and it does);
-  - **HIR oracle** — runs it, but prints its own aggregate/debug rendering (`{x: 1}`), **ignoring
-    the user's `Display::fmt`**;
-  - **MIR** — refuses to lower it ("print/println of this type (C4.5)").
-- **Two problems, not one.** (1) An **engine divergence**: the oracle runs a program MIR rejects.
-  (2) An oracle **correctness** question: 06-Standard-Library treats `Display` as an ordinary
-  trait, so `println(p)` on a type with an impl should plausibly dispatch to that impl rather than
-  to a built-in debug form. The oracle's rendering is not obviously the specified behaviour.
-- **Repro:** `struct P { x: Int32 } impl Display for P { fn fmt(&self) -> String { String::from("P") } }`
-  with `println(p)` — oracle prints `{x: 1}`, MIR reports `LOWER-UNSUPPORTED`.
-- **Status:** NOT fixed. Found by the bounded final validation, which the owner instructed should
-  **stop and report** on a new engine divergence rather than expand into another implementation
-  campaign. It is neither a soundness defect nor invalid MIR: nothing mislowers, and the MIR side
-  refuses cleanly.
-- **Why it only surfaced now:** before DEV-084, `println` accepted ANY type, so the interesting
-  case (a type WITH an impl) was indistinguishable from the far more common case (a type without
-  one). Narrowing the checker is what isolated it.
-- **Assessment against the C5 baseline:** user-`Display` dispatch through `println` is ordinary
-  Core and a C5 application would plausibly use it. Deciding it needs a spec reading first —
-  whether `println` dispatches to `Display::fmt`, and what the oracle's aggregate rendering is for
-  — and then either implementing dispatch in both engines or narrowing the checker further. Owner:
-  unassigned; **material to the C4 closure decision** and reported as such.
+- **What (before):** for a user nominal that DOES implement `Display`, the three components
+  disagreed — the **checker** accepted (correct: DEV-084 made the check "has a `Display` impl"),
+  the **HIR oracle** ran it but printed its own aggregate/debug rendering (`{x: 1}`), **ignoring
+  the user's `Display::fmt`**, and **MIR** refused to lower it.
+- **Two problems, both resolved.** (1) an engine divergence (oracle ran what MIR rejected);
+  (2) an oracle-correctness question — 06-Standard-Library treats `Display` as an ordinary trait,
+  so the statically selected `Display::fmt` must execute.
+- **Why it only surfaced then:** before DEV-084, `println` accepted ANY type, so a type WITH an
+  impl was indistinguishable from the common no-impl case. Narrowing the checker isolated it.
+- **Resolution (owner decision, 2026-07-21): user `Display` dispatch in both engines.**
+  - **Spec (06-Standard-Library, PRINT-DISPLAY-001):** `print`/`println`/`eprint`/`eprintln` are
+    implementation-provided generic functions `fn print<T: Display>(value: T)` (etc.). They
+    evaluate the argument once, select the unique coherent `Display` impl by ordinary trait
+    resolution, invoke `Display::fmt` once, print exactly the returned `String`'s UTF-8 bytes
+    (`println`/`eprintln` then one `0x0A`), and destroy the formatting `String` after its bytes are
+    submitted. No fallback debug/structural rendering exists for a type lacking `Display` — such a
+    program is rejected by the checker (E0500).
+  - **HIR oracle (`interp.rs::display_text`/`finish_display`):** a user nominal's own `Display::fmt`
+    is resolved and executed; its returned `String`'s bytes are printed; the by-value argument is
+    destroyed AFTER the bytes are submitted (ordinary by-value call ownership). The internal
+    aggregate rendering (`format_runtime_value`) is retained for diagnostics but is no longer the
+    language-level `Display` for `print`. `eprint`/`eprintln` route through the same path.
+  - **MIR (`mir/lower.rs::lower_print_display`):** ordinary visible MIR — a static
+    `Callee::Instance` call to the selected `Display::fmt`, then the existing `StringAsStr` +
+    `Print(ln)Str` surface, then a visible `Drop` of the formatting `String` and of the by-value
+    argument. **No new MIR shape, no new `RuntimeFn`, no runtime-surface bump.** `fmt` stays a
+    normal instance call, so user code, traps and provenance remain visible.
+- **Repro (now):** `struct P { x: Int32 } impl Display for P { fn fmt(&self) -> String { String::from("P") } }`
+  with `println(p)` prints `P` in both engines; the argument's `Drop` (if any) runs after the
+  printed bytes and before the next statement.
+- **Regression evidence:** `mir_differential.rs::dev089_user_struct_display_agrees`,
+  `::dev089_user_enum_display_agrees`, `::dev089_display_called_once_with_side_effect_agrees`,
+  `::dev089_dynamically_constructed_string_agrees`,
+  `::dev089_generic_function_with_display_bound_agrees`,
+  `::dev089_generic_nominal_display_agrees`,
+  `::dev089_formatter_result_and_argument_drop_timing_agrees`, `::dev089_trap_inside_fmt_agrees`;
+  and the checker's positive/negative coverage in `gate2_valid.rs::printing_requires_display`.
+
+## DEV-090 — By-value iteration over a non-`Copy` array element is refused at MIR only; now rejected in the front end [CLOSED with a deterministic front-end rejection / feature DEFERRED, WP-C4.7 close-out §6, 2026-07-21]
+
+- **What:** split from DEV-086. `for x in arr` over a fixed-length array whose element type is
+  NOT `Copy` binds each element by value, moving it out of a place named by a **runtime** loop
+  index. No static constant-index projection (A5's `ConstIndex`) can name the consumed element, and
+  reading it by copy instead would be **unsound** — the array still owns the element and would
+  destroy it again (a double free for a `String` in a real backend).
+- **Before:** the checker accepted it, the **oracle ran it** (cloning each element out), and MIR
+  **refused to lower it** (`LOWER-UNSUPPORTED`) — an engine divergence masked by the checker's
+  acceptance and MIR being reached only in the differential path.
+- **Resolution (owner §6): reject in the front end, deterministically, before either engine.**
+  `borrowck.rs` now rejects by-value iteration over a non-`Copy` array element with `E0104` and a
+  diagnostic recommending iterating over a borrow. `Copy`-element array iteration is unaffected and
+  lowers normally; consuming array PATTERNS over droppable elements (DEV-086's closed portion) are
+  unaffected. The MIR guard remains as defence-in-depth but is no longer reachable for this case.
+- **DISPOSITION (owner §6):** full ownership-transferring non-`Copy` array iteration (via loop
+  unrolling for small `N`, or runtime-indexed drop flags) is an explicitly accepted limitation
+  **outside the C5 baseline**, scheduled for a later language-completion package. Must remain
+  visible in the deviation ledger until implemented.
+- **Regression evidence:** `gate2_valid.rs::rejects_by_value_iteration_over_non_copy_array` /
+  `::accepts_by_value_iteration_over_copy_array`, and the `E0104` registry entry in
+  `04-Semantic-Analysis.md`.
 
 ## Informational (not owned deviations)
 
@@ -2572,7 +2622,11 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 87 numbered deviations total (DEV-002 through DEV-089, DEV-001/DEV-003 retired).
+Current count: 88 numbered deviations total (DEV-002 through DEV-090, DEV-001/DEV-003 retired).
+DEV-090 (by-value iteration over a non-`Copy` array element) was split from DEV-086's narrowed
+remainder during the WP-C4.7 close-out and rejected in the front end (`E0104`), the feature itself
+deferred. DEV-089 (user `Display` dispatch through `print`/`println`) was closed the same day by
+implementing dispatch in both engines (CD-041), which was the last item gating Gate C4 closure.
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2637,15 +2691,16 @@ by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 — which WP-C2.6 had a
 decision ownership and C2.11 implementation ownership — were all **resolved by WP-C2.11**; see
 their individual entries. (A prior revision of this paragraph, written at WP-C2.6 time, still
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
-**Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
+**Currently open (2026-07-21, at Gate C4 closure):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-083 (**owner-deferred 2026-07-20** to `WP-C6.x Method Resolution Completion`;
-explicitly outside the mandatory C5 lowering baseline), DEV-086 (**patterns CLOSED by CD-038**;
-by-value non-`Copy` array iteration narrowed and still refused cleanly), DEV-088 (cross-file
-`const` USE; declaration-time evaluation fixed, use site open), DEV-089 (`println` of a type WITH
-a `Display` impl — an ENGINE DIVERGENCE plus an oracle-correctness question, found by the bounded
-final validation and reported rather than chased). All except DEV-089 are over-rejections with
-both engines consistent. DEV-087 (oracle treated a slice reference as non-`Copy`) was found while
+remainder), DEV-083 (**owner-deferred** to `WP-C6.x Method Resolution Completion`; explicitly
+outside the mandatory C5 lowering baseline), DEV-088 use-site (cross-file `const` USE; declaration
+fixed, USE now rejected deterministically in the checker and deferred to the front-end/multi-file
+completion package with DEV-083), and DEV-090 (by-value non-`Copy` array iteration; rejected in the
+front end and deferred to a later language-completion package). All are over-rejections with both
+engines consistent — each rejects at a single deterministic front-end point, none diverges between
+engines. **DEV-089 is now CLOSED** (user `Display` dispatch implemented in both engines, CD-041);
+**DEV-086 is CLOSED** for patterns and its narrowed remainder is tracked as DEV-090. DEV-087 (oracle treated a slice reference as non-`Copy`) was found while
 writing the corpus cases and closed by WP-C4.7-9. DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half landed in WP-C4.7-8.1. DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)
