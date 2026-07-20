@@ -1777,7 +1777,7 @@ WP-C1.5)
   `::determined_generic_fn_coercion_publishes_instantiation` (determined coercion stays
   accepted and publishes `[Int32]`). — closed.
 
-## DEV-067 — Bounded generic parameters lose their bounds at intra-generic call sites and behind references
+## DEV-067 — Bounded generic parameters lose their bounds at intra-generic call sites and behind references [CLOSED, WP-C4.7-7, 2026-07-20]
 
 - **Normative expectation:** inside `fn f<T: Ord>(...)`, the parameter `T` satisfies the
   bound `Ord` — a call `g(x)` to `fn g<U: Ord>(u: U)` with `x: T` must type-check
@@ -1797,8 +1797,28 @@ WP-C1.5)
 - **User impact:** valid generic code patterns (bounded recursion, `&T` trait dispatch) are
   rejected; workarounds exist (unbounded parameter where possible, by-value receiver).
 - **Security/soundness impact:** none — over-rejection only; no invalid program is accepted.
-- **Owning gate:** C4.5 (a later increment, alongside generic method monomorphisation, which
-  needs the same bounds-environment machinery) — open.
+- **Resolution (WP-C4.7-7, 2026-07-20).** Two independent causes, one per symptom.
+  **(b) `&T` receivers:** the bounded-parameter method lookup tested the UNPEELED receiver type,
+  so it matched `t: T` but never `t: &T`. TYPE-METHOD-002 requires auto-dereference to peel
+  leading `&`/`&mut` before receiver matching, and the concrete-type path immediately below it
+  already computed exactly such a peeled `receiver_ty` — the peel was simply performed after the
+  parameter check instead of before. Moving it above makes both paths obey the same rule.
+  **(a) Intra-generic call sites:** `satisfies_bound` had **no `Ty::Param` arm at all** and fell
+  through to `_ => false`, so a caller's own `T: Ord` could never discharge a callee's `T: Ord`
+  (TYPE-GENERIC-001). Adding the arm was not sufficient on its own: trait-bound obligations are
+  collected during body checking and verified in a **deferred pass** that runs after every body,
+  by which point `current_fn_generics` belongs to whatever was checked last. Each obligation now
+  carries the generic environment it arose in, and the deferred pass restores it before checking.
+  The new arm mirrors the `Ty::Param` arm `ty_satisfies_operator_bound` already had, so the two
+  bound checks now agree about parameters.
+- **Soundness:** over-rejection removed, nothing newly accepted. An obligation is discharged only
+  by a bound the enclosing function actually declared — a concrete type without the impl, and an
+  UNBOUNDED parameter forwarded into a bounded position, are both still E0500 (pinned by tests).
+- **Regression evidence:** `mir_differential.rs::bounded_generic_method_through_reference_agrees`
+  (instantiated at two types, so dispatch is exercised, not just the check) and
+  `::bounded_generic_call_chain_agrees` (a three-deep chain of bounded generic calls);
+  `gate2_valid.rs::unsatisfied_trait_bounds_are_still_rejected` (both negatives).
+- **Owning gate:** WP-C4.7-7 (closed).
 
 ## DEV-065 — Array index OOB reported "use of moved or invalid field" [CLOSED, C4.5b-1, 2026-07-19]
 
@@ -1985,7 +2005,7 @@ WP-C1.5)
   `Copy`-payload positives); `mir_differential.rs::match_deref_self_noncopy_wildcard_agree`
   continues to pass unchanged.
 
-## DEV-071 — `match` on `Ordering` with all three variants is flagged non-exhaustive [OPEN, found WP-C4.6 A3-Ord, 2026-07-19]
+## DEV-071 — `match` on `Ordering` with all three variants is flagged non-exhaustive [CLOSED, WP-C4.7-7, 2026-07-20]
 
 - **What:** the front-end exhaustiveness checker does not recognize the prelude `Ordering` enum
   as having exactly `{ Less, Equal, Greater }`, so a `match` covering all three explicit
@@ -1999,7 +2019,19 @@ WP-C1.5)
   which uses an explicit-plus-wildcard match). Owner: front end (adjacent to the A2 pattern
   work but distinct — this is exhaustiveness, not by-reference matching).
 - **Consequence for A3-Ord:** none for the dispatch/round-trip mechanism; only cosmetic (users
-  must add a `_` arm to an all-variants `Ordering` match until fixed).
+  had to add a `_` arm to an all-variants `Ordering` match until fixed).
+- **Resolution (WP-C4.7-7, 2026-07-20).** The prelude `Ordering` is `Ty::Core(CoreType::Ordering)`
+  with `Res::Builtin` variants — structurally like `Option`/`Result`, and invisible to the
+  `Ty::Enum`/`matched_variants` machinery for the same reason. `Option`/`Result` had already been
+  given explicit arms; `Ordering` had not, so it fell through to the "unknown domain, require a
+  wildcard" default that WP-C1.5 introduced. The exhaustiveness check now tracks
+  `Ordering::Less`/`Equal`/`Greater` and treats all three as exhaustive.
+- **Soundness:** the enumeration is exact — a two-variant `Ordering` match is still E0303 (pinned
+  by a test, since an over-generous domain enumeration would silently accept unsound matches).
+- **Regression evidence:** `gate2_valid.rs::ordering_match_exhaustiveness_counts_all_three_variants`
+  (both directions); `mir_differential.rs::ordering_value_round_trips_through_match_agree` was
+  **rewritten to use three explicit arms**, dropping the `_` workaround it had carried for this
+  deviation.
 
 ## DEV-073 — Checker does not match GENERIC impls for operator/iterable bounds [CLOSED, WP-C4.7-5, 2026-07-20]
 
@@ -2205,11 +2237,12 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-067 (WP-C4.7-7), DEV-071 (WP-C4.7-7), DEV-075 (unassigned; found by
-WP-C4.7-6.2, C4-exit-report input). DEV-070 was closed by
+remainder), DEV-075 (unassigned; found by WP-C4.7-6.2, C4-exit-report input). DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
-closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching). DEV-060 closed the same day it was made a C3-ENTRY blocker.
+closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);
+**DEV-067 and DEV-071 were closed by WP-C4.7-7** (bounded-parameter bounds behind references and
+at intra-generic call sites; `Ordering` exhaustiveness). DEV-060 closed the same day it was made a C3-ENTRY blocker.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping

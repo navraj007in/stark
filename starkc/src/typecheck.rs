@@ -162,7 +162,12 @@ pub struct TypeChecker<'a> {
     current_trait_id: Option<ItemId>,
 
     // Bounds checks to run at the end of checking
-    bounds_checks: Vec<(Ty, Vec<hir::TraitRef>, Span)>,
+    /// Deferred trait-bound obligations. The 4th element is the generic environment ACTIVE
+    /// WHERE THE OBLIGATION AROSE (DEV-067(a)): bounds are checked in a pass that runs after
+    /// every body, by which time `current_fn_generics` belongs to whatever was checked last, so
+    /// an obligation on a caller's own type parameter cannot be discharged unless the enclosing
+    /// bounds travel with it.
+    bounds_checks: Vec<(Ty, Vec<hir::TraitRef>, Span, Vec<hir::GenericParam>)>,
 
     /// Enabled language extensions, threaded from the CLI through the whole
     /// front end (parse → resolve → typecheck).
@@ -2475,7 +2480,10 @@ impl<'a> TypeChecker<'a> {
 
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
-        for (concrete_ty, bounds_list, span) in bounds {
+        for (concrete_ty, bounds_list, span, enclosing) in bounds {
+            // DEV-067(a): restore the generic environment this obligation was recorded in, so a
+            // caller's own `T: Ord` can discharge a callee's `T: Ord` (TYPE-GENERIC-001).
+            let saved = self.current_fn_generics.replace(enclosing);
             for bound in bounds_list {
                 if !self.satisfies_bound(&concrete_ty, &bound) {
                     self.diags.push(
@@ -2491,6 +2499,7 @@ impl<'a> TypeChecker<'a> {
                     );
                 }
             }
+            self.current_fn_generics = saved;
         }
     }
 
@@ -4356,6 +4365,15 @@ impl<'a> TypeChecker<'a> {
                 // `match opt { Some(v) => .. }` (missing `None`) compiled clean before this fix.
                 let (mut matched_some, mut matched_none) = (false, false);
                 let (mut matched_ok, mut matched_err) = (false, false);
+                // DEV-071 (WP-C4.7-7): the prelude `Ordering` is `Ty::Core(CoreType::Ordering)`
+                // with `Res::Builtin` variants — exactly like `Option`/`Result`, and for exactly
+                // the same reason it was invisible to the `Ty::Enum`/`matched_variants`
+                // machinery. Unlike those two, though, `Ordering` fell through to the
+                // "unknown domain, require a wildcard" default, so an all-three-variant match
+                // was reported NON-exhaustive (E0303) and every `Ordering` match needed a
+                // pointless `_` arm.
+                let (mut matched_less, mut matched_equal, mut matched_greater) =
+                    (false, false, false);
 
                 let mut preceding_patterns = Vec::new();
 
@@ -4400,6 +4418,9 @@ impl<'a> TypeChecker<'a> {
                             Res::Builtin(Builtin::None) => matched_none = true,
                             Res::Builtin(Builtin::Ok) => matched_ok = true,
                             Res::Builtin(Builtin::Err) => matched_err = true,
+                            Res::Builtin(Builtin::OrderingLess) => matched_less = true,
+                            Res::Builtin(Builtin::OrderingEqual) => matched_equal = true,
+                            Res::Builtin(Builtin::OrderingGreater) => matched_greater = true,
                             _ => {}
                         },
                         hir::PatKind::Lit(Lit::Bool(value)) => {
@@ -4421,6 +4442,11 @@ impl<'a> TypeChecker<'a> {
                         Ty::Primitive(Primitive::Bool) => matched_bools.len() < 2,
                         Ty::Core(CoreType::Option, _) => !(matched_some && matched_none),
                         Ty::Core(CoreType::Result, _) => !(matched_ok && matched_err),
+                        // DEV-071: `Ordering` has exactly three fieldless variants, so matching
+                        // all three IS exhaustive and needs no wildcard.
+                        Ty::Core(CoreType::Ordering, _) => {
+                            !(matched_less && matched_equal && matched_greater)
+                        }
                         // WP-C1.5: every other scrutinee type previously fell through here
                         // silently, regardless of arm coverage -- `match x: Int32 { 1 => ..,
                         // 2 => .. }` (missing every other Int32 value) compiled clean and only
@@ -4941,8 +4967,9 @@ impl<'a> TypeChecker<'a> {
                     .filter(|bound| bound.res != Res::Err)
                     .cloned()
                     .collect();
+                let enclosing = self.current_fn_generics.clone().unwrap_or_default();
                 self.bounds_checks
-                    .push((arg_ty.clone(), trait_bounds, span));
+                    .push((arg_ty.clone(), trait_bounds, span, enclosing));
                 map.insert(param_name, arg_ty);
             }
         } else {
@@ -4955,7 +4982,9 @@ impl<'a> TypeChecker<'a> {
                     .filter(|bound| bound.res != Res::Err)
                     .cloned()
                     .collect();
-                self.bounds_checks.push((var.clone(), trait_bounds, span));
+                let enclosing = self.current_fn_generics.clone().unwrap_or_default();
+                self.bounds_checks
+                    .push((var.clone(), trait_bounds, span, enclosing));
                 map.insert(param_name, var);
             }
         }
@@ -5562,17 +5591,31 @@ impl<'a> TypeChecker<'a> {
             return self.check_tensor_refine(resolved_base, turbofish, args, name_span, call_span);
         }
 
-        if let Ty::Param(p_name) = &resolved_base {
+        let mut receiver_ty = resolved_base.clone();
+        while let Ty::Ref { inner, .. } = receiver_ty {
+            receiver_ty = self.resolve(&inner);
+        }
+
+        // DEV-067(b) (WP-C4.7-7): a method call on a BOUNDED generic parameter resolves through
+        // the parameter's declared bounds. This tested `resolved_base` — the UNPEELED receiver —
+        // so it matched `t: T` but never `t: &T`, and `fn f<T: Speak>(t: &T) { t.speak() }`
+        // failed E0302 "method 'speak' not found for type '&T'". TYPE-METHOD-002 requires
+        // auto-dereference to peel leading `&`/`&mut` before receiver matching, exactly as the
+        // concrete-type path below already did with `receiver_ty`; using the same peeled type
+        // here makes the bounded-parameter path obey the same rule.
+        if let Ty::Param(p_name) = &receiver_ty {
             if let Some(generics) = self.current_fn_generics.clone() {
                 for param in &generics {
                     if self.text(param.name) == p_name {
                         for bound in &param.bounds {
                             let bound_trait_name = self.text(bound.path.span).to_string();
+                            // DEV-069: trait names are read against the declaring item's file.
                             let bound_trait_id =
                                 self.hir.items.iter().enumerate().find_map(|(idx, item)| {
+                                    let trait_id = ItemId(idx as u32);
                                     if let hir::ItemKind::Trait { name, .. } = &item.kind {
-                                        if self.text(*name) == bound_trait_name {
-                                            return Some(ItemId(idx as u32));
+                                        if self.item_text(trait_id, *name) == bound_trait_name {
+                                            return Some(trait_id);
                                         }
                                     }
                                     None
@@ -5588,11 +5631,6 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-        }
-
-        let mut receiver_ty = resolved_base.clone();
-        while let Ty::Ref { inner, .. } = receiver_ty {
-            receiver_ty = self.resolve(&inner);
         }
 
         // DEV-051: `self.other_method()` called from inside a trait's own default-method body
@@ -7005,6 +7043,26 @@ impl<'a> TypeChecker<'a> {
                     })
                 });
                 bindings_match
+            }
+            // DEV-067(a) (WP-C4.7-7): a bound on a generic parameter is discharged by the
+            // ENCLOSING function's own declared bounds. There was no `Ty::Param` arm at all, so
+            // this fell to `_ => false` and any generic fn calling another generic fn with a
+            // bounded parameter — including simple recursion — failed E0500 "type 'T' does not
+            // satisfy trait bound 'Ord'", even though `T: Ord` was declared right there
+            // (TYPE-GENERIC-001: the caller's own bound discharges the callee's obligation).
+            // This mirrors the `Ty::Param` arm `ty_satisfies_operator_bound` already had for the
+            // operator-desugaring bounds, so the two bound checks now agree about parameters.
+            Ty::Param(param_name) => {
+                let Some(generics) = self.current_fn_generics.clone() else {
+                    return false;
+                };
+                generics.iter().any(|param| {
+                    self.text(param.name) == param_name
+                        && param
+                            .bounds
+                            .iter()
+                            .any(|declared| self.text(declared.path.span) == bound_name)
+                })
             }
             Ty::Error => true,
             _ => false,

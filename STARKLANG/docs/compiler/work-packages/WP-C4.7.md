@@ -76,8 +76,8 @@ without prior context. Read §0 and §1 before touching code.
 ### Front-end quirks to ROUTE AROUND in test programs (do not fight them)
 - Integer literals don't coerce to `UInt64` params: write `v.get(0 as UInt64)`,
   `i = i + (1 as UInt64)`.
-- All-three-variant `Ordering` matches are wrongly non-exhaustive (DEV-071): use two variants
-  + `_` until C4.7-7 fixes it.
+- ~~All-three-variant `Ordering` matches are wrongly non-exhaustive (DEV-071)~~ — **fixed by
+  C4.7-7**; write all three variants, no wildcard needed.
 - ~~Generic impls don't satisfy operator/iterable bounds (DEV-073)~~ — **fixed by C4.7-5**;
   `a == b` on `W<Int32>` with `impl<T> Eq for W<T>` and `for x in it` on a generic iterator
   struct both work now.
@@ -436,7 +436,15 @@ Order within the increment (each independently commit-able):
   spec-conformant. **DEV-075 opened** (pre-existing): `Bool`/`Char` ordered comparison is accepted
   by the checker but fails in both engines for `Bool` and DIVERGES for `Char` (MIR succeeds,
   oracle rejects). Workspace 765/0/2.
-- C4.7-7: _pending_
+- C4.7-7: **DONE 2026-07-20 — DEV-067 + DEV-071 CLOSED**, which closes every front-end deviation
+  the C4 track owned. DEV-071: `Ordering` is `Ty::Core` with `Res::Builtin` variants (like
+  `Option`/`Result`) and had no explicit exhaustiveness arm, so it hit WP-C1.5's require-a-wildcard
+  default; now tracks all three variants, two-variant still E0303. DEV-067 was TWO causes: (b) the
+  bounded-parameter lookup tested the unpeeled receiver (TYPE-METHOD-002 requires the peel, and the
+  path below already computed one — it just ran after); (a) `satisfies_bound` had no `Ty::Param`
+  arm, AND bounds are verified in a deferred pass, so each obligation now carries the generic
+  environment it arose in. 4 differential/front-end tests + the `_`-workaround dropped from
+  `ordering_value_round_trips_through_match_agree`. Workspace 769/0/2.
 - C4.7-8: _pending_
 - C4.7-9: _pending_ (last)
 

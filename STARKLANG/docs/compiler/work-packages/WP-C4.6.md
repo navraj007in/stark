@@ -125,7 +125,7 @@ Ordered by estimated effort. "Probe" quotes the program shape that reproduces it
 These never reach lowering; they are conformance gaps of the checker/resolver, recorded here
 so the gate decision sees them (they cap what C5 programs can be written regardless of MIR):
 
-- **DEV-067** — bounded generic params lose bounds at intra-generic call sites (E0500) and
+- **DEV-067** (**CLOSED by WP-C4.7-7, 2026-07-20**) — bounded generic params lose bounds at intra-generic call sites (E0500) and
   behind `&T` receivers (E0302). Probe: `fn call_speak<T: Speak>(t: &T) { t.speak() }` →
   E0302. Open since C4.5c.
 - **DEV-069** — front end + HIR oracle not multi-file-span-clean (found f-3c). **CLOSED by
@@ -170,7 +170,9 @@ is the C5 baseline, not std-full. All Class-A classes A1–A7 are required befor
 `Vec::contains`) may stay reserved beyond C4 unless separately required by the stable Core
 contract. Front-end prerequisites get explicit owners: DEV-069 blocked the C5 multi-file claim
 (**closed by WP-C4.7-4, 2026-07-20**)
-(parallel front-end WP allowed); DEV-067, `Box` deref, and primitive `Ordering::cmp` resolved
+(parallel front-end WP allowed); DEV-067 (closed by WP-C4.7-7), `Box` deref (found
+spec-conformant by WP-C4.7-6.1 — no `Deref` in Core v1), and primitive `Ordering::cmp` (added by
+WP-C4.7-6.2) resolved
 where `core-min` requires. A3's `Ord` portion waits on a CE3 `Ordering` runtime-surface
 amendment (`Eq` may proceed first); A4 needs a dated runtime-surface amendment.
 
@@ -271,9 +273,9 @@ front-end gaps carried past the exit, none silent:**
   method-own generic parameters, non-bare generic impl self args, droppable Iterator Item
   (A1); mutable slice views (A4-2e); `unwrap_or`/combinators on droppable payloads (A4-1/2a).
 - Front-end deviations (owner: front end): DEV-067 (bounded generics at intra-generic call
-  sites), DEV-069 (multi-file span discipline — **closed by WP-C4.7-4, 2026-07-20**; was a
+  sites — **closed by WP-C4.7-7, 2026-07-20**), DEV-069 (multi-file span discipline — **closed by WP-C4.7-4, 2026-07-20**; was a
   prerequisite for the C5 multi-file claim per
-  CD-033), DEV-071 (Ordering exhaustiveness), DEV-072 (move-out-of-borrow via match bindings
+  CD-033), DEV-071 (Ordering exhaustiveness — **closed by WP-C4.7-7, 2026-07-20**), DEV-072 (move-out-of-borrow via match bindings
   passes borrowck — **closed by WP-C4.7-5, 2026-07-20**), DEV-073 (generic impls unmatched in
   operator/iterable bound checks — **closed by WP-C4.7-5, 2026-07-20**),
   `Box` deref, primitive `Ordering::cmp` surface, `Vec::get` literal-typing quirk (all three
@@ -359,7 +361,8 @@ operators on non-generic user nominals lowered to `cmp` + discriminant-compare (
 `Unsupported` for generic-nominal comparison; no change to primitive comparison. Evidence:
 `user_ord_all_operators_agree`, `ordering_value_round_trips_through_match_agree`,
 `user_ord_borrows_and_drops_normally_agree` (differential), `rejects_invalid_core_ordering_variant`
-+ `accepts_valid_core_ordering_variants` (verifier). **Found DEV-071** (open, front-end): an
++ `accepts_valid_core_ordering_variants` (verifier). **Found DEV-071** (front-end; **closed by
+WP-C4.7-7, 2026-07-20**): an
 all-three-variant `Ordering` match is wrongly flagged non-exhaustive (exhaustiveness gap); the
 round-trip test uses an explicit-plus-wildcard match, which fully exercises the MIR path.
 DEV-070 remains open under A2 (enum `Eq`/`Ord` bodies that `match *self`).

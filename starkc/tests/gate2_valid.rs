@@ -1299,3 +1299,83 @@ fn matching_through_a_reference_without_taking_ownership_is_accepted() {
         "a Copy payload is copied, not moved, and must stay legal, got {diagnostics:?}"
     );
 }
+
+/// DEV-067 (WP-C4.7-7) negatives: relaxing bound checking must not weaken it. A concrete type
+/// that does not implement the bound, and an UNBOUNDED parameter forwarded to a bounded one,
+/// must both still be rejected — the fix discharges an obligation only from a bound the caller
+/// actually declared.
+#[test]
+fn unsatisfied_trait_bounds_are_still_rejected() {
+    let concrete = "\
+        trait Speak { fn speak(&self) -> Int32; }\n\
+        fn needs_speak<T: Speak>(t: T) -> Int32 { t.speak() }\n\
+        struct Mute { n: Int32 }\n\
+        fn main() -> Unit {\n\
+            let m = Mute { n: 1 };\n\
+            println(needs_speak(m));\n\
+        }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("bound_concrete.stark", concrete);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0500")),
+        "a concrete type without the impl must still fail the bound, got {diagnostics:?}"
+    );
+
+    let unbounded = "\
+        fn needs_ord<T: Ord>(a: T, b: T) -> Bool { a < b }\n\
+        fn passes_unbounded<T>(a: T, b: T) -> Bool { needs_ord(a, b) }\n\
+        fn main() -> Unit { println(passes_unbounded(1, 2)); }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("bound_unbounded.stark", unbounded);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0500")),
+        "an unbounded parameter must not satisfy a callee's bound, got {diagnostics:?}"
+    );
+}
+
+/// DEV-071 (WP-C4.7-7): an all-three-variant `Ordering` match is exhaustive and needs no
+/// wildcard — but a two-variant one is still non-exhaustive. Both directions, because the fix
+/// enumerates a domain and an enumeration that is too generous silently accepts unsound matches.
+#[test]
+fn ordering_match_exhaustiveness_counts_all_three_variants() {
+    let exhaustive = "\
+        fn label(o: Ordering) -> Int32 {\n\
+            match o {\n\
+                Ordering::Less => 1,\n\
+                Ordering::Equal => 2,\n\
+                Ordering::Greater => 3,\n\
+            }\n\
+        }\n\
+        fn main() -> Unit { println(label(3.cmp(&5))); }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("ord_exhaustive.stark", exhaustive);
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "all three Ordering variants must be exhaustive, got {diagnostics:?}"
+    );
+
+    let partial = "\
+        fn label(o: Ordering) -> Int32 {\n\
+            match o {\n\
+                Ordering::Less => 1,\n\
+                Ordering::Equal => 2,\n\
+            }\n\
+        }\n\
+        fn main() -> Unit { println(label(3.cmp(&5))); }\n\
+    "
+    .to_string();
+    let diagnostics = analyze("ord_partial.stark", partial);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0303")),
+        "a two-variant Ordering match must stay non-exhaustive, got {diagnostics:?}"
+    );
+}

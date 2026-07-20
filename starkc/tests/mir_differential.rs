@@ -476,8 +476,11 @@ fn generic_calling_generic_agrees() {
 }
 
 /// Recursion inside a generic fn stays within one instance (no runaway instantiation).
-/// The recursing parameter is deliberately unbounded: a *bounded* parameter at an
-/// intra-generic call site is over-rejected by the checker today (DEV-067).
+/// The recursing parameter here is unbounded. That was originally forced by DEV-067 (a bounded
+/// parameter at an intra-generic call site was over-rejected); DEV-067 is closed as of
+/// WP-C4.7-7, and the bounded form is now covered by `bounded_generic_call_chain_agrees`. This
+/// test keeps the unbounded shape deliberately, so the no-runaway-instantiation property stays
+/// pinned independently of bound checking.
 #[test]
 fn generic_recursion_agrees() {
     differential(
@@ -491,8 +494,11 @@ fn generic_recursion_agrees() {
 }
 
 /// Static trait dispatch through a generic parameter's bound: the method call on a `T`
-/// receiver resolves to the implementing type's method after substitution. (A `&T` receiver
-/// is over-rejected by the checker today — DEV-067 — so the receiver is by value here.)
+/// receiver resolves to the implementing type's method after substitution. The by-value receiver
+/// was originally forced by DEV-067 (a `&T` receiver was over-rejected); DEV-067 is closed as of
+/// WP-C4.7-7, and the reference form is now covered by
+/// `bounded_generic_method_through_reference_agrees`. Keeping this one by-value preserves
+/// coverage of both receiver forms.
 #[test]
 fn trait_bound_method_dispatch_in_generic_fn_agrees() {
     differential(
@@ -1478,9 +1484,11 @@ fn user_ord_all_operators_agree() {
 }
 
 /// A directly-invoked `cmp` returns an `Ordering` value that round-trips through a `match` by
-/// variant, agreeing with the oracle. (Three-arm exhaustive Ordering matches are a front-end
-/// gap — DEV-071 — so this uses an explicit-plus-wildcard match, which still exercises the MIR
-/// `CoreOrdering` construct/return/discriminant-switch path.)
+/// variant, agreeing with the oracle. Uses all THREE variants explicitly since WP-C4.7-7 closed
+/// DEV-071 — an all-three-variant `Ordering` match used to be wrongly flagged non-exhaustive, so
+/// this test had to carry a `_` arm as a workaround. Dropping the wildcard is what makes it
+/// exercise the real exhaustiveness path as well as the MIR
+/// `CoreOrdering` construct/return/discriminant-switch path.
 #[test]
 fn ordering_value_round_trips_through_match_agree() {
     differential(
@@ -1494,7 +1502,11 @@ fn ordering_value_round_trips_through_match_agree() {
              } \
          } \
          fn report(o: Ordering) -> Int32 { \
-             match o { Ordering::Less => 10, Ordering::Greater => 30, _ => 20, } \
+             match o { \
+                 Ordering::Less => 10, \
+                 Ordering::Greater => 30, \
+                 Ordering::Equal => 20, \
+             } \
          } \
          fn main() { \
              let a = P { x: 3 }; \
@@ -2092,6 +2104,51 @@ fn primitive_cmp_and_ordered_operators_agree() {
              println(check(2, 2)); \
              println(check(3, 2)); \
              println(check(-5, 5)); \
+         }"
+        .to_string(),
+    );
+}
+
+/// DEV-067(b) (WP-C4.7-7): a trait-bound method called through a `&T` RECEIVER. TYPE-METHOD-002
+/// requires auto-dereference to peel leading `&`/`&mut` before receiver matching, but the
+/// bounded-parameter lookup tested the unpeeled type, so `t.speak()` on `t: &T` with `T: Speak`
+/// failed E0302 "method 'speak' not found for type '&T'" while the by-value form worked.
+/// Instantiated at two types, so the monomorphised dispatch is exercised, not just the check.
+#[test]
+fn bounded_generic_method_through_reference_agrees() {
+    differential(
+        "bound_ref.stark",
+        "trait Speak { fn speak(&self) -> Int32; } \
+         struct Dog { n: Int32 } \
+         struct Cat { n: Int32 } \
+         impl Speak for Dog { fn speak(&self) -> Int32 { self.n * 2 } } \
+         impl Speak for Cat { fn speak(&self) -> Int32 { self.n * 3 } } \
+         fn call_speak<T: Speak>(t: &T) -> Int32 { t.speak() } \
+         fn main() { \
+             let d = Dog { n: 7 }; \
+             let c = Cat { n: 5 }; \
+             println(call_speak(&d)); \
+             println(call_speak(&c)); \
+         }"
+        .to_string(),
+    );
+}
+
+/// DEV-067(a): a bound on a generic parameter is discharged by the ENCLOSING function's own
+/// declared bound (TYPE-GENERIC-001). Any generic fn calling another generic fn with a bounded
+/// parameter — including plain recursion — used to fail E0500 "type 'T' does not satisfy trait
+/// bound 'Ord'" even with `T: Ord` declared on the caller. Bound obligations are checked in a
+/// deferred pass, so the fix had to carry the enclosing generic environment with each obligation.
+#[test]
+fn bounded_generic_call_chain_agrees() {
+    differential(
+        "bound_chain.stark",
+        "fn biggest<T: Ord>(a: T, b: T) -> T { if a < b { b } else { a } } \
+         fn chain<T: Ord>(a: T, b: T) -> T { biggest(a, b) } \
+         fn deeper<T: Ord>(a: T, b: T) -> T { chain(a, b) } \
+         fn main() { \
+             println(deeper(3, 9)); \
+             println(deeper(40, 2)); \
          }"
         .to_string(),
     );

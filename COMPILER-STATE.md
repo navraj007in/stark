@@ -1,9 +1,25 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-6.2 — **WP-C4.7 under way; TWO OWNER DECISIONS PENDING (6.1, 6.3)**
+Updated: 2026-07-20 after WP-C4.7-7 — **every C4-track front-end deviation is CLOSED; two owner decisions pending (6.1, 6.3)**
 
 ## Position
 Gate: C4  Next: **owner decisions on WP-C4.7-6.1 (`Box`) and 6.3 (integer-literal typing)**, then
-C4.7-7 (DEV-067 + DEV-071).
+C4.7-8 (remaining normative MIR residuals; 8.6 mutable slices is an owner decision) and C4.7-9
+(fresh audit + exit report).
+**WP-C4.7-7 DONE 2026-07-20 — DEV-067 and DEV-071 CLOSED.** With these, **every front-end
+deviation the C4 track owned is closed**; the only open deviations are the four long-standing
+unscheduled ones (DEV-005/010/011/012/017) plus DEV-075, opened yesterday by C4.7-6.2.
+*DEV-071*: the prelude `Ordering` is `Ty::Core(CoreType::Ordering)` with `Res::Builtin` variants —
+structurally like `Option`/`Result` and invisible to the `Ty::Enum` machinery for the same reason,
+but unlike those two it had never been given an explicit arm, so it hit WP-C1.5's "unknown domain,
+require a wildcard" default. Now tracks all three variants; a two-variant match is still E0303.
+*DEV-067* was two causes, one per symptom: **(b)** the bounded-parameter method lookup tested the
+UNPEELED receiver, so it matched `t: T` but never `t: &T` — TYPE-METHOD-002 requires the peel, and
+the concrete-type path right below already computed one; the peel simply happened too late.
+**(a)** `satisfies_bound` had **no `Ty::Param` arm at all**. Adding it was not enough: bound
+obligations are verified in a DEFERRED pass that runs after every body, so `current_fn_generics`
+belonged to whatever was checked last — each obligation now carries the generic environment it
+arose in. Nothing newly accepted: a concrete type without the impl, and an unbounded parameter
+forwarded into a bounded position, both still E0500 (pinned). Workspace 769/0/2; clippy clean.
 **WP-C4.7-6.2 DONE 2026-07-20 — primitive `Ord::cmp`.** 06 specifies `impl Ord for Int32 {
 fn cmp }` "and similar for other types" and `Ordering` is `core-min` prelude, but `3.cmp(&5)`
 failed E0304, so a user `Ord` impl was the only way to obtain an `Ordering`. Added across all
@@ -1007,7 +1023,8 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-20 (post-WP-C4.7-5); every C4.x item below is owned by a WP-C4.7 increment:
+Open as of 2026-07-20 (post-WP-C4.7-7). **No open deviation is owned by the C4 track any more** —
+every one below is either long-standing/unscheduled or newly found and unassigned:
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -1015,11 +1032,9 @@ Open as of 2026-07-20 (post-WP-C4.7-5); every C4.x item below is owned by a WP-C
 - DEV-012 — VS Code extension UI never interactively verified. Owner: WP-C8.7.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
-- DEV-067 — bounded generic parameters lose their bounds at intra-generic call sites (E0500)
-  and behind `&T` receivers (E0302); over-rejection only, pre-existing, surfaced by WP-C4.5c's
-  differential tests. Owner: **WP-C4.7-7**.
-- DEV-071 — an all-three-variant `Ordering` match is wrongly flagged non-exhaustive
-  (exhaustiveness gap; over-rejection only). Owner: **WP-C4.7-7**.
+- DEV-075 — ordered comparison on `Bool`/`Char` is accepted by the checker but fails in both
+  engines for `Bool` and DIVERGES for `Char` (MIR succeeds, oracle rejects). Found by
+  WP-C4.7-6.2; unassigned, C4-exit-report input.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
@@ -1028,7 +1043,9 @@ at creation — the A4-2e oracle slice-message alignment, a governance gap, not 
 **DEV-069** (WP-C4.7-4 — per-item file resolution in typecheck/borrowck/oracle; this also
 DISCHARGES CD-033's C5 multi-file prerequisite); **DEV-072** and **DEV-073** (WP-C4.7-5 —
 move-out-of-borrow via match bindings, now rejected E0101; generic impls matched through
-`match_impl_type` for operator and iterable bounds).
+`match_impl_type` for operator and iterable bounds); **DEV-067** and **DEV-071** (WP-C4.7-7 —
+bounded-parameter bounds behind references and at intra-generic call sites; `Ordering`
+exhaustiveness).
 Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
 CD-027 pre-C4.1 correction pass; DEV-064 (undetermined-generic rejection, WP-C4.5c, E0004);
 DEV-065/066 (C4.5b oracle fixes). See `KNOWN-DEVIATIONS.md`.
@@ -2111,3 +2128,51 @@ reports and the answer `<`/`==` give must never disagree. Workspace 765 passed /
 FOLLOW-UP: DEV-075; owner decisions on 6.1 and 6.3.
 NEXT: blocked on the two owner decisions; C4.7-7 (DEV-067 + DEV-071) is independent and can
 proceed meanwhile.
+
+### WP-C4.7-7 — DEV-067 + DEV-071 (bounded generics; Ordering exhaustiveness) — 2026-07-20
+DONE: both CLOSED. **With this increment every front-end deviation the C4 track owned is closed.**
+The remaining open ledger entries are the long-standing unscheduled ones (DEV-005/010/011/012/017)
+and DEV-075, which C4.7-6.2 opened the same day.
+**DEV-071 (exhaustiveness).** The prelude `Ordering` is `Ty::Core(CoreType::Ordering)` whose
+variants resolve to `Res::Builtin`, which makes it structurally identical to `Option`/`Result` —
+and invisible to the `Ty::Enum`/`matched_variants` machinery for exactly the same reason those
+two were, before WP-C1.5 gave them explicit arms. `Ordering` never got one, so it fell through to
+the same WP-C1.5 default that requires a wildcard for any domain the checker cannot enumerate.
+The check now tracks `Less`/`Equal`/`Greater` and treats all three as exhaustive. The enumeration
+is exact, and that matters: an over-generous domain would silently accept genuinely non-exhaustive
+matches, so a two-variant match staying E0303 is pinned by its own test.
+**DEV-067 (bounded generics).** One ledger entry, two independent causes:
+- **(b) behind `&T`.** The bounded-parameter method lookup tested the UNPEELED receiver type, so
+  it matched `t: T` but never `t: &T`. TYPE-METHOD-002 requires auto-dereference to peel leading
+  `&`/`&mut` before receiver matching — and the concrete-type path immediately below already
+  computed exactly such a peeled `receiver_ty`. The peel was simply performed *after* the
+  parameter check instead of before it; moving it above makes both paths obey one rule.
+- **(a) at intra-generic call sites.** `satisfies_bound` had **no `Ty::Param` arm at all** and
+  fell through to `_ => false`, so a caller's own `T: Ord` could never discharge a callee's
+  (TYPE-GENERIC-001). Adding the arm alone did not fix it — the probe still failed — because
+  trait-bound obligations are collected during body checking and verified in a **deferred pass**
+  that runs after every body, by which time `current_fn_generics` belongs to whatever was checked
+  last. Each obligation now carries the generic environment it arose in, and the deferred pass
+  restores it. The new arm mirrors the one `ty_satisfies_operator_bound` already had, so the two
+  bound checks finally agree about what a parameter satisfies.
+SOUNDNESS: over-rejection removed, nothing newly accepted. An obligation is discharged only by a
+bound the enclosing function actually declared — both a concrete type lacking the impl and an
+UNBOUNDED parameter forwarded into a bounded position are still E0500, each pinned by a test,
+because "relax a check" is exactly the kind of change that silently over-accepts.
+FILES: starkc/src/typecheck.rs (exhaustiveness arms; receiver peel order; `Ty::Param` bound arm;
+`bounds_checks` carries its generic environment), starkc/tests/{mir_differential,gate2_valid}.rs,
+KNOWN-DEVIATIONS.md (both closed, both enumerations), WP-C4.7.md (tracker + the DEV-071 §1 quirk
+note struck), COMPILER-STATE.md.
+RULES: TYPE-METHOD-002 (auto-dereference before receiver matching), TYPE-GENERIC-001 (the caller's
+bound discharges the callee's obligation), 04-Semantic-Analysis exhaustiveness. No spec change.
+DECISIONS: none at CE level.
+EVIDENCE: `bounded_generic_method_through_reference_agrees` (instantiated at TWO types, so
+monomorphised dispatch is exercised and not merely the check), `bounded_generic_call_chain_agrees`
+(three-deep bounded chain), `unsatisfied_trait_bounds_are_still_rejected` (both negatives),
+`ordering_match_exhaustiveness_counts_all_three_variants` (both directions), and
+`ordering_value_round_trips_through_match_agree` **rewritten to three explicit arms** — dropping
+the `_` workaround it carried for DEV-071 is what makes it exercise the exhaustiveness path.
+Workspace 769 passed / 0 failed / 2 ignored (+4); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: none.
+NEXT: the two owner decisions (6.1 `Box`, 6.3 literal typing), then C4.7-8 (MIR residuals; 8.6
+mutable slices is itself an owner decision) and C4.7-9 (fresh audit + exit report).

@@ -118,7 +118,8 @@ discriminant read and compare reuse existing `Rvalue::Discriminant` and `MirBinO
   **Correction (CE3 clarification #4):** `println(Ordering)` is explicitly **out** of this
   amendment (Display is A4), so the round-trip test verifies **construction, return, and pattern
   matching only** — it does not require Display support. (A three-arm exhaustive `Ordering`
-  match is a separate front-end exhaustiveness gap, DEV-071; the test uses an
+  match was a separate front-end exhaustiveness gap, DEV-071 (**closed by WP-C4.7-7,
+  2026-07-20**; the test now uses three explicit arms); at the time the test used an
   explicit-plus-wildcard match, which fully exercises the MIR `CoreOrdering` path.)
 
 ## 6. Dependency note (not part of the CE3 decision, recorded for sequencing)
