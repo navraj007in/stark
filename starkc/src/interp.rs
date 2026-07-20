@@ -3319,6 +3319,46 @@ impl<'a> Interpreter<'a> {
             resource.0.borrow_mut().take();
             return Ok(Value::Result(Ok(Box::new(Value::Unit))));
         }
+        // DEV-076 (WP-C4.7-8.1 prerequisite): `unwrap_or` CONSUMES the receiver and discards
+        // exactly one of the two values — the payload or the default. It has to be intercepted
+        // here for the same reason `into_inner` is: the borrowing path below operates on a CLONE,
+        // so taking the payload there left the ORIGINAL Option holding it, and it was destroyed a
+        // second time at end of scope. The default fared worse — being discarded on the `Some`
+        // path, its destructor never ran at all. Both halves violate EXEC-ONCE-001 (every value's
+        // destructor runs exactly once), and MIR refused the construct entirely, so the
+        // divergence was invisible to the differential.
+        //
+        // Correct semantics: consume the receiver from the real place; yield the payload and drop
+        // the (already-evaluated, since Core has no laziness) default on the `Some`/`Ok` path;
+        // yield the default on the `None`/`Err` path, dropping the `Err` payload it displaces.
+        if name == "unwrap_or"
+            && matches!(
+                self.place_value(&receiver_place, span)?,
+                Value::Option(_) | Value::Result(_)
+            )
+        {
+            let receiver = self.take_place(&receiver_place, span)?;
+            let default = values.next().unwrap_or(Value::Unit);
+            return match receiver {
+                Value::Option(Some(payload)) => {
+                    self.drop_value(default)?;
+                    Ok(*payload)
+                }
+                Value::Option(None) => Ok(default),
+                Value::Result(Ok(payload)) => {
+                    self.drop_value(default)?;
+                    Ok(*payload)
+                }
+                Value::Result(Err(error)) => {
+                    self.drop_value(*error)?;
+                    Ok(default)
+                }
+                other => Err(RuntimeError::new(
+                    format!("unwrap_or expects Option or Result, found {other}"),
+                    span,
+                )),
+            };
+        }
         // DEV-063: the fn-value-consuming `Option`/`Result` combinators
         // (06-Standard-Library.md §Option/§Result). Intercepted here — before the borrowing
         // receiver match below — because they consume `self` (take_place) and re-enter the

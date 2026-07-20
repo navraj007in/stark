@@ -462,7 +462,12 @@ Order within the increment (each independently commit-able):
   **`PRIM-TRAIT-001`** primitive trait/operator matrix in 06 (+ 03 cross-reference), compiled spec
   regenerated, fixture corpus re-extracted. Pinned the float row's operator/trait split, which
   briefly broke `1.5 < 2.5` during implementation.
-- C4.7-8: _pending_ — **8.1 BLOCKED on DEV-076** (oracle `unwrap_or` double-drop); 8.4/8.5
+- **C4.7-8.1a: DONE 2026-07-20 — DEV-076 CLOSED** (oracle half of 8.1). `unwrap_or` no longer
+  double-drops the payload or leaks the discarded default; the discarded value is destroyed **at
+  the call**, not at scope exit — that is the timing the MIR half must match. The MIR half stays a
+  clean `Unsupported`: moving a payload out of a drop-tracked local via `VariantField` hits the
+  C4.5d guard and needs `lower_enum_match`'s drop-flag machinery.
+- C4.7-8: _pending_ — **8.1 MIR half unblocked** (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)
 

@@ -1,9 +1,23 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after the DEV-075 increment — **`PRIM-TRAIT-001` enters the normative spec**
+Updated: 2026-07-20 after WP-C4.7-8.1a — **DEV-076 closed; every remaining open deviation is long-standing/unscheduled**
 
 ## Position
-Gate: C4  Next: **C4.7-8** (remaining MIR residuals; **8.1 is blocked on DEV-076**, and 8.6
-mutable slices is an owner decision), then **C4.7-9** (fresh audit + exit report).
+Gate: C4  Next: **the MIR half of C4.7-8.1** (droppable `unwrap_or` lowering — now unblocked, and
+it needs the drop-flag machinery `lower_enum_match` uses), then 8.2/8.3, then **C4.7-9** (fresh
+audit + exit report). 8.4/8.5 were reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is
+an owner decision.
+**WP-C4.7-8.1a DONE 2026-07-20 — DEV-076 CLOSED (oracle half).** `Option`/`Result::unwrap_or`
+double-dropped the payload and never dropped the discarded default — a SOUNDNESS defect, same
+root cause as DEV-077: it was handled on the borrowing method path, which operates on a CLONE, so
+taking the payload emptied the clone while the original kept it and destroyed it again at scope
+exit. It now consumes the real place and explicitly drops whichever value it discards.
+**Pinned timing, which is what the MIR half must match and is not the obvious answer:** the
+discarded default is destroyed **at the call**, not at end of scope —
+`let t = Some(Tag{1}).unwrap_or(Tag{2})` observably prints `2` then `1`, where the defect gave
+`1` twice and no `2`. The MIR half stays a clean `Unsupported` for now: moving a payload out of a
+**drop-tracked** local through a `VariantField` projection hits the C4.5d guard, so it needs the
+drop-flag machinery — real work, and now writable against a correct oracle rather than against a
+double drop.
 **DEV-075 CLOSED 2026-07-20 under an owner SPECIFICATION decision — the first spec change of
 WP-C4.7.** The owner split the two types rather than treating them as one gap: **`Char`** is
 totally ordered by **Unicode scalar value** (`Eq`+`Ord`+`Hash`; all four ordered operators;
@@ -1072,8 +1086,8 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-20 (post-DEV-075). Every entry below is long-standing/unscheduled except
-DEV-076, which blocks WP-C4.7-8.1:
+Open as of 2026-07-20 (post-WP-C4.7-8.1a). **Every entry below is long-standing and unscheduled;
+no open deviation belongs to the C4 track.**
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -1081,9 +1095,6 @@ DEV-076, which blocks WP-C4.7-8.1:
 - DEV-012 — VS Code extension UI never interactively verified. Owner: WP-C8.7.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
-- DEV-076 — the HIR oracle's `Option::unwrap_or` double-drops the payload and never drops the
-  discarded default (a SOUNDNESS defect, currently masked because MIR refuses the construct).
-  **Blocking prerequisite for WP-C4.7-8.1** — MIR must not be built to match it.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
@@ -1096,7 +1107,8 @@ move-out-of-borrow via match bindings, now rejected E0101; generic impls matched
 bounded-parameter bounds behind references and at intra-generic call sites; `Ordering`
 exhaustiveness); **DEV-077** (WP-C4.7-6.1 — oracle `Box::into_inner` double-drop); **DEV-078**
 (WP-C4.7-6.3 — integer literals adopt their expected type); **DEV-075** (the DEV-075 increment —
-`Char` ordered by Unicode scalar value, `Bool` not `Ord`, plus normative `PRIM-TRAIT-001`).
+`Char` ordered by Unicode scalar value, `Bool` not `Ord`, plus normative `PRIM-TRAIT-001`);
+**DEV-076** (WP-C4.7-8.1a — the oracle's `unwrap_or` double-drop).
 Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
 CD-027 pre-C4.1 correction pass; DEV-064 (undetermined-generic rejection, WP-C4.5c, E0004);
 DEV-065/066 (C4.5b oracle fixes). See `KNOWN-DEVIATIONS.md`.
@@ -2393,3 +2405,45 @@ FOLLOW-UP: none.
 NEXT: C4.7-8. **8.1 is blocked on DEV-076** (the oracle's `unwrap_or` double-drop must be fixed
 before MIR is built to match it); 8.4/8.5 were reclassified front-end-first by C4.7-2; 8.6
 (mutable slices) is an owner decision.
+
+### WP-C4.7-8.1a — DEV-076: the oracle's `unwrap_or` drop semantics — 2026-07-20
+DONE: DEV-076 CLOSED. This is the oracle half of C4.7-8.1, split out and landed on its own
+because it is a SOUNDNESS fix that is independently valuable and is a hard prerequisite for the
+MIR half — §0.6 makes the oracle the semantics authority MIR must match, and an oracle that
+double-drops is not an authority, it is a bug that would have been faithfully copied into MIR.
+THE DEFECT: with a `Drop`-carrying payload, `Option::unwrap_or` destroyed the payload **twice**
+and the discarded default **never**. Root cause identical to DEV-077: `unwrap_or` was handled on
+the *borrowing* method path, which operates on a CLONE of the receiver, so taking the payload
+emptied the clone while the original `Option` kept it and destroyed it again at end of scope. The
+default fared worse — nothing consumed it, so its destructor never ran at all. (Core has no
+laziness, so the default is always *evaluated*, which is exactly why it always owes a
+destruction.) Both halves violate EXEC-ONCE-001.
+FIX: `unwrap_or` now consumes the receiver from the real place (`take_place`), joining
+`into_inner`/`close` at the same interception point, and explicitly drops whichever value it
+discards — on `Some`/`Ok` it yields the payload and drops the default; on `None` it yields the
+default; on `Err` it yields the default and drops the displaced error payload.
+PINNED TIMING (the point of doing this first, and NOT the obvious answer): the discarded default
+is destroyed **at the `unwrap_or` call**, not at end of scope. For
+`let t = Some(Tag{1}).unwrap_or(Tag{2})` the observable order is `2` then `1`. Before the fix it
+was `1`, `1` — the payload twice, the default never. Any MIR lowering written against the old
+behaviour would have encoded a double drop into the backend contract.
+MIR HALF: still open, still a CLEAN `Unsupported` ("unwrap_or on a droppable payload type"). A
+first attempt at the lowering is deliberately NOT in this commit: moving a payload out of a
+**drop-tracked** local through a `VariantField` projection is refused by the C4.5d guard ("move
+through a non-field projection of a drop-tracked local"), so the consuming path needs the
+drop-flag machinery `lower_enum_match` uses (`consume_variant_payload`/`consume_field`). That is
+real work rather than a small extension, and landing a half-built lowering — which regressed the
+Unsupported message from the precise one to a confusing internal one — would have been worse than
+leaving the construct cleanly refused. It is now writable against a correct oracle.
+FILES: starkc/src/interp.rs, KNOWN-DEVIATIONS.md (DEV-076 closed; both enumerations),
+COMPILER-STATE.md, WP-C4.7.md.
+RULES: EXEC-ONCE-001 / DROP-ORDER-001 (every value's destructor runs exactly once).
+DECISIONS: none at CE level — §0.5 permits an oracle behaviour change that a DEV entry documents,
+and DEV-076 is that entry, written before the fix.
+EVIDENCE: probe programs with printing destructors, run through `oracle_run`, covering all three
+paths — `Some` with a discarded default (`100 2 200 1 300 1`), `None` (`100 200 2 300 2`), and the
+minimal ordering case (`100 2 999 1`). MIR continues to refuse the construct cleanly, so the
+differential is unchanged and no test needed rewriting.
+FOLLOW-UP: the MIR half of C4.7-8.1.
+NEXT: droppable `unwrap_or` lowering via the drop-flag machinery, then 8.2 (droppable Iterator
+Item) and 8.3 (droppable scrutinee + nested patterns, the hardest piece).

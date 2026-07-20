@@ -2147,7 +2147,7 @@ WP-C1.5)
   specified rule from a plausible alternative); `gate2_valid.rs::bool_is_not_ordered` (all four
   operators, `Bool::cmp`, and `==` still accepted) and `::floats_compare_but_do_not_satisfy_ord_bounds`.
 
-## DEV-076 — HIR oracle `Option::unwrap_or` double-drops the payload and leaks the unused default [OPEN, found WP-C4.7-8.1 pre-work, 2026-07-20]
+## DEV-076 — HIR oracle `Option::unwrap_or` double-drops the payload and leaks the unused default [CLOSED, WP-C4.7-8.1a, 2026-07-20]
 
 - **What:** with a `Drop`-carrying payload, `Option::unwrap_or` in the HIR interpreter runs the
   payload's destructor **twice** and the discarded default's destructor **never**. Both halves
@@ -2179,8 +2179,26 @@ WP-C1.5)
   implemented against the corrected timing. Fixing the oracle is an oracle BEHAVIOUR change, so
   per WP-C4.7 §0.5 it needs this ledger entry — which is what this is — and the corrected drop
   timing must be re-pinned empirically before 8.1's lowering is written.
-- **Scope:** `starkc/src/interp.rs`, the `unwrap_or` core-method path. Owner: **WP-C4.7-8.1**
-  (blocking prerequisite).
+- **Scope:** `starkc/src/interp.rs`, the `unwrap_or` core-method path.
+- **Root cause:** the same one as DEV-077 — `unwrap_or` was handled on the *borrowing* method
+  path, which operates on a **clone** of the receiver. Taking the payload emptied the clone while
+  the original `Option` kept it and destroyed it again at end of scope. The discarded default
+  fared worse: nothing consumed it, so its destructor never ran at all. (Core has no laziness, so
+  the default is always *evaluated*, which is precisely why it always owes a destruction.)
+- **Resolution (WP-C4.7-8.1a, 2026-07-20).** `unwrap_or` now consumes the receiver from the real
+  place (`take_place`) alongside `into_inner`/`close`, and explicitly drops whichever value it
+  discards: on `Some`/`Ok` it yields the payload and drops the default; on `None` it yields the
+  default; on `Err` it yields the default and drops the displaced error payload.
+- **Pinned timing (this is what MIR must match, and it is not the obvious answer):** the
+  discarded default is destroyed **at the `unwrap_or` call**, not at end of scope. For
+  `let t = Some(Tag{1}).unwrap_or(Tag{2})` the observable order is `2` (default, at the call)
+  then `1` (the bound value, at scope exit) — where the defect previously produced `1` twice and
+  no `2` at all.
+- **Consequence for the MIR half:** still open. `unwrap_or` on a droppable payload remains a clean
+  `Unsupported` in lowering, because moving a payload out of a **drop-tracked** local through a
+  `VariantField` projection is refused by the C4.5d guard ("move through a non-field projection of
+  a drop-tracked local"); the consuming path needs the drop-flag machinery `lower_enum_match`
+  uses. That is the remainder of WP-C4.7-8.1, and it can now be written against a correct oracle.
 
 ## DEV-077 — HIR oracle `Box::into_inner` double-drops the payload [CLOSED, WP-C4.7-6.1, 2026-07-20]
 
@@ -2356,8 +2374,8 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-076
-(WP-C4.7-8.1 blocking prerequisite — an oracle SOUNDNESS defect). DEV-077 (the same family, in
+remainder). DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half of WP-C4.7-8.1
+remains open as a clean `Unsupported`, not as a deviation. DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)
 was closed by the WP-C4.7 DEV-075 increment under an owner specification decision, which also
