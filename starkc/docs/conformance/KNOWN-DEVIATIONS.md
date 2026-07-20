@@ -2121,6 +2121,41 @@ WP-C1.5)
 - **Owner:** unassigned; C4-exit-report input (it is an over-acceptance plus a divergence, both
   of which the C4 exit conditions care about).
 
+## DEV-076 — HIR oracle `Option::unwrap_or` double-drops the payload and leaks the unused default [OPEN, found WP-C4.7-8.1 pre-work, 2026-07-20]
+
+- **What:** with a `Drop`-carrying payload, `Option::unwrap_or` in the HIR interpreter runs the
+  payload's destructor **twice** and the discarded default's destructor **never**. Both halves
+  violate the abstract machine: `EXEC-ONCE-001`/`DROP-ORDER-001` require every value's destructor
+  to run exactly once.
+- **Repro** (`starkc/examples/oracle_run.rs`):
+  ```stark
+  struct Tag { id: Int32 }
+  impl Drop for Tag { fn drop(&mut self) { println(self.id); } }
+  fn main() {
+      println(100);
+      let o: Option<Tag> = Some(Tag { id: 1 });
+      let t = o.unwrap_or(Tag { id: 2 });
+      println(999);
+  }
+  ```
+  Observed: `100 999 1 1` — the payload (`id: 1`) is destroyed twice and the unused default
+  (`id: 2`) is never destroyed. Expected: `2` once (the default, discarded) and `1` once (the
+  bound value, at end of scope). The `None` case is correct (`100 200 2 300 2`), and a plain
+  `match` over the same droppable Option is also correct (`100 777 1 999` — exactly one drop),
+  so the defect is specific to `unwrap_or`'s value handling, not to droppable payloads generally.
+- **Severity:** this is a **soundness** defect (double destruction), not an over/under-rejection.
+  It is masked today because MIR refuses `unwrap_or` on a droppable payload as a clean
+  `Unsupported` ("droppable payload"), so the differential never compares the two engines on this
+  construct and the divergence cannot be observed through the harness.
+- **Why it matters beyond the oracle:** WP-C4.7-8.1 is the increment that adds droppable
+  `unwrap_or` to MIR, and §0.6 makes the oracle the semantics authority that MIR must match.
+  **MIR must not be built to match this behaviour.** The oracle must be fixed first, then MIR
+  implemented against the corrected timing. Fixing the oracle is an oracle BEHAVIOUR change, so
+  per WP-C4.7 §0.5 it needs this ledger entry — which is what this is — and the corrected drop
+  timing must be re-pinned empirically before 8.1's lowering is written.
+- **Scope:** `starkc/src/interp.rs`, the `unwrap_or` core-method path. Owner: **WP-C4.7-8.1**
+  (blocking prerequisite).
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2170,7 +2205,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 73 numbered deviations total (DEV-002 through DEV-075, DEV-001/DEV-003 retired).
+Current count: 74 numbered deviations total (DEV-002 through DEV-076, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2237,7 +2272,8 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-075 (unassigned; found by WP-C4.7-6.2, C4-exit-report input). DEV-070 was closed by
+remainder), DEV-075 (owner-specified 2026-07-20; see the DEV-075 increment), DEV-076
+(WP-C4.7-8.1 blocking prerequisite — an oracle SOUNDNESS defect). DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);
