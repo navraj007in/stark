@@ -2,8 +2,18 @@
 Updated: 2026-07-20 after WP-C4.7-8.6 — **exclusive slice views land (`0.1-A8`); 8.5 and 8.4 remain**
 
 ## Position
-Gate: C4  Next: **C4.7-8.4** (method-own generic parameters — the last implementation item), then
-**C4.7-9** (fresh audit + exit report — written for the owner, who alone closes the gate).
+Gate: C4  Next: **C4.7-9** — the fresh audit and exit report. **All implementation work in
+WP-C4.7 is complete.** The report is written for the owner, who alone closes the gate.
+**WP-C4.7-8.4 DONE 2026-07-20 — method-own generic parameters, the last implementation item.**
+Two halves had to meet: the checker instantiated only the IMPL's parameters, leaving a method's
+own `U` a rigid `Ty::Param` no argument could unify with; and MIR could not monomorphise a method
+at arguments the impl does not mention. `FnKey::ImplFn` now carries `method_args` beside the
+impl's `type_args`, filled from a per-call-site record keyed by the call expression — the method
+equivalent of C4.5c's machinery for top-level generic fns. **`FnKey` appears ZERO times in
+`mir.md`**, so extending it is not a contract change and needed no CE3 (the plan asked for this to
+be verified and stated). Symbols gain a second bracket for method args and stay injective; §2
+already declares them non-ABI. Workspace 795/0/2.
+
 **WP-C4.7-8.5 DONE 2026-07-20 — non-bare impl heads.** `impl<T> Holder<Option<T>>` now applies to
 `Holder<Option<Int32>>` in BOTH engines. The checker's impl matching bound a parameter only when
 it stood ALONE as a type argument and otherwise demanded `types_equal`, so `Option<T>` vs
@@ -2757,3 +2767,41 @@ rather than merely the checker's acceptance, plus a concrete head position with 
 type. Workspace 794 passed / 0 failed / 2 ignored (+1); fmt clean; clippy clean on 1.93 and 1.97.
 FOLLOW-UP: DEV-083.
 NEXT: WP-C4.7-8.4 — method-own generic parameters, the last implementation item before the audit.
+
+### WP-C4.7-8.4 — method-own generic parameters — 2026-07-20
+DONE. This completes every implementation item in WP-C4.7; only the audit and exit report remain.
+NORMATIVE BASIS: `02:64` puts `GenericParams?` on every `FunctionSig` and `02:120` makes an impl
+item a `Function`, so a method may declare its own generic parameters. C4.7-2 had found this
+front-end-blocked (E0001 "expected 'U', found …") rather than a MIR gap, which is why it moved out
+of the MIR column and needed both engines fixed.
+TWO HALVES:
+- **Checker.** The selected candidate's substitution map carried only the IMPL's parameters, so a
+  method's own `U` stayed a rigid `Ty::Param` and no argument could unify against it. It now gets
+  a fresh inference variable per call site (or the turbofish types when given) — exactly what the
+  ASSOCIATED-FUNCTION path already did. Only the method path lacked it.
+- **MIR.** `FnKey::ImplFn` gains `method_args` beside the impl's `type_args`; `lower_body` binds
+  the method's parameters from it, `key_symbol` renders it in a second bracket, and the call site
+  fills it from a new per-call-site record keyed by the call expression — the method equivalent of
+  C4.5c's `generic_insts` for top-level generic fns. Impl-level and method-level substitutions
+  stay SEPARATE, because a method on a generic nominal is generic in both and conflating them
+  would monomorphise at the wrong arguments.
+CE3 QUESTION THE PLAN ASKED ME TO SETTLE: **`FnKey` appears zero times in `mir.md`.** It is purely
+lowering-internal, so extending it is not a contract change and needs no CE3. The rendered
+`Instance.symbol` does change for generic methods, but §2 states symbols are "deterministic and
+injective for identical inputs; NOT a stable external ABI", and a method with no own generics
+renders exactly as before, so no existing symbol moved.
+FILES: starkc/src/typecheck.rs (method-level instantiation + per-call-site recording),
+starkc/src/mir/lower.rs (`FnKey::ImplFn::method_args`, symbol rendering, body substitution, call
+site), starkc/tests/mir_differential.rs (+1 test, 3 programs), COMPILER-STATE.md, WP-C4.7.md.
+RULES: 02:64/02:120 (grammar), TYPE-GENERIC-001. No spec, MIR-shape, or runtime-surface change.
+DECISIONS: none at CE level — see the `FnKey` conclusion above.
+EVIDENCE: `method_own_generics_agree` — two instantiations at different primitives; two
+method-own parameters in one signature with a droppable (`String`) instantiation; and a GENERIC
+METHOD ON A GENERIC NOMINAL at two different `U`s plus a second nominal instantiation, which is
+the case that would fail if the two substitution levels were conflated. Every case uses multiple
+instantiations, so what is exercised is one lowered body per instantiation rather than the
+checker's acceptance alone. Workspace 795 passed / 0 failed / 2 ignored (+1); fmt clean; clippy
+clean on 1.93 and 1.97.
+FOLLOW-UP: none.
+NEXT: **C4.7-9** — re-run the unsupported-site sweep over every `unsupported(` site, re-verify the
+frozen corpus, and write the exit report for the owner's decision.

@@ -4013,7 +4013,7 @@ impl<'a> TypeChecker<'a> {
                     turbofish,
                 } = &self.hir.expr(*callee).kind
                 {
-                    self.resolve_method(*base, *name, turbofish.as_ref(), args, expr.span)
+                    self.resolve_method(*base, *name, turbofish.as_ref(), args, expr.span, expr_id)
                 } else if let hir::ExprKind::Path {
                     res: Res::TraitMember(trait_id, member),
                     ..
@@ -5721,6 +5721,9 @@ impl<'a> TypeChecker<'a> {
         turbofish: Option<&hir::GenericArgs>,
         args: &[ExprId],
         call_span: Span,
+        // WP-C4.7-8.4: the call expression itself, used to key this call site's METHOD-level
+        // generic instantiation for MIR monomorphisation.
+        call_expr: ExprId,
     ) -> Ty {
         let base_ty = self.check_expr(base_expr);
         // WP-C4.7-6.3: method resolution must branch on a CONCRETE receiver type, and a literal
@@ -5968,7 +5971,45 @@ impl<'a> TypeChecker<'a> {
             return ret_ty;
         }
 
-        if let Some((def, _, map, impl_self_ty)) = selected {
+        if let Some((def, _, mut map, impl_self_ty)) = selected {
+            // WP-C4.7-8.4: the candidate's `map` carries only the IMPL's generic parameters. A
+            // method may declare its OWN (`02:64` puts `GenericParams?` on every `FunctionSig`,
+            // and `02:120` makes an impl item a `Function`), and those need a fresh inference
+            // variable PER CALL SITE — otherwise the signature is used with `U` still a rigid
+            // `Ty::Param` and every argument fails to unify against it ("expected 'U', found …").
+            // The associated-function path already did exactly this; only the method path did not.
+            if let Some(args) = turbofish {
+                self.validate_generic_arity(def.sig.generics.len(), args.args.len(), call_span);
+                for (param, arg) in def.sig.generics.iter().zip(&args.args) {
+                    let ty = match arg {
+                        hir::GenericArg::Type(ty) => self.convert_hir_type(*ty),
+                        _ => Ty::Error,
+                    };
+                    map.insert(self.text(param.name).to_string(), ty);
+                }
+            } else {
+                for param in &def.sig.generics {
+                    let infer = self.new_type_var();
+                    map.insert(self.text(param.name).to_string(), infer);
+                }
+            }
+            // WP-C4.7-8.4: record this call site's METHOD-level instantiation for MIR
+            // monomorphisation, keyed by the method-call expression — the same mechanism C4.5c
+            // uses for top-level generic fns, which had no method equivalent. Recorded in the
+            // method's own declaration order, and only when the method actually declares
+            // parameters, so non-generic methods add no entries.
+            if !def.sig.generics.is_empty() {
+                let ordered: Vec<Ty> = def
+                    .sig
+                    .generics
+                    .iter()
+                    .map(|param| {
+                        let name = self.text(param.name).to_string();
+                        map.get(&name).cloned().unwrap_or(Ty::Error)
+                    })
+                    .collect();
+                self.generic_insts.insert(call_expr, ordered);
+            }
             if matches!(def.sig.receiver, Some(hir::Receiver::RefMut))
                 && !self.is_mutable_place(base_expr)
             {

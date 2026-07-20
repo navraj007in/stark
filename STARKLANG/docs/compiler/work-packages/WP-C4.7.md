@@ -495,7 +495,12 @@ Order within the increment (each independently commit-able):
   in lowering (`bind_written_impl_arg`), generalized together so the two cannot disagree about
   which impls apply. **DEV-083** recorded, not fixed: a concrete head position still cannot match
   an unresolved receiver argument; that needs speculative binding during candidate search.
-- **C4.7-8: DONE** except 8.4, which the owner directed be implemented before the audit.
+- **C4.7-8.4: DONE 2026-07-20** — method-own generic parameters. Checker gives them fresh
+  per-call-site variables (as the associated-fn path already did); `FnKey::ImplFn` carries
+  `method_args` beside the impl's `type_args`, filled from a per-call-site record. **`FnKey` is
+  lowering-internal — zero mentions in `mir.md` — so no CE3 was required** (plan question
+  answered).
+- **C4.7-8: COMPLETE.** All implementation work in WP-C4.7 is done; only C4.7-9 remains.
   The only remaining clean-`Unsupported` entry is `HashMap::values` (std-full, CD-033-reserved). (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)

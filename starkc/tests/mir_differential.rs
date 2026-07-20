@@ -2779,3 +2779,59 @@ fn non_bare_impl_heads_agree() {
             .to_string(),
     );
 }
+
+/// WP-C4.7-8.4: METHOD-OWN generic parameters — `impl Holder { fn echo<U>(&self, x: U) -> U }`.
+/// `02:64` puts `GenericParams?` on every `FunctionSig` and `02:120` makes an impl item a
+/// `Function`, so this is normative Core; C4.7-2 found it front-end-blocked rather than a MIR gap.
+///
+/// Two halves had to meet. The checker instantiated only the IMPL's parameters, leaving `U` a
+/// rigid `Ty::Param` that no argument could unify with; and MIR had no way to monomorphise a
+/// method at arguments the impl does not mention. `FnKey::ImplFn` now carries `method_args`
+/// alongside the impl's `type_args`, filled from a per-call-site record keyed by the call
+/// expression — the method equivalent of C4.5c's machinery for top-level generic fns.
+///
+/// Each case uses MULTIPLE instantiations, so what is exercised is one lowered body per
+/// instantiation rather than merely the checker's acceptance.
+#[test]
+fn method_own_generics_agree() {
+    // Two instantiations at different primitive types.
+    differential(
+        "method_generic_basic.stark",
+        "struct Holder { v: Int32 } \
+         impl Holder { fn echo<U>(&self, x: U) -> U { x } } \
+         fn main() { \
+             let h = Holder { v: 1 }; \
+             println(h.echo(7)); \
+             println(h.echo(true)); \
+         }"
+        .to_string(),
+    );
+    // Two method-own parameters in one signature, and a droppable instantiation.
+    differential(
+        "method_generic_pick.stark",
+        "struct Holder { v: Int32 } \
+         impl Holder { fn first<U>(&self, a: U, b: U) -> U { a } } \
+         fn main() { \
+             let h = Holder { v: 1 }; \
+             println(h.first(7, 9)); \
+             println(h.first(String::from(\"x\"), String::from(\"y\"))); \
+         }"
+        .to_string(),
+    );
+    // The combination that matters most: a GENERIC METHOD on a GENERIC NOMINAL. The impl-level
+    // and method-level substitutions are separate and must not be conflated — `Holder<Int32>`
+    // instantiated at two different `U`s, plus a second nominal instantiation.
+    differential(
+        "method_generic_on_generic.stark",
+        "struct Holder<T> { v: T } \
+         impl<T> Holder<T> { fn pair<U>(&self, other: U) -> U { other } } \
+         fn main() { \
+             let a = Holder { v: 1 }; \
+             let b = Holder { v: true }; \
+             println(a.pair(5)); \
+             println(a.pair(false)); \
+             println(b.pair(9)); \
+         }"
+        .to_string(),
+    );
+}

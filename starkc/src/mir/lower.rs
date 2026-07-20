@@ -455,6 +455,16 @@ pub enum FnKey {
         impl_item: ItemId,
         member: u32,
         type_args: Vec<MirTy>,
+        /// WP-C4.7-8.4: the METHOD's own generic arguments for this instantiation, in the
+        /// method's declaration order (empty when the method declares none). Separate from
+        /// `type_args`, which are the IMPL's — a method on a generic nominal can be generic in
+        /// both, and the two substitutions must not be conflated.
+        ///
+        /// `FnKey` is lowering-internal: it appears nowhere in `mir.md`, so extending it is not
+        /// a contract change and needs no CE3. The rendered `Instance.symbol` does change for
+        /// generic methods, but §2 states symbols are "deterministic and injective for identical
+        /// inputs; NOT a stable external ABI".
+        method_args: Vec<MirTy>,
     },
     /// An un-overridden trait default method, monomorphised for one implementing nominal
     /// instantiation (A1: `self_args` are the nominal's concrete type arguments).
@@ -514,6 +524,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             impl_item,
             member,
             type_args,
+            method_args,
         } => {
             let ItemKind::Impl { trait_, items, .. } = &hir.item(*impl_item).kind else {
                 return unsupported("FnKey::ImplFn on non-impl", span0);
@@ -535,8 +546,25 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                 .map(super::dump_ty)
                 .collect::<Vec<_>>()
                 .join(", ");
+            // WP-C4.7-8.4: a method's OWN arguments render in a second bracket so impl-level and
+            // method-level instantiations stay distinguishable and the symbol stays injective.
+            // A method with no own generics renders exactly as before.
+            let method_text = if method_args.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "::<{}>",
+                    method_args
+                        .iter()
+                        .map(super::dump_ty)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
             match trait_ {
-                None => Ok(format!("{prefix}{type_name}::{method}@[{args_text}]")),
+                None => Ok(format!(
+                    "{prefix}{type_name}::{method}@[{args_text}]{method_text}"
+                )),
                 Some(trait_ref) => {
                     let trait_name = match trait_ref.res {
                         Res::Item(t) => item_name_text(hir, meta, t).unwrap_or("?"),
@@ -546,7 +574,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                         _ => "?",
                     };
                     Ok(format!(
-                        "{prefix}{type_name}::{trait_name}::{method}@[{args_text}]"
+                        "{prefix}{type_name}::{trait_name}::{method}@[{args_text}]{method_text}"
                     ))
                 }
             }
@@ -1189,6 +1217,8 @@ impl<'a> FnLowerer<'a> {
                     impl_item,
                     member: member as u32,
                     type_args: type_args.to_vec(),
+                    // A `Drop::drop` never declares its own generics.
+                    method_args: Vec::new(),
                 };
                 let symbol = key_symbol(self.hir, self.meta, &key)?;
                 return Ok(Some((key, symbol)));
@@ -1565,6 +1595,7 @@ impl<'a> FnLowerer<'a> {
                 impl_item,
                 member,
                 type_args,
+                ..
             } => {
                 let ItemKind::Impl { items, .. } = &self.hir.item(*impl_item).kind else {
                     return unsupported("FnKey::ImplFn on non-impl", span0);
@@ -1862,12 +1893,25 @@ impl<'a> FnLowerer<'a> {
                         sig_span,
                     );
                 }
-                _ => {
-                    // A1 lowers IMPL-level generics; a method's OWN generic parameters
-                    // (`fn map<U>(&self, ...)`) still need per-call-site instantiation
-                    // recording and remain a later increment.
+                // WP-C4.7-8.4: a method's OWN generic parameters substitute from the key's
+                // `method_args`, which the CALL SITE supplied from the checker's per-call-site
+                // recording. Impl-level parameters are bound separately below, from
+                // `type_args` — a method on a generic nominal can be generic in both.
+                FnKey::ImplFn { method_args, .. } if method_args.len() == sig.generics.len() => {
+                    for (param, ty) in sig.generics.iter().zip(method_args.iter()) {
+                        self.param_subst
+                            .insert(self.text(param.name).to_string(), ty.clone());
+                    }
+                }
+                FnKey::ImplFn { .. } => {
                     return unsupported(
-                        "method with its own generic parameters (a later increment)",
+                        "generic method instantiated with the wrong number of type arguments",
+                        sig_span,
+                    );
+                }
+                _ => {
+                    return unsupported(
+                        "trait-default method with its own generic parameters (a later increment)",
                         sig_span,
                     );
                 }
@@ -3695,7 +3739,7 @@ impl<'a> FnLowerer<'a> {
         if let hir::ExprKind::Field { base, name, .. } = &self.hir.expr(callee).kind {
             let base = *base;
             let name_span = *name;
-            return self.lower_method_call(base, name_span, &args, dest, span);
+            return self.lower_method_call(base, name_span, &args, dest, span, expr);
         }
 
         match &self.hir.expr(callee).kind {
@@ -4090,6 +4134,9 @@ impl<'a> FnLowerer<'a> {
                             impl_item,
                             member,
                             type_args,
+                            // Associated-fn calls with their own generics are handled by the
+                            // same recording; none is present when the fn declares none.
+                            method_args: Vec::new(),
                         }
                     };
                     let symbol = key_symbol(self.hir, self.meta, &key)?;
@@ -4370,6 +4417,9 @@ impl<'a> FnLowerer<'a> {
                         impl_item,
                         member: member as u32,
                         type_args: type_args.to_vec(),
+                        // `find_impl_fn` locates the member; the CALL SITE supplies any
+                        // method-level arguments, since they vary per call.
+                        method_args: Vec::new(),
                     },
                     def.sig.receiver,
                 );
@@ -4428,6 +4478,9 @@ impl<'a> FnLowerer<'a> {
         args: &[ExprId],
         dest: Place,
         span: Span,
+        // WP-C4.7-8.4: the CALL expression, which keys the checker's per-call-site record of the
+        // method's own generic arguments.
+        call_expr: ExprId,
     ) -> Result<(), LowerError> {
         let base_ty = self.expr_mir_ty(base)?;
         let (peeled_ty, base_ref_layers) = Self::peel_refs(base_ty.clone());
@@ -4528,6 +4581,34 @@ impl<'a> FnLowerer<'a> {
         let Some((key, receiver)) = self.find_impl_fn(nominal, &name_text, false, &nominal_args)
         else {
             return unsupported(format!("method {name_text} not found (C4.5b+)"), span);
+        };
+        // WP-C4.7-8.4: attach this call site's METHOD-level generic arguments. `find_impl_fn`
+        // locates the member and supplies the IMPL-level arguments; the method's own vary per
+        // call, so they come from the checker's recording keyed by this call expression. The
+        // recorded types are grounded but may still mention the ENCLOSING body's parameters, so
+        // the active substitution applies — the same treatment top-level generic calls get.
+        let key = match key {
+            FnKey::ImplFn {
+                impl_item,
+                member,
+                type_args,
+                ..
+            } => {
+                let method_args = match self.tables.generic_insts.get(&call_expr) {
+                    Some(tys) => tys
+                        .iter()
+                        .map(|t| self.mir_ty(t, span))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => Vec::new(),
+                };
+                FnKey::ImplFn {
+                    impl_item,
+                    member,
+                    type_args,
+                    method_args,
+                }
+            }
+            other => other,
         };
         // Receiver operand FIRST (normative order), before arguments. C4.5b-2: real borrows.
         let receiver_op = match receiver {
@@ -5711,6 +5792,7 @@ impl<'a> FnLowerer<'a> {
             impl_item,
             member,
             type_args,
+            ..
         } = key
         else {
             return unsupported("impl_fn_ret_ty on a non-impl key", span);
