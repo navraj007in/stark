@@ -450,11 +450,17 @@ fn reference_to_struct_field_agrees() {
 fn generic_fns_over_primitive_instantiations_agree() {
     differential(
         "generic_prims.stark",
+        // DEV-075 / PRIM-TRAIT-001: `largest` is instantiated at `Int32` and `Char` — both are
+        // `Ord`. It is NOT instantiated at `Float64` any more: primitive floats implement no
+        // `Ord`, so `largest(2.5, 1.5)` is now correctly rejected (IEEE comparison is not a total
+        // order). `twice<T: Num>` still covers the float instantiation, since `Num` does include
+        // floats — which keeps this test's real subject, multiple primitive instantiations of a
+        // bounded generic, fully exercised.
         "fn largest<T: Ord>(a: T, b: T) -> T { if a > b { a } else { b } } \
          fn twice<T: Num>(x: T) -> T { x + x } \
          fn main() { \
              println(largest(3, 7)); \
-             println(largest(2.5, 1.5)); \
+             println(largest('a', 'z')); \
              println(twice(21)); \
              println(twice(0.25)); \
          }"
@@ -2241,6 +2247,55 @@ fn expected_typed_integer_literals_agree() {
              match v.get(index) { Some(x) => println(*x), None => println(-1), } \
              let unconstrained = 5; \
              println(unconstrained); \
+         }"
+        .to_string(),
+    );
+}
+
+/// DEV-075 (owner specification decision, 2026-07-20; PRIM-TRAIT-001): `Char` is totally ordered
+/// by **Unicode scalar value**. Before this, the oracle rejected all four ordered operators on
+/// `Char` ("invalid binary operation") while MIR executed them correctly — an ENGINE DIVERGENCE
+/// that survived only because no test compared an ordered operator on `Char`. That is exactly the
+/// class of defect this harness exists to catch, so the four operators and `cmp` are pinned
+/// together here.
+#[test]
+fn char_ordering_agrees() {
+    differential(
+        "char_ord.stark",
+        "fn label(o: Ordering) -> Int32 { \
+             match o { \
+                 Ordering::Less => 1, \
+                 Ordering::Equal => 2, \
+                 Ordering::Greater => 3, \
+             } \
+         } \
+         fn main() { \
+             if 'a' < 'b' { println(1); } else { println(0); } \
+             if 'b' <= 'b' { println(1); } else { println(0); } \
+             if 'c' > 'b' { println(1); } else { println(0); } \
+             if 'a' >= 'b' { println(1); } else { println(0); } \
+             println(label('a'.cmp(&'b'))); \
+             println(label('b'.cmp(&'b'))); \
+             println(label('z'.cmp(&'b'))); \
+             if 'a' == 'a' { println(1); } else { println(0); } \
+             if true == true { println(1); } else { println(0); } \
+         }"
+        .to_string(),
+    );
+}
+
+/// The scalar-value rule stated as a comparison a *collation* order would get wrong: `'Z'` (0x5A)
+/// sorts BEFORE `'a'` (0x61), and a digit before both. Any locale-aware ordering would disagree,
+/// so this distinguishes the specified rule from a plausible alternative rather than merely
+/// re-testing that comparison works.
+#[test]
+fn char_ordering_is_scalar_value_not_collation_agrees() {
+    differential(
+        "char_scalar.stark",
+        "fn main() { \
+             if 'Z' < 'a' { println(1); } else { println(0); } \
+             if '0' < 'A' { println(1); } else { println(0); } \
+             if 'a' < 'z' { println(1); } else { println(0); } \
          }"
         .to_string(),
     );

@@ -2083,6 +2083,20 @@ impl<'a> Interpreter<'a> {
                     _ => Err(RuntimeError::new("invalid string operation", span)),
                 }
             }
+            // DEV-075 (owner specification decision, 2026-07-20): `Char` has a total order by
+            // UNICODE SCALAR VALUE — not locale-sensitive or linguistic collation. The oracle
+            // rejected all four ordered operators on `Char` ("invalid binary operation") while
+            // MIR executed them correctly, which was an engine DIVERGENCE, not merely a gap.
+            // Rust's `char: Ord` is scalar-value order, so this matches MIR by construction.
+            // (`Bool` is deliberately absent: per the same decision `Bool` is NOT `Ord`, and its
+            // ordered operators are rejected at type-check time.)
+            (Value::Char(left), Value::Char(right)) => match op {
+                BinOp::Lt => Ok(Value::Bool(left < right)),
+                BinOp::Le => Ok(Value::Bool(left <= right)),
+                BinOp::Gt => Ok(Value::Bool(left > right)),
+                BinOp::Ge => Ok(Value::Bool(left >= right)),
+                _ => Err(RuntimeError::new("invalid Char operation", span)),
+            },
             _ => Err(RuntimeError::new("invalid binary operation", span)),
         }
     }

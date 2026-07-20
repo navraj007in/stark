@@ -4393,6 +4393,9 @@ impl<'a> FnLowerer<'a> {
                     | MirTy::UInt16
                     | MirTy::UInt32
                     | MirTy::UInt64
+                    // DEV-075: `Char` is ordered by Unicode scalar value. `Bool` is deliberately
+                    // absent — it is not `Ord`, and the checker rejects `Bool::cmp` outright.
+                    | MirTy::Char
                     | MirTy::String
                     | MirTy::Str
             )

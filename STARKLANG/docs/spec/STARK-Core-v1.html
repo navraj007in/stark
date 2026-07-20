@@ -1732,6 +1732,18 @@ primitive operation after monomorphization:</p>
 </tr>
 </tbody>
 </table>
+<p>Which <strong>primitive</strong> types admit which of these
+operators, and which implement
+<code>Eq</code>/<code>Ord</code>/<code>Hash</code> for the purpose of
+generic bounds, is specified normatively by <code>PRIM-TRAIT-001</code>
+in 06-Standard-Library (“Primitive Trait and Operator Matrix”). The two
+questions are distinct for primitives: operators on primitives have
+built-in meaning and do not dispatch through the traits, so
+<code>Float64</code> admits <code>&lt;</code> and <code>==</code> as
+IEEE operations while satisfying neither <code>T: Ord</code> nor
+<code>T: Eq</code>. <code>Bool</code> admits
+<code>==</code>/<code>!=</code> but no ordered operator;
+<code>Char</code> is ordered by Unicode scalar value.</p>
 <p><code>Num</code> is a compiler-known marker trait implemented by
 exactly the built-in numeric types
 (<code>Int8</code>–<code>Int64</code>,
@@ -4152,7 +4164,6 @@ impl&lt;T: Copy&gt; Clone for T {
 impl Eq for Int32 {
     fn eq(&amp;self, other: &amp;Int32) -&gt; Bool { *self == *other }
 }
-// ... similar for other types
 
 // Ord trait for basic types
 impl Ord for Int32 {
@@ -4162,6 +4173,106 @@ impl Ord for Int32 {
         else { Ordering::Equal }
     }
 }</code></pre>
+<h3 id="primitive-trait-and-operator-matrix">Primitive Trait and
+Operator Matrix</h3>
+<p><strong>PRIM-TRAIT-001.</strong> The impls shown above are
+illustrative of <em>form</em>. The table below is normative for
+<em>which</em> primitive types implement <code>Eq</code>,
+<code>Ord</code> and <code>Hash</code>, and which operators they admit.
+It replaces the earlier “similar for other types” wording, which was not
+a specification.</p>
+<table>
+<thead>
+<tr>
+<th>Primitive</th>
+<th><code>Eq</code></th>
+<th><code>Ord</code></th>
+<th><code>Hash</code></th>
+<th><code>==</code> <code>!=</code></th>
+<th><code>&lt;</code> <code>&lt;=</code> <code>&gt;</code>
+<code>&gt;=</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Int8</code>…<code>Int64</code>,
+<code>UInt8</code>…<code>UInt64</code></td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>Char</code></td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>String</code>, <code>str</code></td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>Bool</code></td>
+<td>yes</td>
+<td><strong>no</strong></td>
+<td>yes</td>
+<td>yes</td>
+<td><strong>no</strong></td>
+</tr>
+<tr>
+<td><code>Float32</code>, <code>Float64</code></td>
+<td><strong>no</strong></td>
+<td><strong>no</strong></td>
+<td><strong>no</strong></td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td><code>Unit</code></td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+<td>no</td>
+</tr>
+</tbody>
+</table>
+<p>Three rows carry deliberate asymmetries:</p>
+<ul>
+<li><strong><code>Char</code> is ordered by Unicode scalar
+value.</strong> <code>'a' &lt; 'b'</code> compares scalar values;
+<code>Char::cmp</code> returns the corresponding <code>Ordering</code>.
+This is scalar order, <strong>not</strong> locale-sensitive or
+linguistic collation, and Core v1 offers no collation facility.</li>
+<li><strong><code>Bool</code> is <code>Eq</code> and <code>Hash</code>
+but not <code>Ord</code>.</strong> <code>true &lt; false</code>, the
+other ordered operators, and <code>Bool::cmp</code> are compile-time
+errors. An ordering could be defined, but Core v1 has no use for
+ordering truth values, and rejecting the operator is clearer than fixing
+an arbitrary order.</li>
+<li><strong>Floats admit the comparison operators but implement no
+trait.</strong> <code>&lt;</code> and <code>==</code> on
+<code>Float64</code> are built-in IEEE 754 operations
+(<code>NUM-FLOAT-*</code>), and remain available. The traits are
+withheld because IEEE comparison is not an equivalence relation or a
+total order — NaN is unordered and unequal to itself — so
+<code>Float64</code> cannot satisfy a <code>T: Eq</code> or
+<code>T: Ord</code> bound, and cannot be a <code>HashMap</code>
+key.</li>
+</ul>
+<p>Operators on primitives have built-in meaning and do not dispatch
+through these traits (see 03-Type-System, “Operators and Traits”). The
+trait columns therefore govern <em>generic bounds</em> — what
+<code>T: Ord</code> accepts — while the operator columns govern direct
+use. The two differ only for the float row.</p>
 <h2 id="conformance-profiles">Conformance Profiles</h2>
 <p>Two standard-library conformance profiles are defined. A conforming
 implementation MUST state which profile it implements.</p>

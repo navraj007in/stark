@@ -1646,6 +1646,15 @@ after monomorphization:
 | `+ - * / %`, bitwise, shifts | generic `T: Num` | primitive operation after monomorphization |
 | `**` | integer primitive type only | checked integer exponentiation |
 
+Which **primitive** types admit which of these operators, and which implement
+`Eq`/`Ord`/`Hash` for the purpose of generic bounds, is specified normatively
+by `PRIM-TRAIT-001` in 06-Standard-Library ("Primitive Trait and Operator
+Matrix"). The two questions are distinct for primitives: operators on
+primitives have built-in meaning and do not dispatch through the traits, so
+`Float64` admits `<` and `==` as IEEE operations while satisfying neither
+`T: Ord` nor `T: Eq`. `Bool` admits `==`/`!=` but no ordered operator; `Char`
+is ordered by Unicode scalar value.
+
 `Num` is a compiler-known marker trait implemented by exactly the built-in
 numeric types (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`); user
 types cannot implement it in Core v1. `Num` does not by itself authorize
@@ -3954,7 +3963,6 @@ impl<T: Copy> Clone for T {
 impl Eq for Int32 {
     fn eq(&self, other: &Int32) -> Bool { *self == *other }
 }
-// ... similar for other types
 
 // Ord trait for basic types
 impl Ord for Int32 {
@@ -3965,6 +3973,44 @@ impl Ord for Int32 {
     }
 }
 ```
+
+### Primitive Trait and Operator Matrix
+
+**PRIM-TRAIT-001.** The impls shown above are illustrative of *form*. The
+table below is normative for *which* primitive types implement `Eq`, `Ord`
+and `Hash`, and which operators they admit. It replaces the earlier
+"similar for other types" wording, which was not a specification.
+
+| Primitive | `Eq` | `Ord` | `Hash` | `==` `!=` | `<` `<=` `>` `>=` |
+| --- | --- | --- | --- | --- | --- |
+| `Int8`…`Int64`, `UInt8`…`UInt64` | yes | yes | yes | yes | yes |
+| `Char` | yes | yes | yes | yes | yes |
+| `String`, `str` | yes | yes | yes | yes | yes |
+| `Bool` | yes | **no** | yes | yes | **no** |
+| `Float32`, `Float64` | **no** | **no** | **no** | yes | yes |
+| `Unit` | no | no | no | no | no |
+
+Three rows carry deliberate asymmetries:
+
+- **`Char` is ordered by Unicode scalar value.** `'a' < 'b'` compares scalar
+  values; `Char::cmp` returns the corresponding `Ordering`. This is scalar
+  order, **not** locale-sensitive or linguistic collation, and Core v1 offers
+  no collation facility.
+- **`Bool` is `Eq` and `Hash` but not `Ord`.** `true < false`, the other
+  ordered operators, and `Bool::cmp` are compile-time errors. An ordering
+  could be defined, but Core v1 has no use for ordering truth values, and
+  rejecting the operator is clearer than fixing an arbitrary order.
+- **Floats admit the comparison operators but implement no trait.** `<` and
+  `==` on `Float64` are built-in IEEE 754 operations (`NUM-FLOAT-*`), and
+  remain available. The traits are withheld because IEEE comparison is not an
+  equivalence relation or a total order — NaN is unordered and unequal to
+  itself — so `Float64` cannot satisfy a `T: Eq` or `T: Ord` bound, and cannot
+  be a `HashMap` key.
+
+Operators on primitives have built-in meaning and do not dispatch through
+these traits (see 03-Type-System, "Operators and Traits"). The trait columns
+therefore govern *generic bounds* — what `T: Ord` accepts — while the operator
+columns govern direct use. The two differ only for the float row.
 
 ## Conformance Profiles
 Two standard-library conformance profiles are defined. A conforming

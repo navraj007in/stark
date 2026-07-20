@@ -1482,3 +1482,68 @@ fn integer_literal_typing_negatives_still_fail() {
         "an integer literal must not satisfy a Bool parameter, got {diagnostics:?}"
     );
 }
+
+/// DEV-075 (owner specification decision; PRIM-TRAIT-001): `Bool` implements `Eq` and `Hash` but
+/// NOT `Ord`. Its ordered operators and `Bool::cmp` are compile-time errors — an ordering could be
+/// defined, but Core v1 has no use for ordering truth values, and rejecting is clearer than
+/// fixing an arbitrary order. Previously the checker ACCEPTED `false < true` and then both engines
+/// failed at runtime, which is strictly worse than a diagnostic.
+#[test]
+fn bool_is_not_ordered() {
+    for source in [
+        "fn main() -> Unit { if false < true { println(1); } else { println(0); } }\n",
+        "fn main() -> Unit { if false <= true { println(1); } else { println(0); } }\n",
+        "fn main() -> Unit { if false > true { println(1); } else { println(0); } }\n",
+        "fn main() -> Unit { if false >= true { println(1); } else { println(0); } }\n",
+    ] {
+        let diagnostics = analyze("bool_ord.stark", source.to_string());
+        assert!(
+            diagnostics.iter().any(|d| d.severity == Severity::Error),
+            "ordered operators on Bool must be rejected, got {diagnostics:?}\n{source}"
+        );
+    }
+
+    // `Bool::cmp` likewise.
+    let cmp = "fn main() -> Unit { let o = true.cmp(&false); }\n";
+    let diagnostics = analyze("bool_cmp.stark", cmp.to_string());
+    assert!(
+        diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "Bool::cmp must be rejected, got {diagnostics:?}"
+    );
+
+    // But equality stays valid — `Bool` IS `Eq`.
+    let eq = "fn main() -> Unit { if true == true { println(1); } else { println(0); } }\n";
+    let diagnostics = analyze("bool_eq.stark", eq.to_string());
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "Bool equality must stay valid, got {diagnostics:?}"
+    );
+}
+
+/// PRIM-TRAIT-001's float row: the comparison OPERATORS remain available on primitive floats as
+/// built-in IEEE operations, while the `Eq`/`Ord` TRAITS are withheld (IEEE comparison is neither
+/// an equivalence relation nor a total order). The two questions are distinct for primitives, and
+/// conflating them would silently break ordinary float comparison — which it did, once, while
+/// this was being implemented.
+#[test]
+fn floats_compare_but_do_not_satisfy_ord_bounds() {
+    let operators = "fn main() -> Unit {\n\
+        if 1.5 < 2.5 { println(1); } else { println(0); }\n\
+        if 1.5 == 1.5 { println(1); } else { println(0); }\n\
+    }\n";
+    let diagnostics = analyze("float_ops.stark", operators.to_string());
+    assert!(
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "built-in float comparison must stay available, got {diagnostics:?}"
+    );
+
+    let bound = "fn smallest<T: Ord>(a: T, b: T) -> T { if a < b { a } else { b } }\n\
+                 fn main() -> Unit { println(smallest(1.5, 2.5)); }\n";
+    let diagnostics = analyze("float_bound.stark", bound.to_string());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0500")),
+        "Float64 must not satisfy a T: Ord bound, got {diagnostics:?}"
+    );
+}

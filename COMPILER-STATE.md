@@ -1,10 +1,25 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-6.3 — **integer literals adopt their expected type; C4.7-6 COMPLETE**
+Updated: 2026-07-20 after the DEV-075 increment — **`PRIM-TRAIT-001` enters the normative spec**
 
 ## Position
-Gate: C4  Next: **DEV-075** (Char gets `Ord`, `Bool` does not; owner-specified, and it needs
-normative spec edits + a spec regeneration), then C4.7-8 (MIR residuals; **8.1 is blocked on
-DEV-076**) and C4.7-9 (fresh audit + exit report).
+Gate: C4  Next: **C4.7-8** (remaining MIR residuals; **8.1 is blocked on DEV-076**, and 8.6
+mutable slices is an owner decision), then **C4.7-9** (fresh audit + exit report).
+**DEV-075 CLOSED 2026-07-20 under an owner SPECIFICATION decision — the first spec change of
+WP-C4.7.** The owner split the two types rather than treating them as one gap: **`Char`** is
+totally ordered by **Unicode scalar value** (`Eq`+`Ord`+`Hash`; all four ordered operators;
+`Char::cmp`), explicitly not collation; **`Bool`** is `Eq`+`Hash` but **not `Ord`**, so its
+ordered operators and `Bool::cmp` are compile-time errors while `==`/`!=` stay valid. MIR was
+already directionally right for `Char`, so the ORACLE was aligned to it (the divergence ran that
+way round). New **`PRIM-TRAIT-001`** in 06-Standard-Library gives the full primitive
+trait/operator matrix, replacing the illustrative `impl Eq for Int32` + "similar for other types"
+that had been the only authority; 03's operator table cross-references it; compiled spec
+regenerated and the fixture corpus re-extracted (manifest in sync).
+**The matrix had to make one distinction explicit:** for primitives, operators have built-in
+meaning and do NOT dispatch through the traits — `Float64` admits `<`/`==` as IEEE operations
+while implementing neither `Eq` nor `Ord` (IEEE comparison is not an equivalence relation or a
+total order), so it cannot satisfy `T: Ord` or key a `HashMap`. Conflating the operator gate with
+the trait gate silently broke ordinary float comparison once during implementation; both
+directions are now pinned.
 **WP-C4.7-6.3 DONE 2026-07-20 (owner-decided: a real conformance defect, fix it) — DEV-078.**
 An unsuffixed integer literal now ADOPTS an expected integer type. 03 says expected types flow
 inward from annotations, **function parameters**, fields and assignment destinations, and that
@@ -1057,8 +1072,8 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-20 (post-WP-C4.7-7). **No open deviation is owned by the C4 track any more** —
-every one below is either long-standing/unscheduled or newly found and unassigned:
+Open as of 2026-07-20 (post-DEV-075). Every entry below is long-standing/unscheduled except
+DEV-076, which blocks WP-C4.7-8.1:
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -1066,9 +1081,9 @@ every one below is either long-standing/unscheduled or newly found and unassigne
 - DEV-012 — VS Code extension UI never interactively verified. Owner: WP-C8.7.
 - DEV-017 — 39 of 59 legacy coverage rules still lack function-level positive/negative evidence
   classification (tooling exists; classification unscheduled).
-- DEV-075 — ordered comparison on `Bool`/`Char` is accepted by the checker but fails in both
-  engines for `Bool` and DIVERGES for `Char` (MIR succeeds, oracle rejects). Found by
-  WP-C4.7-6.2; unassigned, C4-exit-report input.
+- DEV-076 — the HIR oracle's `Option::unwrap_or` double-drops the payload and never drops the
+  discarded default (a SOUNDNESS defect, currently masked because MIR refuses the construct).
+  **Blocking prerequisite for WP-C4.7-8.1** — MIR must not be built to match it.
 - Informational, not owed a fix: DEV-SEED-008 (two hand-rolled JSON parsers), DEV-SEED-014
   (no attribute syntax — deliberate scope fact).
 
@@ -1079,7 +1094,9 @@ DISCHARGES CD-033's C5 multi-file prerequisite); **DEV-072** and **DEV-073** (WP
 move-out-of-borrow via match bindings, now rejected E0101; generic impls matched through
 `match_impl_type` for operator and iterable bounds); **DEV-067** and **DEV-071** (WP-C4.7-7 —
 bounded-parameter bounds behind references and at intra-generic call sites; `Ordering`
-exhaustiveness).
+exhaustiveness); **DEV-077** (WP-C4.7-6.1 — oracle `Box::into_inner` double-drop); **DEV-078**
+(WP-C4.7-6.3 — integer literals adopt their expected type); **DEV-075** (the DEV-075 increment —
+`Char` ordered by Unicode scalar value, `Bool` not `Ord`, plus normative `PRIM-TRAIT-001`).
 Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
 CD-027 pre-C4.1 correction pass; DEV-064 (undetermined-generic rejection, WP-C4.5c, E0004);
 DEV-065/066 (C4.5b oracle fixes). See `KNOWN-DEVIATIONS.md`.
@@ -2318,3 +2335,61 @@ FOLLOW-UP: WP-C4.7 §1's "integer literals don't coerce to `UInt64`" guidance is
 has been struck.
 NEXT: DEV-075 (Char/Bool ordering + the normative primitive trait/operator matrix — requires spec
 source edits and regenerating the compiled spec).
+
+### WP-C4.7 — DEV-075: Char/Bool ordering and the normative primitive matrix — 2026-07-20
+DONE: DEV-075 CLOSED under an **owner specification decision**. This is the first change to
+normative spec text in WP-C4.7.
+THE DECISION (owner, 2026-07-20) split the two types rather than treating DEV-075 as one gap:
+- **`Char` is totally ordered by Unicode scalar value** — implements `Eq`, `Ord`, `Hash`; all four
+  ordered operators compare scalar values; `Char::cmp` returns the corresponding `Ordering`.
+  Explicitly NOT locale-sensitive or linguistic collation, and Core v1 offers no collation
+  facility.
+- **`Bool` implements `Eq` and `Hash` but NOT `Ord`** — `<`, `<=`, `>`, `>=` and `Bool::cmp` are
+  compile-time errors; `==`/`!=` remain valid. An ordering is definable, but Core v1 has no use
+  for ordering truth values, and rejecting is clearer than fixing an arbitrary one.
+IMPLEMENTED: the divergence ran in `Char`'s favour — MIR executed `'a' < 'b'` correctly while the
+oracle rejected it — so the ORACLE was aligned to MIR (a `(Char, Char)` arm in `eval_binary`,
+matching Rust's scalar-value `char: Ord`), and `Char` joined the primitive `cmp` surface in both
+the checker and lowering. `Bool` was removed from the `Ord` operator gate, which is what turns
+`false < true` from an accept-then-fail into a diagnostic.
+SPEC CHANGE: **`PRIM-TRAIT-001`**, a normative "Primitive Trait and Operator Matrix" in
+06-Standard-Library, replacing the illustrative `impl Eq for Int32` plus `// ... similar for other
+types` — which the owner correctly identified as not being a specification at all. 03-Type-System's
+operator table now cross-references it. `STARK-Core-v1.md`/`.html`/`.pdf` regenerated via
+`build-core-spec.py`; the spec-fixture corpus re-extracted with `extract-spec-examples.sh` (one
+fixture changed, 112 blocks, manifest in sync).
+THE DISTINCTION THE MATRIX FORCED: for primitives, operators have built-in meaning and do **not**
+dispatch through the traits, so the operator question and the trait question are separate. The
+float row is where they differ: `Float64` admits `<` and `==` as built-in IEEE operations (CD-006)
+while implementing neither `Eq` nor `Ord`, because IEEE comparison is neither an equivalence
+relation nor a total order — NaN is unordered and unequal to itself — so `Float64` cannot satisfy
+a `T: Ord` bound or key a `HashMap`. Conflating the two gates silently broke ordinary float
+comparison during implementation (`1.5 < 2.5` started failing E0500); the operator gate
+(`ty_satisfies_operator_bound`) and the trait gate (`satisfies_bound`) now carry the matrix
+separately, and both directions are pinned by a test.
+FILES: STARKLANG/docs/spec/{06-Standard-Library,03-Type-System}.md (+ regenerated
+STARK-Core-v1.{md,html,pdf}), STARKLANG/tests/spec-fixtures/06-Standard-Library__18.stark,
+starkc/src/{interp,typecheck}.rs, starkc/src/mir/lower.rs,
+starkc/tests/{mir_differential,gate2_valid}.rs, KNOWN-DEVIATIONS.md (DEV-075 closed; both
+enumerations), COMPILER-STATE.md.
+RULES: new **PRIM-TRAIT-001**; consistent with CD-015 (floats are not `Eq`/`Ord`/`Hash`) and
+CD-006 (IEEE float operations).
+DECISIONS: owner specification decision, recorded above; no CE-level decision taken by the session.
+EVIDENCE: `char_ordering_agrees` (all four operators + `cmp`, both engines) and
+`char_ordering_is_scalar_value_not_collation_agrees` — the second deliberately uses `'Z' < 'a'`
+and `'0' < 'A'`, comparisons a COLLATION order would get wrong, so it distinguishes the specified
+rule from a plausible alternative rather than merely re-testing that comparison works;
+`bool_is_not_ordered` (four operators + `Bool::cmp` rejected, `==` still accepted);
+`floats_compare_but_do_not_satisfy_ord_bounds` (both sides of the operator/trait distinction).
+OBSERVABLE NARROWING (intended, and worth stating plainly): because primitive floats no longer
+satisfy `T: Ord`, a bounded generic can no longer be INSTANTIATED at a float —
+`fn largest<T: Ord>(..)` called as `largest(2.5, 1.5)` was legal before and is now E0500. One
+existing differential test did exactly that; it was updated to instantiate `largest` at `Int32`
+and `Char` (both `Ord`) while `twice<T: Num>` keeps the float instantiation, since `Num` does
+include floats. That preserves the test's real subject — multiple primitive instantiations of a
+bounded generic — and adds positive `Char`-as-`Ord` coverage. This failure only surfaced in a
+COMPLETE workspace run; several partial runs never reached `mir_differential`.
+FOLLOW-UP: none.
+NEXT: C4.7-8. **8.1 is blocked on DEV-076** (the oracle's `unwrap_or` double-drop must be fixed
+before MIR is built to match it); 8.4/8.5 were reclassified front-end-first by C4.7-2; 8.6
+(mutable slices) is an owner decision.

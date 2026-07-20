@@ -2092,7 +2092,7 @@ WP-C1.5)
   the deviation being recorded is the *governance* gap (an oracle behavior change that went
   unnumbered), not an outstanding code defect. See `mir-amendment-A1-strings-runtime.md` rev. 10.
 
-## DEV-075 — Ordered comparison on `Bool` and `Char` is accepted but unimplemented, and the two engines disagree [OPEN, found WP-C4.7-6.2, 2026-07-20]
+## DEV-075 — Ordered comparison on `Bool` and `Char` is accepted but unimplemented, and the two engines disagree [CLOSED, WP-C4.7 DEV-075 increment, 2026-07-20]
 
 - **What:** the type checker accepts `<`/`<=`/`>`/`>=` on `Bool` and `Char`
   (`ty_satisfies_operator_bound` admits `Eq`/`Ord` for every non-`Unit` primitive), but neither
@@ -2118,8 +2118,34 @@ WP-C1.5)
   the change that closes this deviation.
 - **Repro:** `fn main() { if false < true { println(1); } else { println(0); } }` and the same
   with `'a' < 'b'`; run each through `cargo run --example c46_probe` and `--example oracle_run`.
-- **Owner:** unassigned; C4-exit-report input (it is an over-acceptance plus a divergence, both
-  of which the C4 exit conditions care about).
+- **Resolution (owner SPECIFICATION decision, 2026-07-20).** The owner split the two types rather
+  than treating them as one gap, and directed that the normative documents carry an explicit
+  matrix so "similar for other types" could not remain the authority.
+  - **`Char` is ordered by Unicode scalar value.** It implements `Eq`, `Ord` and `Hash`; all four
+    ordered operators compare scalar values; `Char::cmp` returns the corresponding `Ordering`.
+    Explicitly NOT locale-sensitive or linguistic collation. MIR's existing behaviour was
+    directionally correct, so the ORACLE was aligned to it (a `(Char, Char)` arm in `eval_binary`)
+    and `Char` was added to the primitive `cmp` surface in both the checker and lowering.
+  - **`Bool` implements `Eq` and `Hash` but NOT `Ord`.** `<`, `<=`, `>`, `>=` and `Bool::cmp` are
+    now compile-time errors; `==`/`!=` remain valid. An ordering could be defined, but Core v1 has
+    no use for ordering truth values, and rejecting is clearer than fixing an arbitrary one.
+- **Spec change (the first in WP-C4.7):** `PRIM-TRAIT-001` — a normative "Primitive Trait and
+  Operator Matrix" in 06-Standard-Library, replacing the illustrative `impl Eq for Int32` plus
+  "// ... similar for other types", with a cross-reference from 03-Type-System's operator table.
+  The compiled `STARK-Core-v1.md`/`.html`/`.pdf` were regenerated and the spec-fixture corpus
+  re-extracted (one fixture changed, manifest in sync).
+- **A distinction the matrix had to make explicit:** for primitives, operators have built-in
+  meaning and do NOT dispatch through the traits. So `Float64` admits `<` and `==` as IEEE
+  operations while implementing neither `Eq` nor `Ord` (IEEE comparison is not an equivalence
+  relation or a total order — NaN is unordered and unequal to itself), and therefore cannot
+  satisfy a `T: Ord` bound or key a `HashMap`. Conflating the operator gate with the trait gate
+  silently broke ordinary float comparison once during implementation; both are now pinned by
+  `floats_compare_but_do_not_satisfy_ord_bounds`.
+- **Regression evidence:** `mir_differential.rs::char_ordering_agrees` (all four operators plus
+  `cmp`, both engines) and `::char_ordering_is_scalar_value_not_collation_agrees` (`'Z' < 'a'`,
+  `'0' < 'A'` — comparisons a collation order would get WRONG, so the test distinguishes the
+  specified rule from a plausible alternative); `gate2_valid.rs::bool_is_not_ordered` (all four
+  operators, `Bool::cmp`, and `==` still accepted) and `::floats_compare_but_do_not_satisfy_ord_bounds`.
 
 ## DEV-076 — HIR oracle `Option::unwrap_or` double-drops the payload and leaks the unused default [OPEN, found WP-C4.7-8.1 pre-work, 2026-07-20]
 
@@ -2330,10 +2356,12 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-075 (owner-specified 2026-07-20; see the DEV-075 increment), DEV-076
+remainder), DEV-076
 (WP-C4.7-8.1 blocking prerequisite — an oracle SOUNDNESS defect). DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
-never adopting an expected integer type) was closed by WP-C4.7-6.3. DEV-070 was closed by
+never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)
+was closed by the WP-C4.7 DEV-075 increment under an owner specification decision, which also
+added `PRIM-TRAIT-001` to the normative spec. DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);

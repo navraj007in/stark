@@ -455,7 +455,15 @@ Order within the increment (each independently commit-able):
   arm, AND bounds are verified in a deferred pass, so each obligation now carries the generic
   environment it arose in. 4 differential/front-end tests + the `_`-workaround dropped from
   `ordering_value_round_trips_through_match_agree`. Workspace 769/0/2.
-- C4.7-8: _pending_
+- **DEV-075 increment: DONE 2026-07-20** (owner specification decision; sequenced after C4.7-7,
+  which had already landed). `Char` is ordered by Unicode scalar value in BOTH engines (the oracle
+  was aligned to MIR, which was already right) and joins the primitive `cmp` surface; `Bool` is
+  not `Ord`, so its ordered operators and `Bool::cmp` are now compile-time errors. New normative
+  **`PRIM-TRAIT-001`** primitive trait/operator matrix in 06 (+ 03 cross-reference), compiled spec
+  regenerated, fixture corpus re-extracted. Pinned the float row's operator/trait split, which
+  briefly broke `1.5 < 2.5` during implementation.
+- C4.7-8: _pending_ — **8.1 BLOCKED on DEV-076** (oracle `unwrap_or` double-drop); 8.4/8.5
+  reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)
 
 Recommended execution order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9. Increments 1–2 are

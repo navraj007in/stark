@@ -22,7 +22,6 @@ impl<T: Copy> Clone for T {
 impl Eq for Int32 {
     fn eq(&self, other: &Int32) -> Bool { *self == *other }
 }
-// ... similar for other types
 
 // Ord trait for basic types
 impl Ord for Int32 {

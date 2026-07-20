@@ -6944,9 +6944,19 @@ impl<'a> TypeChecker<'a> {
     /// giving them one now would be new semantics, not a bug fix (Charter rule 4).
     fn ty_satisfies_operator_bound(&self, ty: &Ty, required: &str) -> bool {
         match ty {
+            // DEV-075 (owner specification decision, 2026-07-20). This gate is about the
+            // OPERATOR, not the trait, and on primitives operators have built-in meaning
+            // (03-Type-System, "Operators and Traits"). So primitive FLOATS keep `==` and `<`
+            // here — IEEE comparison per CD-006 — even though CD-015 denies them the `Eq`/`Ord`
+            // *traits*; that distinction lives in `satisfies_bound`, which gates generic bounds.
+            // What DOES change: `Bool` loses ordering. `false < true` is definable, but Core v1
+            // has no meaningful use for ordering truth values, and rejecting it is clearer than
+            // inventing an order merely because one is technically available. `Char` is ordered,
+            // by Unicode scalar value.
             Ty::Primitive(primitive) => match required {
                 "Num" => is_numeric(*primitive),
-                "Eq" | "Ord" => !matches!(primitive, Primitive::Unit),
+                "Eq" => !matches!(primitive, Primitive::Unit),
+                "Ord" => !matches!(primitive, Primitive::Unit | Primitive::Bool),
                 _ => false,
             },
             Ty::Ref {
@@ -7093,8 +7103,12 @@ impl<'a> TypeChecker<'a> {
             Ty::Primitive(p) => {
                 if bound_name == "Num" {
                     is_numeric(*p)
-                } else if bound_name == "Eq" || bound_name == "Ord" {
-                    !matches!(p, Primitive::Unit)
+                } else if bound_name == "Eq" {
+                    // DEV-075 matrix: every primitive except `Unit` and the floats (CD-015).
+                    !matches!(p, Primitive::Unit) && !is_float_primitive(*p)
+                } else if bound_name == "Ord" {
+                    // DEV-075 matrix: as `Eq`, and additionally NOT `Bool`. `Char` is ordered.
+                    !matches!(p, Primitive::Unit | Primitive::Bool) && !is_float_primitive(*p)
                 } else if bound_name == "Display" {
                     standard_display_type(&ty)
                 } else if bound_name == "Clone" || bound_name == "Default" {
@@ -7406,11 +7420,10 @@ fn standard_display_type(ty: &Ty) -> bool {
 /// - **Floats** — CD-015 (WP-C2.9) froze that primitive floats do not implement `Eq`/`Ord`/
 ///   `Hash`, so `1.0.cmp(&2.0)` must stay rejected.
 /// - **`Unit`** — nothing to order.
-/// - **`Bool` and `Char`** — see DEV-075. The checker already accepts `false < true` and
-///   `'a' < 'b'`, but the ORACLE rejects both ("invalid binary operation") and MIR handles them
-///   inconsistently (Bool errors, Char succeeds — an engine divergence). Admitting `cmp` for
-///   these would build a new surface on a broken one and widen the divergence; it is enabled in
-///   the same change that closes DEV-075, not before.
+/// - **`Bool`** — per DEV-075's owner specification decision, `Bool` implements `Eq` and `Hash`
+///   but NOT `Ord`: its ordered operators and `Bool::cmp` are compile-time errors.
+///
+/// `Char` IS included (DEV-075): it is totally ordered by Unicode scalar value.
 fn ordered_primitive(ty: &Ty) -> bool {
     matches!(
         strip_ref(ty),
@@ -7423,9 +7436,20 @@ fn ordered_primitive(ty: &Ty) -> bool {
                 | Primitive::UInt16
                 | Primitive::UInt32
                 | Primitive::UInt64
+                | Primitive::Char
                 | Primitive::String
                 | Primitive::Str
         )
+    )
+}
+
+/// DEV-075: the primitive float types. CD-015 (WP-C2.9) froze that primitive floats implement
+/// none of `Eq`/`Ord`/`Hash`; ordered float COMPARISON operators remain available as built-in
+/// primitive operations (IEEE), which is a separate thing from the trait.
+fn is_float_primitive(p: Primitive) -> bool {
+    matches!(
+        p,
+        Primitive::Float16 | Primitive::BFloat16 | Primitive::Float32 | Primitive::Float64
     )
 }
 

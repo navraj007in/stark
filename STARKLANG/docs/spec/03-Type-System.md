@@ -741,6 +741,15 @@ after monomorphization:
 | `+ - * / %`, bitwise, shifts | generic `T: Num` | primitive operation after monomorphization |
 | `**` | integer primitive type only | checked integer exponentiation |
 
+Which **primitive** types admit which of these operators, and which implement
+`Eq`/`Ord`/`Hash` for the purpose of generic bounds, is specified normatively
+by `PRIM-TRAIT-001` in 06-Standard-Library ("Primitive Trait and Operator
+Matrix"). The two questions are distinct for primitives: operators on
+primitives have built-in meaning and do not dispatch through the traits, so
+`Float64` admits `<` and `==` as IEEE operations while satisfying neither
+`T: Ord` nor `T: Eq`. `Bool` admits `==`/`!=` but no ordered operator; `Char`
+is ordered by Unicode scalar value.
+
 `Num` is a compiler-known marker trait implemented by exactly the built-in
 numeric types (`Int8`–`Int64`, `UInt8`–`UInt64`, `Float32`, `Float64`); user
 types cannot implement it in Core v1. `Num` does not by itself authorize
