@@ -29,8 +29,10 @@
 //! ```
 //!
 //! Scope notes (v0.1, honest limitations — refinements, not silent gaps):
-//! - V-MOVE-1 (refined field-precise under C4.5d): entries are (local, pure-Field path);
-//!   places with non-Field projections are conservatively their whole local. Any-path
+//! - V-MOVE-1 (refined field-precise under C4.5d; VariantField-precise under WP-C4.7-8.3,
+//!   DEV-079): entries are (local, path) where a path component is a struct/tuple field index
+//!   or a variant-then-field pair; places with `Deref`/`Index` projections are conservatively
+//!   their whole local. Any-path
 //!   (union) joins to a fixpoint. A read conflicts with a moved entry when the paths are
 //!   prefix-related either way; assignment reinitializes the subtree it covers. `Drop` of a
 //!   possibly-moved place is NOT an error: flag-guarded conditional drops (contract §8) are
@@ -1919,11 +1921,28 @@ fn is_numeric(ty: &MirTy) -> bool {
 /// knowledge; primitives/fn-values/refs never need dropping.)
 /// Dataflow key of a place: its pure-Field path, or the whole local (path `[]`) when any
 /// non-Field projection is involved (conservative).
+/// The move-dataflow key for a place: its local plus a field-precise path.
+///
+/// `VariantField(v, i)` contributes TWO components — the variant then the field — so that
+/// `_6.v0.0` and `_6.v0.1` are distinguishable siblings rather than collapsing to the whole
+/// local (DEV-079). Collapsing them made every enum variant with two or more droppable payload
+/// fields fail V-MOVE-1: the second field's move was reported as a move from the
+/// already-moved whole local, so `match v { Two::Pair(a, b) => … }` on droppable payloads
+/// produced MIR that lowering accepted and verification rejected.
+///
+/// This cannot collide with a struct's `Field` path: a local has exactly one type, so its
+/// projections are either struct/tuple `Field`s or enum `VariantField`s, never both.
+/// `Deref` and `Index` still collapse to the whole local — conservative and correct, since
+/// neither denotes a statically-known disjoint sub-place.
 fn moved_key(place: &Place) -> (u32, Vec<u32>) {
     let mut path = Vec::new();
     for proj in &place.projection {
         match proj {
             Projection::Field(i) => path.push(*i),
+            Projection::VariantField(v, i) => {
+                path.push(*v);
+                path.push(*i);
+            }
             _ => return (place.local.0, Vec::new()),
         }
     }

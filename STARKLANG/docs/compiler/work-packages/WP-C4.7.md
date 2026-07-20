@@ -476,7 +476,11 @@ Order within the increment (each independently commit-able):
   scope; each value dies at the end of its own iteration, and `break`/`continue` destroy the
   current one — the latter for free, by capturing the loop's `scope_depth` before pushing the
   per-iteration scope. 2 differential tests (3 programs); stale fixture removed.
-- C4.7-8: _pending_ — **8.3 is the last MIR residual**; 8.6 is an owner decision (oracle `unwrap_or` double-drop); 8.4/8.5
+- **C4.7-8.3a: DONE 2026-07-20 — DEV-079 + DEV-080.** Found while oracle-pinning for 8.3, both in
+  the FLAT path A2/C4.5d had signed off: the verifier rejected every enum variant with 2+
+  droppable payload fields (lowering accepted it — an internal inconsistency), and fixing that
+  exposed an arm-end drop-ORDER divergence it had been masking. 2 differential tests (4 programs).
+- C4.7-8: _pending_ — **8.3b (nested patterns) is the last MIR residual**; 8.6 is an owner decision (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)
 

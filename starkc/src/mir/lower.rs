@@ -7116,17 +7116,34 @@ impl<'a> FnLowerer<'a> {
         match &self.hir.pat(pat).kind {
             hir::PatKind::TupleVariant { pats, .. } => {
                 let pats = pats.clone();
-                for (i, sub) in pats.iter().enumerate() {
-                    let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
-                    self.consume_field(
-                        scrut.clone(),
-                        mode,
-                        variant,
-                        i as u32,
-                        &field_ty,
-                        Some(*sub),
-                        span,
-                    )?;
+                // WP-C4.7-8.3 (DEV-080): UNBOUND fields are consumed FIRST, bound ones second.
+                // Arm-end drops run in reverse registration order, so registering the unbound
+                // (wildcard / unmentioned) leaves first makes the bindings drop first — in
+                // reverse binding order — and the discarded leaves after them, which is the
+                // order the oracle produces. Consuming in a single field-order pass interleaved
+                // them and gave plain reverse-FIELD order: for `Two::Pair(a, _)` over
+                // `(Tag{1}, Tag{2})` that printed `2, 1` where the oracle prints `1, 2`. The
+                // divergence was invisible until the V-MOVE-1 fix (DEV-079) let such programs
+                // verify at all.
+                let is_binding = |lower: &Self, sub: &hir::PatId| {
+                    matches!(lower.hir.pat(*sub).kind, hir::PatKind::Binding { .. })
+                };
+                for pass_binds in [false, true] {
+                    for (i, sub) in pats.iter().enumerate() {
+                        if is_binding(self, sub) != pass_binds {
+                            continue;
+                        }
+                        let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
+                        self.consume_field(
+                            scrut.clone(),
+                            mode,
+                            variant,
+                            i as u32,
+                            &field_ty,
+                            Some(*sub),
+                            span,
+                        )?;
+                    }
                 }
             }
             hir::PatKind::Struct { fields, res, .. } => {

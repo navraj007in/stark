@@ -2258,6 +2258,48 @@ WP-C1.5)
   at runtime, so both engines must agree). Unnecessary `as UInt64` casts were removed from the
   differential corpus; casts of genuinely typed values were retained.
 
+## DEV-079 — MIR verification rejects any enum variant with two or more droppable payload fields [CLOSED, WP-C4.7-8.3, 2026-07-20]
+
+- **What:** V-MOVE-1's move dataflow keyed places as `(local, pure-Field path)` and collapsed
+  **any** non-`Field` projection to the whole local. `VariantField(v, i)` is a non-`Field`
+  projection, so moving two different payload fields out of the same enum local looked like two
+  moves of the same whole place: the second was reported `MIR-0007 move from possibly-moved place
+  _N[]`.
+- **Impact:** `match v { Two::Pair(a, b) => … }` where the payload fields need dropping produced
+  MIR that **lowering accepted and verification rejected** — an internal inconsistency between
+  two components that are supposed to be independent readings of the same contract, and strictly
+  worse than a clean `Unsupported`. It applied to every multi-droppable-field variant, with or
+  without a wildcard, including `String` payloads; only single-field variants worked.
+- **Why it was not caught earlier:** the differential corpus had no case with a variant carrying
+  two droppable fields. WP-C4.6 A2 signed off the "general pattern engine" on nested/tuple/array
+  scrutinees, and C4.5d signed off match-drop elaboration, but neither exercised this shape. It
+  surfaced while pinning oracle behaviour for WP-C4.7-8.3.
+- **Resolution (WP-C4.7-8.3):** `moved_key` gives `VariantField(v, i)` **two** path components —
+  the variant, then the field — so sibling fields are distinguishable. This cannot collide with a
+  struct's `Field` path because a local has exactly one type, so its projections are either
+  struct/tuple fields or variant fields, never both. `Deref` and `Index` still collapse to the
+  whole local, which is conservative and correct since neither denotes a statically-known
+  disjoint sub-place. The verifier's "honest limitations" note was updated to match.
+
+## DEV-080 — Arm-end drop ORDER for a variant payload with unbound fields diverged from the oracle [CLOSED, WP-C4.7-8.3, 2026-07-20]
+
+- **What:** with a variant payload where some fields are bound and others are wildcards, MIR
+  destroyed the payload leaves in plain reverse-FIELD order, while the HIR oracle destroys **all
+  bound bindings first (in reverse binding order), then the discarded leaves**.
+- **Repro:** `enum Two { Pair(Tag, Tag), Empty }` matched by `Two::Pair(a, _)` over
+  `(Tag{id:1}, Tag{id:2})`, with a printing destructor: the oracle prints `1, 2`; MIR printed
+  `2, 1`.
+- **Why it was invisible:** every program that could expose it was blocked by DEV-079 above — it
+  could not reach execution to be compared. Fixing the verifier is what made the divergence
+  observable, which is a good argument for fixing conservative-rejection bugs rather than living
+  with them.
+- **Resolution (WP-C4.7-8.3):** `consume_variant_payload` consumes UNBOUND fields first and bound
+  fields second. Arm-end drops run in reverse registration order, so registering the discarded
+  leaves first makes the bindings drop first — in reverse binding order — and the discarded
+  leaves after them, matching the oracle. Verified against three shapes, including a three-field
+  `(a, _, c)` whose expected order (`c`, `a`, then the wildcard) distinguishes this rule from
+  both plain reverse-field and plain declaration order.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2307,7 +2349,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 76 numbered deviations total (DEV-002 through DEV-078, DEV-001/DEV-003 retired).
+Current count: 78 numbered deviations total (DEV-002 through DEV-080, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2379,7 +2421,9 @@ remains open as a clean `Unsupported`, not as a deviation. DEV-077 (the same fam
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)
 was closed by the WP-C4.7 DEV-075 increment under an owner specification decision, which also
-added `PRIM-TRAIT-001` to the normative spec. DEV-070 was closed by
+added `PRIM-TRAIT-001` to the normative spec. **DEV-079 and DEV-080** were found and closed by
+WP-C4.7-8.3 — a verifier false-positive that rejected every multi-droppable-field enum variant,
+and the arm-end drop-order divergence it had been masking. DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);

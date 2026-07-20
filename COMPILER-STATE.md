@@ -1,10 +1,23 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-8.2 — **droppable `Iterator` Item lowers; one MIR residual left**
+Updated: 2026-07-20 after WP-C4.7-8.3a — **two hidden defects in the FLAT match path found and fixed**
 
 ## Position
-Gate: C4  Next: **C4.7-8.3** (droppable scrutinee + nested patterns — the last MIR residual and
-the hardest piece), then **C4.7-9** (fresh audit + exit report). 8.4/8.5 were reclassified
-front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
+Gate: C4  Next: **C4.7-8.3b** (droppable scrutinee + NESTED patterns — the last MIR residual),
+then **C4.7-9** (fresh audit + exit report). 8.4/8.5 were reclassified front-end-first by C4.7-2;
+8.6 (mutable slices) is an owner decision.
+**WP-C4.7-8.3a DONE 2026-07-20 — DEV-079 + DEV-080, both found while pinning oracle behaviour for
+8.3 and both in the FLAT match path that A2/C4.5d had signed off.**
+*DEV-079:* V-MOVE-1 collapsed every non-`Field` projection to the whole local, so moving a second
+payload field out of an enum local read as a second move of the same place. **Every enum variant
+with two or more droppable payload fields produced MIR that lowering accepted and verification
+rejected** (MIR-0007) — an internal inconsistency between two components meant to be independent
+readings of one contract, and strictly worse than a clean `Unsupported`. `VariantField(v, i)` now
+contributes two path components, so siblings are distinguishable; `Deref`/`Index` still collapse.
+*DEV-080:* fixing that immediately exposed a drop-ORDER divergence it had been masking — with a
+mix of bound and wildcard payload fields, MIR used reverse-FIELD order while the oracle destroys
+all bound bindings first (reverse binding order) then the discarded leaves. `consume_variant_payload`
+now consumes unbound fields first and bound second, so reverse-registration yields the oracle's
+order. Workspace 789/0/2.
 **WP-C4.7-8.2 DONE 2026-07-20.** A user `Iterator` with a droppable `Item` now lowers: each
 yielded value is destroyed at the END OF ITS OWN ITERATION, not accumulated to loop exit —
 pinned against the oracle before any lowering was written. `break` destroys the current
@@ -2537,3 +2550,47 @@ per-iteration scope is easiest to get wrong). The pre-existing `String`-Item pro
 FOLLOW-UP: none.
 NEXT: C4.7-8.3 — droppable scrutinee + nested patterns, the last MIR residual and the hardest
 piece in the plan.
+
+### WP-C4.7-8.3a — DEV-079 + DEV-080: two hidden defects in the flat match path — 2026-07-20
+DONE: both CLOSED. Neither was in the plan. Both were found by pinning oracle drop behaviour
+before writing 8.3's lowering — the §0.6 discipline paying for itself — and both sit in the FLAT
+enum-match path that WP-C4.6 A2 ("general pattern engine") and C4.5d (match-drop elaboration) had
+already signed off.
+**DEV-079 — the verifier rejected valid MIR.** V-MOVE-1 keyed moved places as `(local, pure-Field
+path)` and collapsed ANY non-`Field` projection to the whole local. `VariantField` is such a
+projection, so moving two different payload fields out of one enum local looked like two moves of
+the same whole place, and the second was reported `MIR-0007 move from possibly-moved place _N[]`.
+Consequence: **every enum variant with two or more droppable payload fields** — with or without a
+wildcard, user-`Drop` or `String` — produced MIR that **lowering accepted and verification
+rejected**. That is worse than a clean `Unsupported`: the two components are supposed to be
+independent readings of the same contract, and here they disagreed silently until someone wrote
+the program. Fix: `moved_key` gives `VariantField(v, i)` two path components (variant, then
+field), making siblings distinguishable. No collision with struct `Field` paths is possible — a
+local has exactly one type, so its projections are either struct/tuple fields or variant fields.
+`Deref`/`Index` still collapse to the whole local: conservative and correct, since neither denotes
+a statically-known disjoint sub-place.
+**DEV-080 — the drop order the verifier bug had been hiding.** With the verifier fixed, such
+programs ran for the first time and immediately disagreed with the oracle. For a payload mixing
+bound and wildcard fields, MIR destroyed leaves in plain reverse-FIELD order; the oracle destroys
+**all bound bindings first, in reverse binding order, then the discarded leaves**. Fix:
+`consume_variant_payload` consumes unbound fields FIRST and bound fields second — arm-end drops
+run in reverse registration order, so registering the discarded leaves first makes the bindings
+drop first and the discards after, which is the oracle's order.
+WHY THIS PAIR IS WORTH NOTING: the second defect was strictly unobservable while the first
+existed, because no such program could verify. A conservative rejection is not a safe place to
+stop — it can hide a real semantic divergence behind itself indefinitely, and the corpus will
+look green the whole time.
+FILES: starkc/src/mir/verify.rs (`moved_key` + the honest-limitations note),
+starkc/src/mir/lower.rs (`consume_variant_payload`), starkc/tests/mir_differential.rs (+2 tests,
+4 programs), KNOWN-DEVIATIONS.md (DEV-079/080; count 76 → 78), COMPILER-STATE.md, WP-C4.7.md.
+RULES: V-MOVE-1 (refined, not weakened); DROP-ORDER-001 / PAT-DROP-001. No spec, MIR-shape, or
+runtime-surface change.
+DECISIONS: none at CE level.
+EVIDENCE: `enum_variant_with_two_droppable_fields_agrees` (user-`Drop` and `String` payload
+forms) and `variant_payload_drop_order_with_wildcards_agrees`. The three-field `(a, _, c)` case is
+the discriminating one: its expected order — `c`, `a`, then the wildcard — matches neither plain
+reverse-field order nor declaration order, so it pins the actual rule instead of a coincidence.
+Workspace 789 passed / 0 failed / 2 ignored (+2); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: none for these two.
+NEXT: C4.7-8.3b — the original 8.3 target, a droppable scrutinee under NESTED patterns
+(`Some((s, n))`), still a clean `Unsupported` ("A2 residual").

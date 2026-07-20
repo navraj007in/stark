@@ -2443,3 +2443,86 @@ fn droppable_iterator_item_break_and_continue_agree() {
         ),
     );
 }
+
+/// DEV-079 (WP-C4.7-8.3): an enum variant with TWO OR MORE droppable payload fields. V-MOVE-1's
+/// move dataflow collapsed every non-`Field` projection to the whole local, so moving the second
+/// payload field looked like a second move of the same place: lowering accepted the program and
+/// verification rejected it with MIR-0007. That is an internal inconsistency between two
+/// components meant to be independent readings of the same contract — strictly worse than a clean
+/// `Unsupported` — and it applied to EVERY multi-droppable-field variant, wildcard or not.
+///
+/// No corpus case had a variant carrying two droppable fields, which is why A2's "general pattern
+/// engine" and C4.5d's match-drop elaboration both signed off over it.
+#[test]
+fn enum_variant_with_two_droppable_fields_agrees() {
+    differential(
+        "two_drop_fields.stark",
+        "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         enum Two { Pair(Tag, Tag), Empty } \
+         fn main() { \
+             let v = Two::Pair(Tag { id: 1 }, Tag { id: 2 }); \
+             match v { \
+                 Two::Pair(a, b) => { println(a.id); println(b.id); } \
+                 Two::Empty => { println(0); } \
+             } \
+         }"
+        .to_string(),
+    );
+    // The runtime-type payload form: no user destructor to print, but still two droppable fields
+    // moved out of one local.
+    differential(
+        "two_drop_strings.stark",
+        "enum Two { Pair(String, String), Empty } \
+         fn main() { \
+             let v = Two::Pair(String::from(\"x\"), String::from(\"y\")); \
+             match v { \
+                 Two::Pair(a, b) => { println(a); println(b); } \
+                 Two::Empty => { println(0); } \
+             } \
+         }"
+        .to_string(),
+    );
+}
+
+/// DEV-080 (WP-C4.7-8.3): arm-end drop ORDER when some payload fields are bound and others are
+/// discarded. The oracle destroys all BOUND bindings first, in reverse binding order, and the
+/// discarded leaves after them. MIR used plain reverse-FIELD order.
+///
+/// The three-field `(a, _, c)` case is the discriminating one: the expected order is `c`, `a`,
+/// then the wildcard leaf — matching neither plain reverse-field order (`c`, wildcard, `a`) nor
+/// declaration order, so it pins the actual rule rather than a coincidence. This divergence was
+/// unobservable until DEV-079 was fixed, because such programs could not verify at all.
+#[test]
+fn variant_payload_drop_order_with_wildcards_agrees() {
+    let decl = "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } ";
+    differential(
+        "drop_order_wild.stark",
+        format!(
+            "{decl} enum Two {{ Pair(Tag, Tag), Empty }} \
+             fn main() {{ \
+                 let v = Two::Pair(Tag {{ id: 1 }}, Tag {{ id: 2 }}); \
+                 match v {{ \
+                     Two::Pair(a, _) => {{ println(900); println(a.id); }} \
+                     Two::Empty => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    differential(
+        "drop_order_wild3.stark",
+        format!(
+            "{decl} enum Three {{ Trip(Tag, Tag, Tag), Empty }} \
+             fn main() {{ \
+                 let v = Three::Trip(Tag {{ id: 1 }}, Tag {{ id: 2 }}, Tag {{ id: 3 }}); \
+                 match v {{ \
+                     Three::Trip(a, _, c) => {{ println(900); println(a.id); println(c.id); }} \
+                     Three::Empty => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+}
