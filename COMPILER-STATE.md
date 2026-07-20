@@ -1,15 +1,16 @@
 # STARK Compiler STATE
-Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5-ENTRY.md APPROVED (CD-042).** The
-owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both
-engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all
-validation green. The Gate C5 entry plan (`STARKLANG/docs/compiler/work-packages/
-WP-C5-ENTRY.md`) is now approved at its recommended §19 choices; WP-C5.1 (runtime ABI and layout
-design) is cleared to begin.
+Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5-ENTRY.md APPROVED (CD-042), WP-C5.1a
+CLOSED (CD-043).** The owner's DEV-089 close-out directive was executed: user `Display` dispatch
+implemented in both engines, non-`Copy` array iteration and cross-file `const` use rejected in the
+front end, all validation green. The Gate C5 entry plan is approved at its recommended §19 choices;
+WP-C5.1a (representation decision) is closed — exact `MirTy` matrix enumerated, host targets pinned
+to both `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu`. Next: WP-C5.1b (backend/runtime
+skeleton).
 
 ## Position
-Gate: **C5 (native compilation) — OPEN, entry plan APPROVED (CD-042).** Gate **C4 CLOSED
-2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved rather than
-deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
+Gate: **C5 (native compilation) — OPEN, entry plan APPROVED (CD-042), WP-C5.1a CLOSED (CD-043).**
+Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved
+rather than deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
 implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
 1.2.0; the second (this one) resolved DEV-089 and the two residual over-rejections. Final
 validation: workspace tests green, `cargo fmt` clean, `cargo clippy` clean on 1.93 and 1.97, corpus
@@ -1293,6 +1294,27 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   (§4), record its green HIR/MIR baseline snapshot, and record the first host target and Rust
   toolchain versions — these are execution-time deliverables of WP-C5.1a/b, not additional
   approval gates.
+
+- CD-043 [2026-07-21, WP-C5.1a, owner decision] **C5.1a representation decision closed: exact
+  `MirTy` matrix enumerated, host target for the first native proof pinned to BOTH
+  `aarch64-apple-darwin` (primary/local) and `x86_64-unknown-linux-gnu` (secondary/CI), not a
+  single target as the entry plan's default allowed.** Full record: `STARKLANG/docs/compiler/
+  work-packages/WP-C5.1.md`. The `MirTy` matrix (enumerated against `starkc/src/mir/mod.rs` and
+  `starkc/src/hir.rs::CoreType`) marks IN: all integer/float/`Bool`/`Char`/`Unit`/`Never`/`Str`/
+  `String` primitives, `Struct`, user `Enum`, `Option`/`Result` (and structurally `Ordering`),
+  `Tuple`, `Array`, narrow `Ref`, `FnPtr`; marks OUT by default: `Slice`, and every
+  `Core(CoreType::*)` payload except that `String`/`Option`/`Result`/`Ordering` never actually
+  route through `MirTy::Core` (they lower to `MirTy::String`/`MirTy::Enum` directly) — so the real
+  OUT set is `Vec`, `Box`, `HashMap`/`HashSet`, `Range`/`RangeInclusive`, all iterator `CoreType`s,
+  `Random`, `IOError`/`File`. **Scope consequence recorded for C5.4d:** the frozen reference
+  workspace's required "a loop" (§4.1) must be a `while`/array loop, not a `for x in a..b` range
+  loop or Vec/HashMap iteration, since every range/iterator `CoreType` is OUT unless a minimal path
+  is separately approved first. Owner chose the dual-target option over a single first-proof
+  target specifically to avoid a later cross-platform retrofit, matching the project's existing
+  dual-toolchain-version validation habit (1.93/1.97). Non-`Copy` storage, move/Drop invariants,
+  enum/`Option`/`Result` representation, function-pointer representation, and the layout-query rule
+  are all confirmed against the already-approved §6–10 (CD-042) with no changes. WP-C5.1a CLOSED;
+  next is WP-C5.1b (backend/runtime skeleton).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
