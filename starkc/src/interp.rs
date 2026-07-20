@@ -76,7 +76,16 @@ pub fn check_constants(hir: &Hir, file: Arc<SourceFile>, tables: &TypeTables) ->
             );
             continue;
         }
-        if let Err(error) = interpreter.eval_const_item(item_id) {
+        // DEV-088 (WP-C4.7 corpus): evaluate the initializer against the file that DECLARES the
+        // constant. The diagnostic already carried `item_file`, but evaluation ran with the
+        // interpreter still pointed at the ENTRY file, so a cross-file `const`'s literal was
+        // read from the wrong text — `pub const N: Int32 = 31415;` in a dependency failed
+        // "invalid literal". Same per-item file discipline as DEV-069's three body funnels;
+        // constants were a fourth site that closure missed because no corpus case had one.
+        let restore = std::mem::replace(&mut interpreter.file, item_file.clone());
+        let outcome = interpreter.eval_const_item(item_id);
+        interpreter.file = restore;
+        if let Err(error) = outcome {
             diagnostics.push(
                 Diagnostic::error(
                     format!("constant evaluation failed: {}", error.message),

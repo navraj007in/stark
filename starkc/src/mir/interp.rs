@@ -398,6 +398,8 @@ impl<'a> Interp<'a> {
                 (Projection::Deref, MirTy::Ref { inner, .. }) => *inner,
                 (Projection::Index(_), MirTy::Array(elem, _))
                 | (Projection::Index(_), MirTy::Slice(elem)) => *elem,
+                // A5 (CD-038): statically known array element; the verifier proved the bound.
+                (Projection::ConstIndex(_), MirTy::Array(elem, _)) => *elem,
                 (proj, ty) => {
                     return self.internal(format!("place typing: {proj:?} on {ty:?}"));
                 }
@@ -610,6 +612,8 @@ impl<'a> Interp<'a> {
             match projection {
                 Projection::Field(i) => path.push(ConcreteProj::Field(*i)),
                 Projection::VariantField(v, i) => path.push(ConcreteProj::Variant(*v, *i)),
+                // A5 (CD-038): the index is already known; the verifier proved it in range.
+                Projection::ConstIndex(i) => path.push(ConcreteProj::Index(*i as usize)),
                 Projection::Index(proof) => {
                     let proof_value = self
                         .frames

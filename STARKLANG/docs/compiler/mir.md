@@ -14,7 +14,38 @@ change requires a version bump" reading. Amendments approved under this policy t
 the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`), **A3**
 (bitwise/shift/exponentiation arithmetic — recorded in full below), and **A4**
 (`Rvalue::LayoutQuery`, type-preserving `size_of`/`align_of` — `mir-amendment-A4-layout.md`,
-CD-036). All are additive and remain MIR v0.1.
+CD-036), and **A5** (`Projection::ConstIndex` — recorded below, CD-038). All are additive and
+remain MIR v0.1.
+
+**A5 shape amendment (WP-C4.7 post-exit-report, CD-038, owner-approved under CE3).** Adds one
+projection form, `ConstIndex(u64)`.
+
+Contract: valid **only** on `Array<T, N>`; the verifier checks `index < N` **itself**, which is
+the entire justification for the form carrying no proof; it requires no `CheckIndex` terminator
+and no `IndexProof` local; it is **invalid on `Vec` and slice types**, whose lengths are not
+statically known (MIR-0010 either way — out of bounds, or wrong container). Dynamic source
+indexing (`a[i]` for a runtime `i`) continues to use `CheckIndex` + `Index`, unchanged.
+
+**Why it exists.** A proof-backed `Index` cannot name a statically-known sub-place: the proof's
+value is a runtime local, so move analysis must treat the whole array as a single unit. Moving one
+element out therefore poisoned every sibling, which made consuming array patterns
+(`match a { Some([x, _]) => … }` over droppable elements) unrepresentable — lowering could emit
+them but verification rejected them. `ConstIndex` participates **precisely** in move analysis, so
+sibling elements move independently.
+
+**Typed internal paths (required by the same decision).** Move-dataflow paths and drop-unit paths
+are no longer raw `u32` sequences. Both now use typed components — struct/tuple field, variant
+field, constant array index — so distinct projection kinds cannot compare equal. The flat encoding
+was safe only by an argument about types (a local has one type, so its projections are all one
+kind); adding a third kind to the same space made that argument too thin to rest a move analysis
+on. Fixed-length arrays additionally decompose into **per-element drop units**, without which
+moving one element out and then dropping the array would destroy the moved-out element twice.
+
+**Known boundary, deliberately not closed by A5:** by-value iteration over an array with a
+non-`Copy` element type. The loop index is a runtime counter, so no `ConstIndex` names the element
+being consumed and V-MOVE-1 has nothing precise to track; reading by copy instead would be
+unsound (the array would still own and re-destroy the element). It is refused cleanly. Closing it
+needs loop unrolling or runtime-indexed drop flags — a separate design question.
 
 **A4 shape amendment (WP-C4.7-3, CD-036, approved 2026-07-20).** Adds one pure rvalue,
 `LayoutQuery { kind: SizeOf | AlignOf, ty: MirTy }`, destination always `UInt64`. It replaces
@@ -237,6 +268,8 @@ Place    ::= Local . Projection*
 Projection ::= Field(u32)              -- struct/tuple field by index (declaration order)
              | VariantField(v, u32)    -- enum payload field, only after a discriminant test
              | Deref                   -- through Ref
+             | ConstIndex(u64)         -- A5: statically known Array element; no proof needed,
+                                       --   verifier checks index < N; invalid on Vec/slice
              | Index(ProofLocal)       -- element of Array/Slice, consuming an index-proof
                                        --   token produced by a CheckIndex terminator (§6);
                                        --   ordinary integer locals are NOT accepted here

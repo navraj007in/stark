@@ -1506,3 +1506,69 @@ fn rejects_box_new_with_mismatched_dest() {
     );
     expect_code(&program_with(vec![b]), "MIR-0005");
 }
+
+#[test]
+fn rejects_const_index_out_of_bounds() {
+    // A5 (CD-038): the verifier bounds-checks `ConstIndex` against the array's compile-time
+    // length itself — that check is the entire justification for the form carrying no proof.
+    let arr = MirTy::Array(Box::new(MirTy::Int32), 3);
+    let b = body(
+        vec![ret_local(), local(arr), local(MirTy::Int32)],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(2)),
+                Rvalue::Use(Operand::Copy(Place {
+                    local: LocalId(1),
+                    projection: vec![Projection::ConstIndex(3)],
+                })),
+            )],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0010");
+}
+
+#[test]
+fn rejects_const_index_on_non_array() {
+    // Valid only on a fixed-length `Array`. A `Vec` (and likewise a slice) has no statically
+    // known length, so there is nothing the verifier could check the index against — accepting
+    // it would be exactly the unchecked access the proof discipline exists to prevent.
+    let vec_ty = MirTy::Core(starkc::hir::CoreType::Vec, vec![MirTy::Int32]);
+    let b = body(
+        vec![ret_local(), local(vec_ty), local(MirTy::Int32)],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(2)),
+                Rvalue::Use(Operand::Copy(Place {
+                    local: LocalId(1),
+                    projection: vec![Projection::ConstIndex(0)],
+                })),
+            )],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0010");
+}
+
+#[test]
+fn accepts_const_index_within_bounds() {
+    // The complement: a valid constant index needs no `CheckIndex` and no `IndexProof` local.
+    let arr = MirTy::Array(Box::new(MirTy::Int32), 3);
+    let b = body(
+        vec![ret_local(), local(arr), local(MirTy::Int32)],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(2)),
+                Rvalue::Use(Operand::Copy(Place {
+                    local: LocalId(1),
+                    projection: vec![Projection::ConstIndex(2)],
+                })),
+            )],
+            Terminator::Return,
+        )],
+    );
+    assert!(
+        verify_program(&program_with(vec![b])).is_ok(),
+        "an in-bounds ConstIndex on a fixed-length array must verify cleanly"
+    );
+}

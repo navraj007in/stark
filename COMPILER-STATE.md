@@ -1,8 +1,25 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-9 — **WP-C4.7 complete; exit report written; corpus at 1.1.0; gate decision with the owner**
+Updated: 2026-07-20 after the WP-C4.7 close-out — **DEV-086 implemented, DEV-083 deferred, surface ratified, corpus 1.2.0 — but the bounded validation surfaced DEV-089, so C4 is NOT closed**
 
 ## Position
-Gate: C4  **WP-C4.7 IS COMPLETE. The C4 exit report is written and awaiting the owner's decision.**
+Gate: C4  **NOT CLOSED — see below.** The owner's close-out directive (CD-038/039/040) was executed
+in full: **DEV-086 implemented** (`Projection::ConstIndex`, MIR amendment A5, plus the typed
+move/drop paths the same decision required), **DEV-083 explicitly deferred** to
+`WP-C6.x Method Resolution Completion`, **runtime-surface revs 11/12 ratified**, and the **corpus
+refreshed to 1.2.0** with the six specified workloads. Bounded validation: **802/0/2**, fmt clean,
+clippy clean on 1.93 and 1.97, corpus and frozen-corpus differential green.
+**The gate is NOT closed, because that same bounded pass surfaced a new ENGINE DIVERGENCE —
+`DEV-089`** — and §6 of the directive says to stop and report on exactly that rather than proceed.
+`println(p)` where `P` HAS a `Display` impl: the checker accepts, the HIR oracle runs it but prints
+its own debug form (`{x: 1}`) **ignoring the user's `Display::fmt`**, and MIR refuses to lower it.
+Two problems in one: an engine divergence, and an oracle-correctness question about whether `println`
+should dispatch to `Display::fmt` at all. Neither a soundness defect nor invalid MIR — nothing
+mislowers, MIR refuses cleanly — but it is a divergence, and it only became visible because
+DEV-084 narrowed the checker so that "type with an impl" stopped being indistinguishable from
+"type without one". **The stopping rule's third clause ("no known … engine divergence remains") is
+not currently satisfied.** Owner decision needed on DEV-089 before closure.
+(Previously: **WP-C4.7 IS COMPLETE. The C4 exit report is written and awaiting the owner's
+decision.**)
 **Frozen corpus grown to `corpus_version` 1.1.0 (CD-037, owner-directed, ADDITIVE)** — five new
 cases covering every construct the Class-A campaign and WP-C4.7 added; 22 cases, all agreeing
 across both engines. Writing them found and closed **DEV-087** (the oracle treated a slice
@@ -1118,6 +1135,55 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   ratification of the record, not approval of new code — the code shipped in WP-C4.6 A5.**
   Consequence if ratified: WP-C4.7-3's layout amendment is **A4** (`mir-amendment-A4-layout.md`),
   renumbered from the plan's "A3" to avoid a collision.
+
+- CD-038 [2026-07-20, CE3 — owner-approved MIR Amendment A5] **`Projection::ConstIndex(u64)`.**
+  A statically known array element: valid only on `Array<T, N>`, the verifier checks `index < N`
+  itself, no `CheckIndex` terminator and no `IndexProof` local, invalid on `Vec`/slice, dynamic
+  indexing unchanged. It participates PRECISELY in move analysis, which is the point — a
+  proof-backed `Index` names no statically-known sub-place, so moving one element out poisoned
+  every sibling and made consuming array patterns over droppable elements unrepresentable
+  (lowering emitted them; verification rejected them). The same decision required **typed internal
+  paths**: move-dataflow and drop-unit paths are now typed components (field / variant field /
+  constant index) rather than raw `u32` sequences, so distinct projection kinds cannot compare
+  equal, and fixed-length arrays decompose into PER-ELEMENT drop units. Additive; `MIR_VERSION`
+  stays `0.1`; runtime surface untouched (`0.1-A8`). Recorded in `mir.md` as amendment A5.
+  **Narrowed, not closed:** by-value iteration over a non-`Copy` array element — the loop index is
+  a runtime counter, so no `ConstIndex` names the consumed element; reading by copy would be
+  unsound (double free of a `String` in a real backend), so it is refused cleanly. Closing that
+  needs unrolling or runtime-indexed drop flags, a separate design question.
+
+- CD-039 [2026-07-20, WP-C4.7 post-exit-report, owner-directed] **Corpus 1.1.0 → 1.2.0**, completing
+  the compact refresh to the six workloads §4 of the owner's directive specified. Adds a
+  **multi-file** case (cross-file structs, methods, trait default + override, a cross-file `Drop`,
+  and source provenance; its `helper.stark` is a corpus FILE but not a CASE, having no `main`) and
+  folds DEV-086's consuming array pattern into the array/slice case. Lock regenerated (58 → 61
+  files), base commit updated, and the version assertion in `exec_snapshots.rs` updated in the same
+  change. A bump rather than an amendment of 1.1.0 because the array case's bytes changed, which
+  the freeze rules treat as a corpus change. **All 48 hashes from 1.0.0 remain byte-identical**, so
+  the original baseline survives inside 1.2.0. Writing the multi-file case found **DEV-088**
+  (cross-file `const` initializers evaluated against the entry file); the declaration-time half was
+  fixed, the use-site half recorded, and the case reduced to its subject per the owner's
+  scope-discipline instruction.
+
+- CD-040 [2026-07-20, owner decisions closing out WP-C4.7] Four dispositions.
+  **(a) Runtime-surface ratification, post hoc:** A1 rev. 11 (`BoxNew`/`BoxIntoInner`, `0.1-A7`)
+  and rev. 12 (exclusive slice views, `0.1-A8`) are ratified. Documentation and the active
+  constant agree (`MIR_RUNTIME_SURFACE = "0.1-A8"`), so no implementation change was requested or
+  made. **(b) DEV-083 deferred:** *"DEV-083 is deferred to a dedicated post-C5-front-end work
+  package. The eventual design must use candidate-local inference snapshots and
+  declaration-order-independent candidate evaluation. It must not mutate global inference state
+  while probing candidates."* Provisionally assigned to `WP-C6.x Method Resolution Completion`;
+  must stay visible in the ledger and in release/conformance reporting.
+  **(c) Gate interpretation amended:** C4 exit does not require correcting every recorded
+  front-end over-rejection before native-backend work. The stopping rule is: accepted programs
+  produce valid verified MIR; unsupported programs reject cleanly; no known mislowering, ownership
+  unsoundness or engine divergence remains; MIR contains the concepts C5 needs; the required
+  C5/Core baseline lowers; and remaining narrow front-end over-rejections are documented and
+  scheduled. **Condition 3 does not silently waive condition 2** — DEV-083 is owner-approved as
+  outside the mandatory C5 lowering baseline because it is a front-end inference-completeness
+  issue with a workaround and no MIR/backend effect, and that is recorded as a scope decision
+  rather than an exemption. **(d) Scope discipline:** no further open-ended C4 audit; only the
+  bounded final validation.
 
 - CD-037 [2026-07-20, WP-C4.7-9, owner-directed] **Frozen execution corpus bumped 1.0.0 →
   1.1.0 — ADDITIVE ONLY.** Five new primary cases cover the constructs WP-C4.6's Class-A campaign
@@ -2941,3 +3007,50 @@ EVIDENCE CITED: workspace 798/0/2, 114 differential tests, frozen corpus green, 
 on 1.93 and 1.97.
 NEXT: **the owner's decision.** Report §6 is the decision table: DEV-086, DEV-083, post-hoc
 ratification of surface revs 11/12, frozen-corpus growth, and gate closure.
+
+### WP-C4.7 close-out — CD-038/039/040 executed; C4 NOT closed (DEV-089) — 2026-07-20
+DONE: the owner's close-out directive, in full, except the closure itself.
+**1. DEV-086 IMPLEMENTED (CD-038, CE3).** `Projection::ConstIndex(u64)` — statically known array
+element, valid only on `Array<T, N>`, verifier bounds-checks it directly, no `CheckIndex` and no
+`IndexProof`, invalid on `Vec`/slice, dynamic indexing unchanged. Consuming array patterns over
+droppable elements now lower and agree with the oracle including drop order. The same decision's
+**typed internal paths** were adopted: move-dataflow and drop-unit paths are typed components
+(field / variant field / constant index) instead of raw `u32` sequences, and fixed-length arrays
+decompose into per-element drop units — without which moving one element out and then dropping the
+array would destroy it twice. Recorded in `mir.md` as amendment A5.
+**NARROWED, not closed:** by-value iteration over a NON-`Copy` array element. The loop index is a
+runtime counter, so no `ConstIndex` names the consumed element and V-MOVE-1 has nothing precise to
+track. Reading by copy instead would be UNSOUND — the array still owns the element and destroys it
+again, a double free for a `String` in a real backend — so it is refused cleanly with that reason.
+Closing it needs unrolling or runtime-indexed drop flags: a separate design question, not an
+extension of A5. This is recorded rather than approximated, deliberately.
+**2. DEV-083 DEFERRED (CD-040b)** to `WP-C6.x Method Resolution Completion`, with the owner's
+disposition text recorded verbatim in the ledger (candidate-local inference snapshots;
+declaration-order-independent evaluation; no mutation of global inference state while probing).
+**3. RUNTIME SURFACE RATIFIED (CD-040a):** A1 revs 11 and 12 (`0.1-A7`, `0.1-A8`). Documentation
+and the active constant agree, so no implementation change was needed.
+**4. CORPUS 1.2.0 (CD-039).** Completes the compact refresh to the six specified workloads: adds a
+MULTI-FILE case (cross-file structs, methods, trait default + override, cross-file `Drop`,
+provenance) and folds DEV-086's array pattern into the array/slice case. A bump rather than an
+amendment of 1.1.0 because the array case's bytes changed. **All 48 hashes from 1.0.0 verified
+byte-identical**, so the original baseline survives inside 1.2.0.
+**5. GATE NOT CLOSED — DEV-089.** The bounded validation surfaced a new ENGINE DIVERGENCE, and §6
+of the directive says to stop and report on exactly that. `println(p)` where `P` HAS a `Display`
+impl: checker accepts, oracle runs it but prints its own debug form ignoring the user's
+`Display::fmt`, MIR refuses to lower it. Not a soundness defect and not invalid MIR — nothing
+mislowers — but the stopping rule's clause "no known … engine divergence remains" is not satisfied,
+so closing would require asserting something untrue. It surfaced only because DEV-084 narrowed the
+checker: before that, `println` accepted any type, so "has an impl" and "has no impl" were
+indistinguishable.
+ALSO FOUND AND PARTLY FIXED: **DEV-088** — cross-file `const` initializers were evaluated against
+the entry file (the fourth per-item-file site DEV-069 missed). Declaration-time evaluation fixed;
+the USE site remains open in both engines (a clean over-rejection). The multi-file corpus case was
+reduced to its subject rather than chasing it, per the scope-discipline instruction.
+BOUNDED VALIDATION: workspace **802 passed / 0 failed / 2 ignored**, exit 0; fmt clean; clippy
+clean on 1.93 and 1.97; corpus 1.2.0 lock integrity green; `entire_frozen_corpus_agrees` green over
+all 23 cases; DEV-076…086 regressions green; unsupported-site classification re-run (171 sites).
+FILES: starkc/src/mir/{mod,lower,verify,interp}.rs, starkc/src/interp.rs (DEV-088),
+starkc/tests/{mir_differential,mir_verify,exec_snapshots}.rs, the corpus (+3 files, 1 modified) and
+its lock, STARKLANG/docs/compiler/mir.md (amendment A5), KNOWN-DEVIATIONS.md (DEV-086 closed/
+narrowed, DEV-083 deferred, DEV-088/089 opened; count 85 → 87), COMPILER-STATE.md.
+NEXT: **owner decision on DEV-089**, then closure. Everything else in the directive is done.

@@ -109,15 +109,17 @@ fn corpus_lock_matches_frozen_snapshot() {
     // `corpus_version`, regenerate the lock, AND update this line, each with a dated note in
     // COMPILER-STATE.md — so no `UPDATE_SNAPSHOTS=1` run can quietly redefine the baseline.
     //
-    // 1.0.0 → 1.1.0 (WP-C4.7-9, 2026-07-20, CD-037): ADDITIVE growth only. Five new primary
-    // cases covering the constructs WP-C4.6's Class-A campaign and WP-C4.7 added — every one was
-    // exercised by the differential suite and by NO frozen case, so a later freeze would have
-    // locked in a corpus that never ran them. No pre-existing corpus file was modified: all 48
-    // hashes from 1.0.0 are unchanged in the new lock, so the 1.0.0 baseline survives
-    // byte-identically inside 1.1.0 and any comparison taken against it stays valid.
+    // 1.0.0 → 1.1.0 (WP-C4.7-9, 2026-07-20, CD-037): five cases for the Class-A / WP-C4.7
+    // constructs, every one of which the differential suite exercised and no frozen case did.
+    // 1.1.0 → 1.2.0 (post-exit-report, 2026-07-20, CD-039): completes the compact refresh to the
+    // six workloads the owner specified — a MULTI-FILE case (cross-file structs, methods, trait
+    // default + override, cross-file Drop, source provenance) and DEV-086's consuming array
+    // pattern folded into the array/slice case. All 48 hashes from 1.0.0 remain unchanged across
+    // both bumps, so the original baseline survives byte-identically and comparisons against it
+    // stay valid.
     assert_eq!(
         version.as_deref(),
-        Some("1.1.0"),
+        Some("1.2.0"),
         "corpus.lock corpus_version changed without updating this assertion (freeze governance)"
     );
 
@@ -194,6 +196,9 @@ const CASES: &[&str] = &[
     "struct_enum_trait__05_generic_methods_and_impl_heads",
     "primitive__04_bitwise_shift_pow_and_ordering",
     "option_result__03_box_and_layout_queries",
+    // Multi-file: the module's own file (`helper.stark`) is a corpus FILE but not a CASE — it has
+    // no `main`. The lock hashes it; only the entry appears here.
+    "multi_file__01_cross_file_execution_and_provenance",
 ];
 
 /// (base, transformed) pairs: each pair must render an *identical* execution snapshot. One pair

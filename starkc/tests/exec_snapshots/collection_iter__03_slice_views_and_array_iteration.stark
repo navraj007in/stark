@@ -1,3 +1,11 @@
+struct Tagged { id: Int32 }
+
+impl Drop for Tagged {
+    fn drop(&mut self) {
+        println(self.id);
+    }
+}
+
 fn total(values: &[Int32]) -> Int32 {
     let mut sum = 0;
     let mut index = 0;
@@ -41,6 +49,18 @@ fn main() {
         running = running + value;
     }
     println(running);
+
+    let tagged = Some([Tagged { id: 1 }, Tagged { id: 2 }, Tagged { id: 3 }]);
+    match tagged {
+        Some([first, _, third]) => {
+            println(first.id);
+            println(third.id);
+        }
+        None => {
+            println(0);
+        }
+    }
+    println(500);
 
     let mut collected: Vec<Int32> = Vec::new();
     collected.push(7);

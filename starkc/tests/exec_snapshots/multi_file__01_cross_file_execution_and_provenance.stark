@@ -1,0 +1,15 @@
+mod helper;
+
+fn main() {
+    let point = helper::make_point();
+    println(point.sum());
+    println(point.x);
+    println(helper::scaled(point.y, 3));
+
+    let loud = helper::make_loud(7);
+    println(loud.speak());
+
+    let quiet = helper::make_quiet(9);
+    println(quiet.speak());
+    println("end of main");
+}

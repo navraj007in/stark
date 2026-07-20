@@ -193,6 +193,17 @@ pub enum Projection {
     Deref,
     /// Element access consuming an index-proof token (never an ordinary integer local).
     Index(LocalId),
+    /// MIR amendment A5 (CD-038): a STATICALLY KNOWN array element. Valid only on
+    /// `Array<T, N>` with `index < N`, which the verifier checks directly — it needs no
+    /// `CheckIndex` and no `IndexProof`, and is invalid on `Vec` and slice types, whose lengths
+    /// are not statically known.
+    ///
+    /// It exists because a proof-backed `Index` cannot name a statically-known sub-place: a
+    /// dynamic proof forces move analysis to treat the whole array as one unit, so moving one
+    /// element out poisoned the rest. `ConstIndex` participates precisely in move analysis, which
+    /// is what makes consuming array patterns and by-value array iteration expressible.
+    /// Dynamic source indexing continues to use `CheckIndex` + `Index`.
+    ConstIndex(u64),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -773,6 +784,9 @@ fn dump_place(place: &Place) -> String {
             Projection::Deref => text = format!("(*{text})"),
             Projection::Index(proof) => {
                 let _ = write!(text, "[proof _{}]", proof.0);
+            }
+            Projection::ConstIndex(i) => {
+                let _ = write!(text, "[{i}]");
             }
         }
     }

@@ -29,10 +29,11 @@
 //! ```
 //!
 //! Scope notes (v0.1, honest limitations — refinements, not silent gaps):
-//! - V-MOVE-1 (refined field-precise under C4.5d; VariantField-precise under WP-C4.7-8.3,
-//!   DEV-079): entries are (local, path) where a path component is a struct/tuple field index
-//!   or a variant-then-field pair; places with `Deref`/`Index` projections are conservatively
-//!   their whole local. Any-path
+//! - V-MOVE-1 (field-precise under C4.5d; VariantField-precise under DEV-079; ConstIndex-precise
+//!   under A5/DEV-086): entries are (local, path) where a path component is a TYPED
+//!   `MovePathStep` — struct/tuple field, variant-then-field, or a constant array index — so
+//!   distinct projection kinds cannot compare equal. Places with `Deref` or the proof-backed
+//!   `Index` are their whole local, because neither names a statically-known sub-place. Any-path
 //!   (union) joins to a fixpoint. A read conflicts with a moved entry when the paths are
 //!   prefix-related either way; assignment reinitializes the subtree it covers. `Drop` of a
 //!   possibly-moved place is NOT an error: flag-guarded conditional drops (contract §8) are
@@ -270,6 +271,31 @@ impl<'a> BodyCx<'a> {
                     return None;
                 }
                 (Projection::Deref, MirTy::Ref { inner, .. }) => *inner,
+                // A5 (CD-038): a statically known array element. The verifier checks the bound
+                // itself — that is the entire justification for the form carrying no proof.
+                // Deliberately NOT accepted on `Slice` or `Vec`: their lengths are not statically
+                // known, so nothing here could check the index.
+                (Projection::ConstIndex(i), MirTy::Array(elem, len)) => {
+                    if *i >= len {
+                        self.err(
+                            "MIR-0010",
+                            bi,
+                            format!("ConstIndex {i} out of bounds for Array<_, {len}>"),
+                        );
+                        return None;
+                    }
+                    *elem
+                }
+                (Projection::ConstIndex(_), other) => {
+                    self.err(
+                        "MIR-0010",
+                        bi,
+                        format!(
+                            "ConstIndex projection on {other:?}; valid only on a fixed-length Array"
+                        ),
+                    );
+                    return None;
+                }
                 (Projection::Index(proof), MirTy::Array(elem, _))
                 | (Projection::Index(proof), MirTy::Slice(elem)) => {
                     match self.body.locals.get(proof.0 as usize) {
@@ -882,7 +908,8 @@ impl<'a> BodyCx<'a> {
     fn verify_moves(&mut self) {
         let block_count = self.body.blocks.len();
         // moved_in[b]: set of places possibly moved on entry to b.
-        let mut moved_in: Vec<BTreeSet<(u32, Vec<u32>)>> = vec![BTreeSet::new(); block_count];
+        let mut moved_in: Vec<BTreeSet<(u32, Vec<MovePathStep>)>> =
+            vec![BTreeSet::new(); block_count];
         let mut work: VecDeque<usize> = VecDeque::new();
         work.push_back(self.body.entry.0 as usize);
         let mut visited = vec![false; block_count];
@@ -920,9 +947,9 @@ impl<'a> BodyCx<'a> {
     fn flow_block(
         &mut self,
         bi: u32,
-        mut moved: BTreeSet<(u32, Vec<u32>)>,
+        mut moved: BTreeSet<(u32, Vec<MovePathStep>)>,
         report: bool,
-    ) -> (BTreeSet<(u32, Vec<u32>)>, Vec<BlockId>) {
+    ) -> (BTreeSet<(u32, Vec<MovePathStep>)>, Vec<BlockId>) {
         // Collect the reads/writes/moves per statement in order.
         let block = self.body.blocks[bi as usize].clone();
         for (stmt, _) in &block.statements {
@@ -990,7 +1017,7 @@ impl<'a> BodyCx<'a> {
     fn flow_read(
         &mut self,
         place: &Place,
-        moved: &BTreeSet<(u32, Vec<u32>)>,
+        moved: &BTreeSet<(u32, Vec<MovePathStep>)>,
         bi: u32,
         report: bool,
         what: &str,
@@ -1016,7 +1043,7 @@ impl<'a> BodyCx<'a> {
     fn flow_reinit(
         &mut self,
         place: &Place,
-        moved: &mut BTreeSet<(u32, Vec<u32>)>,
+        moved: &mut BTreeSet<(u32, Vec<MovePathStep>)>,
         bi: u32,
         report: bool,
     ) {
@@ -1041,7 +1068,7 @@ impl<'a> BodyCx<'a> {
     fn flow_rvalue(
         &mut self,
         rvalue: &Rvalue,
-        moved: &mut BTreeSet<(u32, Vec<u32>)>,
+        moved: &mut BTreeSet<(u32, Vec<MovePathStep>)>,
         bi: u32,
         report: bool,
     ) {
@@ -1068,7 +1095,7 @@ impl<'a> BodyCx<'a> {
     fn flow_operand(
         &mut self,
         op: &Operand,
-        moved: &mut BTreeSet<(u32, Vec<u32>)>,
+        moved: &mut BTreeSet<(u32, Vec<MovePathStep>)>,
         bi: u32,
         report: bool,
     ) {
@@ -1939,35 +1966,50 @@ fn is_numeric(ty: &MirTy) -> bool {
 /// knowledge; primitives/fn-values/refs never need dropping.)
 /// Dataflow key of a place: its pure-Field path, or the whole local (path `[]`) when any
 /// non-Field projection is involved (conservative).
-/// The move-dataflow key for a place: its local plus a field-precise path.
+/// A single step of a move-dataflow path (A5 / CD-038).
 ///
-/// `VariantField(v, i)` contributes TWO components — the variant then the field — so that
-/// `_6.v0.0` and `_6.v0.1` are distinguishable siblings rather than collapsing to the whole
-/// local (DEV-079). Collapsing them made every enum variant with two or more droppable payload
-/// fields fail V-MOVE-1: the second field's move was reported as a move from the
-/// already-moved whole local, so `match v { Two::Pair(a, b) => … }` on droppable payloads
-/// produced MIR that lowering accepted and verification rejected.
+/// TYPED rather than a raw integer, deliberately. The earlier encoding flattened everything into
+/// `Vec<u32>`, which meant distinct projection kinds could in principle produce the same integer
+/// sequence — `VariantField(0, 1)` and a struct path `.0.1`, say. Nothing exploited that
+/// (a local has exactly one type, so its projections are all one kind), but adding constant array
+/// indices made a third kind share the space, and "provably safe today by an argument about
+/// types" is a poor foundation for an analysis this load-bearing. Distinct kinds now cannot
+/// compare equal, by construction.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum MovePathStep {
+    /// Struct/tuple field by declaration index.
+    Field(u32),
+    /// Enum variant payload field: variant, then field index.
+    VariantField(u32, u32),
+    /// A statically known array element (`Projection::ConstIndex`).
+    ConstIndex(u64),
+}
+
+/// The move-dataflow key for a place: its local plus a precise path.
 ///
-/// This cannot collide with a struct's `Field` path: a local has exactly one type, so its
-/// projections are either struct/tuple `Field`s or enum `VariantField`s, never both.
-/// `Deref` and `Index` still collapse to the whole local — conservative and correct, since
-/// neither denotes a statically-known disjoint sub-place.
-fn moved_key(place: &Place) -> (u32, Vec<u32>) {
+/// Sub-place precision is what lets sibling components move independently. `VariantField`
+/// distinguishes `_6.v0.0` from `_6.v0.1` (DEV-079 — collapsing them made every enum variant with
+/// two or more droppable payload fields fail V-MOVE-1, producing MIR that lowering accepted and
+/// verification rejected). `ConstIndex` does the same for array elements (DEV-086), which is what
+/// makes consuming array patterns and by-value array iteration expressible at all.
+///
+/// `Deref` and the proof-backed `Index` still collapse to the whole local. That is not
+/// conservatism to be removed later: neither denotes a statically-known sub-place — a dynamic
+/// proof's value is not known here — so there is nothing precise to say about them.
+fn moved_key(place: &Place) -> (u32, Vec<MovePathStep>) {
     let mut path = Vec::new();
     for proj in &place.projection {
         match proj {
-            Projection::Field(i) => path.push(*i),
-            Projection::VariantField(v, i) => {
-                path.push(*v);
-                path.push(*i);
-            }
-            _ => return (place.local.0, Vec::new()),
+            Projection::Field(i) => path.push(MovePathStep::Field(*i)),
+            Projection::VariantField(v, i) => path.push(MovePathStep::VariantField(*v, *i)),
+            Projection::ConstIndex(i) => path.push(MovePathStep::ConstIndex(*i)),
+            Projection::Deref | Projection::Index(_) => return (place.local.0, Vec::new()),
         }
     }
     (place.local.0, path)
 }
 
-fn paths_prefix_related(a: &[u32], b: &[u32]) -> bool {
+fn paths_prefix_related(a: &[MovePathStep], b: &[MovePathStep]) -> bool {
     let n = a.len().min(b.len());
     a[..n] == b[..n]
 }

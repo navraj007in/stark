@@ -1219,6 +1219,7 @@ fn entire_frozen_corpus_agrees() {
         "expr_stmt__04_match_and_patterns",
         "option_result__01_option_construction_and_match",
         "option_result__02_result_and_try_propagation",
+        "multi_file__01_cross_file_execution_and_provenance",
         "option_result__03_box_and_layout_queries",
         "ownership_drop__01_move_and_drop_order",
         "ownership_drop__02_shared_borrow_does_not_move",
@@ -2886,6 +2887,72 @@ fn trait_default_method_own_generics_agree() {
              let d = D { n: 1 }; \
              println(d.say(5)); \
              println(d.say(true)); \
+         }"
+        .to_string(),
+    );
+}
+
+/// DEV-086 / MIR amendment A5 (CD-038): consuming array patterns with DROPPABLE elements, which
+/// `Projection::ConstIndex` is what made expressible. A proof-backed `Index` cannot name a
+/// statically-known sub-place — a dynamic proof forces move analysis to treat the whole array as
+/// one unit — so moving one element out used to poison every sibling.
+///
+/// Drop ORDER is the assertion, and it follows the same rule established for variant payloads:
+/// bound bindings first in reverse binding order, then the discarded leaves.
+#[test]
+fn droppable_array_pattern_agrees() {
+    let decl = "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } ";
+    // One binding, one wildcard.
+    differential(
+        "array_pat_wild.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let arr = Some([Tag {{ id: 1 }}, Tag {{ id: 2 }}]); \
+                 match arr {{ \
+                     Some([a, _]) => {{ println(900); println(a.id); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    // Both bound: reverse binding order.
+    differential(
+        "array_pat_both.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let arr = Some([Tag {{ id: 1 }}, Tag {{ id: 2 }}]); \
+                 match arr {{ \
+                     Some([a, b]) => {{ println(a.id); println(b.id); }} \
+                     None => {{ println(0); }} \
+                 }} \
+             }}"
+        ),
+    );
+    // Three elements, middle discarded — distinguishes the rule from plain reverse-index order.
+    differential(
+        "array_pat_three.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let arr = Some([Tag {{ id: 1 }}, Tag {{ id: 2 }}, Tag {{ id: 3 }}]); \
+                 match arr {{ \
+                     Some([a, _, c]) => {{ println(900); println(a.id); println(c.id); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    // A runtime-type element (String): the drop path with no user destructor to print.
+    differential(
+        "array_pat_string.stark",
+        "fn main() { \
+             let arr = Some([String::from(\"x\"), String::from(\"y\")]); \
+             match arr { \
+                 Some([a, _]) => { println(a); } \
+                 None => { println(\"none\"); } \
+             } \
          }"
         .to_string(),
     );

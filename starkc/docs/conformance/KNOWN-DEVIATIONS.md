@@ -2366,8 +2366,17 @@ WP-C1.5)
   one candidate; a speculative-binding search needs its own design and evidence. Recorded rather
   than rushed.
 - **Impact:** over-rejection only; no invalid program is accepted, and both engines reject
-  identically (the checker refuses before either interpreter sees it). Owner: unassigned;
-  C4-exit-report input.
+  identically (the checker refuses before either interpreter sees it).
+- **DISPOSITION (owner decision, 2026-07-20):** *DEV-083 is deferred to a dedicated post-C5-front-end
+  work package. The eventual design must use candidate-local inference snapshots and
+  declaration-order-independent candidate evaluation. It must not mutate global inference state
+  while probing candidates.*
+- **Owner-approved as OUTSIDE the mandatory C5 lowering baseline**, because it is a front-end
+  inference-completeness issue with a workaround (annotate the receiver), no MIR or backend
+  effect, and no engine divergence. This does not waive exit condition 2 — it records an explicit
+  scope decision about what that condition requires.
+- **Assigned:** `WP-C6.x Method Resolution Completion` (provisional). Must remain visible in the
+  deviation ledger and in release/conformance reporting until closed.
 
 ## DEV-084 — `print`/`println` accepted any type, including one with no `Display` impl [CLOSED, WP-C4.7-9 audit, 2026-07-20]
 
@@ -2407,7 +2416,7 @@ WP-C1.5)
 - **Regression evidence:** `mir_differential.rs::for_over_array_agrees` (values and a running
   total; plus `break`/`continue` and a single-element array).
 
-## DEV-086 — Droppable elements in array patterns and by-value array iteration [OPEN, found WP-C4.7-9 audit, 2026-07-20]
+## DEV-086 — Droppable elements in array patterns and by-value array iteration [CLOSED (patterns) / narrowed (iteration), WP-C4.7 post-exit, 2026-07-20]
 
 - **What:** an array element place is reached through `Projection::Index(ProofLocal)`, and the
   only way to mint a proof is a `CheckIndex` terminator — which READS the array to validate the
@@ -2422,8 +2431,28 @@ WP-C1.5)
   (WP-C4.7 §0.5). The contract already anticipates the direction: §6 notes the proof discipline
   "covers fixed-length `Array` (verifier may validate against the compile-time length)", so a
   constant form is a natural extension rather than a new mechanism — but it is the owner's call.
-- **Impact:** over-rejection only; both engines are consistent (MIR refuses cleanly, nothing
-  mislowers). Owner: unassigned; C4-exit-report input.
+- **Resolution (CD-038, owner-approved under CE3).** `Projection::ConstIndex(u64)` — a statically
+  known array element, valid only on `Array<T, N>`, bounds-checked by the verifier itself, needing
+  no `CheckIndex` and no `IndexProof`, invalid on `Vec`/slice. It participates PRECISELY in move
+  analysis, so sibling elements move independently. Consuming array patterns over droppable
+  elements now lower and agree with the oracle, including drop order.
+- **Same decision required typed internal paths**, and they were adopted: move-dataflow paths and
+  drop-unit paths are no longer raw `u32` sequences but typed components (field / variant field /
+  constant index), so distinct projection kinds cannot compare equal. Fixed-length arrays also
+  decompose into PER-ELEMENT drop units — without that, moving one element out and then dropping
+  the array would destroy the moved-out element twice.
+- **NARROWED, not fully closed — by-value iteration over a non-`Copy` array element.** The loop
+  index is a runtime counter, so no `ConstIndex` names the element being consumed and V-MOVE-1 has
+  nothing precise to track. Reading by copy instead would be **unsound**: the array would still own
+  the element and destroy it again — a double free for a `String` in a real backend. It is refused
+  cleanly with that reason. Closing it needs loop unrolling (only sane for small `N`) or
+  runtime-indexed drop flags, which is a separate design question, not an extension of A5.
+  `Copy`-element array iteration is unaffected and lowers normally.
+- **Regression evidence:** `mir_differential.rs::droppable_array_pattern_agrees` (wildcard, both
+  bound, a discriminating three-element case, and a `String` element);
+  `mir_verify.rs::rejects_const_index_out_of_bounds`, `::rejects_const_index_on_non_array`,
+  `::accepts_const_index_within_bounds`; corpus case
+  `collection_iter__03_slice_views_and_array_iteration`.
 
 ## DEV-087 — HIR oracle treats a slice reference as non-`Copy`, so passing one consumes it [CLOSED, WP-C4.7-9 corpus, 2026-07-20]
 
@@ -2445,6 +2474,54 @@ WP-C1.5)
   (shared re-slicing, a slice passed to a function and reused afterwards, exclusive views written
   through, and array iteration), which runs in `exec_snapshots` and in
   `entire_frozen_corpus_agrees`.
+
+## DEV-088 — Cross-file `const` initializers are evaluated against the entry file [PARTIAL, WP-C4.7 post-exit, 2026-07-20]
+
+- **What:** `check_constants` evaluated every `const` initializer with the interpreter still
+  pointed at the ENTRY file, so a constant declared in a dependency had its literal read from the
+  wrong text — `pub const N: Int32 = 31415;` in `helper.stark` failed
+  `E0215 constant evaluation failed: invalid literal`. Same per-item file discipline as DEV-069;
+  constants were a fourth site that closure missed, because no test or corpus case had a
+  cross-file constant.
+- **Fixed here:** declaration-time evaluation now runs against the declaring file, so the spurious
+  E0215 is gone.
+- **STILL OPEN:** *using* a cross-file constant. The oracle re-reads the constant's literal at the
+  USE site against the wrong file (`"invalid literal"` at runtime), and MIR does not lower a
+  cross-file constant use at all ("use of a non-function item as a function"). Both engines fail,
+  so there is no divergence and nothing mislowers — a clean over-rejection.
+- **Found by:** writing the `multi_file__01` corpus case. Per the owner's scope-discipline
+  instruction the case was reduced to its actual subject (cross-file structs, methods, trait
+  default + override, cross-file `Drop`, provenance) and the constant removed, rather than chasing
+  the finding. Both engines agree on the reduced case.
+- **Assessment against the C5 baseline:** a cross-file `const` is ordinary Core and C5's
+  multi-file claim should cover it, but it is an over-rejection with obvious workarounds and no
+  soundness impact. Recommended for the same front-end completion package as DEV-083.
+
+## DEV-089 — `println` of a user type with a `Display` impl: oracle ignores the impl, MIR refuses [OPEN, found by the WP-C4.7 bounded validation, 2026-07-20]
+
+- **What:** for a user nominal that DOES implement `Display`, the three components disagree:
+  - **checker** — accepts (correct: DEV-084 made the check "has a `Display` impl", and it does);
+  - **HIR oracle** — runs it, but prints its own aggregate/debug rendering (`{x: 1}`), **ignoring
+    the user's `Display::fmt`**;
+  - **MIR** — refuses to lower it ("print/println of this type (C4.5)").
+- **Two problems, not one.** (1) An **engine divergence**: the oracle runs a program MIR rejects.
+  (2) An oracle **correctness** question: 06-Standard-Library treats `Display` as an ordinary
+  trait, so `println(p)` on a type with an impl should plausibly dispatch to that impl rather than
+  to a built-in debug form. The oracle's rendering is not obviously the specified behaviour.
+- **Repro:** `struct P { x: Int32 } impl Display for P { fn fmt(&self) -> String { String::from("P") } }`
+  with `println(p)` — oracle prints `{x: 1}`, MIR reports `LOWER-UNSUPPORTED`.
+- **Status:** NOT fixed. Found by the bounded final validation, which the owner instructed should
+  **stop and report** on a new engine divergence rather than expand into another implementation
+  campaign. It is neither a soundness defect nor invalid MIR: nothing mislowers, and the MIR side
+  refuses cleanly.
+- **Why it only surfaced now:** before DEV-084, `println` accepted ANY type, so the interesting
+  case (a type WITH an impl) was indistinguishable from the far more common case (a type without
+  one). Narrowing the checker is what isolated it.
+- **Assessment against the C5 baseline:** user-`Display` dispatch through `println` is ordinary
+  Core and a C5 application would plausibly use it. Deciding it needs a spec reading first —
+  whether `println` dispatches to `Display::fmt`, and what the oracle's aggregate rendering is for
+  — and then either implementing dispatch in both engines or narrowing the checker further. Owner:
+  unassigned; **material to the C4 closure decision** and reported as such.
 
 ## Informational (not owned deviations)
 
@@ -2495,7 +2572,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 85 numbered deviations total (DEV-002 through DEV-087, DEV-001/DEV-003 retired).
+Current count: 87 numbered deviations total (DEV-002 through DEV-089, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2562,10 +2639,14 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-083 (found by WP-C4.7-8.5; narrow over-rejection), DEV-086 (found by the
-WP-C4.7-9 audit; needs a CE3 constant-index projection form). DEV-087 (oracle treated a slice
-reference as non-`Copy`) was found while writing the corpus-1.1.0 cases and closed by WP-C4.7-9. Both are over-rejections with both
-engines consistent, unassigned, C4-exit-report input. DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half landed in WP-C4.7-8.1. DEV-077 (the same family, in
+remainder), DEV-083 (**owner-deferred 2026-07-20** to `WP-C6.x Method Resolution Completion`;
+explicitly outside the mandatory C5 lowering baseline), DEV-086 (**patterns CLOSED by CD-038**;
+by-value non-`Copy` array iteration narrowed and still refused cleanly), DEV-088 (cross-file
+`const` USE; declaration-time evaluation fixed, use site open), DEV-089 (`println` of a type WITH
+a `Display` impl — an ENGINE DIVERGENCE plus an oracle-correctness question, found by the bounded
+final validation and reported rather than chased). All except DEV-089 are over-rejections with
+both engines consistent. DEV-087 (oracle treated a slice reference as non-`Copy`) was found while
+writing the corpus cases and closed by WP-C4.7-9. DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half landed in WP-C4.7-8.1. DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)
 was closed by the WP-C4.7 DEV-075 increment under an owner specification decision, which also

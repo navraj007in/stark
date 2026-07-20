@@ -1,0 +1,47 @@
+pub trait Speak {
+    fn speak(&self) -> Int32 {
+        1
+    }
+}
+
+pub struct Point { pub x: Int32, pub y: Int32 }
+
+impl Point {
+    pub fn sum(&self) -> Int32 {
+        self.x + self.y
+    }
+}
+
+pub struct Loud { pub n: Int32 }
+
+impl Speak for Loud {
+    fn speak(&self) -> Int32 {
+        self.n * 10
+    }
+}
+
+impl Drop for Loud {
+    fn drop(&mut self) {
+        println(self.n);
+    }
+}
+
+pub struct Quiet { pub n: Int32 }
+
+impl Speak for Quiet {}
+
+pub fn make_point() -> Point {
+    Point { x: 11, y: 22 }
+}
+
+pub fn scaled(value: Int32, factor: Int32) -> Int32 {
+    value * factor
+}
+
+pub fn make_loud(n: Int32) -> Loud {
+    Loud { n: n }
+}
+
+pub fn make_quiet(n: Int32) -> Quiet {
+    Quiet { n: n }
+}

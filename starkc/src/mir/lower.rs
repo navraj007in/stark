@@ -660,9 +660,27 @@ struct LoopTargets {
 /// dtor-less structs and tuples. A whole-value glue drop is observably the ordered sequence
 /// of its units' glue drops, which is what makes partial moves representable: moving one
 /// unit out clears exactly that unit's flag.
+/// A5 (CD-038): one step of a drop-unit path. TYPED for the same reason move paths are — once
+/// constant array indices share the space with struct/tuple fields, a raw `u32` sequence can no
+/// longer say which kind it meant.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum DropStep {
+    Field(u32),
+    ConstIndex(u64),
+}
+
+impl DropStep {
+    fn projection(&self) -> Projection {
+        match self {
+            DropStep::Field(i) => Projection::Field(*i),
+            DropStep::ConstIndex(i) => Projection::ConstIndex(*i),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DropUnit {
-    path: Vec<u32>,
+    path: Vec<DropStep>,
     ty: MirTy,
     flag: LocalId,
 }
@@ -1068,10 +1086,15 @@ impl<'a> FnLowerer<'a> {
             return Ok(Operand::Copy(place));
         }
         if let Some(units) = self.drop_info.get(&place.local.0) {
-            let mut prefix: Vec<u32> = Vec::new();
+            let mut prefix: Vec<DropStep> = Vec::new();
             for proj in &place.projection {
                 match proj {
-                    Projection::Field(i) => prefix.push(*i),
+                    Projection::Field(i) => prefix.push(DropStep::Field(*i)),
+                    // A5 (CD-038): a statically known array element IS a nameable sub-place, so
+                    // moving one out clears exactly its own flag and leaves its siblings alive.
+                    // That is what makes by-value array iteration and consuming array patterns
+                    // representable at all.
+                    Projection::ConstIndex(i) => prefix.push(DropStep::ConstIndex(*i)),
                     _ => {
                         return unsupported(
                             "move through a non-field projection of a drop-tracked local (C4.5)",
@@ -1171,8 +1194,8 @@ impl<'a> FnLowerer<'a> {
     fn collect_drop_units(
         &self,
         ty: &MirTy,
-        path: &mut Vec<u32>,
-        out: &mut Vec<(Vec<u32>, MirTy)>,
+        path: &mut Vec<DropStep>,
+        out: &mut Vec<(Vec<DropStep>, MirTy)>,
         span: Span,
     ) -> Result<(), LowerError> {
         if !self.ty_needs_drop(ty, span)? {
@@ -1186,15 +1209,27 @@ impl<'a> FnLowerer<'a> {
                     return unsupported("struct item with enum fields shape", span);
                 };
                 for (i, fty) in tys.iter().enumerate() {
-                    path.push(i as u32);
+                    path.push(DropStep::Field(i as u32));
                     self.collect_drop_units(fty, path, out, span)?;
                     path.pop();
                 }
             }
             MirTy::Tuple(elems) => {
                 for (i, ety) in elems.iter().enumerate() {
-                    path.push(i as u32);
+                    path.push(DropStep::Field(i as u32));
                     self.collect_drop_units(ety, path, out, span)?;
+                    path.pop();
+                }
+            }
+            // A5 (CD-038): a fixed-length array decomposes into PER-ELEMENT units, now that
+            // `ConstIndex` can name one. Without this the array is a single unit, so moving one
+            // element out (by-value iteration, or an array pattern) and then dropping the array
+            // would destroy the moved-out element a second time.
+            MirTy::Array(elem, len) => {
+                let elem = (**elem).clone();
+                for i in 0..*len {
+                    path.push(DropStep::ConstIndex(i));
+                    self.collect_drop_units(&elem, path, out, span)?;
                     path.pop();
                 }
             }
@@ -1355,7 +1390,7 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Emit flag assignments for every unit of `local` whose path starts with `prefix`.
-    fn set_flags_under(&mut self, local: u32, prefix: &[u32], value: bool, span: Span) {
+    fn set_flags_under(&mut self, local: u32, prefix: &[DropStep], value: bool, span: Span) {
         let flags: Vec<LocalId> = match self.drop_info.get(&local) {
             Some(units) => units
                 .iter()
@@ -1391,7 +1426,7 @@ impl<'a> FnLowerer<'a> {
         );
         let place = Place {
             local: LocalId(local),
-            projection: unit.path.iter().map(|&i| Projection::Field(i)).collect(),
+            projection: unit.path.iter().map(DropStep::projection).collect(),
         };
         self.terminate(
             Terminator::Drop {
@@ -1436,11 +1471,12 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         let covered: Vec<DropUnit> = match self.drop_info.get(&place.local.0) {
             Some(units) => {
-                let mut prefix: Vec<u32> = Vec::new();
+                let mut prefix: Vec<DropStep> = Vec::new();
                 let mut pure = true;
                 for proj in &place.projection {
                     match proj {
-                        Projection::Field(i) => prefix.push(*i),
+                        Projection::Field(i) => prefix.push(DropStep::Field(*i)),
+                        Projection::ConstIndex(i) => prefix.push(DropStep::ConstIndex(*i)),
                         _ => {
                             pure = false;
                             break;
@@ -1488,7 +1524,7 @@ impl<'a> FnLowerer<'a> {
             );
             let unit_place = Place {
                 local: place.local,
-                projection: unit.path.iter().map(|&i| Projection::Field(i)).collect(),
+                projection: unit.path.iter().map(DropStep::projection).collect(),
             };
             self.emit(
                 Statement::Assign(Place::local(tmp), Rvalue::Use(Operand::Move(unit_place))),
@@ -5703,9 +5739,16 @@ impl<'a> FnLowerer<'a> {
         len: u64,
         span: Span,
     ) -> Result<(), LowerError> {
+        // A5 (CD-038) reaches consuming array PATTERNS, whose positions are statically known, but
+        // NOT by-value iteration over a non-`Copy` element: the loop index is a runtime counter,
+        // so no `ConstIndex` can name the element being consumed and V-MOVE-1 has nothing precise
+        // to track. Reading by copy instead would be UNSOUND — the array would still own the
+        // element and destroy it again, a double free for a `String` in a real backend — so this
+        // is refused rather than approximated. Closing it needs either loop unrolling (only sane
+        // for small N) or runtime-indexed drop flags, which is a design question beyond A5.
         if !self.is_copy(&elem) {
             return unsupported(
-                "for over an array with a non-Copy element type (needs a constant-index projection form; CE3)",
+                "by-value iteration over an array with a non-Copy element type (the loop index is dynamic, so no ConstIndex names the consumed element)",
                 span,
             );
         }
@@ -7286,23 +7329,6 @@ impl<'a> FnLowerer<'a> {
                     MirTy::Array(elem, _) => (**elem).clone(),
                     _ => return unsupported("array pattern on non-array", pat_span),
                 };
-                if self.ty_needs_drop(&elem_ty, span)? {
-                    // RECORDED RESIDUAL (WP-C4.7-9 audit). Array element places are reached
-                    // through `Projection::Index(ProofLocal)`, and the only way to mint a proof
-                    // is a `CheckIndex` terminator — which READS the array to validate the bound.
-                    // Moving one element out therefore poisons the whole local for V-MOVE-1
-                    // (`Index` collapses to the whole local in `moved_key`, necessarily: a
-                    // dynamic proof names no statically-known sub-place), so the NEXT element's
-                    // `CheckIndex` reads a possibly-moved place. This is not a missing arm; it
-                    // needs a CONSTANT-index projection form that carries no proof — which the
-                    // contract does not have, and adding one is a MIR shape change requiring
-                    // CE3 approval (§0.5). Non-droppable array patterns are unaffected and
-                    // lower normally.
-                    return unsupported(
-                        "droppable element in an array pattern (needs a constant-index projection form; CE3)",
-                        pat_span,
-                    );
-                }
                 for (i, &sub) in pats.iter().enumerate() {
                     let sub_place = self.array_elem_place(place, ty, i, span)?;
                     self.consume_unbound_leaves(sub, &sub_place, &elem_ty, span)?;
@@ -7564,6 +7590,15 @@ impl<'a> FnLowerer<'a> {
 
     /// An array element place at a CONSTANT index: `CheckIndex` mints the proof (statically
     /// in-bounds — the checker verified the pattern length against the array length).
+    /// A5 (CD-038): an array element at a STATICALLY KNOWN index — a pattern position or a
+    /// desugared iteration step. Emits `Projection::ConstIndex`, which the verifier bounds-checks
+    /// against the array's compile-time length, so no `CheckIndex` terminator and no
+    /// `IndexProof` local are needed.
+    ///
+    /// This is what makes consuming array patterns work: a proof-backed `Index` forces move
+    /// analysis to treat the whole array as one unit (a dynamic proof names no
+    /// statically-known sub-place), so moving one element out poisoned every other element.
+    /// Dynamic source indexing — `a[i]` for a runtime `i` — still uses `CheckIndex` + `Index`.
     fn array_elem_place(
         &mut self,
         base: &Place,
@@ -7571,32 +7606,9 @@ impl<'a> FnLowerer<'a> {
         index: usize,
         span: Span,
     ) -> Result<Place, LowerError> {
-        let _ = array_ty;
-        self.locals.push(LocalDecl {
-            ty: MirTy::Int64,
-            kind: LocalKind::IndexProof,
-        });
-        let proof = LocalId((self.locals.len() - 1) as u32);
-        let after = self.new_block();
-        self.terminate(
-            Terminator::Checked {
-                op: CheckedOp::CheckIndex,
-                args: vec![
-                    Operand::Copy(base.clone()),
-                    Operand::Const(Constant::Int(index as i128, MirTy::Int64)),
-                ],
-                dest: proof,
-                target: after,
-                trap: TrapInfo {
-                    category: TrapCategory::IndexOutOfBounds,
-                    source: self.synthetic(span, SyntheticKind::MatchDesugar),
-                },
-            },
-            self.synthetic(span, SyntheticKind::MatchDesugar),
-            after,
-        );
+        let _ = (array_ty, span);
         let mut place = base.clone();
-        place.projection.push(Projection::Index(proof));
+        place.projection.push(Projection::ConstIndex(index as u64));
         Ok(place)
     }
 
