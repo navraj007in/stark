@@ -2342,6 +2342,33 @@ WP-C1.5)
 - **Regression evidence:** `mir_differential.rs::mutable_slice_views_agree` exercises repeated use
   of a `&mut [T]` local alongside the write-through cases.
 
+## DEV-083 — A concrete position in an impl head cannot match an unresolved receiver type argument [OPEN, found WP-C4.7-8.5, 2026-07-20]
+
+- **What:** method resolution matches an impl's written self type against the receiver's type
+  ONE-WAY — impl parameters bind, receiver types do not. When the receiver's own type arguments
+  are still unresolved inference variables at resolution time, a **concrete** (non-parameter)
+  position in the impl head has nothing to compare against and the match fails.
+- **Repro:** `struct Pair<A, B> { x: A, y: B }` + `impl<T> Pair<Option<T>, Int32> { fn tag(&self) -> Int32 { self.y } }`
+  with `let p = Pair { x: Some(5), y: 42 }; p.tag();` → `E0302 method 'tag' not found for type
+  'Pair<Option<_infer_4>, _infer_5>'`. The `Int32` position in the impl head meets `_infer_5`.
+- **Scope:** narrow. It needs ALL of: a generic impl, a **concrete** argument position in its
+  self type, and a receiver whose corresponding argument is still an inference variable. The
+  common non-bare-head forms are unaffected — `impl<T> Holder<Option<T>>` matches
+  `Holder<Option<Int32>>` fine (every position is either the nominal itself or a parameter), and
+  WP-C4.7-8.5's tests cover two such instantiations dispatching correctly.
+- **Workaround:** give the receiver a known type — annotate the local, or obtain it from a
+  function with a declared return type. `fn make() -> Pair<Option<Int32>, Int32>` makes the same
+  program compile and run.
+- **Why it is NOT fixed here:** the fix would require committing inference variables during
+  candidate search, which is a known hazard — binding a variable while probing one candidate can
+  select the wrong impl and is a semantics change rather than a bug fix. 03-Type-System's
+  TYPE-METHOD-001 requires resolution to be independent of declaration order and to yield exactly
+  one candidate; a speculative-binding search needs its own design and evidence. Recorded rather
+  than rushed.
+- **Impact:** over-rejection only; no invalid program is accepted, and both engines reject
+  identically (the checker refuses before either interpreter sees it). Owner: unassigned;
+  C4-exit-report input.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2391,7 +2418,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 80 numbered deviations total (DEV-002 through DEV-082, DEV-001/DEV-003 retired).
+Current count: 81 numbered deviations total (DEV-002 through DEV-083, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2458,7 +2485,8 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder). DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half of WP-C4.7-8.1
+remainder), DEV-083 (found by WP-C4.7-8.5; narrow over-rejection, unassigned, C4-exit-report
+input). DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half of WP-C4.7-8.1
 remains open as a clean `Unsupported`, not as a deviation. DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)

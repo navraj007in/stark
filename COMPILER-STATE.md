@@ -2,8 +2,21 @@
 Updated: 2026-07-20 after WP-C4.7-8.6 — **exclusive slice views land (`0.1-A8`); 8.5 and 8.4 remain**
 
 ## Position
-Gate: C4  Next: **C4.7-8.5** (non-bare impl heads), then **8.4** (method-own generics), then
+Gate: C4  Next: **C4.7-8.4** (method-own generic parameters — the last implementation item), then
 **C4.7-9** (fresh audit + exit report — written for the owner, who alone closes the gate).
+**WP-C4.7-8.5 DONE 2026-07-20 — non-bare impl heads.** `impl<T> Holder<Option<T>>` now applies to
+`Holder<Option<Int32>>` in BOTH engines. The checker's impl matching bound a parameter only when
+it stood ALONE as a type argument and otherwise demanded `types_equal`, so `Option<T>` vs
+`Option<Int32>` failed and every non-bare head was invisible (E0302). Replaced with `unify_impl_ty`
+— one-way structural unification, parameters bound from the IMPLEMENTATION side only, with
+consistency enforced when a parameter recurs (`Pair<T, T>`). Lowering gained the matching
+`bind_written_impl_arg`, because the two must agree about which impls apply or the front end would
+admit programs lowering then rejects — the DEV-079 failure shape. **DEV-083 recorded, not fixed:**
+a CONCRETE position in an impl head still cannot match a receiver argument that is an unresolved
+inference variable at resolution time; fixing it needs speculative binding during candidate
+search, which can select the wrong impl and is a semantics change, not a bug fix. Narrow
+over-rejection with a workaround (annotate the receiver). Workspace 794/0/2.
+
 **OWNER DECISION 2026-07-20: implement 8.6, 8.5 and 8.4, then audit.** All three are normative
 Core by the grammar and the abstract machine — `02:64`+`02:120` put `GenericParams?` on methods,
 `02:117` admits any `Type` as an impl self type, and REF-SLICE-001 states that "writes through an
@@ -2706,3 +2719,41 @@ through the parameter, and repeated use of a `&mut [T]` local (the DEV-082 case)
 FOLLOW-UP: none.
 NEXT: WP-C4.7-8.5 — non-bare impl heads (`impl<T> Wrap for Holder<Vec<T>>`), front-end-first per
 C4.7-2's finding, then 8.4 (method-own generics), then C4.7-9.
+
+### WP-C4.7-8.5 — non-bare impl heads — 2026-07-20
+DONE. `02:117` (`Impl ::= 'impl' GenericParams? Type …`) admits any `Type` as an impl self type,
+so a non-bare head is normative Core; C4.7-2 had already found this front-end-blocked rather than
+a MIR gap.
+ROOT CAUSE: `match_impl_type` bound an impl parameter only when it stood ALONE as a type argument
+and otherwise fell back to `types_equal`. So `Option<T>` versus `Option<Int32>` compared unequal
+and the impl was invisible to method resolution — E0302 "method not found for type
+`Holder<Option<Int32>>`".
+FIX: `unify_impl_ty`, one-way structural unification over nominals, `Core` containers, tuples,
+references, arrays and slices. One-way matters: parameters bind from the IMPLEMENTATION side only.
+A `Ty::Param` on the RECEIVER side is an ordinary type to match against, never a hole to fill —
+otherwise an impl for a concrete type would spuriously match a generic receiver. A parameter that
+recurs (`Pair<T, T>`) must see the same type at each occurrence, so bindings are checked for
+consistency rather than overwritten.
+BOTH ENGINES, DELIBERATELY: lowering's `impl_generic_subst` had the same bare-parameter
+restriction and gained the matching `bind_written_impl_arg`. The checker decides WHICH impls
+apply; lowering recovers the substitution that decision implies. Had only the checker been
+generalized, the front end would have admitted programs that lowering then refused — exactly the
+DEV-079 failure shape, where lowering and verification disagreed about the same contract.
+DEV-083 RECORDED, NOT FIXED: a CONCRETE position in an impl head cannot match a receiver argument
+that is still an unresolved inference variable at resolution time (`impl<T> Pair<Option<T>, Int32>`
+against `Pair<Option<_infer>, _infer>`). Fixing it requires committing inference variables during
+candidate search, which can select the wrong impl — a semantics change needing its own design and
+evidence under TYPE-METHOD-001, not a bug fix to fold into this increment. It is a narrow
+over-rejection (needs a generic impl AND a concrete head position AND an unresolved receiver
+argument), both engines reject identically, and annotating the receiver is a working workaround.
+FILES: starkc/src/typecheck.rs (`unify_impl_ty`), starkc/src/mir/lower.rs
+(`bind_written_impl_arg`), starkc/tests/mir_differential.rs (+1 test, 3 programs),
+KNOWN-DEVIATIONS.md (DEV-083; count 80 → 81), COMPILER-STATE.md, WP-C4.7.md.
+RULES: 02:117 (impl grammar), TYPE-METHOD-001. No spec, MIR-shape, or runtime-surface change.
+DECISIONS: none at CE level.
+EVIDENCE: `non_bare_impl_heads_agree` — a trait impl and an inherent impl on `Holder<Option<T>>`,
+the latter at TWO instantiations so monomorphised dispatch through a non-bare head is exercised
+rather than merely the checker's acceptance, plus a concrete head position with a known receiver
+type. Workspace 794 passed / 0 failed / 2 ignored (+1); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: DEV-083.
+NEXT: WP-C4.7-8.4 — method-own generic parameters, the last implementation item before the audit.

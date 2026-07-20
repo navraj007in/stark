@@ -6776,6 +6776,73 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// WP-C4.7-8.5: ONE-WAY structural unification of an impl's written self type against a
+    /// concrete receiver, binding the impl's parameters along the way.
+    ///
+    /// Recursion is what admits NON-BARE impl heads: `impl<T> Holder<Option<T>>` must match
+    /// `Holder<Option<Int32>>`. The previous version only bound a parameter when it stood ALONE
+    /// as a type argument and otherwise demanded `types_equal`, so `Option<T>` versus
+    /// `Option<Int32>` failed and every non-bare head was invisible to method resolution
+    /// (E0302 "method not found").
+    ///
+    /// One-way: parameters are bound only from the IMPLEMENTATION side. A `Ty::Param` on the
+    /// receiver side is an ordinary type to match against, never a hole to fill — otherwise an
+    /// impl for a concrete type would spuriously match a generic receiver.
+    fn unify_impl_ty(
+        &self,
+        implementation: &Ty,
+        receiver: &Ty,
+        map: &mut HashMap<String, Ty>,
+    ) -> bool {
+        let (imp, recv) = (self.resolve(implementation), self.resolve(receiver));
+        match (imp, recv) {
+            // A parameter absorbs whatever it is matched against, but must stay CONSISTENT: the
+            // same parameter appearing twice (`Pair<T, T>`) has to see the same type both times.
+            (Ty::Param(name), recv) => match map.get(&name) {
+                Some(bound) if !matches!(bound, Ty::Param(p) if *p == name) => {
+                    self.types_equal(bound, &recv)
+                }
+                _ => {
+                    map.insert(name, recv);
+                    true
+                }
+            },
+            (Ty::Struct(l, l_args), Ty::Struct(r, r_args))
+            | (Ty::Enum(l, l_args), Ty::Enum(r, r_args))
+                if l == r && l_args.len() == r_args.len() =>
+            {
+                l_args
+                    .iter()
+                    .zip(&r_args)
+                    .all(|(l, r)| self.unify_impl_ty(l, r, map))
+            }
+            (Ty::Core(l, l_args), Ty::Core(r, r_args))
+                if l == r && l_args.len() == r_args.len() =>
+            {
+                l_args
+                    .iter()
+                    .zip(&r_args)
+                    .all(|(l, r)| self.unify_impl_ty(l, r, map))
+            }
+            (Ty::Tuple(l), Ty::Tuple(r)) if l.len() == r.len() => {
+                l.iter().zip(&r).all(|(l, r)| self.unify_impl_ty(l, r, map))
+            }
+            (
+                Ty::Ref {
+                    mutable: lm,
+                    inner: li,
+                },
+                Ty::Ref {
+                    mutable: rm,
+                    inner: ri,
+                },
+            ) if lm == rm => self.unify_impl_ty(&li, &ri, map),
+            (Ty::Array(l, ln), Ty::Array(r, rn)) if ln == rn => self.unify_impl_ty(&l, &r, map),
+            (Ty::Slice(l), Ty::Slice(r)) => self.unify_impl_ty(&l, &r, map),
+            (left, right) => self.types_equal(&left, &right),
+        }
+    }
+
     fn match_impl_type(
         &self,
         implementation: &Ty,
@@ -6783,26 +6850,7 @@ impl<'a> TypeChecker<'a> {
         generics: &[hir::GenericParam],
     ) -> Option<HashMap<String, Ty>> {
         let mut map = HashMap::new();
-        let matches = match (self.resolve(implementation), self.resolve(receiver)) {
-            (Ty::Param(name), receiver) => {
-                map.insert(name, receiver);
-                true
-            }
-            (Ty::Struct(left, left_args), Ty::Struct(right, right_args))
-            | (Ty::Enum(left, left_args), Ty::Enum(right, right_args))
-                if left == right && left_args.len() == right_args.len() =>
-            {
-                left_args.iter().zip(right_args).all(|(left, right)| {
-                    if let Ty::Param(name) = left {
-                        map.insert(name.clone(), right);
-                        true
-                    } else {
-                        self.types_equal(left, &right)
-                    }
-                })
-            }
-            (left, right) => self.types_equal(&left, &right),
-        };
+        let matches = self.unify_impl_ty(implementation, receiver, &mut map);
         if matches {
             for generic in generics {
                 map.entry(self.text(generic.name).to_string())

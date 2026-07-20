@@ -2732,3 +2732,50 @@ fn mutable_slice_views_agree() {
         .to_string(),
     );
 }
+
+/// WP-C4.7-8.5: NON-BARE impl heads — `impl<T> Holder<Option<T>>` applying to
+/// `Holder<Option<Int32>>`. `02:117` admits any `Type` as an impl self type, so this is normative
+/// Core; C4.7-2 found it front-end-blocked (E0302 "method not found") rather than a MIR gap.
+///
+/// Both engines needed the same generalization, and they had to agree: the checker's
+/// `unify_impl_ty` decides WHICH impls apply, and lowering's `bind_written_impl_arg` recovers the
+/// substitution that decision implies. If they disagreed, the front end would admit programs
+/// lowering then rejects — the DEV-079 failure shape.
+///
+/// Two instantiations, so what is exercised is monomorphised dispatch through a non-bare head,
+/// not merely that the checker stopped complaining.
+#[test]
+fn non_bare_impl_heads_agree() {
+    differential(
+        "nonbare_trait.stark",
+        "struct Holder<T> { v: T } \
+         trait Wrap { fn wrapped(&self) -> Int32; } \
+         impl<T> Wrap for Holder<Option<T>> { fn wrapped(&self) -> Int32 { 1 } } \
+         fn main() { let h = Holder { v: Some(3) }; println(h.wrapped()); }"
+            .to_string(),
+    );
+    differential(
+        "nonbare_inherent.stark",
+        "struct Holder<T> { v: T } \
+         impl<T> Holder<Option<T>> { \
+             fn pick(&self, fallback: Int32) -> Int32 { fallback } \
+         } \
+         fn main() { \
+             let a = Holder { v: Some(3) }; \
+             let b = Holder { v: Some(true) }; \
+             println(a.pick(11)); \
+             println(b.pick(22)); \
+         }"
+        .to_string(),
+    );
+    // A concrete position in the head is fine once the receiver's type is known (DEV-083 records
+    // the remaining case, where it is still an inference variable at resolution time).
+    differential(
+        "nonbare_concrete_pos.stark",
+        "struct Pair<A, B> { x: A, y: B } \
+         impl<T> Pair<Option<T>, Int32> { fn tag(&self) -> Int32 { self.y } } \
+         fn make() -> Pair<Option<Int32>, Int32> { Pair { x: Some(5), y: 42 } } \
+         fn main() { let p = make(); println(p.tag()); }"
+            .to_string(),
+    );
+}

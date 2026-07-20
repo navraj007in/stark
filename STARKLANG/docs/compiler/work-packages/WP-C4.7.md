@@ -490,7 +490,12 @@ Order within the increment (each independently commit-able):
   `0.1-A8` (A1 rev. 12); the interpreter's write path composes the slice window with a following
   index, which is the write-through semantics. **DEV-082** found and closed: a method call on a
   slice receiver consumed it — invisible while only shared (`Copy`) views existed.
-- **C4.7-8: DONE** except 8.4/8.5, which the owner directed be implemented before the audit.
+- **C4.7-8.5: DONE 2026-07-20** — non-bare impl heads (`impl<T> Holder<Option<T>>`). One-way
+  structural unification in the checker (`unify_impl_ty`) and the matching substitution recovery
+  in lowering (`bind_written_impl_arg`), generalized together so the two cannot disagree about
+  which impls apply. **DEV-083** recorded, not fixed: a concrete head position still cannot match
+  an unresolved receiver argument; that needs speculative binding during candidate search.
+- **C4.7-8: DONE** except 8.4, which the owner directed be implemented before the audit.
   The only remaining clean-`Unsupported` entry is `HashMap::values` (std-full, CD-033-reserved). (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)

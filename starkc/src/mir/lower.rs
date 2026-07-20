@@ -1753,32 +1753,92 @@ impl<'a> FnLowerer<'a> {
         else {
             return unsupported("generic impl self type has no written arguments", span0);
         };
-        let mut subst = Vec::new();
-        for (i, arg) in written.args.iter().enumerate() {
-            let hir::GenericArg::Type(t) = arg else {
-                return unsupported("non-type impl self argument", span0);
-            };
-            let hir::TypeKind::Path {
-                res: Res::TypeParam,
-                ..
-            } = &self.hir.ty(*t).kind
-            else {
-                return unsupported(
-                    "generic impl with a non-parameter self argument (e.g. impl Holder<Vec<T>>)",
-                    span0,
-                );
-            };
-            let name = self
-                .meta
-                .item_text(impl_item, self.hir.ty(*t).span)
-                .to_string();
+        // WP-C4.7-8.5: align the impl's WRITTEN self arguments with the instantiation
+        // STRUCTURALLY, so a non-bare head (`impl<T> Holder<Option<T>>` against
+        // `Holder<Option<Int32>>`) binds `T := Int32` instead of being refused. This mirrors the
+        // checker's `unify_impl_ty`; the two must agree about which impls apply, or the front end
+        // would admit programs lowering then rejects.
+        let written_args: Vec<hir::TypeId> = written
+            .args
+            .iter()
+            .map(|arg| match arg {
+                hir::GenericArg::Type(t) => Ok(*t),
+                _ => unsupported("non-type impl self argument", span0),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut subst: Vec<(String, MirTy)> = Vec::new();
+        for (i, written_ty) in written_args.iter().enumerate() {
             let concrete = type_args.get(i).cloned().ok_or_else(|| LowerError {
                 what: "impl instantiated with too few type arguments".into(),
                 span: span0,
             })?;
-            subst.push((name, concrete));
+            self.bind_written_impl_arg(impl_item, *written_ty, &concrete, &mut subst)?;
         }
         Ok(subst)
+    }
+
+    /// WP-C4.7-8.5: one-way structural match of an impl's WRITTEN self argument against the
+    /// instantiation's concrete type, accumulating parameter bindings.
+    ///
+    /// A bare parameter binds directly. A constructed type (`Option<T>`, `Vec<T>`, `(T, U)`,
+    /// `&T`) recurses into the matching position of the concrete type. Anything else is a
+    /// concrete-vs-concrete position that carries no binding and needs no check — the checker
+    /// already established that this impl applies, and lowering is only recovering the
+    /// substitution it implies.
+    fn bind_written_impl_arg(
+        &self,
+        impl_item: ItemId,
+        written: hir::TypeId,
+        concrete: &MirTy,
+        subst: &mut Vec<(String, MirTy)>,
+    ) -> Result<(), LowerError> {
+        let node = self.hir.ty(written);
+        let span = node.span;
+        match &node.kind {
+            hir::TypeKind::Path { res, args, .. } => {
+                if matches!(res, Res::TypeParam) {
+                    let name = self.meta.item_text(impl_item, span).to_string();
+                    if !subst.iter().any(|(n, _)| *n == name) {
+                        subst.push((name, concrete.clone()));
+                    }
+                    return Ok(());
+                }
+                let Some(list) = args else {
+                    return Ok(());
+                };
+                // Descend into the concrete type's arguments positionally.
+                let concrete_args: &[MirTy] = match concrete {
+                    MirTy::Struct(_, a) | MirTy::Enum(_, a) | MirTy::Core(_, a) => a,
+                    _ => return Ok(()),
+                };
+                for (i, arg) in list.args.iter().enumerate() {
+                    let hir::GenericArg::Type(t) = arg else {
+                        continue;
+                    };
+                    let Some(c) = concrete_args.get(i) else {
+                        continue;
+                    };
+                    self.bind_written_impl_arg(impl_item, *t, c, subst)?;
+                }
+                Ok(())
+            }
+            hir::TypeKind::Ref { inner, .. } => match concrete {
+                MirTy::Ref { inner: c, .. } => {
+                    self.bind_written_impl_arg(impl_item, *inner, c, subst)
+                }
+                _ => Ok(()),
+            },
+            hir::TypeKind::Tuple(elems) => match concrete {
+                MirTy::Tuple(cs) => {
+                    for (t, c) in elems.iter().zip(cs) {
+                        self.bind_written_impl_arg(impl_item, *t, c, subst)?;
+                    }
+                    Ok(())
+                }
+                _ => Ok(()),
+            },
+            _ => Ok(()),
+        }
     }
 
     fn lower_body(&mut self) -> Result<MirBody, LowerError> {
