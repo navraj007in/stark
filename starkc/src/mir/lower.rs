@@ -5515,13 +5515,12 @@ impl<'a> FnLowerer<'a> {
             return unsupported("Iterator::next must return Option", span);
         };
         let elem = opt_args.first().cloned().unwrap_or(MirTy::Unit);
-        if self.ty_needs_drop(&elem, span)? {
-            // The yielded value would need per-iteration drop elaboration; recorded residual.
-            return unsupported(
-                "user Iterator yielding a droppable Item type (a later increment)",
-                span,
-            );
-        }
+        // WP-C4.7-8.2: a droppable `Item` is supported. Each yielded value is destroyed at the
+        // END OF ITS OWN ITERATION — pinned against the oracle first (§0.6): a three-element
+        // loop over a printing-destructor Item observes body, value, DROP, body, value, DROP, …
+        // rather than three drops at loop exit. `break` also destroys the current iteration's
+        // value before leaving.
+        let elem_needs_drop = self.ty_needs_drop(&elem, span)?;
         let symbol = key_symbol(self.hir, self.meta, &key)?;
         self.discovered_callees.push(key);
 
@@ -5610,13 +5609,29 @@ impl<'a> FnLowerer<'a> {
             ),
             self.synthetic(span, SyntheticKind::ForLoopDesugar),
         );
+        // The loop's `scope_depth` is captured BEFORE the per-iteration scope is pushed, so the
+        // existing `break`/`continue` handling — which drops every scope from `scope_depth`
+        // onward — destroys the current iteration's value on those paths without any special
+        // casing. That ordering is the whole trick; pushing the scope first would leave the
+        // value alive on `break`.
+        let scope_depth = self.scopes.len();
         self.loops.push(LoopTargets {
             continue_target: header,
             break_target: exit,
-            scope_depth: self.scopes.len(),
+            scope_depth,
             value_target: None,
         });
+        self.scopes.push(Vec::new());
+        if elem_needs_drop {
+            // Registered with flags FALSE and then set true: the binding is initialized by the
+            // move above, and the flag must not be live before that point.
+            self.register_droppable_local(bound, &elem, false, span)?;
+            self.set_flags_under(bound.0, &[], true, span);
+        }
         self.lower_block_value(body)?;
+        // Normal end of iteration: destroy this iteration's value before looping back.
+        self.emit_scope_drops_from(scope_depth, span);
+        self.scopes.pop();
         self.loops.pop();
         self.terminate(
             Terminator::Goto { target: header },

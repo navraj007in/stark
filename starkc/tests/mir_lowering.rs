@@ -266,6 +266,9 @@ fn unsupported_constructs_report_cleanly() {
     // `cargo run --example c46_probe` (LOWER-UNSUPPORTED) and `--example oracle_run` (ORACLE-OK)
     // before being added.
     //
+    // REMOVED by WP-C4.7-8.2: the droppable-`Iterator`-`Item` fixture — that construct now lowers
+    // with a per-iteration scope, covered by
+    // `mir_differential.rs::droppable_iterator_item_drop_timing_agrees`.
     // REMOVED by WP-C4.7-8.1: the `unwrap_or`-on-a-droppable-payload fixture. That construct now
     // LOWERS (drop-of-the-discarded-value elaboration), so it is covered by
     // `mir_differential.rs::droppable_unwrap_or_drop_timing_agrees` instead — a residual fixture
@@ -301,20 +304,6 @@ fn unsupported_constructs_report_cleanly() {
                  } \
              }",
             "A2 residual",
-        ),
-        (
-            // A1 residual: a user `Iterator` whose `Item` needs dropping — the per-iteration
-            // scope around the loop-variable binding is not yet emitted. Owner: WP-C4.7-8.2.
-            "dropiteritem.stark",
-            "struct Words { n: Int32 } \
-             impl Iterator for Words { \
-                 type Item = String; \
-                 fn next(&mut self) -> Option<String> { \
-                     if self.n == 0 { None } else { self.n = self.n - 1; Some(String::from(\"w\")) } \
-                 } \
-             } \
-             fn main() { let mut w = Words { n: 2 }; for s in w { println(s); } }",
-            "droppable Item",
         ),
         (
             // A4-2e reserved: slice views are shared-only in surface 0.1-A6; `&mut base[range]`

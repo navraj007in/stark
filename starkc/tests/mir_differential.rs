@@ -2375,3 +2375,71 @@ fn droppable_unwrap_or_with_runtime_type_agrees() {
         .to_string(),
     );
 }
+
+/// WP-C4.7-8.2: a user `Iterator` whose `Item` needs dropping. Each yielded value is destroyed at
+/// the END OF ITS OWN ITERATION, not accumulated to loop exit — pinned against the oracle before
+/// the lowering was written (§0.6). The printed ORDER is the assertion: body, value, DROP,
+/// repeated, rather than three drops trailing after the loop.
+#[test]
+fn droppable_iterator_item_drop_timing_agrees() {
+    differential(
+        "iter_item_drop.stark",
+        "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         struct Gen { left: Int32 } \
+         impl Iterator for Gen { \
+             type Item = Tag; \
+             fn next(&mut self) -> Option<Tag> { \
+                 if self.left == 0 { None } \
+                 else { self.left = self.left - 1; Some(Tag { id: self.left }) } \
+             } \
+         } \
+         fn main() { \
+             println(100); \
+             let mut g = Gen { left: 3 }; \
+             for t in g { println(900); println(t.id); } \
+             println(200); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The early-exit paths, which is where a per-iteration scope is easy to get wrong: `break` must
+/// destroy the CURRENT iteration's value before leaving, and `continue` must destroy it before
+/// looping back. Both fall out of capturing the loop's `scope_depth` before pushing the
+/// per-iteration scope — so this test is really checking that ordering decision.
+#[test]
+fn droppable_iterator_item_break_and_continue_agree() {
+    let iter_decl = "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         struct Gen { left: Int32 } \
+         impl Iterator for Gen { \
+             type Item = Tag; \
+             fn next(&mut self) -> Option<Tag> { \
+                 if self.left == 0 { None } \
+                 else { self.left = self.left - 1; Some(Tag { id: self.left }) } \
+             } \
+         } ";
+    differential(
+        "iter_item_break.stark",
+        format!(
+            "{iter_decl} fn main() {{ \
+                 println(100); \
+                 let mut g = Gen {{ left: 5 }}; \
+                 for t in g {{ println(900); if t.id == 2 {{ break; }} }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    differential(
+        "iter_item_continue.stark",
+        format!(
+            "{iter_decl} fn main() {{ \
+                 println(100); \
+                 let mut g = Gen {{ left: 4 }}; \
+                 for t in g {{ if t.id == 2 {{ continue; }} println(900); }} \
+                 println(200); \
+             }}"
+        ),
+    );
+}

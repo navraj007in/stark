@@ -1,11 +1,18 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-8.1 — **droppable `unwrap_or` lowers; C4.7-8.1 COMPLETE**
+Updated: 2026-07-20 after WP-C4.7-8.2 — **droppable `Iterator` Item lowers; one MIR residual left**
 
 ## Position
-Gate: C4  Next: **C4.7-8.2** (droppable `Iterator` Item — per-iteration scope around the loop-var
-binding), then **8.3** (droppable scrutinee + nested patterns, the hardest piece), then **C4.7-9**
-(fresh audit + exit report). 8.4/8.5 were reclassified front-end-first by C4.7-2; 8.6 (mutable
-slices) is an owner decision.
+Gate: C4  Next: **C4.7-8.3** (droppable scrutinee + nested patterns — the last MIR residual and
+the hardest piece), then **C4.7-9** (fresh audit + exit report). 8.4/8.5 were reclassified
+front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
+**WP-C4.7-8.2 DONE 2026-07-20.** A user `Iterator` with a droppable `Item` now lowers: each
+yielded value is destroyed at the END OF ITS OWN ITERATION, not accumulated to loop exit —
+pinned against the oracle before any lowering was written. `break` destroys the current
+iteration's value before leaving and `continue` before looping back, and both fall out for free
+from one ordering decision: capture the loop's `scope_depth` BEFORE pushing the per-iteration
+scope, so the existing break/continue handling (which drops every scope from `scope_depth`
+onward) covers them with no special casing. Pushing the scope first would have leaked the value
+on `break`. Workspace 787/0/2.
 **WP-C4.7-8.1 COMPLETE 2026-07-20 (MIR half).** `unwrap_or` over a droppable payload/default now
 lowers, matching the timing pinned against the corrected oracle: the DISCARDED value is destroyed
 **at the call**, not at scope exit — on `Some`/`Ok` the payload is yielded and the default dropped
@@ -2495,3 +2502,38 @@ clippy clean on 1.93 and 1.97.
 FOLLOW-UP: none for 8.1.
 NEXT: C4.7-8.2 — droppable `Iterator` Item (per-iteration scope around the loop-variable binding;
 oracle-pin first), then 8.3.
+
+### WP-C4.7-8.2 — droppable `Iterator` Item (per-iteration drop scope) — 2026-07-20
+DONE: a user `Iterator` whose `Item` needs dropping now lowers.
+PINNED FIRST (§0.6), and it is the non-obvious part: each yielded value is destroyed at the
+**end of its own iteration**, not accumulated and destroyed at loop exit. A three-element loop
+over a printing-destructor `Item` observes `body, value, DROP, body, value, DROP, …`. `break`
+destroys the current iteration's value before leaving; `continue` destroys it before looping back.
+All four shapes were confirmed against the oracle before the lowering existed.
+IMPLEMENTATION: a per-iteration scope around the loop-variable binding — `scopes.push`, register
+the binding as droppable with flags FALSE then set true (the binding is initialized by the move
+out of the `Option`, and the flag must not be live before that point), lower the body, then
+`emit_scope_drops_from` at the latch and pop.
+THE ORDERING DECISION THAT DID THE WORK: the loop's `scope_depth` is captured **before** the
+per-iteration scope is pushed. `break`/`continue` already drop every scope from `scope_depth`
+onward, so both early-exit paths destroy the current iteration's value with **no special casing
+at all** — the existing machinery covers them. Pushing the scope before capturing the depth would
+have left the value alive on `break`, which is exactly the kind of leak that only shows up in a
+test that bothers to break out of the loop. Both early-exit paths are pinned by a test for that
+reason.
+SCOPE DISCIPLINE: the scope is pushed unconditionally (harmless and keeps one code path) but the
+binding is only registered when the `Item` actually needs dropping, so non-droppable iteration
+lowers as before.
+FILES: starkc/src/mir/lower.rs (`lower_for_over_user_iter`), starkc/tests/mir_differential.rs
+(+2 tests, 3 programs), starkc/tests/mir_lowering.rs (stale Unsupported fixture removed),
+COMPILER-STATE.md, WP-C4.7.md.
+RULES: EXEC-ONCE-001 / DROP-ORDER-001 / EXEC-FOR-001. No spec, MIR-shape, or runtime-surface
+change — lowering only.
+DECISIONS: none at CE level.
+EVIDENCE: `droppable_iterator_item_drop_timing_agrees` (printed ORDER is the assertion, so what
+is checked is per-iteration destruction rather than merely that destruction happens) and
+`droppable_iterator_item_break_and_continue_agree` (both early-exit paths, which is where a
+per-iteration scope is easiest to get wrong). The pre-existing `String`-Item probe also agrees.
+FOLLOW-UP: none.
+NEXT: C4.7-8.3 — droppable scrutinee + nested patterns, the last MIR residual and the hardest
+piece in the plan.
