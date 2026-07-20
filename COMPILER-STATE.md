@@ -43,7 +43,8 @@ The executor-grade plan is
 OPEN until WP-C4.7 completes and the owner approves the fresh exit report (the Class-A
 requirement of CD-033 is met, but the external review + self-audit identified corrections
 required before an honest exit — most notably the type-erasing `size_of`/`align_of` lowering
-vs. the spec's "target-layout queries" classification, DEV-069 as a C5 prerequisite, and the
+vs. the spec's "target-layout queries" classification (both resolved — see the WP-C4.7-3/4
+records), DEV-069 as a C5 prerequisite, and the
 front-end deviations DEV-067/071/072/073 + Box deref + primitive `cmp`). **A1 DONE 2026-07-20**, the
 last Class-A blocker: `FnKey::ImplFn`/`TraitDefault` carry the instantiation's type args
 (symbols render them — `Stack::push_item@[Int32]`); impl-generic substitution aligns the
@@ -80,7 +81,8 @@ discriminant-compare; v3-variant → MIR-0008; generic-nominal comparison stays 
 1.93/1.97.
 (Historical note, superseded: DEV-070 was CLOSED by A2 on 2026-07-20; A4/A2/A1 all completed
 2026-07-20 — see the Position header above. Open front-end deviations as of 2026-07-20:
-DEV-067, DEV-069, DEV-071, DEV-072, DEV-073, plus Box deref, primitive `Ordering::cmp`, and
+DEV-067, DEV-069 (since CLOSED by WP-C4.7-4), DEV-071, DEV-072, DEV-073, plus Box deref,
+primitive `Ordering::cmp`, and
 the `Vec::get` literal-typing quirk — all inventoried in `WP-C4.6.md` "Gate closure input"
 and owned by `WP-C4.7.md`.)
 **WP-C4.5f-3 done 2026-07-19, closing WP-C4.5** — three sub-slices in one increment:
@@ -969,7 +971,7 @@ this file (seed list + WP-C1.1/C1.2/C1.3 addition sections) is archived verbatim
 `STARKLANG/docs/compiler/state-archive/C0-C2-closed-detail.md` (CD-020); the ledger remains the
 single source of truth.
 
-Open as of 2026-07-20 (post-WP-C4.7-1); every C4.x item below is owned by a WP-C4.7 increment:
+Open as of 2026-07-20 (post-WP-C4.7-4); every C4.x item below is owned by a WP-C4.7 increment:
 - DEV-005 — `starkc` vs `stark` check/run warning-gating drift. Open, unowned since Gate C1.
 - DEV-010 — LSP hover/definition/references are protocol stubs. Owner: WP-C8.2/C8.3.
 - DEV-011 — doc comments are lexer trivia, not AST/HIR metadata. Unscheduled; needs a scoped
@@ -980,11 +982,6 @@ Open as of 2026-07-20 (post-WP-C4.7-1); every C4.x item below is owned by a WP-C
 - DEV-067 — bounded generic parameters lose their bounds at intra-generic call sites (E0500)
   and behind `&T` receivers (E0302); over-rejection only, pre-existing, surfaced by WP-C4.5c's
   differential tests. Owner: **WP-C4.7-7**.
-- DEV-069 — front end + HIR interpreter are not multi-file-span-clean: cross-file spans are
-  read against the entry file, so cross-file methods mis-resolve, cross-file literals
-  mis-parse, and cross-file field reads fail; found by WP-C4.5f-3c's multi-file work. The MIR
-  lowering itself is multi-file-clean (`ProgramMeta`). Owner: **WP-C4.7-4** (a C5 prerequisite
-  per CD-033).
 - DEV-071 — an all-three-variant `Ordering` match is wrongly flagged non-exhaustive
   (exhaustiveness gap; over-rejection only). Owner: **WP-C4.7-7**.
 - DEV-072 — binding a non-Copy payload out of a shared borrow passes borrowck (under-rejection;
@@ -996,7 +993,9 @@ Open as of 2026-07-20 (post-WP-C4.7-1); every C4.x item below is owned by a WP-C
   (no attribute syntax — deliberate scope fact).
 
 Closed 2026-07-20: DEV-070 (WP-C4.6 A2, both engines); DEV-074 (numbered by WP-C4.7-1 and closed
-at creation — the A4-2e oracle slice-message alignment, a governance gap, not a code defect).
+at creation — the A4-2e oracle slice-message alignment, a governance gap, not a code defect);
+**DEV-069** (WP-C4.7-4 — per-item file resolution in typecheck/borrowck/oracle; this also
+DISCHARGES CD-033's C5 multi-file prerequisite).
 Closed 2026-07-19: DEV-060 (CD-024); DEV-061/062/063 — the function-value cluster — in the
 CD-027 pre-C4.1 correction pass; DEV-064 (undetermined-generic rejection, WP-C4.5c, E0004);
 DEV-065/066 (C4.5b oracle fixes). See `KNOWN-DEVIATIONS.md`.
@@ -1914,3 +1913,52 @@ FOLLOW-UP: C5.1 replaces `reference_layout` with the named target's real layout 
 is the only place it must touch.
 NEXT: WP-C4.7-4 — DEV-069, front-end multi-file span discipline (typecheck + borrowck, then the
 oracle, as two commits; reproduce with throwaway two-file probes first).
+
+### WP-C4.7-4 — DEV-069: multi-file span discipline in the front end and the oracle — 2026-07-20
+DONE: **DEV-069 CLOSED**, discharging CD-033's C5 multi-file prerequisite.
+ROOT CAUSE (one class, not four bugs): `typecheck.rs`, `borrowck.rs`, and `interp.rs` each hold a
+single "current file" and read every `Span` against it. STARK parses each file of a `mod helper;`
+program separately, so spans are FILE-RELATIVE. Reading a span against the current file is
+correct for the item being CHECKED — `check_crate` already swapped `self.file` per item — and
+silently wrong for every item being LOOKED UP, because the lookup scans (method resolution,
+trait-default fallback, associated-fn search, `Drop` discovery, nominal name formatting) walk
+ALL items in the program regardless of file. That single mistake produced all four documented
+shapes: an out-of-bounds panic when the dependency file was longer, garbage method names,
+unparseable literals, and wrong-field reads at runtime.
+FIX, two mechanisms:
+1. **`item_text(item, span)`** in all three modules, reading against the file that DECLARES
+   `item` via `hir.item_files` — the map the resolver already populated and MIR's `ProgramMeta`
+   already relies on, so the three engines now agree on one source of file identity. Applied to
+   every cross-item read found by walking the scan loops: method resolution, trait defaults
+   (which take the TRAIT's file, not the impl's), associated fns, `Drop` impls, `format_nominal`,
+   `item_name`.
+2. **Per-body file swap in the oracle**, which never swapped file at all. `Callable` now carries
+   its declaring file, and all THREE body-execution funnels save/restore `self.file` around the
+   body: `call_callable`, `call_user_method`, and the destructor path in `drop_value`. Restored
+   on error paths too, and AFTER `cleanup_current_frame` on success, since a body's own
+   destructors still belong to its file. Finding the second and third funnels took empirical
+   probing — fixing only `call_callable` left cross-file methods broken, and fixing that left
+   cross-file destructors broken.
+`text()` is additionally non-panicking now in all three modules (`.get(..).unwrap_or("?")`): a
+residual wrong-file read degrades to a visible `"?"` in a diagnostic instead of aborting the
+compiler. That is a backstop, not the mechanism.
+FILES: starkc/src/{typecheck,borrowck,interp}.rs, starkc/tests/multi_file_spans.rs (new),
+starkc/tests/mir_differential.rs (widened), KNOWN-DEVIATIONS.md (DEV-069 closed + both
+enumerations), WP-C4.7.md, COMPILER-STATE.md.
+RULES: none normative — this is an implementation defect against 07-Modules-and-Packages'
+multi-file model; no spec text changed and no accept/reject decision changed for single-file
+programs (759 tests, all pre-existing ones unchanged).
+DECISIONS: one deviation from the plan, recorded: the plan said do this in TWO commits
+(typecheck+borrowck, then the oracle). Landed as ONE, because the regression tests exercise both
+halves end-to-end — a typecheck-only commit would have pushed red tests, which the per-increment
+green-CI rule forbids. The two halves are separable in review by module.
+EVIDENCE: `tests/multi_file_spans.rs` — one test per failure shape, each checked AND executed:
+cross-file methods/fields/literals (33/11/66/12345), a long-dependency-file panic guard, and
+cross-file trait dispatch + `Drop` where destructor ORDER is the observable (40/1/4). The
+multi-file differential test was WIDENED off the safe subset it had been pinned to — now a
+cross-file struct with methods, a cross-file literal, a cross-file field read, and a cross-file
+`Drop` impl — with the exact expected output asserted so two engines agreeing on nothing cannot
+pass. Workspace 759 passed / 0 failed / 2 ignored (+3); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: none. C5 may now claim normal multi-file support.
+NEXT: WP-C4.7-5 — DEV-072 (borrowck: move-out-of-shared-borrow via match bindings) and DEV-073
+(typecheck: generic impls satisfying operator/iterable bounds).

@@ -128,7 +128,8 @@ so the gate decision sees them (they cap what C5 programs can be written regardl
 - **DEV-067** — bounded generic params lose bounds at intra-generic call sites (E0500) and
   behind `&T` receivers (E0302). Probe: `fn call_speak<T: Speak>(t: &T) { t.speak() }` →
   E0302. Open since C4.5c.
-- **DEV-069** — front end + HIR oracle not multi-file-span-clean (found f-3c). Caps
+- **DEV-069** — front end + HIR oracle not multi-file-span-clean (found f-3c). **CLOSED by
+  WP-C4.7-4, 2026-07-20.** Caps
   multi-file programs — directly adjacent to C5's "multi-package application" outcome.
 - **`Box<T>`** — `core-min` requires it; the checker cannot deref it (probe: `*Box::new(5)`
   → E0001 "cannot dereference non-reference type 'Box<Int32>'"). No deviation number yet;
@@ -167,7 +168,8 @@ struct/enum shape crosschecks. No spec exposure; they fail loudly per the C4.3 c
 is the C5 baseline, not std-full. All Class-A classes A1–A7 are required before C4 exit
 (including the `core-min` items in A4). std-full ops (`HashSet`, `HashMap::values`/`remove`,
 `Vec::contains`) may stay reserved beyond C4 unless separately required by the stable Core
-contract. Front-end prerequisites get explicit owners: DEV-069 blocks the C5 multi-file claim
+contract. Front-end prerequisites get explicit owners: DEV-069 blocked the C5 multi-file claim
+(**closed by WP-C4.7-4, 2026-07-20**)
 (parallel front-end WP allowed); DEV-067, `Box` deref, and primitive `Ordering::cmp` resolved
 where `core-min` requires. A3's `Ord` portion waits on a CE3 `Ordering` runtime-surface
 amendment (`Eq` may proceed first); A4 needs a dated runtime-surface amendment.
@@ -267,7 +269,8 @@ front-end gaps carried past the exit, none silent:**
   method-own generic parameters, non-bare generic impl self args, droppable Iterator Item
   (A1); mutable slice views (A4-2e); `unwrap_or`/combinators on droppable payloads (A4-1/2a).
 - Front-end deviations (owner: front end): DEV-067 (bounded generics at intra-generic call
-  sites), DEV-069 (multi-file span discipline — prerequisite for the C5 multi-file claim per
+  sites), DEV-069 (multi-file span discipline — **closed by WP-C4.7-4, 2026-07-20**; was a
+  prerequisite for the C5 multi-file claim per
   CD-033), DEV-071 (Ordering exhaustiveness), DEV-072 (move-out-of-borrow via match bindings
   passes borrowck), DEV-073 (generic impls unmatched in operator/iterable bound checks),
   `Box` deref, primitive `Ordering::cmp` surface, `Vec::get` literal-typing quirk.

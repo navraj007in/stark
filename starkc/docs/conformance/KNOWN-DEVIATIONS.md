@@ -1860,7 +1860,7 @@ WP-C1.5)
 - **Regression evidence:** `tests/mir_differential.rs::user_copy_impl_struct_is_copy_in_mir`
   (Copy struct passed twice by value, field read afterwards; both engines agree). — closed.
 
-## DEV-069 — Front end + HIR interpreter are not multi-file-span-clean [OPEN, found WP-C4.5f-3c, 2026-07-19]
+## DEV-069 — Front end + HIR interpreter are not multi-file-span-clean [CLOSED, WP-C4.7-4, 2026-07-20]
 
 - **What:** the type checker and the HIR reference interpreter resolve `Span`s against the
   **entry file only**. In a multi-file program (`mod helper;` loading `helper.stark`), any
@@ -1882,11 +1882,35 @@ WP-C1.5)
   MIR scope. Until then the differential multi-file test pins the front-end-safe subset
   (scalar free functions, literal-free dependency bodies, no cross-file methods/fields),
   padded so dependency name spans stay in-bounds.
-- **Regression evidence (of the safe subset + MIR cleanliness):**
-  `tests/mir_differential.rs::multi_file_module_program_agrees_with_qualified_symbols`
-  (two-file program; module-qualified symbols `helper::add_self@[]`/`helper::add_both@[]`;
-  `files.len() >= 2`; differential output agreement). Widening that test tracks this
-  deviation's front-end fix.
+- **Resolution (WP-C4.7-4, 2026-07-20).** Root cause: `typecheck.rs`, `borrowck.rs`, and
+  `interp.rs` each hold ONE "current file" and read every span against it. For the item being
+  checked that is correct — `check_crate` already swapped `self.file` per item — but every
+  *lookup* of another item (a nominal's name, an impl's method names, a trait's default method
+  names, a `Drop` impl) scans all items in the program and read their spans against the wrong
+  file. Two mechanisms fix the whole class:
+  1. **`item_text(item, span)`** in all three modules reads a span against the file that
+     DECLARES `item` (via the `hir.item_files` map the resolver already populated, which is
+     also what MIR's `ProgramMeta` uses). Every cross-item scan now uses it: method resolution,
+     trait-default fallback, associated-fn lookup, `Drop` discovery, nominal formatting,
+     `item_name`.
+  2. **Per-body file swap in the oracle.** The interpreter never swapped file at all. `Callable`
+     now carries its declaring file, and all THREE body-execution funnels — `call_callable`,
+     `call_user_method`, and the destructor path in `drop_value` — save/restore `self.file`
+     around the body, on error paths too. A trait default's body correctly takes the TRAIT's
+     file, not the impl's.
+  `text()` in all three modules is additionally non-panicking now (`.get(..).unwrap_or("?")`),
+  so a residual wrong-file read degrades to a visible `"?"` in a diagnostic rather than
+  aborting the compiler. That is a backstop, not the mechanism.
+- **Regression evidence:** `tests/multi_file_spans.rs` (new, 3 tests, one per failure shape):
+  `cross_file_methods_fields_and_literals_check_and_run` (shapes b/c/d, checked AND executed),
+  `a_long_dependency_file_does_not_panic_the_front_end` (shape a — the dependency file is
+  deliberately longer than the entry file, which is what turned a wrong-file read into an
+  out-of-bounds panic), and `cross_file_trait_impls_and_drop_run_correctly` (cross-file trait
+  override, un-overridden trait default, and a cross-file destructor whose ORDER is the
+  observable). Plus `tests/mir_differential.rs::multi_file_module_program_agrees_with_qualified_symbols`,
+  **widened** from the front-end-safe subset to a cross-file struct with methods, a cross-file
+  literal, a cross-file field read, and a cross-file `Drop` impl, with the exact expected
+  output pinned (so agreement cannot be vacuous).
 
 ## DEV-070 — `match` on a scrutinee behind a shared reference moves it out [CLOSED, WP-C4.6 A2, 2026-07-20]
 
@@ -2053,8 +2077,9 @@ WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroact
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
 DEV-069 (front end + HIR interpreter not multi-file-span-clean: cross-file spans read against
 the entry file, breaking cross-file methods/literals/field reads) was found during WP-C4.5f-3c's
-multi-file lowering work and remains **open**, owned by a future front-end WP — the MIR lowering
-itself is multi-file-clean via `ProgramMeta`.
+multi-file lowering work — the MIR lowering itself was already multi-file-clean via
+`ProgramMeta` — and was **closed by WP-C4.7-4** (2026-07-20), removing CD-033's C5 multi-file
+prerequisite.
 DEV-068 (user `impl Copy` structs always-Move in MIR lowering, rejecting valid programs at
 MIR verification) was surfaced by the external C4.5c-head review, confirmed empirically, and
 closed the same day in WP-C4.5e-0 (CD-030).
@@ -2111,11 +2136,11 @@ by exact fixture. DEV-009, DEV-022, DEV-023, and DEV-024 — which WP-C2.6 had a
 decision ownership and C2.11 implementation ownership — were all **resolved by WP-C2.11**; see
 their individual entries. (A prior revision of this paragraph, written at WP-C2.6 time, still
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
-**Currently open (2026-07-20, post-WP-C4.6 Class-A completion):** DEV-005 (unowned), DEV-010
+**Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-067 (WP-C4.7-7), DEV-069 (WP-C4.7-4 — a C5 multi-file prerequisite per
-CD-033), DEV-071 (WP-C4.7-7), DEV-072 (WP-C4.7-5), DEV-073 (WP-C4.7-5). DEV-070 was closed by
-WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation. DEV-060 closed the same day it was made a C3-ENTRY blocker.
+remainder), DEV-067 (WP-C4.7-7), DEV-071 (WP-C4.7-7), DEV-072 (WP-C4.7-5), DEV-073 (WP-C4.7-5). DEV-070 was closed by
+WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
+WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite. DEV-060 closed the same day it was made a C3-ENTRY blocker.
 2 informational not-owned items remain (DEV-SEED-008, DEV-SEED-014).
 
 ### WP-C2.7 abstract-machine rule mapping

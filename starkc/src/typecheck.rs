@@ -339,8 +339,40 @@ pub fn analyze_with_options(
 }
 
 impl<'a> TypeChecker<'a> {
+    /// Read a span belonging to the item currently being checked. `check_crate`'s item walks
+    /// keep `self.file` pointing at the current item's declaring file, so this is correct for
+    /// spans of the item under check — and WRONG for spans of any OTHER item, which must go
+    /// through `item_text` (DEV-069).
+    ///
+    /// Non-panicking since WP-C4.7-4: an out-of-range span used to panic "byte index N out of
+    /// bounds" whenever a dependency file was longer than the entry file (DEV-069 failure shape
+    /// (a)). A wrong-file read is now a visible `"?"` in a diagnostic instead of a compiler
+    /// crash. With the cross-item reads fixed this should be unreachable; it is a backstop, not
+    /// a mechanism.
     fn text(&self, span: Span) -> &str {
-        &self.file.src[span.lo as usize..span.hi as usize]
+        self.file
+            .src
+            .get(span.lo as usize..span.hi as usize)
+            .unwrap_or("?")
+    }
+
+    /// The file that DECLARES `item`. Multi-file programs (`mod helper;`) parse each file
+    /// separately, so spans are file-relative and only meaningful against their own file's text.
+    fn item_src(&self, item: ItemId) -> &str {
+        match self.hir.item_files.get(&item) {
+            Some(file) => &file.src,
+            None => &self.file.src,
+        }
+    }
+
+    /// Read a span belonging to `item`, against the file that declares it. Every cross-item read
+    /// — another type's name, another impl's method names, another struct's field names — must
+    /// use this, because `self.file` is the file of the item being CHECKED, not the item being
+    /// LOOKED UP (DEV-069 failure shapes (b), (c), (d)).
+    fn item_text(&self, item: ItemId, span: Span) -> &str {
+        self.item_src(item)
+            .get(span.lo as usize..span.hi as usize)
+            .unwrap_or("?")
     }
 
     fn find_package_root(&self, file_path: &str) -> Option<std::path::PathBuf> {
@@ -1181,8 +1213,10 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
-    fn format_nominal(&self, name: Span, args: &[Ty]) -> String {
-        let name = self.text(name);
+    /// DEV-069: `item` is the nominal's DECLARING item — its name span is only meaningful
+    /// against its own file, which is not necessarily the file being checked.
+    fn format_nominal(&self, item: ItemId, name: Span, args: &[Ty]) -> String {
+        let name = self.item_text(item, name);
         if args.is_empty() {
             name.to_string()
         } else {
@@ -1324,7 +1358,7 @@ impl<'a> TypeChecker<'a> {
             Ty::Struct(id, args) => {
                 let item = self.hir.item(id);
                 if let hir::ItemKind::Struct { name, .. } = &item.kind {
-                    self.format_nominal(*name, &args)
+                    self.format_nominal(id, *name, &args)
                 } else {
                     "Struct".to_string()
                 }
@@ -1332,7 +1366,7 @@ impl<'a> TypeChecker<'a> {
             Ty::Enum(id, args) => {
                 let item = self.hir.item(id);
                 if let hir::ItemKind::Enum { name, .. } = &item.kind {
-                    self.format_nominal(*name, &args)
+                    self.format_nominal(id, *name, &args)
                 } else {
                     "Enum".to_string()
                 }
@@ -2639,16 +2673,18 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// DEV-069: an item's own name is read against the file that declares it, which is not
+    /// necessarily the file being checked.
     fn item_name(&self, item: ItemId) -> String {
         match &self.hir.item(item).kind {
-            hir::ItemKind::Fn(def) => self.text(def.sig.name).to_string(),
+            hir::ItemKind::Fn(def) => self.item_text(item, def.sig.name).to_string(),
             hir::ItemKind::Struct { name, .. }
             | hir::ItemKind::Enum { name, .. }
             | hir::ItemKind::Trait { name, .. }
             | hir::ItemKind::Const { name, .. }
             | hir::ItemKind::TypeAlias { name, .. }
-            | hir::ItemKind::Mod { name, .. } => self.text(*name).to_string(),
-            hir::ItemKind::Model(def) => self.text(def.name).to_string(),
+            | hir::ItemKind::Mod { name, .. } => self.item_text(item, *name).to_string(),
+            hir::ItemKind::Model(def) => self.item_text(item, def.name).to_string(),
             hir::ItemKind::Impl { .. } | hir::ItemKind::Use(_) => format!("item#{}", item.0),
         }
     }
@@ -5461,8 +5497,11 @@ impl<'a> TypeChecker<'a> {
         let hir::ItemKind::Trait { items, .. } = &self.hir.item(trait_id).kind else {
             return None;
         };
+        // DEV-069: the trait's method names belong to the TRAIT's declaring file.
         items.iter().find_map(|trait_item| match trait_item {
-            hir::TraitItem::Method { sig, .. } if self.text(sig.name) == name_str => {
+            hir::TraitItem::Method { sig, .. }
+                if self.item_text(trait_id, sig.name) == name_str =>
+            {
                 Some(sig.clone())
             }
             _ => None,
@@ -5598,7 +5637,11 @@ impl<'a> TypeChecker<'a> {
 
         let mut candidates = Vec::new();
 
-        for item in &self.hir.items {
+        // DEV-069: this scans EVERY impl in the program, including impls declared in other
+        // files, so method names are read against each impl's OWN file — not `self.file`, which
+        // is the file of the item being checked.
+        for (impl_index, item) in self.hir.items.iter().enumerate() {
+            let impl_item_id = ItemId(impl_index as u32);
             if let hir::ItemKind::Impl {
                 self_ty: impl_self_ty_id,
                 items,
@@ -5614,7 +5657,7 @@ impl<'a> TypeChecker<'a> {
 
                 for impl_item in items {
                     if let hir::ImplItem::Fn { def, .. } = impl_item {
-                        let method_name_str = self.text(def.sig.name);
+                        let method_name_str = self.item_text(impl_item_id, def.sig.name);
                         if method_name_str == name_str {
                             candidates.push((
                                 def,
@@ -5679,9 +5722,11 @@ impl<'a> TypeChecker<'a> {
                 else {
                     return None;
                 };
+                // DEV-069: a trait default's name belongs to the trait's own file, which may
+                // differ from both the impl's file and the file being checked.
                 trait_items.iter().find_map(|trait_item| match trait_item {
                     hir::TraitItem::Method { sig, body: Some(_) }
-                        if self.text(sig.name) == name_str =>
+                        if self.item_text(trait_id, sig.name) == name_str =>
                     {
                         Some((sig.clone(), map.clone(), impl_self_ty.clone()))
                     }

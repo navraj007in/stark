@@ -404,7 +404,18 @@ Order within the increment (each independently commit-able):
   finding: CD-015/C2.9 approved only that `size_of`/`align_of` are the sole layout observations
   and that Core promises no ABI; it fixed no per-type numbers, and LAYOUT-ABI-001 makes them
   target-/version-dependent — so real numbers are C5.1's, not C4's. 4 new tests; workspace 756/0/2.
-- C4.7-4: _pending_
+- C4.7-4: **DONE 2026-07-20 — DEV-069 CLOSED.** Root cause was one class, not four bugs: all
+  three modules read every span against a single "current file", which is right for the item
+  being CHECKED and wrong for every item being LOOKED UP. Fix: `item_text(item, span)` in
+  typecheck/borrowck/interp resolves against the declaring file (`hir.item_files`, the same map
+  MIR's `ProgramMeta` uses), applied to every cross-item scan; plus a per-body file swap in the
+  oracle, which never swapped at all — `Callable` carries its declaring file and all THREE
+  body-execution funnels (`call_callable`, `call_user_method`, `drop_value`) save/restore around
+  the body including error paths. `text()` is now non-panicking in all three as a backstop.
+  Landed as ONE commit rather than the planned two: the tests exercise both halves end-to-end,
+  so a typecheck-only commit would have left them red. 3 new tests + the multi-file differential
+  WIDENED off its safe subset (cross-file struct/methods/literal/field/Drop, exact output
+  pinned). Workspace 759/0/2.
 - C4.7-5: _pending_
 - C4.7-6: _pending_
 - C4.7-7: _pending_

@@ -1100,30 +1100,36 @@ fn multi_file_module_program_agrees_with_qualified_symbols() {
     let dir = std::env::temp_dir().join(format!("stark_f3c_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let helper_path = dir.join("helper.stark");
+    // WIDENED by WP-C4.7-4 (DEV-069 CLOSED): this test was previously pinned to a
+    // front-end-safe subset — scalar free functions and literal-free helper bodies, padded so
+    // helper spans stayed in-bounds — because the checker and the oracle read every span
+    // against the ENTRY file. With per-item file resolution in place it now exercises the
+    // shapes that used to fail: a cross-file STRUCT with METHODS, cross-file LITERALS, a
+    // cross-file FIELD read, and a cross-file `Drop` impl whose destructor ordering is part of
+    // the compared output. The helper is deliberately longer than the entry file (that length
+    // difference is what turned a wrong-file read into an out-of-bounds panic).
     std::fs::write(
         &helper_path,
         "pub fn add_self(n: Int32) -> Int32 { n + n }\n\
-         pub fn add_both(a: Int32, b: Int32) -> Int32 { add_self(a) + b }\n",
+         pub fn add_both(a: Int32, b: Int32) -> Int32 { add_self(a) + b }\n\
+         pub struct Counter { pub n: Int32 }\n\
+         impl Counter {\n\
+             pub fn doubled(&self) -> Int32 { self.n * 2 }\n\
+         }\n\
+         impl Drop for Counter { fn drop(&mut self) { println(self.n); } }\n\
+         pub fn counter() -> Counter { Counter { n: 31415 } }\n",
     )
     .unwrap();
     let main_path = dir.join("main.stark");
-    // NOTE (DEV-069): the FRONT END + ORACLE are not multi-file-span-clean — typecheck and
-    // the HIR interpreter read spans against the entry file, so cross-file METHODS
-    // mis-resolve, cross-file LITERALS mis-parse, and cross-file FIELD reads fail. The test
-    // therefore stays on the front-end-safe subset (scalar free fns, literal-free helper
-    // bodies), padded so helper name spans stay in-bounds for the checker's reads. The MIR
-    // lowering under test IS multi-file-clean (per-item files via ProgramMeta); widening
-    // this test tracks DEV-069's front-end fix, not MIR work.
     let main_src = "mod helper;\n\
          fn main() {\n\
              println(helper::add_self(4));\n\
              println(helper::add_both(2, 5));\n\
+             let c = helper::counter();\n\
+             println(c.doubled());\n\
+             println(c.n);\n\
              println(100);\n\
-         }\n\
-         // padding padding padding padding padding padding padding padding padding\n\
-         // padding padding padding padding padding padding padding padding padding\n\
-         // padding padding padding padding padding padding padding padding padding\n\
-         // padding padding padding padding padding padding padding padding padding\n";
+         }\n";
     std::fs::write(&main_path, main_src).unwrap();
 
     let file = Arc::new(SourceFile::new(
@@ -1174,6 +1180,14 @@ fn multi_file_module_program_agrees_with_qualified_symbols() {
         ),
     };
     assert_eq!(exec.output, oracle.output, "multi-file differential");
+    // Pin the value too, not just the agreement: two engines that both produced nothing would
+    // "agree" vacuously. 8 / 9 = the free functions; 62830 / 31415 = the cross-file method and
+    // field read; 100 = the entry file's own literal; the trailing 31415 is `Counter`'s
+    // cross-file destructor firing at end of scope, AFTER main's last statement.
+    assert_eq!(
+        oracle.output, "8\n9\n62830\n31415\n100\n31415\n",
+        "widened multi-file program output"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

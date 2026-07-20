@@ -787,6 +787,10 @@ struct Callable {
     receiver: Option<(hir::Receiver, LocalId)>,
     params: Vec<LocalId>,
     body: BlockId,
+    /// DEV-069: the file that DECLARES this body. Spans are file-relative, so every span read
+    /// while executing the body (literals, field names, path segments) must resolve against
+    /// this file — not the entry file, and not the caller's file.
+    file: Arc<SourceFile>,
 }
 
 fn is_valid_main_return(ty: &Ty) -> bool {
@@ -1071,8 +1075,37 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// Read a span belonging to the body currently EXECUTING. `call_callable` keeps `self.file`
+    /// on the executing body's declaring file, so this is correct for literals, path segments,
+    /// and other spans inside that body — and wrong for spans of any other item, which must go
+    /// through `item_text` (DEV-069).
+    ///
+    /// Non-panicking since WP-C4.7-4: reading a foreign span used to abort the interpreter with
+    /// "byte index N out of bounds" whenever the other file was longer (DEV-069 shape (a)).
     fn text(&self, span: Span) -> &str {
-        &self.file.src[span.lo as usize..span.hi as usize]
+        self.file
+            .src
+            .get(span.lo as usize..span.hi as usize)
+            .unwrap_or("?")
+    }
+
+    /// The file that declares `item`.
+    fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
+        match self.hir.item_files.get(&item) {
+            Some(file) => file.clone(),
+            None => self.file.clone(),
+        }
+    }
+
+    /// Read a span belonging to `item`, against the file that declares it (DEV-069). Used for
+    /// every cross-item read: another struct's field names, another impl's method names, a
+    /// trait's method names.
+    fn item_text(&self, item: ItemId, span: Span) -> &str {
+        let src = match self.hir.item_files.get(&item) {
+            Some(file) => &file.src,
+            None => &self.file.src,
+        };
+        src.get(span.lo as usize..span.hi as usize).unwrap_or("?")
     }
 
     fn run_main(&mut self) -> Result<(u8, String), RuntimeError> {
@@ -1152,6 +1185,7 @@ impl<'a> Interpreter<'a> {
             receiver: None,
             params: def.sig.params.iter().map(|param| param.local).collect(),
             body: def.body,
+            file: self.item_file(item),
         })
     }
 
@@ -1173,13 +1207,19 @@ impl<'a> Interpreter<'a> {
             frame.insert(local, Some(value));
         }
         self.frames.push(frame);
+        // DEV-069: a body executes against ITS OWN file. Saved and restored around the call so a
+        // cross-file call returns the caller's file — this is the interpreter's analogue of
+        // typecheck's per-item file swap, and it must be restored on the error path too.
+        let caller_file = std::mem::replace(&mut self.file, callable.file);
         let result = self.eval_block(callable.body);
         if result.is_err() {
+            self.file = caller_file;
             self.frames.pop();
             return result.map(|_| Value::Unit);
         }
         let flow = result?;
         self.cleanup_current_frame()?;
+        self.file = caller_file;
         self.frames.pop();
         match flow {
             Flow::Value(value) | Flow::Return(value) => Ok(value),
@@ -2744,7 +2784,10 @@ impl<'a> Interpreter<'a> {
         inherent_only: bool,
     ) -> Option<Callable> {
         let nominal = nominal?;
-        self.hir.items.iter().find_map(|item| {
+        // DEV-069: this scans EVERY impl in the program, including impls from other files, so
+        // both the method names and the resulting body's file come from the impl's own item.
+        self.hir.items.iter().enumerate().find_map(|(idx, item)| {
+            let impl_id = ItemId(idx as u32);
             let hir::ItemKind::Impl {
                 trait_,
                 self_ty,
@@ -2769,11 +2812,12 @@ impl<'a> Interpreter<'a> {
                 return None;
             }
             let overridden = items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == name => {
+                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == name => {
                     Some(Callable {
                         receiver: def.sig.receiver.zip(def.sig.receiver_local),
                         params: def.sig.params.iter().map(|param| param.local).collect(),
                         body: def.body,
+                        file: self.item_file(impl_id),
                     })
                 }
                 _ => None,
@@ -2799,10 +2843,12 @@ impl<'a> Interpreter<'a> {
                     hir::TraitItem::Method {
                         sig,
                         body: Some(body),
-                    } if self.text(sig.name) == name => Some(Callable {
+                    } if self.item_text(trait_id, sig.name) == name => Some(Callable {
                         receiver: sig.receiver.zip(sig.receiver_local),
                         params: sig.params.iter().map(|param| param.local).collect(),
                         body: *body,
+                        // The default body lives in the TRAIT's file, not the impl's.
+                        file: self.item_file(trait_id),
                     }),
                     _ => None,
                 })
@@ -2813,7 +2859,8 @@ impl<'a> Interpreter<'a> {
     fn find_associated_fn(&self, nominal: ItemId, name: &str) -> Option<Callable> {
         let mut inherent = Vec::new();
         let mut trait_candidates = Vec::new();
-        for item in &self.hir.items {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let impl_id = ItemId(idx as u32);
             let hir::ItemKind::Impl {
                 trait_,
                 self_ty,
@@ -2831,12 +2878,14 @@ impl<'a> Interpreter<'a> {
             }
             let candidate = items.iter().find_map(|item| match item {
                 hir::ImplItem::Fn { def, .. }
-                    if def.sig.receiver.is_none() && self.text(def.sig.name) == name =>
+                    if def.sig.receiver.is_none()
+                        && self.item_text(impl_id, def.sig.name) == name =>
                 {
                     Some(Callable {
                         receiver: None,
                         params: def.sig.params.iter().map(|param| param.local).collect(),
                         body: def.body,
+                        file: self.item_file(impl_id),
                     })
                 }
                 _ => None,
@@ -2896,8 +2945,13 @@ impl<'a> Interpreter<'a> {
         }
         self.frames.push(frame);
         let method_frame = self.frames.len() - 1;
+        // DEV-069: a method body executes against the file that declares its impl (or, for an
+        // un-overridden trait default, the trait's file) — this is the second body-execution
+        // funnel alongside `call_callable`, and it needs the same swap. Restored on BOTH exits.
+        let caller_file = std::mem::replace(&mut self.file, callable.file);
         let result = self.eval_block(callable.body);
         if let Err(error) = result {
+            self.file = caller_file;
             let restored = self
                 .frame_mut()
                 .values
@@ -2919,7 +2973,10 @@ impl<'a> Interpreter<'a> {
                 .get_mut(&receiver_local)
                 .and_then(Option::take)
         };
+        // Destructors for the method's own locals still belong to the method's file, so the
+        // restore happens after cleanup (matching `call_callable`).
         self.cleanup_current_frame()?;
+        self.file = caller_file;
         self.frames.pop();
         if receiver_kind == hir::Receiver::RefMut {
             let restored = restored.ok_or_else(|| {
@@ -5197,7 +5254,12 @@ impl<'a> Interpreter<'a> {
                     value = Value::Unit;
                 }
                 self.frames.push(frame);
+                // DEV-069: the THIRD body-execution funnel (alongside `call_callable` and
+                // `call_user_method`) — a destructor body belongs to the file declaring its
+                // `Drop` impl, which need not be the file of the code going out of scope.
+                let caller_file = std::mem::replace(&mut self.file, callable.file);
                 let result = self.eval_block(callable.body);
+                self.file = caller_file;
                 if let Some(local) = receiver_local {
                     if let Some(restored) = self
                         .frame_mut()
@@ -5312,11 +5374,14 @@ impl<'a> Interpreter<'a> {
     }
 
     fn find_drop(&self, item: ItemId) -> Option<Callable> {
-        self.hir.items.iter().find_map(|candidate| {
+        // DEV-069: a `Drop` impl may live in a different file from the type's user; the
+        // destructor's method name and body both belong to the impl's own file.
+        self.hir.items.iter().enumerate().find_map(|(idx, candidate)| {
+            let impl_id = ItemId(idx as u32);
             let hir::ItemKind::Impl { trait_: Some(reference), self_ty, items, .. } = &candidate.kind else { return None; };
             if reference.res != Res::CoreTrait(hir::CoreTrait::Drop) || !matches!(&self.hir.ty(*self_ty).kind, hir::TypeKind::Path { res: Res::Item(actual), .. } if *actual == item) { return None; }
             items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == "drop" => Some(Callable { receiver: def.sig.receiver.zip(def.sig.receiver_local), params: def.sig.params.iter().map(|param| param.local).collect(), body: def.body }),
+                hir::ImplItem::Fn { def, .. } if self.item_text(impl_id, def.sig.name) == "drop" => Some(Callable { receiver: def.sig.receiver.zip(def.sig.receiver_local), params: def.sig.params.iter().map(|param| param.local).collect(), body: def.body, file: self.item_file(impl_id) }),
                 _ => None,
             })
         })

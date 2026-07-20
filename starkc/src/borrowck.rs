@@ -115,8 +115,25 @@ pub fn check_snippet(
 }
 
 impl<'a> BorrowChecker<'a> {
+    /// Read a span belonging to the item being checked (`check_crate` keeps `self.file` on the
+    /// current item's file). Cross-item reads must use `item_text` instead (DEV-069).
+    /// Non-panicking since WP-C4.7-4: an out-of-range span was a compiler crash before.
     fn text(&self, span: Span) -> &str {
-        &self.file.src[span.lo as usize..span.hi as usize]
+        self.file
+            .src
+            .get(span.lo as usize..span.hi as usize)
+            .unwrap_or("?")
+    }
+
+    /// Read a span belonging to `item`, against the file that DECLARES it — multi-file programs
+    /// parse each file separately, so spans are only meaningful against their own file
+    /// (DEV-069).
+    fn item_text(&self, item: hir::ItemId, span: Span) -> &str {
+        let src = match self.hir.item_files.get(&item) {
+            Some(file) => &file.src,
+            None => &self.file.src,
+        };
+        src.get(span.lo as usize..span.hi as usize).unwrap_or("?")
     }
 
     /// WP-C1.4 (2026-07-17): backfill `.with_file()` when a diagnostic doesn't already carry one,
@@ -626,7 +643,10 @@ impl<'a> BorrowChecker<'a> {
             Ty::Struct(item, _) | Ty::Enum(item, _) => item,
             _ => return None,
         };
-        if let Some(receiver) = self.hir.items.iter().find_map(|item| {
+        // DEV-069: scans every impl in the program, so each impl's method names are read
+        // against the file that declares that impl.
+        if let Some(receiver) = self.hir.items.iter().enumerate().find_map(|(idx, item)| {
+            let impl_id = hir::ItemId(idx as u32);
             let hir::ItemKind::Impl { self_ty, items, .. } = &item.kind else {
                 return None;
             };
@@ -641,7 +661,9 @@ impl<'a> BorrowChecker<'a> {
                 return None;
             }
             items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. } if self.text(def.sig.name) == method_name => {
+                hir::ImplItem::Fn { def, .. }
+                    if self.item_text(impl_id, def.sig.name) == method_name =>
+                {
                     def.sig.receiver
                 }
                 _ => None,
@@ -687,9 +709,10 @@ impl<'a> BorrowChecker<'a> {
             else {
                 return None;
             };
+            // DEV-069: the trait's method names belong to the TRAIT's declaring file.
             trait_items.iter().find_map(|trait_item| match trait_item {
                 hir::TraitItem::Method { sig, body: Some(_) }
-                    if self.text(sig.name) == method_name =>
+                    if self.item_text(trait_id, sig.name) == method_name =>
                 {
                     sig.receiver
                 }
@@ -889,7 +912,9 @@ impl<'a> BorrowChecker<'a> {
             Ty::Struct(id, _) | Ty::Enum(id, _) => *id,
             _ => return false,
         };
-        self.hir.items.iter().any(|item| {
+        // DEV-069: the trait name written on each impl belongs to that impl's own file.
+        self.hir.items.iter().enumerate().any(|(idx, item)| {
+            let impl_id = hir::ItemId(idx as u32);
             let hir::ItemKind::Impl {
                 trait_: Some(trait_ref),
                 self_ty,
@@ -898,7 +923,9 @@ impl<'a> BorrowChecker<'a> {
             else {
                 return false;
             };
-            let is_drop = self.text(trait_ref.path.span).ends_with("Drop");
+            let is_drop = self
+                .item_text(impl_id, trait_ref.path.span)
+                .ends_with("Drop");
             let matches_type = matches!(
                 &self.hir.ty(*self_ty).kind,
                 hir::TypeKind::Path {
