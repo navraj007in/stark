@@ -1,10 +1,27 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-7 — **every C4-track front-end deviation is CLOSED; two owner decisions pending (6.1, 6.3)**
+Updated: 2026-07-20 after WP-C4.7-6.1 — **`Box<T>` lands on the MIR runtime surface (`0.1-A7`)**
 
 ## Position
-Gate: C4  Next: **owner decisions on WP-C4.7-6.1 (`Box`) and 6.3 (integer-literal typing)**, then
-C4.7-8 (remaining normative MIR residuals; 8.6 mutable slices is an owner decision) and C4.7-9
-(fresh audit + exit report).
+Gate: C4  Next: **WP-C4.7-6.3** (integer-literal expected typing — owner-decided: fix it), then
+**DEV-075** (Char gets `Ord`, `Bool` does not; needs normative spec edits + regeneration), then
+C4.7-8 (MIR residuals; **8.1 is blocked on DEV-076**) and C4.7-9 (fresh audit + exit report).
+**WP-C4.7-6.1 DONE 2026-07-20 (owner-decided, option (a)).** `Box<T>` reaches MIR as an OPAQUE
+OWNING runtime type: `RuntimeFn::BoxNew`/`BoxIntoInner`, surface **`0.1-A6` → `0.1-A7`** (A1
+amendment rev. 11), `MirTy::Core(Box, [T])` — **no new `MirTy`**, and deliberately NOT lowered
+transparently as `T`. Drop goes through the existing `Drop` terminator's structural glue (no
+public box-drop op): dropping a box destroys the contained `T` exactly once, `into_inner`
+transfers it out without dropping. The audit's "`Box` deref" entry is **corrected**: Core v1 has
+no `Deref` trait, TYPE-METHOD-002 peels only `&`/`&mut`, and 06 gives `Box` exactly
+`new`/`into_inner` — so `*box` is spec-conformant to reject, now pinned by a negative test.
+**Three pre-existing defects surfaced while implementing it:** (1) drop-instance discovery never
+descended into `Core` container type arguments, so a `Box<Tag>`'s `Drop` terminator fired and
+silently found no destructor; (2) that walk had no cycle guard, and `Box` makes types recursive —
+`Node -> Option<Box<Node>> -> Box<Node> -> Node` overflowed the stack; (3) **DEV-077**, an oracle
+double-drop in `Box::into_inner` (it operated on a CLONE of the receiver), fixed and closed here.
+Workspace 775/0/2; clippy clean 1.93/1.97.
+**DEV-076 OPENED (blocking WP-C4.7-8.1):** the oracle's `Option::unwrap_or` double-drops the
+payload and never drops the discarded default — found by pinning drop timing BEFORE writing 8.1's
+lowering, per §0.6. MIR must not be built to match it; the oracle is fixed first.
 **WP-C4.7-7 DONE 2026-07-20 — DEV-067 and DEV-071 CLOSED.** With these, **every front-end
 deviation the C4 track owned is closed**; the only open deviations are the four long-standing
 unscheduled ones (DEV-005/010/011/012/017) plus DEV-075, opened yesterday by C4.7-6.2.
@@ -1863,7 +1880,8 @@ slice-bound messages into the "out of bounds" family — an oracle *behavior* ch
 says needs a ledger entry, previously recorded only in A1 rev. 10. CLOSED at creation (the code
 is correct and spec-directed; the gap was governance). (3) A4's "complete" claim tightened to
 "MIR runtime surface" in `WP-C4.6.md` and A1 rev. 10, with the front-end `core-min` holes
-(`Box` deref, primitive `cmp`) pointed at WP-C4.7-6.
+(`Box` deref, primitive `cmp`) pointed at WP-C4.7-6. (`Box` deref was later found
+**misclassified** — spec-conformant to reject; see the WP-C4.7-6.1 record.)
 FILES: STARKLANG/docs/compiler/mir.md (A3 amendment + grammar), mir-amendment-A1-strings-runtime.md
 (rev. 10 wording + DEV-074 pointer), work-packages/WP-C4.6.md (A4 wording), work-packages/
 WP-C4.7.md (tracker + A3→A4 renumber), starkc/docs/conformance/KNOWN-DEVIATIONS.md (DEV-074;
@@ -2176,3 +2194,58 @@ Workspace 769 passed / 0 failed / 2 ignored (+4); fmt clean; clippy clean on 1.9
 FOLLOW-UP: none.
 NEXT: the two owner decisions (6.1 `Box`, 6.3 literal typing), then C4.7-8 (MIR residuals; 8.6
 mutable slices is itself an owner decision) and C4.7-9 (fresh audit + exit report).
+
+### WP-C4.7-6.1 — `Box<T>` on the MIR runtime surface (`0.1-A7`), owner option (a) — 2026-07-20
+DONE: `Box<T>` reaches MIR. Implemented exactly to the owner's decision: an **opaque owning**
+runtime type, `RuntimeFn::BoxNew` + `BoxIntoInner` activated through the dated A1-amendment
+mechanism (rev. 11), surface **`0.1-A6` → `0.1-A7`**, representation stays
+`MirTy::Core(Box, [T])` with **no new `MirTy`**, and explicitly NOT lowered transparently as `T`.
+AUDIT CORRECTION (owner-directed): the WP-C4.6 gate audit listed "`Box` deref" as a `core-min`
+hole. It is not one. Core v1 has **no `Deref` trait** (absent from `core-min`'s essential-trait
+list), TYPE-METHOD-002's auto-dereference removes only leading `&`/`&mut`, the abstract machine's
+dereference operates on *the reference*, and 06 gives `Box<T>` exactly `new` and `into_inner`.
+`*Box::new(5)` failing is therefore **specification-conformant** and is now pinned by a negative
+front-end test so a later session cannot "fix" conformant behaviour. The real gap was the
+construction/extraction pair — typecheck-clean and oracle-supported, but with no MIR lowering at
+all — which is what this increment closes.
+SEMANTICS: `BoxNew(T) -> Box<T>` consumes its argument exactly once. `BoxIntoInner(Box<T>) -> T`
+consumes the box and transfers the value out **without dropping it** (ownership moves to the
+caller), releasing the allocation. There is **no public box-drop operation**: ordinary
+destruction goes through the existing `Drop` terminator's structural glue, which drops the
+contained `T` exactly once and then releases the allocation. A box consumed by `into_inner` holds
+nothing, so nothing drops twice. Allocation failure stays a classified host/resource failure, not
+a language trap (the reference interpreter cannot fail to allocate and raises none). Interpreter
+representation is a one-element aggregate — addresses are unobservable (LAYOUT-QUERY-001), so the
+reference engine models only the observable fact that the box OWNS its value.
+THREE PRE-EXISTING DEFECTS surfaced while implementing this; none was in the plan:
+1. **Drop-instance discovery never descended into `Core` container type arguments.** A
+   `Box<Tag>`'s `Drop` terminator was emitted correctly and then silently found no destructor
+   registered — the box dropped nothing at all. The walk now descends into every `Core`
+   container's arguments (which also makes the Vec path robust rather than incidentally correct).
+2. **That walk had no cycle guard**, which only mattered once `Box` made types recursive:
+   `Node -> Option<Box<Node>> -> Box<Node> -> Node` overflowed the stack (observed, not
+   theorised). Guarded by a visited-type set — right regardless, since a type's dtor instances
+   need discovering once.
+3. **DEV-077** (opened and CLOSED here): the oracle's `Box::into_inner` read its receiver through
+   the *borrowing* method path, which operates on a CLONE. `.take()` emptied the clone while the
+   original box kept the value and destroyed it again at scope end — an observable double drop
+   with a `Drop` payload, and a divergence from MIR, which was correct. It now consumes the real
+   place via `take_place`, exactly like the pre-existing `File::close` case beside it. The
+   differential could not agree until the oracle was right, which is how it was caught.
+FILES: starkc/src/mir/{mod,lower,verify,interp}.rs, starkc/src/interp.rs (DEV-077),
+starkc/tests/{mir_differential,mir_verify,mir_lowering,gate2_valid}.rs (incl. the two
+surface-string goldens the plan's §1 warns about), mir-amendment-A1-strings-runtime.md (rev. 11),
+KNOWN-DEVIATIONS.md (DEV-077 closed; count 74 → 75), COMPILER-STATE.md.
+RULES: 06's `core-min` `Box<T>`; TYPE-METHOD-002; LAYOUT-QUERY-001 (addresses unobservable);
+EXEC-ONCE-001 (the DEV-077 double drop). No spec text changed.
+DECISIONS: implements the owner's 6.1 decision (option (a)); no new CE-level decision taken.
+EVIDENCE: `box_new_and_into_inner_agree`; `box_drop_timing_agrees` (exact destructor interleaving
+— printed ORDER is the assertion, not a multiset); `box_recursive_type_agrees` (a finite value of
+a recursive type, which is the whole reason Box stays opaque, and which also pins the cycle
+guard); `rejects_box_into_inner_on_non_box` and `rejects_box_new_with_mismatched_dest` (verifier);
+`box_deref_is_rejected` (front-end negative). Workspace 775 passed / 0 failed / 2 ignored (+6);
+fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: none for Box.
+NEXT: WP-C4.7-6.3 (integer-literal expected typing — owner-decided to fix), then DEV-075
+(Char/Bool ordering + the normative primitive trait/operator matrix, which requires spec edits and
+regenerating the compiled spec).

@@ -278,8 +278,9 @@ front-end gaps carried past the exit, none silent:**
   CD-033), DEV-071 (Ordering exhaustiveness — **closed by WP-C4.7-7, 2026-07-20**), DEV-072 (move-out-of-borrow via match bindings
   passes borrowck — **closed by WP-C4.7-5, 2026-07-20**), DEV-073 (generic impls unmatched in
   operator/iterable bound checks — **closed by WP-C4.7-5, 2026-07-20**),
-  `Box` deref, primitive `Ordering::cmp` surface, `Vec::get` literal-typing quirk (all three
-  owned by WP-C4.7-6).
+  `Box` deref (WP-C4.7-6.1 found this **misclassified** — `*box` is spec-conformant to reject;
+  the real gap was `Box::new`/`into_inner` reaching MIR, closed at surface `0.1-A7`), primitive
+  `Ordering::cmp` surface (added by WP-C4.7-6.2), `Vec::get` literal-typing quirk (WP-C4.7-6.3).
 - std-full ops explicitly reserved per CD-033: `HashSet`, `HashMap::values`/`remove`,
   `Vec::contains`.
 Per CD-033: "C4 closes only when all required classes are green and no normative Core or

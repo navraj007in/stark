@@ -425,7 +425,13 @@ Order within the increment (each independently commit-able):
   (E0101), recursing through nested/shorthand patterns; wildcards and Copy bindings stay legal
   (pinned); MIR guard kept as defense in depth with an updated message. 2 differential + 2
   front-end tests; workspace 763/0/2.
-- C4.7-6: **6.2 DONE 2026-07-20; 6.1 and 6.3 WITH THE OWNER.** 6.2 primitive `Ord::cmp` across
+- C4.7-6: **6.1 + 6.2 DONE 2026-07-20; 6.3 next (owner decided: fix it).** 6.1 landed per the
+  owner's option (a): `Box<T>` as an opaque owning runtime type, `BoxNew`/`BoxIntoInner`, surface
+  `0.1-A7` (A1 rev. 11), no new `MirTy`, drop via the existing `Drop` glue. The audit's "`Box`
+  deref" entry is corrected — `*box` is spec-conformant to reject and is now pinned negatively.
+  Three pre-existing defects surfaced: drop discovery never descended into `Core` type args; that
+  walk had no cycle guard (recursive `Box` types overflowed the stack); and **DEV-077**, an oracle
+  double-drop in `into_inner`, closed here. Workspace 775/0/2. Earlier: 6.2 primitive `Ord::cmp` across
   all three engines, no new MIR shape or surface (constructs `CoreOrdering` from the comparisons
   `<`/`==` already lower). **Both other items contradict the plan's framing:** 6.1 — `*Box::new(5)`
   failing is **spec-conformant** (no `Deref` trait in Core v1; TYPE-METHOD-002 auto-deref removes

@@ -684,6 +684,10 @@ impl<'a> BodyCx<'a> {
                     Callee::Runtime(rt) if is_slice_runtime_fn(*rt) => {
                         self.slice_runtime_sig(*rt, &arg_tys, bi)
                     }
+                    // 0.1-A7: Box ops are schematic in T.
+                    Callee::Runtime(rt) if is_box_runtime_fn(*rt) => {
+                        self.box_runtime_sig(*rt, &arg_tys, bi)
+                    }
                     Callee::Runtime(rt) => Some(runtime_sig(*rt)),
                 };
                 if let Some((params, ret)) = sig {
@@ -1319,6 +1323,40 @@ impl<'a> BodyCx<'a> {
     /// 0.1-A6 (A4 slicing): slice ops, schematic in T. `SliceNew`'s receiver is a shared
     /// reference to an Array/Vec/slice with element T; the bounds are a matching integer pair
     /// plus the inclusive Bool; the result is `&[T]`. `SliceLen`/`SliceIsEmpty` read a `&[T]`.
+    /// 0.1-A7 (WP-C4.7-6.1): `BoxNew(T) -> Box<T>` and `BoxIntoInner(Box<T>) -> T`, schematic
+    /// in `T`. Both take their argument BY VALUE — `BoxNew` consumes the value it stores and
+    /// `BoxIntoInner` consumes the box, transferring the contained value out without dropping
+    /// it. `T` is read from the argument, so a mismatched destination is caught by the ordinary
+    /// call-dest check (MIR-0005) in the caller.
+    fn box_runtime_sig(
+        &mut self,
+        rt: RuntimeFn,
+        arg_tys: &[Option<MirTy>],
+        bi: u32,
+    ) -> Option<(Vec<MirTy>, MirTy)> {
+        use RuntimeFn::*;
+        let arg = arg_tys.first().and_then(|o| o.as_ref())?;
+        let boxed = |t: &MirTy| MirTy::Core(crate::hir::CoreType::Box, vec![t.clone()]);
+        match rt {
+            BoxNew => Some((vec![arg.clone()], boxed(arg))),
+            BoxIntoInner => match arg {
+                MirTy::Core(crate::hir::CoreType::Box, args) => {
+                    let inner = args.first().cloned().unwrap_or(MirTy::Unit);
+                    Some((vec![arg.clone()], inner))
+                }
+                other => {
+                    self.err(
+                        "MIR-0005",
+                        bi,
+                        format!("BoxIntoInner expects a Box receiver, found {other:?}"),
+                    );
+                    None
+                }
+            },
+            _ => unreachable!("non-Box op in box_runtime_sig"),
+        }
+    }
+
     fn slice_runtime_sig(
         &mut self,
         rt: RuntimeFn,
@@ -1958,6 +1996,12 @@ fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {
     )
 }
 
+/// 0.1-A7 (WP-C4.7-6.1): the `Box<T>` group. Schematic in `T`, resolved from the argument.
+fn is_box_runtime_fn(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(rt, BoxNew | BoxIntoInner)
+}
+
 fn is_slice_runtime_fn(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
     matches!(rt, SliceNew | SliceLen | SliceIsEmpty)
@@ -2038,6 +2082,10 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
             }],
             MirTy::Enum(EnumRef::CoreOption, vec![MirTy::Char]),
         ),
+        // Box ops are schematic in T — resolved by `box_runtime_sig`, never this fixed table.
+        BoxNew | BoxIntoInner => {
+            unreachable!("Box ops resolve through box_runtime_sig, not runtime_sig")
+        }
         // Vec ops are schematic in T — resolved by `vec_runtime_sig`, never this fixed table.
         VecNew | VecWithCapacity | VecPush | VecPop | VecLen | VecIsEmpty | VecIndexGet
         | VecReplace | VecRemove | VecClear | VecIterNew | VecIterNext | VecGetRef

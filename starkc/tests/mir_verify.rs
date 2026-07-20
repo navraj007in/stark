@@ -1460,3 +1460,49 @@ fn accepts_layout_query_of_any_type_into_uint64() {
         "a layout query into a UInt64 dest must verify cleanly"
     );
 }
+
+#[test]
+fn rejects_box_into_inner_on_non_box() {
+    // 0.1-A7: `BoxIntoInner(Box<T>) -> T` is schematic in T, read from the argument. An Int32
+    // argument has no contained type, so the signature cannot be formed: MIR-0005.
+    let b = body(
+        vec![ret_local(), local(MirTy::Int32), local(MirTy::Int32)],
+        vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::BoxIntoInner),
+                    args: vec![Operand::Const(Constant::Int(1, MirTy::Int32))],
+                    dest: Place::local(LocalId(2)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_box_new_with_mismatched_dest() {
+    // 0.1-A7: `BoxNew(T) -> Box<T>` — the destination's contained type must be the argument's
+    // type. `BoxNew(Int32)` into a `Box<Bool>` is MIR-0005; the schematic signature must not
+    // degrade to "any Box".
+    let boxed_bool = MirTy::Core(starkc::hir::CoreType::Box, vec![MirTy::Bool]);
+    let b = body(
+        vec![ret_local(), local(boxed_bool)],
+        vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::Runtime(RuntimeFn::BoxNew),
+                    args: vec![Operand::Const(Constant::Int(1, MirTy::Int32))],
+                    dest: Place::local(LocalId(1)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}

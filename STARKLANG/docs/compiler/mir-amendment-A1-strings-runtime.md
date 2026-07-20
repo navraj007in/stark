@@ -5,11 +5,11 @@ Status: **APPROVED under CE3 as an additive MIR v0.1 amendment, runtime surface 
 corrections, which this revision incorporates (see §11 revision log). Rev. 1's central design
 was approved in principle; rev. 2 resolved eight required corrections; rev. 3 resolves the
 final four. Implementation of the C4.5e main body may begin against this revision.
-**Current runtime surface after subsequent dated enumerations (§11): `0.1-A6`** (rev. 5
+**Current runtime surface after subsequent dated enumerations (§11): `0.1-A7`** (rev. 5
 activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char ops as
 `0.1-A3`; rev. 8 activated checked interior Vec access as `0.1-A4`; rev. 9 activated string
 chars iteration as `0.1-A5`; rev. 10 activated shared slice views as `0.1-A6`, completing the
-A4 `core-min` surface).
+A4 `core-min` MIR runtime surface; rev. 11 activated the `Box<T>` group as `0.1-A7`).
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -400,6 +400,50 @@ I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
 
+**Rev. 11 — surface `0.1-A7` activation (2026-07-20, WP-C4.7-6.1, owner-decided; per CD-032's
+dated-enumeration rule).** Activates `Box<T>` construction and extraction. 06-Standard-Library
+lists `Box<T>` in `core-min` and gives it exactly `new` and `into_inner`; both reached the front
+end and the HIR oracle but had no MIR lowering at all.
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `BoxNew` | `(T) -> Box<T>` | — | moves `T` into a fresh allocation; consumes its argument exactly once |
+| `BoxIntoInner` | `(Box<T>) -> T` | — | consumes the box and transfers the contained value out **without dropping it** (ownership moves to the caller), releasing the allocation |
+
+`Box<T>` is `MirTy::Core(Box, [T])` — **no new `MirTy`**. It is an **opaque owning** runtime
+type, deliberately NOT lowered transparently as `T`: a transparent box would make a recursive
+type such as `struct Node { next: Option<Box<Node>> }` infinitely sized. Both ops are schematic
+in `T` (`box_runtime_sig`), so a mismatched destination is an ordinary MIR-0005.
+
+**No public box-drop operation.** Ordinary destruction goes through the existing `Drop`
+terminator's structural glue: dropping a `Box<T>` drops the contained `T` **exactly once** and
+then releases the allocation (unobservable). A box consumed by `into_inner` no longer holds the
+value, so nothing is dropped twice. Interpreter representation: a one-element aggregate — Core v1
+makes addresses unobservable (LAYOUT-QUERY-001), so the reference interpreter models only what a
+program can observe, namely that the box *owns* its value. Allocation failure remains a
+classified host/resource failure, not a language trap; the reference interpreter cannot fail to
+allocate and so raises none.
+
+**Core v1 has no `Deref` trait**, so `*box` is not a construct: `into_inner` is the only
+extraction. The rejection of `*Box::new(5)` is specification-conformant and is pinned by a
+negative front-end test. This corrects the WP-C4.6 gate audit, which listed "`Box` deref" as a
+`core-min` hole — it is not; the real gap was the construction/extraction pair recorded here.
+
+Two defects were found and fixed while implementing this, both pre-existing:
+- **Drop-instance discovery never descended into `Core` container type arguments**, so a
+  `Box<Tag>`'s `Drop` terminator fired and silently found no destructor registered. The walk now
+  descends into every `Core` container's arguments.
+- **The walk needed a cycle guard** once `Box` made types recursive: `Node -> Option<Box<Node>>
+  -> Box<Node> -> Node` overflowed the stack. Guarded by visited-type set.
+- **DEV-077** (oracle): `Box::into_inner` operated on a CLONE of the receiver, so the original
+  box kept the value and dropped it again at end of scope — an observable double drop with a
+  `Drop` payload, and a divergence from MIR. It now consumes the real place.
+
+`MIR_RUNTIME_SURFACE = "0.1-A7"`. Evidence: `box_new_and_into_inner_agree`,
+`box_drop_timing_agrees` (exact destructor interleaving, both engines), `box_recursive_type_agrees`
+(a finite value of a recursive type) — differential; `rejects_box_into_inner_on_non_box`,
+`rejects_box_new_with_mismatched_dest` — verifier; `box_deref_is_rejected` — front-end negative.
+
 **Rev. 10 — surface `0.1-A6` activation (2026-07-20, WP-C4.6 A4 slicing, per CD-032's
 dated-enumeration rule; completes the A4 core-min surface).** Activates shared slice views:
 
@@ -417,7 +461,10 @@ against the VIEW length**. Slices are shared-only in this revision (`&mut base[r
 reserved); no writes route through a view. The oracle's three slice-bound error messages were
 aligned to the "out of bounds" family (the spec groups all bound failures as one trap; the
 fragment comparator requires it). `MIR_RUNTIME_SURFACE = "0.1-A6"`. **This completes the A4 `core-min` MIR *runtime surface*** —
-front-end `core-min` holes (`Box` deref, primitive `cmp`) are separate and owned by WP-C4.7-6.
+front-end `core-min` items then attributed to it (`Box` deref, primitive `cmp`) are separate and
+were owned by WP-C4.7-6, which found `Box` deref to be **spec-conformant to reject** (no `Deref`
+trait in Core v1) and added primitive `cmp` (6.2). The real Box gap — `new`/`into_inner` — is
+rev. 11 above.
 The message alignment described above is numbered **DEV-074** (closed at creation; see
 `KNOWN-DEVIATIONS.md`).
 

@@ -39,7 +39,7 @@ pub const MIR_VERSION: &str = "0.1";
 /// user-`Drop` key/value types excluded so no runtime op ever runs a user destructor), plus
 /// the A1-approved-but-deferred Char ops (`StringPushChar`/`StringPopChar`,
 /// `PrintlnChar`/`PrintChar`).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A6";
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A7";
 
 // ------------------------------------------------------------------ identity --
 
@@ -391,6 +391,15 @@ pub enum RuntimeFn {
     VecReplace,
     VecRemove,
     VecClear,
+    // --- 0.1-A7 (WP-C4.7-6.1): `Box<T>` construction and extraction. `Box<T>` stays
+    // `MirTy::Core(Box, [T])` — an OPAQUE OWNING runtime type, deliberately not lowered
+    // transparently as `T` (that would make recursive types through `Box` infinitely sized).
+    // There is no public box-drop operation: ordinary destruction goes through the `Drop`
+    // terminator's structural glue, which drops the contained `T` exactly once and then releases
+    // the allocation. Core v1 has NO `Deref` trait, so `*box` is not a construct — extraction is
+    // `into_inner` only. ---
+    BoxNew,
+    BoxIntoInner,
     // --- 0.1-A4 (C4.6 A4-2b): checked interior access — `get`/`get_mut` return `Option<&T>`/
     // `Option<&mut T>` and DO NOT trap on out-of-bounds (they return `None`), distinct from the
     // trapping `VecIndexGet`/`v[i]`. The reference is an interior borrow into the live Vec. ---

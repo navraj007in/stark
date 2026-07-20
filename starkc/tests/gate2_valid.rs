@@ -1379,3 +1379,22 @@ fn ordering_match_exhaustiveness_counts_all_three_variants() {
         "a two-variant Ordering match must stay non-exhaustive, got {diagnostics:?}"
     );
 }
+
+/// WP-C4.7-6.1: `*box` is NOT a Core v1 construct and must stay rejected. Core v1 has no `Deref`
+/// trait (it is absent from `core-min`'s essential-trait list), TYPE-METHOD-002's auto-dereference
+/// removes only leading `&`/`&mut`, and the abstract machine's dereference operates on *the
+/// reference*. 06 gives `Box<T>` exactly `new` and `into_inner`.
+///
+/// This test exists because the WP-C4.6 gate audit misclassified "`Box` deref" as a `core-min`
+/// hole. It is not a hole — it is conformant behaviour, and the real gap was `Box::new`/
+/// `into_inner` not reaching MIR (fixed in the same increment, surface `0.1-A7`). Pinning the
+/// rejection keeps a future session from "fixing" spec-conformant behaviour.
+#[test]
+fn box_deref_is_rejected() {
+    let source = "fn main() -> Unit { let b = Box::new(5); println(*b); }\n".to_string();
+    let diagnostics = analyze("box_deref.stark", source);
+    assert!(
+        diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "*box must remain unsupported in Core v1, got {diagnostics:?}"
+    );
+}

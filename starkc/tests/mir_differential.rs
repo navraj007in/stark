@@ -2153,3 +2153,67 @@ fn bounded_generic_call_chain_agrees() {
         .to_string(),
     );
 }
+
+/// 0.1-A7 (WP-C4.7-6.1): `Box<T>` construction and extraction. 06-Standard-Library lists
+/// `Box<T>` in `core-min` and gives it exactly `new` and `into_inner`; both reached the front end
+/// and the oracle but not MIR. Core v1 has NO `Deref` trait, so `into_inner` is the only way out
+/// of a box — see `box_deref_is_rejected` in the front-end tests for the other half of that.
+#[test]
+fn box_new_and_into_inner_agree() {
+    differential(
+        "box_basic.stark",
+        "fn main() { \
+             let b = Box::new(5); \
+             println(b.into_inner()); \
+             let s = Box::new(String::from(\"hi\")); \
+             println(s.into_inner()); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The destructor-timing case, which is what makes the Box representation load-bearing rather
+/// than cosmetic: `into_inner` transfers the payload OUT without running its destructor (the
+/// caller now owns it and drops it at end of scope), while a box that is simply dropped destroys
+/// its contents exactly once. Both engines must agree on the exact interleaving, so the printed
+/// order — not just the multiset of lines — is the assertion.
+#[test]
+fn box_drop_timing_agrees() {
+    differential(
+        "box_drop.stark",
+        "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } \
+         fn main() { \
+             println(100); \
+             let moved = Box::new(Tag { id: 1 }); \
+             let t = moved.into_inner(); \
+             println(200); \
+             let untouched = Box::new(Tag { id: 2 }); \
+             println(300); \
+         }"
+        .to_string(),
+    );
+}
+
+/// A finite value of a RECURSIVE type. This is the reason `Box<T>` must stay an opaque owning
+/// handle instead of being lowered transparently as `T`: with a transparent box, `Node` would
+/// contain itself and be infinitely sized. It also pins the cycle guard in drop-instance
+/// discovery — without it, walking `Node -> Option<Box<Node>> -> Box<Node> -> Node` overflows
+/// the stack (observed while building this).
+#[test]
+fn box_recursive_type_agrees() {
+    differential(
+        "box_rec.stark",
+        "struct Node { value: Int32, next: Option<Box<Node>> } \
+         fn main() { \
+             let tail = Node { value: 2, next: None }; \
+             let head = Node { value: 1, next: Some(Box::new(tail)) }; \
+             println(head.value); \
+             match head.next { \
+                 Some(b) => { let n = b.into_inner(); println(n.value); } \
+                 None => { println(-1); } \
+             } \
+         }"
+        .to_string(),
+    );
+}

@@ -533,9 +533,49 @@ impl<'a> Interp<'a> {
                     }
                 }
             }
+            // 0.1-A7: dropping a `Box<T>` drops the contained `T` exactly once, then releases
+            // the allocation (unobservable). A box consumed by `into_inner` no longer holds the
+            // value — ownership moved to the caller — so nothing is dropped twice.
+            MirTy::Core(crate::hir::CoreType::Box, args) => {
+                let inner_ty = args.first().cloned().unwrap_or(MirTy::Unit);
+                if let MirValue::Aggregate(mut fields) = self.read_resolved(frame, local, &path)? {
+                    if let Some(inner) = fields.pop() {
+                        self.drop_owned_value(frame, inner, &inner_ty)?;
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// 0.1-A7 (WP-C4.7-6.1): the `Box<T>` runtime group.
+    ///
+    /// A box is represented as a one-element `Aggregate`. The allocation itself is unobservable
+    /// in Core v1 (LAYOUT-QUERY-001 makes addresses unobservable), so the reference interpreter
+    /// models only what a program can observe: that the box OWNS its value. `BoxIntoInner` moves
+    /// that value out and lets the box go — it must NOT run the value's destructor, because
+    /// ownership transfers to the caller.
+    fn run_box_runtime(
+        &mut self,
+        rt: RuntimeFn,
+        args: Vec<MirValue>,
+    ) -> Result<MirValue, MirRunError> {
+        use RuntimeFn::*;
+        let mut iter = args.into_iter();
+        match rt {
+            BoxNew => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("BoxNew expects one argument".into()))?;
+                Ok(MirValue::Aggregate(vec![value]))
+            }
+            BoxIntoInner => match iter.next() {
+                Some(MirValue::Aggregate(mut fields)) if fields.len() == 1 => Ok(fields.remove(0)),
+                other => self.internal(format!("BoxIntoInner on {other:?}")),
+            },
+            _ => self.internal(format!("non-Box runtime op {rt:?} in run_box_runtime")),
+        }
     }
 
     /// Drop a standalone owned value (a Vec element, §5a): place it in a scratch slot of
@@ -1099,6 +1139,9 @@ impl<'a> Interp<'a> {
         }
         if is_slice_runtime(rt) {
             return self.run_slice_runtime(rt, args, call_info);
+        }
+        if is_box_runtime(rt) {
+            return self.run_box_runtime(rt, args);
         }
         let mut iter = args.into_iter();
         let arg = iter.next();
@@ -1904,6 +1947,11 @@ fn is_vec_runtime(rt: RuntimeFn) -> bool {
             | VecGetRef
             | VecGetMutRef
     )
+}
+
+fn is_box_runtime(rt: RuntimeFn) -> bool {
+    use RuntimeFn::*;
+    matches!(rt, BoxNew | BoxIntoInner)
 }
 
 fn is_slice_runtime(rt: RuntimeFn) -> bool {

@@ -2156,6 +2156,23 @@ WP-C1.5)
 - **Scope:** `starkc/src/interp.rs`, the `unwrap_or` core-method path. Owner: **WP-C4.7-8.1**
   (blocking prerequisite).
 
+## DEV-077 — HIR oracle `Box::into_inner` double-drops the payload [CLOSED, WP-C4.7-6.1, 2026-07-20]
+
+- **What:** `Box::into_inner` in the HIR interpreter read its receiver through the ordinary
+  *borrowing* method path, which operates on a **clone** of the receiver place. `.take()` emptied
+  the clone; the original box kept the value and destroyed it again at end of scope. With a
+  `Drop`-carrying payload this was an observable **double drop** (violating `EXEC-ONCE-001`), and
+  it diverged from MIR, which drops exactly once.
+- **Repro:** `struct Tag { id: Int32 } impl Drop for Tag { fn drop(&mut self) { println(self.id); } }`
+  with `let b = Box::new(Tag { id: 1 }); let t = b.into_inner();` — the oracle printed `1` twice.
+- **Resolution (WP-C4.7-6.1):** `into_inner` **consumes** the box, so it now takes from the real
+  place (`take_place`), exactly like the pre-existing `File::close` case immediately below it in
+  `call_core_method`. The dead borrowing arm was removed. Found while building the Box MIR
+  surface, because the differential could not agree until the oracle was correct.
+- **Relationship to DEV-076:** same family (a consuming operation implemented on a cloned
+  receiver) but a different operation and a separate fix. DEV-076 (`unwrap_or`) remains OPEN and
+  is WP-C4.7-8.1's blocking prerequisite.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2205,7 +2222,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 74 numbered deviations total (DEV-002 through DEV-076, DEV-001/DEV-003 retired).
+Current count: 75 numbered deviations total (DEV-002 through DEV-077, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2273,7 +2290,8 @@ described them as open; corrected 2026-07-19 during the C3-entry governance-repa
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
 remainder), DEV-075 (owner-specified 2026-07-20; see the DEV-075 increment), DEV-076
-(WP-C4.7-8.1 blocking prerequisite — an oracle SOUNDNESS defect). DEV-070 was closed by
+(WP-C4.7-8.1 blocking prerequisite — an oracle SOUNDNESS defect). DEV-077 (the same family, in
+`Box::into_inner`) was found and CLOSED by WP-C4.7-6.1. DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);

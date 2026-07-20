@@ -3284,6 +3284,19 @@ impl<'a> Interpreter<'a> {
                 | "write"
                 | "write_str"
         );
+        // DEV-077 (WP-C4.7-6.1): `Box::into_inner` CONSUMES the box and transfers the contained
+        // value to the caller. It must therefore take from the real place, exactly like `close`
+        // below — the borrowing path further down operates on a CLONE of the receiver, so
+        // `.take()` there emptied the clone while the original box kept the value and dropped it
+        // again at end of scope. With a `Drop` payload that was an observable DOUBLE DROP
+        // (violating EXEC-ONCE-001) and it disagreed with MIR, which drops exactly once.
+        if name == "into_inner" {
+            let value = self.take_place(&receiver_place, span)?;
+            let Value::Boxed(mut inner) = value else {
+                return Err(RuntimeError::new("Box::into_inner expects Box", span));
+            };
+            return Ok(inner.take().unwrap_or(Value::Unit));
+        }
         if name == "close" {
             let value = self.take_place(&receiver_place, span)?;
             let Value::File(resource) = value else {
@@ -4093,7 +4106,6 @@ impl<'a> Interpreter<'a> {
                     span,
                 )),
             },
-            Value::Boxed(value) if name == "into_inner" => Ok(value.take().unwrap_or(Value::Unit)),
             Value::HashMap(map) => match name {
                 "insert" => {
                     let k = values

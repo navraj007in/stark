@@ -795,6 +795,16 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::Vec, inner)
             }
+            // 0.1-A7 (WP-C4.7-6.1): `Box<T>` is an OPAQUE OWNING runtime type. Deliberately NOT
+            // lowered transparently as `T`: a transparent Box would make recursive types through
+            // `Box` (e.g. `struct Node { next: Option<Box<Node>> }`) infinitely sized.
+            Ty::Core(crate::hir::CoreType::Box, args) => {
+                let inner = args
+                    .iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                MirTy::Core(crate::hir::CoreType::Box, inner)
+            }
             // 0.1-A2 (C4.5f-2): the borrowing Vec iterator.
             Ty::Core(crate::hir::CoreType::VecIter, args) => {
                 let inner = args
@@ -927,7 +937,12 @@ impl<'a> FnLowerer<'a> {
                         }
                         // A1: runtime container types in signature/field position.
                         crate::hir::CoreType::String => Ok(MirTy::String),
-                        crate::hir::CoreType::Vec
+                        // 0.1-A7: `Box<T>` in FIELD position is what makes a recursive type
+                        // finitely representable (`struct Node { next: Option<Box<Node>> }`) —
+                        // the box is an opaque owning handle, so the field's size does not
+                        // depend on `Node`'s.
+                        crate::hir::CoreType::Box
+                        | crate::hir::CoreType::Vec
                         | crate::hir::CoreType::HashMap
                         | crate::hir::CoreType::VecIter
                         | crate::hir::CoreType::KeysIter
@@ -1092,7 +1107,10 @@ impl<'a> FnLowerer<'a> {
             // arm makes them units, and the interp's `drop_in_place` reclaims/element-drops.
             // 0.1-A2: the iterator likewise (cursor/borrow release; T: Copy means no element
             // destructors — glue is observably a no-op).
+            // 0.1-A7: a `Box<T>` always needs glue — it owns a heap allocation to release, and
+            // drops the contained `T` exactly once first.
             MirTy::String
+            | MirTy::Core(crate::hir::CoreType::Box, _)
             | MirTy::Core(crate::hir::CoreType::Vec, _)
             | MirTy::Core(crate::hir::CoreType::VecIter, _)
             | MirTy::Core(crate::hir::CoreType::HashMap, _)
@@ -1182,6 +1200,23 @@ impl<'a> FnLowerer<'a> {
     /// Discover every dtor instance `ty`'s drop glue can invoke: record its symbol for the
     /// type context and queue its body for lowering.
     fn discover_drop_impls(&mut self, ty: &MirTy) -> Result<(), LowerError> {
+        let mut visited = std::collections::BTreeSet::new();
+        self.discover_drop_impls_guarded(ty, &mut visited)
+    }
+
+    /// 0.1-A7: the walk needs a cycle guard because `Box<T>` makes types RECURSIVE. Without it,
+    /// `struct Node { next: Option<Box<Node>> }` walks Node → Option<Box<Node>> → Box<Node> →
+    /// Node forever and overflows the stack (observed while adding the Box surface). The guard is
+    /// on the type rather than a depth limit: a type's dtor instances only need discovering once,
+    /// so revisiting is pure waste even where it would terminate.
+    fn discover_drop_impls_guarded(
+        &mut self,
+        ty: &MirTy,
+        visited: &mut std::collections::BTreeSet<MirTy>,
+    ) -> Result<(), LowerError> {
+        if !visited.insert(ty.clone()) {
+            return Ok(());
+        }
         match ty {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
                 let (item, args) = (*item, args.clone());
@@ -1195,13 +1230,13 @@ impl<'a> FnLowerer<'a> {
                 match nominal_instance_fields(self.hir, self.tables, self.meta, item, &args)? {
                     NominalFields::Struct(tys) => {
                         for t in &tys {
-                            self.discover_drop_impls(t)?;
+                            self.discover_drop_impls_guarded(t, visited)?;
                         }
                     }
                     NominalFields::Enum(variants) => {
                         for v in &variants {
                             for t in v {
-                                self.discover_drop_impls(t)?;
+                                self.discover_drop_impls_guarded(t, visited)?;
                             }
                         }
                     }
@@ -1209,10 +1244,19 @@ impl<'a> FnLowerer<'a> {
             }
             MirTy::Enum(_, args) | MirTy::Tuple(args) => {
                 for t in args.clone() {
-                    self.discover_drop_impls(&t)?;
+                    self.discover_drop_impls_guarded(&t, visited)?;
                 }
             }
-            MirTy::Array(elem, _) => self.discover_drop_impls(&elem.clone())?,
+            MirTy::Array(elem, _) => self.discover_drop_impls_guarded(&elem.clone(), visited)?,
+            // 0.1-A7: descend into runtime containers' element types. A `Box<Tag>`'s drop glue
+            // runs `Tag`'s destructor, so `Tag`'s dtor instance must be discovered and lowered —
+            // without this the `Drop` terminator fires and silently finds no dtor registered.
+            // Applies to every `Core` container uniformly (Vec's elements reach the same glue).
+            MirTy::Core(_, args) => {
+                for t in args.clone() {
+                    self.discover_drop_impls_guarded(&t, visited)?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -3703,6 +3747,27 @@ impl<'a> FnLowerer<'a> {
                     Ok(())
                 }
                 // A1 (CD-031), C4.5e-2: Vec construction.
+                // 0.1-A7 (WP-C4.7-6.1): `Box::new(v)` moves `v` into a fresh allocation;
+                // `Box::into_inner(b)` consumes the box and transfers the value out WITHOUT
+                // dropping it, releasing the allocation. Both consume their argument exactly
+                // once, so ordinary operand lowering (which moves a non-Copy value) is correct
+                // and no drop is owed on either side.
+                Res::Builtin(Builtin::BoxNew) => {
+                    if args.len() != 1 {
+                        return unsupported("Box::new arity", span);
+                    }
+                    let value = self.lower_expr_to_operand(args[0])?;
+                    self.emit_runtime_call(RuntimeFn::BoxNew, vec![value], dest, span);
+                    Ok(())
+                }
+                Res::Builtin(Builtin::BoxIntoInner) => {
+                    if args.len() != 1 {
+                        return unsupported("Box::into_inner arity", span);
+                    }
+                    let boxed = self.lower_expr_to_operand(args[0])?;
+                    self.emit_runtime_call(RuntimeFn::BoxIntoInner, vec![boxed], dest, span);
+                    Ok(())
+                }
                 Res::Builtin(Builtin::VecNew) => {
                     self.emit_runtime_call(RuntimeFn::VecNew, vec![], dest, span);
                     Ok(())
@@ -4333,6 +4398,18 @@ impl<'a> FnLowerer<'a> {
             )
         {
             return self.lower_primitive_cmp(base, args[0], dest, span);
+        }
+        // 0.1-A7: the method spelling `b.into_inner()` (the qualified `Box::into_inner(b)` form
+        // goes through the builtin arm in `lower_call`). Core v1 has NO `Deref` trait, so this is
+        // the ONLY way to get the value out of a box — `*b` is not a Core construct.
+        if let MirTy::Core(crate::hir::CoreType::Box, _) = &peeled_ty {
+            let name = self.text(name_span);
+            if name != "into_inner" || !args.is_empty() {
+                return unsupported(format!("Box method {name}"), span);
+            }
+            let boxed = self.lower_expr_to_operand(base)?;
+            self.emit_runtime_call(RuntimeFn::BoxIntoInner, vec![boxed], dest, span);
+            return Ok(());
         }
         // A1 (CD-031): methods on the runtime text types dispatch to the RuntimeFn surface.
         if matches!(peeled_ty, MirTy::String | MirTy::Str) {
