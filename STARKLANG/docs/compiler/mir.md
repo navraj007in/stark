@@ -11,9 +11,27 @@ MIR shape change requires a MIR version bump.* This supersedes the earlier blank
 change requires a version bump" reading. Amendments approved under this policy to date:
 **A1** (CD-031, `Constant::Str`, drop-elaborated `String`/`Vec`, `Trap.message`, runtime-surface
 `RuntimeFn` groups — `mir-amendment-A1-strings-runtime.md`), **A2** (`EnumRef::CoreOrdering`,
-the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`), and **A3**
-(bitwise/shift/exponentiation arithmetic — recorded in full below). All are additive and remain
-MIR v0.1.
+the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`), **A3**
+(bitwise/shift/exponentiation arithmetic — recorded in full below), and **A4**
+(`Rvalue::LayoutQuery`, type-preserving `size_of`/`align_of` — `mir-amendment-A4-layout.md`,
+CD-036). All are additive and remain MIR v0.1.
+
+**A4 shape amendment (WP-C4.7-3, CD-036, approved 2026-07-20).** Adds one pure rvalue,
+`LayoutQuery { kind: SizeOf | AlignOf, ty: MirTy }`, destination always `UInt64`. It replaces
+WP-C4.6 A4-1's type-ERASING lowering of `size_of`/`align_of` to `Const 8`: 06-Standard-Library
+classifies these as *target-layout queries* and LAYOUT-QUERY-001 makes them the only Core layout
+observations, so a backend must be able to answer them from the MIR it is given — which it cannot
+do if `T` was discarded. Because MIR is monomorphised, `ty` is always concrete (`size_of::<T>()`
+in a generic body records the instantiation's type). The rvalue is pure — it cannot trap, call
+user code, or diverge, so §5's totality invariant is unchanged, and it is deliberately NOT a
+`RuntimeFn`: its only input is a type, it cannot trap, and layout is compile-time knowledge
+rather than backend-supplied runtime. Each consumer answers it through a single layout service;
+the C4 reference interpreter's returns `(8, 8)` for every type, i.e. **the same answers both
+engines have always given — A4 changes the representation, not the behavior**, and the HIR oracle
+is untouched. Real per-target numbers are C5.1's (LAYOUT-ABI-001 makes them target- and
+version-dependent; CD-015 fixed none). Verifier rule: destination must be `UInt64` (MIR-0004);
+the queried type is unconstrained, since `Sized`-ness is the checked front end's property. No
+runtime-surface change (`0.1-A6` stands).
 
 **A3 shape amendment (WP-C4.6 A5, under CD-033; recorded 2026-07-20 by WP-C4.7-1 as **CD-035**,
 presented for post-hoc CE3 ratification).** CD-033 approved the A5 *class* of work (bitwise and shift
@@ -235,6 +253,9 @@ Rvalue   ::= Use(Operand)
            | Aggregate(AggKind, Vec<Operand>)      -- struct/tuple/array/enum-variant construction
            | Discriminant(Place)                   -- read enum discriminant as an integer
            | RefOf { mutable, place }              -- take a reference
+           | LayoutQuery { kind, ty }              -- A4: size_of/align_of, dest UInt64; the
+                                                   --   queried type is PRESERVED (concrete,
+                                                   --   since MIR is monomorphised)
 ```
 
 - **The statement and rvalue sets are total: they never trap, never call user code, and never
@@ -412,6 +433,15 @@ fn demo::main@[] {
   bb2:
     Return
 }
+```
+
+**A4 dump grammar addition (CD-036).** A layout query renders with its queried type, using the
+dump's ordinary `MirTy` rendering — the type surviving into the textual contract is the whole
+point of the amendment, so it must be visible to a reader of the dump:
+
+```text
+_3 = layout_size_of(Int32)
+_4 = layout_align_of(struct#7<Int32>)
 ```
 
 ## 12. CE3 review outcomes (owner decisions, 2026-07-19, CD-028)

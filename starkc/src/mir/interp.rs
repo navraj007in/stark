@@ -810,6 +810,16 @@ impl<'a> Interp<'a> {
                 };
                 MirValue::Int(i128::from(variant))
             }
+            // A4 (CD-036): answered by the reference layout service — the ONE place a consumer
+            // decides target layout. A C5 backend overrides `reference_layout` and changes
+            // nothing else.
+            Rvalue::LayoutQuery { kind, ty } => {
+                let (size, align) = reference_layout(ty);
+                MirValue::Int(i128::from(match kind {
+                    LayoutKind::SizeOf => size,
+                    LayoutKind::AlignOf => align,
+                }))
+            }
             // C4.5b-2: real reference creation (C4.5f-1: stamped with the pointee frame's
             // generation).
             Rvalue::RefOf { place, .. } => {
@@ -1950,6 +1960,21 @@ fn option_value(v: Option<MirValue>) -> MirValue {
             fields: Vec::new(),
         },
     }
+}
+
+/// The C4 **reference target's** layout service (MIR amendment A4, CD-036): the single point at
+/// which a consumer of MIR decides what `size_of::<T>()` / `align_of::<T>()` answer.
+///
+/// The reference target reports one machine word for every type, which is what both engines have
+/// always reported (WP-C4.6 A4-1's `Const 8` and the HIR oracle's `Value::Int(8)`) — **A4 changed
+/// the representation, not the answer**, so every existing expectation is unchanged and the
+/// `size_of_align_of_agree` differential stays green untouched.
+///
+/// LAYOUT-ABI-001 makes these values target- and version-dependent by design, and CD-015 (C2.9)
+/// fixed no per-type numbers, so a real per-type layout algorithm is **C5.1's target contract**,
+/// not C4's. A backend replaces this function and nothing else.
+fn reference_layout(_ty: &MirTy) -> (u64, u64) {
+    (8, 8)
 }
 
 /// Outcome of a checked/trapping primitive (A5). `Trap(None)` traps with the terminator's own

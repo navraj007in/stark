@@ -1416,3 +1416,47 @@ fn rejects_switch_on_float() {
     );
     expect_code(&program_with(vec![b]), "MIR-0004");
 }
+
+#[test]
+fn rejects_layout_query_with_non_uint64_dest() {
+    // A4 (CD-036): a layout query answers in `UInt64` (06: `fn size_of<T>() -> UInt64`). An
+    // Int32 dest is MIR-0004. The QUERIED type is deliberately not constrained — every MirTy is
+    // a legal question, so this test pins only the half the verifier owns.
+    let b = body(
+        vec![ret_local(), local(MirTy::Int32)],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(1)),
+                Rvalue::LayoutQuery {
+                    kind: mir::LayoutKind::SizeOf,
+                    ty: MirTy::Bool,
+                },
+            )],
+            Terminator::Return,
+        )],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0004");
+}
+
+#[test]
+fn accepts_layout_query_of_any_type_into_uint64() {
+    // The complement: an unsized queried type (`str`) is a legal QUESTION at the MIR level —
+    // `Sized`-ness is the checked front end's property (amendment A4 §5), not a verifier rule.
+    let b = body(
+        vec![ret_local(), local(MirTy::UInt64)],
+        vec![block(
+            vec![Statement::Assign(
+                Place::local(LocalId(1)),
+                Rvalue::LayoutQuery {
+                    kind: mir::LayoutKind::AlignOf,
+                    ty: MirTy::Str,
+                },
+            )],
+            Terminator::Return,
+        )],
+    );
+    assert!(
+        verify_program(&program_with(vec![b])).is_ok(),
+        "a layout query into a UInt64 dest must verify cleanly"
+    );
+}

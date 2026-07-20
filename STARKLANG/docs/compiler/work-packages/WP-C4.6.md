@@ -362,7 +362,9 @@ DEV-070 remains open under A2 (enum `Eq`/`Ord` bodies that `match *self`).
 Sub-sliced (like A1's e-1/e-2/e-3). **A4-1 DONE 2026-07-19** (no runtime-surface amendment
 needed): `size_of::<T>()` / `align_of::<T>()` lower to the fixed word constant the reference
 implementation reports (the HIR oracle returns 8 for every type — MIR matches exactly, type
-erased, result `UInt64`); `Option::unwrap_or` / `Result::unwrap_or` select payload-or-default
+erased, result `UInt64`) — **superseded 2026-07-20 by WP-C4.7-3 / MIR amendment A4 (CD-036): the
+type erasure was the defect. `Rvalue::LayoutQuery { kind, ty }` now preserves the queried type;
+the answers are unchanged**; `Option::unwrap_or` / `Result::unwrap_or` select payload-or-default
 via a discriminant switch, default evaluated once before the switch (non-droppable payload only
 for now — a droppable payload/default needs drop-of-unused elaboration, deferred). Evidence:
 `size_of_align_of_agree`, `option_result_unwrap_or_agree`.

@@ -1,9 +1,24 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-2 — **WP-C4.7 correction package under way (2 of 9 increments done)**
+Updated: 2026-07-20 after WP-C4.7-3 — **WP-C4.7 correction package under way (3 of 9 increments done)**
 
 ## Position
-Gate: C4  Next: **WP-C4.7-3 (type-preserving layout queries — CE3 amendment A4 drafted for owner
-approval BEFORE any code)**.
+Gate: C4  Next: **WP-C4.7-4 (DEV-069 front-end multi-file span discipline — the largest increment
+and a C5 prerequisite)**.
+**WP-C4.7-3 DONE 2026-07-20 — MIR amendment A4 (CD-036), owner-approved under CE3 as drafted.**
+`Rvalue::LayoutQuery { kind: SizeOf|AlignOf, ty: MirTy }` (pure, dest `UInt64`) replaces WP-C4.6
+A4-1's type-ERASING lowering of `size_of`/`align_of` to `Const 8`. 06 classifies these as
+target-layout queries and LAYOUT-QUERY-001 makes them the only Core layout observations, so a C5
+backend must be able to answer them from the MIR it is handed — impossible once `T` is discarded.
+Because MIR is monomorphised the recorded type is always concrete (`size_of::<T>()` in a generic
+body records the instantiation's type — pinned by a test). Each consumer answers through ONE
+layout service; the reference one returns the frozen `(8, 8)` for every type, so **the
+representation changed and the behavior did not** — the HIR oracle was not touched and
+`size_of_align_of_agree` stays green unmodified, which is the proof. Research finding:
+**CD-015/WP-C2.9 fixed no per-type numbers** — it approved only that `size_of`/`align_of` are the
+sole layout observations and that Core promises no ABI; LAYOUT-ABI-001 makes the values target-
+and version-dependent, so real numbers belong to C5.1's target contract, not C4. Rejected a
+`RuntimeFn` encoding: its only input is a type, it cannot trap, and layout is compile-time
+knowledge, not backend-supplied runtime. Workspace 756/0/2; clippy clean 1.93/1.97.
 **WP-C4.7-2 DONE 2026-07-20** (evidence symmetry, CD-033's evidence rule): 6 hand-built verifier
 negatives covering the Class-A classes (bitwise-on-float and Pow-on-float-dest → MIR-0004;
 `VecGetRef` wrong schematic dest, `CharsIterNext` wrong operand, runtime call arity → MIR-0005;
@@ -878,6 +893,21 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   ratification of the record, not approval of new code — the code shipped in WP-C4.6 A5.**
   Consequence if ratified: WP-C4.7-3's layout amendment is **A4** (`mir-amendment-A4-layout.md`),
   renumbered from the plan's "A3" to avoid a collision.
+
+- CD-036 [2026-07-20, CE3 — owner-approved MIR Amendment A4, as drafted] Approved
+  `Rvalue::LayoutQuery { kind: SizeOf | AlignOf, ty: MirTy }` — a **pure** rvalue typed `UInt64`
+  that PRESERVES the queried type, replacing WP-C4.6 A4-1's type-erasing `Const 8` lowering of
+  `size_of`/`align_of`. Rationale: 06-Standard-Library classifies them as *target-layout queries*
+  and 07's LAYOUT-QUERY-001 makes them the only Core layout observations, so a backend must be
+  able to answer them from MIR alone (charter §1.2). Approved with the drafted scope: consumers
+  answer through a single layout service; the C4 reference implementation returns `(8, 8)` for
+  every type, so **behavior is unchanged and the HIR oracle is not touched** — real per-target
+  numbers are C5.1's, since CD-015 fixed none and LAYOUT-ABI-001 makes them target-/
+  version-dependent. Not a `RuntimeFn` (type-only input, cannot trap, compile-time knowledge).
+  Verifier owns one rule (dest `UInt64`, MIR-0004); `Sized`-ness stays the front end's property.
+  Additive: `MIR_VERSION` stays `0.1`, runtime surface stays `0.1-A6`. Alternatives (a) record as
+  a deviation, (b) real numbers now, and (c) defer to C5 were presented and declined — (c) would
+  have needed a MIR version bump, since C4 exit freezes v0.1 for backend consumption.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -1840,3 +1870,47 @@ EVIDENCE: workspace 752 passed / 0 failed / 2 ignored (+6); fmt clean; clippy cl
 FOLLOW-UP: none blocking.
 NEXT: WP-C4.7-3 — research C2.9's target-layout decision, then DRAFT `mir-amendment-A4-layout.md`
 (`Rvalue::LayoutQuery`) and STOP for owner CE3 approval before writing any code.
+
+### WP-C4.7-3 — type-preserving layout queries (MIR amendment A4, CD-036) — 2026-07-20
+DONE: research → CE3 draft → owner approval → implementation, in that order (the plan's
+mandatory stop was honored; no code was written before approval).
+RESEARCH: the plan asked what C2.9 actually decided about target results. Answer: **CD-015
+approved only that `size_of`/`align_of` are the sole target-layout exposures and that Core
+promises no ABI — it fixed no per-type values.** 07's LAYOUT-QUERY-001 requires positive,
+compile-time/runtime-consistent values satisfying array/field placement; LAYOUT-ABI-001 says the
+values may differ between named targets and compiler versions. So the numbers are C5.1's target
+contract by design, and the C4 defect is purely representational: WP-C4.6 A4-1 lowered both
+builtins to `Const 8` with `T` ERASED, and the HIR oracle returns `Value::Int(8)` for every type
+— the differential passed only because both engines shared one placeholder.
+IMPLEMENTED (amendment §6 scope, exactly): `Rvalue::LayoutQuery { kind: LayoutKind, ty: MirTy }`
++ dump `layout_size_of(<ty>)` / `layout_align_of(<ty>)` (`mod.rs`); the
+`Res::Builtin(SizeOf|AlignOf)` arm now reads the call's turbofish type through `hir_field_ty`,
+which applies the active `param_subst`, so a query inside a monomorphised generic body records
+the INSTANTIATION's concrete type (`lower.rs`); one verifier typing rule — dest `UInt64`, else
+MIR-0004, with the queried type deliberately unconstrained because `Sized`-ness is the checked
+front end's property (`verify.rs`); one `eval_rvalue` arm delegating to a new
+`reference_layout(ty) -> (u64, u64)` returning `(8, 8)` — the single override point a C5 backend
+replaces (`interp.rs`). Rust's exhaustiveness checking usefully forced the new variant through
+all four verifier operand/place analyses (move dataflow, drop-flag discipline, proof-token scan,
+place collection); a layout query has no operands and no places, so each arm is empty by
+construction rather than by assumption.
+BEHAVIOR: unchanged, deliberately. The HIR oracle was NOT touched, and `size_of_align_of_agree`
+passes **unmodified** — that it needed no edit is the evidence that A4 moved the representation
+and not the semantics.
+FILES: STARKLANG/docs/compiler/mir-amendment-A4-layout.md (new, APPROVED), mir.md (amendment
+list + A4 paragraph + §5 rvalue grammar + §11 dump grammar), starkc/src/mir/{mod,lower,verify,
+interp}.rs, starkc/tests/{mir_lowering,mir_verify}.rs, WP-C4.7.md, COMPILER-STATE.md.
+RULES: LAYOUT-QUERY-001 and LAYOUT-ABI-001 (07), 06's "target-layout queries" classification.
+No spec edit was needed — the normative documents already said what A4 implements.
+DECISIONS: **CD-036** (above). CD-035 (amendment A3 record) ratified by the owner in the same
+exchange.
+EVIDENCE: 4 new tests — `layout_queries_preserve_the_queried_type` (dump golden: primitive and
+nominal types survive; the old bare constant is gone),
+`layout_query_inside_a_generic_body_records_the_instantiation` (Int32 and Bool instances each
+record their own type), `rejects_layout_query_with_non_uint64_dest` (MIR-0004),
+`accepts_layout_query_of_any_type_into_uint64` (an unsized queried type is a legal question).
+Workspace 756 passed / 0 failed / 2 ignored; fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: C5.1 replaces `reference_layout` with the named target's real layout algorithm. That
+is the only place it must touch.
+NEXT: WP-C4.7-4 — DEV-069, front-end multi-file span discipline (typecheck + borrowck, then the
+oracle, as two commits; reproduce with throwaway two-file probes first).

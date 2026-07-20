@@ -507,3 +507,56 @@ fn string_literal_dump_round_trips_escapes() {
         "string literal must render with round-tripped escapes, got:\n{dump}"
     );
 }
+
+/// MIR amendment A4 (CD-036): `size_of`/`align_of` are **target-layout queries**, so the queried
+/// type must survive lowering — a C5 backend answers them from its own target layout and cannot
+/// do that from a type-erased constant. This is the regression guard for the C4.7-3 correction:
+/// before it, both engines emitted a bare `8` and the type was gone by the time MIR existed.
+#[test]
+fn layout_queries_preserve_the_queried_type() {
+    let src = "struct Pair { a: Int32, b: Bool } \
+               fn main() { \
+                   println(size_of::<Int32>()); \
+                   println(align_of::<Bool>()); \
+                   println(size_of::<Pair>()); \
+               }";
+    let front = front_end_src("layout.stark", src.to_string());
+    let program = lower_ok(&front);
+    assert_structural_invariants(&program);
+    let dump = program.dump();
+    assert!(
+        dump.contains("layout_size_of(Int32)"),
+        "size_of::<Int32>() must record Int32:\n{dump}"
+    );
+    assert!(
+        dump.contains("layout_align_of(Bool)"),
+        "align_of::<Bool>() must record Bool:\n{dump}"
+    );
+    // The nominal case matters most: a struct's layout is exactly what a backend must compute.
+    assert!(
+        dump.contains("layout_size_of(struct#"),
+        "size_of::<Pair>() must record the nominal type:\n{dump}"
+    );
+    // And the old type-erasing form must be gone.
+    assert!(
+        !dump.contains("const 8u64"),
+        "layout queries must not lower to a bare constant:\n{dump}"
+    );
+}
+
+/// A4 + monomorphisation: `size_of::<T>()` inside a generic body records the INSTANTIATION's
+/// concrete type, once per instance — `MirTy` has no parameter form, so this is the property
+/// that makes the amendment sound in generic code.
+#[test]
+fn layout_query_inside_a_generic_body_records_the_instantiation() {
+    let src = "fn width<T>(x: T) -> UInt64 { size_of::<T>() } \
+               fn main() { println(width(1)); println(width(true)); }";
+    let front = front_end_src("layoutgeneric.stark", src.to_string());
+    let program = lower_ok(&front);
+    assert_structural_invariants(&program);
+    let dump = program.dump();
+    assert!(
+        dump.contains("layout_size_of(Int32)") && dump.contains("layout_size_of(Bool)"),
+        "each instantiation records its own concrete type:\n{dump}"
+    );
+}

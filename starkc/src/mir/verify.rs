@@ -466,6 +466,13 @@ impl<'a> BodyCx<'a> {
                     }
                 }
             }
+            // A4 (CD-036): a layout query answers in `UInt64` (06: `fn size_of<T>() -> UInt64`).
+            // The QUERIED type is deliberately unconstrained — every `MirTy` is a legal question,
+            // and `Sized`-ness is the checked front end's property, not a verifier rule
+            // (amendment §5).
+            Rvalue::LayoutQuery { .. } => {
+                self.expect_ty(expected, &MirTy::UInt64, "layout query", bi);
+            }
             Rvalue::Aggregate(kind, operands) => self.check_aggregate(expected, kind, operands, bi),
             Rvalue::Discriminant(place) => {
                 match self.place_ty(place, bi) {
@@ -1047,6 +1054,8 @@ impl<'a> BodyCx<'a> {
             Rvalue::Discriminant(place) | Rvalue::RefOf { place, .. } => {
                 self.flow_read(place, moved, bi, report, "read of");
             }
+            // A4: a layout query reads no place, so it neither moves nor requires initialization.
+            Rvalue::LayoutQuery { .. } => {}
         }
     }
 
@@ -1493,6 +1502,8 @@ impl<'a> BodyCx<'a> {
                                 );
                             }
                         }
+                        // A4: no operand and no place — a drop flag cannot appear here.
+                        Rvalue::LayoutQuery { .. } => {}
                     }
                 }
             }
@@ -1813,7 +1824,10 @@ impl<'a> BodyCx<'a> {
             Rvalue::Use(op) | Rvalue::UnOp(_, op) => vec![op],
             Rvalue::BinOp(_, a, b) => vec![a, b],
             Rvalue::Aggregate(_, ops) => ops.iter().collect(),
-            Rvalue::Discriminant(_) | Rvalue::RefOf { .. } => Vec::new(),
+            // A4: a layout query has no operands at all — its only input is a type.
+            Rvalue::Discriminant(_) | Rvalue::RefOf { .. } | Rvalue::LayoutQuery { .. } => {
+                Vec::new()
+            }
         };
         for op in ops {
             self.scan_operand_for_proof_misuse(op, bi);
@@ -2059,5 +2073,7 @@ fn collect_rvalue_places(rvalue: &Rvalue, out: &mut Vec<Place>) {
             }
         }
         Rvalue::Discriminant(place) | Rvalue::RefOf { place, .. } => out.push(place.clone()),
+        // A4: no places are read by a layout query.
+        Rvalue::LayoutQuery { .. } => {}
     }
 }

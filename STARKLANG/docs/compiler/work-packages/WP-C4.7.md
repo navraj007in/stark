@@ -396,7 +396,14 @@ Order within the increment (each independently commit-able):
   fixtures B.2 (method-own generics) and B.3 (non-bare impl heads) are **front-end-blocked**
   (E0001 / E0302 — they never reach lowering), which reclassifies C4.7-8.4 and C4.7-8.5 as
   front-end-first work. Workspace 752/0/2.
-- C4.7-3: _pending_ (CE3 draft first)
+- C4.7-3: **DONE 2026-07-20** — `mir-amendment-A4-layout.md` drafted and **APPROVED by the owner
+  under CE3 as drafted (CD-036)**; implemented the same session. `Rvalue::LayoutQuery { kind, ty }`
+  (pure, dest `UInt64`) replaces the type-erasing `Const 8`; one `reference_layout(ty)` service in
+  the MIR interpreter returns the frozen `(8, 8)`, so behavior is unchanged and the HIR oracle was
+  not touched — `size_of_align_of_agree` stays green **unmodified**, which is the proof. Research
+  finding: CD-015/C2.9 approved only that `size_of`/`align_of` are the sole layout observations
+  and that Core promises no ABI; it fixed no per-type numbers, and LAYOUT-ABI-001 makes them
+  target-/version-dependent — so real numbers are C5.1's, not C4's. 4 new tests; workspace 756/0/2.
 - C4.7-4: _pending_
 - C4.7-5: _pending_
 - C4.7-6: _pending_

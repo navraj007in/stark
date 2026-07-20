@@ -268,6 +268,13 @@ pub enum AggKind {
     EnumVariant(EnumRef, u32),
 }
 
+/// A4 (CD-036): which target-layout property `LayoutQuery` asks for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LayoutKind {
+    SizeOf,
+    AlignOf,
+}
+
 #[derive(Clone, Debug)]
 pub enum Rvalue {
     Use(Operand),
@@ -275,7 +282,18 @@ pub enum Rvalue {
     BinOp(MirBinOp, Operand, Operand),
     Aggregate(AggKind, Vec<Operand>),
     Discriminant(Place),
-    RefOf { mutable: bool, place: Place },
+    RefOf {
+        mutable: bool,
+        place: Place,
+    },
+    /// A4 (amendment `mir-amendment-A4-layout.md`, CD-036): a target-layout query
+    /// (`size_of::<T>()` / `align_of::<T>()`), typed `UInt64`. The queried type is PRESERVED —
+    /// MIR is monomorphised, so `ty` is always concrete, and a backend answers from its own
+    /// target layout. Pure: cannot trap, call user code, or diverge (§5 totality holds).
+    LayoutQuery {
+        kind: LayoutKind,
+        ty: MirTy,
+    },
 }
 
 /// The TOTAL statement set (contract §5/§6): assignments and nops only. `Drop` is a terminator.
@@ -720,6 +738,12 @@ fn dump_rvalue(rvalue: &Rvalue) -> String {
                 dump_place(place)
             )
         }
+        // A4: the queried type is part of the dump — that it survives lowering is the whole
+        // point of the amendment, so it must be visible in the textual contract.
+        Rvalue::LayoutQuery { kind, ty } => match kind {
+            LayoutKind::SizeOf => format!("layout_size_of({})", dump_ty(ty)),
+            LayoutKind::AlignOf => format!("layout_align_of({})", dump_ty(ty)),
+        },
     }
 }
 

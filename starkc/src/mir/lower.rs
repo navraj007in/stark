@@ -3863,16 +3863,33 @@ impl<'a> FnLowerer<'a> {
                     );
                     Ok(())
                 }
-                // A4 (C4.6): `size_of::<T>()` / `align_of::<T>()`. Core v1's reference
-                // implementation reports a fixed word size (the HIR oracle returns 8 for every
-                // type); MIR matches that constant exactly. The type argument is erased — the
-                // result is `UInt64`.
-                Res::Builtin(Builtin::SizeOf | Builtin::AlignOf) => {
+                // MIR amendment A4 (CD-036): `size_of::<T>()` / `align_of::<T>()` are
+                // **target-layout queries** (06-Standard-Library; LAYOUT-QUERY-001), so the
+                // queried type must SURVIVE into MIR — a backend answers them from its own
+                // target layout, and it cannot do that from a MIR that erased `T`. (WP-C4.6
+                // A4-1 emitted `Const 8` here, which the C4.7 audit found type-erasing.)
+                // `hir_field_ty` applies the active `param_subst`, so `size_of::<T>()` inside a
+                // monomorphised generic body records the INSTANTIATION's concrete type.
+                Res::Builtin(builtin @ (Builtin::SizeOf | Builtin::AlignOf)) => {
+                    let hir::ExprKind::Path {
+                        turbofish: Some(generic_args),
+                        ..
+                    } = &self.hir.expr(callee).kind
+                    else {
+                        // The checker requires exactly one generic argument (T is not
+                        // inferable), so this is unreachable for checked programs.
+                        return unsupported("layout query without a type argument", span);
+                    };
+                    let [hir::GenericArg::Type(ty_id)] = generic_args.args.as_slice() else {
+                        return unsupported("layout query type argument form", span);
+                    };
+                    let queried = self.hir_field_ty(*ty_id)?;
+                    let kind = match builtin {
+                        Builtin::SizeOf => LayoutKind::SizeOf,
+                        _ => LayoutKind::AlignOf,
+                    };
                     self.emit(
-                        Statement::Assign(
-                            dest,
-                            Rvalue::Use(Operand::Const(Constant::Int(8, MirTy::UInt64))),
-                        ),
+                        Statement::Assign(dest, Rvalue::LayoutQuery { kind, ty: queried }),
                         self.info(span),
                     );
                     Ok(())
