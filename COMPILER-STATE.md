@@ -1,10 +1,22 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-8.3a — **two hidden defects in the FLAT match path found and fixed**
+Updated: 2026-07-20 after WP-C4.7-8.3b — **the last Class-A MIR residual is closed; only C4.7-9 remains**
 
 ## Position
-Gate: C4  Next: **C4.7-8.3b** (droppable scrutinee + NESTED patterns — the last MIR residual),
-then **C4.7-9** (fresh audit + exit report). 8.4/8.5 were reclassified front-end-first by C4.7-2;
-8.6 (mutable slices) is an owner decision.
+Gate: C4  Next: **C4.7-9** (fresh audit + exit report — the report is written for the owner, who
+alone closes the gate). The MIR residual list is now down to exactly two entries, **neither an
+exit blocker on its own**: `HashMap::values` (std-full, explicitly reserved by CD-033) and
+mutable slice views (**8.6 — an owner decision**). 8.4/8.5 remain front-end-first per C4.7-2 and
+need the audit's classification.
+**WP-C4.7-8.3b DONE 2026-07-20 — droppable scrutinee under NESTED patterns.** A consuming match
+decomposes the scrutinee completely, so every leaf the pattern DISCARDS still owes a destructor.
+`consume_unbound_leaves` generalizes C4.5d's flat rule to an arbitrary pattern tree (wildcards,
+unmentioned struct fields, nested tuples/variants → arm-scoped temps), running BEFORE the binding
+walk so reverse-registration order yields the oracle's order: bindings first (reverse binding
+order), discarded leaves after. **A third pre-existing defect surfaced — DEV-081:**
+`bind_shorthand` never registered a shorthand struct-field binding as droppable in ANY mode, so
+`P { a, b }` moved the fields out and destroyed neither. A LEAK, not a double drop, which is
+precisely why it had failed silently — no verifier rule broken, nothing to assert on, invisible
+unless a destructor prints. It affected the FLAT path too, before 8.3b existed. Workspace 792/0/2.
 **WP-C4.7-8.3a DONE 2026-07-20 — DEV-079 + DEV-080, both found while pinning oracle behaviour for
 8.3 and both in the FLAT match path that A2/C4.5d had signed off.**
 *DEV-079:* V-MOVE-1 collapsed every non-`Field` projection to the whole local, so moving a second
@@ -2594,3 +2606,48 @@ Workspace 789 passed / 0 failed / 2 ignored (+2); fmt clean; clippy clean on 1.9
 FOLLOW-UP: none for these two.
 NEXT: C4.7-8.3b — the original 8.3 target, a droppable scrutinee under NESTED patterns
 (`Some((s, n))`), still a clean `Unsupported` ("A2 residual").
+
+### WP-C4.7-8.3b — droppable scrutinee under nested patterns (+ DEV-081) — 2026-07-20
+DONE: the last recorded MIR residual of the WP-C4.6 Class-A campaign is closed.
+IMPLEMENTED: `consume_unbound_leaves` — a recursive walk that moves every droppable sub-place the
+pattern does NOT bind into an arm-scoped registered temp. A consuming match decomposes the
+scrutinee completely, so whatever the pattern discards still owes a destructor: wildcards,
+unmentioned struct fields, and nested tuple/variant sub-places all covered. Bindings themselves
+now register as droppable in the general engine, matching what the flat path's `bind_field_local`
+already did.
+ORDER: the unbound walk runs BEFORE the binding walk. Arm-end drops run in reverse registration
+order, so registering the discarded leaves first makes the bindings drop first — in reverse
+binding order — and the discards after them, which is what the oracle does (the rule established
+by DEV-080). The three-element `Some((a, _, c))` case is the discriminating evidence: expected
+order `c`, `a`, wildcard, which matches neither plain reverse-field order nor declaration order.
+**DEV-081 — a third pre-existing defect, found here.** `bind_shorthand` (the lowering for
+`P { a, b }` rather than `P { a: a, b: b }`) moved the field value into the binding local but
+**never registered that local as droppable, in any mode**. The value left the scrutinee and
+nothing destroyed it. This is a **leak, not a double drop**, which is exactly why it survived: no
+verifier rule is violated, no assertion trips, and a program whose destructor does not print looks
+correct. It affected the FLAT path as well — `enum E { V { a: Tag, b: Tag } }` matched by
+`E::V { a, b }` leaked before 8.3b existed — so it is genuinely pre-existing rather than exposed
+by the new code. The named and shorthand binding paths differed in exactly this one respect, which
+is what made it easy to miss.
+THREE DEFECTS IN ONE INCREMENT, all in already-signed-off code (DEV-079/080 in 8.3a, DEV-081
+here), all found by pinning oracle behaviour before writing lowering. Two of the three were
+invisible to the existing corpus: one because a conservative verifier rejection hid it, one
+because a leak has no loud failure mode.
+RESIDUALS NOW: the clean-`Unsupported` list is down to `HashMap::values` (std-full, explicitly
+reserved by CD-033 — not an exit blocker) and mutable slice views (WP-C4.7-8.6, an owner
+decision). Every other Class-A residual recorded by WP-C4.6 is closed.
+FILES: starkc/src/mir/lower.rs (`consume_unbound_leaves`, `bind_pattern` binding registration,
+`bind_shorthand`, guard removed), starkc/tests/mir_differential.rs (+3 tests, 8 programs),
+starkc/tests/mir_lowering.rs (last stale residual fixture removed),
+KNOWN-DEVIATIONS.md (DEV-081; count 78 → 79), COMPILER-STATE.md, WP-C4.7.md.
+RULES: PAT-DROP-001 / DROP-ORDER-001 / EXEC-ONCE-001. No spec, MIR-shape, or runtime-surface
+change — lowering only.
+DECISIONS: none at CE level.
+EVIDENCE: `droppable_nested_pattern_drop_order_agrees` (four shapes incl. the discriminating
+three-field case and a whole-payload wildcard), `droppable_nested_pattern_depth_and_mixed_payloads_agree`
+(two-level nesting; `String`+user-`Drop` mixed payload), `struct_shorthand_bindings_drop_agrees`
+(both the struct-nominal and struct-shaped-enum-variant forms). Workspace 792 passed / 0 failed /
+2 ignored (+3); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: none.
+NEXT: **C4.7-9** — re-run the unsupported-site sweep over all `unsupported(` sites, re-verify the
+frozen corpus, classify 8.4/8.5, and write the exit report for the owner's decision.

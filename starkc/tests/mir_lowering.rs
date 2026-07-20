@@ -266,6 +266,9 @@ fn unsupported_constructs_report_cleanly() {
     // `cargo run --example c46_probe` (LOWER-UNSUPPORTED) and `--example oracle_run` (ORACLE-OK)
     // before being added.
     //
+    // REMOVED by WP-C4.7-8.3b: the droppable-scrutinee-with-nested-patterns fixture — the last
+    // recorded MIR residual of the Class-A campaign. It now lowers, with unbound leaves consumed
+    // into arm-scoped temps; covered by `mir_differential.rs::droppable_nested_pattern_*`.
     // REMOVED by WP-C4.7-8.2: the droppable-`Iterator`-`Item` fixture — that construct now lowers
     // with a per-iteration scope, covered by
     // `mir_differential.rs::droppable_iterator_item_drop_timing_agrees`.
@@ -290,20 +293,6 @@ fn unsupported_constructs_report_cleanly() {
                  for v in m.values() { println(*v); } \
              }",
             "C4.5",
-        ),
-        (
-            // A2 residual: a droppable scrutinee reaching the general (recursive) match engine.
-            // `lower_general_match` requires a drop-free scrutinee in Consuming mode; the
-            // droppable leaves of a nested pattern are not yet elaborated. Owner: WP-C4.7-8.3.
-            "dropscrutnested.stark",
-            "fn main() { \
-                 let o = Some((String::from(\"x\"), 1)); \
-                 match o { \
-                     Some((s, n)) => { println(n); } \
-                     None => { println(0); } \
-                 } \
-             }",
-            "A2 residual",
         ),
         (
             // A4-2e reserved: slice views are shared-only in surface 0.1-A6; `&mut base[range]`

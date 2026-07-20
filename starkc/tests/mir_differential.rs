@@ -2526,3 +2526,147 @@ fn variant_payload_drop_order_with_wildcards_agrees() {
         ),
     );
 }
+
+/// WP-C4.7-8.3b: a DROPPABLE scrutinee under NESTED patterns — the last recorded MIR residual of
+/// the Class-A campaign. A consuming match decomposes the scrutinee completely, so every leaf the
+/// pattern discards still owes a destructor; the unbound walk moves those into arm-scoped temps
+/// while bindings own what they bind.
+///
+/// Ordering is the real assertion. Bindings are destroyed first, in reverse binding order, then
+/// the discarded leaves — so `Some((a, _, c))` over three tagged values must give `c`, `a`, then
+/// the wildcard. That matches neither plain reverse-field order nor declaration order, which is
+/// what makes it evidence of the rule rather than a coincidence.
+#[test]
+fn droppable_nested_pattern_drop_order_agrees() {
+    let decl = "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } ";
+    // One binding, one discarded leaf.
+    differential(
+        "nested_drop_wild.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 println(100); \
+                 let pair = Some((Tag {{ id: 1 }}, Tag {{ id: 2 }})); \
+                 match pair {{ \
+                     Some((a, _)) => {{ println(900); println(a.id); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    // Two bindings: reverse binding order.
+    differential(
+        "nested_drop_both.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let pair = Some((Tag {{ id: 1 }}, Tag {{ id: 2 }})); \
+                 match pair {{ \
+                     Some((a, b)) => {{ println(900); println(b.id); println(a.id); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    // The discriminating case: bindings first (reverse), then the discarded middle leaf.
+    differential(
+        "nested_drop_three.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let t = Some((Tag {{ id: 1 }}, Tag {{ id: 2 }}, Tag {{ id: 3 }})); \
+                 match t {{ \
+                     Some((a, _, c)) => {{ println(900); println(a.id); println(c.id); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    // A whole-payload wildcard: the tuple drops as a unit, in reverse field order.
+    differential(
+        "nested_drop_whole.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let t = Some((Tag {{ id: 1 }}, Tag {{ id: 2 }})); \
+                 match t {{ Some(_) => {{ println(900); }} None => {{ println(0); }} }} \
+                 println(200); \
+             }}"
+        ),
+    );
+}
+
+/// Deeper nesting and a mixed runtime/user-Drop payload: the decomposition is recursive, so a
+/// two-level pattern and a `String`-plus-`Tag` tuple must behave like the one-level cases.
+#[test]
+fn droppable_nested_pattern_depth_and_mixed_payloads_agree() {
+    let decl = "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } ";
+    differential(
+        "nested_two_level.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let n = Some(Some((Tag {{ id: 1 }}, Tag {{ id: 2 }}))); \
+                 match n {{ \
+                     Some(Some((a, _))) => {{ println(900); println(a.id); }} \
+                     Some(None) => {{ println(1); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    differential(
+        "nested_mixed_payload.stark",
+        format!(
+            "{decl} fn main() {{ \
+                 let t = Some((String::from(\"s\"), Tag {{ id: 7 }})); \
+                 match t {{ \
+                     Some((s, _)) => {{ println(900); println(s); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+}
+
+/// DEV-081 (WP-C4.7-8.3b): a SHORTHAND struct-field binding (`P { a, b }`) owns its moved-in
+/// value and must drop at arm end. `bind_shorthand` never registered it, in any mode, so the
+/// value was moved out of the scrutinee and then destroyed by nobody — a LEAK, which is why it
+/// failed silently: no verifier rule broken, no assertion tripped, and invisible to any program
+/// whose destructor does not print. Both the struct-nominal and struct-shaped-enum-variant forms
+/// are covered, because the flat path had the same gap before 8.3b existed.
+#[test]
+fn struct_shorthand_bindings_drop_agrees() {
+    let decl = "struct Tag { id: Int32 } \
+         impl Drop for Tag { fn drop(&mut self) { println(self.id); } } ";
+    differential(
+        "shorthand_struct.stark",
+        format!(
+            "{decl} struct P {{ a: Tag, b: Tag }} \
+             fn main() {{ \
+                 let p = Some(P {{ a: Tag {{ id: 1 }}, b: Tag {{ id: 2 }} }}); \
+                 match p {{ \
+                     Some(P {{ a, b }}) => {{ println(900); println(a.id); println(b.id); }} \
+                     None => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+    differential(
+        "shorthand_variant.stark",
+        format!(
+            "{decl} enum E {{ V {{ a: Tag, b: Tag }}, Empty }} \
+             fn main() {{ \
+                 let e = E::V {{ a: Tag {{ id: 1 }}, b: Tag {{ id: 2 }} }}; \
+                 match e {{ \
+                     E::V {{ a, b }} => {{ println(900); println(a.id); println(b.id); }} \
+                     E::Empty => {{ println(0); }} \
+                 }} \
+                 println(200); \
+             }}"
+        ),
+    );
+}

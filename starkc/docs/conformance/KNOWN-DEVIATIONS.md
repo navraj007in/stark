@@ -2300,6 +2300,28 @@ WP-C1.5)
   `(a, _, c)` whose expected order (`c`, `a`, then the wildcard) distinguishes this rule from
   both plain reverse-field and plain declaration order.
 
+## DEV-081 — Shorthand struct-field bindings in a consuming match never drop (a leak) [CLOSED, WP-C4.7-8.3b, 2026-07-20]
+
+- **What:** `bind_shorthand` — the lowering for a shorthand field binding, `P { a, b }` rather
+  than `P { a: a, b: b }` — moved the field's value into the binding local but **never registered
+  that local as droppable**, in any mode. The value was moved out of the scrutinee (so the
+  scrutinee no longer owns it) and nothing ever destroyed it.
+- **Impact:** a **leak**, not a double drop, which is exactly why nothing failed loudly: no
+  verifier rule was violated, no assertion tripped, and a program that does not print from its
+  destructor looks entirely correct. It affected both the FLAT path (`consume_variant_payload`'s
+  struct-variant arm) and, once WP-C4.7-8.3b enabled droppable scrutinees there, the general
+  recursive engine.
+- **Repro:** `struct Tag { id: Int32 } impl Drop for Tag { fn drop(&mut self) { println(self.id); } }`
+  with `struct P { a: Tag, b: Tag }` and `match Some(P { a: Tag{id:1}, b: Tag{id:2} }) { Some(P { a, b }) => … }`
+  — the oracle prints `2, 1` at arm end; MIR printed nothing. The enum-variant form
+  (`enum E { V { a: Tag, b: Tag } }` matched by `E::V { a, b }`) behaved identically, confirming
+  the flat path was affected before 8.3b existed.
+- **Resolution (WP-C4.7-8.3b):** `bind_shorthand` registers the binding as droppable with flags
+  true in `Consuming` mode, exactly as `bind_field_local` (the named-binding path) already did.
+  The two paths differed only in this one respect, which is what made the gap easy to miss.
+- **Regression evidence:** `mir_differential.rs::struct_shorthand_bindings_drop_agrees`, covering
+  both the struct-nominal and the struct-shaped-enum-variant forms.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2349,7 +2371,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 78 numbered deviations total (DEV-002 through DEV-080, DEV-001/DEV-003 retired).
+Current count: 79 numbered deviations total (DEV-002 through DEV-081, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2423,7 +2445,9 @@ never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Cha
 was closed by the WP-C4.7 DEV-075 increment under an owner specification decision, which also
 added `PRIM-TRAIT-001` to the normative spec. **DEV-079 and DEV-080** were found and closed by
 WP-C4.7-8.3 — a verifier false-positive that rejected every multi-droppable-field enum variant,
-and the arm-end drop-order divergence it had been masking. DEV-070 was closed by
+and the arm-end drop-order divergence it had been masking. **DEV-081** (shorthand struct-field
+bindings never dropped — a silent leak in both the flat and general match paths) was found and
+closed by WP-C4.7-8.3b. DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);

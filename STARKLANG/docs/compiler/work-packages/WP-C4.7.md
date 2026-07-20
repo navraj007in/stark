@@ -480,7 +480,13 @@ Order within the increment (each independently commit-able):
   the FLAT path A2/C4.5d had signed off: the verifier rejected every enum variant with 2+
   droppable payload fields (lowering accepted it — an internal inconsistency), and fixing that
   exposed an arm-end drop-ORDER divergence it had been masking. 2 differential tests (4 programs).
-- C4.7-8: _pending_ — **8.3b (nested patterns) is the last MIR residual**; 8.6 is an owner decision (oracle `unwrap_or` double-drop); 8.4/8.5
+- **C4.7-8.3b: DONE 2026-07-20** — droppable scrutinee under NESTED patterns, the last recorded
+  Class-A MIR residual. `consume_unbound_leaves` generalizes C4.5d's flat rule to arbitrary
+  pattern trees, running before the binding walk so the oracle's drop order falls out. **DEV-081**
+  found and closed: shorthand struct-field bindings never registered as droppable in ANY mode — a
+  silent LEAK affecting the flat path too. 3 differential tests (8 programs).
+- **C4.7-8: DONE** except **8.6 (mutable slices — owner decision)**. Remaining clean-`Unsupported`
+  entries: `HashMap::values` (std-full, CD-033-reserved) and mutable slice views. (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)
 

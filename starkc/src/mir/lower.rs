@@ -6201,9 +6201,9 @@ impl<'a> FnLowerer<'a> {
             | MirTy::UInt64
             | MirTy::Char => self.lower_int_match(scrut_place, &arms, dest, join, span)?,
             // A2-2: everything else — tuple/array/struct/Float/&str scrutinees and NESTED enum
-            // patterns — routes to the general recursive engine. Consuming mode requires a
-            // drop-free scrutinee (droppable + nested is the recorded residual: it needs the
-            // C4.5d drop-unit decomposition generalized to arbitrary pattern trees).
+            // patterns — routes to the general recursive engine. WP-C4.7-8.3b: a DROPPABLE
+            // scrutinee is handled there too, by generalizing C4.5d's drop-unit decomposition to
+            // arbitrary pattern trees (unbound leaves consumed into temps, bindings registered).
             MirTy::Enum(..)
             | MirTy::Tuple(_)
             | MirTy::Array(..)
@@ -6211,12 +6211,6 @@ impl<'a> FnLowerer<'a> {
             | MirTy::Float32
             | MirTy::Float64
             | MirTy::Ref { .. } => {
-                if mode == MatchMode::Consuming && self.ty_needs_drop(&scrut_ty, span)? {
-                    return unsupported(
-                        "droppable scrutinee with nested/general patterns (A2 residual)",
-                        span,
-                    );
-                }
                 self.lower_general_match(scrut_place, scrut_ty, mode, &arms, dest, join, span)?
             }
             _ => return unsupported("match scrutinee type (C4.5)", span),
@@ -6510,6 +6504,13 @@ impl<'a> FnLowerer<'a> {
             self.emit_pattern_test(pat, &scrut, &scrut_ty, fail, span)?;
             self.scopes.push(Vec::new());
             let depth = self.scopes.len() - 1;
+            // WP-C4.7-8.3b: consuming a droppable scrutinee decomposes it completely — whatever
+            // the pattern DISCARDS still owes a destructor. The unbound walk runs first so that
+            // arm-end drops (reverse registration order) destroy the bindings first and the
+            // discarded leaves after, which is the order the oracle produces (DEV-080).
+            if mode == MatchMode::Consuming {
+                self.consume_unbound_leaves(pat, &scrut, &scrut_ty, span)?;
+            }
             self.bind_pattern(pat, &scrut, &scrut_ty, mode, span)?;
             self.lower_arm_body_scoped(body, &dest, join, depth, span)?;
             self.current = fail;
@@ -6773,6 +6774,177 @@ impl<'a> FnLowerer<'a> {
 
     /// Emit the recursive BIND for a matched `pat`: bindings read out of the scrutinee
     /// (Copy per `read_place`; ByRef enforces Copy-only). Tests were already emitted.
+    /// WP-C4.7-8.3b: move every droppable sub-place of `place` that the pattern does NOT bind
+    /// into a registered temp, so it is destroyed at arm end.
+    ///
+    /// This is `consume_variant_payload`'s flat rule generalized to an arbitrary pattern tree:
+    /// a consuming match decomposes the scrutinee completely, and whatever the pattern discards
+    /// still owes a destructor. It runs BEFORE the binding walk, because arm-end drops run in
+    /// reverse registration order and the oracle destroys bound bindings first, then the
+    /// discarded leaves (DEV-080 — established empirically, and the three-field `(a, _, c)` case
+    /// distinguishes this rule from plain reverse-field order).
+    ///
+    /// `Lit`/`Path` patterns bind nothing and cover a leaf that was already tested: a unit
+    /// variant carries no payload, and a literal's type is `Copy`, so neither owes a drop.
+    fn consume_unbound_leaves(
+        &mut self,
+        pat: hir::PatId,
+        place: &Place,
+        ty: &MirTy,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        if !self.ty_needs_drop(ty, span)? {
+            return Ok(());
+        }
+        let pat_span = self.hir.pat(pat).span;
+        match &self.hir.pat(pat).kind {
+            // A binding takes ownership of this whole sub-place in the bind walk.
+            hir::PatKind::Binding { .. } => Ok(()),
+            // `_` discards this sub-place wholesale: move it into a temp that drops at arm end.
+            hir::PatKind::Wild => {
+                self.discover_drop_impls(ty)?;
+                let value = self.read_place(place.clone(), ty, span)?;
+                let tmp = self.new_temp(ty.clone());
+                self.emit(
+                    Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
+                    self.synthetic(span, SyntheticKind::MatchDesugar),
+                );
+                self.register_droppable_local(tmp, ty, false, span)?;
+                self.set_flags_under(tmp.0, &[], true, span);
+                Ok(())
+            }
+            hir::PatKind::Lit(_) | hir::PatKind::Path { .. } => Ok(()),
+            hir::PatKind::TupleVariant { res, pats, .. } => {
+                let res = *res;
+                let pats = pats.clone();
+                let variant = self.variant_of_res(&res, pat_span)?;
+                let (enum_ref, args) = match ty {
+                    MirTy::Enum(er, args) => (*er, args.clone()),
+                    _ => return unsupported("variant pattern on non-enum", pat_span),
+                };
+                let payload_tys = self.variant_payload_types(enum_ref, &args, variant, span)?;
+                for (i, &sub) in pats.iter().enumerate() {
+                    let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
+                    let mut sub_place = place.clone();
+                    sub_place
+                        .projection
+                        .push(Projection::VariantField(variant, i as u32));
+                    self.consume_unbound_leaves(sub, &sub_place, &field_ty, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Tuple(pats) => {
+                let pats = pats.clone();
+                let elems = match ty {
+                    MirTy::Tuple(elems) => elems.clone(),
+                    _ => return unsupported("tuple pattern on non-tuple", pat_span),
+                };
+                for (i, &sub) in pats.iter().enumerate() {
+                    let elem_ty = elems.get(i).cloned().unwrap_or(MirTy::Unit);
+                    let mut sub_place = place.clone();
+                    sub_place.projection.push(Projection::Field(i as u32));
+                    self.consume_unbound_leaves(sub, &sub_place, &elem_ty, span)?;
+                }
+                Ok(())
+            }
+            hir::PatKind::Struct { res, fields, .. } => {
+                let res = *res;
+                let fields: Vec<(Span, Option<hir::PatId>, Option<crate::hir::LocalId>)> =
+                    fields.iter().map(|f| (f.name, f.pat, f.local)).collect();
+                // Field types + the index of each named field, for both the struct-nominal and
+                // the struct-shaped-enum-variant forms, mirroring `bind_pattern`'s split.
+                let (field_tys, indices, base_proj): (Vec<MirTy>, Vec<usize>, Vec<Projection>) =
+                    match ty {
+                        MirTy::Enum(er, args) => {
+                            let (er, args) = (*er, args.clone());
+                            let variant = self.variant_of_res(&res, pat_span)?;
+                            let tys = self.variant_payload_types(er, &args, variant, span)?;
+                            let order = self.variant_field_order(&res, variant)?;
+                            let mut idx = Vec::new();
+                            for (name_span, _, _) in &fields {
+                                let name_text = self.text(*name_span).to_string();
+                                let Some(i) = order.iter().position(|n| *n == name_text) else {
+                                    return unsupported("unknown variant field", *name_span);
+                                };
+                                idx.push(i);
+                            }
+                            let proj: Vec<Projection> = (0..tys.len())
+                                .map(|i| Projection::VariantField(variant, i as u32))
+                                .collect();
+                            (tys, idx, proj)
+                        }
+                        MirTy::Struct(item, args) => {
+                            let (item, args) = (*item, args.clone());
+                            let tys = match nominal_instance_fields(
+                                self.hir,
+                                self.tables,
+                                self.meta,
+                                item,
+                                &args,
+                            )? {
+                                NominalFields::Struct(tys) => tys,
+                                NominalFields::Enum(_) => {
+                                    return unsupported("struct pattern on enum item", pat_span)
+                                }
+                            };
+                            let mut idx = Vec::new();
+                            for (name_span, _, _) in &fields {
+                                idx.push(self.struct_field_index(item, *name_span)?);
+                            }
+                            let proj: Vec<Projection> = (0..tys.len())
+                                .map(|i| Projection::Field(i as u32))
+                                .collect();
+                            (tys, idx, proj)
+                        }
+                        _ => return unsupported("struct pattern on scrutinee type", pat_span),
+                    };
+                let mut mentioned = vec![false; field_tys.len()];
+                for ((_, sub, shorthand), index) in fields.iter().zip(indices) {
+                    mentioned[index] = true;
+                    let field_ty = field_tys.get(index).cloned().unwrap_or(MirTy::Unit);
+                    let mut sub_place = place.clone();
+                    sub_place.projection.push(base_proj[index].clone());
+                    match (sub, shorthand) {
+                        // A sub-pattern may itself discard leaves; a shorthand binds, so the
+                        // bind walk owns it.
+                        (Some(sub), _) => {
+                            self.consume_unbound_leaves(*sub, &sub_place, &field_ty, span)?
+                        }
+                        (None, Some(_)) => {}
+                        (None, None) => {}
+                    }
+                }
+                // Fields the pattern never mentions are discarded and still owe a drop.
+                for (index, was_mentioned) in mentioned.iter().enumerate() {
+                    if *was_mentioned {
+                        continue;
+                    }
+                    let field_ty = field_tys.get(index).cloned().unwrap_or(MirTy::Unit);
+                    if !self.ty_needs_drop(&field_ty, span)? {
+                        continue;
+                    }
+                    self.discover_drop_impls(&field_ty)?;
+                    let mut sub_place = place.clone();
+                    sub_place.projection.push(base_proj[index].clone());
+                    let value = self.read_place(sub_place, &field_ty, span)?;
+                    let tmp = self.new_temp(field_ty.clone());
+                    self.emit(
+                        Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
+                        self.synthetic(span, SyntheticKind::MatchDesugar),
+                    );
+                    self.register_droppable_local(tmp, &field_ty, false, span)?;
+                    self.set_flags_under(tmp.0, &[], true, span);
+                }
+                Ok(())
+            }
+            hir::PatKind::Array(_) => unsupported(
+                "droppable array scrutinee under a nested pattern (recorded residual)",
+                pat_span,
+            ),
+            hir::PatKind::Error => Ok(()),
+        }
+    }
+
     fn bind_pattern(
         &mut self,
         pat: hir::PatId,
@@ -6809,6 +6981,11 @@ impl<'a> FnLowerer<'a> {
                     Statement::Assign(Place::local(bound), Rvalue::Use(value)),
                     self.synthetic(span, SyntheticKind::MatchDesugar),
                 );
+                // WP-C4.7-8.3b: Consuming — the binding owns the moved-in value and drops at
+                // arm-scope end, exactly as the flat path's `bind_field_local` does.
+                if mode == MatchMode::Consuming {
+                    self.register_droppable_local(bound, ty, true, span)?;
+                }
                 Ok(())
             }
             hir::PatKind::TupleVariant { res, pats, .. } => {
@@ -6956,6 +7133,13 @@ impl<'a> FnLowerer<'a> {
             Statement::Assign(Place::local(bound), Rvalue::Use(value)),
             self.synthetic(span, SyntheticKind::MatchDesugar),
         );
+        // DEV-081 (WP-C4.7-8.3b): a shorthand binding owns the moved-in value exactly as a named
+        // one does, and must drop at arm-scope end. This registration was missing entirely, so
+        // `match p { P { a, b } => … }` over droppable fields moved them out and then destroyed
+        // NEITHER — a leak, not a double drop, which is why nothing failed loudly.
+        if mode == MatchMode::Consuming {
+            self.register_droppable_local(bound, ty, true, span)?;
+        }
         Ok(())
     }
 
