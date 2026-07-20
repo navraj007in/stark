@@ -5,11 +5,12 @@ Status: **APPROVED under CE3 as an additive MIR v0.1 amendment, runtime surface 
 corrections, which this revision incorporates (see §11 revision log). Rev. 1's central design
 was approved in principle; rev. 2 resolved eight required corrections; rev. 3 resolves the
 final four. Implementation of the C4.5e main body may begin against this revision.
-**Current runtime surface after subsequent dated enumerations (§11): `0.1-A7`** (rev. 5
+**Current runtime surface after subsequent dated enumerations (§11): `0.1-A8`** (rev. 5
 activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char ops as
 `0.1-A3`; rev. 8 activated checked interior Vec access as `0.1-A4`; rev. 9 activated string
 chars iteration as `0.1-A5`; rev. 10 activated shared slice views as `0.1-A6`, completing the
-A4 `core-min` MIR runtime surface; rev. 11 activated the `Box<T>` group as `0.1-A7`).
+A4 `core-min` MIR runtime surface; rev. 11 activated the `Box<T>` group as `0.1-A7`; rev. 12 activated the EXCLUSIVE slice view as
+`0.1-A8`).
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -399,6 +400,37 @@ and other interior views into runtime containers (§5d, after C4.5f frame genera
 I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
+
+**Rev. 12 — surface `0.1-A8` activation (2026-07-20, WP-C4.7-8.6, owner-decided; per CD-032's
+dated-enumeration rule).** Activates the **exclusive** slice view, completing the slicing surface
+rev. 10 opened.
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `SliceNewMut` | `(&mut (Array<T,N> \| Vec<T> \| [T]), I, I, Bool) -> &mut [T]` | **IndexOutOfBounds** | same bounds validation as `SliceNew`; requires an EXCLUSIVE receiver borrow and yields `&mut [T]` |
+
+Rev. 10 reserved this deliberately, and the owner decided (2026-07-20) it is required for C4
+exit: **REF-SLICE-001** states that "writes through an exclusive slice reference update the
+original object", 03-Type-System gives `&mut expr[r]` the type `&mut [T]` (§107) and lists
+`&mut [T; N] -> &mut [T]` among the permitted coercions (§547). Deferring it would have exited
+C4 with a gap in a rule the abstract machine states outright.
+
+**Write-through.** A `Slice { start, len }` window followed by an `Index(i)` composes to the
+absolute element `start + i` — the interpreter's WRITE path now performs the same composition its
+READ path already did, which is precisely what makes a write through the view reach the base
+object. A bare window with no following index is not a writable place (it denotes the sub-view as
+a value) and is rejected loudly.
+
+**Verifier.** `SliceNewMut` requires an exclusive receiver reference (MIR-0012 otherwise) — a
+shared base cannot produce a writable view — and yields `&mut [T]`. `SliceLen`/`SliceIsEmpty`
+accept a receiver of either mutability, since they only read.
+
+**Receiver reads are copies, not moves.** `len`/`is_empty` read through the reference, so lowering
+passes the receiver by `Copy` (the MIR-level equivalent of a shared reborrow). Moving it would
+consume an exclusive view and make a second use of the same `&mut [T]` local fail V-MOVE-1, which
+the language does not say: `s.len(); s[0]` is legal. The matching front-end defect is **DEV-082**.
+
+`MIR_RUNTIME_SURFACE = "0.1-A8"`.
 
 **Rev. 11 — surface `0.1-A7` activation (2026-07-20, WP-C4.7-6.1, owner-decided; per CD-032's
 dated-enumeration rule).** Activates `Box<T>` construction and extraction. 06-Standard-Library

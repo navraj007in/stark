@@ -177,7 +177,7 @@ fn golden_mini_dump() {
     // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
     // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
     let expected = "\
-// STARK MIR v0.1 (runtime-surface 0.1-A7)
+// STARK MIR v0.1 (runtime-surface 0.1-A8)
 
 fn main@[] {
   locals: _0: Unit [ret], _1: Unit [tmp], _2: Int32 [tmp], _3: Int64 [tmp]
@@ -266,6 +266,9 @@ fn unsupported_constructs_report_cleanly() {
     // `cargo run --example c46_probe` (LOWER-UNSUPPORTED) and `--example oracle_run` (ORACLE-OK)
     // before being added.
     //
+    // REMOVED by WP-C4.7-8.6: the mutable-slice-view fixture — the owner decided exclusive views
+    // are required for C4 exit (REF-SLICE-001 specifies write-through), so they now lower at
+    // surface 0.1-A8; covered by `mir_differential.rs::mutable_slice_views_agree`.
     // REMOVED by WP-C4.7-8.3b: the droppable-scrutinee-with-nested-patterns fixture — the last
     // recorded MIR residual of the Class-A campaign. It now lowers, with unbound leaves consumed
     // into arm-scoped temps; covered by `mir_differential.rs::droppable_nested_pattern_*`.
@@ -283,26 +286,16 @@ fn unsupported_constructs_report_cleanly() {
     // type checker first (E0001 "expected 'U', found 'Int32'" and E0302 "method not found"
     // respectively), which makes them front-end gaps by the WP-C4.7 §1 rule, whatever their MIR
     // status would be. See the WP-C4.7-2 record in COMPILER-STATE.md.
-    let cases = [
-        (
-            // The core HashMap surface (0.1-A3, f-3a) lowers; values() stays reserved.
-            "hashmapvalues.stark",
-            "fn main() { \
+    let cases = [(
+        // The core HashMap surface (0.1-A3, f-3a) lowers; values() stays reserved.
+        "hashmapvalues.stark",
+        "fn main() { \
                  let mut m: HashMap<Int32, Int32> = HashMap::new(); \
                  m.insert(1, 2); \
                  for v in m.values() { println(*v); } \
              }",
-            "C4.5",
-        ),
-        (
-            // A4-2e reserved: slice views are shared-only in surface 0.1-A6; `&mut base[range]`
-            // needs a SliceNewMut op and writes through a Slice window. Owner: WP-C4.7-8.6
-            // (and an owner decision on whether it is required for C4 exit at all).
-            "mutslice.stark",
-            "fn main() { let mut a = [1, 2, 3]; let s = &mut a[0..2]; println(s.len()); }",
-            "mutable slice",
-        ),
-    ];
+        "C4.5",
+    )];
     for (name, src, needle) in cases {
         let front = front_end_src(name, src.to_string());
         match lower_program(&front.hir, &front.tables, front.file.clone()) {
@@ -470,7 +463,7 @@ fn string_literal_dump_round_trips_escapes() {
     let program = lower_ok(&front);
     let dump = program.dump();
     assert!(
-        dump.contains("(runtime-surface 0.1-A7)"),
+        dump.contains("(runtime-surface 0.1-A8)"),
         "dump header must carry the current runtime surface, got:\n{dump}"
     );
     assert!(

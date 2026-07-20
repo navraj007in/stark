@@ -39,7 +39,7 @@ pub const MIR_VERSION: &str = "0.1";
 /// user-`Drop` key/value types excluded so no runtime op ever runs a user destructor), plus
 /// the A1-approved-but-deferred Char ops (`StringPushChar`/`StringPopChar`,
 /// `PrintlnChar`/`PrintChar`).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A7";
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A8";
 
 // ------------------------------------------------------------------ identity --
 
@@ -415,6 +415,10 @@ pub enum RuntimeFn {
     // negative, inverted, or out-of-range bound (06-Standard-Library behavioral requirement);
     // re-slicing composes. `SliceLen`/`SliceIsEmpty` read the view length. ---
     SliceNew,
+    /// 0.1-A8 (WP-C4.7-8.6): the EXCLUSIVE slice view. REF-SLICE-001: "writes through an
+    /// exclusive slice reference update the original object", so unlike `SliceNew` this yields
+    /// `&mut [T]` and writes through the window reach the base object.
+    SliceNewMut,
     SliceLen,
     SliceIsEmpty,
     // --- 0.1-A2 (C4.5f-2, CD-032): by-reference Vec iteration. The iterator borrows the

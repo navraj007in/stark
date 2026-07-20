@@ -671,6 +671,15 @@ impl<'a> BorrowChecker<'a> {
             base_ty = *inner;
         }
         let method_name = self.text(name);
+        // DEV-082 (WP-C4.7-8.6): SLICE and ARRAY receivers were absent here, so a method call on
+        // one returned `None` and the caller's fallback CONSUMED the receiver. For a `&[T]` local
+        // that is harmless (shared references are `Copy`), which is why shared slices shipped
+        // without anyone noticing; for a `&mut [T]` local it is a move, so `s.len()` followed by
+        // any second use failed E0100 "use of moved value". Slice methods (`len`/`is_empty`) only
+        // ever read, so a shared borrow is the right receiver kind.
+        if matches!(base_ty, Ty::Slice(..) | Ty::Array(..)) {
+            return Some(hir::Receiver::Ref);
+        }
         if matches!(
             base_ty,
             Ty::Primitive(crate::ast::Primitive::String | crate::ast::Primitive::Str)

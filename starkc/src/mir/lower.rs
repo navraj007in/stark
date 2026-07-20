@@ -2554,14 +2554,8 @@ impl<'a> FnLowerer<'a> {
                     // oracle, not the enclosing `&…`.
                     if let hir::ExprKind::Index { base, index } = &self.hir.expr(*operand).kind {
                         if matches!(self.tables.expr_types.get(index), Some(Ty::Range(_))) {
-                            if *mutable {
-                                return unsupported(
-                                    "mutable slice views (&mut base[range]) are reserved",
-                                    span,
-                                );
-                            }
                             let index_span = self.hir.expr(*operand).span;
-                            return self.lower_make_slice(*base, *index, index_span);
+                            return self.lower_make_slice(*base, *index, *mutable, index_span);
                         }
                     }
                     // C4.5b-2: `&expr` / `&mut expr` — borrow of a place, NOT a value read.
@@ -3466,6 +3460,7 @@ impl<'a> FnLowerer<'a> {
         &mut self,
         base: ExprId,
         index: ExprId,
+        mutable: bool,
         span: Span,
     ) -> Result<Operand, LowerError> {
         let (peeled, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
@@ -3478,23 +3473,18 @@ impl<'a> FnLowerer<'a> {
         };
         // Base reference: pass an existing reference through (a `&[T]` re-slice or `&Vec`),
         // else borrow the owned Array/Vec place (shared).
+        // 0.1-A8: an EXCLUSIVE view borrows the base exclusively; a shared one borrows shared.
         let base_ref = if layers > 0 {
             self.lower_expr_to_operand(base)?
         } else {
             let place = self.place_or_temp(base, &peeled, span)?;
             let ref_ty = MirTy::Ref {
-                mutable: false,
+                mutable,
                 inner: Box::new(peeled.clone()),
             };
             let temp = self.new_temp(ref_ty.clone());
             self.emit(
-                Statement::Assign(
-                    Place::local(temp),
-                    Rvalue::RefOf {
-                        mutable: false,
-                        place,
-                    },
-                ),
+                Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
                 self.info(span),
             );
             self.read_place(Place::local(temp), &ref_ty, span)?
@@ -3517,12 +3507,16 @@ impl<'a> FnLowerer<'a> {
         };
         let _ = &bound_ty;
         let slice_ty = MirTy::Ref {
-            mutable: false,
+            mutable,
             inner: Box::new(MirTy::Slice(Box::new(elem))),
         };
         let dest = self.new_temp(slice_ty.clone());
         self.emit_runtime_call(
-            RuntimeFn::SliceNew,
+            if mutable {
+                RuntimeFn::SliceNewMut
+            } else {
+                RuntimeFn::SliceNew
+            },
             vec![
                 base_ref,
                 Operand::Copy(field(0)),
@@ -4436,8 +4430,16 @@ impl<'a> FnLowerer<'a> {
                 "is_empty" => RuntimeFn::SliceIsEmpty,
                 other => return unsupported(format!("slice method {other}"), span),
             };
-            // The receiver expression is the `&[T]` value itself (peel found ref layers).
-            let recv = self.lower_expr_to_operand(base)?;
+            // The receiver expression is the `&[T]`/`&mut [T]` value itself (peel found ref
+            // layers). WP-C4.7-8.6: read it by COPY rather than move. `len`/`is_empty` only read
+            // through the reference — the MIR-level equivalent of a shared reborrow — so moving
+            // it would consume an exclusive view and make a second use of the same `&mut [T]`
+            // local fail V-MOVE-1, which is not what the language says (`s.len(); s[0]` is legal,
+            // and the oracle accepts it since DEV-082).
+            let recv = match self.lower_place(base) {
+                Ok(place) => Operand::Copy(place),
+                Err(_) => self.lower_expr_to_operand(base)?,
+            };
             self.emit_runtime_call(rt, vec![recv], dest, span);
             return Ok(());
         }

@@ -1,12 +1,25 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-8.3b — **the last Class-A MIR residual is closed; only C4.7-9 remains**
+Updated: 2026-07-20 after WP-C4.7-8.6 — **exclusive slice views land (`0.1-A8`); 8.5 and 8.4 remain**
 
 ## Position
-Gate: C4  Next: **C4.7-9** (fresh audit + exit report — the report is written for the owner, who
-alone closes the gate). The MIR residual list is now down to exactly two entries, **neither an
-exit blocker on its own**: `HashMap::values` (std-full, explicitly reserved by CD-033) and
-mutable slice views (**8.6 — an owner decision**). 8.4/8.5 remain front-end-first per C4.7-2 and
-need the audit's classification.
+Gate: C4  Next: **C4.7-8.5** (non-bare impl heads), then **8.4** (method-own generics), then
+**C4.7-9** (fresh audit + exit report — written for the owner, who alone closes the gate).
+**OWNER DECISION 2026-07-20: implement 8.6, 8.5 and 8.4, then audit.** All three are normative
+Core by the grammar and the abstract machine — `02:64`+`02:120` put `GenericParams?` on methods,
+`02:117` admits any `Type` as an impl self type, and REF-SLICE-001 states that "writes through an
+exclusive slice reference update the original object" — so under CD-033's strict reading
+(deliberately chosen over the workload-subset reading) none of them may be silently deferred.
+**WP-C4.7-8.6 DONE 2026-07-20 — exclusive slice views, surface `0.1-A7` → `0.1-A8` (A1 rev. 12).**
+`SliceNewMut` yields `&mut [T]` from an exclusive receiver borrow; the interpreter's WRITE path
+now composes a `Slice { start, len }` window with a following `Index(i)` exactly as its READ path
+already did, which is what makes a write through the view reach the base object. Verifier: an
+exclusive receiver is required (MIR-0012 otherwise); `len`/`is_empty` accept either mutability
+since they only read. **DEV-082 found and closed:** `method_receiver` had no slice/array arm, so a
+method call on a slice CONSUMED the receiver — harmless for `&[T]` (shared refs are `Copy`, which
+is why shared slices shipped clean in A4-2e) but a real move for `&mut [T]`, making
+`s.len(); s[0]` fail E0100. Invisible until exclusive views existed to expose it. Lowering
+likewise now reads such a receiver by `Copy` — the MIR-level shared reborrow — instead of moving
+it. Workspace 793/0/2.
 **WP-C4.7-8.3b DONE 2026-07-20 — droppable scrutinee under NESTED patterns.** A consuming match
 decomposes the scrutinee completely, so every leaf the pattern DISCARDS still owes a destructor.
 `consume_unbound_leaves` generalizes C4.5d's flat rule to an arbitrary pattern tree (wildcards,
@@ -2651,3 +2664,45 @@ three-field case and a whole-payload wildcard), `droppable_nested_pattern_depth_
 FOLLOW-UP: none.
 NEXT: **C4.7-9** — re-run the unsupported-site sweep over all `unsupported(` sites, re-verify the
 frozen corpus, classify 8.4/8.5, and write the exit report for the owner's decision.
+
+### WP-C4.7-8.6 — exclusive slice views (surface 0.1-A8) + DEV-082 — 2026-07-20
+DONE, under the owner's decision to implement 8.6/8.5/8.4 before auditing rather than defer any
+of them. The evidence for that decision, recorded because it settles a question the plan had left
+open: **REF-SLICE-001** states outright that "writes through an exclusive slice reference update
+the original object", 03-Type-System §107 gives `&mut expr[r]` the type `&mut [T]`, and §547 lists
+`&mut [T; N] -> &mut [T]` among the permitted coercions. Mutable slice views are therefore
+normative Core, and rev. 10's deferral of them would have exited C4 with a gap in a rule the
+abstract machine states directly.
+IMPLEMENTED: `RuntimeFn::SliceNewMut` (A1 amendment rev. 12, surface `0.1-A7` → `0.1-A8`),
+`&mut [T]` destination, exclusive receiver borrow. The shared and exclusive constructors compute
+the SAME window and share one interpreter arm — they differ only in the reference they yield, and
+write permission is a static property the verifier enforces rather than something the runtime
+value carries.
+WRITE-THROUGH: the interpreter's WRITE path now composes a `Slice { start, len }` window with a
+following `Index(i)` into the absolute element `start + i` — precisely the composition its READ
+path already performed. That composition IS the write-through semantics; without it a write
+through a view could not reach the base. A bare window with no following index is not a writable
+place (it denotes the sub-view as a value) and is rejected loudly.
+**DEV-082, found here and closed.** `borrowck.rs`'s `method_receiver` had no arm for slice or
+array receivers, so a method call on one returned `None` and the caller's fallback CONSUMED the
+receiver. For `&[T]` that is harmless — shared references are `Copy`, so the "move" is a copy —
+which is exactly why shared slices shipped in A4-2e without anyone noticing. For `&mut [T]` it is
+a real move, so `let s = &mut a[1..4]; s.len(); s[0]` failed E0100. The defect was **structurally
+invisible until exclusive views existed to expose it**: no program could hold a non-`Copy` slice
+reference before today. MIR had the same shape — lowering passed the receiver by MOVE — and now
+reads it by `Copy`, the MIR-level equivalent of a shared reborrow, since `len`/`is_empty` only
+read.
+FILES: starkc/src/mir/{mod,lower,verify,interp}.rs, starkc/src/borrowck.rs (DEV-082),
+starkc/tests/{mir_differential,mir_lowering}.rs (incl. both surface-string goldens and the last
+`mutslice` Unsupported fixture removed), mir-amendment-A1-strings-runtime.md (rev. 12),
+KNOWN-DEVIATIONS.md (DEV-082; count 79 → 80), COMPILER-STATE.md, WP-C4.7.md.
+RULES: REF-SLICE-001 (write-through), 03 §107/§547. No spec text changed — the spec already
+required this. MIR shape unchanged; runtime surface bumped by the pre-authorized dated-enumeration
+mechanism.
+DECISIONS: implements the owner's 8.6 decision; no new CE-level decision taken.
+EVIDENCE: `mutable_slice_views_agree` — write-through observed at the BASE object (array and
+`Vec`, the latter at a non-zero view-relative index), a view passed to a function that mutates it
+through the parameter, and repeated use of a `&mut [T]` local (the DEV-082 case).
+FOLLOW-UP: none.
+NEXT: WP-C4.7-8.5 — non-bare impl heads (`impl<T> Wrap for Holder<Vec<T>>`), front-end-first per
+C4.7-2's finding, then 8.4 (method-own generics), then C4.7-9.

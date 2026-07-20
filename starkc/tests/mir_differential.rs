@@ -2670,3 +2670,65 @@ fn struct_shorthand_bindings_drop_agrees() {
         ),
     );
 }
+
+/// WP-C4.7-8.6 (surface `0.1-A8`): EXCLUSIVE slice views. REF-SLICE-001 states that "writes
+/// through an exclusive slice reference update the original object", and 03-Type-System gives
+/// `&mut expr[r]` the type `&mut [T]`, so this is normative Core rather than an optional
+/// extension — the owner decided accordingly rather than deferring it past C4.
+///
+/// Covers the three things that can independently go wrong: write-through reaching the BASE
+/// object (array and `Vec`), a view passed to a function that mutates it, and repeated use of a
+/// `&mut [T]` local (DEV-082 — a method call on a slice receiver used to consume it, which was
+/// invisible while only shared views existed because `&[T]` is `Copy`).
+#[test]
+fn mutable_slice_views_agree() {
+    // Write through a view; the base observes it.
+    differential(
+        "mut_slice_write.stark",
+        "fn main() { \
+             let mut a = [1, 2, 3, 4, 5]; \
+             let s = &mut a[1..4]; \
+             s[0] = 99; \
+             println(s.len()); \
+             println(s[0]); \
+             println(a[1]); \
+         }"
+        .to_string(),
+    );
+    // A view as a function argument, mutated through the parameter.
+    differential(
+        "mut_slice_param.stark",
+        "fn bump(s: &mut [Int32]) -> Unit { s[0] = s[0] + 100; } \
+         fn main() { \
+             let mut a = [1, 2, 3]; \
+             bump(&mut a[0..2]); \
+             println(a[0]); \
+             println(a[1]); \
+         }"
+        .to_string(),
+    );
+    // A `Vec` base, writing at a view-relative index that is not zero.
+    differential(
+        "mut_slice_vec.stark",
+        "fn main() { \
+             let mut v: Vec<Int32> = Vec::new(); \
+             v.push(7); v.push(8); v.push(9); \
+             let s = &mut v[1..3]; \
+             s[1] = 55; \
+             println(v[2]); \
+         }"
+        .to_string(),
+    );
+    // DEV-082: a read-only method call must not consume an exclusive view.
+    differential(
+        "mut_slice_reuse.stark",
+        "fn main() { \
+             let mut a = [1, 2, 3, 4, 5]; \
+             let s = &mut a[1..4]; \
+             println(s.len()); \
+             println(s.len()); \
+             println(s[2]); \
+         }"
+        .to_string(),
+    );
+}

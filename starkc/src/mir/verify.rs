@@ -1367,12 +1367,8 @@ impl<'a> BodyCx<'a> {
     ) -> Option<(Vec<MirTy>, MirTy)> {
         use RuntimeFn::*;
         let recv_ty = arg_tys.first().and_then(|o| o.as_ref());
-        let slice_ref = |t: &MirTy| MirTy::Ref {
-            mutable: false,
-            inner: Box::new(MirTy::Slice(Box::new(t.clone()))),
-        };
         match rt {
-            SliceNew => {
+            SliceNew | SliceNewMut => {
                 let (recv, t) = match recv_ty {
                     Some(r @ MirTy::Ref { inner, .. }) => match inner.as_ref() {
                         MirTy::Array(elem, _) | MirTy::Slice(elem) => (r.clone(), (**elem).clone()),
@@ -1406,9 +1402,27 @@ impl<'a> BodyCx<'a> {
                     }
                     None => return None,
                 };
-                Some((vec![recv, bound.clone(), bound, MirTy::Bool], slice_ref(&t)))
+                // 0.1-A8: the EXCLUSIVE form yields `&mut [T]` and requires an exclusive
+                // receiver borrow — a shared base cannot produce a writable view.
+                let exclusive = matches!(rt, SliceNewMut);
+                if exclusive && !matches!(recv, MirTy::Ref { mutable: true, .. }) {
+                    self.err(
+                        "MIR-0012",
+                        bi,
+                        "SliceNewMut receiver must be an exclusive reference",
+                    );
+                    return None;
+                }
+                let result = MirTy::Ref {
+                    mutable: exclusive,
+                    inner: Box::new(MirTy::Slice(Box::new(t))),
+                };
+                Some((vec![recv, bound.clone(), bound, MirTy::Bool], result))
             }
+            // `len`/`is_empty` only read, so either a shared or an exclusive view is a valid
+            // receiver; the signature is stated in terms of the receiver's own mutability.
             SliceLen | SliceIsEmpty => {
+                let recv_mutable = matches!(recv_ty, Some(MirTy::Ref { mutable: true, .. }));
                 let t = match recv_ty {
                     Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
                         MirTy::Slice(elem) => (**elem).clone(),
@@ -1431,7 +1445,11 @@ impl<'a> BodyCx<'a> {
                 } else {
                     MirTy::Bool
                 };
-                Some((vec![slice_ref(&t)], ret))
+                let recv = MirTy::Ref {
+                    mutable: recv_mutable,
+                    inner: Box::new(MirTy::Slice(Box::new(t))),
+                };
+                Some((vec![recv], ret))
             }
             _ => unreachable!("non-slice op in slice_runtime_sig"),
         }
@@ -2023,7 +2041,7 @@ fn is_box_runtime_fn(rt: RuntimeFn) -> bool {
 
 fn is_slice_runtime_fn(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
-    matches!(rt, SliceNew | SliceLen | SliceIsEmpty)
+    matches!(rt, SliceNew | SliceNewMut | SliceLen | SliceIsEmpty)
 }
 
 fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
@@ -2115,7 +2133,7 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext => {
             unreachable!("HashMap ops resolve through map_runtime_sig, not runtime_sig")
         }
-        SliceNew | SliceLen | SliceIsEmpty => {
+        SliceNew | SliceNewMut | SliceLen | SliceIsEmpty => {
             unreachable!("slice ops resolve through slice_runtime_sig, not runtime_sig")
         }
     }

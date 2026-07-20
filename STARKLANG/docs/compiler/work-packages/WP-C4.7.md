@@ -485,8 +485,13 @@ Order within the increment (each independently commit-able):
   pattern trees, running before the binding walk so the oracle's drop order falls out. **DEV-081**
   found and closed: shorthand struct-field bindings never registered as droppable in ANY mode — a
   silent LEAK affecting the flat path too. 3 differential tests (8 programs).
-- **C4.7-8: DONE** except **8.6 (mutable slices — owner decision)**. Remaining clean-`Unsupported`
-  entries: `HashMap::values` (std-full, CD-033-reserved) and mutable slice views. (oracle `unwrap_or` double-drop); 8.4/8.5
+- **C4.7-8.6: DONE 2026-07-20** — the owner decided exclusive slice views ARE required for C4
+  exit (REF-SLICE-001 specifies write-through; 03 §107/§547 type it). `SliceNewMut` at surface
+  `0.1-A8` (A1 rev. 12); the interpreter's write path composes the slice window with a following
+  index, which is the write-through semantics. **DEV-082** found and closed: a method call on a
+  slice receiver consumed it — invisible while only shared (`Copy`) views existed.
+- **C4.7-8: DONE** except 8.4/8.5, which the owner directed be implemented before the audit.
+  The only remaining clean-`Unsupported` entry is `HashMap::values` (std-full, CD-033-reserved). (oracle `unwrap_or` double-drop); 8.4/8.5
   reclassified front-end-first by C4.7-2; 8.6 (mutable slices) is an owner decision.
 - C4.7-9: _pending_ (last)
 

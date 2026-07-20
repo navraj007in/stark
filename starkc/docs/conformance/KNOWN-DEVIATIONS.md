@@ -2322,6 +2322,26 @@ WP-C1.5)
 - **Regression evidence:** `mir_differential.rs::struct_shorthand_bindings_drop_agrees`, covering
   both the struct-nominal and the struct-shaped-enum-variant forms.
 
+## DEV-082 — A method call on a slice receiver consumes it, so a `&mut [T]` local cannot be used twice [CLOSED, WP-C4.7-8.6, 2026-07-20]
+
+- **What:** `borrowck.rs`'s `method_receiver` had no arm for slice or array receivers, so a method
+  call on one returned `None` and the caller's fallback **consumed** the receiver.
+- **Impact:** for a `&[T]` local this is harmless — shared references are `Copy`, so the "move" is
+  a copy — which is exactly why shared slices shipped in A4-2e without anyone noticing. For a
+  `&mut [T]` local it is a real move: `let s = &mut a[1..4]; s.len(); s[0]` failed
+  `E0100 use of moved value 's'`. The defect was therefore invisible until exclusive slice views
+  existed to expose it.
+- **Repro:** `fn main() { let mut a = [1,2,3,4,5]; let s = &mut a[1..4]; println(s.len()); println(s.len()); }`
+  → E0100. The same program with `&a[1..4]` is accepted.
+- **Resolution (WP-C4.7-8.6):** `method_receiver` returns `Receiver::Ref` for slice and array
+  receivers. The slice methods in the surface (`len`, `is_empty`) only read, so a shared borrow is
+  the correct receiver kind.
+- **MIR counterpart:** lowering also passed the receiver by MOVE. It now reads it by `Copy` — the
+  MIR-level equivalent of a shared reborrow — so V-MOVE-1 does not treat a read-only method call
+  as consuming an exclusive view. Both engines agree on `s.len(); s[0]`.
+- **Regression evidence:** `mir_differential.rs::mutable_slice_views_agree` exercises repeated use
+  of a `&mut [T]` local alongside the write-through cases.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2371,7 +2391,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 79 numbered deviations total (DEV-002 through DEV-081, DEV-001/DEV-003 retired).
+Current count: 80 numbered deviations total (DEV-002 through DEV-082, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2447,7 +2467,9 @@ added `PRIM-TRAIT-001` to the normative spec. **DEV-079 and DEV-080** were found
 WP-C4.7-8.3 — a verifier false-positive that rejected every multi-droppable-field enum variant,
 and the arm-end drop-order divergence it had been masking. **DEV-081** (shorthand struct-field
 bindings never dropped — a silent leak in both the flat and general match paths) was found and
-closed by WP-C4.7-8.3b. DEV-070 was closed by
+closed by WP-C4.7-8.3b. **DEV-082** (a method call on a slice receiver consumed it, so a
+`&mut [T]` local could not be used twice — invisible until exclusive views existed) was found and
+closed by WP-C4.7-8.6. DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching);

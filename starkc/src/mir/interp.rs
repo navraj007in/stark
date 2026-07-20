@@ -760,7 +760,33 @@ impl<'a> Interp<'a> {
                 ))
             })?;
         let mut target = slot;
-        for step in path {
+        // 0.1-A8 (WP-C4.7-8.6): a `Slice` window followed by an `Index` composes to the absolute
+        // element, exactly as the READ path does — that composition is what makes a write through
+        // an exclusive view reach the original object (REF-SLICE-001). Normalizing here keeps the
+        // walk below a simple one-step-at-a-time loop.
+        let path: Vec<ConcreteProj> = {
+            let mut out: Vec<ConcreteProj> = Vec::with_capacity(path.len());
+            let mut k = 0;
+            while k < path.len() {
+                match (&path[k], path.get(k + 1)) {
+                    (ConcreteProj::Slice { start, len }, Some(ConcreteProj::Index(i))) => {
+                        if *i >= *len {
+                            return Err(MirRunError::Internal(
+                                "proven slice index out of bounds (verifier bug)".into(),
+                            ));
+                        }
+                        out.push(ConcreteProj::Index(start + i));
+                        k += 2;
+                    }
+                    (step, _) => {
+                        out.push(step.clone());
+                        k += 1;
+                    }
+                }
+            }
+            out
+        };
+        for step in &path {
             target = match (step, target) {
                 (ConcreteProj::Field(i), MirValue::Aggregate(fields)) => fields
                     .get_mut(*i as usize)
@@ -781,11 +807,12 @@ impl<'a> Interp<'a> {
                         MirRunError::Internal("proven index write out of bounds".into())
                     })?
                 }
-                // 0.1-A6: slice views are SHARED — no writes route through them (the front end
-                // rejects assignment through an immutable slice; loud failure if one slips by).
+                // A bare `Slice` window with no following `Index` is not a writable place: it
+                // denotes the sub-view as a value, and the normalization above has already
+                // folded away every composed form. Reaching here means malformed MIR.
                 (ConcreteProj::Slice { .. }, _) => {
                     return Err(MirRunError::Internal(
-                        "write through a shared slice view".into(),
+                        "write to a slice view as a whole (not an element)".into(),
                     ))
                 }
                 (step, target) => {
@@ -1722,7 +1749,11 @@ impl<'a> Interp<'a> {
         };
         self.check_ref_live(frame, generation)?;
         match rt {
-            SliceNew => {
+            // 0.1-A8: the shared and exclusive constructors compute the SAME window; they
+            // differ only in the reference they yield, and the interpreter's `Ref` already
+            // carries no mutability of its own — write permission is a static property the
+            // verifier enforces (`SliceNewMut` requires an exclusive receiver). So one arm.
+            SliceNew | SliceNewMut => {
                 let oob = || MirRunError::Trap {
                     category: TrapCategory::IndexOutOfBounds,
                     source: call_info,
@@ -1956,7 +1987,7 @@ fn is_box_runtime(rt: RuntimeFn) -> bool {
 
 fn is_slice_runtime(rt: RuntimeFn) -> bool {
     use RuntimeFn::*;
-    matches!(rt, SliceNew | SliceLen | SliceIsEmpty)
+    matches!(rt, SliceNew | SliceNewMut | SliceLen | SliceIsEmpty)
 }
 
 fn is_map_runtime(rt: RuntimeFn) -> bool {
