@@ -489,14 +489,20 @@ The corpus was green throughout all of that.
 
 ### Condition 1 — the corpus runs equivalently through both interpreters: **SATISFIED**
 
-`entire_frozen_corpus_agrees` passes over all 17 frozen cases (`corpus_version = 1.0.0`),
+`entire_frozen_corpus_agrees` passes over all **22** frozen cases (`corpus_version = 1.1.0` —
+grown from 17 by CD-037, additively; see §5),
 comparing stdout, exit status, trap category, exact user-origin trap provenance, and pre-trap
 output. The differential suite is now **114 tests**; the workspace is **798 passed / 0 failed /
 2 ignored**, `fmt` clean, `clippy` clean on both 1.93 and 1.97 (CI parity).
 
-Stronger than in July: the corpus is unchanged, but the differential around it grew by ~40 tests
-covering exactly the constructs this work package touched, with **drop ORDER** — not merely drop
-occurrence — as the assertion wherever destructors are involved.
+Stronger than in July on both axes. The differential grew by ~40 tests covering exactly the
+constructs this work package touched, with **drop ORDER** — not merely drop occurrence — as the
+assertion wherever destructors are involved. And the frozen corpus itself grew from 17 cases to
+22 (CD-037): until then every Class-A and WP-C4.7 construct was covered by the differential and by
+**no frozen case**, so a later freeze would have locked in a baseline that never exercised them.
+Writing those five cases immediately found **DEV-087** — the oracle treated a slice reference as
+non-`Copy`, so passing one to a function consumed it — which is the fourth defect in this package
+that existed only in the gap between two engines.
 
 ### Condition 2 — every normative Core construct required by C5 has verified MIR lowering: **SATISFIED, with two recorded exceptions the owner must rule on**
 
@@ -556,11 +562,11 @@ Also open, none C4-owned: DEV-005 (unowned since C1), DEV-010/012 (WP-C8.x), DEV
 
 ## 4. Deviation ledger state
 
-**84 numbered deviations** (DEV-002…DEV-086; DEV-001/003 retired). WP-C4.7 opened 13 and closed
-11 of its own, plus DEV-069 and DEV-067/071/072/073 carried in from WP-C4.6.
+**85 numbered deviations** (DEV-002…DEV-087; DEV-001/003 retired). WP-C4.7 opened 14 and closed
+12 of its own, plus DEV-069 and DEV-067/071/072/073 carried in from WP-C4.6.
 
 Closed by WP-C4.7: DEV-067, 069, 071, 072, 073, 074, 075, 076, 077, 078, 079, 080, 081, 082, 084,
-085. Opened and left open: DEV-083, DEV-086.
+085, 087. Opened and left open: DEV-083, DEV-086.
 
 Three were **soundness** defects, not over/under-rejections:
 - **DEV-076** — `unwrap_or` destroyed the payload twice and the discarded default never.
@@ -578,6 +584,7 @@ its receiver.
 | MIR **amendment A4** (`Rvalue::LayoutQuery`) | CD-036 — owner-approved under CE3 |
 | Runtime surface `0.1-A6` → **`0.1-A8`** | A1 rev. 11 (`Box`), rev. 12 (exclusive slices) |
 | **`PRIM-TRAIT-001`** — normative primitive trait/operator matrix in 06, cross-referenced from 03 | Owner specification decision (DEV-075). Compiled spec regenerated; fixture corpus re-extracted |
+| Frozen execution corpus **1.0.0 → 1.1.0**, additive: 17 → 22 cases, lock 48 → 58 files | CD-037, owner-directed. Verified additive — all 48 hashes from 1.0.0 are byte-identical in the new lock and no pre-existing corpus file was modified, so the 1.0.0 baseline survives inside 1.1.0 |
 
 `MIR_VERSION` remains `0.1`. Every shape change was additive and individually approved.
 
@@ -589,9 +596,9 @@ its receiver.
 3. **Post-hoc ratification** of the runtime-surface bumps executed in this package: revs 11 and 12
    (`0.1-A7`, `0.1-A8`). Revs 8–10 were executed under CD-033's pre-authorisation; 11 and 12 were
    executed under explicit owner instructions in-session and should be ratified in the record.
-4. **Frozen-corpus growth** — whether to add cases for the Class-A and WP-C4.7 constructs. A
-   `corpus_version` bump is governance-controlled, so this session did not touch it. The
-   differential covers these constructs; the *frozen corpus* does not.
+4. ~~**Frozen-corpus growth**~~ — **DISCHARGED 2026-07-20 (CD-037)**: the owner directed it, and
+   the corpus is now 1.1.0 with five additive cases covering these constructs. Recorded here
+   because the decision belongs in this table's history, not because anything remains open.
 5. **Gate C4 closure** itself.
 
 ## 7. Recommendation

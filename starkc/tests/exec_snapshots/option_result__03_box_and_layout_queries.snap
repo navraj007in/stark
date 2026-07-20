@@ -1,0 +1,15 @@
+STATUS: 0
+--- stdout ---
+5
+boxed
+box drop runs once at end of scope
+still alive
+in-box
+1
+2
+8
+8
+1
+11
+in-box
+--- stderr ---

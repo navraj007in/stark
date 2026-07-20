@@ -1,0 +1,34 @@
+fn label(order: Ordering) -> Int32 {
+    match order {
+        Ordering::Less => 1,
+        Ordering::Equal => 2,
+        Ordering::Greater => 3,
+    }
+}
+
+fn main() {
+    println(6 & 3);
+    println(6 | 3);
+    println(6 ^ 3);
+    println(1 << 3);
+    println(16 >> 2);
+    println(2 ** 5);
+
+    let mut acc = 12;
+    acc &= 10;
+    println(acc);
+    acc <<= 2;
+    println(acc);
+
+    let mask: UInt8 = 5;
+    println(~mask);
+
+    println(label(3.cmp(&5)));
+    println(label(5.cmp(&5)));
+    println(label(9.cmp(&5)));
+    println(label('a'.cmp(&'b')));
+    println(label(String::from("a").cmp(&String::from("b"))));
+
+    if 'Z' < 'a' { println(1); } else { println(0); }
+    if 1.5 < 2.5 { println(1); } else { println(0); }
+}

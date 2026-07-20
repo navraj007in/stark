@@ -105,9 +105,19 @@ fn corpus_lock_matches_frozen_snapshot() {
             "duplicate path in corpus.lock: {path}"
         );
     }
+    // Freeze governance: this assertion is the deliberate speed bump. A corpus change must bump
+    // `corpus_version`, regenerate the lock, AND update this line, each with a dated note in
+    // COMPILER-STATE.md — so no `UPDATE_SNAPSHOTS=1` run can quietly redefine the baseline.
+    //
+    // 1.0.0 → 1.1.0 (WP-C4.7-9, 2026-07-20, CD-037): ADDITIVE growth only. Five new primary
+    // cases covering the constructs WP-C4.6's Class-A campaign and WP-C4.7 added — every one was
+    // exercised by the differential suite and by NO frozen case, so a later freeze would have
+    // locked in a corpus that never ran them. No pre-existing corpus file was modified: all 48
+    // hashes from 1.0.0 are unchanged in the new lock, so the 1.0.0 baseline survives
+    // byte-identically inside 1.1.0 and any comparison taken against it stays valid.
     assert_eq!(
         version.as_deref(),
-        Some("1.0.0"),
+        Some("1.1.0"),
         "corpus.lock corpus_version changed without updating this assertion (freeze governance)"
     );
 
@@ -176,6 +186,14 @@ const CASES: &[&str] = &[
     "option_result__02_result_and_try_propagation",
     "collection_iter__01_vec_push_index_iterate",
     "collection_iter__02_hashmap_insert_get_iteration_order",
+    // corpus_version 1.1.0 (WP-C4.7-9): the constructs WP-C4.6's Class-A campaign and WP-C4.7
+    // added. Until now every one of them was covered by the differential suite but by NO frozen
+    // case, so a future freeze would have locked in a corpus that never exercised them.
+    "ownership_drop__03_discarded_values_and_nested_patterns",
+    "collection_iter__03_slice_views_and_array_iteration",
+    "struct_enum_trait__05_generic_methods_and_impl_heads",
+    "primitive__04_bitwise_shift_pow_and_ordering",
+    "option_result__03_box_and_layout_queries",
 ];
 
 /// (base, transformed) pairs: each pair must render an *identical* execution snapshot. One pair

@@ -1211,21 +1211,27 @@ fn entire_frozen_corpus_agrees() {
     for name in [
         "collection_iter__01_vec_push_index_iterate",
         "collection_iter__02_hashmap_insert_get_iteration_order",
+        // corpus_version 1.1.0 (WP-C4.7-9).
+        "collection_iter__03_slice_views_and_array_iteration",
         "expr_stmt__01_arithmetic_and_precedence",
         "expr_stmt__02_if_else_and_block_tail",
         "expr_stmt__03_loops_break_continue",
         "expr_stmt__04_match_and_patterns",
         "option_result__01_option_construction_and_match",
         "option_result__02_result_and_try_propagation",
+        "option_result__03_box_and_layout_queries",
         "ownership_drop__01_move_and_drop_order",
         "ownership_drop__02_shared_borrow_does_not_move",
+        "ownership_drop__03_discarded_values_and_nested_patterns",
         "primitive__01_integer_widths_and_overflow_traps",
         "primitive__02_integer_overflow_traps",
         "primitive__03_float_arithmetic_and_casts",
+        "primitive__04_bitwise_shift_pow_and_ordering",
         "struct_enum_trait__01_struct_construction_and_methods",
         "struct_enum_trait__02_enum_and_pattern_match",
         "struct_enum_trait__03_generic_function_and_trait_bound",
         "struct_enum_trait__04_trait_default_and_override",
+        "struct_enum_trait__05_generic_methods_and_impl_heads",
     ] {
         let path = corpus_dir().join(format!("{name}.stark"));
         let source = std::fs::read_to_string(&path).unwrap();

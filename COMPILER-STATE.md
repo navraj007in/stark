@@ -1,10 +1,16 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-8.6 — **exclusive slice views land (`0.1-A8`); 8.5 and 8.4 remain**
+Updated: 2026-07-20 after WP-C4.7-9 — **WP-C4.7 complete; exit report written; corpus at 1.1.0; gate decision with the owner**
 
 ## Position
-Gate: C4  **WP-C4.7 IS COMPLETE. The C4 exit report is written and awaiting the owner's decision**
-— `WP-C4.6.md`, final section "Gate C4 Exit Report (WP-C4.7-9)". It supersedes that document's
-2026-07-19 Verdict. **This session does not close the gate.**
+Gate: C4  **WP-C4.7 IS COMPLETE. The C4 exit report is written and awaiting the owner's decision.**
+**Frozen corpus grown to `corpus_version` 1.1.0 (CD-037, owner-directed, ADDITIVE)** — five new
+cases covering every construct the Class-A campaign and WP-C4.7 added; 22 cases, all agreeing
+across both engines. Writing them found and closed **DEV-087** (the oracle treated a slice
+reference as non-`Copy`, so passing one to a function consumed it) — the fourth defect in this
+package that lived only in the gap between two engines. Decision-table item 4 is now discharged;
+items 1, 2, 3 and 5 remain with the owner.
+Report: `WP-C4.6.md`, final section "Gate C4 Exit Report (WP-C4.7-9)". It supersedes that
+document's 2026-07-19 Verdict. **This session does not close the gate.**
 Recommendation in the report: **close C4, conditional on the owner disposing of DEV-086 and
 DEV-083 by explicit dated decision** rather than leaving them undisposed. Exit conditions 1 and 3
 are satisfied outright; condition 2 is satisfied except for those two over-rejections, which are
@@ -1112,6 +1118,24 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   ratification of the record, not approval of new code — the code shipped in WP-C4.6 A5.**
   Consequence if ratified: WP-C4.7-3's layout amendment is **A4** (`mir-amendment-A4-layout.md`),
   renumbered from the plan's "A3" to avoid a collision.
+
+- CD-037 [2026-07-20, WP-C4.7-9, owner-directed] **Frozen execution corpus bumped 1.0.0 →
+  1.1.0 — ADDITIVE ONLY.** Five new primary cases cover the constructs WP-C4.6's Class-A campaign
+  and WP-C4.7 added, every one of which the differential suite exercised but NO frozen case did:
+  `ownership_drop__03_discarded_values_and_nested_patterns` (unwrap_or discarding at the call,
+  nested-pattern drop order, shorthand bindings), `collection_iter__03_slice_views_and_array_
+  iteration` (shared + exclusive slices, write-through to the base, array iteration),
+  `struct_enum_trait__05_generic_methods_and_impl_heads` (method-own generics, non-bare impl
+  heads, trait-default generics), `primitive__04_bitwise_shift_pow_and_ordering` (A5 operators,
+  compound forms, primitive/`Char`/`String` `cmp`, the float operator/trait split), and
+  `option_result__03_box_and_layout_queries` (`Box` new/into_inner + drop timing, a recursive type
+  through `Box`, layout queries, expected-typed literals). `corpus.lock` regenerated: 48 → 58
+  files, base commit updated, and the version assertion in `exec_snapshots.rs` updated in the same
+  change per the freeze procedure. **Verified additive:** all 48 hashes from 1.0.0 are byte-identical
+  in the new lock and no pre-existing corpus file was modified, so the 1.0.0 baseline survives
+  inside 1.1.0 and comparisons taken against it remain valid. All 22 cases agree across the HIR
+  and MIR engines. Writing the slice case found **DEV-087** (the oracle treated a slice reference
+  as non-`Copy`, so passing one to a function consumed it) — closed in the same change.
 
 - CD-036 [2026-07-20, CE3 — owner-approved MIR Amendment A4, as drafted] Approved
   `Rvalue::LayoutQuery { kind: SizeOf | AlignOf, ty: MirTy }` — a **pure** rvalue typed `UInt64`

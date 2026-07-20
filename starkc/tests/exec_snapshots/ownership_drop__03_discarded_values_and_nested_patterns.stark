@@ -1,0 +1,42 @@
+struct Loud { label: String }
+
+impl Drop for Loud {
+    fn drop(&mut self) {
+        println(self.label.as_str());
+    }
+}
+
+struct Holder { left: Loud, right: Loud }
+
+fn main() {
+    println("unwrap_or: Some discards the default at the call");
+    let present: Option<Loud> = Some(Loud { label: String::from("payload") });
+    let taken = present.unwrap_or(Loud { label: String::from("unused-default") });
+    println("after unwrap_or");
+    println(taken.label.as_str());
+
+    println("nested pattern: bindings drop before discarded leaves");
+    let pair = Some((Loud { label: String::from("bound") }, Loud { label: String::from("wild") }));
+    match pair {
+        Some((kept, _)) => {
+            println(kept.label.as_str());
+        }
+        None => {
+            println("none");
+        }
+    }
+
+    println("shorthand struct bindings own what they bind");
+    let held = Holder {
+        left: Loud { label: String::from("left") },
+        right: Loud { label: String::from("right") },
+    };
+    match held {
+        Holder { left, right } => {
+            println(left.label.as_str());
+            println(right.label.as_str());
+        }
+    }
+
+    println("end of main");
+}

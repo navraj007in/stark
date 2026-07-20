@@ -1,0 +1,51 @@
+struct Node { value: Int32, next: Option<Box<Node>> }
+
+struct Loud { label: String }
+
+impl Drop for Loud {
+    fn drop(&mut self) {
+        println(self.label.as_str());
+    }
+}
+
+fn takes_index(index: UInt64) -> UInt64 {
+    index + 1
+}
+
+fn main() {
+    let boxed = Box::new(5);
+    println(boxed.into_inner());
+
+    let text = Box::new(String::from("boxed"));
+    println(text.into_inner());
+
+    println("box drop runs once at end of scope");
+    let held = Box::new(Loud { label: String::from("in-box") });
+    println("still alive");
+    let moved_out = held.into_inner();
+    println(moved_out.label.as_str());
+
+    let tail = Node { value: 2, next: None };
+    let head = Node { value: 1, next: Some(Box::new(tail)) };
+    println(head.value);
+    match head.next {
+        Some(rest) => {
+            let inner = rest.into_inner();
+            println(inner.value);
+        }
+        None => {
+            println(0);
+        }
+    }
+
+    println(size_of::<Int32>());
+    println(align_of::<Bool>());
+
+    let mut items: Vec<Int32> = Vec::new();
+    items.push(11);
+    println(takes_index(0));
+    match items.get(0) {
+        Some(found) => println(*found),
+        None => println(-1),
+    }
+}

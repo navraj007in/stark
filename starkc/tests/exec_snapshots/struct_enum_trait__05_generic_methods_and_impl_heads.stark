@@ -1,0 +1,45 @@
+struct Holder<T> { value: T }
+
+impl<T> Holder<T> {
+    fn echo<U>(&self, given: U) -> U {
+        given
+    }
+}
+
+impl<T> Holder<Option<T>> {
+    fn describe(&self) -> Int32 {
+        1
+    }
+}
+
+trait Greet {
+    fn greet<U>(&self, given: U) -> U {
+        given
+    }
+    fn name(&self) -> Int32;
+}
+
+struct Plain { tag: Int32 }
+
+impl Greet for Plain {
+    fn name(&self) -> Int32 {
+        self.tag
+    }
+}
+
+fn main() {
+    let ints = Holder { value: 1 };
+    let flags = Holder { value: true };
+
+    println(ints.echo(5));
+    println(ints.echo(false));
+    println(flags.echo(9));
+
+    let wrapped = Holder { value: Some(3) };
+    println(wrapped.describe());
+
+    let plain = Plain { tag: 42 };
+    println(plain.name());
+    println(plain.greet(7));
+    println(plain.greet(true));
+}

@@ -2425,6 +2425,27 @@ WP-C1.5)
 - **Impact:** over-rejection only; both engines are consistent (MIR refuses cleanly, nothing
   mislowers). Owner: unassigned; C4-exit-report input.
 
+## DEV-087 — HIR oracle treats a slice reference as non-`Copy`, so passing one consumes it [CLOSED, WP-C4.7-9 corpus, 2026-07-20]
+
+- **What:** the interpreter's `value_is_copy` classified `Value::Slice` as NOT `Copy`. A slice
+  value is a shared reference (`&[T]`), and shared references ARE `Copy` (03-Type-System) — the
+  neighbouring `Value::Ref` was already treated that way. Passing a slice to a function therefore
+  MOVED it out of the caller's binding.
+- **Repro:** `fn total(v: &[Int32]) -> Int32 { … } fn main() { let a = [1,2,3,4,5]; let s = &a[1..4]; println(total(s)); println(s[0]); }`
+  — the checker accepts it (correctly), MIR runs it, and the oracle failed
+  `"use of unavailable value"` on the second use.
+- **How it was found:** writing the `collection_iter__03` frozen-corpus case. The differential
+  suite's slice tests happened never to pass a slice to a function *and then reuse it*, so the
+  divergence had no coverage. It is the fourth defect in this work package that existed only in
+  the gap between two engines rather than inside either one.
+- **Resolution (WP-C4.7-9):** `Value::Slice` is `Copy`. Exclusive (`&mut [T]`) views are not
+  distinguished, for the same reason `Value::Ref` is not: the interpreter's reference values carry
+  no mutability, and write permission is a static property the front end and the verifier enforce.
+- **Regression evidence:** the `collection_iter__03_slice_views_and_array_iteration` corpus case
+  (shared re-slicing, a slice passed to a function and reused afterwards, exclusive views written
+  through, and array iteration), which runs in `exec_snapshots` and in
+  `entire_frozen_corpus_agrees`.
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2474,7 +2495,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 84 numbered deviations total (DEV-002 through DEV-086, DEV-001/DEV-003 retired).
+Current count: 85 numbered deviations total (DEV-002 through DEV-087, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2542,7 +2563,8 @@ described them as open; corrected 2026-07-19 during the C3-entry governance-repa
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
 remainder), DEV-083 (found by WP-C4.7-8.5; narrow over-rejection), DEV-086 (found by the
-WP-C4.7-9 audit; needs a CE3 constant-index projection form). Both are over-rejections with both
+WP-C4.7-9 audit; needs a CE3 constant-index projection form). DEV-087 (oracle treated a slice
+reference as non-`Copy`) was found while writing the corpus-1.1.0 cases and closed by WP-C4.7-9. Both are over-rejections with both
 engines consistent, unassigned, C4-exit-report input. DEV-076 was CLOSED by WP-C4.7-8.1a (the oracle half); the MIR half landed in WP-C4.7-8.1. DEV-077 (the same family, in
 `Box::into_inner`) was found and CLOSED by WP-C4.7-6.1; DEV-078 (unsuffixed integer literals
 never adopting an expected integer type) was closed by WP-C4.7-6.3; DEV-075 (Char/Bool ordering)

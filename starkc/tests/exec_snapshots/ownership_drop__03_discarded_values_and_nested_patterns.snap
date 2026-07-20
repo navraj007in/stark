@@ -1,0 +1,18 @@
+STATUS: 0
+--- stdout ---
+unwrap_or: Some discards the default at the call
+unused-default
+after unwrap_or
+payload
+nested pattern: bindings drop before discarded leaves
+bound
+bound
+wild
+shorthand struct bindings own what they bind
+left
+right
+right
+left
+end of main
+payload
+--- stderr ---

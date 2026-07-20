@@ -5280,11 +5280,19 @@ impl<'a> Interpreter<'a> {
             Value::Result(value) => match value {
                 Ok(value) | Err(value) => self.value_is_copy(value),
             },
+            // DEV-087 (WP-C4.7-9 corpus): a `Value::Slice` IS a shared reference — `&[T]` — and
+            // shared references are `Copy` (03-Type-System; `Value::Ref` above is treated the
+            // same way). Classifying it non-`Copy` made passing a slice to a function CONSUME
+            // the caller's binding, so `total(shared); shared[0]` failed "use of unavailable
+            // value" in the oracle while the checker accepted it and MIR ran it. Exclusive
+            // (`&mut [T]`) views are not distinguished here because the interpreter's slice
+            // value carries no mutability — write permission is a static property the front end
+            // and the verifier enforce, exactly as for `Value::Ref`.
+            Value::Slice(..) => true,
             Value::String(_)
             | Value::Vec(_)
             | Value::Boxed(_)
             | Value::Range { .. }
-            | Value::Slice(..)
             | Value::CharsIter(..)
             | Value::SplitIter(..)
             | Value::VecIter(..)
