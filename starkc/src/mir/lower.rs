@@ -4312,6 +4312,28 @@ impl<'a> FnLowerer<'a> {
     ) -> Result<(), LowerError> {
         let base_ty = self.expr_mir_ty(base)?;
         let (peeled_ty, base_ref_layers) = Self::peel_refs(base_ty.clone());
+        // WP-C4.7-6.2: `Ord::cmp` on a PRIMITIVE receiver (06's `impl Ord for Int32`, "and
+        // similar for other types"). Checked BEFORE the String/Vec/HashMap dispatches below,
+        // because `String` is a primitive receiver for this purpose and would otherwise be
+        // claimed by the String runtime surface (which has no `cmp` entry).
+        if self.text(name_span) == "cmp"
+            && args.len() == 1
+            && matches!(
+                peeled_ty,
+                MirTy::Int8
+                    | MirTy::Int16
+                    | MirTy::Int32
+                    | MirTy::Int64
+                    | MirTy::UInt8
+                    | MirTy::UInt16
+                    | MirTy::UInt32
+                    | MirTy::UInt64
+                    | MirTy::String
+                    | MirTy::Str
+            )
+        {
+            return self.lower_primitive_cmp(base, args[0], dest, span);
+        }
         // A1 (CD-031): methods on the runtime text types dispatch to the RuntimeFn surface.
         if matches!(peeled_ty, MirTy::String | MirTy::Str) {
             return self.lower_string_method_call(base, &peeled_ty, name_span, args, dest, span);
@@ -4501,6 +4523,152 @@ impl<'a> FnLowerer<'a> {
         let tmp = self.new_temp(str_ty.clone());
         self.emit_runtime_call(RuntimeFn::StringAsStr, vec![recv], Place::local(tmp), span);
         self.read_place(Place::local(tmp), &str_ty, span)
+    }
+
+    /// WP-C4.7-6.2: `a.cmp(&b)` on a primitive, producing a `CoreOrdering` value.
+    ///
+    /// Strategy (no new MIR shape, no new `RuntimeFn`): compute the SAME comparisons the `<` and
+    /// `==` operator paths already lower — including routing `String`/`str` through `StrCmp`, so
+    /// `a.cmp(&b)` and `a < b` cannot disagree — then select the variant with a two-step branch:
+    ///
+    /// ```text
+    ///   if a < b        -> Ordering::Less
+    ///   else if a == b  -> Ordering::Equal
+    ///   else            -> Ordering::Greater
+    /// ```
+    ///
+    /// This is the inverse of `lower_user_ord`, which CALLS a user `cmp` and switches on the
+    /// resulting discriminant; here we compute the comparison and CONSTRUCT the value. Both
+    /// operands are read into temps before any branching, so each is evaluated exactly once,
+    /// receiver before argument (EXEC-ONCE-001 / the normative evaluation order).
+    fn lower_primitive_cmp(
+        &mut self,
+        base: ExprId,
+        other: ExprId,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let (ty, _) = Self::peel_refs(self.expr_mir_ty(base)?);
+        let info = self.info(span);
+        let is_str = matches!(ty, MirTy::String | MirTy::Str);
+
+        let (lt, eq) = if is_str {
+            let a = self.str_operand_for(base, span)?;
+            let b = self.str_operand_for(other, span)?;
+            let cmp = self.new_temp(MirTy::Int64);
+            self.emit_runtime_call(RuntimeFn::StrCmp, vec![a, b], Place::local(cmp), span);
+            let zero = Operand::Const(Constant::Int(0, MirTy::Int64));
+            let lt = self.new_temp(MirTy::Bool);
+            self.emit(
+                Statement::Assign(
+                    Place::local(lt),
+                    Rvalue::BinOp(MirBinOp::Lt, Operand::Copy(Place::local(cmp)), zero.clone()),
+                ),
+                info,
+            );
+            let eq = self.new_temp(MirTy::Bool);
+            self.emit(
+                Statement::Assign(
+                    Place::local(eq),
+                    Rvalue::BinOp(MirBinOp::Eq, Operand::Copy(Place::local(cmp)), zero),
+                ),
+                info,
+            );
+            (lt, eq)
+        } else {
+            let a = self.scalar_value_operand(base, &ty, span)?;
+            let b = self.scalar_value_operand(other, &ty, span)?;
+            let lt = self.new_temp(MirTy::Bool);
+            self.emit(
+                Statement::Assign(
+                    Place::local(lt),
+                    Rvalue::BinOp(MirBinOp::Lt, a.clone(), b.clone()),
+                ),
+                info,
+            );
+            let eq = self.new_temp(MirTy::Bool);
+            self.emit(
+                Statement::Assign(Place::local(eq), Rvalue::BinOp(MirBinOp::Eq, a, b)),
+                info,
+            );
+            (lt, eq)
+        };
+
+        let less_block = self.new_block();
+        let not_less_block = self.new_block();
+        let equal_block = self.new_block();
+        let greater_block = self.new_block();
+        let join = self.new_block();
+
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(lt)),
+                arms: vec![(1, less_block)],
+                otherwise: not_less_block,
+            },
+            info,
+            less_block,
+        );
+        self.assign_ordering_variant(dest.clone(), 0, join, info);
+
+        self.current = not_less_block;
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(eq)),
+                arms: vec![(1, equal_block)],
+                otherwise: greater_block,
+            },
+            info,
+            equal_block,
+        );
+        self.assign_ordering_variant(dest.clone(), 1, join, info);
+
+        self.current = greater_block;
+        self.assign_ordering_variant(dest, 2, join, info);
+
+        self.current = join;
+        Ok(())
+    }
+
+    /// Read a scalar operand for `cmp`, dereferencing a `&Self` argument to its referent — the
+    /// comparison is between the VALUES, not the references.
+    fn scalar_value_operand(
+        &mut self,
+        expr: ExprId,
+        ty: &MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let (peeled, layers) = Self::peel_refs(self.expr_mir_ty(expr)?);
+        if layers == 0 {
+            let place = self.place_or_temp(expr, ty, span)?;
+            return self.read_place(place, ty, span);
+        }
+        let mut place = self.place_or_temp(expr, &self.expr_mir_ty(expr)?.clone(), span)?;
+        for _ in 0..layers {
+            place.projection.push(Projection::Deref);
+        }
+        self.read_place(place, &peeled, span)
+    }
+
+    /// Assign one fieldless `Ordering` variant and jump to `join`, sealing the current block.
+    fn assign_ordering_variant(
+        &mut self,
+        dest: Place,
+        variant: u32,
+        join: BlockId,
+        info: SourceInfo,
+    ) {
+        self.emit(
+            Statement::Assign(
+                dest,
+                Rvalue::Aggregate(
+                    AggKind::EnumVariant(EnumRef::CoreOrdering, variant),
+                    Vec::new(),
+                ),
+            ),
+            info,
+        );
+        self.terminate(Terminator::Goto { target: join }, info, join);
     }
 
     /// Lower a `String`/`str` comparison to `StrEq`/`StrCmp` (A1). `==`/`!=` use `StrEq`;

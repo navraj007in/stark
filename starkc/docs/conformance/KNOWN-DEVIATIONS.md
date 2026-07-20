@@ -2060,6 +2060,35 @@ WP-C1.5)
   the deviation being recorded is the *governance* gap (an oracle behavior change that went
   unnumbered), not an outstanding code defect. See `mir-amendment-A1-strings-runtime.md` rev. 10.
 
+## DEV-075 — Ordered comparison on `Bool` and `Char` is accepted but unimplemented, and the two engines disagree [OPEN, found WP-C4.7-6.2, 2026-07-20]
+
+- **What:** the type checker accepts `<`/`<=`/`>`/`>=` on `Bool` and `Char`
+  (`ty_satisfies_operator_bound` admits `Eq`/`Ord` for every non-`Unit` primitive), but neither
+  engine implements them consistently:
+  - `false < true` — **HIR oracle**: runtime error "invalid binary operation". **MIR**: internal
+    error `BinOp Lt on Bool(false), Bool(true)`. Both fail, so this is an accept-then-fail: a
+    program the checker approved cannot run in either engine.
+  - `'a' < 'b'` — **HIR oracle**: runtime error "invalid binary operation". **MIR**: succeeds,
+    printing the correct answer. This is an **engine divergence**: MIR accepts and produces
+    output where the oracle refuses, which is exactly the class of defect the differential
+    harness exists to catch. It went unnoticed because no test compares an ordered operator on
+    `Char`.
+- **Scope:** the checker's operator-bound surface vs. both engines' `BinOp` evaluation. Neither
+  is obviously the "right" side: the fix is either to implement the comparisons in both engines
+  (if 03 intends `Bool`/`Char` to be ordered) or to narrow the checker to reject them (if it does
+  not). 03's operator section gives primitives "built-in meaning (Numeric Semantics below)",
+  which speaks to numeric types and does not clearly settle `Bool`/`Char` ordering — so this
+  needs a spec reading, not just a code fix. `Char` ordering by Unicode scalar value is the
+  conventional answer and is already what MIR does.
+- **Found by:** WP-C4.7-6.2, while scoping which primitives should get `Ord::cmp`. `cmp` was
+  deliberately restricted to integers, `String`, and `str` — the types both engines fully
+  support — rather than built on top of this gap. Enabling `cmp` for `Bool`/`Char` belongs in
+  the change that closes this deviation.
+- **Repro:** `fn main() { if false < true { println(1); } else { println(0); } }` and the same
+  with `'a' < 'b'`; run each through `cargo run --example c46_probe` and `--example oracle_run`.
+- **Owner:** unassigned; C4-exit-report input (it is an over-acceptance plus a divergence, both
+  of which the C4 exit conditions care about).
+
 ## Informational (not owned deviations)
 
 These were investigated during WP-C0.2/C0.4 and are recorded for completeness, but are not
@@ -2109,7 +2138,7 @@ attribute syntax existed. No fix owed.
   was superseded by confirmed findings under different numbers (DEV-SEED-001 → DEV-008;
   DEV-SEED-003 → DEV-009) during WP-C0.2, to avoid two IDs describing the same issue.
 
-Current count: 72 numbered deviations total (DEV-002 through DEV-074, DEV-001/DEV-003 retired).
+Current count: 73 numbered deviations total (DEV-002 through DEV-075, DEV-001/DEV-003 retired).
 DEV-074 (HIR oracle slice-bound messages folded into the "out of bounds" family) was made during
 WP-C4.6 A4-2e, recorded then only in the A1 amendment doc, and numbered retroactively by
 WP-C4.7-1 as **closed at creation** — the code is correct and shipped; the gap was governance.
@@ -2176,7 +2205,8 @@ their individual entries. (A prior revision of this paragraph, written at WP-C2.
 described them as open; corrected 2026-07-19 during the C3-entry governance-repair pass.)
 **Currently open (2026-07-20, during WP-C4.7):** DEV-005 (unowned), DEV-010
 (WP-C8.2/C8.3), DEV-011 (unscheduled), DEV-012 (WP-C8.7), DEV-017 (partial, unscheduled
-remainder), DEV-067 (WP-C4.7-7), DEV-071 (WP-C4.7-7). DEV-070 was closed by
+remainder), DEV-067 (WP-C4.7-7), DEV-071 (WP-C4.7-7), DEV-075 (unassigned; found by
+WP-C4.7-6.2, C4-exit-report input). DEV-070 was closed by
 WP-C4.6 A2 in both engines; DEV-074 (WP-C4.7-1) is closed at creation; **DEV-069 was closed by
 WP-C4.7-4**, which also removes CD-033's C5 multi-file prerequisite; **DEV-072 and DEV-073 were
 closed by WP-C4.7-5** (move-out-of-borrow via match bindings; generic-impl bound matching). DEV-060 closed the same day it was made a C3-ENTRY blocker.

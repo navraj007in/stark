@@ -3363,6 +3363,25 @@ impl<'a> Interpreter<'a> {
             let receiver = self.place_value(&receiver_place, span)?;
             return Ok(Value::Int(standard_hash(receiver, &receiver_ty)? as i128));
         }
+        // WP-C4.7-6.2: `Ord::cmp` on a primitive receiver (06's `impl Ord for Int32` and
+        // "similar for other types"). The checker admits this only for totally-ordered
+        // primitives — floats are excluded per CD-015 — so by the time execution reaches here
+        // the comparison is well defined. `canonical_cmp` is the SAME comparison the existing
+        // `<`/`>` operator path and sorted-collection iteration already use (`Ord for Value`),
+        // so `a.cmp(&b)` and `a < b` cannot disagree.
+        if name == "cmp" {
+            let receiver = self.place_value(&receiver_place, span)?.clone();
+            let mut values = self
+                .eval_call_arguments(args)?
+                .map_err(|_| RuntimeError::new("cmp argument propagated an error", span))?;
+            let other = values
+                .pop()
+                .ok_or_else(|| RuntimeError::new("cmp expects one argument", span))?;
+            // The argument is `&Self`; compare the referents, not the references.
+            let other = self.deref_value(other, span)?;
+            let receiver = self.deref_value(receiver, span)?;
+            return Ok(Value::Ordering(Ord::cmp(&receiver, &other)));
+        }
         if matches!(name, "read_to_string" | "write" | "write_str") {
             let Value::File(resource) = self.place_value(&receiver_place, span)? else {
                 return Err(RuntimeError::new("file method expects File", span));

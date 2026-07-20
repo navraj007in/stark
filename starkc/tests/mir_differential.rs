@@ -2038,3 +2038,61 @@ fn generic_user_iterator_for_loop_agrees() {
         .to_string(),
     );
 }
+
+/// WP-C4.7-6.2: `Ord::cmp` on a PRIMITIVE receiver. 06-Standard-Library specifies
+/// `impl Ord for Int32 { fn cmp(&self, other: &Int32) -> Ordering }` "and similar for other
+/// types", and `Ordering` is `core-min` prelude — but `3.cmp(&5)` failed E0304 ("method call on
+/// non-struct/enum type"), so the only way to obtain an `Ordering` was a user `Ord` impl.
+///
+/// The lowering constructs the variant from the same comparisons `<`/`==` already use (and
+/// routes `String` through `StrCmp`), which is what makes `a.cmp(&b)` and `a < b` agree by
+/// construction rather than by coincidence.
+#[test]
+fn primitive_cmp_agrees() {
+    differential(
+        "prim_cmp.stark",
+        "fn label(o: Ordering) -> Int32 { \
+             match o { \
+                 Ordering::Less => 1, \
+                 Ordering::Equal => 2, \
+                 _ => 3, \
+             } \
+         } \
+         fn main() { \
+             println(label(3.cmp(&5))); \
+             println(label(5.cmp(&5))); \
+             println(label(9.cmp(&5))); \
+             println(label(String::from(\"a\").cmp(&String::from(\"b\")))); \
+             println(label(String::from(\"zz\").cmp(&String::from(\"zz\")))); \
+             let x = 7; \
+             println(label(x.cmp(&x))); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The `cmp`/`<` consistency property stated as a test rather than assumed: for the same pair,
+/// the `Ordering` a `cmp` reports and the answer the ordered operators give must never disagree.
+/// Both engines are checked against each other, and the expected output is pinned.
+#[test]
+fn primitive_cmp_and_ordered_operators_agree() {
+    differential(
+        "cmp_vs_ops.stark",
+        "fn check(a: Int32, b: Int32) -> Int32 { \
+             let via_cmp = match a.cmp(&b) { \
+                 Ordering::Less => 1, \
+                 Ordering::Equal => 2, \
+                 _ => 3, \
+             }; \
+             let via_ops = if a < b { 1 } else { if a == b { 2 } else { 3 } }; \
+             if via_cmp == via_ops { 0 } else { 99 } \
+         } \
+         fn main() { \
+             println(check(1, 2)); \
+             println(check(2, 2)); \
+             println(check(3, 2)); \
+             println(check(-5, 5)); \
+         }"
+        .to_string(),
+    );
+}

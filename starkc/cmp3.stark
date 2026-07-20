@@ -1,0 +1,15 @@
+fn label(o: Ordering) -> Int32 {
+    match o {
+        Ordering::Less => 1,
+        Ordering::Equal => 2,
+        _ => 3,
+    }
+}
+fn main() {
+    println(label(3.cmp(&5)));
+    println(label(5.cmp(&5)));
+    println(label(9.cmp(&5)));
+    println(label(String::from("a").cmp(&String::from("b"))));
+    let x = 7;
+    println(label(x.cmp(&x)));
+}

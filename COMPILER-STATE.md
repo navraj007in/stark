@@ -1,9 +1,25 @@
 # STARK Compiler STATE
-Updated: 2026-07-20 after WP-C4.7-5 — **WP-C4.7 correction package under way (5 of 9 increments done)**
+Updated: 2026-07-20 after WP-C4.7-6.2 — **WP-C4.7 under way; TWO OWNER DECISIONS PENDING (6.1, 6.3)**
 
 ## Position
-Gate: C4  Next: **WP-C4.7-6 (front-end `core-min` completions: `Box` deref, primitive `cmp`, and
-the literal-typing question — 6.3 is an OWNER DECISION)**.
+Gate: C4  Next: **owner decisions on WP-C4.7-6.1 (`Box`) and 6.3 (integer-literal typing)**, then
+C4.7-7 (DEV-067 + DEV-071).
+**WP-C4.7-6.2 DONE 2026-07-20 — primitive `Ord::cmp`.** 06 specifies `impl Ord for Int32 {
+fn cmp }` "and similar for other types" and `Ordering` is `core-min` prelude, but `3.cmp(&5)`
+failed E0304, so a user `Ord` impl was the only way to obtain an `Ordering`. Added across all
+three engines: checker surface returning `Core(Ordering)`; oracle via the existing `Ord for
+Value` (the same comparison `<` uses); MIR via a new `lower_primitive_cmp` that CONSTRUCTS the
+`CoreOrdering` variant from the comparisons `<`/`==` already lower (`StrCmp` for `String`/`str`)
+— the exact inverse of `lower_user_ord`, and **no new MIR shape and no runtime-surface change**.
+Scoped to integers + `String`/`str`; floats excluded per CD-015; **`Bool`/`Char` excluded because
+of DEV-075** (below). Workspace 765/0/2; clippy clean 1.93/1.97.
+**DEV-075 OPENED (found while scoping 6.2, pre-existing and unrelated to it):** the checker
+accepts `<` on `Bool` and `Char`, but `false < true` fails in BOTH engines (accept-then-fail)
+and `'a' < 'b'` **succeeds in MIR while the oracle rejects it — an engine divergence**, unnoticed
+because no test compares an ordered operator on `Char`. Needs a spec reading (does 03 intend
+`Bool`/`Char` to be ordered?), not just a code fix. C4-exit-report input.
+**WP-C4.7-6.1 and 6.3 are with the OWNER** — see the dated record for the evidence; both findings
+contradict the WP-C4.7 plan's framing of them.
 **WP-C4.7-5 DONE 2026-07-20 — DEV-072 and DEV-073 CLOSED.**
 *DEV-073* root cause sat one level below the two failing checks: `type_from_hir_without_diagnostics`
 DROPS generic arguments, which was invisible while its only consumers compared non-generic
@@ -2036,3 +2052,62 @@ the MIR half if it needs a new MirTy/runtime op — §0.5 stop), 6.2 primitive `
 6.3 the integer-literal-typing question, which is an **OWNER DECISION** (check 03's literal
 inference rules first; if 03 forbids the coercion, record as spec-conformant and close as
 "not a bug").
+
+### WP-C4.7-6 — front-end `core-min` completions: 6.2 done, 6.1 and 6.3 to the owner — 2026-07-20
+DONE (6.2): **primitive `Ord::cmp`.** 06-Standard-Library specifies `impl Ord for Int32 { fn cmp
+(&self, other: &Int32) -> Ordering }` and "similar for other types"; `Ordering` is `core-min`
+prelude. `3.cmp(&5)` nevertheless failed E0304 "method call on non-struct/enum type" — primitives
+had no `cmp` entry at all, so the only way to obtain an `Ordering` value was a user-defined `Ord`
+impl. Implemented in all three engines: (a) checker — a `cmp` entry in the core-method surface
+returning `Core(Ordering)` with an `&Self` parameter; (b) oracle — evaluated through the existing
+`Ord for Value`, i.e. the SAME comparison the `<` operator path and sorted-collection iteration
+already use; (c) MIR — `lower_primitive_cmp` computes the comparisons `<`/`==` already lower
+(routing `String`/`str` through the existing `StrCmp`) and CONSTRUCTS the `CoreOrdering` variant
+from them. That is the exact inverse of `lower_user_ord`, which calls a user `cmp` and switches
+on the resulting discriminant. **No new MIR shape, no new `RuntimeFn`, no surface bump** — the
+dispatch is placed before the String/Vec/HashMap runtime dispatches, since `String` is a
+primitive receiver for this purpose. Both operands are read into temps before branching, so each
+is evaluated exactly once, receiver before argument (EXEC-ONCE-001).
+FOUND WHILE SCOPING 6.2 — **DEV-075**, pre-existing and unrelated to this change: the checker
+accepts ordered comparison on `Bool` and `Char`, but `false < true` fails in BOTH engines
+("invalid binary operation" / `BinOp Lt on Bool`) — an accept-then-fail — and `'a' < 'b'`
+**succeeds in MIR while the oracle rejects it**, an engine divergence of exactly the kind the
+differential exists to catch, missed only because no test compares an ordered operator on `Char`.
+`cmp` was therefore scoped to integers + `String`/`str` rather than built on this gap; enabling
+`Bool`/`Char` belongs in the change that closes DEV-075. Fixing it needs a spec reading — 03
+gives primitives "built-in meaning (Numeric Semantics below)", which addresses numeric types and
+does not settle `Bool`/`Char` ordering — so it is not a pure code fix. Ledger count 72 → 73.
+TO THE OWNER — both remaining items contradict the plan's framing of them:
+**6.1 `Box<T>`.** The plan (and the WP-C4.6 audit) called "`Box` deref" a `core-min` hole. The
+spec says otherwise: 06 defines `Box<T>` with exactly `new` and `into_inner`; there is **no
+`Deref` trait in Core v1** (not among core-min's essential traits); TYPE-METHOD-002's
+auto-dereference "repeatedly removes one leading `&`/`&mut`" — references only; and the abstract
+machine's Dereference operates on "the reference". So `*Box::new(5)` failing E0001 is
+**spec-conformant**, and the audit's classification was wrong. The REAL gap is one level over:
+`Box::new(v).into_inner()` is typecheck-clean and oracle-supported but **MIR-unsupported**
+("type Core(Box, [...]) (C4.5)"). Closing it is a §0.5-class decision either way — an honest
+representation needs `BoxNew`/`BoxIntoInner` runtime ops plus a surface bump, while the tempting
+alternative (lower `Box<T>` transparently as `T`, since Core v1 makes addresses unobservable) is
+a semantic claim that recursive types through `Box` would break; the front end already accepts
+`struct Node { next: Box<Node> }`.
+**6.3 integer-literal typing.** The plan hedged that 03 might FORBID a literal adopting an
+expected `UInt64`, in which case the item closes as "not a bug". 03 says the opposite, and says
+it twice: expected types "flow inward from ... **function parameters** ...", and defaulting
+applies only to "an **unconstrained** integer literal". A literal in a `UInt64` parameter
+position is constrained, so defaulting to `Int32` must not apply — this is expected-type
+propagation, not a coercion (step 4 limits coercions to explicit sites), so it does not collide
+with the no-implicit-coercion rule either. `v.get(0)` failing "expected 'UInt64', found 'Int32'"
+is therefore a **real conformance bug (over-rejection)**, not spec-conformant behavior.
+FILES: starkc/src/{typecheck,interp}.rs, starkc/src/mir/lower.rs, starkc/tests/mir_differential.rs,
+KNOWN-DEVIATIONS.md (DEV-075; count 72 → 73; both enumerations), COMPILER-STATE.md.
+RULES: 06's `Ord` impls for primitives and `core-min` prelude `Ordering`; CD-015 (floats are not
+`Ord`). No spec text changed.
+DECISIONS: none taken at CE level; two put TO the owner (6.1, 6.3, above).
+EVIDENCE: `mir_differential.rs::primitive_cmp_agrees` (Less/Equal/Greater over integers and
+`String`, plus a local receiver) and `::primitive_cmp_and_ordered_operators_agree`, which states
+the consistency property as a test rather than assuming it: for the same pair, the variant `cmp`
+reports and the answer `<`/`==` give must never disagree. Workspace 765 passed / 0 failed /
+2 ignored (+2); fmt clean; clippy clean on 1.93 and 1.97.
+FOLLOW-UP: DEV-075; owner decisions on 6.1 and 6.3.
+NEXT: blocked on the two owner decisions; C4.7-7 (DEV-067 + DEV-071) is independent and can
+proceed meanwhile.

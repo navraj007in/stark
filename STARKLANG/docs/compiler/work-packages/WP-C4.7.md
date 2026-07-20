@@ -425,7 +425,17 @@ Order within the increment (each independently commit-able):
   (E0101), recursing through nested/shorthand patterns; wildcards and Copy bindings stay legal
   (pinned); MIR guard kept as defense in depth with an updated message. 2 differential + 2
   front-end tests; workspace 763/0/2.
-- C4.7-6: _pending_
+- C4.7-6: **6.2 DONE 2026-07-20; 6.1 and 6.3 WITH THE OWNER.** 6.2 primitive `Ord::cmp` across
+  all three engines, no new MIR shape or surface (constructs `CoreOrdering` from the comparisons
+  `<`/`==` already lower). **Both other items contradict the plan's framing:** 6.1 — `*Box::new(5)`
+  failing is **spec-conformant** (no `Deref` trait in Core v1; TYPE-METHOD-002 auto-deref removes
+  only `&`/`&mut`; 06 gives `Box` just `new`/`into_inner`), and the real gap is `Box::new`/
+  `into_inner` being MIR-unsupported, which is a §0.5 shape/surface decision; 6.3 — 03 REQUIRES
+  the literal to adopt an expected `UInt64` (expected types flow inward from function parameters;
+  defaulting applies only to *unconstrained* literals), so it is a real over-rejection, not
+  spec-conformant. **DEV-075 opened** (pre-existing): `Bool`/`Char` ordered comparison is accepted
+  by the checker but fails in both engines for `Bool` and DIVERGES for `Char` (MIR succeeds,
+  oracle rejects). Workspace 765/0/2.
 - C4.7-7: _pending_
 - C4.7-8: _pending_
 - C4.7-9: _pending_ (last)

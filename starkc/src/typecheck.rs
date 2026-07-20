@@ -6062,6 +6062,26 @@ impl<'a> TypeChecker<'a> {
         if name == "hash" && standard_hash_type(receiver) {
             return Some((Vec::new(), u64_ty, false));
         }
+        // WP-C4.7-6.2: `Ord::cmp` on a PRIMITIVE receiver. 06-Standard-Library specifies
+        // `impl Ord for Int32 { fn cmp(&self, other: &Int32) -> Ordering }` "and similar for
+        // other types", and `Ordering` is `core-min` prelude, but calling `3.cmp(&5)` failed
+        // E0304 "method call on non-struct/enum type" — primitives had no `cmp` entry at all,
+        // so the ONLY way to obtain an `Ordering` was a user-defined `Ord` impl.
+        //
+        // Scope: types with a total order. FLOATS ARE EXCLUDED deliberately — CD-015 (WP-C2.9)
+        // froze that primitive floats do not implement `Eq`/`Ord`/`Hash`, so `1.0.cmp(&2.0)`
+        // must stay rejected. `Unit` has no ordering to report.
+        if name == "cmp" && ordered_primitive(receiver) {
+            let self_ref = Ty::Ref {
+                mutable: false,
+                inner: Box::new(strip_ref(receiver).clone()),
+            };
+            return Some((
+                vec![self_ref],
+                Ty::Core(CoreType::Ordering, Vec::new()),
+                false,
+            ));
+        }
         if matches!(receiver, Ty::Core(CoreType::File, args) if args.is_empty()) {
             let io_error = Ty::Core(CoreType::IOError, Vec::new());
             return match name {
@@ -7162,6 +7182,45 @@ fn standard_display_type(ty: &Ty) -> bool {
         Ty::Ref { inner, .. } => standard_display_type(inner),
         _ => false,
     }
+}
+
+/// WP-C4.7-6.2: primitive types that have a total order AND a working ordered comparison in
+/// both execution engines, so `a.cmp(&b)` can never disagree with `a < b`.
+///
+/// Excluded, deliberately:
+/// - **Floats** — CD-015 (WP-C2.9) froze that primitive floats do not implement `Eq`/`Ord`/
+///   `Hash`, so `1.0.cmp(&2.0)` must stay rejected.
+/// - **`Unit`** — nothing to order.
+/// - **`Bool` and `Char`** — see DEV-075. The checker already accepts `false < true` and
+///   `'a' < 'b'`, but the ORACLE rejects both ("invalid binary operation") and MIR handles them
+///   inconsistently (Bool errors, Char succeeds — an engine divergence). Admitting `cmp` for
+///   these would build a new surface on a broken one and widen the divergence; it is enabled in
+///   the same change that closes DEV-075, not before.
+fn ordered_primitive(ty: &Ty) -> bool {
+    matches!(
+        strip_ref(ty),
+        Ty::Primitive(
+            Primitive::Int8
+                | Primitive::Int16
+                | Primitive::Int32
+                | Primitive::Int64
+                | Primitive::UInt8
+                | Primitive::UInt16
+                | Primitive::UInt32
+                | Primitive::UInt64
+                | Primitive::String
+                | Primitive::Str
+        )
+    )
+}
+
+/// The receiver type with any leading references removed (method receivers auto-deref).
+fn strip_ref(ty: &Ty) -> &Ty {
+    let mut current = ty;
+    while let Ty::Ref { inner, .. } = current {
+        current = inner;
+    }
+    current
 }
 
 fn standard_hash_type(ty: &Ty) -> bool {
