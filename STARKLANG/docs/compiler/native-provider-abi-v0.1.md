@@ -1,10 +1,10 @@
 # STARK Native Provider ABI v0.1
 
-**Status: PROPOSED — drafted 2026-07-21 under WP-C5.1c, owner CE4 review required.** CD-042
-approved *writing* this document as part of `WP-C5-ENTRY.md`'s recommended §19 choices ("Provider
-ABI | Specify v0.1 in C5.1; execution not required for MVP"); it did not pre-approve this
-document's actual technical content, which is new design surface. WP-C5.1 does not close until
-this is either approved as drafted or revised and re-reviewed.
+**Status: APPROVED (CE4, 2026-07-21, CD-046) — approved as drafted, no changes.** Drafted
+2026-07-21 under WP-C5.1c; CD-042 had approved *writing* this document as part of
+`WP-C5-ENTRY.md`'s recommended §19 choices ("Provider ABI | Specify v0.1 in C5.1; execution not
+required for MVP"), and the owner's CD-046 review approved this document's actual technical
+content as drafted, with no required changes. WP-C5.1 is closed.
 
 **Scope boundary (WP-C5-ENTRY.md §10.2).** This document specifies the v0.1 ABI shape and ships a
 compile-time metadata validator plus mock fixtures (§17). It does **not** implement dynamic

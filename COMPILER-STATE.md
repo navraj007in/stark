@@ -1,22 +1,20 @@
 # STARK Compiler STATE
-Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5-ENTRY.md APPROVED (CD-042), WP-C5.1a
-CLOSED (CD-043), WP-C5.1b CLOSED (CD-044), WP-C5.1c DRAFTED pending owner CE4 review (CD-045).**
-The owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both
-engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all
-validation green. The Gate C5 entry plan is approved at its recommended §19 choices; WP-C5.1a
-(representation decision) closed the `MirTy` matrix and host targets; WP-C5.1b (backend/runtime
-skeleton) delivered a working `starkc/src/backend/` + `starkc/stark-runtime/` and proved an empty
-`fn main() { }` compiles and runs as a real native executable on the primary target; WP-C5.1c
-(Native Provider ABI v0.1) drafted the document plus a compile-time validator and mock fixtures,
-but **WP-C5.1 does not close until the owner reviews the document's actual design** (CD-042's
-blanket approval covered writing a v0.1 doc, not this doc's content). Next: owner CE4 review of
-`STARKLANG/docs/compiler/native-provider-abi-v0.1.md`.
+Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 (Runtime ABI and Layout Design)
+CLOSED IN FULL (CD-042/043/044/045/046).** The owner's DEV-089 close-out directive was executed:
+user `Display` dispatch implemented in both engines, non-`Copy` array iteration and cross-file
+`const` use rejected in the front end, all validation green. The Gate C5 entry plan is approved at
+its recommended §19 choices; WP-C5.1a (representation decision) closed the `MirTy` matrix and host
+targets; WP-C5.1b (backend/runtime skeleton) delivered a working `starkc/src/backend/` +
+`starkc/stark-runtime/` and proved an empty `fn main() { }` compiles and runs as a real native
+executable on the primary target; WP-C5.1c (Native Provider ABI v0.1) drafted the document plus a
+compile-time validator and mock fixtures, and the owner's CD-046 review approved the document's
+technical content as drafted, closing WP-C5.1 overall. Next: WP-C5.2 (scalar native lowering).
 
 ## Position
-Gate: **C5 (native compilation) — OPEN, entry plan APPROVED (CD-042), WP-C5.1a CLOSED (CD-043),
-WP-C5.1b CLOSED (CD-044), WP-C5.1c DRAFTED pending owner CE4 review (CD-045).** Gate **C4 CLOSED
-2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved rather than
-deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
+Gate: **C5 (native compilation) — OPEN. WP-C5.1 (Runtime ABI and Layout Design) CLOSED 2026-07-21
+in full** (entry plan CD-042, WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046
+approved). Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker (DEV-089) was
+resolved rather than deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
 implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
 1.2.0; the second (this one) resolved DEV-089 and the two residual over-rejections. Final
 validation: workspace tests green, `cargo fmt` clean, `cargo clippy` clean on 1.93 and 1.97, corpus
@@ -1378,6 +1376,23 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   design itself awaits owner CE4 review before WP-C5.1 overall can close** (provider execution is
   not required for the C5 MVP, so this blocks only the design-review checkbox, not
   implementation).
+
+- CD-046 [2026-07-21, owner CE4 decision] **Native Provider ABI v0.1 (`STARKLANG/docs/compiler/
+  native-provider-abi-v0.1.md`) APPROVED AS DRAFTED, no changes required.** Closes the review gate
+  CD-045 opened. Owner reviewed the document's actual technical choices — the C-ABI-idiom error
+  convention (§11: status code + out-parameters, chosen to avoid a hand-rolled unsafe tagged
+  union), the no-borrowed-handle-in-v0.1 decision (§8), and the closed `AbiType` vocabulary (§6/
+  §10) as the single mechanism enforcing both the callback prohibition and the
+  no-generated-Rust-aggregate-crossing rule — and approved as drafted, the same draft-then-CE4-
+  review outcome `mir.md` reached under CD-028 (there: approve-with-required-changes; here:
+  approve outright). Document status flipped `PROPOSED` → `APPROVED`. **WP-C5.1c CLOSED; WP-C5.1
+  (Runtime ABI and Layout Design) CLOSED in full — all of C5.1a/b/c done.** Per `WP-C5-ENTRY.md`
+  §14's exit checklist: CE4 decision recorded (CD-042 representation contract + CD-046 provider
+  ABI), one verified empty/scalar MIR program is a standalone executable on both pinned targets,
+  runtime/backend/compiler version checks demonstrated, no language semantics hidden in the
+  runtime. Next: WP-C5.2 (scalar native lowering) — primitive values/constants (C5.2a), locals/
+  places/copies/moves (C5.2b), operations/control flow (C5.2c), direct functions/calls (C5.2d),
+  trap path (C5.2e).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

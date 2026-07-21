@@ -3,7 +3,10 @@
 Gate: C5 (Native Core Backend MVP). Scope from `COMPILER-ROADMAP.md` WP-C5.1, detailed by
 `WP-C5-ENTRY.md` §14 (C5.1a/b/c). Escalation: **CE4 — runtime ABI, layout, drop glue, panic/trap,
 and native resource model.** CE4 approval for the representation contract (entry plan §6–10) is
-recorded under CD-042 (owner approved the entry plan at its recommended §19 choices).
+recorded under CD-042 (owner approved the entry plan at its recommended §19 choices); CE4 approval
+for the Native Provider ABI v0.1 document's actual technical content is recorded under CD-046.
+
+**WP-C5.1 CLOSED 2026-07-21.**
 
 ## C5.1a — Representation decision
 
@@ -192,12 +195,12 @@ unaffected by the new workspace member.
 
 ## C5.1c — Native Provider ABI specification
 
-### Status: document DRAFTED and validator DELIVERED 2026-07-21 (CD-045) — **owner CE4 review of the document's content is still open.** Not the same as C5.1a/b's closure: CD-042 approved *writing* a v0.1 ABI document, not this document's actual technical content, which is new design surface drafted in this WP.
+### Status: CLOSED 2026-07-21 (CD-045 drafted; CD-046 owner CE4 approval, no changes required).
 
 Delivered per `WP-C5-ENTRY.md` §10:
 
 - **The ABI document** — `STARKLANG/docs/compiler/native-provider-abi-v0.1.md`, status
-  `PROPOSED`, covering all 17 required points from §10.1: provider identity/semver, integrity
+  `APPROVED` (CD-046), covering all 17 required points from §10.1: provider identity/semver, integrity
   hash/origin, target triples, capability declaration, the exported function table, the opaque
   `ResourceHandle` (§7 of the doc), ownership transfer in both directions, the two borrowed-buffer
   shapes, `ProviderStatus` error returns, the three-way distinction between provider error/STARK
@@ -232,13 +235,13 @@ Delivered per `WP-C5-ENTRY.md` §10:
 no real `extern "C"` calls, no file/network provider implementation. That is explicitly out of
 this WP's scope per §10.2.
 
-**What still needs owner action before this sub-WP is CLOSED (not before WP-C5.1 overall, since
-provider execution isn't required for the C5 MVP — see the C5.1 exit note below):** a CE4 review
-pass over the document's actual technical choices (the C-ABI-idiom error convention in §11 —
-status code + out-parameters, chosen specifically to avoid a hand-rolled unsafe tagged union;
-the no-borrowed-handle-in-v0.1 decision in §8; the closed `AbiType` vocabulary in §6/§10 as the
-mechanism enforcing both the callback prohibition and the no-aggregate-crossing rule) — the same
+**Owner CE4 review (2026-07-21, CD-046): APPROVED AS DRAFTED, no changes required.** Covered the
+document's actual technical choices — the C-ABI-idiom error convention in §11 (status code +
+out-parameters, chosen specifically to avoid a hand-rolled unsafe tagged union), the
+no-borrowed-handle-in-v0.1 decision in §8, and the closed `AbiType` vocabulary in §6/§10 as the
+mechanism enforcing both the callback prohibition and the no-aggregate-crossing rule — the same
 draft-then-review pattern `mir.md` went through under CE3 (WP-C4.1, CD-028), not a rubber stamp.
+Document status flipped `PROPOSED` → `APPROVED`.
 
 **Validation:** `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
 --all-features -- -D warnings` clean, full workspace suite green (0 failures), `cargo test --test
@@ -246,16 +249,13 @@ exec_snapshots` green (4/4).
 
 ## C5.1 exit
 
-**Not yet reached.** Per `WP-C5-ENTRY.md` §14's own checklist (CE4 decision recorded; one verified
-empty/scalar MIR program becomes a standalone executable on both pinned targets; runtime/backend/
-compiler version checks demonstrated; no language semantics hidden in the runtime), every item is
-technically satisfied by C5.1a/b. The blocker is narrower and self-imposed by the ABI document
-itself: `native-provider-abi-v0.1.md`'s own status line states "WP-C5.1 does not close until this
-is either approved as drafted or revised and re-reviewed" — a draft-then-CE4-review gate, the same
-pattern `mir.md` went through (WP-C4.1, CD-028), not a formality. Provider execution is not
-required for the C5 MVP (§10.2), so this is a documentation/design review blocker, not an
-implementation one.
+**Reached 2026-07-21.** Per `WP-C5-ENTRY.md` §14's checklist: CE4 decision recorded (CD-042 for
+the representation contract, CD-046 for the provider ABI); one verified empty/scalar MIR program
+becomes a standalone executable on both pinned targets (primary proven locally in C5.1b, secondary
+proven by CI); runtime/backend/compiler version checks demonstrated (C5.1b); no language semantics
+hidden in the runtime (`trap`/`value` placeholders are pre-declared module shape awaiting WP-C5.2/
+C5.3 content, not hidden logic).
 
-**C5.1a CLOSED 2026-07-21 (CD-043). C5.1b CLOSED 2026-07-21 (CD-044). C5.1c DRAFTED 2026-07-21 —
-document + validator + fixtures delivered, owner CE4 review of the document's technical content
-still open. WP-C5.1 overall: not yet closed, pending that review.**
+**C5.1a CLOSED 2026-07-21 (CD-043). C5.1b CLOSED 2026-07-21 (CD-044). C5.1c CLOSED 2026-07-21
+(CD-045 drafted, CD-046 approved). WP-C5.1 CLOSED 2026-07-21. Next: WP-C5.2 (scalar native
+lowering).**
