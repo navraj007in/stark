@@ -2215,6 +2215,56 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     clippy clean, stark-runtime 23/23, `backend::` 40/40, `three_engine_differential` 35/35,
     `native_c5_3_aggregates_enums` 10/10, earlier native suites green, **Miri 18/18 with zero UB**.
 
+- CD-060 [2026-07-21, C5.3d-0 REOPENED and re-closed; C5.3c in progress] **An owner review of
+  `4a7e24c` found two contract violations the closure record had not covered. Both were real.
+  Corrected; C5.3d-0 re-closed.**
+
+  - **VIOLATION 1 — the partial-field primitives could not honestly be safe.** `move_field`,
+    `copy_field`, `drop_field_with` and `move_field_whole` accepted an arbitrary projection
+    function and then read the pointer it returned, checking only the SLOT's state. They could
+    not validate that the pointer belonged to the slot, that the field was still live, or that
+    the same field had not already been moved — so **safe Rust could reach UB** by calling
+    `move_field(the_same_projection)` twice. The module's docs claimed preconditions were
+    "checked rather than assumed"; for per-field liveness and projection validity that was false.
+
+    Corrected as the owner directed: all four primitives are now `unsafe fn` with explicit
+    `# Safety` contracts, and the backend emits **one safe wrapper per (type, sub-place,
+    operation)** into `mod stark_proj`. Each wrapper pairs exactly one primitive with exactly one
+    fixed projection over one slot type, so the obligation is discharged **by construction**
+    rather than claimed. Emitted MIR bodies call only wrappers — asserted by a test that scans
+    the bodies for `move_field`/`copy_field` and requires none.
+
+  - **VIOLATION 2 — whole-enum structural Drop silently omitted its payload.**
+    `emit_drop_glue` located a possible user destructor for an enum and then walked
+    `struct_fields`, which an enum has no entry in. It never matched the active variant and never
+    traversed `enum_variants`, so dropping a whole non-`Copy` enum marked the slot dead and leaked
+    its payload. **Miri could not report it because the slot tests ignore leaks by design** — the
+    fix's own evidence channel was blind to it.
+
+    Corrected: enum glue now emits a match over EVERY variant (no catch-all, so a new variant
+    cannot silently acquire a no-op drop) with payload fields dropped in reverse declaration
+    order, mirroring `mir::interp::drop_in_place`. Two unit tests pin variant coverage, reverse
+    order, and that `Copy` payload fields are ignored rather than dropped.
+
+    **Currently unexercised by any compilable program**, and worth stating: no droppable type is
+    expressible in the C5 subset, because a user `Drop` impl needs `&mut Self` and references are
+    out of scope. The fix is correct and tested at the emitter level; it becomes reachable when
+    the destructor-reference lane lands.
+
+  - **C5.3c (Option/Result) is IN PROGRESS, not closed.** Core enums now share the user-enum
+    representation through one `variant_payloads` table — the single source the definition, the
+    discriminant match, and every projection all read — with `Option` as `None=0`/`Some=1`,
+    `Result` as `Ok=0`/`Err=1`, `Ordering` as three fieldless variants, mirroring
+    `mir::verify::variant_payload`. A probe compiles and runs `Option`/`Result` construction,
+    matching and payload reads natively. **Deviation from §6.2 to flag:** §6.2 preferred ordinary
+    Rust `Option<T>`/`Result<T, E>` "if all observable semantics match"; generated enums are used
+    instead, so one mechanism covers every enum and no Rust drop glue exists for a type MIR is
+    responsible for destroying. Owner may overrule; the change would be confined to
+    `emit_types::nominal_type_name`.
+
+  - Validation: fmt clean, clippy clean, stark-runtime 23/23, `backend::` 42/42,
+    `three_engine_differential` 35/35, `native_c5_3_aggregates_enums` 10/10, Miri 18/18 zero UB.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,

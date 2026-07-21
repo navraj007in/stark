@@ -16,6 +16,50 @@ pub fn field_name(i: u32) -> String {
     format!("f{i}")
 }
 
+/// The variant payload table for ANY enum, core or user — the single source the generated
+/// definition, the discriminant match, and every payload projection all read.
+///
+/// Mirrors `mir::verify::variant_payload` exactly, which is the authority: `Option` is
+/// `None = 0` / `Some(T) = 1`; `Result` is `Ok(T) = 0` / `Err(E) = 1`; `Ordering` is three
+/// fieldless variants `Less`/`Equal`/`Greater`. Deriving them here rather than special-casing
+/// each use site is what stops the three consumers from disagreeing about a variant index.
+pub fn variant_payloads(
+    enum_ref: &crate::mir::EnumRef,
+    args: &[MirTy],
+    types: &TypeContext,
+) -> Option<Vec<Vec<MirTy>>> {
+    use crate::mir::EnumRef;
+    match enum_ref {
+        EnumRef::CoreOption => Some(vec![vec![], vec![args.first()?.clone()]]),
+        EnumRef::CoreResult => Some(vec![
+            vec![args.first()?.clone()],
+            vec![args.get(1)?.clone()],
+        ]),
+        EnumRef::CoreOrdering => Some(vec![vec![], vec![], vec![]]),
+        EnumRef::User(item) => types.enum_variants.get(&(item.0, args.to_vec())).cloned(),
+    }
+}
+
+/// The generated Rust type name for any nominal instance, core or user. Core enums get a
+/// distinct key space (`option`/`result`/`ordering`) so they cannot collide with a user item id.
+pub fn nominal_type_name(ty: &MirTy) -> Option<String> {
+    use crate::mir::EnumRef;
+    match ty {
+        MirTy::Struct(item, args) => Some(mangle::type_name_for_nominal(item.0, args)),
+        MirTy::Enum(EnumRef::User(item), args) => Some(mangle::type_name_for_nominal(item.0, args)),
+        MirTy::Enum(core, args) => {
+            let tag = match core {
+                EnumRef::CoreOption => "option",
+                EnumRef::CoreResult => "result",
+                EnumRef::CoreOrdering => "ordering",
+                EnumRef::User(_) => unreachable!("handled above"),
+            };
+            Some(mangle::type_name_for_core_enum(tag, args))
+        }
+        _ => None,
+    }
+}
+
 /// The generated variant name for the enum variant at declaration index `v`. Positional for the
 /// same reason [`field_name`] is: MIR carries variants by index (`AggKind::EnumVariant`,
 /// `Projection::VariantField`, and a `SwitchInt` on a discriminant), having discarded the source
@@ -60,9 +104,14 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         // WP-C5.3b: user enums only. `Option`/`Result`/`Ordering` (`EnumRef::Core*`) are
         // WP-C5.3c, where they arrive together with match/`?` lowering rather than being
         // half-supported here.
-        MirTy::Enum(crate::mir::EnumRef::User(item), args) => {
-            mangle::type_name_for_nominal(item.0, args)
-        }
+        // WP-C5.3b user enums and WP-C5.3c core enums take the SAME representation: a generated
+        // Rust enum with positional tuple variants. §6.2 offered ordinary `Option<T>`/`Result`
+        // "if all observable semantics match"; a generated enum is used instead so that one
+        // mechanism covers every enum, and so no Rust drop glue exists for a type MIR is
+        // responsible for destroying. See CD-060.
+        MirTy::Enum(..) => nominal_type_name(ty).ok_or_else(|| {
+            BackendDiagnostic::Unsupported(format!("no generated name for enum {ty:?}"))
+        })?,
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \
@@ -112,6 +161,33 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
 /// copy helper per nominal, and the change is confined to [`derives_for`].
 pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
+
+    // WP-C5.3c: core enums have no `TypeContext` entry -- their variants are DERIVED from their
+    // type arguments -- so the reachable instances are collected from the program's own types.
+    for ty in collect_core_enum_instances(program) {
+        let MirTy::Enum(enum_ref, args) = &ty else {
+            continue;
+        };
+        let variants = variant_payloads(enum_ref, args, &program.types).ok_or_else(|| {
+            BackendDiagnostic::Unsupported(format!("no variant table for {ty:?}"))
+        })?;
+        let name = nominal_type_name(&ty).expect("core enum always names");
+        out.push_str(&format!("// STARK nominal: {}\n", crate::mir::dump_ty(&ty)));
+        if let Some(derives) = derives_for(&ty, &program.types) {
+            out.push_str(&format!("{derives}\n"));
+        }
+        out.push_str(&format!("enum {name} {{\n"));
+        for (v, payload) in variants.iter().enumerate() {
+            let fields: Result<Vec<String>, _> = payload.iter().map(emit_ty).collect();
+            out.push_str(&format!(
+                "    {}({}),\n",
+                variant_name(v as u32),
+                fields?.join(", ")
+            ));
+        }
+        out.push_str("}\n\n");
+    }
+
     for ((item, args), variants) in &program.types.enum_variants {
         let name = mangle::type_name_for_nominal(*item, args);
         let rendered: Vec<String> = args.iter().map(crate::mir::dump_ty).collect();
@@ -163,6 +239,63 @@ pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendD
         out.push_str("}\n\n");
     }
     Ok(out)
+}
+
+/// Every distinct core-enum instance the program mentions, in a deterministic order. Walks local
+/// declarations and the nominal type tables, recursing through aggregates so an `Option` nested
+/// inside a struct field or another enum's payload is still found.
+fn collect_core_enum_instances(program: &MirProgram) -> Vec<MirTy> {
+    let mut found: std::collections::BTreeMap<String, MirTy> = std::collections::BTreeMap::new();
+    let visit = |ty: &MirTy, found: &mut std::collections::BTreeMap<String, MirTy>| {
+        walk_ty(ty, found);
+    };
+    for body in &program.bodies {
+        for local in &body.locals {
+            visit(&local.ty, &mut found);
+        }
+        visit(&body.ret, &mut found);
+        for param in &body.params {
+            visit(param, &mut found);
+        }
+    }
+    for fields in program.types.struct_fields.values() {
+        for ty in fields {
+            visit(ty, &mut found);
+        }
+    }
+    for variants in program.types.enum_variants.values() {
+        for payload in variants {
+            for ty in payload {
+                visit(ty, &mut found);
+            }
+        }
+    }
+    found.into_values().collect()
+}
+
+fn walk_ty(ty: &MirTy, found: &mut std::collections::BTreeMap<String, MirTy>) {
+    match ty {
+        MirTy::Enum(crate::mir::EnumRef::User(_), args) | MirTy::Struct(_, args) => {
+            for arg in args {
+                walk_ty(arg, found);
+            }
+        }
+        MirTy::Enum(_, args) => {
+            found.insert(crate::mir::dump_ty(ty), ty.clone());
+            for arg in args {
+                walk_ty(arg, found);
+            }
+        }
+        MirTy::Tuple(elems) => {
+            for elem in elems {
+                walk_ty(elem, found);
+            }
+        }
+        MirTy::Array(elem, _) | MirTy::Slice(elem) | MirTy::Ref { inner: elem, .. } => {
+            walk_ty(elem, found)
+        }
+        _ => {}
+    }
 }
 
 /// The single point where the flagged §6.3-vs-§7.4 reading is applied; see
@@ -244,21 +377,18 @@ pub fn default_value_expr(ty: &MirTy, types: &TypeContext) -> Result<String, Bac
             }
             format!("{name} {{ {} }}", parts.join(", "))
         }
-        MirTy::Enum(crate::mir::EnumRef::User(item), args) => {
-            let variants = types
-                .enum_variants
-                .get(&(item.0, args.clone()))
-                .ok_or_else(|| {
-                    BackendDiagnostic::Unsupported(format!(
-                        "no type-context entry for enum instance {ty:?}"
-                    ))
-                })?;
-            let payload = variants.first().ok_or_else(|| {
+        MirTy::Enum(enum_ref, args) => {
+            let variants = variant_payloads(enum_ref, args, types).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("no variant table for enum instance {ty:?}"))
+            })?;
+            let payload = variants.first().cloned().ok_or_else(|| {
                 BackendDiagnostic::Unsupported(format!("enum instance {ty:?} declares no variants"))
             })?;
-            let name = mangle::type_name_for_nominal(item.0, args);
+            let name = nominal_type_name(ty).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("no generated name for {ty:?}"))
+            })?;
             let mut parts = Vec::with_capacity(payload.len());
-            for field_ty in payload {
+            for field_ty in &payload {
                 parts.push(default_value_expr(field_ty, types)?);
             }
             // The FIRST variant, arbitrarily -- like every other default value here, this exists

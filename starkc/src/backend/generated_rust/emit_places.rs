@@ -90,17 +90,11 @@ impl<'a> TyEnv<'a> {
             (Projection::Index(_) | Projection::ConstIndex(_), MirTy::Array(elem, _)) => {
                 Ok((**elem).clone())
             }
-            (
-                Projection::VariantField(v, i),
-                MirTy::Enum(crate::mir::EnumRef::User(item), args),
-            ) => {
-                let variants = self
-                    .types
-                    .enum_variants
-                    .get(&(item.0, args.clone()))
+            (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => {
+                let variants = emit_types::variant_payloads(enum_ref, args, self.types)
                     .ok_or_else(|| {
                         BackendDiagnostic::Unsupported(format!(
-                            "no type-context entry for enum instance {base:?}"
+                            "no variant table for enum instance {base:?}"
                         ))
                     })?;
                 variants
@@ -171,9 +165,13 @@ fn emit_place_from(
         if raw_base && emit_types::mir_ty_is_copy(&field_ty, env.types) {
             // Mirrors `emit_projections::collect_operand` case 2 exactly; the two must agree, or
             // emission would name a helper the collector never generated.
-            let (helper, _) = super::emit_projections::collect_for_place(place, env)?;
+            let helper = super::emit_projections::collect_for_place(
+                place,
+                env,
+                super::emit_projections::HelperOp::Copy,
+            )?;
             return Ok(format!(
-                "{}.copy_field(stark_proj::{helper})",
+                "stark_proj::{helper}(&{})",
                 local_name(place.local.0)
             ));
         }
@@ -213,10 +211,7 @@ fn emit_place_from(
             // dereferenced, which requires the FIELD type to be Copy. A non-Copy payload would
             // have to be moved out, which needs WP-C5.3d's controlled storage for the same
             // reason C5.3a's cross-block moves do.
-            (
-                Projection::VariantField(v, i),
-                MirTy::Enum(crate::mir::EnumRef::User(item), args),
-            ) => {
+            (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => {
                 let field_ty = env.project_once(&ty, projection)?;
                 if !emit_types::mir_ty_is_copy(&field_ty, env.types) {
                     return Err(BackendDiagnostic::Unsupported(format!(
@@ -225,12 +220,11 @@ fn emit_place_from(
                          runs into the same block-dispatch limit as C5.3a's cross-block moves"
                     )));
                 }
-                let enum_name = super::mangle::type_name_for_nominal(item.0, args);
-                let arity = env
-                    .types
-                    .enum_variants
-                    .get(&(item.0, args.clone()))
-                    .and_then(|variants| variants.get(*v as usize))
+                let enum_name = emit_types::nominal_type_name(&ty).ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!("no generated name for {ty:?}"))
+                })?;
+                let arity = emit_types::variant_payloads(enum_ref, args, env.types)
+                    .and_then(|variants| variants.get(*v as usize).cloned())
                     .map(|payload| payload.len())
                     .ok_or_else(|| {
                         BackendDiagnostic::Unsupported(format!(
@@ -285,16 +279,12 @@ pub fn emit_move_out(place: &Place, env: &TyEnv) -> Result<String, BackendDiagno
         // sub-place has raw-pointer syntax: struct/tuple/array projections do and therefore work
         // on already-partial storage; an enum payload does not, and is legal only while the slot
         // is still whole.
-        let helpers = super::emit_projections::collect_for_place(place, env)?;
-        let name = format!("stark_proj::{}", helpers.0);
-        return Ok(match helpers.1 {
-            super::emit_projections::ProjectionForm::Raw => {
-                format!("{local}.move_field({name})")
-            }
-            super::emit_projections::ProjectionForm::Whole => {
-                format!("{local}.move_field_whole({name})")
-            }
-        });
+        let helper = super::emit_projections::collect_for_place(
+            place,
+            env,
+            super::emit_projections::HelperOp::Move,
+        )?;
+        return Ok(format!("stark_proj::{helper}(&mut {local})"));
     }
     Ok(format!("{local}.take()"))
 }
@@ -380,10 +370,11 @@ mod tests {
         assert_eq!(
             emit_place(&struct_field, &env).unwrap(),
             format!(
-                "_1.copy_field(stark_proj::{})",
+                "stark_proj::{}(&_1)",
                 super::super::emit_projections::helper_name(
                     &MirTy::Struct(crate::hir::ItemId(0), vec![]),
-                    &Projection::Field(1)
+                    &Projection::Field(1),
+                    super::super::emit_projections::HelperOp::Copy
                 )
             )
         );

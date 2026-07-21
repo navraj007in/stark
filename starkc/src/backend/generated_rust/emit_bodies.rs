@@ -368,16 +368,63 @@ fn emit_drop_glue(ty: &MirTy, value: &str, env: &TyEnv) -> Result<String, Backen
         let name = mangle::function_name_for_symbol(symbol);
         out.push_str(&format!("{name}({value}); "));
     }
-    // Then fields, in REVERSE declaration order. Only non-Copy fields have glue; a Copy field
-    // has no destructor by construction (Copy and Drop are mutually exclusive in STARK).
-    if let Some(fields) = env.types.struct_fields.get(&(item, args.clone())) {
-        for (i, field_ty) in fields.iter().enumerate().rev() {
-            if emit_types::mir_ty_is_copy(field_ty, env.types) {
-                continue;
+    // Then the value's own components, in REVERSE declaration order -- mirroring
+    // `mir::interp::drop_in_place`, which drops fields/payload back to front.
+    //
+    // A struct walks its field table. An ENUM must first establish which variant is live and then
+    // drop THAT variant's payload: an earlier version of this function looked only at
+    // `struct_fields`, so dropping a whole non-Copy enum marked the slot dead and silently
+    // skipped its payload. Miri could not report it because the slot module's tests ignore leaks
+    // by design, and a leak is exactly what it produced.
+    match ty {
+        MirTy::Struct(..) => {
+            if let Some(fields) = env.types.struct_fields.get(&(item, args.clone())) {
+                for (i, field_ty) in fields.iter().enumerate().rev() {
+                    if emit_types::mir_ty_is_copy(field_ty, env.types) {
+                        continue;
+                    }
+                    let field = format!("(&mut {value}.{})", emit_types::field_name(i as u32));
+                    out.push_str(&emit_drop_glue(field_ty, &field, env)?);
+                }
             }
-            let field = format!("(&mut {value}.{})", emit_types::field_name(i as u32));
-            out.push_str(&emit_drop_glue(field_ty, &field, env)?);
         }
+        MirTy::Enum(enum_ref, _) => {
+            let variants =
+                emit_types::variant_payloads(enum_ref, &args, env.types).ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!("no variant table for {ty:?}"))
+                })?;
+            let name = emit_types::nominal_type_name(ty).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("no generated name for {ty:?}"))
+            })?;
+            // Every variant gets an arm -- including the ones whose payloads need no glue -- so
+            // the match is exhaustive without a catch-all, and a new variant cannot silently
+            // acquire a no-op drop.
+            let mut arms = Vec::with_capacity(variants.len());
+            for (v, payload) in variants.iter().enumerate() {
+                let droppable: Vec<usize> = payload
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, field_ty)| !emit_types::mir_ty_is_copy(field_ty, env.types))
+                    .map(|(i, _)| i)
+                    .collect();
+                let mut binders: Vec<String> =
+                    (0..payload.len()).map(|_| "_".to_string()).collect();
+                for i in &droppable {
+                    binders[*i] = format!("__p{i}");
+                }
+                let mut body = String::new();
+                for i in droppable.iter().rev() {
+                    body.push_str(&emit_drop_glue(&payload[*i], &format!("__p{i}"), env)?);
+                }
+                arms.push(format!(
+                    "{name}::{}({}) => {{ {body} }}",
+                    emit_types::variant_name(v as u32),
+                    binders.join(", ")
+                ));
+            }
+            out.push_str(&format!("match {value} {{ {} }}; ", arms.join(", ")));
+        }
+        _ => {}
     }
     Ok(out)
 }
@@ -438,21 +485,18 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
         Rvalue::Discriminant(place) => {
             let base = emit_places::emit_place(place, env)?;
             let ty = env.place_ty(place)?;
-            let MirTy::Enum(crate::mir::EnumRef::User(item), args) = &ty else {
+            let MirTy::Enum(enum_ref, args) = &ty else {
                 return Err(BackendDiagnostic::Unsupported(format!(
-                    "Discriminant of {ty:?} lands in WP-C5.3c (Option/Result/Ordering)"
+                    "Discriminant of the non-enum type {ty:?}"
                 )));
             };
-            let variants = env
-                .types
-                .enum_variants
-                .get(&(item.0, args.clone()))
-                .ok_or_else(|| {
-                    BackendDiagnostic::Unsupported(format!(
-                        "no type-context entry for enum instance {ty:?}"
-                    ))
+            let variants =
+                emit_types::variant_payloads(enum_ref, args, env.types).ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!("no variant table for {ty:?}"))
                 })?;
-            let name = mangle::type_name_for_nominal(item.0, args);
+            let name = emit_types::nominal_type_name(&ty).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("no generated name for {ty:?}"))
+            })?;
             // The arms are typed by the DESTINATION, not by a fixed width: MIR types the
             // discriminant local itself (Int64 today), and a hardcoded `i128` literal made the
             // generated crate fail to compile with "expected i64, found i128".
@@ -503,20 +547,17 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
                         .collect();
                     format!("{name} {{ {} }}", fields.join(", "))
                 }
-                AggKind::EnumVariant(enum_ref, variant) => {
-                    let crate::mir::EnumRef::User(item) = enum_ref else {
-                        return Err(BackendDiagnostic::Unsupported(format!(
-                            "aggregate for {enum_ref:?} lands in WP-C5.3c (Option/Result/Ordering)"
-                        )));
-                    };
+                AggKind::EnumVariant(_, variant) => {
                     // Like the struct case, the type ARGUMENTS come from the destination:
                     // `AggKind::EnumVariant` names the enum and the variant, not the instance.
-                    let MirTy::Enum(_, args) = dest_ty else {
+                    let MirTy::Enum(..) = dest_ty else {
                         return Err(BackendDiagnostic::Unsupported(format!(
                             "enum aggregate assigned to a non-enum destination {dest_ty:?}"
                         )));
                     };
-                    let name = mangle::type_name_for_nominal(item.0, args);
+                    let name = emit_types::nominal_type_name(dest_ty).ok_or_else(|| {
+                        BackendDiagnostic::Unsupported(format!("no generated name for {dest_ty:?}"))
+                    })?;
                     format!(
                         "{name}::{}({})",
                         emit_types::variant_name(*variant),
@@ -892,4 +933,109 @@ fn emit_cast_expr(
     Err(BackendDiagnostic::Unsupported(format!(
         "cast {src_ty:?} -> {dest_ty:?} has no WP-C5.2c representation yet"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mir::{BlockId, EnumRef, Instance, LocalDecl, LocalKind};
+
+    fn env_body() -> MirBody {
+        MirBody {
+            instance: Instance {
+                item: crate::hir::ItemId(0),
+                symbol: "t@[]".to_string(),
+                type_args: vec![],
+            },
+            params: vec![],
+            ret: MirTy::Unit,
+            locals: vec![LocalDecl {
+                ty: MirTy::Unit,
+                kind: LocalKind::Temp,
+            }],
+            blocks: vec![],
+            entry: BlockId(0),
+        }
+    }
+
+    /// **The correction this test exists for.** An earlier `emit_drop_glue` walked only
+    /// `struct_fields`, so dropping a whole non-`Copy` ENUM located a possible user destructor
+    /// and then stopped — never matching the active variant, never dropping its payload. The
+    /// value leaked, and Miri could not report it because the slot tests ignore leaks by design.
+    ///
+    /// Correct glue matches EVERY variant (no catch-all, so a new variant cannot silently
+    /// acquire a no-op drop) and drops each droppable payload field in reverse order, mirroring
+    /// `mir::interp::drop_in_place`.
+    #[test]
+    fn enum_drop_glue_matches_every_variant_and_drops_its_payload() {
+        let mut types = TypeContext::default();
+        // A droppable inner struct: it has its own destructor instance, so it needs glue.
+        types.struct_fields.insert((1, vec![]), vec![MirTy::Int32]);
+        types
+            .drop_impls
+            .insert((1, vec![]), "Inner::drop@[]".to_string());
+        // An enum whose variant 1 carries two droppable fields, and whose variant 0 carries none.
+        types.enum_variants.insert(
+            (2, vec![]),
+            vec![
+                vec![],
+                vec![
+                    MirTy::Struct(crate::hir::ItemId(1), vec![]),
+                    MirTy::Struct(crate::hir::ItemId(1), vec![]),
+                ],
+            ],
+        );
+
+        let body = env_body();
+        let env = TyEnv::new(&body, &types);
+        let ty = MirTy::Enum(EnumRef::User(crate::hir::ItemId(2)), vec![]);
+        let glue = emit_drop_glue(&ty, "__v", &env).expect("enum glue must emit");
+
+        // Both variants appear: the payload-free one too, so the match needs no catch-all.
+        assert!(
+            glue.contains("::V0()"),
+            "every variant must have an arm: {glue}"
+        );
+        assert!(
+            glue.contains("::V1("),
+            "the payload variant must have an arm: {glue}"
+        );
+        // Reverse declaration order, checked on the arm BODY -- the pattern binders necessarily
+        // list `__p0` first, so searching the whole string would compare the wrong occurrences.
+        let body = glue
+            .split_once("__p1) => {")
+            .expect("the payload arm must bind both fields")
+            .1;
+        let first = body.find("__p1").expect("field 1 must be dropped");
+        let second = body.find("__p0").expect("field 0 must be dropped");
+        assert!(
+            first < second,
+            "payload fields must drop in REVERSE declaration order: {glue}"
+        );
+        // And each one dispatches the concrete destructor the type context names.
+        assert_eq!(
+            glue.matches(&mangle::function_name_for_symbol("Inner::drop@[]"))
+                .count(),
+            2,
+            "both droppable payload fields must dispatch their destructor: {glue}"
+        );
+    }
+
+    /// A `Copy` payload field carries no drop obligation, so it must NOT be bound or dropped --
+    /// binding it would be harmless but dropping it would be wrong.
+    #[test]
+    fn enum_drop_glue_skips_copy_payload_fields() {
+        let mut types = TypeContext::default();
+        types
+            .enum_variants
+            .insert((3, vec![]), vec![vec![MirTy::Int32]]);
+        let body = env_body();
+        let env = TyEnv::new(&body, &types);
+        let ty = MirTy::Enum(EnumRef::User(crate::hir::ItemId(3)), vec![]);
+        let glue = emit_drop_glue(&ty, "__v", &env).expect("glue must emit");
+        assert!(
+            glue.contains("::V0(_)"),
+            "a Copy payload must be ignored, not bound: {glue}"
+        );
+    }
 }

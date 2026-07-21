@@ -216,9 +216,24 @@ impl<T> ValueSlot<T> {
     // pointer computed with `addr_of_mut!` does not dereference, and does not assert that the
     // surrounding value is valid.
     //
-    // `project` is a per-type, per-field function the BACKEND generates (one per field actually
-    // used) so that emitted MIR bodies contain no `unsafe` of their own — the projection's
-    // `unsafe` lives in the generated helper module, and the call site here is safe.
+    // **These are `unsafe fn`, and that is a correction.** An earlier version made them safe on
+    // the reasoning that preconditions were "checked rather than assumed". They are not: the slot
+    // checks only its own state, and can validate neither that the returned pointer belongs to
+    // this slot, nor that the field is still live, nor that the same field has not already been
+    // moved. Safe Rust could therefore reach undefined behaviour by calling
+    // `move_field(same_projection)` twice, or by passing a projection returning any pointer at
+    // all. Per-field liveness is MIR's, tracked in its drop flags; it is not duplicated here.
+    //
+    // The obligation is discharged by CONSTRUCTION instead: the backend emits one safe wrapper
+    // per (type, sub-place, operation) into `mod stark_proj`, each calling exactly one primitive
+    // with exactly one fixed projection, and emitted MIR bodies call only wrappers. The `unsafe`
+    // keyword and the projection it guards therefore live in the same small generated module.
+    //
+    // # Safety (all four primitives below)
+    //
+    // The caller must guarantee that `project` addresses a field OF THIS SLOT's storage, and that
+    // the drop unit it names is still live — not already moved or dropped. Neither is checkable
+    // here.
 
     fn base_ptr(&mut self) -> *mut T {
         // `ManuallyDrop<T>` is `#[repr(transparent)]`, so this cast is layout-exact.
@@ -236,7 +251,15 @@ impl<T> ValueSlot<T> {
     /// The slot becomes `Partial` — not dead, because the other drop units are still live and MIR
     /// tracks them individually (collapsing that into whole-local liveness is what §7.6 forbids);
     /// and not `Whole`, because the storage no longer holds a valid complete `T`.
-    pub fn move_field<F>(&mut self, project: fn(*mut T) -> *mut F) -> F {
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and the drop unit it names must
+    /// still be live — not already moved or dropped. Neither is checkable here: the slot tracks
+    /// whole-storage state only, and per-field liveness lives in MIR's drop flags. The generated
+    /// wrappers in `mod stark_proj` discharge this by pairing each call with one fixed
+    /// projection.
+    pub unsafe fn move_field<F>(&mut self, project: fn(*mut T) -> *mut F) -> F {
         self.require_accessible("sub-place move out of a dead slot");
         self.state = SlotState::Partial;
         let field = project(self.base_ptr());
@@ -258,7 +281,15 @@ impl<T> ValueSlot<T> {
     /// fields, tuple elements, constant array indices), since that form also works on an already
     /// `Partial` value. This one is for the first — and, for a single-payload enum variant, only
     /// — move out of a complete value.
-    pub fn move_field_whole<F>(&mut self, project: fn(&mut T) -> &mut F) -> F {
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and the drop unit it names must
+    /// still be live — not already moved or dropped. Neither is checkable here: the slot tracks
+    /// whole-storage state only, and per-field liveness lives in MIR's drop flags. The generated
+    /// wrappers in `mod stark_proj` discharge this by pairing each call with one fixed
+    /// projection.
+    pub unsafe fn move_field_whole<F>(&mut self, project: fn(&mut T) -> &mut F) -> F {
         self.require_whole(
             "whole-projection sub-place move requires a complete value (a partially moved value \
              cannot be reached through &mut T at all)",
@@ -276,7 +307,15 @@ impl<T> ValueSlot<T> {
     /// Takes `&self`, not `&mut self`, so two field reads can appear in one expression --
     /// `a.copy_field(p0) + a.copy_field(p1)` would otherwise be two simultaneous mutable borrows.
     /// The derived pointer is only ever READ through; nothing writes via it.
-    pub fn copy_field<F: Copy>(&self, project: fn(*mut T) -> *mut F) -> F {
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and the drop unit it names must
+    /// still be live — not already moved or dropped. Neither is checkable here: the slot tracks
+    /// whole-storage state only, and per-field liveness lives in MIR's drop flags. The generated
+    /// wrappers in `mod stark_proj` discharge this by pairing each call with one fixed
+    /// projection.
+    pub unsafe fn copy_field<F: Copy>(&self, project: fn(*mut T) -> *mut F) -> F {
         self.require_accessible("field read from a dead slot");
         let field = project(self.storage.as_ptr() as *mut T);
         // SAFETY: as `move_field`, except that `F: Copy` means the read leaves the field's own
@@ -288,7 +327,19 @@ impl<T> ValueSlot<T> {
     ///
     /// The slot becomes `Partial`: after destroying a field the value is no longer complete, for
     /// exactly the same reason moving one out makes it incomplete.
-    pub fn drop_field_with<F>(&mut self, project: fn(*mut T) -> *mut F, glue: impl FnOnce(*mut F)) {
+    ///
+    /// # Safety
+    ///
+    /// `project` must address a field of THIS slot's storage, and the drop unit it names must
+    /// still be live — not already moved or dropped. Neither is checkable here: the slot tracks
+    /// whole-storage state only, and per-field liveness lives in MIR's drop flags. The generated
+    /// wrappers in `mod stark_proj` discharge this by pairing each call with one fixed
+    /// projection.
+    pub unsafe fn drop_field_with<F>(
+        &mut self,
+        project: fn(*mut T) -> *mut F,
+        glue: impl FnOnce(*mut F),
+    ) {
         self.require_accessible("field drop on a dead slot");
         self.state = SlotState::Partial;
         let field = project(self.base_ptr());
@@ -345,6 +396,17 @@ mod tests {
 
     fn project_1(p: *mut (String, i32)) -> *mut i32 {
         unsafe { core::ptr::addr_of_mut!((*p).1) }
+    }
+
+    // Safe, operation-specific wrappers -- exactly the shape the backend generates into
+    // `mod stark_proj`. The primitives are `unsafe fn`, so this is how a caller is *meant* to
+    // reach them: one wrapper, one fixed projection, one operation.
+    fn move_0(slot: &mut ValueSlot<(String, i32)>) -> String {
+        unsafe { slot.move_field(project_0) }
+    }
+
+    fn copy_1(slot: &ValueSlot<(String, i32)>) -> i32 {
+        unsafe { slot.copy_field(project_1) }
     }
 
     #[test]
@@ -450,7 +512,7 @@ mod tests {
     fn a_sub_place_move_makes_the_slot_partial_not_whole() {
         let mut slot: ValueSlot<(String, i32)> = ValueSlot::dead();
         slot.write(("first".to_string(), 9));
-        let first: String = slot.move_field(project_0);
+        let first: String = move_0(&mut slot);
         assert_eq!(first, "first");
         assert_eq!(
             slot.state(),
@@ -459,7 +521,7 @@ mod tests {
         );
         // The untouched Copy element is still readable -- through a RAW projection, never
         // through `&T`.
-        assert_eq!(slot.copy_field(project_1), 9);
+        assert_eq!(copy_1(&slot), 9);
         slot.finish_partial();
         assert_eq!(slot.state(), SlotState::Dead);
     }
@@ -469,7 +531,7 @@ mod tests {
     fn move_field_then_get_is_refused() {
         let mut slot: ValueSlot<(String, i32)> = ValueSlot::dead();
         slot.write(("gone".to_string(), 1));
-        let _ = slot.move_field(project_0);
+        let _ = move_0(&mut slot);
         let _ = slot.get();
     }
 
@@ -478,7 +540,7 @@ mod tests {
     fn move_field_then_get_mut_is_refused() {
         let mut slot: ValueSlot<(String, i32)> = ValueSlot::dead();
         slot.write(("gone".to_string(), 1));
-        let _ = slot.move_field(project_0);
+        let _ = move_0(&mut slot);
         let _ = slot.get_mut();
     }
 
@@ -487,7 +549,7 @@ mod tests {
     fn move_field_then_take_is_refused() {
         let mut slot: ValueSlot<(String, i32)> = ValueSlot::dead();
         slot.write(("gone".to_string(), 1));
-        let _ = slot.move_field(project_0);
+        let _ = move_0(&mut slot);
         let _ = slot.take();
     }
 
@@ -496,7 +558,7 @@ mod tests {
     fn move_field_then_drop_value_is_refused() {
         let mut slot: ValueSlot<(String, i32)> = ValueSlot::dead();
         slot.write(("gone".to_string(), 1));
-        let _ = slot.move_field(project_0);
+        let _ = move_0(&mut slot);
         slot.drop_value();
     }
 
@@ -505,7 +567,7 @@ mod tests {
     fn move_field_then_drop_with_is_refused() {
         let mut slot: ValueSlot<(String, i32)> = ValueSlot::dead();
         slot.write(("gone".to_string(), 1));
-        let _ = slot.move_field(project_0);
+        let _ = move_0(&mut slot);
         slot.drop_with(|_| {});
     }
 
@@ -522,8 +584,8 @@ mod tests {
         fn p1(p: *mut (String, String)) -> *mut String {
             unsafe { core::ptr::addr_of_mut!((*p).1) }
         }
-        assert_eq!(slot.move_field(p0), "a");
-        assert_eq!(slot.move_field(p1), "b");
+        assert_eq!(unsafe { slot.move_field(p0) }, "a");
+        assert_eq!(unsafe { slot.move_field(p1) }, "b");
         assert_eq!(slot.state(), SlotState::Partial);
         slot.finish_partial();
     }
@@ -543,10 +605,12 @@ mod tests {
         fn p0<'a>(p: *mut (Observed<'a>, i32)) -> *mut Observed<'a> {
             unsafe { core::ptr::addr_of_mut!((*p).0) }
         }
-        slot.drop_field_with(p0, |field| {
-            // SAFETY-equivalent for the test: the field is live and this is its only destruction.
-            unsafe { core::ptr::drop_in_place(field) };
-        });
+        unsafe {
+            slot.drop_field_with(p0, |field| {
+                // The field is live and this is its only destruction.
+                core::ptr::drop_in_place(field)
+            })
+        };
         assert_eq!(*log.borrow(), vec!["field"]);
         assert_eq!(slot.state(), SlotState::Partial);
         slot.finish_partial();
@@ -566,10 +630,12 @@ mod tests {
         }
         let mut slot: ValueSlot<Holder> = ValueSlot::dead();
         slot.write(Holder::Has("payload".to_string()));
-        let taken = slot.move_field_whole(|v| match v {
-            Holder::Has(p) => p,
-            Holder::Empty => unreachable!("V-DISC-1"),
-        });
+        let taken = unsafe {
+            slot.move_field_whole(|v| match v {
+                Holder::Has(p) => p,
+                Holder::Empty => unreachable!("V-DISC-1"),
+            })
+        };
         assert_eq!(taken, "payload");
         assert_eq!(slot.state(), SlotState::Partial);
         slot.finish_partial();
@@ -585,8 +651,8 @@ mod tests {
         fn p0(p: *mut (String, String)) -> *mut String {
             unsafe { core::ptr::addr_of_mut!((*p).0) }
         }
-        let _ = slot.move_field(p0);
-        let _ = slot.move_field_whole(|v| &mut v.1);
+        let _ = unsafe { slot.move_field(p0) };
+        let _ = unsafe { slot.move_field_whole(|v| &mut v.1) };
     }
 
     #[test]

@@ -394,14 +394,20 @@ fn main() {
         "the sibling read must still work; stderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
-    // The move went through a field projection, not a whole-local take.
+    // The move went through a generated wrapper, not a whole-local take -- and the wrapper, not
+    // the emitted body, is what calls the unsafe primitive.
+    let (projections, bodies) = split_projection_module(&generated);
     assert!(
-        generated.contains("move_field(stark_proj::"),
-        "a sub-place move must use a projection helper:\n{generated}"
+        projections.contains("slot.move_field("),
+        "the move wrapper must call the primitive:\n{projections}"
     );
     assert!(
-        generated.contains("copy_field(stark_proj::"),
-        "the sibling read must use raw projection so it survives the sibling move:\n{generated}"
+        projections.contains("slot.copy_field("),
+        "the sibling read must use raw projection so it survives the sibling move:\n{projections}"
+    );
+    assert!(
+        !bodies.contains("move_field") && !bodies.contains("copy_field"),
+        "emitted bodies must call WRAPPERS, never the unsafe primitives:\n{bodies}"
     );
 }
 

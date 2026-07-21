@@ -72,6 +72,14 @@ pub fn type_name_for_nominal(item: u32, args: &[crate::mir::MirTy]) -> String {
     sanitize_symbol(&format!("ty#{item}@[{}]", rendered.join(", ")))
 }
 
+/// The generated Rust type name for a CORE enum instance (`Option`/`Result`/`Ordering`). A
+/// separate key space from [`type_name_for_nominal`]'s numeric item ids, so a core instance can
+/// never collide with a user nominal however the item ids fall.
+pub fn type_name_for_core_enum(tag: &str, args: &[crate::mir::MirTy]) -> String {
+    let rendered: Vec<String> = args.iter().map(crate::mir::dump_ty).collect();
+    sanitize_symbol(&format!("core#{tag}@[{}]", rendered.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

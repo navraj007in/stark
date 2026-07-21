@@ -20,8 +20,7 @@
 
 use super::{emit_places, emit_types, mangle, BackendDiagnostic};
 use crate::mir::{
-    EnumRef, MirProgram, MirTy, Operand, Place, Projection, Rvalue, Statement, Terminator,
-    TypeContext,
+    MirProgram, MirTy, Operand, Place, Projection, Rvalue, Statement, Terminator, TypeContext,
 };
 use std::collections::BTreeMap;
 
@@ -34,10 +33,22 @@ pub enum ProjectionForm {
     Whole,
 }
 
+/// Which slot primitive a helper wraps. One wrapper per (type, sub-place, OPERATION), so each
+/// generated function calls exactly one `unsafe` primitive with exactly one fixed projection —
+/// which is what discharges those primitives' safety obligation by construction.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum HelperOp {
+    /// Moves the drop unit out: `ValueSlot::move_field` / `move_field_whole`.
+    Move,
+    /// Reads a `Copy` field without disturbing liveness: `ValueSlot::copy_field`.
+    Copy,
+}
+
 /// One helper to generate.
 #[derive(Clone)]
 pub struct ProjectionHelper {
     pub name: String,
+    pub op: HelperOp,
     pub base_ty: MirTy,
     pub field_ty: MirTy,
     pub projection: Projection,
@@ -47,14 +58,21 @@ pub struct ProjectionHelper {
 /// The generated helper name for one (base type, projection) pair. Deterministic and injective:
 /// it reuses [`mangle::sanitize_symbol`]'s encoding over a canonical key, so two distinct
 /// projections cannot collide any more than two distinct instances can.
-pub fn helper_name(base_ty: &MirTy, projection: &Projection) -> String {
+pub fn helper_name(base_ty: &MirTy, projection: &Projection, op: HelperOp) -> String {
+    let verb = match op {
+        HelperOp::Move => "move",
+        HelperOp::Copy => "copy",
+    };
     let selector = match projection {
         Projection::Field(i) => format!("f{i}"),
         Projection::ConstIndex(n) => format!("i{n}"),
         Projection::VariantField(v, i) => format!("v{v}f{i}"),
         other => format!("{other:?}"),
     };
-    mangle::sanitize_symbol(&format!("proj#{}#{selector}", crate::mir::dump_ty(base_ty)))
+    mangle::sanitize_symbol(&format!(
+        "{verb}#{}#{selector}",
+        crate::mir::dump_ty(base_ty)
+    ))
 }
 
 /// Walk every body and collect the projections that need helpers: sub-place moves, and sub-place
@@ -81,7 +99,7 @@ pub fn collect(program: &MirProgram) -> Result<Vec<ProjectionHelper>, BackendDia
                     collect_operand(scrut, &env, &program.types, &mut found)?
                 }
                 Terminator::Drop { place, .. } if !place.projection.is_empty() => {
-                    collect_place(place, &env, &mut found)?
+                    collect_place(place, &env, HelperOp::Move, &mut found)?
                 }
                 _ => {}
             }
@@ -126,10 +144,10 @@ fn collect_operand(
     let field_is_copy = emit_types::mir_ty_is_copy(&field_ty, types);
 
     if !field_is_copy && matches!(operand, Operand::Move(_)) {
-        return collect_place(place, env, found); // case 1
+        return collect_place(place, env, HelperOp::Move, found); // case 1
     }
     if field_is_copy && place.projection.len() == 1 && raw_projectable(place, env)? {
-        return collect_place(place, env, found); // case 2
+        return collect_place(place, env, HelperOp::Copy, found); // case 2
     }
     Ok(())
 }
@@ -148,6 +166,7 @@ fn raw_projectable(place: &Place, env: &emit_places::TyEnv) -> Result<bool, Back
 fn collect_place(
     place: &Place,
     env: &emit_places::TyEnv,
+    op: HelperOp,
     found: &mut BTreeMap<String, ProjectionHelper>,
 ) -> Result<(), BackendDiagnostic> {
     if place.projection.len() != 1 {
@@ -165,7 +184,7 @@ fn collect_place(
     let form = match (&projection, &base_ty) {
         (Projection::Field(_), MirTy::Struct(..) | MirTy::Tuple(_))
         | (Projection::ConstIndex(_), MirTy::Array(..)) => ProjectionForm::Raw,
-        (Projection::VariantField(..), MirTy::Enum(EnumRef::User(..), _)) => ProjectionForm::Whole,
+        (Projection::VariantField(..), MirTy::Enum(..)) => ProjectionForm::Whole,
         _ => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "sub-place move/drop through {projection:?} on {base_ty:?} is not in the \
@@ -173,9 +192,10 @@ fn collect_place(
             )))
         }
     };
-    let name = helper_name(&base_ty, &projection);
+    let name = helper_name(&base_ty, &projection, op);
     found.entry(name.clone()).or_insert(ProjectionHelper {
         name,
+        op,
         base_ty,
         field_ty,
         projection,
@@ -190,14 +210,15 @@ fn collect_place(
 pub fn collect_for_place(
     place: &Place,
     env: &emit_places::TyEnv,
-) -> Result<(String, ProjectionForm), BackendDiagnostic> {
+    op: HelperOp,
+) -> Result<String, BackendDiagnostic> {
     let mut found = BTreeMap::new();
-    collect_place(place, env, &mut found)?;
+    collect_place(place, env, op, &mut found)?;
     let helper = found
         .into_values()
         .next()
         .expect("collect_place inserts exactly one helper on success");
-    Ok((helper.name, helper.form))
+    Ok(helper.name)
 }
 
 /// Emit the generated helper module. Empty when the program performs no sub-place moves.
@@ -221,17 +242,13 @@ pub fn emit(
     for helper in helpers {
         let base = emit_types::emit_ty(&helper.base_ty)?;
         let field = emit_types::emit_ty(&helper.field_ty)?;
-        match helper.form {
+        // The projection expression, inlined into the wrapper rather than passed around: each
+        // wrapper therefore pairs ONE primitive with ONE fixed projection over ONE slot type,
+        // which is exactly the pairing the primitives' safety contract requires.
+        let projection = match helper.form {
             ProjectionForm::Raw => {
                 let selector = raw_selector(&helper.projection, &helper.base_ty)?;
-                out.push_str(&format!(
-                    "\n    /// Raw projection: computes a field address WITHOUT dereferencing, so \
-                     it stays\n    /// defined even when the surrounding value is partially moved.\n\
-                     \x20   pub fn {}(p: *mut {base}) -> *mut {field} {{\n\
-                     \x20       unsafe {{ core::ptr::addr_of_mut!((*p){selector}) }}\n\
-                     \x20   }}\n",
-                    helper.name
-                ));
+                format!("|p: *mut {base}| unsafe {{ core::ptr::addr_of_mut!((*p){selector}) }}")
             }
             ProjectionForm::Whole => {
                 let Projection::VariantField(variant, index) = &helper.projection else {
@@ -239,15 +256,13 @@ pub fn emit(
                         "whole-form projection outside an enum payload".to_string(),
                     ));
                 };
-                let MirTy::Enum(EnumRef::User(item), args) = &helper.base_ty else {
+                let MirTy::Enum(enum_ref, args) = &helper.base_ty else {
                     return Err(BackendDiagnostic::Unsupported(
-                        "whole-form projection on a non-user-enum base".to_string(),
+                        "whole-form projection on a non-enum base".to_string(),
                     ));
                 };
-                let arity = types
-                    .enum_variants
-                    .get(&(item.0, args.clone()))
-                    .and_then(|variants| variants.get(*variant as usize))
+                let arity = emit_types::variant_payloads(enum_ref, args, types)
+                    .and_then(|variants| variants.get(*variant as usize).cloned())
                     .map(|payload| payload.len())
                     .ok_or_else(|| {
                         BackendDiagnostic::Unsupported(format!(
@@ -257,23 +272,44 @@ pub fn emit(
                     })?;
                 let mut binders: Vec<String> = (0..arity).map(|_| "_".to_string()).collect();
                 binders[*index as usize] = "__payload".to_string();
-                out.push_str(&format!(
-                    "\n    /// Enum-payload projection. Rust cannot address a variant's field \
-                     without a\n    /// `match`, and a `match` needs a reference -- so this form \
-                     is valid only while the\n    /// slot is WHOLE, which \
-                     `ValueSlot::move_field_whole` enforces. The `_` arm is dead\n    /// under \
-                     V-DISC-1.\n\
-                     \x20   pub fn {}(v: &mut {base}) -> &mut {field} {{\n\
-                     \x20       match v {{\n\
-                     \x20           {base}::{}({}) => __payload,\n\
-                     \x20           _ => unreachable!(\"V-DISC-1: payload projection without a \
-                     discriminant test\"),\n\
-                     \x20       }}\n\
-                     \x20   }}\n",
-                    helper.name,
+                format!(
+                    "|v: &mut {base}| match v {{ {base}::{}({}) => __payload, \
+                     _ => unreachable!(\"V-DISC-1: payload projection without a discriminant \
+                     test\") }}",
                     emit_types::variant_name(*variant),
                     binders.join(", ")
-                ));
+                )
+            }
+        };
+        match (helper.op, helper.form) {
+            (HelperOp::Move, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// Moves one drop unit out. Raw projection: `addr_of_mut!` computes a \
+                 field\n    /// address WITHOUT dereferencing, so it stays valid over partially \
+                 moved storage.\n                 \x20   pub fn {}(slot: &mut stark_runtime::slot::ValueSlot<{base}>) -> {field} \
+                 {{\n                 \x20       // SAFETY: one fixed projection into THIS slot's storage; MIR's drop \
+                 flags\n                 \x20       // guarantee the unit is live and moved at most once.\n                 \x20       unsafe {{ slot.move_field({projection}) }}\n                 \x20   }}\n",
+                helper.name
+            )),
+            (HelperOp::Move, ProjectionForm::Whole) => out.push_str(&format!(
+                "\n    /// Moves an enum payload out. Rust cannot address a variant's field \
+                 without a\n    /// `match`, and a `match` needs a reference -- so this form is \
+                 valid only while the\n    /// slot is WHOLE, which `move_field_whole` enforces. \
+                 The `_` arm is dead under V-DISC-1.\n                 \x20   pub fn {}(slot: &mut stark_runtime::slot::ValueSlot<{base}>) -> {field} \
+                 {{\n                 \x20       // SAFETY: one fixed projection into THIS slot's storage; the active \
+                 variant\n                 \x20       // was established by a discriminant test (V-DISC-1).\n                 \x20       unsafe {{ slot.move_field_whole({projection}) }}\n                 \x20   }}\n",
+                helper.name
+            )),
+            (HelperOp::Copy, ProjectionForm::Raw) => out.push_str(&format!(
+                "\n    /// Reads a `Copy` field without disturbing liveness. Raw projection, so \
+                 it keeps\n    /// working after a SIBLING unit has been moved out.\n                 \x20   pub fn {}(slot: &stark_runtime::slot::ValueSlot<{base}>) -> {field} {{\n                 \x20       // SAFETY: one fixed projection into THIS slot's storage; a `Copy` \
+                 field\n                 \x20       // carries no drop obligation, so reading it cannot double-free.\n                 \x20       unsafe {{ slot.copy_field({projection}) }}\n                 \x20   }}\n",
+                helper.name
+            )),
+            (HelperOp::Copy, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(
+                    "a Copy read of an enum payload uses the `get()` path, not a helper"
+                        .to_string(),
+                ))
             }
         }
     }
