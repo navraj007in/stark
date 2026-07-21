@@ -377,11 +377,19 @@ package open while its closure evidence moved into an unrelated later one. Deliv
 
 ### What the harness is
 
-`WP-C5-ENTRY.md` §15.1's pipeline, implemented literally: **one** source string per case, run
-through **all three** engines — the HIR interpreter (the semantic oracle, charter §1.6 rule 6),
-the MIR pipeline (lower → verify → execute), and the native binary (lower → verify → emit → cargo
-build → run the executable) — with each result **normalised into one common `Outcome`** and all
-three required equal.
+It implements **§15.1's three-engine pipeline**, and compares traps in **normalised** form for
+C5.2. **One** source string per case, run through **all three** engines — the HIR interpreter
+(the semantic oracle, charter §1.6 rule 6), the MIR pipeline (lower → verify → execute), and the
+native binary (lower → verify → emit → cargo build → run the executable) — with each result
+**normalised into one common `Outcome`** and all three required equal.
+
+Stating the one deviation from §15.1's comparison list up front rather than in a footnote: **raw
+stderr byte equality is not compared, because the HIR oracle has no canonical stderr format to
+compare against.** Its trap text is a set of ad hoc per-call-site message strings, which
+`stark_runtime::trap`'s own doc comment already records it does not attempt to match byte for
+byte. What the harness compares instead is what those bytes *mean* — trap category plus exact
+file/line/column, parsed back out of the native binary's stderr. §15.1's remaining dimensions are
+covered or explicitly N/A; see the dimension table below.
 
 ```rust
 enum Outcome {
@@ -489,7 +497,7 @@ one stands, rather than only the ones that are covered:
 | §15.1 dimension | Status at C5.2 scope |
 |---|---|
 | stdout bytes | Compared as part of `Outcome` equality. The admitted surface produces none, and the harness **enforces** that (see above) rather than skipping the field |
-| stderr bytes | Compared as *meaning*, not bytes: the trap header and `-->` location are parsed back into category + file/line/column and compared. Byte equality is deliberately NOT the contract — `stark_runtime::trap`'s own doc states the runtime's messages are not claimed to match the HIR interpreter's ad hoc per-call-site strings. On the non-trap path, stderr is asserted **empty** for the oracle and the native binary |
+| stderr bytes | **Not compared as bytes** — the HIR oracle has no canonical stderr format to compare against (ad hoc per-call-site strings, which `stark_runtime::trap`'s own doc records it does not attempt to match). Compared as *meaning* instead: the trap header and `-->` location are parsed back into category + file/line/column. On the non-trap path, stderr is asserted **empty** for the oracle and the native binary |
 | exit code | Compared (`Completed.exit`; trap ⇒ 101) |
 | trap category | Compared |
 | trap source file and line | Compared, plus **column**, which §15.1 does not require |
@@ -532,6 +540,10 @@ against the roadmap bullet is deliberate and is recorded here so the discrepancy
 
 `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features --
 -D warnings` clean; `three_engine_differential` 20/20; `mir_differential` and all five
-`native_c5_*` suites green; `cargo test --workspace` green — **818 passed / 0 failed / 2 ignored
-across 40 test binaries** (up from 798, the 20 new harness tests). The pass's only production
-change is a visibility widening (`TrapCategory::message()` → `pub`).
+`native_c5_*` suites green; `cargo test --workspace` green — **884 passed / 0 failed / 2 ignored
+across 52 test binaries**. The pass's only production change is a visibility widening
+(`TrapCategory::message()` → `pub`).
+
+(The figure first recorded here, 818 across 40 binaries, was an undercount of the same green run:
+the background capture lost its first 24 lines to buffering, dropping 12 suites from the tally.
+Corrected after a complete re-capture disagreed on the suite count.)

@@ -1681,8 +1681,11 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   as a mandatory WP-C5.3 opening condition.** All four executed.
 
   - **Part 1 — the three-engine differential harness. BUILT; WP-C5.2 CLOSED.**
-    `starkc/tests/three_engine_differential.rs` implements `WP-C5-ENTRY.md` §15.1's pipeline
-    literally: one source string per case, run through the HIR interpreter (oracle), the MIR
+    `starkc/tests/three_engine_differential.rs` implements `WP-C5-ENTRY.md` §15.1's **three-engine
+    pipeline**, comparing traps in **normalised** form for C5.2 (raw stderr byte equality is NOT
+    compared — the HIR oracle has no canonical stderr format to compare against, only ad hoc
+    per-call-site strings; what is compared is what those bytes mean, i.e. category plus exact
+    file/line/column): one source string per case, run through the HIR interpreter (oracle), the MIR
     pipeline (lower → verify → execute) and the native binary (lower → verify → emit → cargo build
     → run), each result **normalised into one common `Outcome`** — `Completed { stdout, exit }` or
     `Trapped { category, file, line, column, stdout_before }` — and all three required equal. The
@@ -1769,10 +1772,14 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
 
   - Validation: `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
     --all-features -- -D warnings` clean, `three_engine_differential` 20/20, `mir_differential`
-    and all five `native_c5_*` suites green, and **`cargo test --workspace` green: 818 passed /
-    0 failed / 2 ignored across 40 test binaries** (up from 798 — the 20 new harness tests). The
-    only production change in this pass is a visibility widening
-    (`TrapCategory::message()` → `pub`).
+    and all five `native_c5_*` suites green, and **`cargo test --workspace` green: 884 passed /
+    0 failed / 2 ignored across 52 test binaries**.
+    **Correction to the figure first recorded here (818 across 40 binaries):** that was an
+    undercount of the *same* green run, not a different result — the background capture of that
+    run lost its first 24 lines to output buffering, so 12 suites never reached the tally. Caught
+    by re-running with a complete capture and noticing the suite count disagreed. Recorded rather
+    than quietly overwritten, because "the number moved and nobody said why" is worse than the
+    original error.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

@@ -15,6 +15,16 @@
 //! so agreement covers completion-vs-trap, exit status, trap category, and trap location, not
 //! just "all three exited nonzero".
 //!
+//! Precisely: this implements §15.1's **three-engine pipeline** and compares traps in
+//! **normalised** form for C5.2. Raw stderr byte equality is NOT compared, because the HIR oracle
+//! has no canonical stderr format to compare against — its trap text is a set of ad hoc
+//! per-call-site strings, which `stark_runtime::trap`'s own doc comment records it does not
+//! attempt to match byte for byte. What is compared is what those bytes mean.
+//!
+//! Every agreement rule lives in [`compare_outcomes`] and nowhere else, so the rules can be — and
+//! are — tested directly against disagreeing inputs, rather than only being exercised by cases
+//! expected to agree.
+//!
 //! Observation channel. Native `println` is `Unsupported` until WP-C5.3 (no string values yet),
 //! so the admitted C5.2 source surface produces no observable output at all. Values are
 //! therefore observed by in-program `assert`/`assert_eq`, which reach the C5.2e trap ABI on
@@ -348,6 +358,49 @@ fn parse_native_trap(name: &str, stderr: &str) -> (TrapCategory, String, u32, u3
 
 // ----------------------------------------------------------------- the check --
 
+/// **The comparator.** Every agreement rule this harness enforces lives here and nowhere else,
+/// as a pure function of three already-normalised outcomes — deliberately returning `Err(reason)`
+/// rather than asserting, so the rules themselves are testable against deliberately disagreeing
+/// inputs (`the_comparator_rejects_disagreeing_outcomes`) instead of only being exercised by
+/// cases that are expected to agree. A comparator whose only coverage is passing cases is a
+/// comparator nobody has watched fail.
+///
+/// `three_engine` turns an `Err` into the test failure; it adds no rule of its own.
+fn compare_outcomes(
+    name: &str,
+    hir: &Outcome,
+    mir: &Outcome,
+    native: &Outcome,
+) -> Result<(), String> {
+    if !NATIVE_STDOUT_SUPPORTED {
+        // Enforced, not assumed: if a case ever starts printing, this fires rather than letting
+        // the native side's necessarily-empty stdout quietly disagree with the other two.
+        let printed = match hir {
+            Outcome::Completed { stdout, .. } => stdout,
+            Outcome::Trapped { stdout_before, .. } => stdout_before,
+        };
+        if !printed.is_empty() {
+            return Err(format!(
+                "{name}: case produces stdout ({printed:?}), but the native backend cannot emit \
+                 output until WP-C5.3 — every harness case must observe values through in-program \
+                 assertions while NATIVE_STDOUT_SUPPORTED is false"
+            ));
+        }
+    }
+
+    if hir != mir {
+        return Err(format!(
+            "{name}: HIR/MIR DISAGREEMENT\n--- HIR oracle ---\n{hir:#?}\n--- MIR ---\n{mir:#?}"
+        ));
+    }
+    if mir != native {
+        return Err(format!(
+            "{name}: MIR/NATIVE DISAGREEMENT\n--- MIR ---\n{mir:#?}\n--- native ---\n{native:#?}"
+        ));
+    }
+    Ok(())
+}
+
 /// Run one source through all three engines and require identical normalised outcomes.
 ///
 /// `tag` names the scratch build directory only; `name` becomes the STARK source file name, so
@@ -364,29 +417,9 @@ fn three_engine(tag: &str, source: &str) -> Outcome {
     let mir = run_mir(&name, &program);
     let native = run_native(&name, tag, &program);
 
-    if !NATIVE_STDOUT_SUPPORTED {
-        // Enforced, not assumed: if a case ever starts printing, this fires rather than letting
-        // the native side's necessarily-empty stdout quietly disagree with the other two.
-        let printed = match &hir {
-            Outcome::Completed { stdout, .. } => stdout,
-            Outcome::Trapped { stdout_before, .. } => stdout_before,
-        };
-        assert!(
-            printed.is_empty(),
-            "{name}: case produces stdout ({printed:?}), but the native backend cannot emit \
-             output until WP-C5.3 — every harness case must observe values through in-program \
-             assertions while NATIVE_STDOUT_SUPPORTED is false"
-        );
+    if let Err(disagreement) = compare_outcomes(&name, &hir, &mir, &native) {
+        panic!("{disagreement}");
     }
-
-    assert_eq!(
-        hir, mir,
-        "{name}: HIR/MIR DISAGREEMENT\n--- HIR oracle ---\n{hir:#?}\n--- MIR ---\n{mir:#?}"
-    );
-    assert_eq!(
-        mir, native,
-        "{name}: MIR/NATIVE DISAGREEMENT\n--- MIR ---\n{mir:#?}\n--- native ---\n{native:#?}"
-    );
     hir
 }
 
@@ -920,41 +953,117 @@ fn main() {
 "#
 );
 
-/// The harness's own guard: a case whose engines disagree must FAIL, not pass quietly. This runs
-/// the comparator's normalisation over two deliberately different outcomes and asserts the
-/// equality check rejects them — cheap, no native build, and it fails if someone ever weakens
-/// `three_engine`'s assertions into warnings.
+/// The harness's own guard: the COMPARATOR must reject disagreement, not merely the `Outcome`
+/// type's `PartialEq`. This exercises [`compare_outcomes`] — the function that carries every
+/// agreement rule — against deliberately disagreeing triples, so weakening a rule inside it (or
+/// deleting one of its checks outright) fails a test instead of silently passing every case.
+///
+/// Cheap: no engine runs and no native build. That is the point — the rules are separable from
+/// the engines that feed them, and testing them directly is the only way to watch them fail.
 #[test]
 fn the_comparator_rejects_disagreeing_outcomes() {
-    let completed = Outcome::Completed {
-        stdout: String::new(),
-        exit: 0,
-    };
-    let trapped = Outcome::Trapped {
-        category: TrapCategory::IntegerOverflow,
-        file: "x.stark".to_string(),
-        line: 4,
-        column: 20,
-        stdout_before: String::new(),
-    };
-    assert_ne!(completed, trapped);
-    // Same category, same file, ONE column apart: the comparator distinguishes trap locations,
-    // not just trap categories.
-    let shifted = Outcome::Trapped {
-        category: TrapCategory::IntegerOverflow,
-        file: "x.stark".to_string(),
-        line: 4,
-        column: 21,
-        stdout_before: String::new(),
-    };
-    assert_ne!(trapped, shifted);
-    // And it distinguishes categories at one location.
-    let other_category = Outcome::Trapped {
-        category: TrapCategory::CastFailure,
-        file: "x.stark".to_string(),
-        line: 4,
-        column: 20,
-        stdout_before: String::new(),
-    };
-    assert_ne!(trapped, other_category);
+    fn completed(stdout: &str, exit: i32) -> Outcome {
+        Outcome::Completed {
+            stdout: stdout.to_string(),
+            exit,
+        }
+    }
+    fn trapped(category: TrapCategory, line: u32, column: u32) -> Outcome {
+        Outcome::Trapped {
+            category,
+            file: "x.stark".to_string(),
+            line,
+            column,
+            stdout_before: String::new(),
+        }
+    }
+    /// Asserts the comparator rejects this triple, and that the reason names the disagreeing
+    /// PAIR — a comparator that failed for the wrong reason would still be broken.
+    fn rejects(case: &str, hir: &Outcome, mir: &Outcome, native: &Outcome, expect: &str) {
+        match compare_outcomes("t.stark", hir, mir, native) {
+            Ok(()) => panic!("comparator ACCEPTED disagreeing outcomes ({case})"),
+            Err(reason) => assert!(
+                reason.contains(expect),
+                "{case}: comparator rejected for the wrong reason — wanted {expect:?}, got:\n{reason}"
+            ),
+        }
+    }
+
+    // Agreement is accepted — otherwise "rejects everything" would pass every case below.
+    let ok = completed("", 0);
+    assert!(compare_outcomes("t.stark", &ok, &ok, &ok).is_ok());
+    let ok_trap = trapped(TrapCategory::IntegerOverflow, 4, 20);
+    assert!(compare_outcomes("t.stark", &ok_trap, &ok_trap, &ok_trap).is_ok());
+
+    // Completion vs. trap, on each side independently.
+    let done = completed("", 0);
+    let trap = trapped(TrapCategory::IntegerOverflow, 4, 20);
+    rejects("HIR completed, MIR trapped", &done, &trap, &trap, "HIR/MIR");
+    rejects(
+        "MIR completed, native trapped",
+        &done,
+        &done,
+        &trap,
+        "MIR/NATIVE",
+    );
+
+    // A MISSED TRAP in the native engine specifically — the shape a backend bug takes when it
+    // computes a wrong value that happens not to trip an assertion.
+    rejects(
+        "native completed, others trapped",
+        &trap,
+        &trap,
+        &done,
+        "MIR/NATIVE",
+    );
+
+    // Exit status alone.
+    rejects(
+        "exit status differs",
+        &done,
+        &done,
+        &completed("", 1),
+        "MIR/NATIVE",
+    );
+
+    // Trap CATEGORY alone, at one identical location — all three would exit 101, so only the
+    // category distinguishes them.
+    rejects(
+        "trap category differs",
+        &trap,
+        &trap,
+        &trapped(TrapCategory::CastFailure, 4, 20),
+        "MIR/NATIVE",
+    );
+
+    // Trap LOCATION alone: same category, ONE column apart, then one line apart. This is the
+    // dimension the `resolve_source_location` mutation check exercised end to end.
+    rejects(
+        "trap column differs by one",
+        &trap,
+        &trap,
+        &trapped(TrapCategory::IntegerOverflow, 4, 21),
+        "MIR/NATIVE",
+    );
+    rejects(
+        "trap line differs by one",
+        &trap,
+        &trapped(TrapCategory::IntegerOverflow, 5, 20),
+        &trap,
+        "HIR/MIR",
+    );
+
+    // The output-free precondition is a comparator rule too, and is enforced while
+    // NATIVE_STDOUT_SUPPORTED is false — a case that prints must fail rather than have its
+    // stdout quietly excluded from the comparison.
+    if !NATIVE_STDOUT_SUPPORTED {
+        let printing = completed("hello\n", 0);
+        rejects(
+            "case produces stdout",
+            &printing,
+            &printing,
+            &printing,
+            "NATIVE_STDOUT_SUPPORTED",
+        );
+    }
 }
