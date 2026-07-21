@@ -7,8 +7,16 @@ description = "Compiler for the STARK Core v1 language"
 license = "MIT"
 rust-version = "1.85"
 
+# WP-C5.1b: `starkc` is now the workspace root, with `stark-runtime` (the crate every
+# generated-Rust native binary links, WP-C5-ENTRY.md §9) as a sibling member. Kept nested here
+# rather than at the repo root so CI's existing `working-directory: starkc` continues to cover
+# it with no workflow changes.
+[workspace]
+members = [".", "stark-runtime"]
+
 [dependencies]
 sha2 = { version = "0.11.0", default-features = false }
+stark-runtime = { path = "stark-runtime" }
 
 [dev-dependencies]
 # Already a normal dependency; declared here so integration tests can hash

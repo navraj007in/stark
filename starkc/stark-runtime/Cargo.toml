@@ -1,0 +1,16 @@
+[package]
+name = "stark-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal runtime consumed by STARK's generated-Rust native backend (Gate C5)"
+license = "MIT"
+rust-version = "1.85"
+publish = false
+
+# WP-C5.1b: dependency-free by construction (COMPILER-ROADMAP.md WP-C5-ENTRY.md §11.3 offline
+# rule) -- a generated crate's `cargo build` must never need network dependency resolution, and
+# this crate is the one thing every generated crate depends on.
+[dependencies]
+
+[lints.clippy]
+all = "warn"

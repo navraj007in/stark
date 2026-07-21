@@ -12,6 +12,7 @@
 pub mod analysis;
 pub mod ast;
 pub mod ast_dump;
+pub mod backend;
 pub mod borrowck;
 pub mod deploy;
 pub mod diag;

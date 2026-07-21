@@ -124,10 +124,71 @@ mechanism for local testing, and the missing-toolchain diagnostic (§12.4) — t
 
 ## C5.1b — Backend/runtime skeleton
 
-**Not started.** Deliverables per `WP-C5-ENTRY.md` §14: backend module, version constants, minimal
-runtime crate/module, generated crate skeleton, build-manifest schema, one generated empty `main`
-program compiled natively (on both C5.1a-pinned targets, per this WP's stricter host-target
-decision).
+### Status: CLOSED 2026-07-21 (CD-044) — proven on the primary target; secondary target proven by the next CI run.
+
+Delivered per `WP-C5-ENTRY.md` §14:
+
+- **Backend module** — `starkc/src/backend/` (`mod.rs`, `version.rs`,
+  `generated_rust/{mod,emit_program,emit_types,emit_bodies,emit_places,emit_runtime,mangle,
+  source_map,build}.rs`), matching §5.1's suggested module boundaries. Per §5.1's own
+  qualification ("a responsibility map, not a requirement to create every file immediately"),
+  `emit_places`/`emit_runtime`/`source_map` are doc-comment-only placeholders — WP-C5.2/C5.3 land
+  their real content when places, runtime calls, and traps are lowered.
+- **Version constants** — `backend::version::{BACKEND_VERSION, compiler_version, build_versions}`
+  assembles the §9.2 version-identity record (compiler/MIR/runtime-surface/runtime/backend/rustc/
+  target/profile) from `crate::mir::{MIR_VERSION, MIR_RUNTIME_SURFACE}` plus a query of
+  `rustc -vV`.
+- **Minimal runtime crate** — new workspace member `starkc/stark-runtime/` (`output.rs`: real
+  stdout/stderr byte + line submission; `version.rs`: real `BuildVersions`/`check` compatibility
+  gate; `trap.rs`/`value.rs`/`provider_abi.rs`: category-vocabulary/doc-only placeholders, since
+  C5.1b's proof program neither traps nor owns non-`Copy` locals nor crosses the provider
+  boundary — real content is WP-C5.2e/C5.2b-c5.3d/C5.1c respectively). Dependency-free by
+  construction (§11.3 offline rule). `starkc/Cargo.toml` gained `[workspace] members = [".",
+  "stark-runtime"]`; `starkc` itself now depends on `stark-runtime` (to embed
+  `BuildVersions`/`RUNTIME_VERSION` into generated code, not because a generated binary needs the
+  compiler).
+- **Generated crate skeleton** — `build.rs`'s `generated_cargo_toml` emits a package with an
+  empty `[workspace]` table (cuts inheritance from `starkc`'s own workspace — a generated crate is
+  never a member of the compiler's workspace), `panic = "abort"` under `[profile.dev]` (§7.7), a
+  named `[[bin]]` (`stark_program`), and a path dependency on `stark-runtime` resolved via this
+  compiler build's own `CARGO_MANIFEST_DIR` (§11's real toolchain-installation discovery is
+  WP-C5.5c's job, not reopened here).
+- **Build-manifest schema** — `build.json` (hand-written minimal JSON, no new dependency) records
+  `build_key` (SHA-256 of the MIR dump + every version field, truncated to 128 bits — an
+  isolation/diagnostics key per §11.1, explicitly not a security boundary or the incremental
+  cache C5 doesn't need) plus every §9.2 version field.
+- **One generated empty `main` compiled natively** —
+  `starkc/tests/native_c5_1b_skeleton.rs::empty_main_compiles_and_runs_natively` runs the real
+  pipeline (parse → resolve → typecheck → `lower_program` → `verify_program` →
+  `backend::generated_rust::emit_native_debug` → `cargo build --offline` → run) on `fn main() { }`
+  and asserts exit code 0, empty stdout, and that `build.json`/`Cargo.toml` were written. **Proven
+  locally on `aarch64-apple-darwin`** (this session's host); the `x86_64-unknown-linux-gnu`
+  secondary target is proven the next time this test runs in CI, since it needs no environment
+  changes beyond what CI already provides (rustc/cargo via `dtolnay/rust-toolchain@stable`) — no
+  separate CI job was added.
+
+**Implementation notes recorded for C5.2+, not decided/reopened by C5.1b:**
+
+- `emit_bodies::emit_trivial_unit_body` accepts only a body whose **entry block** (`body.entry`,
+  not always `blocks[0]`) contains solely `Nop`/return-slot-`Unit` statements and a `Return`
+  terminator, plus any number of trivially-dead (`Unreachable`, no statements) trailing blocks —
+  discovered from real lowered MIR: `fn main() { }` lowers to two blocks (`bb0` real, `bb1` a
+  synthetic dead `Unreachable` block from WP-C4.5's return-slot elaboration), not one. Real
+  multi-block control flow is WP-C5.2c.
+- `mangle::sanitize_symbol` sanitizes MIR's already-deterministic, injective `instance.symbol`
+  (e.g. `main@[]`) into a valid Rust identifier by hex-encoding every disallowed byte
+  individually — it does not re-derive symbol identity (WP-C4.5c's `key_symbol` already owns
+  that), only makes it valid Rust syntax. The entry instance is looked up by the literal string
+  `"main@[]"`, the same convention `mir::interp::run_program` already uses (kept identical per
+  §5.2, "no backend semantic reconstruction" — one entry-point convention, not two).
+- `emit_types::emit_ty` implements only the primitive rows of §6.2's type-mapping table (what an
+  empty `main` needs); every aggregate/enum/reference/opaque-runtime-type row returns
+  `BackendDiagnostic::Unsupported`, consistent with the C5.1a `MirTy` matrix above.
+
+**Validation:** `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings` clean, `cargo test --workspace --all-targets --all-features` green
+(0 failures), `cargo test --test exec_snapshots` green (4/4) — the full C3-ENTRY CI baseline,
+unaffected by the new workspace member.
 
 ## C5.1c — Native Provider ABI specification
 
@@ -137,8 +198,12 @@ expansion.
 
 ## C5.1 exit
 
-Not yet reached. Per `WP-C5-ENTRY.md` §14: CE4 decision recorded (done, CD-042), one verified
-empty/scalar MIR program becomes a standalone executable on both pinned targets, runtime/backend/
-compiler version checks demonstrated, no language semantics hidden in the runtime.
+Not yet reached — C5.1c (Native Provider ABI v0.1 specification) is still open. Per
+`WP-C5-ENTRY.md` §14: CE4 decision recorded (done, CD-042), one verified empty/scalar MIR program
+becomes a standalone executable on both pinned targets (primary proven locally, secondary pending
+the next CI run — C5.1b), runtime/backend/compiler version checks demonstrated (C5.1b), no
+language semantics hidden in the runtime (C5.1b: `trap`/`value`/`provider_abi` are placeholders by
+design, not because logic was hidden elsewhere).
 
-**C5.1a CLOSED 2026-07-21. Next: WP-C5.1b (backend/runtime skeleton).**
+**C5.1a CLOSED 2026-07-21. C5.1b CLOSED 2026-07-21 (CD-044). Next: WP-C5.1c (Native Provider ABI
+v0.1 specification).**
