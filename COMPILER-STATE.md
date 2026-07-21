@@ -1,20 +1,20 @@
 # STARK Compiler STATE
-Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 (Runtime ABI and Layout Design)
-CLOSED IN FULL (CD-042/043/044/045/046).** The owner's DEV-089 close-out directive was executed:
-user `Display` dispatch implemented in both engines, non-`Copy` array iteration and cross-file
-`const` use rejected in the front end, all validation green. The Gate C5 entry plan is approved at
-its recommended §19 choices; WP-C5.1a (representation decision) closed the `MirTy` matrix and host
-targets; WP-C5.1b (backend/runtime skeleton) delivered a working `starkc/src/backend/` +
-`starkc/stark-runtime/` and proved an empty `fn main() { }` compiles and runs as a real native
-executable on the primary target; WP-C5.1c (Native Provider ABI v0.1) drafted the document plus a
-compile-time validator and mock fixtures, and the owner's CD-046 review approved the document's
-technical content as drafted, closing WP-C5.1 overall. Next: WP-C5.2 (scalar native lowering).
+Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 CLOSED IN FULL
+(CD-042/043/044/045/046), WP-C5.2a CLOSED (CD-047).** The owner's DEV-089 close-out directive was
+executed: user `Display` dispatch implemented in both engines, non-`Copy` array iteration and
+cross-file `const` use rejected in the front end, all validation green. WP-C5.1 (Runtime ABI and
+Layout Design) closed in full — representation contract, backend/runtime skeleton with a proven
+native empty-`main` executable, and the owner-approved Native Provider ABI v0.1. WP-C5.2 (scalar
+native lowering) is open; C5.2a (primitive values/constants) is closed — `emit_constant` covers
+every primitive `Constant` variant, round-trip-tested through real `rustc`. Next: WP-C5.2b
+(locals/places/copies/moves). **Process note:** full-workspace test runs are now reserved for WP/
+gate closure points, not every intermediate change, per owner feedback.
 
 ## Position
-Gate: **C5 (native compilation) — OPEN. WP-C5.1 (Runtime ABI and Layout Design) CLOSED 2026-07-21
-in full** (entry plan CD-042, WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046
-approved). Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker (DEV-089) was
-resolved rather than deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
+Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
+WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
+native lowering) OPEN; C5.2a CLOSED (CD-047).** Gate **C4 CLOSED 2026-07-21** by owner directive,
+after the last blocker (DEV-089) was resolved rather than deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
 implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
 1.2.0; the second (this one) resolved DEV-089 and the two residual over-rejections. Final
 validation: workspace tests green, `cargo fmt` clean, `cargo clippy` clean on 1.93 and 1.97, corpus
@@ -1393,6 +1393,25 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   runtime. Next: WP-C5.2 (scalar native lowering) — primitive values/constants (C5.2a), locals/
   places/copies/moves (C5.2b), operations/control flow (C5.2c), direct functions/calls (C5.2d),
   trap path (C5.2e).
+
+- CD-047 [2026-07-21, WP-C5.2a] **Constant emission delivered — `emit_types::emit_constant`
+  covers every primitive `Constant` variant.** Full record: `STARKLANG/docs/compiler/
+  work-packages/WP-C5.2.md` §C5.2a. `Bool`/`Unit` direct; `Int` with the integer-suffix reused
+  from `emit_ty`; `Int(codepoint, MirTy::Char)` (the `Char` constant's actual MIR encoding, per
+  `mir::lower`'s f-3b) reconstructed via `char::from_u32(...).unwrap()` since Rust has no `char`
+  literal suffix; `Float` via `f64`'s `Debug` formatting (guaranteed round-trip, always a decimal
+  point/exponent so it parses back as a float literal) with `NaN`/`Infinity`/`-Infinity` handled
+  as named `f64::` constants since they have no Rust literal syntax. **Real bug caught before
+  commit:** the first version unconditionally appended an `f64` suffix, producing invalid
+  `f64::NANf64` for the NaN case — caught by the test harness (every emitted expression is
+  round-tripped through a real `rustc --edition 2021 --crate-type lib` parse/typecheck, not just
+  string-shape-asserted), fixed by making the NaN/Infinity branches return an already-fully-typed
+  expression the caller does not re-suffix. 5/5 tests pass. Validation: `cargo fmt`, `cargo
+  clippy -D warnings`, full workspace suite, `exec_snapshots` — all green. **Process note:** the
+  owner flagged that running the full workspace suite after every small change was slowing
+  development; going forward, scoped `cargo test --lib`/`--test <file>` runs during iteration,
+  full-suite runs reserved for WP/gate closure points (recorded for future sessions in memory,
+  not just here). WP-C5.2a CLOSED; next is WP-C5.2b (locals/places/copies/moves).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
