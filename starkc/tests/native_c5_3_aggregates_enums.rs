@@ -543,3 +543,138 @@ fn main() {
         "`?` must be emitted as MIR's own branches, not Rust's operator:\n{generated}"
     );
 }
+
+// ------------------------------ WP-C5.3d-1a: the ephemeral reference lane --
+
+/// The lane's negative cases: a reference outside the admitted shape must be refused **before
+/// rustc**, as a named STARK limitation, not as a borrow-check error in generated code.
+///
+/// Each source here is rejected by the front end or the backend; what the test pins is that the
+/// rejection happens on OUR side of the boundary. A reference that reached rustc and failed there
+/// would be a diagnostic defect even though the program is correctly not compiled.
+#[test]
+fn references_outside_the_lane_are_refused_before_rustc() {
+    for (tag, source) in [
+        // Returning a reference.
+        (
+            "ret",
+            r#"fn pick(a: &Int32) -> &Int32 {
+    a
+}
+
+fn main() {
+    let x: Int32 = 1;
+    let r: &Int32 = pick(&x);
+}
+"#,
+        ),
+        // Storing a reference in a user binding that outlives its block.
+        (
+            "store",
+            r#"fn main() {
+    let x: Int32 = 1;
+    let r: &Int32 = &x;
+    let mut i: Int32 = 0;
+    while i < 2 {
+        i = i + 1;
+    }
+    let y: Int32 = *r;
+}
+"#,
+        ),
+    ] {
+        let file = Arc::new(SourceFile::new(
+            format!("c5_3_ref_{tag}.stark"),
+            source.to_string(),
+        ));
+        let (ast, parse_diags) = parse(&file, ParseMode::Program);
+        if !parse_diags.is_empty() {
+            continue; // rejected at parse: still before rustc
+        }
+        let (hir, resolve_diags) = resolve(&ast, file.clone());
+        if !resolve_diags.is_empty() {
+            continue;
+        }
+        let checked = typecheck::analyze(&hir, file.clone());
+        if checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == starkc::diag::Severity::Error)
+        {
+            continue; // rejected by the front end: before rustc
+        }
+        let Ok(program) = lower_program(&hir, &checked.tables, file) else {
+            continue; // rejected by lowering: before rustc
+        };
+        let Ok(verified) = verify_program(&program) else {
+            continue; // rejected by the verifier: before rustc
+        };
+        let target_dir =
+            std::env::temp_dir().join(format!("stark_c5_3_ref_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&target_dir);
+        let result = emit_native_debug(
+            &verified,
+            &NativeBuildOptions {
+                target_dir: target_dir.clone(),
+            },
+        );
+        let _ = std::fs::remove_dir_all(&target_dir);
+        match result {
+            Err(BackendDiagnostic::Unsupported(_)) => {}
+            Err(BackendDiagnostic::BuildFailed(output)) => panic!(
+                "{tag}: a reference outside the lane reached rustc and failed THERE; the backend \
+                 must refuse it first:\n{output}"
+            ),
+            Err(other) => panic!("{tag}: expected an Unsupported refusal, got {other:?}"),
+            Ok(_) => panic!(
+                "{tag}: this reference shape is outside the C5 lane and must be refused; if it \
+                 is now legitimately supported, move it to a positive test"
+            ),
+        }
+    }
+}
+
+/// `Ordering` and a user destructor both compile now, and both go through the lane. The
+/// generated destructor takes a real Rust reference receiver rather than a slot.
+#[test]
+fn the_lane_admits_orderings_and_destructor_receivers() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct Held { v: Int32 }
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let read: Int32 = self.v;
+    }
+}
+
+fn main() {
+    let a: Int32 = 1;
+    let b: Int32 = 2;
+    let o: Ordering = a.cmp(&b);
+    let v: Int32 = match o {
+        Ordering::Less => 10,
+        Ordering::Equal => 20,
+        Ordering::Greater => 30,
+    };
+    assert_eq(v, 10);
+    let h: Held = Held { v: 3 };
+    assert_eq(h.v, 3);
+}
+"#;
+    let (generated, run) = build(source, "lane").expect("both lane cases must build");
+    assert_eq!(run.status.code(), Some(0));
+    // The destructor receiver is a plain Rust reference, NOT a ValueSlot: a slot-backed receiver
+    // would make the body's Deref project through the slot instead of the reference.
+    assert!(
+        generated.contains("mut _1: &mut stark_ty_"),
+        "the destructor receiver must be a bare reference parameter:\n{generated}"
+    );
+    // And the borrow for `cmp` is inlined at its use rather than stored.
+    assert!(
+        generated.contains("(&_"),
+        "the shared borrow should appear as a borrow expression:\n{generated}"
+    );
+}

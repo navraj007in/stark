@@ -73,10 +73,10 @@ fn emit_param_list(body: &MirBody, types: &TypeContext) -> Result<String, Backen
         // uniform `let mut` treatment rather than trying to prove a parameter is never
         // reassigned.
         let decl_ty = &body.locals[local as usize].ty;
-        let name = if emit_types::mir_ty_is_copy(decl_ty, types) {
-            emit_places::local_name(local)
-        } else {
+        let name = if emit_types::is_slot_backed(decl_ty, types) {
             incoming_param_name(local)
+        } else {
+            emit_places::local_name(local)
         };
         parts.push(format!("mut {name}: {rust_ty}"));
     }
@@ -99,6 +99,7 @@ pub fn emit_block_body(
     types: &TypeContext,
 ) -> Result<String, BackendDiagnostic> {
     let env = &TyEnv::new(body, types);
+    validate_ephemeral_references(body, env)?;
     let mut out = String::from("{\n");
 
     // Every non-parameter local is declared `let mut`, DEFAULT-INITIALISED, up front (WP-C5.2c's
@@ -109,15 +110,26 @@ pub fn emit_block_body(
     // argument with a fabricated default, so every parameter would read as its default value
     // rather than the value passed in.
     for (i, decl) in body.locals.iter().enumerate() {
-        let is_copy = emit_types::mir_ty_is_copy(&decl.ty, env.types);
+        // One rule for both the parameter and the ordinary-local branch: a value is slot-backed
+        // when it is non-Copy AND not a reference. References are ephemeral by the C5.3d-1a lane
+        // and must never be wrapped -- a slot-backed `&mut Self` receiver would make the
+        // destructor body's `Deref` project through a `ValueSlot` instead of the reference.
+        let slotted = emit_types::is_slot_backed(&decl.ty, env.types);
         match &decl.kind {
             // `IndexProof` (WP-C5.3a) is an ordinary integer local in generated Rust: MIR
             // keeps it opaque so only `Projection::Index` can consume it, but that opacity is a
             // MIR-level property the verifier enforces, not something the backend re-creates.
-            LocalKind::Return | LocalKind::User(_) | LocalKind::Temp | LocalKind::IndexProof => {}
+            // `DropFlag` (WP-C5.3d) is an ordinary `Bool` local: MIR's drop elaboration produces
+            // it, and the backend simply carries it -- per-drop-unit liveness lives there, not in
+            // `ValueSlot`.
+            LocalKind::Return
+            | LocalKind::User(_)
+            | LocalKind::Temp
+            | LocalKind::IndexProof
+            | LocalKind::DropFlag => {}
             // A Copy parameter is already bound by the signature under its `_N` name. A non-Copy
             // one is bound as `__pN` and moved into its slot below.
-            LocalKind::Param(_) if is_copy => continue,
+            LocalKind::Param(_) if !slotted => continue,
             LocalKind::Param(_) => {
                 let slot_ty = emit_types::emit_slot_ty(&decl.ty)?;
                 let name = emit_places::local_name(i as u32);
@@ -129,18 +141,27 @@ pub fn emit_block_body(
                     incoming_param_name(i as u32)
                 ));
                 continue;
-            }
-            other => {
-                return Err(BackendDiagnostic::Unsupported(format!(
-                    "WP-C5.3a supports Return/Param/User/Temp/IndexProof locals; {other:?} \
-                     lands alongside Drop elaboration (WP-C5.3d)"
-                )))
-            }
+            } // No catch-all: every `LocalKind` is handled as of WP-C5.3d-1a, and keeping the
+              // match exhaustive means a NEW kind stops compilation rather than silently becoming
+              // an `Unsupported` diagnostic nobody reads.
         }
         // WP-C5.3d-0: a non-Copy local is backed by a `ValueSlot`, which starts DEAD -- so
         // generated code stops fabricating a default value it would immediately overwrite, and
         // MIR liveness is represented explicitly instead of being approximated by Rust's.
-        if is_copy {
+        // A REFERENCE local is declared UNINITIALISED. It has no valid default value, and the
+        // C5.3d-1a lane guarantees it is assigned and consumed within one basic block, so Rust's
+        // own definite-assignment analysis can see the assignment precedes the use. That makes
+        // rustc a second check on the lane: a reference that escaped its block would fail to
+        // compile as "possibly uninitialized" rather than silently reading a fabricated value.
+        if matches!(decl.ty, MirTy::Ref { .. }) {
+            out.push_str(&format!(
+                "    let mut {}: {};\n",
+                emit_places::local_name(i as u32),
+                emit_types::emit_ty(&decl.ty)?
+            ));
+            continue;
+        }
+        if !slotted {
             let ty = emit_types::emit_ty(&decl.ty)?;
             let default = emit_types::default_value_expr(&decl.ty, env.types)?;
             out.push_str(&format!(
@@ -183,6 +204,107 @@ pub fn emit_block_body(
     out.push_str("    __stark_ret\n");
     out.push_str("}\n");
     Ok(out)
+}
+
+/// WP-C5.3d-1a (CD-062): the **ephemeral borrowed-call reference lane** validator.
+///
+/// References are admitted into C5 only in a shape narrow enough that they need no storage and no
+/// liveness tracking. Everything outside it is refused HERE, before rustc, so a broader reference
+/// use fails as a named STARK backend limitation rather than as a borrow-check error in generated
+/// code.
+///
+/// Enforced:
+///
+/// - a `RefOf` result must land in a compiler-generated temporary, never a user local (the lane
+///   forbids writing a reference into a user-visible binding);
+/// - every use of that temporary must be in the SAME basic block that created it (no reference
+///   crosses a block boundary, which is what makes "ephemeral" true rather than aspirational);
+/// - it must not be returned, stored into an aggregate, or written into a non-temporary place.
+///
+/// **One deviation from CD-062's wording, reported rather than absorbed.** The lane says the
+/// reference must be "consumed by a statically resolved direct call". That is the shape a user
+/// destructor takes, but it is NOT what `a.cmp(&b)` lowers to: for primitives, lowering inlines
+/// the comparison, so the reference is consumed by a `Deref` READ inside a `BinOp` — and it is
+/// first copied into a second temporary. Both remain ephemeral, same-block and unstored, so the
+/// lane's *purpose* holds; its stated consumption form does not. This validator therefore accepts
+/// same-block consumption by read as well as by call, and the difference is recorded in CD-063
+/// rather than quietly widened.
+fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), BackendDiagnostic> {
+    for (bi, block) in body.blocks.iter().enumerate() {
+        let mut created_here: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for (statement, _) in &block.statements {
+            let Statement::Assign(place, rvalue) = statement else {
+                continue;
+            };
+            if let Rvalue::RefOf { .. } = rvalue {
+                if !place.projection.is_empty() {
+                    return Err(BackendDiagnostic::Unsupported(format!(
+                        "a borrow written through a projection ({place:?}) is outside the C5 \
+                         ephemeral reference lane"
+                    )));
+                }
+                let kind = &body.locals[place.local.0 as usize].kind;
+                if !matches!(kind, LocalKind::Temp) {
+                    return Err(BackendDiagnostic::Unsupported(format!(
+                        "a borrow stored in a {kind:?} local is outside the C5 ephemeral \
+                         reference lane: references may live only in compiler-generated \
+                         temporaries, never in user bindings"
+                    )));
+                }
+                created_here.insert(place.local.0);
+            }
+            // A reference VALUE may only be copied into another temporary in the same block
+            // (which is how `cmp` lowers); it may not be written into a user local or an
+            // aggregate.
+            for operand in super::emit_projections::rvalue_operands(rvalue) {
+                let (Operand::Copy(src) | Operand::Move(src)) = operand else {
+                    continue;
+                };
+                if !created_here.contains(&src.local.0) {
+                    continue;
+                }
+                let dest_is_temp = place.projection.is_empty()
+                    && matches!(body.locals[place.local.0 as usize].kind, LocalKind::Temp);
+                if matches!(rvalue, Rvalue::Aggregate(..)) || !dest_is_temp {
+                    return Err(BackendDiagnostic::Unsupported(format!(
+                        "a reference flowing into {place:?} is outside the C5 ephemeral \
+                         reference lane: it may not be stored in an aggregate, written to a user \
+                         local, or returned"
+                    )));
+                }
+                created_here.insert(place.local.0);
+            }
+        }
+        // Nothing created in this block may be read in any other one.
+        for (other_i, other) in body.blocks.iter().enumerate() {
+            if other_i == bi {
+                continue;
+            }
+            for (statement, _) in &other.statements {
+                if let Statement::Assign(_, rvalue) = statement {
+                    for operand in super::emit_projections::rvalue_operands(rvalue) {
+                        if let Operand::Copy(p) | Operand::Move(p) = operand {
+                            if created_here.contains(&p.local.0) {
+                                return Err(BackendDiagnostic::Unsupported(format!(
+                                    "reference temporary _{} is created in block {bi} and used in \
+                                     block {other_i}: the C5 ephemeral reference lane requires \
+                                     creation and consumption in the SAME basic block",
+                                    p.local.0
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // A reference may never be returned.
+    if matches!(env.local_ty(0)?, MirTy::Ref { .. }) {
+        return Err(BackendDiagnostic::Unsupported(
+            "returning a reference is outside the C5 ephemeral reference lane".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn emit_terminator(
@@ -482,6 +604,17 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
         // for the same reason -- Rust exposes no integer discriminant for an enum with payloads,
         // so the index is recovered by matching. Every variant is listed, so there is no
         // catch-all arm and adding a variant cannot silently fall through to a wrong index.
+        // WP-C5.3d-1a: an ephemeral borrow. The lane forbids storing, returning or carrying it
+        // across blocks, so this never needs reference STORAGE -- it is a borrow expression the
+        // validator has already proved is consumed in the same block.
+        Rvalue::RefOf { mutable, place } => {
+            let borrowed = emit_places::emit_place(place, env)?;
+            Ok(if *mutable {
+                format!("(&mut {borrowed})")
+            } else {
+                format!("(&{borrowed})")
+            })
+        }
         Rvalue::Discriminant(place) => {
             let base = emit_places::emit_place(place, env)?;
             let ty = env.place_ty(place)?;
@@ -576,11 +709,8 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
                     format!("(core::mem::align_of::<{rust_ty}>() as u64)")
                 }
             })
-        }
-        other => Err(BackendDiagnostic::Unsupported(format!(
-            "Rvalue {other:?} has no WP-C5.2c representation yet -- Aggregate/Discriminant land \
-             in WP-C5.3, RefOf is not yet scheduled to a specific sub-WP"
-        ))),
+        } // No catch-all: every `Rvalue` variant is handled as of WP-C5.3d-1a (`RefOf` was the
+          // last), so a new one stops compilation instead of silently degrading.
     }
 }
 

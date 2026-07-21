@@ -1396,12 +1396,66 @@ fn main() {
 "#
 );
 
-// `Ordering` -- the third core enum -- is SUPPORTED by the emitter (it shares the same variant
-// table, with A2's fixed Less=0/Equal=1/Greater=2) but has NO three-engine case, because it
-// cannot be produced from compilable C5 source: the only way to obtain one is `a.cmp(&b)`, and
-// `cmp` takes a reference. That is the same root cause as user `Drop` impls being unrepresentable
-// (`&mut Self` receiver) -- both remaining C5.3 gaps are the absence of references, not two
-// separate limitations. See CD-061.
+// `Ordering`, the third core enum, reachable as of the C5.3d-1a ephemeral reference lane
+// (CD-062): `a.cmp(&b)` needs a shared borrow, which the lane now admits. All three variants are
+// produced with distinct results, so any mis-selected arm changes the answer.
+//
+// expected_span_reason: none -- this case completes rather than trapping.
+three_engine_test!(
+    ordering_comparisons_agree,
+    "core_ordering",
+    completes,
+    r#"fn main() {
+    let a: Int32 = 1;
+    let b: Int32 = 2;
+    let less: Ordering = a.cmp(&b);
+    let v1: Int32 = match less {
+        Ordering::Less => 10,
+        Ordering::Equal => 20,
+        Ordering::Greater => 30,
+    };
+    assert_eq(v1, 10);
+
+    let equal: Ordering = b.cmp(&b);
+    let v2: Int32 = match equal {
+        Ordering::Less => 10,
+        Ordering::Equal => 20,
+        Ordering::Greater => 30,
+    };
+    assert_eq(v2, 20);
+
+    let greater: Ordering = b.cmp(&a);
+    let v3: Int32 = match greater {
+        Ordering::Less => 10,
+        Ordering::Equal => 20,
+        Ordering::Greater => 30,
+    };
+    assert_eq(v3, 30);
+}
+"#
+);
+
+// A user destructor reading through its `&mut Self` receiver -- the second case the lane exists
+// for. The destructor's observable effect is not checked here (that is C5.3d-1c); what this pins
+// is that the receiver and its `Deref` projections compile and agree across all three engines.
+three_engine_test!(
+    a_user_destructor_with_a_self_receiver_agrees,
+    "ref_dtor",
+    completes,
+    r#"struct Held { v: Int32 }
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let read: Int32 = self.v;
+    }
+}
+
+fn main() {
+    let h: Held = Held { v: 3 };
+    assert_eq(h.v, 3);
+}
+"#
+);
 
 // ========================================================= review regressions --
 // CD-052's fixed defects, re-pinned as three-engine agreement rather than per-engine assertions.

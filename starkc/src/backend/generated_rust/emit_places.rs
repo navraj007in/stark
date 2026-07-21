@@ -90,6 +90,7 @@ impl<'a> TyEnv<'a> {
             (Projection::Index(_) | Projection::ConstIndex(_), MirTy::Array(elem, _)) => {
                 Ok((**elem).clone())
             }
+            (Projection::Deref, MirTy::Ref { inner, .. }) => Ok((**inner).clone()),
             (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => {
                 let variants = emit_types::variant_payloads(enum_ref, args, self.types)
                     .ok_or_else(|| {
@@ -121,7 +122,7 @@ impl<'a> TyEnv<'a> {
 /// moves out of them and Rust never destroys them.
 pub fn is_slot_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic> {
     let ty = env.local_ty(local)?;
-    Ok(!emit_types::mir_ty_is_copy(&ty, env.types))
+    Ok(emit_types::is_slot_backed(&ty, env.types))
 }
 
 /// A place in READ position. A slot-backed local reads through `get()`, which borrows rather
@@ -196,6 +197,9 @@ fn emit_place_from(
             // A5/CD-038: statically known and verifier-checked against the array length, so it
             // needs no bounds check of its own.
             (Projection::ConstIndex(n), MirTy::Array(..)) => rendered.push_str(&format!("[{n}]")),
+            // WP-C5.3d-1a: reading through an ephemeral reference. Parenthesised because the
+            // projection chain may continue (`(*_6).f0`).
+            (Projection::Deref, MirTy::Ref { .. }) => rendered = format!("(*{rendered})"),
             // A proof-backed index: `CheckedOp::CheckIndex` already validated it and trapped
             // otherwise, so this is a plain index expression rather than a second check.
             (Projection::Index(proof), MirTy::Array(..)) => {

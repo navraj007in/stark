@@ -108,7 +108,9 @@ pub fn collect(program: &MirProgram) -> Result<Vec<ProjectionHelper>, BackendDia
     Ok(found.into_values().collect())
 }
 
-fn rvalue_operands(rvalue: &Rvalue) -> Vec<&Operand> {
+/// Every operand an rvalue reads. Shared with `emit_bodies`' reference validator so the two
+/// cannot disagree about what counts as a use.
+pub fn rvalue_operands(rvalue: &Rvalue) -> Vec<&Operand> {
     match rvalue {
         Rvalue::Use(operand) | Rvalue::UnOp(_, operand) => vec![operand],
         Rvalue::BinOp(_, lhs, rhs) => vec![lhs, rhs],

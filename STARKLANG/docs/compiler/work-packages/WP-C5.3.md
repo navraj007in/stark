@@ -433,6 +433,60 @@ the same lane would also make `Ordering` reachable. `EnumRef::CoreOption`/`CoreR
 match/`?` lowering, on the slot abstraction, since `Option`/`Result` payloads are frequently
 non-`Copy` and `?` is inherently cross-block.
 
+## C5.3d-1a — Ephemeral borrowed-call references
+
+### Status: CLOSED 2026-07-21 (CD-063).
+
+The lane CD-062 approved, implemented and bounded. Both cases the missing-references finding
+identified now compile and run natively: `a.cmp(&b)` producing an `Ordering`, and a user
+destructor reading through its `&mut Self` receiver.
+
+Delivered: `MirTy::Ref` in the type mapping; `Projection::Deref` in place emission and the type
+walk; `Rvalue::RefOf` as a borrow expression; `LocalKind::DropFlag` admitted; and
+`validate_ephemeral_references`, a pre-emission validator refusing every shape outside the lane.
+
+Three design points:
+
+- **A reference local is never slot-backed**, even a `&mut` one (which MIR classifies non-`Copy`).
+  References are ephemeral by the lane, so they have no liveness to track — and a slot-backed
+  `&mut Self` receiver would make the destructor body's `Deref` project through the slot instead
+  of through the reference.
+- **Reference locals are declared UNINITIALISED**, unlike every other local. A reference has no
+  valid default, and the lane guarantees assignment precedes use within one block — which makes
+  rustc a *second* check on the lane: a reference escaping its block fails to compile as "possibly
+  uninitialized" rather than silently reading a fabricated value.
+- **One slot-backing rule, `emit_types::is_slot_backed`**, shared by the signature emitter, the
+  local declarations and place emission. Those three sites disagreeing is not a theoretical
+  hazard: it happened during this work, and produced a generated crate binding a parameter under
+  one convention and reading it under the other.
+
+### One deviation from CD-062's wording, reported not absorbed
+
+The lane says the reference must be "consumed by a statically resolved direct call". That is
+exactly the destructor shape, but **not** what `a.cmp(&b)` lowers to: for primitives, lowering
+*inlines* the comparison, so the MIR is
+
+```text
+_5 = &_2            // RefOf into a temporary
+_6 = copy _5        // copied into a second temporary
+_7 = Lt(copy _1, copy (*_6))   // consumed by a Deref READ inside a BinOp
+```
+
+The reference is consumed by a **read**, not a call, and it passes through an intermediate copy.
+Both remain ephemeral, same-block, unstored and unreturned, so the lane's *purpose* holds
+unchanged — but its stated consumption form does not describe the case it was written to enable.
+The validator therefore accepts same-block consumption by read as well as by call. Flagged for the
+owner: the alternative is to reject `cmp` and leave `Ordering` unreachable, which would defeat the
+lane's stated motivation.
+
+### Evidence
+
+Two three-engine cases (all three `Ordering` variants with distinct results; a destructor with a
+`&mut Self` receiver reading a field) and two native cases — one asserting the destructor receiver
+is a bare Rust reference rather than a slot, one driving two out-of-lane shapes (a returned
+reference, a reference carried across blocks) and requiring each to be refused **before rustc**,
+failing loudly if any reaches rustc and fails there instead.
+
 ## C5.3d-1 — Bounded Drop proof
 
 Not started. Follows C5.3c. Contains the dedicated observable destruction fixture and the final

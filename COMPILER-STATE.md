@@ -102,7 +102,19 @@ is an owner-level scope question.
 — and until it lands, C5.3d-1's observable destruction fixture cannot be built and the enum drop
 glue fixed under CD-060 stays unexercised.
 
-Next: the reference-lane decision, then C5.3d-1. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+**All open decisions resolved by CD-062.** C5.3's remaining work is now **two closure packages**,
+not four gaps: (a) references/Drop evidence — C5.3d-1a ephemeral reference lane → C5.3d-1b
+canonical `DropPlan` → C5.3d-1c observable evidence; and (b) C5.3e, the exact target-layout
+manifest, independent and parallelisable. §6.2 amended for generated core enums; universal
+`NativeOperation` IR deferred.
+
+**C5.3d-1a CLOSED (CD-063)** — the lane is implemented; `Ordering` is reachable and user
+destructors compile and run natively. One deviation from CD-062's wording is flagged for the
+owner: `cmp` consumes its borrow by a `Deref` READ, not by a direct call, because lowering inlines
+primitive comparison.
+
+Next: **C5.3d-1b — the canonical `DropPlan`**, then C5.3d-1c's observable evidence. C5.3e (layout
+manifest) remains independent and parallelisable. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -2307,6 +2319,106 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   - Validation, scoped: fmt clean, clippy clean, stark-runtime 23/23, `backend::` 42/42,
     `three_engine_differential` 39/39, `native_c5_3_aggregates_enums` 12/12, earlier native
     suites green.
+
+- CD-062 [2026-07-21, owner decisions after C5.3c] **Five decisions. C5.3's remaining work is
+  reduced from four unrelated gaps to TWO closure packages: references/Drop evidence, and exact
+  target layout.**
+
+  1. **C5.3c closure ACCEPTED** (`9aa94ac`) under the scoped-validation policy. The owner's note
+     on why it matters architecturally: `?` required no backend reconstruction — MIR already
+     contains the branches, payload moves and early return, and the backend merely emits them.
+     The test prohibiting Rust's `?` is the correct guard against semantic reconstruction.
+
+  2. **Generated core enums APPROVED; §6.2 AMENDED rather than the implementation reverted.** New
+     normative wording: *"Core enums use compiler-generated concrete enum representations governed
+     by MIR's canonical variant table. Rust `Option`, `Result` and `Ordering` are not used as
+     STARK value representations in C5. A future representation optimisation requires evidence
+     that discriminants, layout queries, movement, partial movement and explicit MIR-directed
+     destruction remain equivalent."* The original "prefer Rust's types if observable semantics
+     match" condition is **too weak after `ValueSlot`**: Rust-owned Drop can conceal a missed MIR
+     Drop and make exactly-once evidence less falsifiable, and the dual path through definitions,
+     discriminants, projections and Drop glue would be permanent. A semantic boundary, not an
+     implementation convenience.
+
+  3. **EPHEMERAL BORROWED-CALL REFERENCE LANE APPROVED** — renamed from "destructor-reference
+     lane", because it covers both cases the missing-references finding identified: shared refs
+     for `cmp(&other)` and exclusive refs for `Drop::drop(&mut self)`. Bounded to: `RefOf` borrows
+     only a verified live, WHOLE place; never into a partially moved `ValueSlot`; the reference is
+     consumed by a statically resolved direct call; creation and consumption in the SAME basic
+     block; a generated reference temporary has exactly one use; reference-typed parameters
+     allowed; callees may use `Deref` projections from them; shared reads, exclusive mutates and
+     serves as destructor receiver. Forbidden: returning, storing in aggregates, writing into user
+     locals, passing indirectly, carrying across blocks, nested references, slices, reference
+     equality, general reborrowing, reference-valued results. Everything else rejected before
+     rustc. A pre-emission validator enforces single-use/same-block; the emitter **inlines the
+     borrow into the call** (`cmp_fn(&lhs, &rhs)`, `drop_fn(&mut value)`) rather than introducing
+     general reference storage — considerably safer than making references ordinary
+     `ValueSlot`-backed values.
+
+  4. **`DropPlan` MANDATORY before C5.3d-1 closure**, and it precedes any general
+     `NativeOperation` refactor (owner accepted that sequencing). A representation-neutral plan
+     derived from `MirTy` + `TypeContext`, consumed by BOTH the MIR interpreter and the native
+     emitter: `Noop` / `UserDestructor(instance)` / `Struct(reverse fields)` / `Enum(every variant
+     → reverse payload)` / `Tuple(reverse)` / `Array(reverse indices)`. Preserves: user destructor
+     first; structural fields or active payload after; reverse declaration order; complete variant
+     coverage; no action for `Copy` units. **Does not change MIR v0.1** — it centralises an
+     existing duplicated derivation. CD-060 fixed the enum-Drop *instance*; `DropPlan` removes the
+     *class*.
+
+  5. **Universal `NativeOperation` IR DEFERRED**, to evolve incrementally. **Layout manifest
+     OPENED as an independent package (C5.3e)**, which may proceed in parallel since it depends on
+     neither references nor `DropPlan`.
+
+  - **Execution order set by the owner**: C5.3d-1a (ephemeral references) → C5.3d-1b (canonical
+    `DropPlan`) → C5.3d-1c (observable closure evidence, then close C5.3d-1). C5.3e independent;
+    if work must be sequential, C5.3d-1 first as the higher correctness risk.
+
+  - **Trap-line expectations KEPT**, with an addition: each trapping fixture must carry an
+    `expected_span_reason` note documenting WHY the expected location is correct, derived from the
+    language rather than from any engine. The owner's rationale: having corrected the expected
+    answer three times confirms these expectations are independent rather than self-fulfilling.
+
+- CD-063 [2026-07-21, C5.3d-1a CLOSED] **The ephemeral borrowed-call reference lane is
+  implemented. `Ordering` is reachable and user destructors compile — the two gaps CD-061
+  identified as one root cause are closed.**
+
+  - **Delivered**: `MirTy::Ref` in the type mapping; `Projection::Deref`; `Rvalue::RefOf` as a
+    borrow expression; `LocalKind::DropFlag` admitted; and `validate_ephemeral_references`, a
+    pre-emission validator refusing every out-of-lane shape.
+
+  - **Three design points worth keeping**: (a) a reference local is **never** slot-backed, even a
+    `&mut` one — a slot-backed `&mut Self` receiver would make the destructor's `Deref` project
+    through the slot rather than the reference; (b) reference locals are declared
+    **uninitialised**, so rustc becomes a *second* check on the lane — a reference escaping its
+    block fails as "possibly uninitialized" rather than reading a fabricated value; (c) one
+    slot-backing rule (`emit_types::is_slot_backed`) shared by the signature emitter, the local
+    declarations and place emission. That third point is not theoretical: those sites disagreed
+    during this work and produced a crate binding a parameter under one convention and reading it
+    under the other.
+
+  - **DEVIATION FROM CD-062, reported not absorbed.** The lane requires the reference to be
+    "consumed by a statically resolved direct call". That is the destructor shape exactly, but
+    **not** what `a.cmp(&b)` lowers to: for primitives lowering INLINES the comparison, giving
+    `_5 = &_2; _6 = copy _5; _7 = Lt(copy _1, copy (*_6))` — consumed by a `Deref` READ inside a
+    `BinOp`, via an intermediate copy. Ephemeral, same-block, unstored and unreturned all still
+    hold, so the lane's purpose is intact; its stated consumption form is not. The validator
+    accepts same-block consumption by read as well as by call. **The alternative is to reject
+    `cmp` and leave `Ordering` unreachable, which would defeat the lane's own motivation** —
+    owner may rule otherwise.
+
+  - **Evidence**: two three-engine cases (all three `Ordering` variants with distinct results; a
+    destructor reading through `&mut Self`) and two native cases — one asserting the destructor
+    receiver is a bare Rust reference not a slot, one driving out-of-lane shapes (returned
+    reference; reference carried across blocks) and requiring refusal **before rustc**, failing
+    loudly if any reaches rustc and fails there instead.
+
+  - Two matches became exhaustive as a result (`LocalKind`, `Rvalue`) and their catch-alls were
+    deleted: a new variant now stops compilation instead of silently becoming an `Unsupported`
+    diagnostic nobody reads.
+
+  - Validation, scoped: fmt clean, clippy clean, stark-runtime 23/23, `backend::` 42/42,
+    `three_engine_differential` 41/41, `native_c5_3_aggregates_enums` 14/14, earlier native suites
+    green.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

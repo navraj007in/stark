@@ -365,8 +365,8 @@ This section is a proposed CE4 decision and must be approved before broad implem
 | Array<T, N> | `[Generated<T>; N]` |
 | User struct instance | One concrete generated Rust struct |
 | User enum instance | One concrete generated Rust enum |
-| Option<T> | One canonical generated representation; ordinary `Option<T>` is preferred for C5 if all observable semantics match |
-| Result<T, E> | One canonical generated representation; ordinary `Result<T, E>` is preferred for C5 if all observable semantics match |
+| Option<T> | Compiler-generated concrete enum (see the core-enum rule below) |
+| Result<T, E> | Compiler-generated concrete enum (see the core-enum rule below) |
 | String | C5 runtime-owned or Rust `String`, according to the approved Drop strategy |
 | `str`/string view | Borrowed string view used only where MIR reference semantics permit it |
 | Reference | Internal reference/pointer representation chosen in C5.1; broad parity remains C6 |
@@ -375,6 +375,18 @@ This section is a proposed CE4 decision and must be approved before broad implem
 | Box | Deferred unless explicitly added to the C5 subset |
 | Vec | Deferred except for a separately approved minimal path |
 | Opaque provider resource | Not an ordinary Rust pointer; separate Native Provider ABI handle |
+
+**Core enums (amended CD-062).** Core enums use compiler-generated concrete enum
+representations governed by MIR's canonical variant table. Rust `Option`, `Result` and `Ordering`
+are not used as STARK value representations in C5. A future representation optimisation requires
+evidence that discriminants, layout queries, movement, partial movement and explicit MIR-directed
+destruction remain equivalent.
+
+*Why the original "prefer Rust's types if observable semantics match" wording was replaced:* after
+`ValueSlot`, that condition is too weak. Rust-owned `Drop` can conceal a missed MIR `Drop` and
+make exactly-once evidence less falsifiable, and a dual path through definitions, discriminants,
+projections and Drop glue would be permanent. This is a semantic boundary, not an implementation
+convenience.
 
 Do not apply `#[repr(C)]` to all internal language types merely for convenience. Internal generated layout and external provider ABI layout are different concerns.
 

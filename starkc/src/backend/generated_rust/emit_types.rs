@@ -100,6 +100,18 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
             }
         }
         MirTy::Array(elem, n) => format!("[{}; {n}]", emit_ty(elem)?),
+        // WP-C5.3d-1a: the ephemeral borrowed-call reference lane (CD-062). Admitted ONLY in the
+        // bounded shapes the lane allows -- a reference-typed function parameter, and a
+        // same-block borrow consumed without being stored, returned, or carried across blocks.
+        // The pre-emission validator is what enforces that; this only says how one is spelled.
+        MirTy::Ref { mutable, inner } => {
+            let inner = emit_ty(inner)?;
+            if *mutable {
+                format!("&mut {inner}")
+            } else {
+                format!("&{inner}")
+            }
+        }
         MirTy::Struct(item, args) => mangle::type_name_for_nominal(item.0, args),
         // WP-C5.3b: user enums only. `Option`/`Result`/`Ordering` (`EnumRef::Core*`) are
         // WP-C5.3c, where they arrive together with match/`?` lowering rather than being
@@ -143,6 +155,18 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
         MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
         _ => true,
     }
+}
+
+/// Whether a local of this type is backed by a `ValueSlot`. **The single rule**, shared by the
+/// signature emitter, the local declarations, and place emission — three sites that must agree or
+/// the generated crate will not even compile (a parameter bound under one convention and read
+/// under the other).
+///
+/// Slot-backed means non-`Copy` AND not a reference. References are ephemeral under the C5.3d-1a
+/// lane and have no liveness to track; wrapping one would also make a destructor's `&mut Self`
+/// receiver project through a slot instead of through the reference.
+pub fn is_slot_backed(ty: &MirTy, types: &TypeContext) -> bool {
+    !mir_ty_is_copy(ty, types) && !matches!(ty, MirTy::Ref { .. })
 }
 
 /// §6.3: one Rust definition per reachable concrete nominal instance, emitted in the type
