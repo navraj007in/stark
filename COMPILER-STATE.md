@@ -1,7 +1,25 @@
 # STARK Compiler STATE
 Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 CLOSED IN FULL
-(CD-042/043/044/045/046), WP-C5.2a-e ALL CLOSED (CD-047/048/049/050/051) — WP-C5.2 (scalar
-native lowering) is NOT yet claimed closed, pending the three-engine differential harness.** The
+(CD-042/043/044/045/046), WP-C5.2 CLOSED IN FULL (CD-047/048/049/050/051 for C5.2a-e; CD-053 for
+the three-engine differential harness that satisfies §14's exit condition).**
+
+**CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
+was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
+`starkc/tests/three_engine_differential.rs`, 20 tests, one source per case run through HIR, MIR
+and native with all three results normalised to a common outcome (completion vs. trap, exit
+status, trap category, exact source file/line/column, observable output) and required equal.
+**WP-C5.2 is therefore CLOSED.** The harness was mutation-tested (a wrong native `+`, and a
+native trap line off by one) to prove it fails before it was trusted to pass. (2) CE4
+Amendment 1 to the Native Provider ABI v0.1 was **NOT approved as submitted**; the owner approved
+its principles and directed a revision, now at
+`native-provider-abi-v0.1-CE4-amendment-1.md` **revision 2** — awaiting owner approval, and
+neither `provider_abi.rs` changes until then. (3) The ABI version stays **`0.1`** (nothing has
+shipped or executed against it). (4) DEV-095 (build-key completeness) is confirmed as a
+**mandatory WP-C5.3 opening condition**: no aggregate or Drop-bearing native generation begins
+until every semantic input affecting generated code is in the build key, with cache-invalidation
+tests.
+
+Preceding context (unchanged): the
 owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both
 engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all
 validation green. WP-C5.1 (Runtime ABI and Layout Design) closed in full — representation
@@ -10,10 +28,9 @@ owner-approved Native Provider ABI v0.1. Every WP-C5.2 sub-part (C5.2a-e) is clo
 arithmetic with correct overflow/div-by-zero/shift trapping, comparisons, `if`/`else`, `while`
 loops, multi-function programs with real parameters and direct calls, and now a real trap ABI
 (category + exact source file/line on stderr, exit 101) all compile and run natively via a
-block-index dispatch loop. **§14's own C5.2 exit condition requires three-engine (HIR/MIR/
-native) automated agreement, which has not been built yet** — every `native_c5_2*.rs` test
-asserts on the native engine's own output in isolation; this gap is recorded deliberately, not
-glossed over. **An external review of head 37828a07 then raised seven findings, all seven real
+block-index dispatch loop. (§14's C5.2 exit condition — three-engine automated agreement — was
+open at that point and is what CD-053 above closed; the per-engine `native_c5_2*.rs` tests remain
+as supplementary evidence.) **An external review of head 37828a07 then raised seven findings, all seven real
 (CD-052)**: four fixed (DEV-091 float→int casts accepted out-of-range values at 64-bit widths in
 BOTH the MIR interpreter and the native backend; DEV-092 symbol sanitization was not injective;
 DEV-093 native success-path tests observed no computed values; DEV-094 reversed version-mismatch
@@ -22,16 +39,17 @@ context), and two escalated to the owner as a CE4 amendment to the approved Nati
 v0.1. Fixing the first surfaced an eighth defect the review had not named (DEV-096: the HIR oracle
 reported every out-of-range cast as an arithmetic overflow). The pass also completed C5.2e's
 `Terminator::Trap` support, which CD-051 had recorded as closed while it was still `Unsupported`.
-Next: decide whether to build the three-engine differential harness now (closing
-WP-C5.2 properly) or defer it to WP-C5.6. **Process note:** full-workspace test runs are now
-reserved for WP/gate closure points, not every intermediate change, per owner feedback.
+Next: **WP-C5.3 (aggregates, enums, and error values)** — which may not begin its aggregate or
+Drop-bearing generation until DEV-095's build-key completeness condition is discharged (CD-053
+part 4). **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+not every intermediate change, per owner feedback.
 
 ## Position
 Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
 WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
-native lowering): C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048), C5.2c CLOSED (CD-049), C5.2d
-CLOSED (CD-050), C5.2e CLOSED (CD-051) — but WP-C5.2 overall is NOT closed, pending the
-three-engine differential harness §14 requires.** Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker
+native lowering) CLOSED 2026-07-21 in full**: C5.2a (CD-047), C5.2b (CD-048), C5.2c (CD-049),
+C5.2d (CD-050), C5.2e (CD-051), and the §14 exit condition discharged by the three-engine
+differential harness (CD-053). Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker
 (DEV-089) was resolved
 rather than
 deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
@@ -1650,9 +1668,112 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     and the full workspace suite all passed because **no test exercised a 64-bit cast boundary** —
     a green pipeline bounds the risk to what the corpus covers, and this pass is a direct
     demonstration of that limit.
-  - Validation: `cargo fmt`, `cargo clippy -D warnings`, `mir_differential` 141/141 (including
-    the frozen corpus and 11 new cast cases), all five `native_c5_*` suites green (23 tests),
-    `exec_snapshots`/`conformance`/`gate3_execution` green, full workspace suite green.
+  - Validation: `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+    --all-features -- -D warnings` clean, `mir_differential` 132/132 (up from 123 — the frozen
+    corpus plus nine new cast cases: seven boundary, two category), all five `native_c5_*` suites
+    green (19 tests, up from 13), `exec_snapshots`/`conformance`/`gate3_execution` green, and the
+    full workspace suite green.
+
+- CD-053 [2026-07-21, WP-C5.2 closure + CE4 amendment direction] **Owner directive, four parts:
+  build the three-engine differential harness NOW as the WP-C5.2 closure addendum (not deferred to
+  WP-C5.6); do NOT approve CE4 Amendment 1 as submitted — revise and resubmit before either
+  `provider_abi.rs` changes; keep the ABI version at `0.1`; keep DEV-095 (build-key completeness)
+  as a mandatory WP-C5.3 opening condition.** All four executed.
+
+  - **Part 1 — the three-engine differential harness. BUILT; WP-C5.2 CLOSED.**
+    `starkc/tests/three_engine_differential.rs` implements `WP-C5-ENTRY.md` §15.1's pipeline
+    literally: one source string per case, run through the HIR interpreter (oracle), the MIR
+    pipeline (lower → verify → execute) and the native binary (lower → verify → emit → cargo build
+    → run), each result **normalised into one common `Outcome`** — `Completed { stdout, exit }` or
+    `Trapped { category, file, line, column, stdout_before }` — and all three required equal. The
+    normalisation is the substance: the oracle raises prose plus a byte span, MIR raises a
+    `TrapCategory` plus a `SourceInfo`, and the native binary writes stderr text and a process exit
+    code, so agreement is only mechanically checkable once all three are projected onto one type.
+    Compared per case: completion-vs-trap, exit status, trap category, exact trap file/line/column,
+    and observable output. 20 tests, all green.
+    - Coverage against §14's six required dimensions: scalar arithmetic (all operators, widths,
+      precedence, negative-operand division/remainder, `Float64`); branches (both directions of
+      each `if`/`else`, an `else if` chain taking middle and final arms, nested, no-`else`, `if`
+      as an expression, `&&`/`||`/`!`); loops (zero-iteration in two shapes; accumulate,
+      `continue`, `break`, nested); direct calls (multi-function, argument order via a
+      non-commutative callee, no-arg, `Unit`-returning, nested-call arguments, recursion, call in
+      a loop); successful checked operations (arithmetic landing exactly on `Int32::MAX`/`MIN`,
+      shift counts at width-1, in-range casts at the narrower type's exact boundary, widening,
+      int↔float); and every admitted trap category (`IntegerOverflow`, `DivideByZero` for both `/`
+      and `%`, `InvalidShift`, `CastFailure`, `AssertFailure` for both `assert_eq` and bare
+      `assert`). `IndexOutOfBounds`, `UnwrapNone`/`UnwrapErr` and message-carrying `Panic` are not
+      reachable from the C5.2 surface and the oracle-normalisation function panics explicitly on
+      them rather than guessing.
+    - CD-052 regressions re-pinned as three-engine agreement rather than per-engine assertions:
+      **DEV-091** (four cases — in-range boundary conversions, exactly 2^64 → `UInt64`, exactly
+      2^63 → `Int64`, first f64 below `Int64::MIN`; both sides of every bound), **DEV-096** (a
+      case only a category comparison can hold, since all three engines exit 101 either way),
+      **DEV-092** (the source-level consequence, not just the encoding: `mod m { pub fn f() }`
+      versus a top-level `fn m_3a_3af()` — one Rust identifier under the old encoding — with both
+      called and both return values observed), and the **negative control** proving a false
+      assertion really does fail the run in all three engines, without which every
+      assertion-observed completing case would be decorative.
+    - **Mutation-tested before being trusted.** A comparator that passes proves nothing until it
+      has been shown to fail. Two mutations were injected into the native backend and reverted:
+      `checked_add` → `checked_sub` (result: `MIR/NATIVE DISAGREEMENT`, MIR `Completed` vs. native
+      `Trapped { AssertFailure }` — the value dimension is live) and native trap `line` → `line +
+      1` (result: same category and file, line 4 vs. 5 — the location dimension is live,
+      independently of category). `git diff` confirms neither survives.
+    - Honest handling of the output dimension: native `println` is `Unsupported` until WP-C5.3, so
+      values are observed through in-program `assert`/`assert_eq`. Rather than quietly excluding
+      stdout from the comparison, `NATIVE_STDOUT_SUPPORTED: bool = false` gates a precondition
+      **enforcing** that every case is output-free, which is what makes full three-way `Outcome`
+      equality total. Flipping that constant when native output lands drops the precondition and
+      starts comparing real bytes, with no other change.
+    - One production change only: `stark_runtime::trap::TrapCategory::message()` became `pub`, so
+      the harness normalises native stderr against the runtime's own category table instead of a
+      second copy in a test file that would drift the first time a message's wording changed.
+    - Per-engine tests (`native_c5_2*.rs`, `mir_differential.rs`) remain and remain useful, but
+      per the owner's direction they are **supplementary** and do not themselves satisfy §14. What
+      stays with WP-C5.6 is cross-backend replay of the frozen `exec_snapshots` corpus (the
+      WP-C4.4/CD-018 carry-forward); what moved out of it is the comparator.
+
+  - **Part 2 — CE4 Amendment 1 NOT approved as submitted; revised and resubmitted.** The owner
+    approved five principles (every physical provider function returns `ProviderStatus`; result
+    values travel through explicit output channels; the owning resource representation is not
+    `Clone`/`Copy`; a raw C-compatible `Copy` handle may remain inside the isolated FFI boundary;
+    the owning wrapper must NOT implement Rust `Drop` — verified MIR keeps the exactly-once close
+    obligation) and named four issues revision 1 omitted. Revision 2
+    (`STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md` revision 2) resolves all four:
+    (a) `BorrowedBuffer`/`BorrowedBufferMut` are borrowed call-duration views, so §8's
+    ownership-transfer language is corrected to cover handles only — as written it made *reading
+    the buffer you just passed to `kv_get`* a use-after-transfer; (b) the v0.1 prohibition on
+    borrowed handles is lifted, because consuming-only handles made §17's own mock provider
+    unexpressible (`kv_get` would consume the store it reads); (c) every handle parameter and
+    handle output names its declared resource type, so the validator can enforce §13's
+    wrong-resource-type rule it currently cannot see; (d) direction and ownership are separated —
+    revision 1's `Direction × AbiType` product is **rejected**, since of its 15 combinations six
+    are meaningful, three are one case spelled three times, and the distinction that matters
+    (borrowed vs. consumed handle) is the one it cannot express. Replaced by a closed `AbiParam`
+    enum over exactly the seven owner-enumerated forms, plus a `RawResourceHandle`
+    (`Copy`, boundary-only) / `OwnedResourceHandle` (non-`Copy`, non-`Clone`, no `Drop`) split, a
+    close-function rule requiring exactly one consumed handle of the declared type and no ordinary
+    value output, two new violation classes, and a corrected `valid_example_kv` fixture. One
+    discretionary reading is flagged for the owner rather than assumed (may a close function take
+    additional pure inputs?). **Neither `provider_abi.rs` changes until revision 2 is approved.**
+
+  - **Part 3 — ABI version stays `0.1`.** Nothing has shipped or executed against this ABI, so
+    correcting a pre-execution contract is an amendment, not a version bump. Recorded as CE4
+    Amendment 1 to v0.1.
+
+  - **Part 4 — DEV-095 confirmed as a mandatory WP-C5.3 OPENING condition.** WP-C5.3 may not begin
+    aggregate or Drop-bearing native generation until every semantic input affecting generated
+    code — nominal type context and the Drop map included — is in the build key and covered by
+    cache-invalidation tests. Recorded in Follow-ups as a blocking entry condition, not a
+    to-do.
+
+  - Validation: `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+    --all-features -- -D warnings` clean, `three_engine_differential` 20/20, and every suite the
+    harness touches green (`mir_differential`, all five `native_c5_*`). The full-workspace run was
+    still executing when this was committed — zero failures across every suite that had reported;
+    the remaining suites are confirmed in the commit that follows. The only production change in
+    this pass is a visibility widening (`TrapCategory::message()` → `pub`), which cannot change
+    behaviour.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
@@ -1884,18 +2005,25 @@ evidence in the C0/C1/C2 exit reports.
 - [ ] WP-C1.1 follow-up (not blocking): underscore-placement rules for binary/octal literals
       untested; no max-value-per-suffix positive test for the 8 int / 2 float suffixes.
 - [ ] DEV-017 remainder: classify the 39 unclassified legacy coverage rules (unscheduled).
-- [ ] **DEV-095 — WP-C5.3 OPENING CONDITION (CD-052)**: the generated-crate build key hashes
-      `program.dump()`, which serializes only the version header and bodies — not the nominal
-      type context or the Drop implementation map. Once aggregates and `Drop` exist, changing a
-      struct's fields or its Drop metadata could leave the build key unchanged and silently reuse
-      a stale generated crate. Must be fixed BEFORE aggregates land, not after.
-- [ ] **Native Provider ABI v0.1 — CE4 amendment 1 (CD-052), awaiting owner decision**:
-      `STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md`. Three items — the
-      §7/§8-vs-§11 return-shape contradiction (`FunctionDecl.returns` cannot express the
-      status-plus-out-parameter ABI §11 mandates, and the validator's own "valid" fixture
-      violates it), `ResourceHandle` deriving `Clone`/`Copy` against §8's exclusive-ownership and
-      §13's close-exactly-once rules, and an editorial dangling §12→§13 pointer in §8. Cheap now
-      (no provider executes); breaking once provider execution lands.
+- [ ] **DEV-095 — MANDATORY WP-C5.3 OPENING CONDITION (CD-052, confirmed as blocking by CD-053
+      part 4)**: the generated-crate build key hashes `program.dump()`, which serializes only the
+      version header and bodies — not the nominal type context or the Drop implementation map.
+      Once aggregates and `Drop` exist, changing a struct's fields or its Drop metadata could
+      leave the build key unchanged and silently reuse a stale generated crate. **WP-C5.3 may not
+      begin aggregate or Drop-bearing native generation** until every semantic input affecting
+      generated code is in the build key AND covered by cache-invalidation tests. This is an
+      entry condition on the package, not a task inside it.
+- [ ] **Native Provider ABI v0.1 — CE4 amendment 1, REVISION 2, awaiting owner decision
+      (CD-052 raised, CD-053 directed the revision)**:
+      `STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md`. Revision 1 was **not
+      approved**; its principles were, and revision 2 additionally resolves the four omitted
+      issues (buffers are borrowed call-duration views, not ownership transfer; ordinary resource
+      operations need a non-consuming borrowed-handle form; every handle parameter/output names
+      its declared resource type; direction and ownership are separated into a closed `AbiParam`
+      enum instead of a `Direction × AbiType` product). ABI version stays `0.1`. **Neither
+      `provider_abi.rs` changes until revision 2 is approved.** One discretionary reading is
+      flagged in §4.4 for the owner to rule on (may a close function take additional pure
+      inputs?).
 - [x] DEV-060: dispose before C3 workload freeze (C3-ENTRY blocker). **Closed 2026-07-19,
       CD-024 — fixed in `borrowck.rs::method_receiver`.**
 Completed follow-ups through Gate C2 are archived verbatim in the state-archive file.

@@ -272,6 +272,12 @@ exec_snapshots` green (4/4).
 
 ## C5.2 exit
 
+> **SUPERSEDED 2026-07-21 by "C5.2 closure" below (CD-053).** The owner resolved the open
+> decision this section ends on: build the harness now as the C5.2 closure addendum, do **not**
+> defer it to WP-C5.6. It is built, the exit condition is met, and **WP-C5.2 is CLOSED**. The
+> text from here to the end of the "Review-response pass" section is the historical pre-closure
+> record and is left unedited.
+
 **Not yet reached — and this WP is not claiming otherwise.** §14's stated exit condition is
 explicit: *"Require three-engine agreement for: scalar arithmetic; branches; loops; direct
 calls; successful checked operations; each admitted trap category."* Every `native_c5_2*.rs` test
@@ -357,3 +363,175 @@ covered by the real HIR-vs-MIR comparator (`mir_differential.rs`), with the nati
 separately against the same expected values; that is two automated engines plus a manually
 corresponding third, not the §15.1 pipeline. **WP-C5.2 remains not closed**, and the open decision
 recorded above — build the harness now, or defer to WP-C5.6 — is still the owner's.
+
+---
+
+## C5.2 closure — the three-engine differential harness (CD-053, 2026-07-21)
+
+### Status: WP-C5.2 CLOSED 2026-07-21 (CD-053).
+
+The owner directed that the harness be built now, as this package's closure addendum, rather than
+deferred to WP-C5.6: §14's exit condition is C5.2's own, and deferring it would have left the
+package open while its closure evidence moved into an unrelated later one. Delivered:
+`starkc/tests/three_engine_differential.rs`, 20 tests, all green.
+
+### What the harness is
+
+`WP-C5-ENTRY.md` §15.1's pipeline, implemented literally: **one** source string per case, run
+through **all three** engines — the HIR interpreter (the semantic oracle, charter §1.6 rule 6),
+the MIR pipeline (lower → verify → execute), and the native binary (lower → verify → emit → cargo
+build → run the executable) — with each result **normalised into one common `Outcome`** and all
+three required equal.
+
+```rust
+enum Outcome {
+    Completed { stdout: String, exit: i32 },
+    Trapped { category, file, line, column, stdout_before },
+}
+```
+
+The normalisation is the substance, because the three engines report failure in three unrelated
+vocabularies: the oracle raises prose plus a byte span, MIR raises a `TrapCategory` plus a
+`SourceInfo`, and the native binary writes a line of stderr text and exits with a process code.
+Projecting all three onto one type is what makes "agreement" a mechanical check rather than a
+human reading two test files side by side. Concretely, each case compares:
+
+| Dimension | How each engine supplies it |
+|---|---|
+| normal completion vs. trap | `Ok`/`Err` (HIR, MIR); exit code 101 vs. other (native) |
+| exit status | `Execution.status` (HIR, MIR); process exit code (native) |
+| trap category | prose → category via `oracle_category` (HIR); `TrapCategory` (MIR); stderr header matched against `stark_runtime::trap::TrapCategory::message()` (native) |
+| trap file/line/column | `SourceFile::line_col(span.lo)` (HIR, MIR); parsed from the `-->` line (native) |
+| observable output | `Execution.output` / pre-trap partial output (HIR, MIR); captured stdout (native) |
+
+Three deliberate properties:
+
+- **The oracle's prose is normalised explicitly, never fuzzily.** `oracle_category` maps known
+  messages to categories and **panics** on anything unrecognised. A silent fallback would let a
+  wrong-category trap normalise into whatever the other two engines happened to say — the exact
+  failure the comparator exists to catch. Categories outside the C5.2-admitted surface
+  (`IndexOutOfBounds`, `UnwrapNone`/`UnwrapErr`, message-carrying `Panic` — all WP-C5.3) are
+  listed as explicit "not admitted yet" panics rather than guessed at.
+- **The native category table is the runtime's own, not a copy.** `stark_runtime::trap::
+  TrapCategory::message()` was made `pub` for this (the only production change in the addendum,
+  five lines of doc plus a visibility keyword); a second table in a test file would have drifted
+  the first time a category's wording changed.
+- **Trap location is compared exactly, and stated independently.** `agree_trapping` takes the
+  expected line as a parameter, so a case whose three engines agree on the *wrong* line still
+  fails. Agreement alone is not correctness.
+
+### The observable-output dimension, handled honestly
+
+Native `println` is `Unsupported` until WP-C5.3 (no string values yet), so the C5.2-admitted
+source surface produces no observable output at all, and value observation runs through in-program
+`assert`/`assert_eq` — which reach the C5.2e trap ABI in all three engines when they fail.
+
+That could have been a quietly excluded comparison dimension. Instead the harness **enforces** it:
+`NATIVE_STDOUT_SUPPORTED: bool = false` gates a precondition asserting every case's oracle run
+produced no output, so full `Outcome` equality across three engines is *total* rather than
+skipping a field. When native output lands, flipping that constant drops the precondition and the
+same equality check starts comparing real stdout bytes on all three sides — no other change.
+
+### Coverage against §14's exit condition
+
+| §14 requires three-engine agreement for | Case(s) |
+|---|---|
+| scalar arithmetic | `scalar_arithmetic_agrees` — `+ - * / %`, unary minus, precedence and parens, all six comparisons, `<< >> & \| ^`, negative-operand division/remainder, `Int8`/`Int64`/`UInt32` widths, `Float64` arithmetic |
+| branches | `branches_both_directions_agree` — both directions of two `if`/`else`s, an `else if` chain taking the middle and the final arm, nested `if`, `if` with no `else`, `if` as an expression in both directions, `&&`/`\|\|`/`!` |
+| loops | `zero_iteration_loop_agrees` (body never runs, two shapes), `multi_iteration_loop_agrees` (accumulate, `continue`, `break`, nested loops) |
+| direct calls | `direct_calls_agree` — multi-function program, argument order via a non-commutative callee, a no-argument function, a `Unit`-returning function, nested calls as arguments, recursion, a call inside a loop |
+| successful checked operations | `successful_checked_operations_agree` — arithmetic that lands exactly on `Int32::MAX`/`MIN`, shift counts at width-1, in-range casts at the exact boundary of the narrower type, widening casts, int↔float |
+| each admitted trap category | `IntegerOverflow`, `DivideByZero` (twice: `/` and `%`), `InvalidShift`, `CastFailure`, `AssertFailure` (twice: `assert_eq` and bare `assert`) |
+
+Review regressions from CD-052, re-pinned as three-engine agreement rather than per-engine
+assertions:
+
+- **DEV-091** (float→int casts accepted out-of-range values at 64-bit widths): four cases —
+  in-range boundary conversions, exactly 2^64 → `UInt64`, exactly 2^63 → `Int64`, and the first
+  f64 below `Int64::MIN`. Both sides of every bound.
+- **DEV-096** (the oracle reported every out-of-range cast as `IntegerOverflow`):
+  `out_of_range_cast_is_a_cast_failure_not_an_overflow` — a case only a three-engine comparison of
+  *categories* can hold, since all three engines exit 101 either way.
+- **DEV-092** (symbol mangling was not injective): `colliding_symbol_names_stay_distinct_functions`
+  — the source-level consequence, not just the encoding. `mod m { pub fn f() }` and a top-level
+  `fn m_3a_3af()` collided into one Rust identifier under the previous encoding; both are called
+  and both return values are observed.
+- **The negative control**: `a_false_assertion_traps_in_all_three_engines`. Every completing case
+  observes values through assertions, so "all three completed with exit 0" is evidence *only*
+  because a false assertion demonstrably fails the run in all three engines. Without this case the
+  whole harness would pass against three engines that ignored assertions.
+
+Plus `the_comparator_rejects_disagreeing_outcomes`, a guard on the comparator itself: it asserts
+that outcomes differing only in trap column, or only in category, are unequal — so a future
+weakening of the normalisation into something coarser fails a test instead of silently passing
+everything.
+
+### The harness was mutation-tested before being trusted
+
+A comparator that passes proves nothing until it has been shown to fail. Two mutations were
+injected into the native backend, run, and reverted:
+
+1. `checked_add` → `checked_sub` in `emit_bodies.rs`'s checked-arithmetic emission. Result:
+   `scalar_arithmetic_agrees` failed with `MIR/NATIVE DISAGREEMENT`, MIR `Completed` vs. native
+   `Trapped { AssertFailure, line 4 }`. The value dimension is live.
+2. `line as u32` → `line as u32 + 1` in `resolve_source_location`. Result:
+   `integer_overflow_trap_agrees` failed with the same category and file but line 4 vs. line 5.
+   The location dimension is live, independently of the category dimension.
+
+Both mutations were reverted and the suite re-verified green. `git diff` confirms no backend
+change survives from either.
+
+### Against §15.1's comparison list, dimension by dimension
+
+§15.1 enumerates seven things the native differential harness must compare. Stating where each
+one stands, rather than only the ones that are covered:
+
+| §15.1 dimension | Status at C5.2 scope |
+|---|---|
+| stdout bytes | Compared as part of `Outcome` equality. The admitted surface produces none, and the harness **enforces** that (see above) rather than skipping the field |
+| stderr bytes | Compared as *meaning*, not bytes: the trap header and `-->` location are parsed back into category + file/line/column and compared. Byte equality is deliberately NOT the contract — `stark_runtime::trap`'s own doc states the runtime's messages are not claimed to match the HIR interpreter's ad hoc per-call-site strings. On the non-trap path, stderr is asserted **empty** for the oracle and the native binary |
+| exit code | Compared (`Completed.exit`; trap ⇒ 101) |
+| trap category | Compared |
+| trap source file and line | Compared, plus **column**, which §15.1 does not require |
+| observable Drop events | **N/A at C5.2** — no C5.2-admitted type has a destructor (every admitted `MirTy` is a primitive, hence `Copy`). This is WP-C5.3d's dimension and needs a channel that does not exist yet |
+| build success/failure classification | Every case must build; a `BackendDiagnostic` fails the case with the diagnostic attached. Classifying *expected* build failures is WP-C5.5b's (§12.5), which owns the classification vocabulary |
+
+§15.2 asks for distinct suites whose categories stay visible, naming `native_scalar.rs`/
+`native_traps.rs`/etc. and allowing different names. This lands as one comparator file with the
+categories visible as case groups (arithmetic/branches/loops/calls/checked-operations = scalar;
+every case expecting a trap = traps), because at C5.2 scope splitting the same comparator across
+two files would
+duplicate it rather than separate anything. The remaining §15.2 suites (aggregates, layout, drop,
+function values, packages, build CLI, snapshot replay) belong to the packages that introduce what
+they test.
+
+### What this closure does NOT claim
+
+- Only the C5.2-admitted surface is covered. Aggregates, enums, `Option`/`Result`, matches, `?`,
+  strings, and Drop-bearing types are WP-C5.3 and are absent by construction, not by oversight.
+- Native stdout is not compared against real bytes, because it cannot be produced yet. The
+  harness enforces the precondition that makes its absence total rather than pretending
+  otherwise (see above).
+- Per-engine tests (`native_c5_2*.rs`, `mir_differential.rs`) remain and remain useful, but they
+  are **supplementary**. The §14 exit condition is satisfied by this harness alone; the owner's
+  direction is explicit that engine-specific tests do not satisfy it.
+- The `exec_snapshots` frozen corpus is not yet routed through the native engine. Cross-backend
+  snapshot replay stays WP-C5.6's (per the WP-C4.4/CD-018 carry-forward); what moved out of
+  C5.6 is the three-engine comparator, not the corpus.
+
+**One cross-document divergence, stated rather than left for a reviewer to find.**
+`COMPILER-ROADMAP.md`'s own WP-C5.2 bullet list includes "tuples and simple structs", which this
+closure does **not** deliver. That is not a gap in the closure: the owner-approved entry plan
+(`WP-C5-ENTRY.md` §14, CD-042) decomposes C5.2 into C5.2a-e with no aggregate step, and moves
+aggregates into WP-C5.3, which it correspondingly re-titles "Aggregates, enums, and error values"
+against the roadmap's "Enums, matches, and error values". The approved decomposition governs; the
+roadmap's earlier sketch has not been amended to match. Closing C5.2 against §14 rather than
+against the roadmap bullet is deliberate and is recorded here so the discrepancy is visible.
+
+### Validation
+
+`cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features --
+-D warnings` clean; `three_engine_differential` 20/20; `mir_differential` and all five
+`native_c5_*` suites green. The full-workspace run was still executing at commit time with zero
+failures across every suite that had reported — confirmed in the following commit. The pass's
+only production change is a visibility widening (`TrapCategory::message()` → `pub`).

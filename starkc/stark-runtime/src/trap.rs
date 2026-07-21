@@ -37,7 +37,12 @@ impl TrapCategory {
     /// the differential comparator (`WP-C5-ENTRY.md` §15.1) checks trap CATEGORY plus source
     /// file/line, not stderr text. This exists for a native binary's stderr to be readable, not
     /// to satisfy a byte-equality contract.
-    fn message(self) -> &'static str {
+    ///
+    /// Public so the three-engine differential harness (`tests/three_engine_differential.rs`)
+    /// can normalise a native binary's stderr back into a category against THIS table rather
+    /// than a second copy of it in a test file, which would drift the day a category's wording
+    /// changed.
+    pub fn message(self) -> &'static str {
         match self {
             TrapCategory::IntegerOverflow => "integer overflow",
             TrapCategory::DivideByZero => "division by zero",
