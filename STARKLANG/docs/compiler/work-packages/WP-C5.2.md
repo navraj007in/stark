@@ -104,8 +104,78 @@ last confirmed green at WP-C5.2a's close and this WP's changes are additive/narr
 
 ## C5.2c — Operations and control flow
 
-**Not started.** Pure rvalues, checked terminators (arithmetic/cast traps), branches, switches,
-loops, returns.
+### Status: CLOSED 2026-07-21 (CD-049).
+
+Delivered per `WP-C5-ENTRY.md` §14:
+
+- **Arbitrary control flow via block-index dispatch** — `emit_bodies.rs` was restructured from
+  C5.2b's single-block-plus-dead-trailer shape to `let mut __bb: u32 = <entry>; loop { match __bb
+  { 0 => { ... }, 1 => { ... }, ... } }`, one match arm per real MIR block. Rust has no `goto`;
+  this is the standard technique for emitting an arbitrary basic-block graph (including cycles,
+  for loops) without first recovering structured `if`/`while` shapes — the same approach rustc's
+  own backends use at the LLVM-IR level. `Terminator::Goto`/`SwitchInt` both reduce to `__bb =
+  target; continue;`, so branches and loops need no special-casing beyond emitting the right
+  target index; `Terminator::Return` becomes `break _0;` (the loop's value becomes the function's
+  tail expression); `Terminator::Unreachable` becomes Rust's `unreachable!()` (aborts, since the
+  generated crate's `panic = "abort"` profile applies).
+- **Pure rvalues** — `UnOp::Not`/`FloatNeg`; `BinOp` exhaustively matched (no fallback arm, so a
+  new `MirBinOp` variant would fail to compile rather than silently reach `Unsupported`):
+  `Eq`/`Ne`/`Lt`/`Le`/`Gt`/`Ge` → `==`/`!=`/`<`/`<=`/`>`/`>=`, `FloatAdd`/`Sub`/`Mul` →
+  `+`/`-`/`*`, `BitAnd`/`Or`/`Xor` → `&`/`|`/`^`; `LayoutQuery` → real target-dependent
+  `core::mem::size_of::<T>()`/`align_of::<T>()` against the canonical generated type (§8.2 — no
+  longer the C4 interpreter's placeholder `(8, 8)`).
+- **Checked terminators** — `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Neg`/`Pow`/`Shl`/`Shr`/`FloatDiv`/
+  `FloatRem`/`Cast`, matching `mir::interp::eval_checked` (the semantic oracle) exactly: every
+  integer op widens both operands to `i128`, computes with Rust's native `checked_*`, then
+  range-filters the result against the DESTINATION type before narrowing back — not native
+  narrow-width `checked_*` directly. Provably equivalent to native narrow-width checked
+  arithmetic for `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Neg`/`Pow` (the true mathematical result either
+  fits the narrow range or it doesn't, and `i128` can never itself overflow at these widths), but
+  NOT optional for `Shl`: Rust's native `checked_shl` only validates the shift count, silently
+  dropping overflowed bits within the narrow type, whereas STARK traps `IntegerOverflow` when a
+  left shift's true result does not fit — the widen-then-filter approach is used uniformly rather
+  than optimising the operators where it isn't strictly required, to stay a provable match
+  against the oracle rather than a per-operator "should be equivalent" argument. Trap categories
+  are read directly from the terminator's own `TrapInfo` (already assigned correctly per-operator
+  by lowering) rather than re-derived, with the one documented exception `mir::interp` itself
+  makes: a `Shl`/`Shr` bad shift count overrides the terminator's default category with
+  `InvalidShift`.
+- **Minimal trap abort** — `stark_runtime::trap::abort_minimal(category)` reports the category on
+  stderr and exits nonzero. Explicitly NOT the final trap ABI (§13.1's source-map/span lookup and
+  §13.2's canonical format are WP-C5.2e's deliverable) — necessary now because "an overflow adds
+  and silently continues" would violate STARK's always-trap semantics, and C5.2e's own scope is
+  specifically the *diagnostic richness* of the abort, not whether one exists at all.
+- **`Cast`** — Int↔Int (range-checked against the destination), Int→Float and Float→Float
+  (always succeed, native Rust `as` matches interp's rounding), Float→Int (NaN/range-checked via
+  `.trunc()`, matching interp's exact condition).
+
+**Real bug caught during bring-up, fixed before commit — not cosmetic, a genuine soundness gap:**
+the first version kept WP-C5.2b's "declare every local uninitialised, let rustc's
+definite-assignment analysis catch a lowering bug" strategy. That only worked for a single
+straight-line block. Once a body has more than one block, each `match __bb { N => {...} } `arm is
+an independent branch of one ordinary Rust match from rustc's point of view — it has no notion
+that arm 1 is only reachable after arm 0 already ran and assigned a local, because that fact
+lives in the *data flowing through* `__bb`, which rustc does not track across `continue`. Every
+one of the first real multi-block test programs (arithmetic, division-by-zero, the `while` loop)
+failed to compile with `E0381 used binding isn't initialized` the first time this was tried
+against real generated code, not a hypothetical review comment. Fixed by default-initialising
+every local (`emit_types::default_value_expr`) — the standard fix for CFG-to-match-dispatch
+codegen, trading away the "lowering bug catches itself" property C5.2b's record claimed (revised
+here rather than left stale) in exchange for correctness across arbitrary control flow; MIR's own
+verifier (V-MOVE-1) remains responsible for catching genuine lowering bugs.
+
+**Test approach:** `starkc/tests/native_c5_2c_operations.rs` — five new end-to-end native
+compile-and-run proofs: full checked-arithmetic/comparison coverage (add/sub/mul/div/rem/shift/
+bitwise/float, all succeeding), an `Int32` overflow that must trap (nonzero exit), a
+division-by-zero that must trap, an `if`/`else`, and a `while` loop counting to 5 — plus the
+existing C5.1b/C5.2b proofs re-run unchanged as regressions on the restructured emitter.
+
+**Validation:** `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings` clean, scoped tests green (`backend::` 16/16, new test 5/5,
+`native_c5_2b_locals` 2/2, `native_c5_1b_skeleton` 1/1), `cargo test --test exec_snapshots` green
+(4/4). Full workspace suite not re-run this WP per the test-run-frequency policy (last green at
+WP-C5.2a; this WP's changes are additive and narrowly scoped to `backend::generated_rust` +
+`stark-runtime::trap`).
 
 ## C5.2d — Direct functions and calls
 

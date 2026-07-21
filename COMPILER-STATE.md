@@ -1,21 +1,24 @@
 # STARK Compiler STATE
 Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 CLOSED IN FULL
-(CD-042/043/044/045/046), WP-C5.2a CLOSED (CD-047), WP-C5.2b CLOSED (CD-048).** The owner's
-DEV-089 close-out directive was executed: user `Display` dispatch implemented in both engines,
-non-`Copy` array iteration and cross-file `const` use rejected in the front end, all validation
-green. WP-C5.1 (Runtime ABI and Layout Design) closed in full — representation contract, backend/
-runtime skeleton with a proven native empty-`main` executable, and the owner-approved Native
-Provider ABI v0.1. WP-C5.2 (scalar native lowering) is open; C5.2a (primitive values/constants)
-and C5.2b (locals/places/copies/moves) are closed — real `let`-bound locals of every primitive
-type, assignment, and Copy/Move now compile and run natively, proven end to end. Next: WP-C5.2c
-(operations and control flow). **Process note:** full-workspace test runs are now reserved for
-WP/gate closure points, not every intermediate change, per owner feedback.
+(CD-042/043/044/045/046), WP-C5.2a CLOSED (CD-047), WP-C5.2b CLOSED (CD-048), WP-C5.2c CLOSED
+(CD-049).** The owner's DEV-089 close-out directive was executed: user `Display` dispatch
+implemented in both engines, non-`Copy` array iteration and cross-file `const` use rejected in
+the front end, all validation green. WP-C5.1 (Runtime ABI and Layout Design) closed in full —
+representation contract, backend/runtime skeleton with a proven native empty-`main` executable,
+and the owner-approved Native Provider ABI v0.1. WP-C5.2 (scalar native lowering) is open; C5.2a
+(primitive values/constants), C5.2b (locals/places/copies/moves), and C5.2c (operations and
+control flow) are closed — real arithmetic with correct overflow/div-by-zero/shift trapping,
+comparisons, `if`/`else`, and `while` loops now compile and run natively via a block-index
+dispatch loop, matching the MIR interpreter oracle exactly. Next: WP-C5.2d (direct functions and
+calls). **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+not every intermediate change, per owner feedback.
 
 ## Position
 Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
 WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
-native lowering) OPEN; C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048).** Gate **C4 CLOSED
-2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved rather than
+native lowering) OPEN; C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048), C5.2c CLOSED (CD-049).**
+Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved
+rather than
 deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
 implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
 1.2.0; the second (this one) resolved DEV-089 and the two residual over-rejections. Final
@@ -1438,6 +1441,42 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   `exec_snapshots` 4/4 — full workspace suite not re-run this WP, per the new test-run-frequency
   policy (last green at WP-C5.2a; this WP's changes are additive and narrowly scoped to
   `backend::generated_rust`). WP-C5.2b CLOSED; next is WP-C5.2c (operations and control flow).
+
+- CD-049 [2026-07-21, WP-C5.2c] **Real operations and arbitrary control flow delivered —
+  arithmetic (with correct overflow/div-by-zero/shift trapping), comparisons, bitwise ops,
+  `if`/`else`, and `while` loops now compile and run natively, matching `mir::interp::eval_checked`
+  (the oracle) exactly.** Full record: `STARKLANG/docs/compiler/work-packages/WP-C5.2.md`
+  §C5.2c. `emit_bodies.rs` restructured to a block-index dispatch loop (`let mut __bb: u32 =
+  <entry>; loop { match __bb { 0 => {...}, ... } }`) — the standard technique for emitting an
+  arbitrary MIR basic-block graph without recovering structured `if`/`while` shapes, since Rust
+  has no `goto`; `Goto`/`SwitchInt` both reduce to `__bb = target; continue;`, so loops need no
+  special-casing versus branches. Checked ops widen to `i128`, use Rust's native `checked_*`,
+  then range-filter against the DESTINATION type — provably equivalent to native narrow-width
+  checked arithmetic for `Add`/`Sub`/`Mul`/`Div`/`Rem`/`Neg`/`Pow`, but NOT optional for `Shl`
+  (native `checked_shl` only validates the shift count, silently dropping overflowed bits, which
+  would violate STARK's always-trap semantics for left-shift overflow specifically). Trap
+  categories read directly from the terminator's own `TrapInfo` rather than re-derived, matching
+  `mir::interp`'s own "terminator's category, with the `Shl`/`Shr` bad-count `InvalidShift`
+  override" rule exactly. New `stark_runtime::trap::abort_minimal` is an explicitly MINIMAL,
+  not-yet-final abort (stderr category + nonzero exit) — the real trap ABI (source spans, §13.2
+  canonical format) stays WP-C5.2e's job; this exists now only because "overflow and silently
+  continue" would be unsound to leave unimplemented. **Real soundness bug caught and fixed before
+  commit, not cosmetic:** WP-C5.2b's "leave locals uninitialised, let rustc's definite-assignment
+  analysis catch a lowering bug" strategy silently breaks the moment a body has more than one
+  block — rustc treats each `match __bb { N => {...} }` arm as an independent branch of one
+  ordinary match with no notion that arm 1 only runs after arm 0 already assigned a local (that
+  fact lives in data flowing through `__bb`, invisible to rustc across `continue`). The first
+  real multi-block test programs failed to compile with `E0381` immediately, not hypothetically;
+  fixed by default-initialising every local (`emit_types::default_value_expr`), the standard fix
+  for this codegen pattern, trading away C5.2b's "free" lowering-bug-catch property (MIR's own
+  V-MOVE-1 verifier remains responsible for that instead) — WP-C5.2b's own record was revised to
+  say so rather than left stale. Five new end-to-end native tests
+  (`native_c5_2c_operations.rs`: full arithmetic/comparison suite, an `Int32` overflow trap, a
+  division-by-zero trap, `if`/`else`, a `while` loop to 5) plus the C5.1b/C5.2b proofs re-run
+  unchanged as regressions. Validation: `cargo fmt`, `cargo clippy -D warnings`, scoped tests
+  (`backend::` 16/16, new test 5/5, prior regressions 3/3), `exec_snapshots` 4/4 — full workspace
+  suite not re-run per the test-run-frequency policy. WP-C5.2c CLOSED; next is WP-C5.2d (direct
+  functions and calls).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

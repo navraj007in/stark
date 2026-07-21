@@ -32,6 +32,34 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
     })
 }
 
+/// An arbitrary-but-valid value of `ty`, used only to give a local declaration a starting value
+/// in multi-block bodies (WP-C5.2c) -- NOT a claim about what the local logically holds. Real
+/// MIR liveness (what a lowering-bug read-before-write would violate) is a property of the
+/// `__bb` state machine that rustc's definite-assignment analysis cannot see across match arms;
+/// see `emit_bodies.rs`'s block-dispatch-loop doc comment for why every local must be
+/// default-initialised once more than one block exists.
+pub fn default_value_expr(ty: &MirTy) -> Result<String, BackendDiagnostic> {
+    Ok(match ty {
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64 => "0".to_string(),
+        MirTy::Float32 | MirTy::Float64 => "0.0".to_string(),
+        MirTy::Bool => "false".to_string(),
+        MirTy::Char => "'\\0'".to_string(),
+        MirTy::Unit => "()".to_string(),
+        other => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "MirTy {other:?} has no WP-C5.2c default-value representation yet"
+            )))
+        }
+    })
+}
+
 /// A Rust expression, not necessarily a single literal token (e.g. a `Char` constant becomes
 /// `char::from_u32(...).unwrap()`, and a negative float becomes a unary-negation expression) --
 /// callers must not assume the result can be used only where a bare literal is legal, only that
