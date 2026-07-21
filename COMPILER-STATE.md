@@ -1,20 +1,22 @@
 # STARK Compiler STATE
 Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 CLOSED IN FULL
-(CD-042/043/044/045/046), WP-C5.2a CLOSED (CD-047).** The owner's DEV-089 close-out directive was
-executed: user `Display` dispatch implemented in both engines, non-`Copy` array iteration and
-cross-file `const` use rejected in the front end, all validation green. WP-C5.1 (Runtime ABI and
-Layout Design) closed in full — representation contract, backend/runtime skeleton with a proven
-native empty-`main` executable, and the owner-approved Native Provider ABI v0.1. WP-C5.2 (scalar
-native lowering) is open; C5.2a (primitive values/constants) is closed — `emit_constant` covers
-every primitive `Constant` variant, round-trip-tested through real `rustc`. Next: WP-C5.2b
-(locals/places/copies/moves). **Process note:** full-workspace test runs are now reserved for WP/
-gate closure points, not every intermediate change, per owner feedback.
+(CD-042/043/044/045/046), WP-C5.2a CLOSED (CD-047), WP-C5.2b CLOSED (CD-048).** The owner's
+DEV-089 close-out directive was executed: user `Display` dispatch implemented in both engines,
+non-`Copy` array iteration and cross-file `const` use rejected in the front end, all validation
+green. WP-C5.1 (Runtime ABI and Layout Design) closed in full — representation contract, backend/
+runtime skeleton with a proven native empty-`main` executable, and the owner-approved Native
+Provider ABI v0.1. WP-C5.2 (scalar native lowering) is open; C5.2a (primitive values/constants)
+and C5.2b (locals/places/copies/moves) are closed — real `let`-bound locals of every primitive
+type, assignment, and Copy/Move now compile and run natively, proven end to end. Next: WP-C5.2c
+(operations and control flow). **Process note:** full-workspace test runs are now reserved for
+WP/gate closure points, not every intermediate change, per owner feedback.
 
 ## Position
 Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
 WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
-native lowering) OPEN; C5.2a CLOSED (CD-047).** Gate **C4 CLOSED 2026-07-21** by owner directive,
-after the last blocker (DEV-089) was resolved rather than deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
+native lowering) OPEN; C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048).** Gate **C4 CLOSED
+2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved rather than
+deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
 implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
 1.2.0; the second (this one) resolved DEV-089 and the two residual over-rejections. Final
 validation: workspace tests green, `cargo fmt` clean, `cargo clippy` clean on 1.93 and 1.97, corpus
@@ -1412,6 +1414,30 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   development; going forward, scoped `cargo test --lib`/`--test <file>` runs during iteration,
   full-suite runs reserved for WP/gate closure points (recorded for future sessions in memory,
   not just here). WP-C5.2a CLOSED; next is WP-C5.2b (locals/places/copies/moves).
+
+- CD-048 [2026-07-21, WP-C5.2b] **Real locals/places/assignments/copies delivered —
+  `emit_body` (renamed from and fully replacing C5.1b's `emit_trivial_unit_body`) declares every
+  body local and lowers `Use`-rvalue assignments; `emit_place` supports bare locals.** Full
+  record: `STARKLANG/docs/compiler/work-packages/WP-C5.2.md` §C5.2b. Locals declared `let mut _N:
+  T;` uniformly (uninitialised, `mut` regardless of reassignment — cheap given the generated
+  file's blanket `#![allow(unused)]`, and leaving them genuinely uninitialised means a
+  lowering-bug read-before-write is caught by rustc's own definite-assignment analysis, not
+  silently given a fabricated default). `Operand::Copy`/`Operand::Move` both emit the same bare
+  place reference — sound because `emit_ty` only admits primitive `MirTy`s and every primitive is
+  `Copy` by construction; real non-`Copy` move/liveness tracking stays deferred to WP-C5.3+. The
+  entry's Unit-return check moved from inside the body emitter to `emit_program.rs` specifically
+  (a Rust-`fn main()` constraint, not a general body-emission one), so `emit_body` stays reusable
+  for an arbitrary-return-type function once WP-C5.2d lifts the single-body-program restriction.
+  Two new end-to-end native tests (`native_c5_2b_locals.rs`: real `Int32`/`Bool`/`Char`/
+  `Float64`/`UInt8` locals + a copy; separate `Float32`/`Float64` locals) plus the existing
+  `native_c5_1b_skeleton.rs` empty-`main` proof re-run unchanged as a regression check that the
+  generalized emitter still handles the C5.1b shape. One STARK-level (not backend) snag caught
+  writing the test: an unsuffixed `2.5` float literal defaults `Float64` and does not coerce to a
+  `Float32`-typed `let` (`E0001`) — fixed in the test source. Validation: `cargo fmt`, `cargo
+  clippy -D warnings`, scoped tests (`backend::` 16/16, new test 2/2, regression 1/1),
+  `exec_snapshots` 4/4 — full workspace suite not re-run this WP, per the new test-run-frequency
+  policy (last green at WP-C5.2a; this WP's changes are additive and narrowly scoped to
+  `backend::generated_rust`). WP-C5.2b CLOSED; next is WP-C5.2c (operations and control flow).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
