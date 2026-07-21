@@ -246,10 +246,39 @@ impl<T> ValueSlot<T> {
         unsafe { field.read() }
     }
 
+    /// Typed sub-place move out of a slot that is still **`Whole`**, projecting through
+    /// `&mut T`.
+    ///
+    /// This exists because some sub-places have no raw-pointer syntax: Rust offers no way to
+    /// take a pointer into an **enum variant's payload** without a `match`, and a `match` needs a
+    /// reference. Constructing `&mut T` is legal here precisely because `Whole` is required — the
+    /// storage still holds a valid complete value at the moment of projection.
+    ///
+    /// Use [`ValueSlot::move_field`] instead wherever raw projection *is* expressible (struct
+    /// fields, tuple elements, constant array indices), since that form also works on an already
+    /// `Partial` value. This one is for the first — and, for a single-payload enum variant, only
+    /// — move out of a complete value.
+    pub fn move_field_whole<F>(&mut self, project: fn(&mut T) -> &mut F) -> F {
+        self.require_whole(
+            "whole-projection sub-place move requires a complete value (a partially moved value \
+             cannot be reached through &mut T at all)",
+        );
+        self.state = SlotState::Partial;
+        // SAFETY: `Whole` means `storage` holds a valid complete `T`, so `&mut T` is sound to
+        // construct. `project` narrows it to one drop unit, which is then moved out; the slot is
+        // now `Partial`, so no whole-value operation can observe the gap.
+        let value: &mut T = unsafe { &mut *self.base_ptr() };
+        let field: *mut F = project(value);
+        unsafe { field.read() }
+    }
+
     /// Read a `Copy` field out of a possibly-partial value, without materialising the whole `T`.
-    pub fn copy_field<F: Copy>(&mut self, project: fn(*mut T) -> *mut F) -> F {
+    /// Takes `&self`, not `&mut self`, so two field reads can appear in one expression --
+    /// `a.copy_field(p0) + a.copy_field(p1)` would otherwise be two simultaneous mutable borrows.
+    /// The derived pointer is only ever READ through; nothing writes via it.
+    pub fn copy_field<F: Copy>(&self, project: fn(*mut T) -> *mut F) -> F {
         self.require_accessible("field read from a dead slot");
-        let field = project(self.base_ptr());
+        let field = project(self.storage.as_ptr() as *mut T);
         // SAFETY: as `move_field`, except that `F: Copy` means the read leaves the field's own
         // drop obligation untouched -- a `Copy` type has none.
         unsafe { field.read() }
@@ -521,6 +550,43 @@ mod tests {
         assert_eq!(*log.borrow(), vec!["field"]);
         assert_eq!(slot.state(), SlotState::Partial);
         slot.finish_partial();
+    }
+
+    /// The enum case: a payload has no raw-pointer projection syntax, so it must be reached
+    /// through `&mut T` -- which is why `move_field_whole` requires a complete value.
+    #[test]
+    fn move_field_whole_extracts_an_enum_payload() {
+        // Two variants, because the `match` in the projection must have a dead arm to be
+        // representative -- that arm is exactly what the generated helper's `unreachable!()`
+        // corresponds to under V-DISC-1.
+        #[allow(dead_code)]
+        enum Holder {
+            Has(String),
+            Empty,
+        }
+        let mut slot: ValueSlot<Holder> = ValueSlot::dead();
+        slot.write(Holder::Has("payload".to_string()));
+        let taken = slot.move_field_whole(|v| match v {
+            Holder::Has(p) => p,
+            Holder::Empty => unreachable!("V-DISC-1"),
+        });
+        assert_eq!(taken, "payload");
+        assert_eq!(slot.state(), SlotState::Partial);
+        slot.finish_partial();
+    }
+
+    /// And it is refused once the value is partial, because `&mut T` would then be invalid --
+    /// the distinction that makes the two projection forms different rather than redundant.
+    #[test]
+    #[should_panic(expected = "partially moved value cannot be reached through &mut T")]
+    fn move_field_whole_is_refused_on_a_partial_slot() {
+        let mut slot: ValueSlot<(String, String)> = ValueSlot::dead();
+        slot.write(("a".to_string(), "b".to_string()));
+        fn p0(p: *mut (String, String)) -> *mut String {
+            unsafe { core::ptr::addr_of_mut!((*p).0) }
+        }
+        let _ = slot.move_field(p0);
+        let _ = slot.move_field_whole(|v| &mut v.1);
     }
 
     #[test]

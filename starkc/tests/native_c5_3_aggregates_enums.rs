@@ -54,6 +54,34 @@ fn build(source: &str, tag: &str) -> Result<(String, std::process::Output), Back
     Ok((generated, run))
 }
 
+/// Split generated source into (projection module, everything else) by brace counting from
+/// `mod stark_proj {`. Deliverable 2's check is about where `unsafe` may appear, so it needs an
+/// exact boundary rather than a substring guess.
+fn split_projection_module(generated: &str) -> (String, String) {
+    let Some(start) = generated.find("mod stark_proj {") else {
+        return (String::new(), generated.to_string());
+    };
+    let mut depth = 0usize;
+    let mut end = start;
+    for (offset, ch) in generated[start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = start + offset + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let module = generated[start..end].to_string();
+    let mut rest = generated[..start].to_string();
+    rest.push_str(&generated[end..]);
+    (module, rest)
+}
+
 fn rustc_available() -> bool {
     std::process::Command::new("rustc")
         .arg("--version")
@@ -164,11 +192,14 @@ fn main() {
         generated.contains("ValueSlot"),
         "the non-Copy local must be slot-backed:\n{generated}"
     );
-    // Deliverable 2: no ad hoc unsafe in emitted MIR bodies -- every unsafe operation routes
-    // through the reviewed runtime helpers.
-    assert!(
-        !generated.contains("unsafe"),
-        "emitted bodies must contain no unsafe of their own:\n{generated}"
+    // Deliverable 2: no ad hoc unsafe in emitted MIR bodies. `unsafe` may appear only inside the
+    // generated projection module, which this program does use -- its `Copy` field reads go
+    // through raw projections so they survive a sibling move.
+    let (projections, _) = split_projection_module(&generated);
+    assert_eq!(
+        generated.matches("unsafe").count(),
+        projections.matches("unsafe").count(),
+        "every `unsafe` must be inside `mod stark_proj`:\n{generated}"
     );
 }
 
@@ -290,5 +321,126 @@ fn main() {
     assert!(
         generated.contains("V-DISC-1"),
         "the impossible arm should name the rule that makes it impossible:\n{generated}"
+    );
+}
+
+// --------------------------------------------- WP-C5.3d-0: storage and movement --
+
+/// §7.7: an aborting trap must not run pending Drop glue.
+///
+/// **This is a structural proof, not an observable one, and the difference matters.** The
+/// observable version — a destructor with a side effect that must not appear after a trap —
+/// cannot be built natively yet: a user `Drop` impl's receiver is `&mut Self`, and references
+/// are outside the C5 subset entirely, so `impl Drop` does not compile natively at all (see
+/// CD-059). What can be proven now is that the emitted trap path reaches the abort with no drop
+/// call before it, which is the mechanism the observable test would exercise.
+#[test]
+fn a_trapping_block_emits_no_drop_before_its_abort() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct Held { v: Int32 }
+
+fn main() {
+    let h: Held = Held { v: 1 };
+    let a: Int32 = 2147483647;
+    let b: Int32 = a + 1;
+    assert_eq(h.v, 1);
+}
+"#;
+    let (generated, run) = build(source, "droptrap").expect("must build");
+    assert_eq!(run.status.code(), Some(101), "the overflow must trap");
+
+    // Every abort call site must be the first statement of its block: nothing -- least of all a
+    // `drop_with` -- may precede it.
+    for block in generated.split("trap::abort") {
+        let tail: String = block.chars().rev().take(200).collect();
+        let preceding: String = tail.chars().rev().collect();
+        assert!(
+            !preceding.contains("drop_with"),
+            "a drop ran on the path to a trap:\n{preceding}"
+        );
+    }
+}
+
+/// Deliverable 6: a partial move must NOT be collapsed into whole-local liveness. Moving one
+/// field out and then reading a sibling is the observable consequence -- under a whole-local
+/// approximation the sibling read would find a dead slot and abort.
+#[test]
+fn a_field_move_does_not_kill_its_siblings() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct Inner { v: Int32 }
+
+struct Outer { a: Inner, b: Int32 }
+
+fn take_inner(i: Inner) -> Int32 {
+    i.v
+}
+
+fn main() {
+    let o: Outer = Outer { a: Inner { v: 5 }, b: 9 };
+    assert_eq(take_inner(o.a), 5);
+    assert_eq(o.b, 9);
+}
+"#;
+    let (generated, run) = build(source, "partial").expect("must build");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the sibling read must still work; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    // The move went through a field projection, not a whole-local take.
+    assert!(
+        generated.contains("move_field(stark_proj::"),
+        "a sub-place move must use a projection helper:\n{generated}"
+    );
+    assert!(
+        generated.contains("copy_field(stark_proj::"),
+        "the sibling read must use raw projection so it survives the sibling move:\n{generated}"
+    );
+}
+
+/// Deliverable 2, checked on a program that actually exercises partial moves: the ONLY `unsafe`
+/// in a generated program is inside the generated projection module.
+#[test]
+fn unsafe_appears_only_in_the_generated_projection_module() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct Inner { v: Int32 }
+
+struct Outer { a: Inner, b: Int32 }
+
+fn take_inner(i: Inner) -> Int32 {
+    i.v
+}
+
+fn main() {
+    let o: Outer = Outer { a: Inner { v: 5 }, b: 9 };
+    assert_eq(take_inner(o.a), 5);
+}
+"#;
+    let (generated, _) = build(source, "scopecheck").expect("must build");
+    // NOTE: the tag must not contain "unsafe" -- the source file name is baked into every trap
+    // call site, so a tag like "unsafescope" would make this check fail on its own file name.
+    let (projections, outside) = split_projection_module(&generated);
+    assert!(
+        projections.contains("unsafe"),
+        "the projection module is where unsafe belongs:\n{projections}"
+    );
+    let stray: Vec<&str> = outside
+        .lines()
+        .filter(|line| line.contains("unsafe"))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "every `unsafe` in a generated program must be inside `mod stark_proj`; found outside: \
+         {stray:?}"
     );
 }

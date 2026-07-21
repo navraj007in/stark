@@ -33,7 +33,7 @@ impl<'a> TyEnv<'a> {
         TyEnv { body, types }
     }
 
-    fn local_ty(&self, local: u32) -> Result<MirTy, BackendDiagnostic> {
+    pub(super) fn local_ty(&self, local: u32) -> Result<MirTy, BackendDiagnostic> {
         self.body
             .locals
             .get(local as usize)
@@ -154,6 +154,30 @@ fn emit_place_from(
     env: &TyEnv,
     mode: PlaceMode,
 ) -> Result<String, BackendDiagnostic> {
+    // WP-C5.3d-0. A single-level READ of a `Copy` field out of a slot goes through a raw
+    // projection helper rather than `get()`, because it must keep working after a SIBLING drop
+    // unit has been moved out -- at which point the storage no longer holds a valid complete
+    // value and `get()` is correctly refused. Enum payload reads are excluded: they have no raw
+    // projection syntax, and an enum's payload is read while the value is still whole.
+    if mode == PlaceMode::Read && place.projection.len() == 1 && is_slot_local(place.local.0, env)?
+    {
+        let base_ty = env.local_ty(place.local.0)?;
+        let field_ty = env.place_ty(place)?;
+        let raw_base = matches!(
+            (&place.projection[0], &base_ty),
+            (Projection::Field(_), MirTy::Struct(..) | MirTy::Tuple(_))
+                | (Projection::ConstIndex(_), MirTy::Array(..))
+        );
+        if raw_base && emit_types::mir_ty_is_copy(&field_ty, env.types) {
+            // Mirrors `emit_projections::collect_operand` case 2 exactly; the two must agree, or
+            // emission would name a helper the collector never generated.
+            let (helper, _) = super::emit_projections::collect_for_place(place, env)?;
+            return Ok(format!(
+                "{}.copy_field(stark_proj::{helper})",
+                local_name(place.local.0)
+            ));
+        }
+    }
     let mut rendered = local_name(place.local.0);
     if is_slot_local(place.local.0, env)? {
         rendered = match mode {
@@ -249,21 +273,30 @@ fn emit_place_from(
 /// use-after-free. A sub-place move emitted through the whole-value path would therefore be
 /// silently unsound rather than merely unsupported.
 pub fn emit_move_out(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    let local = local_name(place.local.0);
     if !is_slot_local(place.local.0, env)? {
         return Err(BackendDiagnostic::Unsupported(format!(
             "move out of the non-slot place {place:?}"
         )));
     }
     if !place.projection.is_empty() {
-        return Err(BackendDiagnostic::Unsupported(format!(
-            "moving the SUB-PLACE {place:?} out of a non-Copy local needs a generated field \
-             projection helper (WP-C5.3d-0, next increment): partial access to a slot is defined \
-             only through raw pointers, because once a drop unit has been moved the storage no \
-             longer holds a valid complete value. Emitting this through the whole-value path \
-             would be unsound, not merely unsupported"
-        )));
+        // A sub-place move goes through a GENERATED projection helper, so the emitted body
+        // contains no `unsafe` of its own. Which slot operation applies depends on whether the
+        // sub-place has raw-pointer syntax: struct/tuple/array projections do and therefore work
+        // on already-partial storage; an enum payload does not, and is legal only while the slot
+        // is still whole.
+        let helpers = super::emit_projections::collect_for_place(place, env)?;
+        let name = format!("stark_proj::{}", helpers.0);
+        return Ok(match helpers.1 {
+            super::emit_projections::ProjectionForm::Raw => {
+                format!("{local}.move_field({name})")
+            }
+            super::emit_projections::ProjectionForm::Whole => {
+                format!("{local}.move_field_whole({name})")
+            }
+        });
     }
-    Ok(format!("{}.take()", local_name(place.local.0)))
+    Ok(format!("{local}.take()"))
 }
 
 /// Whether `place` reads through an enum variant's payload. Such a place emits as a `match`
@@ -342,7 +375,18 @@ mod tests {
             local: LocalId(1),
             projection: vec![Projection::Field(1)],
         };
-        assert_eq!(emit_place(&struct_field, &env).unwrap(), "_1.get().f1");
+        // WP-C5.3d-0: a single-level Copy field read on a slot local goes through a raw
+        // projection helper, so it keeps working after a SIBLING field has been moved out.
+        assert_eq!(
+            emit_place(&struct_field, &env).unwrap(),
+            format!(
+                "_1.copy_field(stark_proj::{})",
+                super::super::emit_projections::helper_name(
+                    &MirTy::Struct(crate::hir::ItemId(0), vec![]),
+                    &Projection::Field(1)
+                )
+            )
+        );
     }
 
     #[test]

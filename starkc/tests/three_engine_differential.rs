@@ -1227,6 +1227,62 @@ fn main() {
 "#
 );
 
+// Shape 3: a CONSUMING match that extracts a non-Copy payload out of an enum. This is the case
+// that needs a generated projection helper: Rust cannot address an enum variant's field without
+// a `match`, so the payload is reached through `move_field_whole` while the slot is still whole.
+three_engine_test!(
+    consuming_match_of_a_non_copy_payload_agrees,
+    "slot_payload",
+    completes,
+    r#"struct Point { x: Int32, y: Int32 }
+
+enum Holder { Has(Point), Empty }
+
+fn sum(p: Point) -> Int32 {
+    p.x + p.y
+}
+
+fn unwrap_or_zero(h: Holder) -> Int32 {
+    match h {
+        Holder::Has(p) => sum(p),
+        Holder::Empty => 0,
+    }
+}
+
+fn main() {
+    let h: Holder = Holder::Has(Point { x: 3, y: 4 });
+    assert_eq(unwrap_or_zero(h), 7);
+    let e: Holder = Holder::Empty;
+    assert_eq(unwrap_or_zero(e), 0);
+}
+"#
+);
+
+// A non-Copy field moved OUT of a struct, leaving the rest of the value behind -- the partial
+// move that `Option<ManuallyDrop<T>>` could not have represented, since after this the storage
+// no longer holds a valid complete value.
+three_engine_test!(
+    a_non_copy_field_moved_out_of_a_struct_agrees,
+    "slot_partial",
+    completes,
+    r#"struct Inner { v: Int32 }
+
+struct Outer { a: Inner, b: Int32 }
+
+fn take_inner(i: Inner) -> Int32 {
+    i.v
+}
+
+fn main() {
+    let o: Outer = Outer { a: Inner { v: 5 }, b: 9 };
+    assert_eq(o.b, 9);
+    // Moves `o.a` out while `o.b` stays live and readable.
+    assert_eq(take_inner(o.a), 5);
+    assert_eq(o.b, 9);
+}
+"#
+);
+
 // ========================================================= review regressions --
 // CD-052's fixed defects, re-pinned as three-engine agreement rather than per-engine assertions.
 

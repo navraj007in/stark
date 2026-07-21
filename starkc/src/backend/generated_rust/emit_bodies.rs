@@ -291,10 +291,9 @@ fn emit_terminator(
         Terminator::Drop { place, target } => {
             out.push_str(&format!("                {}\n", emit_drop(place, env)?));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
-        }
-        // No catch-all: as of WP-C5.3d-0 every `Terminator` variant is handled, and keeping the
-        // match exhaustive means a NEW variant stops this compiling rather than silently becoming
-        // an `Unsupported` diagnostic nobody notices.
+        } // No catch-all: as of WP-C5.3d-0 every `Terminator` variant is handled, and keeping the
+          // match exhaustive means a NEW variant stops this compiling rather than silently becoming
+          // an `Unsupported` diagnostic nobody notices.
     }
     Ok(())
 }

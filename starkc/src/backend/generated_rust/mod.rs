@@ -6,6 +6,7 @@ pub mod build;
 pub mod emit_bodies;
 pub mod emit_places;
 pub mod emit_program;
+pub mod emit_projections;
 pub mod emit_runtime;
 pub mod emit_types;
 pub mod mangle;

@@ -191,7 +191,7 @@ inherently cross-block.
 
 ## C5.3d-0 — Non-Copy storage and movement foundation
 
-### Status: IN PROGRESS (opened 2026-07-21 under CD-058).
+### Status: CLOSED 2026-07-21 (CD-059).
 
 A **bounded prerequisite inserted before C5.3c** by owner directive. Its purpose is to unblock
 C5.3c; **it does not close C5.3d**, whose observable destruction fixture and final
@@ -304,9 +304,62 @@ conditional construction then discriminant read on a non-`Copy` enum (2); non-`C
 argument and return (4); whole-value reassignment after an explicit move (5). Shape 3 works for
 `Copy` payloads; non-`Copy` payload extraction awaits the projection helpers.
 
-**Remaining for C5.3d-0**: the generated per-type projection helper module (unblocking sub-place
-moves and shape 3 for non-`Copy` payloads), partial-move discipline across the frozen fixtures,
-and the three mutation cases that need generated code. Superseded text below:
+**Increment 3 (2026-07-21): projection helpers, partial moves, and closure.**
+
+`emit_projections.rs` collects every (type, sub-place) pair a program actually moves or reads
+through, and emits one helper per pair into a generated `mod stark_proj`. Two forms, because two
+are genuinely needed:
+
+- **Raw** `fn(*mut T) -> *mut F` via `addr_of_mut!` — computes a field address *without*
+  dereferencing, so it stays valid over partially moved storage. Struct fields, tuple elements,
+  constant array indices.
+- **Whole** `fn(&mut T) -> &mut F` for an **enum payload**, which Rust cannot address without a
+  `match`, and a `match` needs a reference. Legal only while the slot is `Whole`, enforced by
+  `ValueSlot::move_field_whole`.
+
+`Copy` field READS on a slot local also route through raw helpers rather than `get()`. That was
+not an optimisation: the state machine caught it. A program that moved `o.a` out and then read
+`o.b` aborted with *"the slot is PARTIAL — a drop unit has been moved out"*, because `get()`
+correctly refuses partial storage. The read had to become field-precise for the same reason the
+move did.
+
+**Deliverable 5, all five shapes working**: cross-block whole-local move; conditional construction
+then discriminant read on a non-`Copy` enum; consuming match extracting a non-`Copy` payload;
+non-`Copy` direct-call argument and return; whole-value reassignment after an explicit move.
+
+**Deliverable 2 verified on a program that exercises partial moves**: every `unsafe` in a
+generated program lies inside `mod stark_proj`, checked by brace-counting the module and scanning
+the remainder.
+
+### A structural finding: user `Drop` impls cannot compile natively yet
+
+The planned observable Drop-after-trap fixture **cannot be built**. A user destructor's receiver
+is `&mut Self`, so `impl Drop` requires `MirTy::Ref` — and references are outside the C5 subset
+entirely (C6). This holds even for a destructor whose body never touches `self`: the *signature*
+is enough.
+
+Consequences, which belong to whoever schedules C5.3d-1:
+
+- `Terminator::Drop` works for **structural** glue (types with no user destructor);
+- a **user** destructor cannot be dispatched natively until `Ref` is admitted at least for
+  destructor receivers — an owner-level scope question, not something C5.3d-1 can absorb;
+- the §7.7 no-Drop-after-trap property is therefore proven **structurally** rather than
+  observably: `a_trapping_block_emits_no_drop_before_its_abort` asserts no `drop_with` precedes
+  any abort call site. That is the mechanism the observable test would have exercised, and the
+  difference is stated rather than glossed.
+
+### Deliverable 7: mutation evidence
+
+| Mutation | Result |
+|---|---|
+| omit the dead transition after a move | slot invariant fires (module-level) |
+| allow a second take | same invariant, reached through `write` on a live slot |
+| allow an automatic Rust `Drop` | observable fixture fails: `got ["leaked"]` |
+| allow whole-value access while `Partial` | **Miri: use-after-free** on the `drop_value` path |
+| collapse a field drop unit into whole-local | `a_field_move_does_not_kill_its_siblings` fails — the sibling read finds a dead slot |
+| run Drop after a trap | `a_trapping_block_emits_no_drop_before_its_abort` fails |
+
+**Superseded text below:**
 
 **Previously remaining**: backend integration — emitting slots for non-`Copy` locals
 (deliverable 2 in generated code), the five initial movement shapes (deliverable 5), partial-move

@@ -85,9 +85,18 @@ is §7.2's `ValueSlot<T>` over `MaybeUninit<ManuallyDrop<T>>` — plain `Option<
 introducing Rust-owned destruction, `Option<ManuallyDrop<T>>` rejected as the general form because
 a partially moved value's bytes need not form a valid `T`.
 
-Next: **C5.3d-0 (non-Copy storage and movement foundation)** — a bounded prerequisite inserted
-before C5.3c, which does not close C5.3d. Then C5.3c on the slot abstraction, then C5.3d-1's
-observable destruction fixture. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+**C5.3d-0 CLOSED (CD-059)** — `ValueSlot` is sound for partial moves (three-state machine, Miri
+verified), generated projection helpers confine all `unsafe` to one module, and all five movement
+shapes work. **C5.3c is unblocked.**
+
+**One structural finding needs an owner decision**: a user `Drop` impl's receiver is `&mut Self`,
+so `impl Drop` requires `MirTy::Ref`, which is outside the C5 subset. User destructors therefore
+cannot be dispatched natively, and C5.3d-1's observable destruction fixture cannot be built as
+planned — §7.7 is currently proven structurally instead. Admitting `Ref` for destructor receivers
+is an owner-level scope question.
+
+Next: C5.3c (Option/Result/matches/`?`) on the slot abstraction, and the `Ref`-for-destructors
+decision before C5.3d-1. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -2159,6 +2168,52 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     destruction fixture and the final exactly-once/order/no-Drop-after-trap proof.
 
   - C5.3a and C5.3b remain closed.
+
+- CD-059 [2026-07-21, C5.3d-0 CLOSED] **The non-Copy storage and movement foundation is complete.
+  C5.3c is unblocked. One structural finding blocks part of C5.3d-1 and needs an owner decision.**
+
+  - **Soundness correction first (owner review).** The initial `ValueSlot` was unsound for partial
+    moves: `move_sub` took `&mut T`, moved a field out, and left the slot "live", after which
+    `get`/`get_mut`/`take`/`drop_value` all remained callable over storage that no longer held a
+    valid `T`. **The module's own test asserted `slot.get().1` after moving `.0`, so the bug was
+    written into its evidence.** Corrected to a three-state machine — `Dead`/`Whole`/`Partial` —
+    with whole-value operations requiring `Whole`, partial access restricted to raw-pointer
+    projection, and an explicit `finish_partial` transition. Miri confirms zero UB across 18 slot
+    tests; restoring the old permissive guard makes Miri report a real **use-after-free**.
+
+  - **What this says about the validation strategy, not just the code.** The three-engine harness
+    could not have caught it: it compares observable outcomes, and UB that does not change
+    observable behaviour agrees across all three engines. **Differential testing is strong for
+    semantics and blind to memory soundness.** Miri is now the compensating control — and even
+    Miri did not flag `move_field` → `get` for a `(String, i32)`, because a moved-out `String`'s
+    bytes stay bit-valid. For that case the state machine *is* the evidence. Layered: state
+    machine primary, Miri for what it can see, neither complete alone.
+
+  - **Generated projection helpers** (`emit_projections.rs`): one per (type, sub-place) pair the
+    program actually uses, emitted into `mod stark_proj`. Raw `fn(*mut T) -> *mut F` via
+    `addr_of_mut!` for struct/tuple/array (valid over partial storage); whole `fn(&mut T) -> &mut F`
+    for enum payloads, which Rust cannot address without a `match`. Deliverable 2 verified on a
+    partial-move program: every `unsafe` lies inside that module.
+
+  - **`Copy` field reads had to become field-precise too**, and the state machine is what found
+    it: moving `o.a` out then reading `o.b` aborted with "the slot is PARTIAL", because `get()`
+    correctly refuses partial storage. Not an optimisation — a correctness consequence.
+
+  - **All five deliverable-5 movement shapes work.** The C5.3a cross-block guard is deleted; what
+    it refused now compiles and runs.
+
+  - **STRUCTURAL FINDING — user `Drop` impls cannot compile natively yet (owner decision needed).**
+    A destructor's receiver is `&mut Self`, so `impl Drop` requires `MirTy::Ref`, and references
+    are outside the C5 subset entirely. This holds even when the body never touches `self` — the
+    signature alone is enough. Therefore: `Terminator::Drop` works for structural glue only; a
+    user destructor cannot be dispatched natively until `Ref` is admitted at least for destructor
+    receivers; and **C5.3d-1's dedicated observable destruction fixture cannot be built as
+    planned**. The §7.7 no-Drop-after-trap property is proven STRUCTURALLY instead (no `drop_with`
+    precedes any abort site), and the difference is recorded rather than glossed.
+
+  - Validation, scoped (backend + runtime; no workspace-wide semantic consumer): fmt clean,
+    clippy clean, stark-runtime 23/23, `backend::` 40/40, `three_engine_differential` 35/35,
+    `native_c5_3_aggregates_enums` 10/10, earlier native suites green, **Miri 18/18 with zero UB**.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

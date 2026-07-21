@@ -8,7 +8,7 @@
 //! `emit_bodies::emit_function` with its symbol's sanitized name. Indirect calls through a
 //! function value remain WP-C5.4c.
 
-use super::{emit_bodies, emit_types, mangle, BackendDiagnostic};
+use super::{emit_bodies, emit_projections, emit_types, mangle, BackendDiagnostic};
 use crate::mir::{MirBody, MirProgram, MirTy};
 use stark_runtime::version::BuildVersions;
 
@@ -52,6 +52,12 @@ pub fn emit(
     // WP-C5.3a: §6.3's "one Rust definition per reachable concrete nominal instance", emitted
     // before every function so declaration order never depends on use order.
     main_rs.push_str(&emit_types::emit_nominal_definitions(program)?);
+
+    // WP-C5.3d-0: the generated projection helpers, collected from the bodies below. Emitted
+    // before them so the module is in scope, and so the ONE place unsafe appears in a generated
+    // program is visible at the top of the file rather than buried.
+    let projections = emit_projections::collect(program)?;
+    main_rs.push_str(&emit_projections::emit(&projections, &program.types)?);
 
     for body in &program.bodies {
         main_rs.push_str(&format!("// STARK instance: {}\n", body.instance.symbol));
