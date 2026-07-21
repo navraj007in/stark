@@ -124,7 +124,7 @@ pub fn emit_block_body(
             match stmt {
                 Statement::Nop => {}
                 Statement::Assign(place, rvalue) => {
-                    let dest = emit_places::emit_place(place, env)?;
+                    let dest = emit_dest_place(place, env)?;
                     let dest_ty = env.place_ty(place)?;
                     let value = emit_rvalue(rvalue, &dest_ty, env)?;
                     out.push_str(&format!("                {dest} = {value};\n"));
@@ -274,7 +274,7 @@ fn emit_terminator(
             dest,
             target,
         } => {
-            let dest_place = emit_places::emit_place(dest, env)?;
+            let dest_place = emit_dest_place(dest, env)?;
             let call_expr = emit_call(callee, args, env)?;
             out.push_str(&format!("                {dest_place} = {call_expr};\n"));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
@@ -349,6 +349,23 @@ fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, B
 /// arguments — a monomorphised instance is `(item, args)`, and only the destination knows the
 /// args. Reading them from the destination is not inference: verified MIR guarantees the
 /// assignment is well-typed, so the destination's type IS the aggregate's type.
+/// A place used as an assignment DESTINATION. Refuses the one place shape that emits as an
+/// expression rather than a Rust place: a read through an enum variant's payload (WP-C5.3b's
+/// `match` form). MIR lowering never produces such a destination — `VariantField` appears only
+/// under `read_place` and pattern tests, and STARK has no syntax for assigning into a payload —
+/// so this is a guard against a silently wrong splice, not a limitation anyone can hit from
+/// source.
+fn emit_dest_place(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    if emit_places::reads_through_variant_field(place) {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "assigning THROUGH an enum variant field ({place:?}) is not representable: the read \
+             form is a `match` expression, which is not a Rust place. No MIR lowering path emits \
+             this, so reaching it means either a new lowering shape or a compiler defect"
+        )));
+    }
+    emit_places::emit_place(place, env)
+}
+
 fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match rvalue {
         Rvalue::Use(operand) => emit_operand(operand, env),
@@ -358,6 +375,44 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
         }
         Rvalue::BinOp(op, lhs, rhs) => {
             emit_binop(*op, emit_operand(lhs, env)?, emit_operand(rhs, env)?)
+        }
+        // WP-C5.3b: the variant index of an enum value. Same shape as a variant-field read and
+        // for the same reason -- Rust exposes no integer discriminant for an enum with payloads,
+        // so the index is recovered by matching. Every variant is listed, so there is no
+        // catch-all arm and adding a variant cannot silently fall through to a wrong index.
+        Rvalue::Discriminant(place) => {
+            let base = emit_places::emit_place(place, env)?;
+            let ty = env.place_ty(place)?;
+            let MirTy::Enum(crate::mir::EnumRef::User(item), args) = &ty else {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "Discriminant of {ty:?} lands in WP-C5.3c (Option/Result/Ordering)"
+                )));
+            };
+            let variants = env
+                .types
+                .enum_variants
+                .get(&(item.0, args.clone()))
+                .ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "no type-context entry for enum instance {ty:?}"
+                    ))
+                })?;
+            let name = mangle::type_name_for_nominal(item.0, args);
+            // The arms are typed by the DESTINATION, not by a fixed width: MIR types the
+            // discriminant local itself (Int64 today), and a hardcoded `i128` literal made the
+            // generated crate fail to compile with "expected i64, found i128".
+            let discriminant_ty = emit_types::emit_ty(dest_ty)?;
+            let arms: Vec<String> = variants
+                .iter()
+                .enumerate()
+                .map(|(v, _)| {
+                    format!(
+                        "{name}::{}(..) => {v}{discriminant_ty}",
+                        emit_types::variant_name(v as u32)
+                    )
+                })
+                .collect();
+            Ok(format!("(match &{base} {{ {} }})", arms.join(", ")))
         }
         // WP-C5.3a: aggregate construction. Each kind has a direct Rust constructor, so nothing
         // here reconstructs source syntax -- the operand order IS the MIR field/element order.
@@ -393,10 +448,25 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
                         .collect();
                     format!("{name} {{ {} }}", fields.join(", "))
                 }
-                AggKind::EnumVariant(..) => {
-                    return Err(BackendDiagnostic::Unsupported(
-                        "enum-variant aggregates land in WP-C5.3b".to_string(),
-                    ))
+                AggKind::EnumVariant(enum_ref, variant) => {
+                    let crate::mir::EnumRef::User(item) = enum_ref else {
+                        return Err(BackendDiagnostic::Unsupported(format!(
+                            "aggregate for {enum_ref:?} lands in WP-C5.3c (Option/Result/Ordering)"
+                        )));
+                    };
+                    // Like the struct case, the type ARGUMENTS come from the destination:
+                    // `AggKind::EnumVariant` names the enum and the variant, not the instance.
+                    let MirTy::Enum(_, args) = dest_ty else {
+                        return Err(BackendDiagnostic::Unsupported(format!(
+                            "enum aggregate assigned to a non-enum destination {dest_ty:?}"
+                        )));
+                    };
+                    let name = mangle::type_name_for_nominal(item.0, args);
+                    format!(
+                        "{name}::{}({})",
+                        emit_types::variant_name(*variant),
+                        parts.join(", ")
+                    )
                 }
             })
         }

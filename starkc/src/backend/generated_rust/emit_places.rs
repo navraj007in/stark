@@ -90,6 +90,29 @@ impl<'a> TyEnv<'a> {
             (Projection::Index(_) | Projection::ConstIndex(_), MirTy::Array(elem, _)) => {
                 Ok((**elem).clone())
             }
+            (
+                Projection::VariantField(v, i),
+                MirTy::Enum(crate::mir::EnumRef::User(item), args),
+            ) => {
+                let variants = self
+                    .types
+                    .enum_variants
+                    .get(&(item.0, args.clone()))
+                    .ok_or_else(|| {
+                        BackendDiagnostic::Unsupported(format!(
+                            "no type-context entry for enum instance {base:?}"
+                        ))
+                    })?;
+                variants
+                    .get(*v as usize)
+                    .and_then(|payload| payload.get(*i as usize))
+                    .cloned()
+                    .ok_or_else(|| {
+                        BackendDiagnostic::Unsupported(format!(
+                            "variant field v{v}.{i} out of range for {base:?}"
+                        ))
+                    })
+            }
             (projection, base) => Err(BackendDiagnostic::Unsupported(format!(
                 "projection {projection:?} on {base:?} has no WP-C5.3a representation yet -- \
                  VariantField lands in WP-C5.3b, Deref needs references (not in the C5 subset), \
@@ -119,15 +142,73 @@ pub fn emit_place(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnosti
             (Projection::Index(proof), MirTy::Array(..)) => {
                 rendered.push_str(&format!("[{} as usize]", local_name(proof.0)))
             }
+            // WP-C5.3b. Rust has NO way to project into an enum variant's field outside a
+            // `match`, so this is the one projection that cannot be a suffix: it wraps what came
+            // before. The `_` arm is provably dead -- V-DISC-1 makes a variant-field projection
+            // legal only after a discriminant test -- so it takes the same `unreachable!()` the
+            // verifier-proved dead-block path already uses.
+            //
+            // `match &base` (not `match base`) keeps the read non-consuming; the field is then
+            // dereferenced, which requires the FIELD type to be Copy. A non-Copy payload would
+            // have to be moved out, which needs WP-C5.3d's controlled storage for the same
+            // reason C5.3a's cross-block moves do.
+            (
+                Projection::VariantField(v, i),
+                MirTy::Enum(crate::mir::EnumRef::User(item), args),
+            ) => {
+                let field_ty = env.project_once(&ty, projection)?;
+                if !emit_types::mir_ty_is_copy(&field_ty, env.types) {
+                    return Err(BackendDiagnostic::Unsupported(format!(
+                        "reading the non-Copy payload field v{v}.{i} of {ty:?} needs WP-C5.3d's \
+                         controlled storage: `match &e` yields a reference, and moving out of it \
+                         runs into the same block-dispatch limit as C5.3a's cross-block moves"
+                    )));
+                }
+                let enum_name = super::mangle::type_name_for_nominal(item.0, args);
+                let arity = env
+                    .types
+                    .enum_variants
+                    .get(&(item.0, args.clone()))
+                    .and_then(|variants| variants.get(*v as usize))
+                    .map(|payload| payload.len())
+                    .ok_or_else(|| {
+                        BackendDiagnostic::Unsupported(format!(
+                            "variant v{v} unresolvable for {ty:?}"
+                        ))
+                    })?;
+                let mut binders: Vec<String> = (0..arity).map(|_| "_".to_string()).collect();
+                binders[*i as usize] = "__payload".to_string();
+                rendered = format!(
+                    "(match &{rendered} {{ {enum_name}::{}({}) => *__payload, \
+                     _ => unreachable!(\"V-DISC-1: variant-field projection without a \
+                     discriminant test\") }})",
+                    emit_types::variant_name(*v),
+                    binders.join(", ")
+                );
+            }
             _ => {
                 return Err(BackendDiagnostic::Unsupported(format!(
-                    "projection {projection:?} on {ty:?} has no WP-C5.3a representation yet"
+                    "projection {projection:?} on {ty:?} has no WP-C5.3b representation yet"
                 )))
             }
         }
         ty = env.project_once(&ty, projection)?;
     }
     Ok(rendered)
+}
+
+/// Whether `place` reads through an enum variant's payload. Such a place emits as a `match`
+/// EXPRESSION (see [`emit_place`]), which is not a Rust place expression and therefore cannot be
+/// an assignment destination. Callers that splice a place on the left of `=` must refuse it.
+///
+/// Reachability check, so this is a guard and not a limitation: MIR lowering emits
+/// `VariantField` through `read_place` and pattern tests only, never as an assignment
+/// destination, and STARK source has no syntax for assigning into an enum payload.
+pub fn reads_through_variant_field(place: &Place) -> bool {
+    place
+        .projection
+        .iter()
+        .any(|p| matches!(p, Projection::VariantField(..)))
 }
 
 #[cfg(test)]

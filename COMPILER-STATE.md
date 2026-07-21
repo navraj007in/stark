@@ -71,7 +71,14 @@ C5.3d** and is already visible as C5.3a's scope boundary — a non-`Copy` move a
 basic-block boundary is refused as `Unsupported` because the block-dispatch loop defeats Rust's
 borrow checker.
 
-Next: the three decisions above, then C5.3b (enums and discriminants). **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+**C5.3b CLOSED (CD-057)** — user enums, discriminants and payload access run natively; the
+variant-field projection is emitted as a `match` expression, since Rust cannot project into a
+variant otherwise. It also makes **decision 3 urgent**: conditionally constructing an enum and
+then matching it is the ordinary shape, and it straddles a basic-block boundary, so the
+non-`Copy` storage strategy is a **prerequisite for C5.3c** (`Option`/`Result` payloads are
+frequently non-`Copy` and `?` is inherently cross-block), not a nicety.
+
+Next: the three open decisions, then C5.3c. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -2027,6 +2034,62 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     rather than the scoped set, per CD-055's rule: `interp.rs` — the semantic oracle — changed for
     DEV-097, and that is a workspace-wide consumer (`mir_differential`, `exec_snapshots`,
     `conformance`, `gate3_execution` all read it).
+
+- CD-057 [2026-07-21, C5.3b closed] **User enums, discriminants, and payload access compile and
+  run natively. C5.3b CLOSED. The one structural problem — Rust cannot project into an enum
+  variant outside a `match` — is solved by emitting a match EXPRESSION, with two consequences
+  recorded rather than discovered later.**
+
+  - **Delivered**: user enums → generated Rust enums with uniformly TUPLE variants (`V0()`,
+    `V1(i32)`, `V2(i32, i32)`); `AggKind::EnumVariant` construction (type arguments from the
+    destination, as with struct aggregates); `Projection::VariantField` reads;
+    `Rvalue::Discriminant`. `EnumRef::CoreOption`/`CoreResult`/`CoreOrdering` are deliberately
+    EXCLUDED — they belong with match/`?` lowering in C5.3c rather than being half-supported.
+
+  - **Uniform tuple variants, including empty ones.** `V0()` is legal Rust, and the uniformity
+    removes a special case from construction, from patterns (`V0(..)` matches it), and from the
+    discriminant match. A unit variant would need different syntax in all three places.
+
+  - **The structural problem.** Every other MIR projection appends to a place expression (`.f0`,
+    `[2]`); a variant field has to WRAP what came before, because Rust exposes no way to project
+    into a variant outside a `match`. Emitted as
+    `(match &base { Ty::V1(__payload) => *__payload, _ => unreachable!("V-DISC-1: ...") })`.
+    Two consequences, both deliberate: (a) the `_` arm is **provably dead** — V-DISC-1 makes a
+    variant-field projection legal only after a discriminant test — so it gets the same
+    `unreachable!()` the verifier-proved dead-block path has, naming the rule rather than
+    fabricating a value that would paper over a lowering bug; (b) the result is an EXPRESSION,
+    not a place, so it cannot be an assignment destination. `emit_dest_place` refuses that
+    explicitly — a guard, not a limitation, since lowering emits `VariantField` only through
+    `read_place` and pattern tests and STARK has no syntax for assigning into a payload.
+
+  - **`Rvalue::Discriminant` takes the same shape** (an enum with payloads has no integer `as`
+    conversion), listing **every variant with no catch-all**, so adding a variant cannot silently
+    fall through to a wrong index. Its arms are typed by the DESTINATION local rather than a fixed
+    width — a hardcoded `i128` failed to compile against MIR's `Int64` discriminant local, caught
+    by the first native probe.
+
+  - **Evidence**: four new three-engine cases (all three payload arities constructed and matched;
+    payload field ORDER via a non-commutative operation, so a wrongly-bound two-field payload
+    cannot pass; discriminant selection across four variants in a loop with distinct per-variant
+    values, so any mis-selected arm changes the sum; a trap raised from a payload value) and three
+    new native-only cases (one definition per instance with uniform tuple variants; a discriminant
+    match naming every variant; the `unreachable!()` arm citing V-DISC-1). One test expectation of
+    mine was wrong — a trap line off by one — and all three engines agreeing is what exposed it,
+    which is exactly why `agree_trapping` takes the expected line independently.
+
+  - **C5.3b makes CD-056 decision 3 (non-`Copy` storage) urgent rather than optional.** C5.3a's
+    cross-block non-`Copy` move boundary bites far harder for enums: conditionally constructing a
+    value and then matching it — the ordinary way enums are used — puts construction in one block
+    and the match in another, which is exactly what the block-dispatch loop cannot express for a
+    non-`Copy` value. The discriminant-selection test needs `impl Copy` to cross that boundary at
+    all. **C5.3c is worse still**: `Option`/`Result` payloads are frequently non-`Copy` and `?` is
+    inherently cross-block, so the storage decision is a prerequisite for C5.3c, not a nicety.
+
+  - Validation, **scoped** per CD-055's rule (this change is backend-only — no `interp.rs`, no
+    MIR contract, nothing with workspace-wide consumers): `cargo fmt --all -- --check` clean,
+    `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean, `backend::` unit
+    tests 40/40, `three_engine_differential` 31/31, `native_c5_3_aggregates_enums` 7/7, and the
+    five earlier `native_c5_*` suites green. ~22 seconds.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

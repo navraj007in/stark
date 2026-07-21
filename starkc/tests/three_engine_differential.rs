@@ -1022,6 +1022,133 @@ three_engine_test!(
 "#
 );
 
+// ================================================== WP-C5.3b: enums and discriminants --
+
+three_engine_test!(
+    enum_construction_and_matching_agree,
+    "enum_match",
+    completes,
+    r#"enum Shape { Point, Circle(Int32), Rect(Int32, Int32) }
+
+fn main() {
+    // Every variant is constructed and matched: a fieldless variant, a one-field variant, and a
+    // two-field variant, so payload arity is exercised at 0, 1 and 2.
+    let c: Shape = Shape::Circle(2);
+    let ca: Int32 = match c {
+        Shape::Point => 0,
+        Shape::Circle(r) => 3 * r * r,
+        Shape::Rect(w, h) => w * h,
+    };
+    assert_eq(ca, 12);
+
+    let r: Shape = Shape::Rect(3, 4);
+    let ra: Int32 = match r {
+        Shape::Point => 0,
+        Shape::Circle(x) => x,
+        Shape::Rect(w, h) => w * h,
+    };
+    assert_eq(ra, 12);
+
+    // The fieldless variant must select its own arm rather than falling through.
+    let p: Shape = Shape::Point;
+    let pa: Int32 = match p {
+        Shape::Point => 7,
+        Shape::Circle(x) => x,
+        Shape::Rect(w, h) => w * h,
+    };
+    assert_eq(pa, 7);
+}
+"#
+);
+
+// PAYLOAD FIELD ORDER is observable. A backend that bound a two-field payload in the wrong order
+// would pass a `w * h` test (multiplication commutes) and fail this one.
+three_engine_test!(
+    enum_payload_field_order_agrees,
+    "enum_order",
+    completes,
+    r#"enum Pair { Both(Int32, Int32), Neither }
+
+fn main() {
+    let p: Pair = Pair::Both(10, 3);
+    let d: Int32 = match p {
+        Pair::Both(a, b) => a - b,
+        Pair::Neither => 0,
+    };
+    assert_eq(d, 7);
+
+    let q: Pair = Pair::Both(10, 3);
+    let e: Int32 = match q {
+        Pair::Both(a, b) => b - a,
+        Pair::Neither => 0,
+    };
+    assert_eq(e, -7);
+}
+"#
+);
+
+// Discriminant SELECTION across every variant of a wider enum, driven by a loop so each
+// discriminant is computed at runtime rather than folded. A backend that mapped variant indices
+// wrongly would select the wrong arm for at least one value.
+//
+// `impl Copy` is not decoration here: the enum is CONSTRUCTED in one basic block and MATCHED in
+// another, which for a non-Copy enum is exactly C5.3a's cross-block-move boundary. That
+// boundary bites far harder for enums than for structs — conditionally building a value and then
+// matching it is the ordinary shape — which is the strongest argument yet for settling the
+// non-Copy storage decision (CD-056 decision 3) before C5.3c.
+three_engine_test!(
+    enum_discriminant_selection_agrees,
+    "enum_disc",
+    completes,
+    r#"enum Colour { Red, Green, Blue, Other(Int32) }
+
+impl Copy for Colour {}
+
+fn main() {
+    let mut i: Int32 = 0;
+    let mut total: Int32 = 0;
+    while i < 4 {
+        let c: Colour = if i == 0 {
+            Colour::Red
+        } else if i == 1 {
+            Colour::Green
+        } else if i == 2 {
+            Colour::Blue
+        } else {
+            Colour::Other(100)
+        };
+        let v: Int32 = match c {
+            Colour::Red => 1,
+            Colour::Green => 2,
+            Colour::Blue => 4,
+            Colour::Other(n) => n,
+        };
+        total = total + v;
+        i = i + 1;
+    }
+    // 1 + 2 + 4 + 100 -- each term distinct, so any mis-selected arm changes the sum.
+    assert_eq(total, 107);
+}
+"#
+);
+
+// An enum payload feeding a trap: the trap must reach the same category at the same location in
+// all three engines even though the value that caused it came out of a variant field.
+three_engine_test!(
+    a_trap_from_an_enum_payload_agrees,
+    "enum_trap",
+    traps(TrapCategory::DivideByZero, 6),
+    r#"enum Divisor { By(Int32) }
+
+fn main() {
+    let d: Divisor = Divisor::By(0);
+    let q: Int32 = match d {
+        Divisor::By(n) => 100 / n,
+    };
+}
+"#
+);
+
 // ========================================================= review regressions --
 // CD-052's fixed defects, re-pinned as three-engine agreement rather than per-engine assertions.
 

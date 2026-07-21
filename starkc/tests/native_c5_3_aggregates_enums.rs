@@ -1,5 +1,6 @@
-//! WP-C5.3a bring-up proofs that belong to the native engine alone: the generated-source shape
-//! (nominal definitions), and the SCOPE BOUNDARY — what the backend refuses, and how.
+//! WP-C5.3a/C5.3b bring-up proofs that belong to the native engine alone: the generated-source
+//! shape (nominal definitions for structs and enums), and the SCOPE BOUNDARY — what the backend
+//! refuses, and how.
 //!
 //! Value agreement for aggregates lives in `three_engine_differential.rs`, which is where §14's
 //! C5.3 exit condition is discharged. This file covers what a three-engine comparator
@@ -16,7 +17,7 @@ use std::sync::Arc;
 
 fn build(source: &str, tag: &str) -> Result<(String, std::process::Output), BackendDiagnostic> {
     let file = Arc::new(SourceFile::new(
-        format!("c5_3a_{tag}.stark"),
+        format!("c5_3_{tag}.stark"),
         source.to_string(),
     ));
     let (ast, parse_diags) = parse(&file, ParseMode::Program);
@@ -37,7 +38,7 @@ fn build(source: &str, tag: &str) -> Result<(String, std::process::Output), Back
     };
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} must verify: {e:?}"));
 
-    let target_dir = std::env::temp_dir().join(format!("stark_c5_3a_{tag}_{}", std::process::id()));
+    let target_dir = std::env::temp_dir().join(format!("stark_c5_3_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&target_dir);
     let artifact = emit_native_debug(
         &verified,
@@ -183,4 +184,106 @@ fn main() {
 "#;
     let (_, run) = build(source, "sameblock").expect("same-block moves must still build");
     assert_eq!(run.status.code(), Some(0));
+}
+
+// ------------------------------------------------------------ WP-C5.3b: enums --
+
+/// §6.3 again, for enums: one Rust definition per instance, with uniformly TUPLE variants so an
+/// empty payload needs no unit-variant special case in construction, patterns, or the
+/// discriminant match.
+#[test]
+fn an_enum_instance_gets_one_definition_with_uniform_tuple_variants() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"enum Shape { Point, Circle(Int32), Rect(Int32, Int32) }
+
+fn main() {
+    let s: Shape = Shape::Rect(3, 4);
+    let a: Int32 = match s {
+        Shape::Point => 0,
+        Shape::Circle(r) => r,
+        Shape::Rect(w, h) => w * h,
+    };
+    assert_eq(a, 12);
+}
+"#;
+    let (generated, run) = build(source, "enumdef").expect("must build");
+    assert_eq!(run.status.code(), Some(0));
+
+    assert_eq!(
+        generated.matches("enum stark_ty_").count(),
+        1,
+        "expected exactly one enum definition:\n{generated}"
+    );
+    // The fieldless variant is still a tuple variant -- `V0()`, not `V0`.
+    assert!(
+        generated.contains("V0(),"),
+        "an empty payload must still be a tuple variant:\n{generated}"
+    );
+    assert!(
+        generated.contains("V1(i32),") && generated.contains("V2(i32, i32),"),
+        "payload arity must follow the type context:\n{generated}"
+    );
+}
+
+/// The discriminant is recovered by MATCHING, not by a Rust integer cast: an enum with payloads
+/// has no `as` conversion. Every variant is listed with no catch-all, so adding a variant cannot
+/// silently fall through to a wrong index.
+#[test]
+fn a_discriminant_read_lists_every_variant_with_no_catch_all() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"enum Three { A, B, C(Int32) }
+
+fn main() {
+    let t: Three = Three::B;
+    let v: Int32 = match t {
+        Three::A => 1,
+        Three::B => 2,
+        Three::C(n) => n,
+    };
+    assert_eq(v, 2);
+}
+"#;
+    let (generated, run) = build(source, "enumdisc").expect("must build");
+    assert_eq!(run.status.code(), Some(0));
+    for variant in ["V0(..) =>", "V1(..) =>", "V2(..) =>"] {
+        assert!(
+            generated.contains(variant),
+            "the discriminant match must name {variant}:\n{generated}"
+        );
+    }
+}
+
+/// V-DISC-1 makes a variant-field projection legal only after a discriminant test, so the `_`
+/// arm of a payload read is provably dead. It is emitted as `unreachable!()` naming the rule --
+/// the same treatment the verifier-proved dead-block path gets -- rather than as a fabricated
+/// value that would silently paper over a lowering bug.
+#[test]
+fn a_payload_read_marks_its_impossible_arm_unreachable() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"enum Holder { Has(Int32), Empty }
+
+fn main() {
+    let h: Holder = Holder::Has(41);
+    let v: Int32 = match h {
+        Holder::Has(n) => n + 1,
+        Holder::Empty => 0,
+    };
+    assert_eq(v, 42);
+}
+"#;
+    let (generated, run) = build(source, "enumpayload").expect("must build");
+    assert_eq!(run.status.code(), Some(0));
+    assert!(
+        generated.contains("V-DISC-1"),
+        "the impossible arm should name the rule that makes it impossible:\n{generated}"
+    );
 }

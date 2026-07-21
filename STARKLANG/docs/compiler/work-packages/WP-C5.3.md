@@ -120,11 +120,75 @@ per nominal, and the change is confined to `emit_types::derives_for` plus one te
 
 ## C5.3b — Enums and discriminants
 
-Not started.
+### Status: CLOSED 2026-07-21 (CD-057).
+
+Delivered per `WP-C5-ENTRY.md` §14 ("user enums, payload access, discriminant switching, and
+verifier-assumed variant correctness"):
+
+- **User enums map to generated Rust enums** with uniformly **tuple** variants (`V0()`,
+  `V1(i32)`, `V2(i32, i32)`), positional like struct fields and for the same reason. Empty
+  payloads stay tuple variants: `V0()` is legal Rust, and the uniformity removes a special case
+  from construction, from patterns (`V0(..)` matches it), and from the discriminant match — a
+  unit variant would need different syntax in all three.
+- **`AggKind::EnumVariant`** construction, taking its type ARGUMENTS from the destination for the
+  same reason struct aggregates do: the kind names the enum and the variant, not the instance.
+- **`Projection::VariantField`** — the one projection that cannot be a Rust suffix.
+
+### The structural problem, and the shape it forces
+
+Rust has no way to project into an enum variant's field outside a `match`. Every other MIR
+projection appends to a place expression (`.f0`, `[2]`); this one has to *wrap* what came before:
+
+```rust
+(match &_5 { Ty::V1(__payload) => *__payload,
+             _ => unreachable!("V-DISC-1: variant-field projection without a discriminant test") })
+```
+
+Two consequences, both deliberate:
+
+- **The `_` arm is provably dead**, because V-DISC-1 makes a variant-field projection legal only
+  after a discriminant test. It gets the same `unreachable!()` treatment the verifier-proved
+  dead-block path already has, naming the rule — not a fabricated value that would paper over a
+  lowering bug.
+- **The result is an expression, not a place**, so it cannot be spliced as an assignment
+  destination. `emit_dest_place` refuses it explicitly. This is a guard rather than a
+  limitation: MIR lowering emits `VariantField` only through `read_place` and pattern tests, and
+  STARK source has no syntax for assigning into a payload, so no path reaches it.
+
+`Rvalue::Discriminant` takes the same shape for the same reason — an enum with payloads has no
+integer `as` conversion. Every variant is listed with **no catch-all arm**, so adding a variant
+cannot silently fall through to a wrong index. Its arms are typed by the destination local, not
+by a fixed width; a hardcoded `i128` made the generated crate fail to compile against MIR's
+`Int64` discriminant local, which the first native probe caught.
+
+### Evidence
+
+Four new three-engine cases (all three payload arities constructed and matched; payload field
+ORDER, using a non-commutative operation so a wrongly-bound two-field payload cannot pass;
+discriminant selection across four variants driven by a loop, with distinct per-variant values so
+any mis-selected arm changes the sum; and a trap raised from a value that came out of a payload).
+Three new native-only cases for the generated shape: one definition per instance with uniform
+tuple variants, a discriminant match naming every variant, and the `unreachable!()` arm citing
+V-DISC-1.
+
+### What C5.3b makes newly urgent
+
+The cross-block non-`Copy` move boundary from C5.3a **bites far harder for enums than for
+structs**. Conditionally constructing a value and then matching it — the ordinary way enums are
+used — puts construction in one basic block and the match in another, which is exactly the shape
+the block-dispatch loop cannot express for a non-`Copy` value. The discriminant-selection test
+above needs `impl Copy for Colour {}` to cross that boundary at all.
+
+This is the strongest argument yet for settling **CD-056 decision 3 (the non-`Copy` storage
+strategy)** before C5.3c: `Option`/`Result` payloads are frequently non-`Copy`, and `?` is
+inherently cross-block.
 
 ## C5.3c — Option, Result, matches, and `?`
 
-Not started.
+Not started. `EnumRef::CoreOption`/`CoreResult`/`CoreOrdering` are deliberately excluded from
+C5.3b rather than half-supported: they arrive with match/`?` lowering, and their payloads make
+CD-056 decision 3 (non-`Copy` storage) a prerequisite rather than a nicety — see C5.3b's closing
+note.
 
 ## C5.3d — Bounded Drop proof
 
@@ -134,5 +198,5 @@ above already makes visible.
 ## C5.3 exit
 
 Not reached. §14 requires three-engine agreement for aggregate values (C5.3a: done), payload
-variants, match paths, Option/Result, `?`, target layout queries (**definition open — CD-056**),
-and the dedicated C5 Drop fixture.
+variants (C5.3b: done), match paths (C5.3b: done for user enums), Option/Result, `?`, target
+layout queries (**definition open — CD-056**), and the dedicated C5 Drop fixture.

@@ -16,6 +16,14 @@ pub fn field_name(i: u32) -> String {
     format!("f{i}")
 }
 
+/// The generated variant name for the enum variant at declaration index `v`. Positional for the
+/// same reason [`field_name`] is: MIR carries variants by index (`AggKind::EnumVariant`,
+/// `Projection::VariantField`, and a `SwitchInt` on a discriminant), having discarded the source
+/// names.
+pub fn variant_name(v: u32) -> String {
+    format!("V{v}")
+}
+
 pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
     Ok(match ty {
         MirTy::Int8 => "i8".to_string(),
@@ -49,6 +57,12 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         }
         MirTy::Array(elem, n) => format!("[{}; {n}]", emit_ty(elem)?),
         MirTy::Struct(item, args) => mangle::type_name_for_nominal(item.0, args),
+        // WP-C5.3b: user enums only. `Option`/`Result`/`Ordering` (`EnumRef::Core*`) are
+        // WP-C5.3c, where they arrive together with match/`?` lowering rather than being
+        // half-supported here.
+        MirTy::Enum(crate::mir::EnumRef::User(item), args) => {
+            mangle::type_name_for_nominal(item.0, args)
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \
@@ -98,6 +112,35 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
 /// copy helper per nominal, and the change is confined to [`derives_for`].
 pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
+    for ((item, args), variants) in &program.types.enum_variants {
+        let name = mangle::type_name_for_nominal(*item, args);
+        let rendered: Vec<String> = args.iter().map(crate::mir::dump_ty).collect();
+        out.push_str(&format!(
+            "// STARK nominal: enum#{item}[{}]\n",
+            rendered.join(", ")
+        ));
+        let ty = MirTy::Enum(
+            crate::mir::EnumRef::User(crate::hir::ItemId(*item)),
+            args.clone(),
+        );
+        if let Some(derives) = derives_for(&ty, &program.types) {
+            out.push_str(&format!("{derives}\n"));
+        }
+        out.push_str(&format!("enum {name} {{\n"));
+        for (v, payload) in variants.iter().enumerate() {
+            let fields: Result<Vec<String>, _> = payload.iter().map(emit_ty).collect();
+            // Every variant is a TUPLE variant, including empty ones (`V0()` is legal Rust).
+            // Uniformity removes a special case from construction (`V0()`), from patterns
+            // (`V0(..)` matches it), and from the discriminant match -- a unit variant would
+            // need different syntax in all three.
+            out.push_str(&format!(
+                "    {}({}),\n",
+                variant_name(v as u32),
+                fields?.join(", ")
+            ));
+        }
+        out.push_str("}\n\n");
+    }
     for ((item, args), fields) in &program.types.struct_fields {
         let name = mangle::type_name_for_nominal(*item, args);
         let rendered: Vec<String> = args.iter().map(crate::mir::dump_ty).collect();
@@ -194,9 +237,31 @@ pub fn default_value_expr(ty: &MirTy, types: &TypeContext) -> Result<String, Bac
             }
             format!("{name} {{ {} }}", parts.join(", "))
         }
+        MirTy::Enum(crate::mir::EnumRef::User(item), args) => {
+            let variants = types
+                .enum_variants
+                .get(&(item.0, args.clone()))
+                .ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "no type-context entry for enum instance {ty:?}"
+                    ))
+                })?;
+            let payload = variants.first().ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("enum instance {ty:?} declares no variants"))
+            })?;
+            let name = mangle::type_name_for_nominal(item.0, args);
+            let mut parts = Vec::with_capacity(payload.len());
+            for field_ty in payload {
+                parts.push(default_value_expr(field_ty, types)?);
+            }
+            // The FIRST variant, arbitrarily -- like every other default value here, this exists
+            // only so a multi-block body's locals have a starting value, and says nothing about
+            // what the local logically holds. MIR liveness governs that.
+            format!("{name}::{}({})", variant_name(0), parts.join(", "))
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "MirTy {other:?} has no WP-C5.3a default-value representation yet"
+                "MirTy {other:?} has no WP-C5.3b default-value representation yet"
             )))
         }
     })
