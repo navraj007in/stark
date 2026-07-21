@@ -450,3 +450,96 @@ fn main() {
          {stray:?}"
     );
 }
+
+// -------------------------------------- WP-C5.3c: Option, Result, and `?` --
+
+/// Core enums take the SAME generated representation as user enums, from one shared variant
+/// table. §6.2 preferred ordinary Rust `Option`/`Result` "if all observable semantics match";
+/// generated enums are used instead so one mechanism covers every enum and no Rust drop glue
+/// exists for a type MIR is responsible for destroying (CD-060).
+#[test]
+fn option_and_result_generate_their_own_enums_with_mir_discriminant_order() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"fn half(n: Int32) -> Option<Int32> {
+    if n % 2 == 0 { Some(n / 2) } else { None }
+}
+
+fn checked(n: Int32) -> Result<Int32, Bool> {
+    if n > 0 { Ok(n) } else { Err(true) }
+}
+
+fn main() {
+    match half(4) {
+        Some(v) => assert_eq(v, 2),
+        None => assert(false),
+    }
+    match checked(1) {
+        Ok(v) => assert_eq(v, 1),
+        Err(e) => assert(false),
+    }
+}
+"#;
+    let (generated, run) = build(source, "coreenums").expect("must build");
+    assert_eq!(run.status.code(), Some(0));
+
+    // No STARK local is declared at Rust's prelude `Option`/`Result`. The check is on LOCAL
+    // DECLARATIONS specifically: Rust's `Option` does legitimately appear elsewhere in the
+    // output as an implementation detail of checked arithmetic (`checked_add` returns one), and
+    // that has nothing to do with how STARK's `Option` is represented.
+    let rust_typed_locals: Vec<&str> = generated
+        .lines()
+        .filter(|line| line.trim_start().starts_with("let mut _"))
+        .filter(|line| line.contains(": Option<") || line.contains(": Result<"))
+        .collect();
+    assert!(
+        rust_typed_locals.is_empty(),
+        "core enums must use generated definitions, not Rust's: {rust_typed_locals:?}"
+    );
+    // Two generated core enums, each with its MIR variant order: Option is None=0/Some=1, so V1
+    // carries the payload; Result is Ok=0/Err=1, so V0 does.
+    assert!(
+        generated.contains("V0(),\n    V1(i32),"),
+        "Option must be None=0 then Some(T)=1:\n{generated}"
+    );
+    assert!(
+        generated.contains("V0(i32),\n    V1(bool),"),
+        "Result must be Ok(T)=0 then Err(E)=1:\n{generated}"
+    );
+}
+
+/// `?` is already ordinary control flow by the time the backend sees it: §14 requires emitting
+/// the lowered flow "without reconstructing source patterns". The check is that no Rust `?`
+/// appears in the output -- the propagation is branches and returns, not a borrowed Rust
+/// operator whose semantics would then have to be argued equivalent.
+#[test]
+fn question_mark_emits_control_flow_not_a_rust_question_mark() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"fn parse(n: Int32) -> Result<Int32, Bool> {
+    if n > 0 { Ok(n * 2) } else { Err(true) }
+}
+
+fn twice(n: Int32) -> Result<Int32, Bool> {
+    let first: Int32 = parse(n)?;
+    Ok(first)
+}
+
+fn main() {
+    match twice(2) {
+        Ok(v) => assert_eq(v, 4),
+        Err(e) => assert(false),
+    }
+}
+"#;
+    let (generated, run) = build(source, "qmark").expect("must build");
+    assert_eq!(run.status.code(), Some(0));
+    assert!(
+        !generated.contains(")?;") && !generated.contains(")?\n"),
+        "`?` must be emitted as MIR's own branches, not Rust's operator:\n{generated}"
+    );
+}

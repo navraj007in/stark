@@ -95,8 +95,14 @@ cannot be dispatched natively, and C5.3d-1's observable destruction fixture cann
 planned — §7.7 is currently proven structurally instead. Admitting `Ref` for destructor receivers
 is an owner-level scope question.
 
-Next: C5.3c (Option/Result/matches/`?`) on the slot abstraction, and the `Ref`-for-destructors
-decision before C5.3d-1. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+**C5.3c CLOSED (CD-061)** — Option, Result, matches and `?` run natively on generated core enums.
+
+**The two remaining C5.3 gaps are one gap: no references.** User `Drop` impls need `&mut Self`;
+`Ordering` needs `cmp(&other)`. A narrow destructor-reference lane, slightly widened, closes both
+— and until it lands, C5.3d-1's observable destruction fixture cannot be built and the enum drop
+glue fixed under CD-060 stays unexercised.
+
+Next: the reference-lane decision, then C5.3d-1. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -2264,6 +2270,43 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
 
   - Validation: fmt clean, clippy clean, stark-runtime 23/23, `backend::` 42/42,
     `three_engine_differential` 35/35, `native_c5_3_aggregates_enums` 10/10, Miri 18/18 zero UB.
+
+- CD-061 [2026-07-21, C5.3c CLOSED] **`Option`, `Result`, matches and `?` compile and run
+  natively. Two of the three remaining C5.3 gaps are now known to share ONE root cause.**
+
+  - **Core enums share the user-enum representation** through one `variant_payloads` table — the
+    single source the definition, the discriminant match and every projection read — mirroring
+    `mir::verify::variant_payload`: `Option` `None=0`/`Some=1`, `Result` `Ok=0`/`Err=1`,
+    `Ordering` three fieldless variants (A2).
+
+  - **§6.2 deviation, flagged.** §6.2 preferred ordinary Rust `Option`/`Result` "if all observable
+    semantics match"; generated enums are used instead so one mechanism covers every enum and no
+    Rust drop glue exists for a type MIR is responsible for destroying — which matters more now
+    that `ValueSlot` makes destruction explicitly MIR's. Reversible in
+    `emit_types::nominal_type_name`.
+
+  - **`?` needed no backend work**: MIR has already lowered it to branches and returns. A native
+    test asserts no Rust `?` appears in the output, so the propagation is MIR's own control flow
+    rather than a borrowed operator whose equivalence would have to be argued.
+
+  - **Evidence**: four three-engine cases (both Option variants, including one flowing through a
+    local into a later block; Result with DIFFERENT Ok/Err payload types, so confusing the two
+    variants' payload tables would not compile; `?` on both propagating and falling-through
+    paths; a trap from inside an Option payload, checking provenance on the core-enum path) and
+    two native cases pinning generated variant order and the absence of Rust `?`. One expected
+    trap line of mine was wrong again and all three engines agreeing exposed it — the third time
+    that independent expectation has earned its place.
+
+  - **`Ordering` is supported but UNREACHABLE, and it shares a root cause with the Drop gap.** It
+    needs no special case in the emitter, but cannot be produced from compilable C5 source: the
+    only way to obtain one is `a.cmp(&b)`, and `cmp` takes a reference. That is the same cause as
+    user `Drop` impls being unrepresentable (`&mut Self` receiver). **The two remaining C5.3 gaps
+    are one gap — the absence of references** — which means the narrow destructor-reference lane,
+    slightly widened, would close both. Worth knowing before scoping it.
+
+  - Validation, scoped: fmt clean, clippy clean, stark-runtime 23/23, `backend::` 42/42,
+    `three_engine_differential` 39/39, `native_c5_3_aggregates_enums` 12/12, earlier native
+    suites green.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

@@ -1283,6 +1283,126 @@ fn main() {
 "#
 );
 
+// ============================ WP-C5.3c: Option, Result, matches, and `?` --
+
+three_engine_test!(
+    option_construction_and_matching_agree,
+    "core_option",
+    completes,
+    r#"fn half(n: Int32) -> Option<Int32> {
+    if n % 2 == 0 { Some(n / 2) } else { None }
+}
+
+fn main() {
+    // Both variants constructed, both matched, and the payload observed -- a backend that
+    // mapped Some/None to the wrong discriminants would select the wrong arm.
+    match half(10) {
+        Some(v) => assert_eq(v, 5),
+        None => assert(false),
+    }
+    match half(7) {
+        Some(v) => assert(false),
+        None => assert(true),
+    }
+
+    // An Option flowing through a local and matched in a later block.
+    let o: Option<Int32> = half(8);
+    match o {
+        Some(v) => assert_eq(v, 4),
+        None => assert(false),
+    }
+}
+"#
+);
+
+three_engine_test!(
+    result_construction_and_matching_agree,
+    "core_result",
+    completes,
+    r#"fn checked(n: Int32) -> Result<Int32, Bool> {
+    if n > 0 { Ok(n) } else { Err(true) }
+}
+
+fn main() {
+    match checked(3) {
+        Ok(v) => assert_eq(v, 3),
+        Err(e) => assert(false),
+    }
+    match checked(-1) {
+        Ok(v) => assert(false),
+        Err(e) => assert(e),
+    }
+
+    // Ok and Err carry DIFFERENT payload types, so a backend that confused the two variants'
+    // payload tables would not even compile.
+    let r: Result<Int32, Bool> = checked(7);
+    match r {
+        Ok(v) => assert_eq(v + 1, 8),
+        Err(e) => assert(!e),
+    }
+}
+"#
+);
+
+// The `?` operator: MIR has already lowered it to ordinary control flow, so the backend emits
+// that flow without reconstructing the source form. Both paths are exercised -- early return on
+// Err, and fall-through on Ok.
+three_engine_test!(
+    question_mark_propagation_agrees,
+    "core_qmark",
+    completes,
+    r#"fn parse(n: Int32) -> Result<Int32, Bool> {
+    if n > 0 { Ok(n * 2) } else { Err(true) }
+}
+
+fn twice(n: Int32) -> Result<Int32, Bool> {
+    let first: Int32 = parse(n)?;
+    let second: Int32 = parse(first)?;
+    Ok(second)
+}
+
+fn main() {
+    match twice(3) {
+        Ok(v) => assert_eq(v, 12),
+        Err(e) => assert(false),
+    }
+    // The Err path propagates out of the FIRST `?`, so the second call never runs.
+    match twice(-1) {
+        Ok(v) => assert(false),
+        Err(e) => assert(e),
+    }
+}
+"#
+);
+
+// A trap raised from inside an Option payload, so trap provenance is checked on the core-enum
+// path too rather than only the user-enum one.
+three_engine_test!(
+    a_trap_from_an_option_payload_agrees,
+    "core_trap",
+    traps(TrapCategory::DivideByZero, 8),
+    r#"fn zero() -> Option<Int32> {
+    Some(0)
+}
+
+fn main() {
+    match zero() {
+        Some(n) => {
+            let q: Int32 = 100 / n;
+        }
+        None => assert(false),
+    }
+}
+"#
+);
+
+// `Ordering` -- the third core enum -- is SUPPORTED by the emitter (it shares the same variant
+// table, with A2's fixed Less=0/Equal=1/Greater=2) but has NO three-engine case, because it
+// cannot be produced from compilable C5 source: the only way to obtain one is `a.cmp(&b)`, and
+// `cmp` takes a reference. That is the same root cause as user `Drop` impls being unrepresentable
+// (`&mut Self` receiver) -- both remaining C5.3 gaps are the absence of references, not two
+// separate limitations. See CD-061.
+
 // ========================================================= review regressions --
 // CD-052's fixed defects, re-pinned as three-engine agreement rather than per-engine assertions.
 

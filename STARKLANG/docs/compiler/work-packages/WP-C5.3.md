@@ -394,7 +394,41 @@ second take through emitted paths).
 
 ## C5.3c — Option, Result, matches, and `?`
 
-Not started, and **not next**: CD-058 inserts C5.3d-0 first. `EnumRef::CoreOption`/`CoreResult`/
+### Status: CLOSED 2026-07-21 (CD-061).
+
+Core enums take the **same generated representation as user enums**, driven by one shared
+`variant_payloads` table — the single source the generated definition, the discriminant match and
+every payload projection all read. It mirrors `mir::verify::variant_payload`, which is the
+authority: `Option` is `None = 0`/`Some(T) = 1`, `Result` is `Ok(T) = 0`/`Err(E) = 1`, `Ordering`
+is three fieldless variants (A2's `Less`/`Equal`/`Greater`).
+
+**Deviation from §6.2, flagged.** §6.2 preferred ordinary Rust `Option<T>`/`Result<T, E>` "if all
+observable semantics match". Generated enums are used instead, for two reasons: one mechanism then
+covers every enum in the language, and no Rust drop glue exists for a type MIR is responsible for
+destroying — which matters now that `ValueSlot` makes destruction explicitly MIR's. Reversible in
+`emit_types::nominal_type_name` if the owner prefers the stated default.
+
+`?` needs no backend work at all: MIR has already lowered it to branches and returns, and §14
+requires emitting that flow "without reconstructing source patterns". A native test asserts no
+Rust `?` appears in the output — the propagation is MIR's own control flow, not a borrowed Rust
+operator whose semantics would then have to be argued equivalent.
+
+Evidence: four three-engine cases (Option both variants including one flowing through a local into
+a later block; Result with *different* Ok/Err payload types; `?` on both the propagating and
+falling-through paths; and a trap raised from inside an Option payload, so trap provenance is
+checked on the core-enum path too) plus two native cases pinning the generated variant order and
+the absence of Rust `?`.
+
+### `Ordering` is supported but unreachable — and it shares a root cause
+
+`Ordering` is handled by the same table and needs no special case, but it has **no three-engine
+case, because it cannot be produced from compilable C5 source**: the only way to obtain one is
+`a.cmp(&b)`, and `cmp` takes a reference.
+
+That is the *same* root cause as user `Drop` impls being unrepresentable (`&mut Self` receiver).
+**Both remaining C5.3 gaps are the absence of references, not two separate limitations** — which
+strengthens the case for the narrow destructor-reference lane, since a slightly wider version of
+the same lane would also make `Ordering` reachable. `EnumRef::CoreOption`/`CoreResult`/
 `CoreOrdering` are deliberately excluded from C5.3b rather than half-supported — they arrive with
 match/`?` lowering, on the slot abstraction, since `Option`/`Result` payloads are frequently
 non-`Copy` and `?` is inherently cross-block.
@@ -408,6 +442,6 @@ blocked on is resolved (CD-058) and its foundation is C5.3d-0's deliverable.
 ## C5.3 exit
 
 Not reached. §14 requires three-engine agreement for aggregate values (C5.3a: done), payload
-variants (C5.3b: done), match paths (C5.3b: done for user enums), Option/Result, `?`, target
+variants (C5.3b: done), match paths (done), Option/Result (C5.3c: done), `?` (C5.3c: done), target
 layout queries (**defined by CD-058: exact values under one injectable target-layout manifest;
 the current relations-only case is a placeholder, not evidence**), and the dedicated C5 Drop fixture.
