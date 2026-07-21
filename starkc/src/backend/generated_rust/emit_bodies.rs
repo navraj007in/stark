@@ -10,23 +10,36 @@
 //! "this is a loop" versus "this is a branch": both are just `__bb = target; continue;`.
 //!
 //! `Rvalue::Aggregate`/`Discriminant` (WP-C5.3), `Rvalue::RefOf` (not yet scheduled to a
-//! specific sub-WP), and indirect (`Callee::FnValue`) / runtime (`Callee::Runtime`) calls and
-//! `Drop`/`Trap` terminators (WP-C5.4c / WP-C5.2e / wherever `RuntimeFn` support lands) remain
-//! `Unsupported`.
+//! specific sub-WP), indirect (`Callee::FnValue`) / runtime (`Callee::Runtime`) calls
+//! (WP-C5.4c / wherever `RuntimeFn` support lands), the `Drop` terminator (WP-C5.3), and
+//! `Terminator::Trap` carrying a user MESSAGE (needs `&str` values -- WP-C5.3) remain
+//! `Unsupported`. Message-less `Terminator::Trap` is supported as of WP-C5.2e.
+//!
+//! WP-C5.2e: every checked-operation trap now carries a real source location. The location is
+//! resolved at COMPILE TIME (`SourceFile::line_col` against `MirProgram::files`, both already
+//! available to the backend) and baked into the generated call site as literals -- see
+//! `stark-runtime/src/trap.rs`'s doc comment for why this is a deliberate, documented
+//! alternative to §13.1's compact-span-ID-plus-runtime-lookup design, not an oversight.
 
 use super::{emit_places, emit_types, mangle, BackendDiagnostic};
 use crate::mir::{
     Callee, CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand, Rvalue,
-    Statement, Terminator, TrapCategory,
+    SourceInfo, Statement, Terminator, TrapCategory, TrapInfo,
 };
+use crate::source::SourceFile;
+use std::sync::Arc;
 
 /// A complete `fn name(params) -> ret { ... }` for an ordinary (non-entry) function. The entry
 /// instance is emitted separately, by `emit_program.rs`, as Rust's literal `fn main()` with the
 /// version-check prologue prepended -- `emit_block_body` is the shared piece both use.
-pub fn emit_function(body: &MirBody, name: &str) -> Result<String, BackendDiagnostic> {
+pub fn emit_function(
+    body: &MirBody,
+    name: &str,
+    files: &[Arc<SourceFile>],
+) -> Result<String, BackendDiagnostic> {
     let params = emit_param_list(body)?;
     let ret_ty = emit_types::emit_ty(&body.ret)?;
-    let block = emit_block_body(body)?;
+    let block = emit_block_body(body, files)?;
     Ok(format!("fn {name}({params}) -> {ret_ty} {block}"))
 }
 
@@ -62,7 +75,10 @@ fn emit_param_list(body: &MirBody) -> Result<String, BackendDiagnostic> {
 /// `Temp`-kinded, every statement a `Nop` or an assignment whose `Rvalue` is `Use`/`UnOp`/
 /// `BinOp`/`LayoutQuery`, and every terminator `Goto`/`SwitchInt`/`Checked`/`Call` (direct only)/
 /// `Return`/`Unreachable`.
-pub fn emit_block_body(body: &MirBody) -> Result<String, BackendDiagnostic> {
+pub fn emit_block_body(
+    body: &MirBody,
+    files: &[Arc<SourceFile>],
+) -> Result<String, BackendDiagnostic> {
     let mut out = String::from("{\n");
 
     // Every non-parameter local is declared `let mut`, DEFAULT-INITIALISED, up front (WP-C5.2c's
@@ -106,7 +122,7 @@ pub fn emit_block_body(body: &MirBody) -> Result<String, BackendDiagnostic> {
                 }
             }
         }
-        emit_terminator(body, &mut out, &block.terminator.0)?;
+        emit_terminator(body, files, &mut out, &block.terminator.0)?;
         out.push_str("            }\n");
     }
     out.push_str("            _ => unreachable!(\"invalid block index\"),\n");
@@ -119,6 +135,7 @@ pub fn emit_block_body(body: &MirBody) -> Result<String, BackendDiagnostic> {
 
 fn emit_terminator(
     body: &MirBody,
+    files: &[Arc<SourceFile>],
     out: &mut String,
     terminator: &Terminator,
 ) -> Result<(), BackendDiagnostic> {
@@ -154,7 +171,7 @@ fn emit_terminator(
         } => {
             let dest_place = emit_places::local_name(dest.0);
             let dest_ty = &body.locals[dest.0 as usize].ty;
-            let expr = emit_checked_expr(body, *op, args, dest_ty, trap.category)?;
+            let expr = emit_checked_expr(body, files, *op, args, dest_ty, trap)?;
             out.push_str(&format!("                {dest_place} = {expr};\n"));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
         }
@@ -185,10 +202,28 @@ fn emit_terminator(
                 "                unreachable!(\"WP-C4 verifier proved this block is dead\");\n",
             );
         }
+        Terminator::Trap { info, message } => {
+            // WP-C5.2e: an UNCONDITIONAL trap -- `panic(msg)` and a failed `assert*`, as opposed
+            // to `Terminator::Checked`'s conditional one. It shares the same abort call and the
+            // same compile-time-resolved location, so a native `assert_eq` failure and a native
+            // overflow report through one path and one stderr format.
+            if message.is_some() {
+                // `panic("...")`/`assert*` with a user message needs a `&str` VALUE crossing into
+                // the runtime, which needs string representation -- WP-C5.3. Message-less traps
+                // (every compiler-generated trap, and `assert`/`assert_eq`/`assert_ne`, which
+                // `mir::lower` emits with `message: None`) are fully supported now.
+                return Err(BackendDiagnostic::Unsupported(
+                    "Terminator::Trap with a user message needs `&str` values (WP-C5.3); \
+                     message-less traps are supported"
+                        .to_string(),
+                ));
+            }
+            let abort = emit_abort_call(files, info.category, &info.source);
+            out.push_str(&format!("                {abort};\n"));
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "Terminator {other:?} has no WP-C5.2d representation yet -- Drop/Trap land in \
-                 WP-C5.2e/C5.3"
+                "Terminator {other:?} has no WP-C5.2e representation yet -- Drop lands in WP-C5.3"
             )))
         }
     }
@@ -335,6 +370,38 @@ fn trap_category_token(category: TrapCategory) -> String {
     format!("stark_runtime::trap::TrapCategory::{category:?}")
 }
 
+/// WP-C5.2e: resolves a `SourceInfo` to (file path, 1-based line, 1-based column) at COMPILE
+/// TIME, using the same `SourceFile::line_col` the rest of the compiler's diagnostics already
+/// use (`04-Semantic-Analysis.md`'s 1-based convention) -- not a new position-mapping scheme.
+fn resolve_source_location(files: &[Arc<SourceFile>], info: &SourceInfo) -> (String, u32, u32) {
+    let file = &files[info.file.0 as usize];
+    let (line, col) = file.line_col(info.span.lo);
+    (file.name.clone(), line as u32, col as u32)
+}
+
+/// A Rust string-literal token. File paths are compiler-controlled (from `MirProgram::files`,
+/// not raw user input), but escaped defensively rather than trusted verbatim regardless.
+fn rust_str_lit(s: &str) -> String {
+    format!("\"{}\"", s.escape_default())
+}
+
+/// The full `stark_runtime::trap::abort(...)` call expression for a given category and source
+/// location -- the one place that assembles a trap abort call, so every trap site (the
+/// terminator's own default category, and the `Shl`/`Shr` `InvalidShift` override) goes through
+/// the same construction.
+fn emit_abort_call(
+    files: &[Arc<SourceFile>],
+    category: TrapCategory,
+    source: &SourceInfo,
+) -> String {
+    let (file, line, col) = resolve_source_location(files, source);
+    format!(
+        "stark_runtime::trap::abort({}, {}, {line}, {col})",
+        trap_category_token(category),
+        rust_str_lit(&file),
+    )
+}
+
 fn int_bounds_tokens(ty: &MirTy) -> Result<(&'static str, &'static str), BackendDiagnostic> {
     Ok(match ty {
         MirTy::Int8 => ("(i8::MIN as i128)", "(i8::MAX as i128)"),
@@ -348,6 +415,35 @@ fn int_bounds_tokens(ty: &MirTy) -> Result<(&'static str, &'static str), Backend
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "integer bounds requested for non-integer MirTy {other:?}"
+            )))
+        }
+    })
+}
+
+/// The float→int cast range test's bounds, as EXACT `f64` literals: `(min, upper_exclusive)`,
+/// where the accept condition is `min <= truncated < upper_exclusive`.
+///
+/// This is deliberately separate from [`int_bounds_tokens`], whose `(min, max)` pair is compared
+/// in exact `i128` arithmetic by the checked-arithmetic path and is correct there. Reusing it for
+/// a FLOAT comparison is not: `u64::MAX as f64` rounds up to 2^64 and `i64::MAX as f64` rounds up
+/// to 2^63, so an inclusive `truncated > (max as f64)` test accepts exactly 2^64 / 2^63 and Rust's
+/// saturating `as` then silently clamps them into range -- admitting a value 03-Type-System.md
+/// requires to trap. Every `max + 1` here is a power of two, hence exactly representable as `f64`,
+/// so the half-open form is exact at every width. Mirrors `mir::interp`'s `Cast` arm; the two
+/// engines must agree, and the differential comparator checks that they do.
+fn int_float_bounds_tokens(ty: &MirTy) -> Result<(&'static str, &'static str), BackendDiagnostic> {
+    Ok(match ty {
+        MirTy::Int8 => ("-128.0f64", "128.0f64"),
+        MirTy::Int16 => ("-32768.0f64", "32768.0f64"),
+        MirTy::Int32 => ("-2147483648.0f64", "2147483648.0f64"),
+        MirTy::Int64 => ("-9223372036854775808.0f64", "9223372036854775808.0f64"),
+        MirTy::UInt8 => ("0.0f64", "256.0f64"),
+        MirTy::UInt16 => ("0.0f64", "65536.0f64"),
+        MirTy::UInt32 => ("0.0f64", "4294967296.0f64"),
+        MirTy::UInt64 => ("0.0f64", "18446744073709551616.0f64"),
+        other => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "float cast bounds requested for non-integer MirTy {other:?}"
             )))
         }
     })
@@ -380,13 +476,14 @@ fn int_width_tokens(ty: &MirTy) -> Result<&'static str, BackendDiagnostic> {
 /// against the oracle rather than a "should be equivalent" argument re-derived per operator.
 fn emit_checked_expr(
     body: &MirBody,
+    files: &[Arc<SourceFile>],
     op: CheckedOp,
     args: &[Operand],
     dest_ty: &MirTy,
-    default_category: TrapCategory,
+    trap: &TrapInfo,
 ) -> Result<String, BackendDiagnostic> {
     use CheckedOp::*;
-    let default_trap = trap_category_token(default_category);
+    let default_abort = emit_abort_call(files, trap.category, &trap.source);
     match op {
         Add | Sub | Mul | Div | Rem | Neg | Pow => {
             let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
@@ -424,7 +521,7 @@ fn emit_checked_expr(
             };
             Ok(format!(
                 "match {checked} {{ Some(__v) if __v >= {min} && __v <= {max} => __v as \
-                 {dest_rust_ty}, _ => stark_runtime::trap::abort_minimal({default_trap}) }}"
+                 {dest_rust_ty}, _ => {default_abort} }}"
             ))
         }
         Shl | Shr => {
@@ -438,12 +535,13 @@ fn emit_checked_expr(
             } else {
                 "checked_shr"
             };
-            let invalid_shift = trap_category_token(TrapCategory::InvalidShift);
+            let invalid_shift_abort =
+                emit_abort_call(files, TrapCategory::InvalidShift, &trap.source);
             Ok(format!(
                 "{{ let __count = ({count}) as i128; if __count < 0 || __count >= {width} {{ \
-                 stark_runtime::trap::abort_minimal({invalid_shift}) }} else {{ match (({l}) as \
+                 {invalid_shift_abort} }} else {{ match (({l}) as \
                  i128).{method}(__count as u32) {{ Some(__v) if __v >= {min} && __v <= {max} => \
-                 __v as {dest_rust_ty}, _ => stark_runtime::trap::abort_minimal({default_trap}) \
+                 __v as {dest_rust_ty}, _ => {default_abort} \
                  }} }} }}"
             ))
         }
@@ -454,11 +552,11 @@ fn emit_checked_expr(
             let rust_op = if matches!(op, FloatDiv) { "/" } else { "%" };
             Ok(format!(
                 "{{ let __l: {dest_rust_ty} = {l}; let __r: {dest_rust_ty} = {r}; if __r == 0.0 \
-                 {{ stark_runtime::trap::abort_minimal({default_trap}) }} else {{ __l {rust_op} \
+                 {{ {default_abort} }} else {{ __l {rust_op} \
                  __r }} }}"
             ))
         }
-        Cast => emit_cast_expr(body, &args[0], dest_ty, &default_trap),
+        Cast => emit_cast_expr(body, files, &args[0], dest_ty, trap),
         other => Err(BackendDiagnostic::Unsupported(format!(
             "CheckedOp {other:?} has no WP-C5.2c representation yet -- CheckIndex lands \
              alongside array/slice indexing (WP-C5.3)"
@@ -468,9 +566,10 @@ fn emit_checked_expr(
 
 fn emit_cast_expr(
     body: &MirBody,
+    files: &[Arc<SourceFile>],
     source: &Operand,
     dest_ty: &MirTy,
-    default_trap: &str,
+    trap: &TrapInfo,
 ) -> Result<String, BackendDiagnostic> {
     let src_ty = operand_mir_ty(body, source)?;
     let a = emit_operand(source)?;
@@ -479,12 +578,13 @@ fn emit_cast_expr(
     let dest_is_int = int_bounds_tokens(dest_ty).is_ok();
     let src_is_float = matches!(src_ty, MirTy::Float32 | MirTy::Float64);
     let dest_is_float = matches!(dest_ty, MirTy::Float32 | MirTy::Float64);
+    let default_abort = emit_abort_call(files, trap.category, &trap.source);
 
     if src_is_int && dest_is_int {
         let (min, max) = int_bounds_tokens(dest_ty)?;
         return Ok(format!(
             "{{ let __v = ({a}) as i128; if __v >= {min} && __v <= {max} {{ __v as \
-             {dest_rust_ty} }} else {{ stark_runtime::trap::abort_minimal({default_trap}) }} }}"
+             {dest_rust_ty} }} else {{ {default_abort} }} }}"
         ));
     }
     if src_is_int && dest_is_float {
@@ -496,10 +596,13 @@ fn emit_cast_expr(
         return Ok(format!("(({a}) as {dest_rust_ty})"));
     }
     if src_is_float && dest_is_int {
-        let (min, max) = int_bounds_tokens(dest_ty)?;
+        // Half-open, on EXACT f64 bounds -- see `int_float_bounds_tokens` for why the inclusive
+        // `int_bounds_tokens` pair is wrong here. Widening an f32 source to f64 is exact, so the
+        // comparison is performed at one width for every source type.
+        let (min, upper_exclusive) = int_float_bounds_tokens(dest_ty)?;
         return Ok(format!(
-            "{{ let __f = ({a}) as f64; let __t = __f.trunc(); if __f.is_nan() || __t < ({min} \
-             as f64) || __t > ({max} as f64) {{ stark_runtime::trap::abort_minimal({default_trap}) \
+            "{{ let __f = ({a}) as f64; let __t = __f.trunc(); if __f.is_nan() || __t < {min} \
+             || __t >= {upper_exclusive} {{ {default_abort} \
              }} else {{ __t as {dest_rust_ty} }} }}"
         ));
     }

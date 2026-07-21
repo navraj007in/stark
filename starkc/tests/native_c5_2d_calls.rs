@@ -68,20 +68,62 @@ fn direct_call_with_parameters_compiles_and_runs_natively() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
+    // The RETURNED VALUE is observed, not merely the fact that a call compiled and the process
+    // exited: `let x: Int32 = add(2, 3);` with an exit-0 check passes against a backend that
+    // returns zero from every function. Native `println` is out of scope until WP-C5.3, so a
+    // failed `assert_eq` (a message-less `Terminator::Trap`, supported natively as of WP-C5.2e)
+    // is the observation channel -- see `native_c5_2c_operations.rs`'s negative control, which
+    // proves a false assertion really does trap rather than being compiled away.
     let source = r#"
 fn add(a: Int32, b: Int32) -> Int32 {
     a + b
 }
 
 fn main() {
-    let x: Int32 = add(2, 3);
+    assert_eq(add(2, 3), 5);
+    // Argument ORDER is observable only with asymmetric arguments and a non-commutative
+    // operation; `add` alone could not distinguish a backend that swapped them.
+    assert_eq(add(10, 1), 11);
 }
 "#;
     let run = compile_and_run(source, "call");
     assert_eq!(
         run.status.code(),
         Some(0),
-        "stderr: {}",
+        "the call's return value must be correct; stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// Parameter ORDER and identity across a multi-parameter signature, which a commutative helper
+/// cannot pin: `sub` and the three-way `pick` both change result if any two parameters are
+/// transposed on the way in.
+#[test]
+fn parameter_order_is_preserved_across_a_direct_call() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"
+fn sub(a: Int32, b: Int32) -> Int32 {
+    a - b
+}
+
+fn pick(first: Int32, second: Int32, third: Int32) -> Int32 {
+    first * 100 + second * 10 + third
+}
+
+fn main() {
+    assert_eq(sub(10, 3), 7);
+    assert_eq(sub(3, 10), -7);
+    assert_eq(pick(1, 2, 3), 123);
+}
+"#;
+    let run = compile_and_run(source, "paramorder");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "parameters must arrive in declaration order; stderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
 }
@@ -112,19 +154,29 @@ fn is_positive(x: Float64) -> Bool {
 }
 
 fn main() {
+    // All three of `clamp`'s paths are exercised and each result observed -- clamped high,
+    // clamped low, and passed through untouched.
+    assert_eq(clamp(15, 0, 10), 10);
+    assert_eq(clamp(-5, 0, 10), 0);
+    assert_eq(clamp(7, 0, 10), 7);
+
     let clamped: Int32 = clamp(15, 0, 10);
     let mut flag: Bool = false;
     if clamped == 10 {
         flag = true;
     }
-    let positive: Bool = is_positive(2.5);
+    assert(flag);
+
+    // The differently-typed helper's Bool return is observed in both directions.
+    assert(is_positive(2.5));
+    assert(!is_positive(-2.5));
 }
 "#;
     let run = compile_and_run(source, "multiparam");
     assert_eq!(
         run.status.code(),
         Some(0),
-        "stderr: {}",
+        "every helper result must be correct; stderr: {}",
         String::from_utf8_lossy(&run.stderr)
     );
 }

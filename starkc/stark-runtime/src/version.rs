@@ -27,10 +27,15 @@ pub struct BuildVersions {
     pub profile: String,
 }
 
+/// Which side is "expected" and which is "actual" is fixed by the generated crate's point of
+/// view, and the two must not be swapped: the version the compiler RECORDED at generation time
+/// is what the binary expects, and the version of the runtime it actually LINKED is what it got.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VersionMismatch {
-    pub expected_runtime_version: &'static str,
-    pub actual_runtime_version: String,
+    /// From `BuildVersions::runtime_version` -- stamped in when the crate was generated.
+    pub expected_runtime_version: String,
+    /// This linked runtime's own [`RUNTIME_VERSION`].
+    pub actual_runtime_version: &'static str,
 }
 
 /// Fails before any user code runs (§9.2) when the runtime this binary linked does not match
@@ -38,9 +43,42 @@ pub struct VersionMismatch {
 pub fn check(recorded: &BuildVersions) -> Result<(), VersionMismatch> {
     if recorded.runtime_version != RUNTIME_VERSION {
         return Err(VersionMismatch {
-            expected_runtime_version: RUNTIME_VERSION,
-            actual_runtime_version: recorded.runtime_version.clone(),
+            expected_runtime_version: recorded.runtime_version.clone(),
+            actual_runtime_version: RUNTIME_VERSION,
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn versions_recording(runtime_version: &str) -> BuildVersions {
+        BuildVersions {
+            compiler_version: "0.1.0".to_string(),
+            mir_version: "0.1".to_string(),
+            mir_runtime_surface: "0.1".to_string(),
+            runtime_version: runtime_version.to_string(),
+            backend_version: "0.1".to_string(),
+            rustc_version: "irrelevant".to_string(),
+            target_triple: "irrelevant".to_string(),
+            profile: "debug".to_string(),
+        }
+    }
+
+    #[test]
+    fn matching_runtime_version_passes() {
+        assert_eq!(check(&versions_recording(RUNTIME_VERSION)), Ok(()));
+    }
+
+    /// Pins the field-to-side assignment, not merely that a mismatch is detected -- the generated
+    /// crate prints these as "generated for runtime {expected}, linked against {actual}", so
+    /// swapping them produces a message that names the wrong version on each side.
+    #[test]
+    fn mismatch_reports_the_recorded_version_as_expected_and_this_runtime_as_actual() {
+        let mismatch = check(&versions_recording("0.0-ancient")).unwrap_err();
+        assert_eq!(mismatch.expected_runtime_version, "0.0-ancient");
+        assert_eq!(mismatch.actual_runtime_version, RUNTIME_VERSION);
+    }
 }

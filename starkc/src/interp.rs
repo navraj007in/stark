@@ -2119,7 +2119,7 @@ impl<'a> Interpreter<'a> {
             .unwrap_or(Ty::Error);
         match value {
             Value::Int(value) if matches!(target, Ty::Primitive(p) if is_integer(p)) => {
-                self.check_integer_range(value, expr, span).map(Value::Int)
+                self.check_cast_range(value, expr, span).map(Value::Int)
             }
             Value::Int(value) if matches!(target, Ty::Primitive(p) if is_float(p)) => {
                 self.normalize_numeric(Value::Float(value as f64, FloatWidth::F64), expr, span)
@@ -2131,17 +2131,39 @@ impl<'a> Interpreter<'a> {
                 // A finite float-to-integer cast truncates toward zero, then traps only when
                 // the truncated result is unrepresentable in the target width (not merely
                 // because the source had a nonzero fractional part). NaN and infinities always
-                // trap. `.trunc() as i128` truncates finite f64 values toward zero exactly; the
-                // subsequent `check_integer_range` call performs the actual representability
-                // check against the target's declared width.
+                // trap. `.trunc() as i128` truncates finite f64 values toward zero exactly (i128
+                // covers every integral f64 magnitude a cast can produce, including 2^64); the
+                // subsequent `check_cast_range` call performs the actual representability check
+                // against the target's declared width, in exact integer arithmetic.
                 if !value.is_finite() {
                     return Err(RuntimeError::new("numeric cast out of range", span));
                 }
                 let truncated = value.trunc() as i128;
-                self.check_integer_range(truncated, expr, span)
-                    .map(Value::Int)
+                self.check_cast_range(truncated, expr, span).map(Value::Int)
             }
             _ => Err(RuntimeError::new("invalid numeric cast", span)),
+        }
+    }
+
+    /// The range check for a failing `as` CAST. Identical representability test to
+    /// [`Self::check_integer_range`], different trap: a failing cast is `TrapCategory::
+    /// CastFailure`, not `IntegerOverflow` -- 03-Type-System.md enumerates them as distinct
+    /// always-trap causes, and the MIR interpreter and native backend both classify a failing
+    /// cast as `CastFailure`. Both cast arms previously routed through `check_integer_range` and
+    /// so reported a cast failure with the ARITHMETIC overflow message, making the HIR oracle
+    /// disagree with the other two engines on category for every out-of-range cast at any width.
+    /// The message matches the one this function's non-finite sibling case already used, and is
+    /// what the differential comparator maps to `CastFailure`.
+    fn check_cast_range(
+        &self,
+        value: i128,
+        expr: ExprId,
+        span: Span,
+    ) -> Result<i128, RuntimeError> {
+        if self.fits_target_integer_width(value, expr) {
+            Ok(value)
+        } else {
+            Err(RuntimeError::new("numeric cast out of range", span))
         }
     }
 
@@ -2151,8 +2173,19 @@ impl<'a> Interpreter<'a> {
         expr: ExprId,
         span: Span,
     ) -> Result<i128, RuntimeError> {
+        if self.fits_target_integer_width(value, expr) {
+            Ok(value)
+        } else {
+            Err(RuntimeError::new("integer overflow", span))
+        }
+    }
+
+    /// Whether `value` is representable in the integer width the type tables assign to `expr`.
+    /// Shared by the arithmetic-overflow and cast-failure checks so the two can never drift on
+    /// WHICH values are in range while differing, correctly, on which trap they raise.
+    fn fits_target_integer_width(&self, value: i128, expr: ExprId) -> bool {
         let ty = self.tables.expr_types.get(&expr);
-        let valid = match ty {
+        match ty {
             Some(Ty::Primitive(Primitive::Int8)) => i8::try_from(value).is_ok(),
             Some(Ty::Primitive(Primitive::Int16)) => i16::try_from(value).is_ok(),
             Some(Ty::Primitive(Primitive::Int32)) => i32::try_from(value).is_ok(),
@@ -2162,11 +2195,6 @@ impl<'a> Interpreter<'a> {
             Some(Ty::Primitive(Primitive::UInt32)) => u32::try_from(value).is_ok(),
             Some(Ty::Primitive(Primitive::UInt64)) => u64::try_from(value).is_ok(),
             _ => true,
-        };
-        if valid {
-            Ok(value)
-        } else {
-            Err(RuntimeError::new("integer overflow", span))
         }
     }
 

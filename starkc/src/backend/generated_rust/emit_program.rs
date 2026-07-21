@@ -52,10 +52,10 @@ pub fn emit(
     for body in &program.bodies {
         main_rs.push_str(&format!("// STARK instance: {}\n", body.instance.symbol));
         if body.instance.symbol == mangle::ENTRY_SYMBOL {
-            main_rs.push_str(&emit_entry_fn(body, versions)?);
+            main_rs.push_str(&emit_entry_fn(body, versions, &program.files)?);
         } else {
             let name = mangle::function_name_for_symbol(&body.instance.symbol);
-            main_rs.push_str(&emit_bodies::emit_function(body, &name)?);
+            main_rs.push_str(&emit_bodies::emit_function(body, &name, &program.files)?);
         }
         main_rs.push('\n');
     }
@@ -63,8 +63,12 @@ pub fn emit(
     Ok(GeneratedSource { main_rs })
 }
 
-fn emit_entry_fn(entry: &MirBody, versions: &BuildVersions) -> Result<String, BackendDiagnostic> {
-    let block = emit_bodies::emit_block_body(entry)?;
+fn emit_entry_fn(
+    entry: &MirBody,
+    versions: &BuildVersions,
+    files: &[std::sync::Arc<crate::source::SourceFile>],
+) -> Result<String, BackendDiagnostic> {
+    let block = emit_bodies::emit_block_body(entry, files)?;
     let mut out = String::new();
     out.push_str("fn main() {\n");
     out.push_str("    let __stark_build_versions = ");

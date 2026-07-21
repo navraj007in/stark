@@ -3099,3 +3099,144 @@ fn dev089_trap_inside_fmt_agrees() {
         .to_string(),
     );
 }
+
+// ---------------------------------------------------------------- float->int cast boundaries --
+//
+// The 64-bit float->integer cast boundary. The HIR oracle truncates to `i128` and range-checks in
+// EXACT integer arithmetic, so it has always been right here; the MIR interpreter and the native
+// backend compared against `max as f64`, which ROUNDS UP at 64-bit widths (`u64::MAX as f64` is
+// 2^64, `i64::MAX as f64` is 2^63). Both therefore ACCEPTED exactly 2^64 / 2^63 and then
+// saturated them into range, silently producing a value where 03-Type-System.md requires a trap.
+//
+// The comparator would have caught this the day it was written -- no corpus or inline case had
+// ever exercised a 64-bit boundary, which is the actual gap these tests close. They are written
+// as one case per boundary because a trap ends the program: a combined case could only ever
+// observe the first trap.
+
+/// Exactly 2^64 is NOT representable as `UInt64` and must trap. This is the case the rounded
+/// comparison accepted; it is the primary regression test for the whole class.
+#[test]
+fn float_to_uint64_at_two_pow_64_traps_in_both_engines() {
+    differential(
+        "cast_u64_at_bound.stark",
+        "fn main() { \
+             let f: Float64 = 18446744073709551616.0; \
+             println(f as UInt64); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The greatest `f64` strictly below 2^64 (2^64 - 2048) IS representable and must convert. Paired
+/// with the test above so the fix is pinned from both sides -- a cast path that simply rejected
+/// everything near the bound would pass the trap test alone.
+#[test]
+fn float_to_uint64_just_below_two_pow_64_converts_in_both_engines() {
+    differential(
+        "cast_u64_below_bound.stark",
+        "fn main() { \
+             let f: Float64 = 18446744073709549568.0; \
+             println(f as UInt64); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Exactly 2^63 exceeds `Int64::MAX` (2^63 - 1) and must trap -- the signed twin of the 2^64 case.
+#[test]
+fn float_to_int64_at_two_pow_63_traps_in_both_engines() {
+    differential(
+        "cast_i64_at_bound.stark",
+        "fn main() { \
+             let f: Float64 = 9223372036854775808.0; \
+             println(f as Int64); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The greatest `f64` strictly below 2^63 (2^63 - 1024) converts.
+#[test]
+fn float_to_int64_just_below_two_pow_63_converts_in_both_engines() {
+    differential(
+        "cast_i64_below_bound.stark",
+        "fn main() { \
+             let f: Float64 = 9223372036854774784.0; \
+             println(f as Int64); \
+         }"
+        .to_string(),
+    );
+}
+
+/// `Int64::MIN` is exactly -2^63 and exactly representable as `f64`, so the LOWER bound is
+/// inclusive and must convert. The upper bound is exclusive and the lower inclusive; that
+/// asymmetry is easy to get wrong in the opposite direction, so it is pinned explicitly.
+#[test]
+fn float_to_int64_at_negative_two_pow_63_converts_in_both_engines() {
+    differential(
+        "cast_i64_at_min.stark",
+        "fn main() { \
+             let f: Float64 = -9223372036854775808.0; \
+             println(f as Int64); \
+         }"
+        .to_string(),
+    );
+}
+
+/// One representable `f64` step below -2^63 must trap.
+#[test]
+fn float_to_int64_below_negative_two_pow_63_traps_in_both_engines() {
+    differential(
+        "cast_i64_below_min.stark",
+        "fn main() { \
+             let f: Float64 = -9223372036854777856.0; \
+             println(f as Int64); \
+         }"
+        .to_string(),
+    );
+}
+
+/// Truncation toward zero, then the range check -- a fractional value inside the range converts
+/// (it does not trap merely for having a fraction), and one whose TRUNCATION lands out of range
+/// traps. Guards the ordering of `trunc` and the bound test.
+#[test]
+fn float_to_int_truncates_toward_zero_before_range_checking() {
+    differential(
+        "cast_trunc_order.stark",
+        "fn main() { \
+             let a: Float64 = -0.9; \
+             println(a as UInt64); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The trap CATEGORY for a failing cast, at a narrow width where no float rounding is involved.
+/// Found by the boundary tests above: both cast arms in the HIR oracle routed through
+/// `check_integer_range` and so reported "integer overflow" for what MIR classifies as
+/// `CastFailure`, making the two engines disagree on category for EVERY out-of-range cast at
+/// every width -- the 64-bit boundary merely happened to be where a test first looked.
+#[test]
+fn out_of_range_float_to_int32_cast_traps_as_a_cast_failure_in_both_engines() {
+    differential(
+        "cast_i32_category.stark",
+        "fn main() { \
+             let f: Float64 = 10000000000.0; \
+             println(f as Int32); \
+         }"
+        .to_string(),
+    );
+}
+
+/// The same category question for an INT->INT cast, which shares the defect and the fix.
+#[test]
+fn out_of_range_int_to_int_cast_traps_as_a_cast_failure_in_both_engines() {
+    differential(
+        "cast_int_narrowing_category.stark",
+        "fn main() { \
+             let big: Int64 = 4294967296; \
+             println(big as Int32); \
+         }"
+        .to_string(),
+    );
+}

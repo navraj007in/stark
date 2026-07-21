@@ -227,10 +227,133 @@ re-run this WP per the test-run-frequency policy.
 
 ## C5.2e — Trap path
 
-**Not started.** Native trap records, source IDs, abort, no-unwind configuration —
-`stark-runtime::trap`'s category-vocabulary-only placeholder gets real content here.
+### Status: CLOSED 2026-07-21 (CD-051).
+
+Delivered per `WP-C5-ENTRY.md` §13.1/§13.2:
+
+- **Real source location, resolved at compile time** — every checked-operation trap site now
+  carries the STARK source file path, 1-based line, and 1-based column of the trapping
+  terminator. Deliberately resolved at CODEGEN time (`SourceFile::line_col` against
+  `MirProgram::files`, both already available to the backend) and baked into the generated call
+  site as literals, rather than building §13.1's compact-span-ID-plus-runtime-lookup-table —
+  documented as a legitimate simpler MVP alternative (the ID/table design exists to deduplicate
+  span data for large programs with many trap sites; at MVP program sizes, inlined literals are
+  simpler and exactly as correct), not an oversight, revisit-able if generated-binary size ever
+  makes deduplication worth it.
+- **The real trap ABI** — `stark_runtime::trap::abort(category, file, line, column) -> !`
+  replaces C5.2c's `abort_minimal` placeholder outright (not wrapped): reports the category's
+  message and `file:line:column` on stderr, then exits with code **101** — matching `stark
+  run`'s own already-established convention exactly (`starkc/src/bin/stark.rs`:
+  `ExitCode::from(if error.is_trap { 101 } else { 1 })`), reused rather than invented. Category
+  messages (e.g. "integer overflow", "division by zero") are NOT claimed to match the HIR
+  interpreter's own ad hoc per-call-site strings byte-for-byte — no such canonical table exists
+  there to match, and the differential comparator (§15.1) checks category plus source file/line,
+  not stderr text.
+- **One naming authority for both trap sites** — `emit_abort_call` is the single place that
+  assembles a `stark_runtime::trap::abort(...)` call, used both for a terminator's own default
+  category and for the `Shl`/`Shr` `InvalidShift` override, so the two trap sites within one
+  checked operation can never independently drift in how they resolve or format a location.
+- **Retrofit:** C5.2c's own two trap tests (`integer_overflow_traps_natively`,
+  `division_by_zero_traps_natively`) were tightened from a loose `assert_ne!(status, Some(0))` to
+  the exact `assert_eq!(status, Some(101))` now that the precise contract exists — the kind of
+  strengthening a later WP is expected to do to an earlier WP's own tests once it settles a
+  question the earlier WP had deliberately left loose.
+
+**Test approach:** `starkc/tests/native_c5_2e_traps.rs` — four new tests: an overflow trap
+asserting BOTH the category message and an EXACT `file:line` match (source deliberately written
+with no leading blank line so the trapping statement's line number is unambiguous, not a loose
+"some plausible number" check), plus division-by-zero, invalid-shift, and cast-failure traps each
+asserting category message and exit code.
+
+**Validation:** `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings` clean, scoped tests green (`backend::` 18/18, new test 4/4, all
+prior native regressions including the two retrofitted C5.2c tests), `cargo test --test
+exec_snapshots` green (4/4).
 
 ## C5.2 exit
 
-Not yet reached. Requires three-engine (HIR/MIR/native) agreement for: scalar arithmetic;
-branches; loops; direct calls; successful checked operations; each admitted trap category.
+**Not yet reached — and this WP is not claiming otherwise.** §14's stated exit condition is
+explicit: *"Require three-engine agreement for: scalar arithmetic; branches; loops; direct
+calls; successful checked operations; each admitted trap category."* Every `native_c5_2*.rs` test
+written across C5.2a-e compiles a program and asserts on the NATIVE engine's own output in
+isolation (exit code, stdout, stderr content) — none of them actually run the SAME source through
+the HIR interpreter and the MIR interpreter and automatically diff all three, the way
+`mir_differential.rs` already does for the HIR-vs-MIR pair. The individual constructs have been
+reasoned through carefully against `mir::interp` as the semantic oracle (cited throughout this
+document and the state-file CD entries) and tested for internally-consistent native correctness,
+but that is not the same evidentiary bar as an automated three-engine comparator, and this record
+says so rather than quietly treating "native looks right" as satisfying "three engines agree."
+**Building that harness (`WP-C5-ENTRY.md` §15.1's `source case -> HIR -> MIR -> native ->
+comparator` pipeline, `native_scalar.rs`/`native_traps.rs`/etc. per §15.2) is the next real
+decision point** — whether it lands as a C5.2-closing addendum or is deliberately deferred to
+WP-C5.6 (which already co-owns cross-backend snapshot replay per the WP-C4.4/CD-018 carry-forward)
+is an open question for the owner, not resolved unilaterally here.
+
+## Review-response pass (CD-052, 2026-07-21)
+
+An external review of head `37828a07` raised seven findings against C5.1/C5.2. **All seven were
+verified as real against the code — no false positives.** Four are fixed here, one is recorded as
+a WP-C5.3 opening condition, and two are escalated to the ABI's owner rather than resolved. Full
+record: `COMPILER-STATE.md` CD-052 (DEV-091 … DEV-096). The two escalated findings are written up
+in `STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md` (PROPOSED — the Native
+Provider ABI v0.1 is owner-approved under CD-046, so neither it nor `provider_abi.rs` is changed
+without a CE4 decision).
+
+Two things about this pass are worth stating plainly, because both cut against the C5.2a-e record
+above:
+
+**1. `Terminator::Trap` was still `Unsupported` when C5.2e was recorded as closed (CD-051).** The
+trap ABI landed for `Terminator::Checked`'s *conditional* traps — the ones checked operations
+raise — but the *unconditional* `Trap` terminator that `mir::lower` emits for `panic`/`assert`/
+`assert_eq`/`assert_ne` still returned a backend `Unsupported` diagnostic. That is squarely
+C5.2e's own deliverable, and CD-051's "real trap ABI delivered" claim was therefore broader than
+what had been built. It is now implemented for the message-less form (every compiler-generated
+trap, and all three `assert*` builtins, which `mir::lower` emits with `message: None`); the form
+carrying a user `&str` message still needs string values and remains WP-C5.3.
+
+**2. Every C5.2a-d success-path test observed only an exit code, never a computed value.** The
+arithmetic test computed sums, products, shifts and comparisons; the call tests computed
+`add(2, 3)` and `clamp(15, 0, 10)`. None of the results was checked. A backend that returned zero
+from every function would have passed nearly all of them — so those tests proved the programs
+*compiled and ran*, not that they *computed*. This was not a gap the C5.2a-e records acknowledged.
+
+Both are now closed by the same mechanism: with `Terminator::Trap` supported, `assert_eq`/`assert`
+inside the STARK program itself is the observation channel that native `println` cannot yet be
+(WP-C5.3), and a failed assertion reaches the C5.2e trap ABI as an exit-101 `assertion failed`.
+`native_c5_2c_operations.rs::a_false_assertion_traps_natively` is the **negative control** that
+makes the rest of the suite meaningful: without it, "exit 0" stays ambiguous between "every
+assertion held" and "assertions were compiled away to nothing".
+
+### The semantic defect, and why the existing evidence missed it
+
+The most serious finding (DEV-091) was that float→integer casts *accepted out-of-range values at
+64-bit widths* in both the MIR interpreter and the native backend: both compared the truncated
+value against `max as f64`, which rounds **up** at those widths (`u64::MAX as f64` is 2^64), so
+exactly 2^64 passed the range guard and the saturating `as` then clamped it to `u64::MAX` instead
+of trapping.
+
+The HIR oracle was already correct — it truncates to `i128` and range-checks in exact integer
+arithmetic — so this was a genuine two-engine divergence from the oracle, and
+`mir_differential.rs` would have caught it on the day it was written. **It survived because no
+case in the frozen corpus or the inline set had ever exercised a 64-bit cast boundary.** The gap
+was in the corpus, not the comparator. Ten boundary cases now exist — seven differential (2^64,
+greatest f64 below 2^64, 2^63, greatest below 2^63, -2^63 inclusive, below -2^63, and truncation
+ordering) and three native.
+
+Writing those tests immediately surfaced an eighth defect the review had not named (DEV-096): the
+oracle reported *every* out-of-range cast, at every width, as `IntegerOverflow` rather than
+`CastFailure`, because both cast arms in `interp.rs` routed through `check_integer_range` and
+inherited its hardcoded arithmetic-overflow message. The new tests failed on trap **category**,
+not on the bound. That is the pattern worth noting: the boundary tests were written to pin one
+defect and found a second, unrelated one in a different engine, at widths the first defect never
+touched.
+
+### Standing on the C5.2 exit condition
+
+Unchanged by this pass. The three-engine comparator §14 requires still does not exist, and the
+new native tests are still native-only assertions — stronger ones, since they now observe values
+rather than exit codes, but not automated three-engine agreement. The DEV-091 boundary cases *are*
+covered by the real HIR-vs-MIR comparator (`mir_differential.rs`), with the native engine pinned
+separately against the same expected values; that is two automated engines plus a manually
+corresponding third, not the §15.1 pipeline. **WP-C5.2 remains not closed**, and the open decision
+recorded above — build the harness now, or defer to WP-C5.6 — is still the owner's.

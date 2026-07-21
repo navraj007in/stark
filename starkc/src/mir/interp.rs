@@ -1060,7 +1060,15 @@ impl<'a> Interp<'a> {
                     (MirValue::Float(f), ty) if int_range(ty).is_some() => {
                         let truncated = f.trunc();
                         let (min, max) = int_range(ty).unwrap();
-                        if f.is_nan() || truncated < min as f64 || truncated > max as f64 {
+                        // `max as f64` ROUNDS at 64-bit widths -- `u64::MAX as f64` is 2^64 and
+                        // `i64::MAX as f64` is 2^63, both one past the real maximum. An
+                        // inclusive `truncated > max as f64` test therefore ACCEPTS 2^64/2^63,
+                        // which 03-Type-System.md requires to trap. `max + 1` is always an exact
+                        // power of two and so exactly representable as f64, making the half-open
+                        // `>= (max + 1) as f64` test exact at every width. `min` needs no such
+                        // care: every min is 0 or -2^(n-1), already exact as f64. `+inf`/`-inf`
+                        // fall out of the same two comparisons; NaN is rejected explicitly.
+                        if f.is_nan() || truncated < min as f64 || truncated >= (max + 1) as f64 {
                             None
                         } else {
                             Some(MirValue::Int(truncated as i128))

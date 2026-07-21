@@ -1,23 +1,37 @@
 # STARK Compiler STATE
 Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 CLOSED IN FULL
-(CD-042/043/044/045/046), WP-C5.2a CLOSED (CD-047), WP-C5.2b CLOSED (CD-048), WP-C5.2c CLOSED
-(CD-049), WP-C5.2d CLOSED (CD-050).** The owner's DEV-089 close-out directive was executed: user
-`Display` dispatch implemented in both engines, non-`Copy` array iteration and cross-file `const`
-use rejected in the front end, all validation green. WP-C5.1 (Runtime ABI and Layout Design)
-closed in full — representation contract, backend/runtime skeleton with a proven native
-empty-`main` executable, and the owner-approved Native Provider ABI v0.1. WP-C5.2 (scalar native
-lowering) is open; C5.2a-d are closed — real arithmetic with correct overflow/div-by-zero/shift
-trapping, comparisons, `if`/`else`, `while` loops, and now multi-function programs with real
-parameters and direct calls all compile and run natively via a block-index dispatch loop,
-matching the MIR interpreter oracle exactly. Next: WP-C5.2e (trap path — the real trap ABI
-replacing `abort_minimal`'s placeholder). **Process note:** full-workspace test runs are now
+(CD-042/043/044/045/046), WP-C5.2a-e ALL CLOSED (CD-047/048/049/050/051) — WP-C5.2 (scalar
+native lowering) is NOT yet claimed closed, pending the three-engine differential harness.** The
+owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both
+engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all
+validation green. WP-C5.1 (Runtime ABI and Layout Design) closed in full — representation
+contract, backend/runtime skeleton with a proven native empty-`main` executable, and the
+owner-approved Native Provider ABI v0.1. Every WP-C5.2 sub-part (C5.2a-e) is closed: real
+arithmetic with correct overflow/div-by-zero/shift trapping, comparisons, `if`/`else`, `while`
+loops, multi-function programs with real parameters and direct calls, and now a real trap ABI
+(category + exact source file/line on stderr, exit 101) all compile and run natively via a
+block-index dispatch loop. **§14's own C5.2 exit condition requires three-engine (HIR/MIR/
+native) automated agreement, which has not been built yet** — every `native_c5_2*.rs` test
+asserts on the native engine's own output in isolation; this gap is recorded deliberately, not
+glossed over. **An external review of head 37828a07 then raised seven findings, all seven real
+(CD-052)**: four fixed (DEV-091 float→int casts accepted out-of-range values at 64-bit widths in
+BOTH the MIR interpreter and the native backend; DEV-092 symbol sanitization was not injective;
+DEV-093 native success-path tests observed no computed values; DEV-094 reversed version-mismatch
+labels), one recorded as a WP-C5.3 opening condition (DEV-095 build key omits nominal type
+context), and two escalated to the owner as a CE4 amendment to the approved Native Provider ABI
+v0.1. Fixing the first surfaced an eighth defect the review had not named (DEV-096: the HIR oracle
+reported every out-of-range cast as an arithmetic overflow). The pass also completed C5.2e's
+`Terminator::Trap` support, which CD-051 had recorded as closed while it was still `Unsupported`.
+Next: decide whether to build the three-engine differential harness now (closing
+WP-C5.2 properly) or defer it to WP-C5.6. **Process note:** full-workspace test runs are now
 reserved for WP/gate closure points, not every intermediate change, per owner feedback.
 
 ## Position
 Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
 WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
-native lowering) OPEN; C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048), C5.2c CLOSED (CD-049), C5.2d
-CLOSED (CD-050).** Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker
+native lowering): C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048), C5.2c CLOSED (CD-049), C5.2d
+CLOSED (CD-050), C5.2e CLOSED (CD-051) — but WP-C5.2 overall is NOT closed, pending the
+three-engine differential harness §14 requires.** Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker
 (DEV-089) was resolved
 rather than
 deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
@@ -1505,6 +1519,141 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   18/18, new test 2/2, prior regressions 8/8), `exec_snapshots` 4/4 — full workspace suite not
   re-run per the test-run-frequency policy. WP-C5.2d CLOSED; next is WP-C5.2e (trap path).
 
+- CD-051 [2026-07-21, WP-C5.2e] **Real trap ABI delivered — every checked-operation trap now
+  reports its category and an exact source file/line on stderr, exit code 101 (matching `stark
+  run`'s own established convention).** Full record: `STARKLANG/docs/compiler/work-packages/
+  WP-C5.2.md` §C5.2e. `stark_runtime::trap::abort(category, file, line, column) -> !` replaces
+  C5.2c's `abort_minimal` placeholder outright. Source location is resolved at COMPILE TIME
+  (`SourceFile::line_col` against `MirProgram::files`, both already available to the backend) and
+  baked into the generated call site as literals — a documented, deliberate simplification of
+  §13.1's compact-span-ID-plus-runtime-lookup-table design (that design exists to deduplicate
+  span data for large programs; inlined literals are simpler and exactly as correct at MVP
+  scale), not an oversight. `emit_abort_call` is the one place that assembles a trap-abort call,
+  used for both a terminator's default category and the `Shl`/`Shr` `InvalidShift` override, so
+  the two trap sites within one checked operation cannot independently drift. Category messages
+  are NOT claimed to match the HIR interpreter's own ad hoc per-call-site strings byte-for-byte —
+  no canonical table exists there to match, and the differential comparator (§15.1) checks
+  category plus source file/line, not stderr text. C5.2c's own two trap tests were retrofitted
+  from a loose `assert_ne!` to the exact `assert_eq!(status, Some(101))` now that the precise
+  contract exists. Four new tests (`native_c5_2e_traps.rs`): an overflow trap asserting an EXACT
+  `file:line` match (not a loose check), plus division-by-zero/invalid-shift/cast-failure each
+  asserting category message and exit code. Validation: `cargo fmt`, `cargo clippy -D warnings`,
+  scoped tests (`backend::` 18/18, new test 4/4, all prior native regressions including the two
+  retrofitted), `exec_snapshots` 4/4. **WP-C5.2e CLOSED. WP-C5.2 (scalar native lowering) is
+  NOT YET claimed closed**: §14's exit condition explicitly requires three-engine (HIR/MIR/
+  native) automated agreement, and every `native_c5_2*.rs` test to date asserts on the native
+  engine's own output in isolation, not an automated diff against the other two engines the way
+  `mir_differential.rs` already does for HIR-vs-MIR. This gap is recorded here deliberately
+  rather than treated as satisfied by "native looks right" reasoning. Building the three-engine
+  differential harness (§15.1/§15.2) is the next open decision — whether it lands as a C5.2-
+  closing addendum or defers to WP-C5.6 (which already co-owns cross-backend snapshot replay per
+  the WP-C4.4/CD-018 carry-forward) is for the owner to decide, not resolved here.
+
+- CD-052 [2026-07-21, WP-C5.2 review response] **External review of head 37828a07 raised seven
+  findings; all seven verified as REAL against the code (no false positives). Four fixed here
+  (DEV-091/092/093/094), one recorded as a C5.3 opening condition (DEV-095), two escalated to the
+  ABI's owner as a CE4 amendment.** Writing the regression tests for the first finding surfaced an
+  eighth, previously unknown defect (DEV-096) that the review did not name.
+
+  - **DEV-091 — float→int casts accepted out-of-range values at 64-bit widths, in BOTH the MIR
+    interpreter and the native backend. FIXED.** Both compared the truncated value against
+    `max as f64`, which ROUNDS UP at 64-bit widths: `u64::MAX as f64` is 2^64 and `i64::MAX as
+    f64` is 2^63. Exactly 2^64 therefore passed the guard, and the subsequent saturating `as`
+    clamped it to `u64::MAX` — silently producing a value where 03-Type-System.md requires a
+    trap. Same defect at 2^63 for `Int64`. Fixed in both engines with a half-open test against an
+    EXACT bound: every `max + 1` is a power of two and so exactly representable as `f64`
+    (`mir/interp.rs`'s `Cast` arm; `emit_bodies.rs`'s new `int_float_bounds_tokens`, deliberately
+    separate from `int_bounds_tokens`, whose inclusive pair remains correct for the exact-`i128`
+    checked-arithmetic path). The HIR ORACLE was already correct here — it truncates to `i128`
+    and range-checks in exact integer arithmetic — so this was a genuine engine divergence, not a
+    shared misreading of the spec. The reason it survived: no corpus or inline case had ever
+    exercised a 64-bit cast boundary. Seven new boundary cases in `mir_differential.rs` (2^64,
+    greatest f64 below 2^64, 2^63, greatest below 2^63, -2^63 inclusive, below -2^63, truncation
+    ordering) plus three native ones in `native_c5_2c_operations.rs`.
+  - **DEV-092 — symbol sanitization was not injective, while its own doc comment asserted that
+    it was. FIXED.** `sanitize_symbol` hex-encoded disallowed bytes as `_hh` but passed `_`
+    through unchanged, so encoded output was indistinguishable from source text that already
+    spelled an escape: `pkg::f` and a legally-named STARK function `pkg_3a_3af` both encoded to
+    `stark_pkg_3a_3af...`. Reachable from ordinary source, because `key_symbol` puts a
+    `::`-joined module/package path in every symbol, and materially relevant since C5.2d, where
+    every MIR body became its own Rust function. Fixed by making `_` the escape introducer and
+    escaping it as `__`; the encoding is now decodable, hence injective, and stays readable
+    (`my_fn` → `my__fn`) rather than hex-encoding every byte. Tests: a pairwise-distinctness
+    sweep over 17 adversarial symbols (`::`/`_3a` at package and module boundaries, `@`/`_40`,
+    `[`/`_5b`, literal-vs-escaped underscores, the `, ` type-argument separator, and non-ASCII
+    identifiers) plus a round-trip-through-a-decoder test that states injectivity directly rather
+    than sampling for collisions.
+  - **DEV-093 — native success-path tests observed no computed values. FIXED.** The arithmetic,
+    branch, loop and direct-call tests computed results and asserted only `exit == 0`; a backend
+    returning zero from every function would have passed most of the suite. All success-path
+    tests now assert IN the STARK program via `assert_eq`/`assert` (native `println` is still
+    WP-C5.3), covering every arithmetic result, both branch directions, loop trip count AND body
+    effect, zero-iteration loops, call return values, and parameter order. This required
+    implementing `Terminator::Trap` in the backend (message-less form — what `mir::lower` emits
+    for `assert`/`assert_eq`/`assert_ne`), which was still `Unsupported` at CD-051 and is
+    properly WP-C5.2e's own deliverable; `Trap` carrying a user `&str` message remains WP-C5.3.
+    A NEGATIVE CONTROL (`a_false_assertion_traps_natively`) proves a false assertion really does
+    reach the trap ABI and exit 101 — without it, "exit 0" would remain ambiguous between
+    "assertions held" and "assertions compiled away".
+  - **DEV-094 — the version-mismatch message named the wrong version on each side. FIXED.**
+    `version::check` assigned the LINKED runtime's `RUNTIME_VERSION` to `expected_runtime_version`
+    and the generation-time recorded value to `actual_`, while the generated crate prints them as
+    "generated for runtime {expected}, linked against {actual}". Fixed at the source (the field
+    assignment, not the message) so the names read correctly for any future consumer, with a test
+    that pins the field-to-side assignment rather than merely that a mismatch is detected.
+  - **DEV-095 — the generated-crate build key omits nominal type context and the Drop map.
+    RECORDED as a WP-C5.3 opening condition, NOT fixed here.** `compute_build_key` hashes
+    `program.dump()`, and `dump()` emits only the version header and bodies; the MIR contract
+    states the nominal type context and destructor map are in-memory parts of the compilation
+    unit that the textual dump does not serialize. Changing a struct's fields or its `Drop`
+    metadata could therefore leave the build key unchanged and silently reuse a stale generated
+    crate. This CANNOT bite before aggregates and Drop exist, which is exactly WP-C5.3, so it is
+    a C5.3 entry condition rather than a C5.2 defect: before aggregates land, build identity must
+    cover a deterministic encoding of the nominal type context, the Drop implementation map, the
+    source table, package graph identity, the entry instance, all bodies, and the backend/
+    runtime/toolchain versions.
+  - **DEV-096 — the HIR oracle reported every out-of-range cast as an ARITHMETIC OVERFLOW trap,
+    at every width. FIXED. Not named by the review; found by DEV-091's new boundary tests, which
+    failed on category mismatch rather than on the bound.** Both cast arms in `interp.rs`
+    (int→int and float→int) routed through `check_integer_range`, whose message is hardcoded
+    `"integer overflow"`, so the oracle disagreed with the MIR interpreter and the native backend
+    — both of which classify a failing cast as `TrapCategory::CastFailure` — for every
+    out-of-range cast, not merely at 64-bit boundaries. 03-Type-System.md enumerates overflow and
+    failing `as` casts as DISTINCT always-trap causes, and the oracle's own non-finite float case
+    already used the cast-specific message, so this was an implementation artifact of a shared
+    helper rather than a semantic question. Split into `check_cast_range` (cast failure) and
+    `check_integer_range` (overflow) over one shared width predicate, so the two can never drift
+    on WHICH values are in range while differing, correctly, on which trap they raise. Two
+    narrow-width regression tests pin the category independently of any float rounding.
+  - **Escalated to the owner as a CE4 amendment, NOT changed here** (the Native Provider ABI
+    v0.1 is owner-approved under CD-046, so amending it is the owner's decision):
+    `STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md` documents two
+    contradictions between the approved document and its own validator — the return-shape
+    contradiction (§11 says every provider function returns `ProviderStatus` with results via
+    out-parameters, but `FunctionDecl` has `returns: AbiType` with no out-parameter
+    representation, and the validator's own "valid" fixture has `kv_open` returning
+    `ResourceHandle`), and `ResourceHandle` deriving `Clone`/`Copy` against §12's exclusive-
+    ownership and close-exactly-once rules. Both are cheap to correct now because no provider
+    executes in the C5 MVP; neither is corrected without owner sign-off.
+  - **Also observed, not filed as defects**: no integer literal above `Int64::MAX` is expressible
+    (an unsuffixed literal types as `Int64` first, so even `let x: UInt64 = 18446744073709549568;`
+    is rejected), `Int64::MIN` has no literal spelling, and an unsuffixed literal in argument
+    position does not receive expected-type propagation from a sibling argument. These shaped how
+    the boundary tests are written (documented at the test) but are pre-existing front-end
+    behaviours unrelated to native lowering.
+  - **The review's one process observation did NOT hold up.** It reported that the "CI green"
+    claim was unverifiable because its GitHub connector exposed no workflow run for head
+    37828a07. `gh run list` shows the `CI` workflow completed with conclusion `success` on
+    37828a07 (and on 5af7ad7/56b5202/c9eaa53 before it), so the claim was accurate and the gap was
+    in the connector's visibility, not in the evidence. Worth recording for its own reason,
+    though: CI was green on the very commit carrying DEV-091's semantic defect. `fmt`, `clippy`
+    and the full workspace suite all passed because **no test exercised a 64-bit cast boundary** —
+    a green pipeline bounds the risk to what the corpus covers, and this pass is a direct
+    demonstration of that limit.
+  - Validation: `cargo fmt`, `cargo clippy -D warnings`, `mir_differential` 141/141 (including
+    the frozen corpus and 11 new cast cases), all five `native_c5_*` suites green (23 tests),
+    `exec_snapshots`/`conformance`/`gate3_execution` green, full workspace suite green.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
@@ -1735,6 +1884,18 @@ evidence in the C0/C1/C2 exit reports.
 - [ ] WP-C1.1 follow-up (not blocking): underscore-placement rules for binary/octal literals
       untested; no max-value-per-suffix positive test for the 8 int / 2 float suffixes.
 - [ ] DEV-017 remainder: classify the 39 unclassified legacy coverage rules (unscheduled).
+- [ ] **DEV-095 — WP-C5.3 OPENING CONDITION (CD-052)**: the generated-crate build key hashes
+      `program.dump()`, which serializes only the version header and bodies — not the nominal
+      type context or the Drop implementation map. Once aggregates and `Drop` exist, changing a
+      struct's fields or its Drop metadata could leave the build key unchanged and silently reuse
+      a stale generated crate. Must be fixed BEFORE aggregates land, not after.
+- [ ] **Native Provider ABI v0.1 — CE4 amendment 1 (CD-052), awaiting owner decision**:
+      `STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md`. Three items — the
+      §7/§8-vs-§11 return-shape contradiction (`FunctionDecl.returns` cannot express the
+      status-plus-out-parameter ABI §11 mandates, and the validator's own "valid" fixture
+      violates it), `ResourceHandle` deriving `Clone`/`Copy` against §8's exclusive-ownership and
+      §13's close-exactly-once rules, and an editorial dangling §12→§13 pointer in §8. Cheap now
+      (no provider executes); breaking once provider execution lands.
 - [x] DEV-060: dispose before C3 workload freeze (C3-ENTRY blocker). **Closed 2026-07-19,
       CD-024 — fixed in `borrowck.rs::method_receiver`.**
 Completed follow-ups through Gate C2 are archived verbatim in the state-archive file.
