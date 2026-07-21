@@ -78,7 +78,16 @@ then matching it is the ordinary shape, and it straddles a basic-block boundary,
 non-`Copy` storage strategy is a **prerequisite for C5.3c** (`Option`/`Result` payloads are
 frequently non-`Copy` and `?` is inherently cross-block), not a nicety.
 
-Next: the three open decisions, then C5.3c. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+**All three CD-056 decisions RESOLVED by CD-058**: layout agreement means exact values under one
+injectable target-layout manifest (relations-only tests no longer discharge the exit condition);
+the Copy-derive reading is approved with `copy_types` as the sole authority; and non-Copy storage
+is §7.2's `ValueSlot<T>` over `MaybeUninit<ManuallyDrop<T>>` — plain `Option<T>` rejected for
+introducing Rust-owned destruction, `Option<ManuallyDrop<T>>` rejected as the general form because
+a partially moved value's bytes need not form a valid `T`.
+
+Next: **C5.3d-0 (non-Copy storage and movement foundation)** — a bounded prerequisite inserted
+before C5.3c, which does not close C5.3d. Then C5.3c on the slot abstraction, then C5.3d-1's
+observable destruction fixture. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -2090,6 +2099,66 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean, `backend::` unit
     tests 40/40, `three_engine_differential` 31/31, `native_c5_3_aggregates_enums` 7/7, and the
     five earlier `native_c5_*` suites green. ~22 seconds.
+
+- CD-058 [2026-07-21, owner review of 7829552] **C5.3b APPROVED as closed. The three CD-056
+  decisions are RESOLVED. Work-package sequencing changed: a bounded prerequisite, C5.3d-0, is
+  inserted BEFORE C5.3c.**
+
+  - **C5.3b's limitation, stated precisely (owner wording).** C5.3b supports **Copy payload
+    reads**. **Non-Copy payload movement remains blocked on the controlled-storage foundation and
+    is not claimed complete merely by the current `VariantField` expression.** The scoped
+    validation was confirmed correct for that commit: generated-Rust backend, its tests, and
+    compiler records only — no workspace-wide semantic consumer.
+
+  - **DECISION 1 — layout-query agreement. RESOLVED.** For C5 exit, layout-query agreement means
+    **exact `size_of`/`align_of` agreement when all three engines execute under ONE recorded
+    target-layout context**. `(8, 8)` is preserved as the default historical C4 reference layout.
+    For C5 differential execution, an **injectable target-layout manifest** is generated or probed
+    through the same canonical generated-Rust representations, target triple, rustc version,
+    backend/runtime versions and profile as the native build; HIR and MIR consume that manifest
+    during C5 layout cases, and the harness compares exact values. Relations-only layout tests may
+    remain but **do not discharge** the C5.3 exit condition. (The current
+    `layout_queries_run_in_all_three_engines` case is therefore a placeholder, not evidence.)
+
+  - **DECISION 2 — Copy derivation. APPROVED as implemented, with the rule stated exactly.** A
+    generated nominal instance may derive `Clone, Copy` **if and only if that exact concrete
+    instance is present in MIR's `copy_types` classification**. MIR remains the authority: the
+    backend must not infer Copy from Rust fields or trait resolution, and **`.clone()` must never
+    implement a MIR move or copy**. `Eq`, `Ord`, `Hash`, `Drop` and other semantic traits are not
+    derived as substitutes for STARK behaviour.
+
+  - **DECISION 3 — non-Copy storage. RESOLVED: §7.2 controlled manual storage.**
+
+    ```text
+    ValueSlot<T> {
+        storage: MaybeUninit<ManuallyDrop<T>>,
+        whole-place live state,
+        typed drop-unit live state where MIR distinguishes sub-places
+    }
+    ```
+
+    **Ordinary `Option<T>` is REJECTED** — it introduces Rust-owned destruction.
+    **`Option<ManuallyDrop<T>>` is REJECTED as the general representation**: it is adequate only
+    for whole-value liveness, and once a field or constant-index element has been moved the
+    remaining bytes no longer necessarily form a valid complete `T`. `MaybeUninit` is required to
+    hold that partially moved state legally. An Option-shaped slot **may later be admitted as an
+    optimisation** for locals MIR dataflow proves have no partial-move paths.
+
+    Recording the reasoning because it is the part that would otherwise be re-litigated: the
+    objection to `Option<ManuallyDrop<T>>` is not about destruction (`ManuallyDrop` already
+    suppresses that) but about **representation validity under partial moves** — a distinction the
+    C5.3a/C5.3b work had not yet had to confront, since neither admits partial moves.
+
+  - **SEQUENCING CHANGE — C5.3c does NOT begin next.** A bounded prerequisite is inserted:
+    **C5.3d-0 — non-Copy storage and movement foundation**, whose purpose is to unblock C5.3c and
+    which **does not close C5.3d**. Its seven required deliverables (helper module; no ad hoc
+    unsafe in emitted bodies; move semantics; Drop semantics; the five initial supported movement
+    shapes; partial-move discipline; mutation-tested evidence) are recorded in
+    `WP-C5.3.md`. After C5.3d-0 passes: C5.3c using the slot abstraction for non-Copy
+    `Option`/`Result` values and `?` paths, then **C5.3d-1** with the dedicated observable
+    destruction fixture and the final exactly-once/order/no-Drop-after-trap proof.
+
+  - C5.3a and C5.3b remain closed.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

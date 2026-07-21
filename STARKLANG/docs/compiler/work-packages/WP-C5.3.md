@@ -171,6 +171,12 @@ Three new native-only cases for the generated shape: one definition per instance
 tuple variants, a discriminant match naming every variant, and the `unreachable!()` arm citing
 V-DISC-1.
 
+### The limitation, stated precisely (CD-058)
+
+**C5.3b supports Copy payload reads. Non-Copy payload movement remains blocked on the
+controlled-storage foundation and is not claimed complete merely by the current `VariantField`
+expression.**
+
 ### What C5.3b makes newly urgent
 
 The cross-block non-`Copy` move boundary from C5.3a **bites far harder for enums than for
@@ -183,20 +189,114 @@ This is the strongest argument yet for settling **CD-056 decision 3 (the non-`Co
 strategy)** before C5.3c: `Option`/`Result` payloads are frequently non-`Copy`, and `?` is
 inherently cross-block.
 
+## C5.3d-0 — Non-Copy storage and movement foundation
+
+### Status: IN PROGRESS (opened 2026-07-21 under CD-058).
+
+A **bounded prerequisite inserted before C5.3c** by owner directive. Its purpose is to unblock
+C5.3c; **it does not close C5.3d**, whose observable destruction fixture and final
+exactly-once/order/no-Drop-after-trap proof become C5.3d-1.
+
+### The approved representation (CD-058, decision 3)
+
+```text
+ValueSlot<T> {
+    storage: MaybeUninit<ManuallyDrop<T>>,
+    whole-place live state,
+    typed drop-unit live state where MIR distinguishes sub-places
+}
+```
+
+Ordinary `Option<T>` is rejected: it introduces Rust-owned destruction, which §7.1 forbids.
+`Option<ManuallyDrop<T>>` is rejected as the *general* representation for a subtler reason worth
+keeping visible — it is adequate only for whole-value liveness, and **once a field or
+constant-index element has been moved, the remaining bytes no longer necessarily form a valid
+complete `T`**. Only `MaybeUninit` may legally hold that partially moved state. An Option-shaped
+slot may later be admitted as an optimisation for locals MIR dataflow proves have no partial-move
+paths.
+
+### Progress
+
+**Increment 1 (2026-07-21): the helper module.** `stark-runtime/src/slot.rs` — `ValueSlot<T>`
+over `MaybeUninit<ManuallyDrop<T>>` with whole-place liveness, and six operations: `dead`
+(initialisation), `get`/`get_mut` (shared and mutable place access), `take` (whole-value move),
+`move_sub` (typed sub-place move), `write` (destination write), `drop_value` (explicit drop-unit
+destruction). Deliverable 1 complete; deliverables 3 and 4 implemented at the module level;
+deliverable 7 verified for the two mutations reachable without generated code.
+
+Design points worth keeping visible:
+
+- **Every operation is a SAFE function.** Deliverable 2 requires no ad hoc `unsafe` in emitted
+  bodies, which means the helper API cannot be `unsafe fn` — otherwise generated code would need
+  `unsafe {}` blocks of its own. Preconditions are guaranteed by verified MIR and *checked* here,
+  not assumed.
+- **`ValueSlot` implements no `Drop`.** A slot generated code never empties leaks, and that is
+  the intended trade: leaking is what MIR verification excludes, whereas a Rust destructor here
+  would silently cover for a lowering bug and make exactly-once unfalsifiable.
+- **Liveness transitions happen BEFORE the operation they guard.** `take` and `drop_value` mark
+  the slot dead first, so no path can observe a slot that is simultaneously live and moved-from —
+  and if drop glue itself traps, the abort path sees a dead slot and cannot re-enter the value.
+  That ordering is what makes exactly-once hold even when a destructor fails.
+- **`move_sub` leaves the slot LIVE**, because the other drop units still are. Collapsing that
+  into whole-local liveness is exactly what §7.6 forbids. This is also the case that rules out
+  `Option<ManuallyDrop<T>>`: after a sub-place move the storage no longer holds a valid complete
+  `T`.
+- **Violations exit 102, not 101.** A STARK trap is a defined language outcome a correct program
+  can reach; a slot violation means the backend emitted code contradicting verified MIR.
+  Conflating the exit codes would let a compiler defect masquerade as the program's own trap.
+
+Mutation-verified (deliverable 7, the two mutations reachable without generated code): omitting
+the dead transition after a move exits **102** (the invariant check fires when the slot is later
+rewritten); adding a Rust `Drop` impl fails the observable-destruction fixture with
+`Rust scope exit must NOT destroy a slot's contents; got ["leaked"]`. Both reverted.
+
+**Remaining for C5.3d-0**: backend integration — emitting slots for non-`Copy` locals
+(deliverable 2 in generated code), the five initial movement shapes (deliverable 5), partial-move
+discipline with a backend diagnostic before rustc (deliverable 6), and the three mutation cases
+that need generated code (whole-local collapse of a field/index drop unit; Drop after a trap;
+second take through emitted paths).
+
+### Required deliverables
+
+1. **A small fixed helper module** covering: slot initialisation; shared and mutable place
+   access; whole-value take; typed sub-place move; destination write; explicit drop-unit
+   destruction.
+2. **No ad hoc unsafe blocks in emitted MIR bodies.** Every unsafe operation routes through those
+   reviewed helpers — which means the helper API must be *safe to call*, with preconditions
+   guaranteed by verified MIR and checked in generated debug builds.
+3. **Move semantics**: source must be live; bytes/value transfer without running source Drop; the
+   exact source drop unit becomes dead; destination becomes live; moving an already-dead unit is
+   rejected by generated debug checks or made unreachable through verified invariants.
+4. **Drop semantics**: operate only on a live unit; mark the unit dead **before** invoking user or
+   structural Drop glue; execute exactly once; preserve MIR field and constant-index order; never
+   run after an aborting trap; never rely on Rust scope exit.
+5. **Initial supported movement shapes**: cross-block whole-local move; conditional construction
+   followed by discriminant read; consuming match of a non-`Copy` single-payload enum; non-`Copy`
+   direct-call argument and return; whole-value reassignment after the previous value was
+   explicitly moved or dropped.
+6. **Partial moves**: implement the typed paths the frozen C5 fixtures require; reject other
+   partial-move forms with a STARK backend diagnostic **before rustc**; never silently collapse
+   field, variant-field or constant-index liveness into whole-local state.
+7. **Mutation-tested evidence** — each of these must FAIL: omitting the dead transition after a
+   move; allowing a second take; allowing an automatic Rust `Drop`; changing a field/index drop
+   unit to whole-local; running Drop after a trap.
+
 ## C5.3c — Option, Result, matches, and `?`
 
-Not started. `EnumRef::CoreOption`/`CoreResult`/`CoreOrdering` are deliberately excluded from
-C5.3b rather than half-supported: they arrive with match/`?` lowering, and their payloads make
-CD-056 decision 3 (non-`Copy` storage) a prerequisite rather than a nicety — see C5.3b's closing
-note.
+Not started, and **not next**: CD-058 inserts C5.3d-0 first. `EnumRef::CoreOption`/`CoreResult`/
+`CoreOrdering` are deliberately excluded from C5.3b rather than half-supported — they arrive with
+match/`?` lowering, on the slot abstraction, since `Option`/`Result` payloads are frequently
+non-`Copy` and `?` is inherently cross-block.
 
-## C5.3d — Bounded Drop proof
+## C5.3d-1 — Bounded Drop proof
 
-Not started. Blocked on the non-`Copy` storage decision (CD-056), which the C5.3a scope boundary
-above already makes visible.
+Not started. Follows C5.3c. Contains the dedicated observable destruction fixture and the final
+exactly-once, ordering, and no-Drop-after-trap proof. The storage decision it was previously
+blocked on is resolved (CD-058) and its foundation is C5.3d-0's deliverable.
 
 ## C5.3 exit
 
 Not reached. §14 requires three-engine agreement for aggregate values (C5.3a: done), payload
 variants (C5.3b: done), match paths (C5.3b: done for user enums), Option/Result, `?`, target
-layout queries (**definition open — CD-056**), and the dedicated C5 Drop fixture.
+layout queries (**defined by CD-058: exact values under one injectable target-layout manifest;
+the current relations-only case is a placeholder, not evidence**), and the dedicated C5 Drop fixture.
