@@ -4911,8 +4911,14 @@ impl<'a> Interpreter<'a> {
                         self.hir.expr(*index).span,
                     ));
                 }
+                // DEV-097: BOTH ends of one bounds check report the SAME site. This used to
+                // use the index OPERAND's span while the out-of-range arm below uses `node.span`
+                // (the whole index expression), so the oracle blamed two different columns for
+                // two ends of the same check -- and disagreed with MIR and the native backend on
+                // one of them. Found by the three-engine harness's negative-index case; no
+                // corpus or inline case had ever indexed with a negative value.
                 let index = usize::try_from(index_value)
-                    .map_err(|_| RuntimeError::new("negative index", self.hir.expr(*index).span))?;
+                    .map_err(|_| RuntimeError::new("negative index", node.span))?;
                 if let Value::Slice(base_place, start, end) =
                     self.place_value(&place, node.span)?.clone()
                 {

@@ -1,9 +1,17 @@
-//! WP-C5.2b — place emission. Scope is bare locals only (no projections): struct/tuple field,
-//! variant field, `Deref`, `Index`, `ConstIndex` all require aggregates/references, which
-//! `emit_types::emit_ty` does not admit yet (WP-C5.2c/C5.3).
+//! WP-C5.2b/C5.3a — place emission and the type environment projections resolve against.
+//!
+//! C5.2b supported bare locals only. C5.3a adds the aggregate projections: struct/tuple `Field`,
+//! `ConstIndex`, and proof-backed `Index`. `VariantField` (enum payloads) is WP-C5.3b and
+//! `Deref` needs references, which are not in the C5 subset yet.
+//!
+//! **Why a type environment is needed at all.** MIR's `Projection::Field(i)` is one variant
+//! covering both struct fields and tuple elements, but the generated Rust differs (`.f0` on a
+//! named struct, `.0` on a Rust tuple). Choosing between them requires knowing the *type of the
+//! place being projected*, which means walking the projection chain from the local's declared
+//! type through the nominal type context. [`TyEnv`] is that walk.
 
-use super::BackendDiagnostic;
-use crate::mir::Place;
+use super::{emit_types, BackendDiagnostic};
+use crate::mir::{MirBody, MirTy, Place, Projection, TypeContext};
 
 /// Matches MIR's own dump format (`_0`, `_1`, ...) one-to-one, which is also a valid Rust
 /// identifier and (as a bonus, not the reason it was chosen) already suppresses Rust's
@@ -12,35 +20,227 @@ pub fn local_name(local: u32) -> String {
     format!("_{local}")
 }
 
-pub fn emit_place(place: &Place) -> Result<String, BackendDiagnostic> {
-    if !place.projection.is_empty() {
-        return Err(BackendDiagnostic::Unsupported(format!(
-            "WP-C5.2b supports only bare locals, no projections; place {place:?} lands in \
-             WP-C5.2c/C5.3 (field/variant/index/deref projections)"
-        )));
+/// The information a place needs to be emitted: the body's local declarations (where a
+/// projection chain starts) and the program's nominal type context (how it continues).
+#[derive(Clone, Copy)]
+pub struct TyEnv<'a> {
+    pub body: &'a MirBody,
+    pub types: &'a TypeContext,
+}
+
+impl<'a> TyEnv<'a> {
+    pub fn new(body: &'a MirBody, types: &'a TypeContext) -> Self {
+        TyEnv { body, types }
     }
-    Ok(local_name(place.local.0))
+
+    fn local_ty(&self, local: u32) -> Result<MirTy, BackendDiagnostic> {
+        self.body
+            .locals
+            .get(local as usize)
+            .map(|d| d.ty.clone())
+            .ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!(
+                    "place names local _{local} which the body does not declare"
+                ))
+            })
+    }
+
+    /// The type of `place`, resolved by walking its projection chain. Every error here is a
+    /// backend limitation or a malformed place, never a user-source error — verified MIR
+    /// guarantees projections are well-typed, so a failure means either an unsupported
+    /// projection kind or a compiler defect upstream.
+    pub fn place_ty(&self, place: &Place) -> Result<MirTy, BackendDiagnostic> {
+        let mut ty = self.local_ty(place.local.0)?;
+        for projection in &place.projection {
+            ty = self.project_once(&ty, projection)?;
+        }
+        Ok(ty)
+    }
+
+    fn project_once(
+        &self,
+        base: &MirTy,
+        projection: &Projection,
+    ) -> Result<MirTy, BackendDiagnostic> {
+        match (projection, base) {
+            (Projection::Field(i), MirTy::Tuple(elems)) => {
+                elems.get(*i as usize).cloned().ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "tuple field {i} out of range for {base:?}"
+                    ))
+                })
+            }
+            (Projection::Field(i), MirTy::Struct(item, args)) => {
+                let fields = self
+                    .types
+                    .struct_fields
+                    .get(&(item.0, args.clone()))
+                    .ok_or_else(|| {
+                        BackendDiagnostic::Unsupported(format!(
+                            "no type-context entry for struct instance {base:?} -- the nominal \
+                             type context does not reach this instance"
+                        ))
+                    })?;
+                fields.get(*i as usize).cloned().ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "struct field {i} out of range for {base:?}"
+                    ))
+                })
+            }
+            (Projection::Index(_) | Projection::ConstIndex(_), MirTy::Array(elem, _)) => {
+                Ok((**elem).clone())
+            }
+            (projection, base) => Err(BackendDiagnostic::Unsupported(format!(
+                "projection {projection:?} on {base:?} has no WP-C5.3a representation yet -- \
+                 VariantField lands in WP-C5.3b, Deref needs references (not in the C5 subset), \
+                 and indexing a Slice/Vec needs their runtime representations"
+            ))),
+        }
+    }
+}
+
+pub fn emit_place(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    let mut rendered = local_name(place.local.0);
+    let mut ty = env.local_ty(place.local.0)?;
+
+    for projection in &place.projection {
+        match (projection, &ty) {
+            // A Rust tuple element is `.0`; a generated named struct's field is `.f0`. One MIR
+            // variant, two Rust syntaxes -- the reason `TyEnv` exists.
+            (Projection::Field(i), MirTy::Tuple(_)) => rendered.push_str(&format!(".{i}")),
+            (Projection::Field(i), MirTy::Struct(..)) => {
+                rendered.push_str(&format!(".{}", emit_types::field_name(*i)))
+            }
+            // A5/CD-038: statically known and verifier-checked against the array length, so it
+            // needs no bounds check of its own.
+            (Projection::ConstIndex(n), MirTy::Array(..)) => rendered.push_str(&format!("[{n}]")),
+            // A proof-backed index: `CheckedOp::CheckIndex` already validated it and trapped
+            // otherwise, so this is a plain index expression rather than a second check.
+            (Projection::Index(proof), MirTy::Array(..)) => {
+                rendered.push_str(&format!("[{} as usize]", local_name(proof.0)))
+            }
+            _ => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "projection {projection:?} on {ty:?} has no WP-C5.3a representation yet"
+                )))
+            }
+        }
+        ty = env.project_once(&ty, projection)?;
+    }
+    Ok(rendered)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mir::{LocalId, Projection};
+    use crate::mir::{BlockId, Instance, LocalDecl, LocalId, LocalKind};
 
-    #[test]
-    fn bare_local_emits_its_dump_name() {
-        let place = Place::local(LocalId(3));
-        assert_eq!(emit_place(&place).unwrap(), "_3");
+    fn body_with(locals: Vec<MirTy>) -> MirBody {
+        MirBody {
+            instance: Instance {
+                item: crate::hir::ItemId(0),
+                symbol: "t@[]".to_string(),
+                type_args: vec![],
+            },
+            params: vec![],
+            ret: MirTy::Unit,
+            locals: locals
+                .into_iter()
+                .map(|ty| LocalDecl {
+                    ty,
+                    kind: LocalKind::Temp,
+                })
+                .collect(),
+            blocks: vec![],
+            entry: BlockId(0),
+        }
     }
 
     #[test]
-    fn projected_place_is_unsupported() {
-        let place = Place {
+    fn bare_local_emits_its_dump_name() {
+        let body = body_with(vec![MirTy::Unit, MirTy::Int32, MirTy::Int32, MirTy::Int32]);
+        let types = TypeContext::default();
+        let env = TyEnv::new(&body, &types);
+        assert_eq!(emit_place(&Place::local(LocalId(3)), &env).unwrap(), "_3");
+    }
+
+    /// One MIR `Field` projection, two Rust syntaxes, chosen by the base type -- the property
+    /// that makes `TyEnv` necessary rather than merely convenient.
+    #[test]
+    fn field_syntax_differs_between_tuples_and_structs() {
+        let body = body_with(vec![
+            MirTy::Tuple(vec![MirTy::Int32, MirTy::Bool]),
+            MirTy::Struct(crate::hir::ItemId(0), vec![]),
+        ]);
+        let mut types = TypeContext::default();
+        types
+            .struct_fields
+            .insert((0, vec![]), vec![MirTy::Int32, MirTy::Bool]);
+        let env = TyEnv::new(&body, &types);
+
+        let tuple_field = Place {
             local: LocalId(0),
             projection: vec![Projection::Field(1)],
         };
+        assert_eq!(emit_place(&tuple_field, &env).unwrap(), "_0.1");
+
+        let struct_field = Place {
+            local: LocalId(1),
+            projection: vec![Projection::Field(1)],
+        };
+        assert_eq!(emit_place(&struct_field, &env).unwrap(), "_1.f1");
+    }
+
+    #[test]
+    fn nested_projections_resolve_through_the_type_context() {
+        // A struct whose second field is a tuple: `_0.f1.0` cannot be emitted without first
+        // resolving what `.f1` is.
+        let body = body_with(vec![MirTy::Struct(crate::hir::ItemId(0), vec![])]);
+        let mut types = TypeContext::default();
+        types.struct_fields.insert(
+            (0, vec![]),
+            vec![MirTy::Int32, MirTy::Tuple(vec![MirTy::Bool, MirTy::Int64])],
+        );
+        let env = TyEnv::new(&body, &types);
+        let place = Place {
+            local: LocalId(0),
+            projection: vec![Projection::Field(1), Projection::Field(0)],
+        };
+        assert_eq!(emit_place(&place, &env).unwrap(), "_0.f1.0");
+        assert_eq!(env.place_ty(&place).unwrap(), MirTy::Bool);
+    }
+
+    #[test]
+    fn array_indices_emit_both_forms() {
+        let body = body_with(vec![MirTy::Array(Box::new(MirTy::Int32), 3), MirTy::Int64]);
+        let types = TypeContext::default();
+        let env = TyEnv::new(&body, &types);
+
+        let constant = Place {
+            local: LocalId(0),
+            projection: vec![Projection::ConstIndex(2)],
+        };
+        assert_eq!(emit_place(&constant, &env).unwrap(), "_0[2]");
+
+        let proved = Place {
+            local: LocalId(0),
+            projection: vec![Projection::Index(LocalId(1))],
+        };
+        assert_eq!(emit_place(&proved, &env).unwrap(), "_0[_1 as usize]");
+    }
+
+    /// Enum payloads are WP-C5.3b: rejected loudly rather than guessed at.
+    #[test]
+    fn variant_field_is_still_unsupported() {
+        let body = body_with(vec![MirTy::Int32]);
+        let types = TypeContext::default();
+        let env = TyEnv::new(&body, &types);
+        let place = Place {
+            local: LocalId(0),
+            projection: vec![Projection::VariantField(0, 0)],
+        };
         assert!(matches!(
-            emit_place(&place),
+            emit_place(&place, &env),
             Err(BackendDiagnostic::Unsupported(_))
         ));
     }

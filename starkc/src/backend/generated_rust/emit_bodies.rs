@@ -21,10 +21,11 @@
 //! `stark-runtime/src/trap.rs`'s doc comment for why this is a deliberate, documented
 //! alternative to §13.1's compact-span-ID-plus-runtime-lookup design, not an oversight.
 
+use super::emit_places::TyEnv;
 use super::{emit_places, emit_types, mangle, BackendDiagnostic};
 use crate::mir::{
-    Callee, CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand, Rvalue,
-    SourceInfo, Statement, Terminator, TrapCategory, TrapInfo,
+    AggKind, Callee, CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand,
+    Rvalue, SourceInfo, Statement, Terminator, TrapCategory, TrapInfo, TypeContext,
 };
 use crate::source::SourceFile;
 use std::sync::Arc;
@@ -36,10 +37,11 @@ pub fn emit_function(
     body: &MirBody,
     name: &str,
     files: &[Arc<SourceFile>],
+    types: &TypeContext,
 ) -> Result<String, BackendDiagnostic> {
     let params = emit_param_list(body)?;
     let ret_ty = emit_types::emit_ty(&body.ret)?;
-    let block = emit_block_body(body, files)?;
+    let block = emit_block_body(body, files, types)?;
     Ok(format!("fn {name}({params}) -> {ret_ty} {block}"))
 }
 
@@ -78,7 +80,10 @@ fn emit_param_list(body: &MirBody) -> Result<String, BackendDiagnostic> {
 pub fn emit_block_body(
     body: &MirBody,
     files: &[Arc<SourceFile>],
+    types: &TypeContext,
 ) -> Result<String, BackendDiagnostic> {
+    let env = &TyEnv::new(body, types);
+    reject_cross_block_non_copy_moves(body, env)?;
     let mut out = String::from("{\n");
 
     // Every non-parameter local is declared `let mut`, DEFAULT-INITIALISED, up front (WP-C5.2c's
@@ -90,17 +95,20 @@ pub fn emit_block_body(
     // rather than the value passed in.
     for (i, decl) in body.locals.iter().enumerate() {
         match &decl.kind {
-            LocalKind::Return | LocalKind::User(_) | LocalKind::Temp => {}
+            // `IndexProof` (WP-C5.3a) is an ordinary integer local in generated Rust: MIR
+            // keeps it opaque so only `Projection::Index` can consume it, but that opacity is a
+            // MIR-level property the verifier enforces, not something the backend re-creates.
+            LocalKind::Return | LocalKind::User(_) | LocalKind::Temp | LocalKind::IndexProof => {}
             LocalKind::Param(_) => continue,
             other => {
                 return Err(BackendDiagnostic::Unsupported(format!(
-                    "WP-C5.2d supports only Return/Param/User/Temp locals; {other:?} lands \
-                     alongside indexing/Drop lowering (WP-C5.3)"
+                    "WP-C5.3a supports Return/Param/User/Temp/IndexProof locals; {other:?} \
+                     lands alongside Drop elaboration (WP-C5.3d)"
                 )))
             }
         }
         let ty = emit_types::emit_ty(&decl.ty)?;
-        let default = emit_types::default_value_expr(&decl.ty)?;
+        let default = emit_types::default_value_expr(&decl.ty, env.types)?;
         out.push_str(&format!(
             "    let mut {}: {ty} = {default};\n",
             emit_places::local_name(i as u32)
@@ -116,13 +124,14 @@ pub fn emit_block_body(
             match stmt {
                 Statement::Nop => {}
                 Statement::Assign(place, rvalue) => {
-                    let dest = emit_places::emit_place(place)?;
-                    let value = emit_rvalue(rvalue)?;
+                    let dest = emit_places::emit_place(place, env)?;
+                    let dest_ty = env.place_ty(place)?;
+                    let value = emit_rvalue(rvalue, &dest_ty, env)?;
                     out.push_str(&format!("                {dest} = {value};\n"));
                 }
             }
         }
-        emit_terminator(body, files, &mut out, &block.terminator.0)?;
+        emit_terminator(body, files, &mut out, &block.terminator.0, env)?;
         out.push_str("            }\n");
     }
     out.push_str("            _ => unreachable!(\"invalid block index\"),\n");
@@ -133,11 +142,95 @@ pub fn emit_block_body(
     Ok(out)
 }
 
+/// WP-C5.3a boundary: a **non-`Copy` value moved out of a local that was not initialised in the
+/// same basic block** is refused here, as a backend `Unsupported`, rather than being emitted and
+/// left for rustc to reject.
+///
+/// Why it cannot simply be emitted: the backend lowers MIR's block graph to
+/// `loop { match __bb { .. } }`, so every block is one iteration of one Rust loop. Rust's borrow
+/// checker is conservative across iterations — it cannot see that MIR's control flow never
+/// revisits a moved-from local, and reports "value moved here, in previous iteration of loop"
+/// even though verified MIR proves the move is sound. Moving within a single block is fine
+/// (assign-then-move is visible to Rust inside one iteration), which is why aggregate
+/// construction (`_2 = aggregate ..; _1 = move _2;`) works today.
+///
+/// The real fix is `WP-C5-ENTRY.md` §7.2's controlled storage for non-`Copy` locals — explicit
+/// liveness the generated code carries itself rather than borrowing Rust's. That is WP-C5.3d's
+/// deliverable, and it needs the storage decision recorded in CD-056. Until then this is a
+/// scoped, named limitation instead of a confusing rustc error surfacing as `BuildFailed`.
+fn reject_cross_block_non_copy_moves(body: &MirBody, env: &TyEnv) -> Result<(), BackendDiagnostic> {
+    for block in &body.blocks {
+        let mut initialised_here: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let check = |operand: &Operand,
+                     initialised_here: &std::collections::HashSet<u32>|
+         -> Result<(), BackendDiagnostic> {
+            let Operand::Move(place) = operand else {
+                return Ok(());
+            };
+            let ty = env.place_ty(place)?;
+            if emit_types::mir_ty_is_copy(&ty, env.types)
+                || initialised_here.contains(&place.local.0)
+            {
+                return Ok(());
+            }
+            Err(BackendDiagnostic::Unsupported(format!(
+                "moving the non-Copy value in _{} across a basic-block boundary needs WP-C5.3d's \
+                 controlled storage for non-Copy locals (WP-C5-ENTRY.md §7.2): the block-dispatch \
+                 loop makes Rust's borrow checker reject a move it cannot prove is not repeated, \
+                 even though verified MIR proves exactly that",
+                place.local.0
+            )))
+        };
+
+        for (statement, _) in &block.statements {
+            if let Statement::Assign(place, rvalue) = statement {
+                for operand in rvalue_operands(rvalue) {
+                    check(operand, &initialised_here)?;
+                }
+                // Only a WHOLE-local assignment re-initialises it; assigning through a
+                // projection leaves the rest of the local as it was.
+                if place.projection.is_empty() {
+                    initialised_here.insert(place.local.0);
+                }
+            }
+        }
+        match &block.terminator.0 {
+            Terminator::Call { args, .. } => {
+                for arg in args {
+                    check(arg, &initialised_here)?;
+                }
+            }
+            Terminator::Checked { args, .. } => {
+                for arg in args {
+                    check(arg, &initialised_here)?;
+                }
+            }
+            Terminator::SwitchInt { scrut, .. } => check(scrut, &initialised_here)?,
+            Terminator::Trap {
+                message: Some(operand),
+                ..
+            } => check(operand, &initialised_here)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn rvalue_operands(rvalue: &Rvalue) -> Vec<&Operand> {
+    match rvalue {
+        Rvalue::Use(operand) | Rvalue::UnOp(_, operand) => vec![operand],
+        Rvalue::BinOp(_, lhs, rhs) => vec![lhs, rhs],
+        Rvalue::Aggregate(_, operands) => operands.iter().collect(),
+        Rvalue::Discriminant(_) | Rvalue::RefOf { .. } | Rvalue::LayoutQuery { .. } => vec![],
+    }
+}
+
 fn emit_terminator(
     body: &MirBody,
     files: &[Arc<SourceFile>],
     out: &mut String,
     terminator: &Terminator,
+    env: &TyEnv,
 ) -> Result<(), BackendDiagnostic> {
     match terminator {
         Terminator::Goto { target } => {
@@ -148,7 +241,7 @@ fn emit_terminator(
             arms,
             otherwise,
         } => {
-            let key = switch_key_expr(body, scrut)?;
+            let key = switch_key_expr(scrut, env)?;
             out.push_str(&format!("                match {key} {{\n"));
             for (value, target) in arms {
                 out.push_str(&format!(
@@ -171,7 +264,7 @@ fn emit_terminator(
         } => {
             let dest_place = emit_places::local_name(dest.0);
             let dest_ty = &body.locals[dest.0 as usize].ty;
-            let expr = emit_checked_expr(body, files, *op, args, dest_ty, trap)?;
+            let expr = emit_checked_expr(files, *op, args, dest_ty, trap, env)?;
             out.push_str(&format!("                {dest_place} = {expr};\n"));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
         }
@@ -181,8 +274,8 @@ fn emit_terminator(
             dest,
             target,
         } => {
-            let dest_place = emit_places::emit_place(dest)?;
-            let call_expr = emit_call(callee, args)?;
+            let dest_place = emit_places::emit_place(dest, env)?;
+            let call_expr = emit_call(callee, args, env)?;
             out.push_str(&format!("                {dest_place} = {call_expr};\n"));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
         }
@@ -234,13 +327,13 @@ fn emit_terminator(
 /// (`Callee::FnValue`) are WP-C5.4c's job (function values as first-class values need the same
 /// representation decisions as everywhere else they appear, not a special case here); runtime
 /// calls (`Callee::Runtime`) land alongside whichever `RuntimeFn` group first gets lowered.
-fn emit_call(callee: &Callee, args: &[Operand]) -> Result<String, BackendDiagnostic> {
+fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match callee {
         Callee::Instance(instance) => {
             let name = mangle::function_name_for_symbol(&instance.symbol);
             let mut arg_exprs = Vec::with_capacity(args.len());
             for arg in args {
-                arg_exprs.push(emit_operand(arg)?);
+                arg_exprs.push(emit_operand(arg, env)?);
             }
             Ok(format!("{name}({})", arg_exprs.join(", ")))
         }
@@ -251,12 +344,62 @@ fn emit_call(callee: &Callee, args: &[Operand]) -> Result<String, BackendDiagnos
     }
 }
 
-fn emit_rvalue(rvalue: &Rvalue) -> Result<String, BackendDiagnostic> {
+/// `dest_ty` is the type of the place being assigned. It is needed because
+/// `Rvalue::Aggregate(AggKind::Struct(item), ..)` names the nominal ITEM but not its type
+/// arguments — a monomorphised instance is `(item, args)`, and only the destination knows the
+/// args. Reading them from the destination is not inference: verified MIR guarantees the
+/// assignment is well-typed, so the destination's type IS the aggregate's type.
+fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match rvalue {
-        Rvalue::Use(operand) => emit_operand(operand),
-        Rvalue::UnOp(MirUnOp::Not, operand) => Ok(format!("(!({}))", emit_operand(operand)?)),
-        Rvalue::UnOp(MirUnOp::FloatNeg, operand) => Ok(format!("(-({}))", emit_operand(operand)?)),
-        Rvalue::BinOp(op, lhs, rhs) => emit_binop(*op, emit_operand(lhs)?, emit_operand(rhs)?),
+        Rvalue::Use(operand) => emit_operand(operand, env),
+        Rvalue::UnOp(MirUnOp::Not, operand) => Ok(format!("(!({}))", emit_operand(operand, env)?)),
+        Rvalue::UnOp(MirUnOp::FloatNeg, operand) => {
+            Ok(format!("(-({}))", emit_operand(operand, env)?))
+        }
+        Rvalue::BinOp(op, lhs, rhs) => {
+            emit_binop(*op, emit_operand(lhs, env)?, emit_operand(rhs, env)?)
+        }
+        // WP-C5.3a: aggregate construction. Each kind has a direct Rust constructor, so nothing
+        // here reconstructs source syntax -- the operand order IS the MIR field/element order.
+        Rvalue::Aggregate(kind, operands) => {
+            let mut parts = Vec::with_capacity(operands.len());
+            for operand in operands {
+                parts.push(emit_operand(operand, env)?);
+            }
+            Ok(match kind {
+                AggKind::Tuple => match parts.len() {
+                    0 => "()".to_string(),
+                    1 => format!("({},)", parts[0]),
+                    _ => format!("({})", parts.join(", ")),
+                },
+                AggKind::Array(_) => format!("[{}]", parts.join(", ")),
+                AggKind::Struct(item) => {
+                    let MirTy::Struct(dest_item, args) = dest_ty else {
+                        return Err(BackendDiagnostic::Unsupported(format!(
+                            "struct aggregate assigned to a non-struct destination {dest_ty:?}"
+                        )));
+                    };
+                    if dest_item.0 != item.0 {
+                        return Err(BackendDiagnostic::Unsupported(format!(
+                            "struct aggregate names item {} but its destination is item {}",
+                            item.0, dest_item.0
+                        )));
+                    }
+                    let name = mangle::type_name_for_nominal(item.0, args);
+                    let fields: Vec<String> = parts
+                        .iter()
+                        .enumerate()
+                        .map(|(i, value)| format!("{}: {value}", emit_types::field_name(i as u32)))
+                        .collect();
+                    format!("{name} {{ {} }}", fields.join(", "))
+                }
+                AggKind::EnumVariant(..) => {
+                    return Err(BackendDiagnostic::Unsupported(
+                        "enum-variant aggregates land in WP-C5.3b".to_string(),
+                    ))
+                }
+            })
+        }
         Rvalue::LayoutQuery { kind, ty } => {
             let rust_ty = emit_types::emit_ty(ty)?;
             Ok(match kind {
@@ -303,33 +446,26 @@ fn emit_binop(op: MirBinOp, l: String, r: String) -> Result<String, BackendDiagn
 /// operand kinds emit the same bare place reference here. Real non-`Copy` move/liveness tracking
 /// (`WP-C5-ENTRY.md` §7.2's `MaybeUninit<ManuallyDrop<T>>` strategy) is deferred to whichever WP
 /// first admits a non-`Copy` `MirTy` (WP-C5.3+).
-fn emit_operand(operand: &Operand) -> Result<String, BackendDiagnostic> {
+fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match operand {
         Operand::Const(c) => emit_types::emit_constant(c),
-        Operand::Copy(place) | Operand::Move(place) => emit_places::emit_place(place),
+        Operand::Copy(place) | Operand::Move(place) => emit_places::emit_place(place, env),
     }
 }
 
 /// Resolves an operand's MIR type -- needed for `SwitchInt`'s bit-pattern key and `Cast`'s
-/// source type, neither of which `Operand` itself carries.
-fn operand_mir_ty(body: &MirBody, operand: &Operand) -> Result<MirTy, BackendDiagnostic> {
+/// source type, neither of which `Operand` itself carries. WP-C5.3a: projected places resolve
+/// through `TyEnv`, so a switch on a struct field or an array element is no longer a special
+/// case that has to be refused.
+fn operand_mir_ty(operand: &Operand, env: &TyEnv) -> Result<MirTy, BackendDiagnostic> {
     match operand {
         Operand::Const(Constant::Bool(_)) => Ok(MirTy::Bool),
         Operand::Const(Constant::Int(_, ty)) => Ok(ty.clone()),
         Operand::Const(Constant::Float(_, ty)) => Ok(ty.clone()),
         Operand::Const(Constant::Unit) => Ok(MirTy::Unit),
-        Operand::Copy(place) | Operand::Move(place) => {
-            if !place.projection.is_empty() {
-                return Err(BackendDiagnostic::Unsupported(
-                    "WP-C5.2c supports only bare-local operand type lookups; projections land \
-                     in WP-C5.2c's place work / WP-C5.3"
-                        .into(),
-                ));
-            }
-            Ok(body.locals[place.local.0 as usize].ty.clone())
-        }
+        Operand::Copy(place) | Operand::Move(place) => env.place_ty(place),
         other => Err(BackendDiagnostic::Unsupported(format!(
-            "operand type lookup for {other:?} has no WP-C5.2c representation yet"
+            "operand {other:?} has no WP-C5.3a type resolution yet"
         ))),
     }
 }
@@ -340,9 +476,9 @@ fn operand_mir_ty(body: &MirBody, operand: &Operand) -> Result<MirTy, BackendDia
 /// -- i.e. sign-extension THEN bit-reinterpretation, not a same-width truncation). Reproduced
 /// here by casting through `i128` explicitly so the same sign-extension happens regardless of
 /// the Rust-side value's actual declared width.
-fn switch_key_expr(body: &MirBody, operand: &Operand) -> Result<String, BackendDiagnostic> {
-    let ty = operand_mir_ty(body, operand)?;
-    let value = emit_operand(operand)?;
+fn switch_key_expr(operand: &Operand, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    let ty = operand_mir_ty(operand, env)?;
+    let value = emit_operand(operand, env)?;
     match ty {
         MirTy::Bool => Ok(format!("(if {value} {{ 1u128 }} else {{ 0u128 }})")),
         MirTy::Char => Ok(format!("(({value} as u32) as i128 as u128)")),
@@ -475,12 +611,12 @@ fn int_width_tokens(ty: &MirTy) -> Result<&'static str, BackendDiagnostic> {
 /// these rather than optimizing the ones where it isn't required, to stay a provable match
 /// against the oracle rather than a "should be equivalent" argument re-derived per operator.
 fn emit_checked_expr(
-    body: &MirBody,
     files: &[Arc<SourceFile>],
     op: CheckedOp,
     args: &[Operand],
     dest_ty: &MirTy,
     trap: &TrapInfo,
+    env: &TyEnv,
 ) -> Result<String, BackendDiagnostic> {
     use CheckedOp::*;
     let default_abort = emit_abort_call(files, trap.category, &trap.source);
@@ -488,34 +624,34 @@ fn emit_checked_expr(
         Add | Sub | Mul | Div | Rem | Neg | Pow => {
             let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
             let (min, max) = int_bounds_tokens(dest_ty)?;
-            let a = emit_operand(&args[0])?;
+            let a = emit_operand(&args[0], env)?;
             let checked = match op {
                 Add => format!(
                     "(({a}) as i128).checked_add(({}) as i128)",
-                    emit_operand(&args[1])?
+                    emit_operand(&args[1], env)?
                 ),
                 Sub => format!(
                     "(({a}) as i128).checked_sub(({}) as i128)",
-                    emit_operand(&args[1])?
+                    emit_operand(&args[1], env)?
                 ),
                 Mul => format!(
                     "(({a}) as i128).checked_mul(({}) as i128)",
-                    emit_operand(&args[1])?
+                    emit_operand(&args[1], env)?
                 ),
                 Div => format!(
                     "(({a}) as i128).checked_div(({}) as i128)",
-                    emit_operand(&args[1])?
+                    emit_operand(&args[1], env)?
                 ),
                 Rem => format!(
                     "(({a}) as i128).checked_rem(({}) as i128)",
-                    emit_operand(&args[1])?
+                    emit_operand(&args[1], env)?
                 ),
                 Neg => format!("(({a}) as i128).checked_neg()"),
                 // A5: exponent must be nonnegative and fit in u32 (NUM-INT-ARITH-001);
                 // `u32::try_from` rejects both a negative exponent and one wider than u32.
                 Pow => format!(
                     "u32::try_from(({}) as i128).ok().and_then(|__e| (({a}) as i128).checked_pow(__e))",
-                    emit_operand(&args[1])?
+                    emit_operand(&args[1], env)?
                 ),
                 _ => unreachable!(),
             };
@@ -528,8 +664,8 @@ fn emit_checked_expr(
             let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
             let (min, max) = int_bounds_tokens(dest_ty)?;
             let width = int_width_tokens(dest_ty)?;
-            let l = emit_operand(&args[0])?;
-            let count = emit_operand(&args[1])?;
+            let l = emit_operand(&args[0], env)?;
+            let count = emit_operand(&args[1], env)?;
             let method = if matches!(op, Shl) {
                 "checked_shl"
             } else {
@@ -547,8 +683,8 @@ fn emit_checked_expr(
         }
         FloatDiv | FloatRem => {
             let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
-            let l = emit_operand(&args[0])?;
-            let r = emit_operand(&args[1])?;
+            let l = emit_operand(&args[0], env)?;
+            let r = emit_operand(&args[1], env)?;
             let rust_op = if matches!(op, FloatDiv) { "/" } else { "%" };
             Ok(format!(
                 "{{ let __l: {dest_rust_ty} = {l}; let __r: {dest_rust_ty} = {r}; if __r == 0.0 \
@@ -556,23 +692,34 @@ fn emit_checked_expr(
                  __r }} }}"
             ))
         }
-        Cast => emit_cast_expr(body, files, &args[0], dest_ty, trap),
-        other => Err(BackendDiagnostic::Unsupported(format!(
-            "CheckedOp {other:?} has no WP-C5.2c representation yet -- CheckIndex lands \
-             alongside array/slice indexing (WP-C5.3)"
-        ))),
+        Cast => emit_cast_expr(files, &args[0], dest_ty, trap, env),
+        // WP-C5.3a: the bounds check that DEFINES an index proof for `Projection::Index`. The
+        // proof value is the validated index itself, so the projection can then index without a
+        // second check. Compared at `i128` for the same reason the arithmetic ops are: the index
+        // operand may be any signed integer width, and a negative index must trap rather than
+        // wrap into a huge `usize`.
+        CheckIndex => {
+            let array = emit_operand(&args[0], env)?;
+            let index = emit_operand(&args[1], env)?;
+            let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
+            Ok(format!(
+                "{{ let __i = ({index}) as i128; \
+                 let __n = ({array}).len() as i128; \
+                 if __i < 0 || __i >= __n {{ {default_abort} }} else {{ __i as {dest_rust_ty} }} }}"
+            ))
+        }
     }
 }
 
 fn emit_cast_expr(
-    body: &MirBody,
     files: &[Arc<SourceFile>],
     source: &Operand,
     dest_ty: &MirTy,
     trap: &TrapInfo,
+    env: &TyEnv,
 ) -> Result<String, BackendDiagnostic> {
-    let src_ty = operand_mir_ty(body, source)?;
-    let a = emit_operand(source)?;
+    let src_ty = operand_mir_ty(source, env)?;
+    let a = emit_operand(source, env)?;
     let dest_rust_ty = emit_types::emit_ty(dest_ty)?;
     let src_is_int = int_bounds_tokens(&src_ty).is_ok();
     let dest_is_int = int_bounds_tokens(dest_ty).is_ok();

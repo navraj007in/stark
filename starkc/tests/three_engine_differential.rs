@@ -111,9 +111,10 @@ fn front_end(name: &str, source: &str) -> Front {
 /// failure: a silent fallback would let a wrong-category trap normalise to whatever the other
 /// engines said.
 ///
-/// `IndexOutOfBounds`, `UnwrapNone`, `UnwrapErr` and message-carrying `Panic` are not reachable
-/// from the C5.2-admitted surface (arrays, `Option`/`Result` and string values are all WP-C5.3),
-/// so they are listed here as explicit "not admitted yet" failures rather than guessed at.
+/// `UnwrapNone`, `UnwrapErr` and message-carrying `Panic` are not reachable from the currently
+/// admitted surface (`Option`/`Result` are WP-C5.3c, string values WP-C5.3), so they are listed
+/// here as explicit "not admitted yet" failures rather than guessed at. `IndexOutOfBounds`
+/// joined the admitted set with WP-C5.3a's arrays.
 fn oracle_category(message: &str) -> TrapCategory {
     if message.contains("integer overflow") {
         TrapCategory::IntegerOverflow
@@ -127,10 +128,16 @@ fn oracle_category(message: &str) -> TrapCategory {
         TrapCategory::CastFailure
     } else if message.contains("assertion failed") {
         TrapCategory::AssertFailure
-    } else if message.contains("out of bounds") || message.contains("unwrap") {
+    } else if message.contains("out of bounds") || message.contains("negative index") {
+        // Admitted as of WP-C5.3a (arrays). The oracle words the two ends of the range
+        // differently ("index out of bounds" vs "negative index") while MIR and the native
+        // engine use one category for both -- normalised here rather than by loosening the
+        // match, so a genuinely unknown message still fails loudly.
+        TrapCategory::IndexOutOfBounds
+    } else if message.contains("unwrap") {
         panic!(
-            "oracle raised a trap category outside the C5.2-admitted surface: {message:?} \
-             (arrays and Option/Result are WP-C5.3)"
+            "oracle raised a trap category outside the admitted surface: {message:?} \
+             (Option/Result are WP-C5.3c)"
         )
     } else {
         panic!(
@@ -834,6 +841,183 @@ three_engine_test!(
     r#"fn main() {
     let a: Int32 = 10;
     assert(a > 100);
+}
+"#
+);
+
+// ============================================================ WP-C5.3a: aggregates --
+// Tuples, arrays, and structs: construction, field projection, copying/moving, and layout
+// queries, all under the same three-engine agreement the scalar cases use.
+
+three_engine_test!(
+    struct_construction_and_field_projection_agree,
+    "agg_struct",
+    completes,
+    r#"struct Point { x: Int32, y: Int32 }
+
+struct Nested { p: Point, tag: Bool }
+
+fn main() {
+    let p: Point = Point { x: 3, y: 4 };
+    assert_eq(p.x, 3);
+    assert_eq(p.y, 4);
+    assert_eq(p.x + p.y, 7);
+
+    // Field order is observable: a backend that emitted fields in the wrong order would pass
+    // `x + y` and fail here.
+    let q: Point = Point { x: 10, y: 1 };
+    assert_eq(q.x - q.y, 9);
+
+    // Nested aggregates: a struct field that is itself a struct, projected two levels deep.
+    let n: Nested = Nested { p: Point { x: 5, y: 6 }, tag: true };
+    assert_eq(n.p.x, 5);
+    assert_eq(n.p.y, 6);
+    assert(n.tag);
+}
+"#
+);
+
+three_engine_test!(
+    tuple_construction_and_projection_agree,
+    "agg_tuple",
+    completes,
+    r#"fn main() {
+    let t: (Int32, Bool) = (1, true);
+    assert_eq(t.0, 1);
+    assert(t.1);
+
+    // Element order and heterogeneous element types.
+    let u: (Int32, Int64, Bool) = (7, 8, false);
+    assert_eq(u.0, 7);
+    let second: Int64 = 8;
+    assert_eq(u.1, second);
+    assert(!u.2);
+
+    // A tuple of tuples: `.1.0` needs the projection walk to resolve `.1`'s type first.
+    let nested: ((Int32, Int32), Bool) = ((2, 3), true);
+    assert_eq(nested.0.0, 2);
+    assert_eq(nested.0.1, 3);
+    assert(nested.1);
+
+    // Tuples of primitives are Copy in MIR: `v` is read after being bound to `w`.
+    let v: (Int32, Int32) = (4, 5);
+    let w: (Int32, Int32) = v;
+    assert_eq(v.0 + w.1, 9);
+}
+"#
+);
+
+three_engine_test!(
+    array_construction_and_indexing_agree,
+    "agg_array",
+    completes,
+    r#"fn main() {
+    let a: [Int32; 3] = [10, 20, 30];
+
+    // Constant indices (MIR `ConstIndex`, no bounds check needed -- the verifier checked it).
+    assert_eq(a[0], 10);
+    assert_eq(a[1], 20);
+    assert_eq(a[2], 30);
+
+    // Dynamic indices (MIR `CheckIndex` + a proof-backed `Index` projection). Every element is
+    // reached through a runtime index, so a backend that mixed up the proof value would fail.
+    let mut i: Int32 = 0;
+    let mut total: Int32 = 0;
+    while i < 3 {
+        total = total + a[i];
+        i = i + 1;
+    }
+    assert_eq(total, 60);
+
+    // An index computed rather than counted, and the last valid index specifically.
+    let j: Int32 = 1 + 1;
+    assert_eq(a[j], 30);
+
+    // Arrays of other element types, including a nested array.
+    let flags: [Bool; 2] = [true, false];
+    assert(flags[0]);
+    assert(!flags[1]);
+    let grid: [[Int32; 2]; 2] = [[1, 2], [3, 4]];
+    assert_eq(grid[0][1], 2);
+    assert_eq(grid[1][0], 3);
+}
+"#
+);
+
+// LAYOUT QUERIES ARE DELIBERATELY NOT ASSERTED FOR VALUE AGREEMENT HERE -- see CD-056.
+//
+// §14's C5.3 exit lists "target layout queries" among the dimensions requiring three-engine
+// agreement, but the three engines cannot currently agree on layout VALUES and it is not obvious
+// they should: both interpreters answer 8 for every type (`mir::interp::reference_layout`'s
+// "reference target", whose own doc says a real per-type algorithm is the backend's job), while
+// the native engine answers its actual Rust target layout (`size_of::<i32>() == 4`). The harness
+// found this immediately: `assert_eq(size_of::<Int32>(), 4)` traps in both interpreters and
+// succeeds natively.
+//
+// That is a semantic question about what LAYOUT-ABI-001's target-dependence means for a
+// three-engine comparator, not a backend defect, and it is with the owner. Until it is settled
+// this file asserts only that a layout query RUNS in all three engines and agrees on
+// completion-vs-trap -- which is real coverage of the emission path without pretending the value
+// question is answered.
+three_engine_test!(
+    layout_queries_run_in_all_three_engines,
+    "agg_layout",
+    completes,
+    r#"fn main() {
+    let a: UInt64 = size_of::<Int32>();
+    let b: UInt64 = align_of::<Int32>();
+    let c: UInt64 = size_of::<Bool>();
+    let d: UInt64 = align_of::<Char>();
+    // Only relations that hold under BOTH layout answers are asserted: a query is deterministic
+    // within one engine, and alignment is never larger than size for these primitives.
+    let a2: UInt64 = size_of::<Int32>();
+    assert_eq(a, a2);
+    assert(b <= a);
+    assert(c >= 1);
+    assert(d >= 1);
+}
+"#
+);
+
+// The trap side of indexing: out of bounds must trap, with the same category and the same source
+// location, in all three engines. Both ends of the range, since an off-by-one in the bounds check
+// would pass one and fail the other.
+three_engine_test!(
+    index_out_of_bounds_traps_in_all_three_engines,
+    "agg_oob_high",
+    traps(TrapCategory::IndexOutOfBounds, 4),
+    r#"fn main() {
+    let a: [Int32; 3] = [10, 20, 30];
+    let i: Int32 = 3;
+    let x: Int32 = a[i];
+}
+"#
+);
+
+three_engine_test!(
+    negative_index_traps_in_all_three_engines,
+    "agg_oob_neg",
+    traps(TrapCategory::IndexOutOfBounds, 4),
+    r#"fn main() {
+    let a: [Int32; 3] = [10, 20, 30];
+    let i: Int32 = -1;
+    let x: Int32 = a[i];
+}
+"#
+);
+
+// The LAST valid index must NOT trap -- the negative control for the two cases above, without
+// which a bounds check that rejected everything would pass both.
+three_engine_test!(
+    the_last_valid_index_does_not_trap,
+    "agg_oob_edge",
+    completes,
+    r#"fn main() {
+    let a: [Int32; 3] = [10, 20, 30];
+    let last: Int32 = 2;
+    assert_eq(a[last], 30);
+    let first: Int32 = 0;
+    assert_eq(a[first], 10);
 }
 "#
 );

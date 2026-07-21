@@ -5,8 +5,16 @@
 //! deferred alongside output support (WP-C5.2c/d, wherever `RuntimeFn` calls first lower), since
 //! a constant string with nothing to do with it yet is not independently useful to prove.
 
-use super::BackendDiagnostic;
-use crate::mir::{Constant, MirTy};
+use super::{mangle, BackendDiagnostic};
+use crate::mir::{Constant, MirProgram, MirTy, TypeContext};
+
+/// The generated field name for a struct field at declaration index `i`. Positional rather than
+/// the STARK source name: MIR carries fields by index (`Projection::Field(u32)`) and has already
+/// discarded the names, so inventing them back would mean re-deriving information the backend is
+/// explicitly not supposed to reconstruct (§5.2, "no backend semantic reconstruction").
+pub fn field_name(i: u32) -> String {
+    format!("f{i}")
+}
 
 pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
     Ok(match ty {
@@ -23,13 +31,106 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         MirTy::Bool => "bool".to_string(),
         MirTy::Char => "char".to_string(),
         MirTy::Unit => "()".to_string(),
+        // §6.2 offers "generated concrete tuple or named internal aggregate; choose one
+        // canonical form". A Rust tuple is chosen: it needs no generated definition, no name to
+        // keep deterministic, and no reachability walk to decide which shapes to emit. The cost
+        // is that `Projection::Field` has two Rust syntaxes depending on base type, which
+        // `emit_places::TyEnv` resolves.
+        MirTy::Tuple(elems) => {
+            let rendered: Result<Vec<String>, _> = elems.iter().map(emit_ty).collect();
+            let rendered = rendered?;
+            // A 1-tuple needs Rust's trailing comma to stay a tuple rather than a parenthesised
+            // expression; `()` for the empty case coincides with Unit, which is correct.
+            match rendered.len() {
+                0 => "()".to_string(),
+                1 => format!("({},)", rendered[0]),
+                _ => format!("({})", rendered.join(", ")),
+            }
+        }
+        MirTy::Array(elem, n) => format!("[{}; {n}]", emit_ty(elem)?),
+        MirTy::Struct(item, args) => mangle::type_name_for_nominal(item.0, args),
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "MirTy {other:?} has no C5.2 generated-Rust representation yet -- aggregates \
-                 land in WP-C5.2b/c, enums in WP-C5.3; see WP-C5.1.md's MirTy matrix"
+                "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \
+                 WP-C5.3b, Option/Result in WP-C5.3c, references/slices/String/Vec are outside \
+                 the C5 subset; see WP-C5.1.md's MirTy matrix"
             )))
         }
     })
+}
+
+/// Whether MIR classifies `ty` as `Copy`. **Mirrors `mir::lower::is_copy` exactly**, which is
+/// the semantic authority — §7.4 is explicit that the backend must not independently broaden the
+/// Copy set based on Rust traits, so this reads MIR's own classification (`TypeContext::
+/// copy_types` for nominals, structural rules for everything else) rather than asking Rust.
+///
+/// An unmarked all-`Copy`-fields STARK struct is still Move; only an `impl Copy` makes it Copy,
+/// and the front end has already validated the all-Copy-fields/no-Drop rules for that impl to
+/// exist.
+pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
+    match ty {
+        MirTy::Struct(item, args) => types.copy_types.contains(&(item.0, args.clone())),
+        MirTy::Enum(crate::mir::EnumRef::User(item), args) => {
+            types.copy_types.contains(&(item.0, args.clone()))
+        }
+        MirTy::Enum(_, args) => args.iter().all(|a| mir_ty_is_copy(a, types)),
+        MirTy::Tuple(elems) => elems.iter().all(|e| mir_ty_is_copy(e, types)),
+        MirTy::Array(elem, _) => mir_ty_is_copy(elem, types),
+        MirTy::Ref { mutable, .. } => !*mutable,
+        MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
+        _ => true,
+    }
+}
+
+/// §6.3: one Rust definition per reachable concrete nominal instance, emitted in the type
+/// context's own (`BTreeMap`, therefore deterministic) order.
+///
+/// **FLAGGED READING, CE4-shaped — see `COMPILER-STATE.md` CD-056.** §6.3 says "do not derive
+/// `Clone`, `Copy`, `Eq`, `Ord`, or `Hash` as a shortcut for STARK semantics", while §7.4 says a
+/// MIR copy is emitted only for a MIR-`Copy` type and the backend must not broaden that set. A
+/// STARK struct with an `impl Copy` needs SOME mechanism for `Operand::Copy` to read it twice.
+/// The reading taken here: deriving `Clone`/`Copy` on exactly the instances MIR classifies
+/// `Copy` is not a "shortcut for STARK semantics" — MIR decides, the derive follows, and the set
+/// is neither broadened nor narrowed. No other trait is derived; `Eq`/`Ord`/`Hash` remain
+/// forbidden because those WOULD substitute Rust behaviour for STARK's.
+///
+/// If the owner reads §6.3 as forbidding this outright, the alternative is an explicit generated
+/// copy helper per nominal, and the change is confined to [`derives_for`].
+pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendDiagnostic> {
+    let mut out = String::new();
+    for ((item, args), fields) in &program.types.struct_fields {
+        let name = mangle::type_name_for_nominal(*item, args);
+        let rendered: Vec<String> = args.iter().map(crate::mir::dump_ty).collect();
+        out.push_str(&format!(
+            "// STARK nominal: struct#{item}[{}]\n",
+            rendered.join(", ")
+        ));
+        let ty = MirTy::Struct(crate::hir::ItemId(*item), args.clone());
+        if let Some(derives) = derives_for(&ty, &program.types) {
+            out.push_str(&format!("{derives}\n"));
+        }
+        out.push_str(&format!("struct {name} {{\n"));
+        for (i, field_ty) in fields.iter().enumerate() {
+            out.push_str(&format!(
+                "    {}: {},\n",
+                field_name(i as u32),
+                emit_ty(field_ty)?
+            ));
+        }
+        out.push_str("}\n\n");
+    }
+    Ok(out)
+}
+
+/// The single point where the flagged §6.3-vs-§7.4 reading is applied; see
+/// [`emit_nominal_definitions`].
+fn derives_for(ty: &MirTy, types: &TypeContext) -> Option<&'static str> {
+    if mir_ty_is_copy(ty, types) {
+        // `Clone` is required by Rust for `Copy`, not chosen independently.
+        Some("#[derive(Clone, Copy)]")
+    } else {
+        None
+    }
 }
 
 /// An arbitrary-but-valid value of `ty`, used only to give a local declaration a starting value
@@ -38,7 +139,7 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
 /// `__bb` state machine that rustc's definite-assignment analysis cannot see across match arms;
 /// see `emit_bodies.rs`'s block-dispatch-loop doc comment for why every local must be
 /// default-initialised once more than one block exists.
-pub fn default_value_expr(ty: &MirTy) -> Result<String, BackendDiagnostic> {
+pub fn default_value_expr(ty: &MirTy, types: &TypeContext) -> Result<String, BackendDiagnostic> {
     Ok(match ty {
         MirTy::Int8
         | MirTy::Int16
@@ -52,9 +153,50 @@ pub fn default_value_expr(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         MirTy::Bool => "false".to_string(),
         MirTy::Char => "'\\0'".to_string(),
         MirTy::Unit => "()".to_string(),
+        MirTy::Tuple(elems) => {
+            let rendered: Result<Vec<String>, _> =
+                elems.iter().map(|e| default_value_expr(e, types)).collect();
+            let rendered = rendered?;
+            match rendered.len() {
+                0 => "()".to_string(),
+                1 => format!("({},)", rendered[0]),
+                _ => format!("({})", rendered.join(", ")),
+            }
+        }
+        MirTy::Array(elem, n) => {
+            let element = default_value_expr(elem, types)?;
+            if mir_ty_is_copy(elem, types) {
+                format!("[{element}; {n}]")
+            } else {
+                // `[expr; N]` requires a `Copy` element. `from_fn` builds N independent values
+                // without materialising N copies of the expression in the generated source,
+                // which a literal element list would (and which would explode for large N).
+                format!("core::array::from_fn(|_| {element})")
+            }
+        }
+        MirTy::Struct(item, args) => {
+            let fields = types
+                .struct_fields
+                .get(&(item.0, args.clone()))
+                .ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "no type-context entry for struct instance {ty:?}"
+                    ))
+                })?;
+            let name = mangle::type_name_for_nominal(item.0, args);
+            let mut parts = Vec::with_capacity(fields.len());
+            for (i, field_ty) in fields.iter().enumerate() {
+                parts.push(format!(
+                    "{}: {}",
+                    field_name(i as u32),
+                    default_value_expr(field_ty, types)?
+                ));
+            }
+            format!("{name} {{ {} }}", parts.join(", "))
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "MirTy {other:?} has no WP-C5.2c default-value representation yet"
+                "MirTy {other:?} has no WP-C5.3a default-value representation yet"
             )))
         }
     })

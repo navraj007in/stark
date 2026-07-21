@@ -53,12 +53,25 @@ context), and two escalated to the owner as a CE4 amendment to the approved Nati
 v0.1. Fixing the first surfaced an eighth defect the review had not named (DEV-096: the HIR oracle
 reported every out-of-range cast as an arithmetic overflow). The pass also completed C5.2e's
 `Terminator::Trap` support, which CD-051 had recorded as closed while it was still `Unsupported`.
-Next: **WP-C5.3 (aggregates, enums, and error values)**, whose blocking entry condition is now
-discharged — **DEV-095 closed (CD-055)**: the generated-crate build key covers every semantic
-input affecting generated code (all eight version axes, entry symbol, source table with content
-hashes, all four `TypeContext` fields, bodies), with seven cache-invalidation tests that were
-mutation-verified to fail against the old `hash(dump())` key. WP-C5.3 itself has not been opened
-and awaits owner go-ahead. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+**WP-C5.3 OPEN (CD-056), C5.3a CLOSED.** DEV-095 was discharged first (CD-055: the build key now
+covers all eight version axes, the entry symbol, the source table with content hashes, all four
+`TypeContext` fields and the bodies, with seven mutation-verified cache-invalidation tests).
+C5.3a delivered tuples, arrays and structs — §6.2 type mapping, §6.3 nominal definitions, the
+projection-type walk, aggregate construction, constant and proof-backed indexing — with seven new
+three-engine cases and four native-only ones. It found and fixed **DEV-097** (the HIR oracle
+blamed two different columns for the two ends of one bounds check; the fourth defect this campaign
+has found living only in the gap between engines).
+
+**THREE OWNER DECISIONS ARE OPEN (CD-056), all flagged rather than resolved:** (1) what
+"three-engine agreement on target layout queries" means, since §14 requires it but the
+interpreters answer 8 for every type while native answers real target layout — the exit condition
+cannot be satisfied as literally written; (2) the §6.3-vs-§7.4 `Copy`-derive reading, implemented
+and reversible in one function; (3) the non-`Copy` storage strategy (§7.2), which **blocks
+C5.3d** and is already visible as C5.3a's scope boundary — a non-`Copy` move across a
+basic-block boundary is refused as `Unsupported` because the block-dispatch loop defeats Rust's
+borrow checker.
+
+Next: the three decisions above, then C5.3b (enums and discriminants). **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -1934,6 +1947,86 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     (`grep` confirms no other reference in the workspace), so the untouched suites — parser,
     lexer, formatter, LSP, ONNX, gate4/gate7 — carry no information about this change. ~15 seconds
     against ~40 minutes for the full suite.
+
+- CD-056 [2026-07-21, WP-C5.3 opened; C5.3a closed] **WP-C5.3 opened by owner directive after
+  CD-055 discharged its entry condition. C5.3a (tuples, arrays, structs) CLOSED. Two owner
+  decisions are OPEN and flagged rather than resolved unilaterally; one oracle defect (DEV-097)
+  was found and fixed; one scope boundary is now a named diagnostic instead of a rustc error.**
+
+  - **Delivered (C5.3a)**: §6.2 type mapping for `Tuple`/`Array`/`Struct`; §6.3 nominal
+    definitions (one Rust `struct` per type-context instance, positional `f0..fn` field names,
+    `BTreeMap` order); `mangle::type_name_for_nominal` (injective, and provably disjoint from
+    function names because `#` cannot occur in a STARK identifier); `emit_places::TyEnv`, the
+    projection-type walk; `Rvalue::Aggregate` for all three kinds; `ConstIndex`, `CheckIndex` and
+    proof-backed `Index`; `LocalKind::IndexProof`. Tuples map to **Rust tuples** — §6.2 offered
+    "concrete tuple or named internal aggregate; choose one canonical form", and the Rust tuple
+    needs no generated definition, no deterministic name, and no reachability walk.
+    Evidence: seven new three-engine cases plus four native-only cases
+    (`native_c5_3a_aggregates.rs`) for what a three-engine comparator structurally cannot cover.
+
+  - **Why `TyEnv` exists, since it is the one structural addition**: MIR's `Projection::Field(i)`
+    is ONE variant covering both struct fields and tuple elements, but generated Rust needs `.f0`
+    for one and `.0` for the other. Choosing requires the projected place's type, hence a walk
+    from the local's declared type through the nominal type context. It also let `operand_mir_ty`
+    stop refusing projected operands, so a `SwitchInt` on a struct field or array element works.
+
+  - **DEV-097 — the HIR oracle blamed two different columns for two ends of one bounds check.
+    FIXED.** An out-of-range index trapped at the whole index expression's span; a NEGATIVE index
+    trapped at the index operand's span. So the oracle disagreed with both other engines on one of
+    the two, and was internally inconsistent about one check. Found by the three-engine harness's
+    negative-index case; no corpus or inline case had ever indexed with a negative value. Fixed in
+    `interp.rs` to use the index-expression span for both, matching MIR and native. **This is the
+    fourth defect this campaign has found that lived only in the gap between engines.**
+
+  - **OPEN DECISION 1 — what does "three-engine agreement on target layout queries" mean?**
+    §14's C5.3 exit lists it, and it **cannot be satisfied as literally stated**: both
+    interpreters answer **8 for every type** (`mir::interp::reference_layout`, whose own doc says
+    a real per-type algorithm is the backend's job and that "a backend replaces this function and
+    nothing else"), while the native engine answers its **actual Rust target layout**
+    (`size_of::<Int32>()` is 4). `assert_eq(size_of::<Int32>(), 4)` traps in both interpreters and
+    succeeds natively. This is not a backend defect — LAYOUT-ABI-001 makes layout target-dependent
+    by design — but the exit condition needs a definition. Candidate readings: (a) the
+    interpreters adopt a real layout algorithm matching the native target, which makes the
+    reference oracle target-dependent; (b) agreement means agreement on RELATIONS Core guarantees,
+    not absolute values; (c) layout queries are excluded from value agreement, with the divergence
+    documented as intended. **Until the owner rules, the harness asserts only that layout queries
+    run in all three engines and agree on completion-vs-trap, plus relations true under both
+    answers.** The value question is recorded, not dropped.
+
+  - **OPEN DECISION 2 — the §6.3-vs-§7.4 `Copy`-derive reading (implemented, reversible).** §6.3
+    forbids deriving `Clone`/`Copy`/`Eq`/`Ord`/`Hash` "as a shortcut for STARK semantics"; §7.4
+    says a MIR copy is emitted only for MIR-`Copy` types and the backend must not broaden that
+    set. A STARK struct with an `impl Copy` needs SOME mechanism for `Operand::Copy` to read it
+    twice. **Reading taken:** deriving `Clone`/`Copy` on exactly the instances MIR classifies
+    `Copy` is not a shortcut — MIR decides, the derive follows, the set is neither broadened nor
+    narrowed. No other trait is derived. `emit_types::mir_ty_is_copy` mirrors
+    `mir::lower::is_copy` rather than asking Rust anything. If the owner reads §6.3 as forbidding
+    this, the alternative is a generated copy helper per nominal and the change is confined to
+    `emit_types::derives_for` plus one test.
+
+  - **Scope boundary now a named diagnostic.** A **non-`Copy` value moved out of a local
+    initialised in an EARLIER block** is refused as `Unsupported` naming WP-C5.3d. The backend
+    lowers MIR's block graph to `loop { match __bb { .. } }`, so every block is one iteration of
+    one Rust loop, and Rust's borrow checker cannot see that MIR never revisits a moved-from
+    local — it reports "value moved here, in previous iteration of loop" for a move verified MIR
+    proves sound. Found when a three-engine case passing a struct by value produced a
+    `BuildFailed` carrying a rustc borrow-check error; a scope limit surfacing as a rustc error is
+    itself a defect in the diagnostic. Moving WITHIN one block still works (ordinary aggregate
+    construction lowers that way) and has its own test, so the guard is pinned against
+    over-rejection too.
+
+  - **OPEN DECISION 3 (blocks C5.3d) — the non-`Copy` storage strategy.** §7.2 proposes
+    `MaybeUninit<ManuallyDrop<T>>` plus explicit liveness and move/drop helpers, and permits
+    evidence-based simplification. A safe-Rust `Option<T>`-shaped variant would model MIR
+    liveness without any unsafe helper. Choosing is CE4-shaped and is not made here.
+
+  - Validation: `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+    --all-features -- -D warnings` clean, **`cargo test --workspace` green: 917 passed / 0 failed
+    / 2 ignored across 53 test binaries** (up from 894/52 — the new `native_c5_3a_aggregates`
+    suite plus the new three-engine and unit tests). The full-workspace run is justified here
+    rather than the scoped set, per CD-055's rule: `interp.rs` — the semantic oracle — changed for
+    DEV-097, and that is a workspace-wide consumer (`mir_differential`, `exec_snapshots`,
+    `conformance`, `gate3_execution` all read it).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

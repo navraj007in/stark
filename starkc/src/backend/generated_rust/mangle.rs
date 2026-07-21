@@ -56,6 +56,22 @@ pub fn function_name_for_symbol(symbol: &str) -> String {
     }
 }
 
+/// WP-C5.3a: the generated Rust type name for one monomorphised nominal instance (§6.3: "for
+/// every reachable concrete nominal instance, emit exactly one Rust definition"). Reuses
+/// [`sanitize_symbol`]'s injective encoding over a canonical instance string, so two distinct
+/// nominal instances can never name one Rust type for the same reason two distinct function
+/// instances cannot.
+///
+/// The `ty#` prefix is what keeps type names disjoint from function names: `#` is not a legal
+/// STARK identifier character and cannot appear in any `key_symbol` output, so no function
+/// symbol can encode to a name beginning `stark_ty_23`. That is an argument about the source
+/// language, not a hope -- if `#` ever becomes legal in an identifier, this stops being true and
+/// the prefix must change.
+pub fn type_name_for_nominal(item: u32, args: &[crate::mir::MirTy]) -> String {
+    let rendered: Vec<String> = args.iter().map(crate::mir::dump_ty).collect();
+    sanitize_symbol(&format!("ty#{item}@[{}]", rendered.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +192,27 @@ mod tests {
         let s = sanitize_symbol("main@[]");
         assert!(s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
         assert!(s.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'));
+    }
+
+    /// A nominal type name can never collide with a function name: `#` cannot occur in a STARK
+    /// identifier, so no `key_symbol` output can encode to the `ty#` prefix's encoding.
+    #[test]
+    fn nominal_type_names_are_disjoint_from_function_names() {
+        let ty = type_name_for_nominal(0, &[]);
+        assert!(ty.starts_with("stark_ty_23"), "{ty}");
+        assert_ne!(ty, sanitize_symbol("main@[]"));
+        assert_ne!(ty, sanitize_symbol("ty@[]"));
+    }
+
+    /// Distinct instances of one generic nominal get distinct type names.
+    #[test]
+    fn nominal_instances_are_distinct_per_type_argument() {
+        use crate::mir::MirTy;
+        let a = type_name_for_nominal(4, &[MirTy::Int32]);
+        let b = type_name_for_nominal(4, &[MirTy::Int64]);
+        let c = type_name_for_nominal(5, &[MirTy::Int32]);
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(type_name_for_nominal(4, &[]), a);
     }
 }
