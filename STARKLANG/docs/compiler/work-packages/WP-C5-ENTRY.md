@@ -722,7 +722,9 @@ The implementation may split files further as size grows.
 
 ### 11.1 Build key
 
-The build key should include at least:
+The build key should include at least (all of the following are covered as of CD-055; see
+`COMPILER-STATE.md` for what "at least" grew to include — the nominal type context and the Drop
+map, which are semantic inputs to generated code that the MIR dump does not serialize):
 
 - package graph identity;
 - entry package and target;

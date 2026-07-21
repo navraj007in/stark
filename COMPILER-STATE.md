@@ -53,9 +53,12 @@ context), and two escalated to the owner as a CE4 amendment to the approved Nati
 v0.1. Fixing the first surfaced an eighth defect the review had not named (DEV-096: the HIR oracle
 reported every out-of-range cast as an arithmetic overflow). The pass also completed C5.2e's
 `Terminator::Trap` support, which CD-051 had recorded as closed while it was still `Unsupported`.
-Next: **WP-C5.3 (aggregates, enums, and error values)** — which may not begin its aggregate or
-Drop-bearing generation until DEV-095's build-key completeness condition is discharged (CD-053
-part 4). **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+Next: **WP-C5.3 (aggregates, enums, and error values)**, whose blocking entry condition is now
+discharged — **DEV-095 closed (CD-055)**: the generated-crate build key covers every semantic
+input affecting generated code (all eight version axes, entry symbol, source table with content
+hashes, all four `TypeContext` fields, bodies), with seven cache-invalidation tests that were
+mutation-verified to fail against the old `hash(dump())` key. WP-C5.3 itself has not been opened
+and awaits owner go-ahead. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -1869,6 +1872,69 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     / 2 ignored across 52 test binaries** (up from 884 — the seven new validator tests and three
     new runtime tests).
 
+- CD-055 [2026-07-21, DEV-095 discharged — WP-C5.3 entry condition] **The generated-crate build
+  key now covers every semantic input that can affect generated code, with cache-invalidation
+  tests. WP-C5.3's blocking entry condition (CD-053 part 4) is DISCHARGED; aggregate and
+  Drop-bearing native generation may begin.**
+
+  - **The defect.** `compute_build_key` hashed `program.dump()` plus the eight version axes, and
+    `dump()` serializes only the version header and the bodies. The MIR contract is explicit that
+    the **nominal type context and the destructor map are in-memory parts of the compilation unit
+    the textual dump does not serialize**. So two programs with byte-identical dumps but different
+    struct fields, different enum variants, a different `Drop` impl, or different `Copy`
+    classification hashed to the SAME key — and the second build would silently reuse the first's
+    generated crate. Unreachable while the backend admitted only primitives; live the moment
+    WP-C5.3 lands aggregates and `Drop`, which is why it was fixed before rather than after.
+
+  - **The fix.** `build_key_input(program, versions)` builds a canonical, line-oriented encoding
+    which `compute_build_key` hashes. Sections: `[versions]` (all eight axes), `[entry]`,
+    `[sources]` (per-file name + SHA-256 of contents), `[types.struct_fields]`,
+    `[types.enum_variants]`, `[types.drop_impls]`, `[types.copy_types]`, `[bodies]`
+    (`program.dump()`, already the contract's deterministic body serialization). Determinism comes
+    from the data structures themselves — `TypeContext` is `BTreeMap`/`BTreeSet` and
+    `program.bodies` is sorted by canonical symbol. Tagged `build key v2` so a future encoding
+    change is visibly a different scheme rather than silently colliding with v1 keys.
+
+  - **Why the encoding is a separate function from the hash.** A test asserting "these two keys
+    differ" says nothing about WHICH input made them differ; a test that can diff the encoding
+    does. `the_key_input_carries_every_documented_section` pins that every section is present, so
+    a section deleted from the encoder fails by name instead of quietly weakening every other test
+    in the module.
+
+  - **Coverage** (7 tests, `backend::generated_rust::build::tests`): key determinism (the baseline
+    without which every "the key changed" assertion could be satisfied by a key that changes every
+    time); a different body; **the DEV-095 regression** — eight one-input mutations across all
+    four `TypeContext` fields (new nominal, changed field type, changed type arguments, new enum,
+    reordered variants, gained destructor, changed destructor instance, became `Copy`), each
+    asserting `dump()` stays byte-identical as a PRECONDITION before asserting the key changed, so
+    the test is meaningless the day it stops being the actual condition; a different file name
+    (names reach generated code verbatim through trap-site `file:line:column`); a source-content
+    change invisible to `dump()` (an appended comment moves no span, and §11.1 requires
+    source-content hashes regardless); and all eight version axes moved independently.
+
+  - **Verified by mutation, not just by passing.** Simulating the old key (dropping the `[types]`
+    sections from the hashed input) makes the regression test fail with
+    `struct_fields: a new nominal: build key did not change — a stale generated crate would be
+    reused`. Reverted; `git diff` confirms nothing of the simulation survives.
+
+  - **One §11.1 item deliberately not given its own section: package graph identity.** A C5
+    program is one compilation unit and the source table is its identity; when multi-package
+    linkage lands (WP-C5.4) it gets its own section rather than being assumed covered. Recorded
+    in the encoder's own comment so the next reader does not have to rediscover the reasoning.
+
+  - Validation, **scoped deliberately** per the standing process note (full-workspace runs are for
+    WP/gate closure points, not intermediate changes — this discharges an entry condition, it does
+    not close a package): `cargo fmt --all -- --check` clean, `cargo clippy --workspace
+    --all-targets --all-features -- -D warnings` clean (workspace-wide, since clippy is cheap),
+    and every consumer of the changed code green — `backend::` unit tests 35/35 (including the
+    seven new build-key tests) plus all six suites that invoke `emit_native_debug`, which is
+    `compute_build_key`'s only caller: `native_c5_1b_skeleton` 1/1, `native_c5_2b_locals` 2/2,
+    `native_c5_2c_operations` 9/9, `native_c5_2d_calls` 3/3, `native_c5_2e_traps` 4/4,
+    `three_engine_differential` 20/20. Nothing outside the native build path reads the build key
+    (`grep` confirms no other reference in the workspace), so the untouched suites — parser,
+    lexer, formatter, LSP, ONNX, gate4/gate7 — carry no information about this change. ~15 seconds
+    against ~40 minutes for the full suite.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
@@ -2099,14 +2165,13 @@ evidence in the C0/C1/C2 exit reports.
 - [ ] WP-C1.1 follow-up (not blocking): underscore-placement rules for binary/octal literals
       untested; no max-value-per-suffix positive test for the 8 int / 2 float suffixes.
 - [ ] DEV-017 remainder: classify the 39 unclassified legacy coverage rules (unscheduled).
-- [ ] **DEV-095 — MANDATORY WP-C5.3 OPENING CONDITION (CD-052, confirmed as blocking by CD-053
-      part 4)**: the generated-crate build key hashes `program.dump()`, which serializes only the
-      version header and bodies — not the nominal type context or the Drop implementation map.
-      Once aggregates and `Drop` exist, changing a struct's fields or its Drop metadata could
-      leave the build key unchanged and silently reuse a stale generated crate. **WP-C5.3 may not
-      begin aggregate or Drop-bearing native generation** until every semantic input affecting
-      generated code is in the build key AND covered by cache-invalidation tests. This is an
-      entry condition on the package, not a task inside it.
+- [x] **DEV-095 — WP-C5.3 opening condition. DISCHARGED 2026-07-21, CD-055.** The build key was
+      hashing `program.dump()`, which omits the nominal type context and the Drop map, so a
+      changed struct field or `Drop` impl could leave the key unchanged and silently reuse a stale
+      generated crate. The key now covers all eight version axes, the entry symbol, the source
+      table (names + content hashes), all four `TypeContext` fields, and the bodies — with seven
+      cache-invalidation tests, mutation-verified against the old behaviour. **WP-C5.3's blocking
+      entry condition is satisfied; aggregate and Drop-bearing native generation may begin.**
 - [x] **Native Provider ABI v0.1 — CE4 Amendment 1. CLOSED 2026-07-21, CD-054**: approved at
       revision 3 and applied in full (ABI document, both `provider_abi.rs` files, fixtures,
       violation tests). Revision 1 was not approved; revision 2's design was approved with five

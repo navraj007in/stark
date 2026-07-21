@@ -160,6 +160,11 @@ Delivered per `WP-C5-ENTRY.md` §14:
   `build_key` (SHA-256 of the MIR dump + every version field, truncated to 128 bits — an
   isolation/diagnostics key per §11.1, explicitly not a security boundary or the incremental
   cache C5 doesn't need) plus every §9.2 version field.
+  **Superseded 2026-07-21 by CD-055 (DEV-095):** "the MIR dump + every version field" was
+  incomplete — the dump omits the nominal type context and the Drop map, so a changed struct field
+  or `Drop` impl left the key unchanged. The key is now `build key v2`: all eight version axes,
+  the entry symbol, the source table (names + content hashes), all four `TypeContext` fields, and
+  the bodies.
 - **One generated empty `main` compiled natively** —
   `starkc/tests/native_c5_1b_skeleton.rs::empty_main_compiles_and_runs_natively` runs the real
   pipeline (parse → resolve → typecheck → `lower_program` → `verify_program` →
