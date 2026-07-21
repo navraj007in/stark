@@ -250,7 +250,65 @@ the dead transition after a move exits **102** (the invariant check fires when t
 rewritten); adding a Rust `Drop` impl fails the observable-destruction fixture with
 `Rust scope exit must NOT destroy a slot's contents; got ["leaked"]`. Both reverted.
 
-**Remaining for C5.3d-0**: backend integration — emitting slots for non-`Copy` locals
+**Increment 2 (2026-07-21): soundness correction + backend integration.**
+
+An owner review found the first `ValueSlot` **unsound for partial moves**, and it was right.
+`move_sub` took `&mut T`, moved a field out, and left the slot "live" — after which `get`,
+`get_mut`, `take` and `drop_value` all remained callable over storage that no longer held a valid
+`T`. The module's own test asserted `slot.get().1` after moving `.0`, so **the bug was written
+into its evidence**.
+
+Corrected to a three-state machine — `Dead` / `Whole` / `Partial`:
+
+- `get`, `get_mut`, `take`, `drop_value` and `drop_with` require `Whole`;
+- the first partial move takes `Whole` → `Partial`;
+- partial access is **raw-pointer only** (`move_field`, `copy_field`, `drop_field_with`), never
+  constructing a `T`, `&T` or `&mut T`;
+- `finish_partial` is the explicit `Partial` → `Dead` transition, deliberately not automatic,
+  because only generated code following MIR's drop flags knows every unit is accounted for.
+
+Projections are per-type, per-field `fn(*mut T) -> *mut F` helpers the backend generates, using
+`addr_of_mut!` — which computes a field address **without dereferencing**, and is therefore
+defined even over partially moved storage. That is what keeps `unsafe` out of emitted MIR bodies
+while still allowing partial access.
+
+**Miri evidence.** All 16 slot tests pass under Miri with zero UB
+(`MIRIFLAGS=-Zmiri-ignore-leaks cargo +nightly miri test slot::` — leaks are ignored deliberately,
+since an unemptied slot leaking is the module's documented contract). Mutation-verified:
+restoring the old permissive `drop_value` guard makes Miri report **`Undefined Behavior:
+constructing invalid value of type &mut [u8]: encountered a dangling reference (use-after-free)`**
+— a real double-destruction, not a theoretical one.
+
+One honest qualification: Miri did **not** independently flag `move_field` → `get` for a
+`(String, i32)`. A moved-out `String`'s bytes stay bit-valid, so no validity check fires. That
+sequence is still refused by the state machine and still violates the abstract machine's rules —
+but the evidence for that specific case is the state machine, not Miri.
+
+Backend integration landed on the corrected API:
+
+- non-`Copy` locals are `ValueSlot<T>` starting **dead**, so generated code no longer fabricates a
+  default value it immediately overwrites;
+- reads go through `get()`, whole-local moves through `take()`, assignments through `write()`;
+- non-`Copy` **parameters** arrive as `__pN` and are moved into their slot in the prologue —
+  binding them as `_N` would collide with the slot the body declares;
+- `Terminator::Drop` lowers to `drop_with`, running the destructor `TypeContext::drop_impls`
+  names, then fields in **reverse declaration order** — mirroring `mir::interp::drop_in_place`,
+  which is the semantic authority;
+- **the C5.3a cross-block move guard is gone**: what it refused now compiles and runs;
+- sub-place moves are refused *before rustc* pending the generated projection helpers, because
+  routing them through the whole-value path would be silently unsound rather than merely
+  unsupported.
+
+Movement shapes now working (CD-058 deliverable 5): whole-local cross-block move (1);
+conditional construction then discriminant read on a non-`Copy` enum (2); non-`Copy` direct-call
+argument and return (4); whole-value reassignment after an explicit move (5). Shape 3 works for
+`Copy` payloads; non-`Copy` payload extraction awaits the projection helpers.
+
+**Remaining for C5.3d-0**: the generated per-type projection helper module (unblocking sub-place
+moves and shape 3 for non-`Copy` payloads), partial-move discipline across the frozen fixtures,
+and the three mutation cases that need generated code. Superseded text below:
+
+**Previously remaining**: backend integration — emitting slots for non-`Copy` locals
 (deliverable 2 in generated code), the five initial movement shapes (deliverable 5), partial-move
 discipline with a backend diagnostic before rustc (deliverable 6), and the three mutation cases
 that need generated code (whole-local collapse of a field/index drop unit; Drop after a trap;

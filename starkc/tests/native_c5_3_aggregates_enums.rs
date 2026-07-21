@@ -131,12 +131,16 @@ fn main() {
     );
 }
 
-/// **The scope boundary, made a clean diagnostic instead of a rustc error.** Moving a non-`Copy`
-/// value out of a local initialised in an earlier block is what WP-C5.3d's controlled storage is
-/// for; until then the backend must say so itself rather than emitting code the Rust borrow
-/// checker rejects with "value moved here, in previous iteration of loop".
+/// **WP-C5.3d-0's payoff.** This program was refused before the slot foundation existed: passing
+/// a non-`Copy` struct by value puts the move in a different basic block from the construction,
+/// and the block-dispatch loop made Rust's borrow checker reject a move verified MIR proves
+/// sound. With `ValueSlot` carrying liveness explicitly, it compiles and runs.
 #[test]
-fn a_cross_block_non_copy_move_is_refused_as_unsupported_not_as_a_build_failure() {
+fn a_cross_block_non_copy_move_now_compiles_and_runs() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
     let source = r#"struct Point { x: Int32, y: Int32 }
 
 fn sum(p: Point) -> Int32 {
@@ -149,22 +153,23 @@ fn main() {
     assert_eq(sum(p), 7);
 }
 "#;
-    match build(source, "crossblock") {
-        Err(BackendDiagnostic::Unsupported(message)) => {
-            assert!(
-                message.contains("WP-C5.3d"),
-                "the diagnostic must name the package that lifts the limit: {message}"
-            );
-        }
-        Err(other) => panic!(
-            "a scope limit must be Unsupported, not {other:?} -- a BuildFailed here means rustc \
-             rejected generated code, which is the failure mode this guard exists to prevent"
-        ),
-        Ok(_) => panic!(
-            "cross-block non-Copy moves are not supported yet; if this now builds, the guard is \
-             stale and should be removed along with this test"
-        ),
-    }
+    let (generated, run) = build(source, "crossblock").expect("slots must make this expressible");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert!(
+        generated.contains("ValueSlot"),
+        "the non-Copy local must be slot-backed:\n{generated}"
+    );
+    // Deliverable 2: no ad hoc unsafe in emitted MIR bodies -- every unsafe operation routes
+    // through the reviewed runtime helpers.
+    assert!(
+        !generated.contains("unsafe"),
+        "emitted bodies must contain no unsafe of their own:\n{generated}"
+    );
 }
 
 /// The guard must not over-reject: moving a non-`Copy` value WITHIN one block is how ordinary

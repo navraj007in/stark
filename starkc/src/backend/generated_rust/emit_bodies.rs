@@ -39,13 +39,17 @@ pub fn emit_function(
     files: &[Arc<SourceFile>],
     types: &TypeContext,
 ) -> Result<String, BackendDiagnostic> {
-    let params = emit_param_list(body)?;
+    let params = emit_param_list(body, types)?;
     let ret_ty = emit_types::emit_ty(&body.ret)?;
     let block = emit_block_body(body, files, types)?;
     Ok(format!("fn {name}({params}) -> {ret_ty} {block}"))
 }
 
-fn emit_param_list(body: &MirBody) -> Result<String, BackendDiagnostic> {
+/// A non-`Copy` parameter arrives as an ordinary Rust value (the caller moved it in), but the
+/// body needs it in a `ValueSlot` like every other non-`Copy` local. It is therefore bound under
+/// a distinct incoming name `__pN` and written into the slot in the prologue -- binding it as
+/// `_N` directly would collide with the slot the body declares.
+fn emit_param_list(body: &MirBody, types: &TypeContext) -> Result<String, BackendDiagnostic> {
     let mut param_locals: Vec<Option<u32>> = vec![None; body.params.len()];
     for (i, decl) in body.locals.iter().enumerate() {
         if let LocalKind::Param(j) = decl.kind {
@@ -68,7 +72,13 @@ fn emit_param_list(body: &MirBody) -> Result<String, BackendDiagnostic> {
         // a reassignable parameter from any other local, so this matches every other local's
         // uniform `let mut` treatment rather than trying to prove a parameter is never
         // reassigned.
-        parts.push(format!("mut {}: {rust_ty}", emit_places::local_name(local)));
+        let decl_ty = &body.locals[local as usize].ty;
+        let name = if emit_types::mir_ty_is_copy(decl_ty, types) {
+            emit_places::local_name(local)
+        } else {
+            incoming_param_name(local)
+        };
+        parts.push(format!("mut {name}: {rust_ty}"));
     }
     Ok(parts.join(", "))
 }
@@ -77,13 +87,18 @@ fn emit_param_list(body: &MirBody) -> Result<String, BackendDiagnostic> {
 /// `Temp`-kinded, every statement a `Nop` or an assignment whose `Rvalue` is `Use`/`UnOp`/
 /// `BinOp`/`LayoutQuery`, and every terminator `Goto`/`SwitchInt`/`Checked`/`Call` (direct only)/
 /// `Return`/`Unreachable`.
+/// The Rust parameter name a non-`Copy` argument arrives under, before it is moved into its
+/// slot. Distinct from `local_name` so the two cannot collide.
+fn incoming_param_name(local: u32) -> String {
+    format!("__p{local}")
+}
+
 pub fn emit_block_body(
     body: &MirBody,
     files: &[Arc<SourceFile>],
     types: &TypeContext,
 ) -> Result<String, BackendDiagnostic> {
     let env = &TyEnv::new(body, types);
-    reject_cross_block_non_copy_moves(body, env)?;
     let mut out = String::from("{\n");
 
     // Every non-parameter local is declared `let mut`, DEFAULT-INITIALISED, up front (WP-C5.2c's
@@ -94,12 +109,27 @@ pub fn emit_block_body(
     // argument with a fabricated default, so every parameter would read as its default value
     // rather than the value passed in.
     for (i, decl) in body.locals.iter().enumerate() {
+        let is_copy = emit_types::mir_ty_is_copy(&decl.ty, env.types);
         match &decl.kind {
             // `IndexProof` (WP-C5.3a) is an ordinary integer local in generated Rust: MIR
             // keeps it opaque so only `Projection::Index` can consume it, but that opacity is a
             // MIR-level property the verifier enforces, not something the backend re-creates.
             LocalKind::Return | LocalKind::User(_) | LocalKind::Temp | LocalKind::IndexProof => {}
-            LocalKind::Param(_) => continue,
+            // A Copy parameter is already bound by the signature under its `_N` name. A non-Copy
+            // one is bound as `__pN` and moved into its slot below.
+            LocalKind::Param(_) if is_copy => continue,
+            LocalKind::Param(_) => {
+                let slot_ty = emit_types::emit_slot_ty(&decl.ty)?;
+                let name = emit_places::local_name(i as u32);
+                out.push_str(&format!(
+                    "    let mut {name}: {slot_ty} = stark_runtime::slot::ValueSlot::dead();\n"
+                ));
+                out.push_str(&format!(
+                    "    {name}.write({});\n",
+                    incoming_param_name(i as u32)
+                ));
+                continue;
+            }
             other => {
                 return Err(BackendDiagnostic::Unsupported(format!(
                     "WP-C5.3a supports Return/Param/User/Temp/IndexProof locals; {other:?} \
@@ -107,12 +137,23 @@ pub fn emit_block_body(
                 )))
             }
         }
-        let ty = emit_types::emit_ty(&decl.ty)?;
-        let default = emit_types::default_value_expr(&decl.ty, env.types)?;
-        out.push_str(&format!(
-            "    let mut {}: {ty} = {default};\n",
-            emit_places::local_name(i as u32)
-        ));
+        // WP-C5.3d-0: a non-Copy local is backed by a `ValueSlot`, which starts DEAD -- so
+        // generated code stops fabricating a default value it would immediately overwrite, and
+        // MIR liveness is represented explicitly instead of being approximated by Rust's.
+        if is_copy {
+            let ty = emit_types::emit_ty(&decl.ty)?;
+            let default = emit_types::default_value_expr(&decl.ty, env.types)?;
+            out.push_str(&format!(
+                "    let mut {}: {ty} = {default};\n",
+                emit_places::local_name(i as u32)
+            ));
+        } else {
+            let slot_ty = emit_types::emit_slot_ty(&decl.ty)?;
+            out.push_str(&format!(
+                "    let mut {}: {slot_ty} = stark_runtime::slot::ValueSlot::dead();\n",
+                emit_places::local_name(i as u32)
+            ));
+        }
     }
 
     out.push_str(&format!("    let mut __bb: u32 = {};\n", body.entry.0));
@@ -124,10 +165,12 @@ pub fn emit_block_body(
             match stmt {
                 Statement::Nop => {}
                 Statement::Assign(place, rvalue) => {
-                    let dest = emit_dest_place(place, env)?;
                     let dest_ty = env.place_ty(place)?;
                     let value = emit_rvalue(rvalue, &dest_ty, env)?;
-                    out.push_str(&format!("                {dest} = {value};\n"));
+                    out.push_str(&format!(
+                        "                {}\n",
+                        emit_assignment(place, &value, env)?
+                    ));
                 }
             }
         }
@@ -140,89 +183,6 @@ pub fn emit_block_body(
     out.push_str("    __stark_ret\n");
     out.push_str("}\n");
     Ok(out)
-}
-
-/// WP-C5.3a boundary: a **non-`Copy` value moved out of a local that was not initialised in the
-/// same basic block** is refused here, as a backend `Unsupported`, rather than being emitted and
-/// left for rustc to reject.
-///
-/// Why it cannot simply be emitted: the backend lowers MIR's block graph to
-/// `loop { match __bb { .. } }`, so every block is one iteration of one Rust loop. Rust's borrow
-/// checker is conservative across iterations — it cannot see that MIR's control flow never
-/// revisits a moved-from local, and reports "value moved here, in previous iteration of loop"
-/// even though verified MIR proves the move is sound. Moving within a single block is fine
-/// (assign-then-move is visible to Rust inside one iteration), which is why aggregate
-/// construction (`_2 = aggregate ..; _1 = move _2;`) works today.
-///
-/// The real fix is `WP-C5-ENTRY.md` §7.2's controlled storage for non-`Copy` locals — explicit
-/// liveness the generated code carries itself rather than borrowing Rust's. That is WP-C5.3d's
-/// deliverable, and it needs the storage decision recorded in CD-056. Until then this is a
-/// scoped, named limitation instead of a confusing rustc error surfacing as `BuildFailed`.
-fn reject_cross_block_non_copy_moves(body: &MirBody, env: &TyEnv) -> Result<(), BackendDiagnostic> {
-    for block in &body.blocks {
-        let mut initialised_here: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let check = |operand: &Operand,
-                     initialised_here: &std::collections::HashSet<u32>|
-         -> Result<(), BackendDiagnostic> {
-            let Operand::Move(place) = operand else {
-                return Ok(());
-            };
-            let ty = env.place_ty(place)?;
-            if emit_types::mir_ty_is_copy(&ty, env.types)
-                || initialised_here.contains(&place.local.0)
-            {
-                return Ok(());
-            }
-            Err(BackendDiagnostic::Unsupported(format!(
-                "moving the non-Copy value in _{} across a basic-block boundary needs WP-C5.3d's \
-                 controlled storage for non-Copy locals (WP-C5-ENTRY.md §7.2): the block-dispatch \
-                 loop makes Rust's borrow checker reject a move it cannot prove is not repeated, \
-                 even though verified MIR proves exactly that",
-                place.local.0
-            )))
-        };
-
-        for (statement, _) in &block.statements {
-            if let Statement::Assign(place, rvalue) = statement {
-                for operand in rvalue_operands(rvalue) {
-                    check(operand, &initialised_here)?;
-                }
-                // Only a WHOLE-local assignment re-initialises it; assigning through a
-                // projection leaves the rest of the local as it was.
-                if place.projection.is_empty() {
-                    initialised_here.insert(place.local.0);
-                }
-            }
-        }
-        match &block.terminator.0 {
-            Terminator::Call { args, .. } => {
-                for arg in args {
-                    check(arg, &initialised_here)?;
-                }
-            }
-            Terminator::Checked { args, .. } => {
-                for arg in args {
-                    check(arg, &initialised_here)?;
-                }
-            }
-            Terminator::SwitchInt { scrut, .. } => check(scrut, &initialised_here)?,
-            Terminator::Trap {
-                message: Some(operand),
-                ..
-            } => check(operand, &initialised_here)?,
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-fn rvalue_operands(rvalue: &Rvalue) -> Vec<&Operand> {
-    match rvalue {
-        Rvalue::Use(operand) | Rvalue::UnOp(_, operand) => vec![operand],
-        Rvalue::BinOp(_, lhs, rhs) => vec![lhs, rhs],
-        Rvalue::Aggregate(_, operands) => operands.iter().collect(),
-        Rvalue::Discriminant(_) | Rvalue::RefOf { .. } | Rvalue::LayoutQuery { .. } => vec![],
-    }
 }
 
 fn emit_terminator(
@@ -262,10 +222,12 @@ fn emit_terminator(
             target,
             trap,
         } => {
-            let dest_place = emit_places::local_name(dest.0);
             let dest_ty = &body.locals[dest.0 as usize].ty;
             let expr = emit_checked_expr(files, *op, args, dest_ty, trap, env)?;
-            out.push_str(&format!("                {dest_place} = {expr};\n"));
+            out.push_str(&format!(
+                "                {}\n",
+                emit_assignment(&crate::mir::Place::local(*dest), &expr, env)?
+            ));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
         }
         Terminator::Call {
@@ -274,16 +236,22 @@ fn emit_terminator(
             dest,
             target,
         } => {
-            let dest_place = emit_dest_place(dest, env)?;
             let call_expr = emit_call(callee, args, env)?;
-            out.push_str(&format!("                {dest_place} = {call_expr};\n"));
+            out.push_str(&format!(
+                "                {}\n",
+                emit_assignment(dest, &call_expr, env)?
+            ));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
         }
         Terminator::Return => {
-            out.push_str(&format!(
-                "                break {};\n",
+            // A non-Copy return value is MOVED out of its slot: the callee's local is dead
+            // afterwards, which is exactly what `take` records.
+            let ret = if emit_places::is_slot_local(0, env)? {
+                format!("{}.take()", emit_places::local_name(0))
+            } else {
                 emit_places::local_name(0)
-            ));
+            };
+            out.push_str(&format!("                break {ret};\n"));
         }
         Terminator::Unreachable => {
             // WP-C4's verifier proves this block is dead (e.g. the synthetic trailer WP-C4.5's
@@ -314,11 +282,19 @@ fn emit_terminator(
             let abort = emit_abort_call(files, info.category, &info.source);
             out.push_str(&format!("                {abort};\n"));
         }
-        other => {
-            return Err(BackendDiagnostic::Unsupported(format!(
-                "Terminator {other:?} has no WP-C5.2e representation yet -- Drop lands in WP-C5.3"
-            )))
+        // WP-C5.3d-0. Mirrors `mir::interp`'s `drop_in_place` exactly, which is the semantic
+        // authority: run the type's own destructor instance if `TypeContext::drop_impls` names
+        // one, then its fields in REVERSE declaration order.
+        //
+        // The unit is marked dead BEFORE any glue runs (§7.5, via `ValueSlot::drop_with`), so a
+        // destructor that itself traps cannot leave a live value the abort path might re-enter.
+        Terminator::Drop { place, target } => {
+            out.push_str(&format!("                {}\n", emit_drop(place, env)?));
+            out.push_str(&format!("                __bb = {}; continue;\n", target.0));
         }
+        // No catch-all: as of WP-C5.3d-0 every `Terminator` variant is handled, and keeping the
+        // match exhaustive means a NEW variant stops this compiling rather than silently becoming
+        // an `Unsupported` diagnostic nobody notices.
     }
     Ok(())
 }
@@ -349,13 +325,84 @@ fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, B
 /// arguments — a monomorphised instance is `(item, args)`, and only the destination knows the
 /// args. Reading them from the destination is not inference: verified MIR guarantees the
 /// assignment is well-typed, so the destination's type IS the aggregate's type.
-/// A place used as an assignment DESTINATION. Refuses the one place shape that emits as an
-/// expression rather than a Rust place: a read through an enum variant's payload (WP-C5.3b's
-/// `match` form). MIR lowering never produces such a destination — `VariantField` appears only
-/// under `read_place` and pattern tests, and STARK has no syntax for assigning into a payload —
-/// so this is a guard against a silently wrong splice, not a limitation anyone can hit from
-/// source.
-fn emit_dest_place(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+/// A MIR `Drop(place)`, lowered to `slot.drop_with(|v| <glue>)`.
+///
+/// The glue is built from the type context, not reconstructed from source: the destructor
+/// instance named by `drop_impls`, then fields in reverse declaration order — the same order
+/// `mir::interp::drop_in_place` uses, because that function is the semantic authority.
+fn emit_drop(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    if !place.projection.is_empty() {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "dropping a SUB-PLACE ({place:?}) needs per-drop-unit liveness in the emitted body; \
+             WP-C5.3d-1. Collapsing it into a whole-local drop would violate §7.6, so it is \
+             refused rather than approximated"
+        )));
+    }
+    let ty = env.place_ty(place)?;
+    if emit_types::mir_ty_is_copy(&ty, env.types) {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "MIR emitted Drop on the Copy type {ty:?}, which has no destructor and no slot"
+        )));
+    }
+    let glue = emit_drop_glue(&ty, "__v", env)?;
+    Ok(format!(
+        "{}.drop_with(|__v| {{ {glue} }});",
+        emit_places::local_name(place.local.0)
+    ))
+}
+
+/// The destructor sequence for `ty`, applied to the Rust expression `value` (an `&mut`).
+fn emit_drop_glue(ty: &MirTy, value: &str, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    let mut out = String::new();
+    let (item, args) = match ty {
+        MirTy::Struct(item, args) => (item.0, args.clone()),
+        MirTy::Enum(crate::mir::EnumRef::User(item), args) => (item.0, args.clone()),
+        other => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "drop glue for {other:?} is not in the WP-C5.3d-0 subset"
+            )))
+        }
+    };
+    // The type's own destructor first, taking `&mut self` -- the same receiver shape
+    // `mir::interp` passes.
+    if let Some(symbol) = env.types.drop_impls.get(&(item, args.clone())) {
+        let name = mangle::function_name_for_symbol(symbol);
+        out.push_str(&format!("{name}({value}); "));
+    }
+    // Then fields, in REVERSE declaration order. Only non-Copy fields have glue; a Copy field
+    // has no destructor by construction (Copy and Drop are mutually exclusive in STARK).
+    if let Some(fields) = env.types.struct_fields.get(&(item, args.clone())) {
+        for (i, field_ty) in fields.iter().enumerate().rev() {
+            if emit_types::mir_ty_is_copy(field_ty, env.types) {
+                continue;
+            }
+            let field = format!("(&mut {value}.{})", emit_types::field_name(i as u32));
+            out.push_str(&emit_drop_glue(field_ty, &field, env)?);
+        }
+    }
+    Ok(out)
+}
+
+/// Emit one assignment statement, choosing the form the destination requires.
+///
+/// Three cases, and the split is forced rather than stylistic:
+///
+/// - **a slot-backed whole local** → `_1.write(value);`. `write` is a method call, not a place
+///   expression, so this cannot be spliced as `dest = value`. It also asserts the slot is dead,
+///   which is MIR's own invariant: MIR emits an explicit `Drop` before reassigning a live place.
+/// - **a projected place through a slot** → `_1.get_mut().f0 = value;`, mutable access to a
+///   still-live value.
+/// - **an ordinary Copy local** → `_1 = value;` as before.
+///
+/// A read through an enum variant field is refused: its read form is a `match` EXPRESSION, which
+/// is not a Rust place. MIR lowering never produces such a destination — `VariantField` appears
+/// only under `read_place` and pattern tests, and STARK has no syntax for assigning into a
+/// payload — so this is a guard against a silently wrong splice, not a limitation.
+fn emit_assignment(
+    place: &crate::mir::Place,
+    value: &str,
+    env: &TyEnv,
+) -> Result<String, BackendDiagnostic> {
     if emit_places::reads_through_variant_field(place) {
         return Err(BackendDiagnostic::Unsupported(format!(
             "assigning THROUGH an enum variant field ({place:?}) is not representable: the read \
@@ -363,7 +410,16 @@ fn emit_dest_place(place: &crate::mir::Place, env: &TyEnv) -> Result<String, Bac
              this, so reaching it means either a new lowering shape or a compiler defect"
         )));
     }
-    emit_places::emit_place(place, env)
+    if emit_places::is_slot_local(place.local.0, env)? && place.projection.is_empty() {
+        return Ok(format!(
+            "{}.write({value});",
+            emit_places::local_name(place.local.0)
+        ));
+    }
+    Ok(format!(
+        "{} = {value};",
+        emit_places::emit_place_mut(place, env)?
+    ))
 }
 
 fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, BackendDiagnostic> {
@@ -519,7 +575,18 @@ fn emit_binop(op: MirBinOp, l: String, r: String) -> Result<String, BackendDiagn
 fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match operand {
         Operand::Const(c) => emit_types::emit_constant(c),
-        Operand::Copy(place) | Operand::Move(place) => emit_places::emit_place(place, env),
+        Operand::Copy(place) => emit_places::emit_place(place, env),
+        // WP-C5.3d-0. A move out of a Copy place is a read like any other -- MIR only marks it
+        // `Move` for uniformity, and Rust copies. A move out of a NON-Copy place must go through
+        // the slot, which records that the source unit is now dead; that record is the whole
+        // reason the block-dispatch loop no longer defeats the borrow checker.
+        Operand::Move(place) => {
+            let ty = env.place_ty(place)?;
+            if emit_types::mir_ty_is_copy(&ty, env.types) {
+                return emit_places::emit_place(place, env);
+            }
+            emit_places::emit_move_out(place, env)
+        }
     }
 }
 

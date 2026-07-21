@@ -122,8 +122,45 @@ impl<'a> TyEnv<'a> {
     }
 }
 
+/// Whether a local is backed by a `ValueSlot` (WP-C5.3d-0) rather than a bare Rust value.
+/// Exactly the non-`Copy` locals: `Copy` values need no liveness tracking, because MIR never
+/// moves out of them and Rust never destroys them.
+pub fn is_slot_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic> {
+    let ty = env.local_ty(local)?;
+    Ok(!emit_types::mir_ty_is_copy(&ty, env.types))
+}
+
+/// A place in READ position. A slot-backed local reads through `get()`, which borrows rather
+/// than moves — the whole point of the slot is that reading does not disturb liveness.
 pub fn emit_place(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    emit_place_from(place, env, PlaceMode::Read)
+}
+
+/// A place in WRITE position: the base is accessed mutably. Only valid for a PROJECTED place —
+/// a whole-local assignment to a slot goes through `write()` instead, which is a statement, not
+/// a place expression. `emit_bodies` branches on that before calling here.
+pub fn emit_place_mut(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    emit_place_from(place, env, PlaceMode::Write)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlaceMode {
+    Read,
+    Write,
+}
+
+fn emit_place_from(
+    place: &Place,
+    env: &TyEnv,
+    mode: PlaceMode,
+) -> Result<String, BackendDiagnostic> {
     let mut rendered = local_name(place.local.0);
+    if is_slot_local(place.local.0, env)? {
+        rendered = match mode {
+            PlaceMode::Read => format!("{rendered}.get()"),
+            PlaceMode::Write => format!("{rendered}.get_mut()"),
+        };
+    }
     let mut ty = env.local_ty(place.local.0)?;
 
     for projection in &place.projection {
@@ -197,6 +234,38 @@ pub fn emit_place(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnosti
     Ok(rendered)
 }
 
+/// A move OUT of a non-`Copy` place (WP-C5.3d-0).
+///
+/// **Whole-local moves only in this increment.** A sub-place move is sound in `ValueSlot`
+/// (`move_field`), but it requires a per-type, per-field *projection helper* the backend must
+/// generate — partial access is defined only through raw pointers, never through `&mut T`, so it
+/// cannot be expressed by splicing a closure over the slot's contents at the call site. Emitting
+/// those helpers is the next increment; until then a sub-place move is refused here, before
+/// rustc, which is what deliverable 6 requires of any partial-move form not yet implemented.
+///
+/// Refusing is not merely conservative. The owner review of the first `ValueSlot` design found
+/// that a partially moved value cannot be touched through `&T`/`&mut T` at all: a whole-value
+/// read, take, or drop over it is undefined behaviour, and Miri reproduces the drop case as a
+/// use-after-free. A sub-place move emitted through the whole-value path would therefore be
+/// silently unsound rather than merely unsupported.
+pub fn emit_move_out(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    if !is_slot_local(place.local.0, env)? {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "move out of the non-slot place {place:?}"
+        )));
+    }
+    if !place.projection.is_empty() {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "moving the SUB-PLACE {place:?} out of a non-Copy local needs a generated field \
+             projection helper (WP-C5.3d-0, next increment): partial access to a slot is defined \
+             only through raw pointers, because once a drop unit has been moved the storage no \
+             longer holds a valid complete value. Emitting this through the whole-value path \
+             would be unsound, not merely unsupported"
+        )));
+    }
+    Ok(format!("{}.take()", local_name(place.local.0)))
+}
+
 /// Whether `place` reads through an enum variant's payload. Such a place emits as a `match`
 /// EXPRESSION (see [`emit_place`]), which is not a Rust place expression and therefore cannot be
 /// an assignment destination. Callers that splice a place on the left of `=` must refuse it.
@@ -247,6 +316,10 @@ mod tests {
 
     /// One MIR `Field` projection, two Rust syntaxes, chosen by the base type -- the property
     /// that makes `TyEnv` necessary rather than merely convenient.
+    ///
+    /// Also pins the WP-C5.3d-0 slot distinction: the tuple of primitives is `Copy` and reads
+    /// directly, while the struct (no `impl Copy`, so non-`Copy` in MIR) is slot-backed and reads
+    /// through `get()`. Both syntaxes appear in one test so a change to either is visible.
     #[test]
     fn field_syntax_differs_between_tuples_and_structs() {
         let body = body_with(vec![
@@ -269,7 +342,7 @@ mod tests {
             local: LocalId(1),
             projection: vec![Projection::Field(1)],
         };
-        assert_eq!(emit_place(&struct_field, &env).unwrap(), "_1.f1");
+        assert_eq!(emit_place(&struct_field, &env).unwrap(), "_1.get().f1");
     }
 
     #[test]
@@ -287,7 +360,9 @@ mod tests {
             local: LocalId(0),
             projection: vec![Projection::Field(1), Projection::Field(0)],
         };
-        assert_eq!(emit_place(&place, &env).unwrap(), "_0.f1.0");
+        // `_0` is a non-Copy struct, hence slot-backed; the projection chain continues from
+        // the borrowed value.
+        assert_eq!(emit_place(&place, &env).unwrap(), "_0.get().f1.0");
         assert_eq!(env.place_ty(&place).unwrap(), MirTy::Bool);
     }
 

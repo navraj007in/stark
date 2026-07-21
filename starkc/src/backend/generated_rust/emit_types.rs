@@ -176,6 +176,13 @@ fn derives_for(ty: &MirTy, types: &TypeContext) -> Option<&'static str> {
     }
 }
 
+/// WP-C5.3d-0: the storage type for a non-`Copy` local — `ValueSlot<T>` rather than a bare `T`.
+/// See `stark-runtime/src/slot.rs` for why ordinary Rust ownership cannot express MIR liveness
+/// inside the block-dispatch loop.
+pub fn emit_slot_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
+    Ok(format!("stark_runtime::slot::ValueSlot<{}>", emit_ty(ty)?))
+}
+
 /// An arbitrary-but-valid value of `ty`, used only to give a local declaration a starting value
 /// in multi-block bodies (WP-C5.2c) -- NOT a claim about what the local logically holds. Real
 /// MIR liveness (what a lowering-bug read-before-write would violate) is a property of the

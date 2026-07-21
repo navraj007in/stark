@@ -1149,6 +1149,84 @@ fn main() {
 "#
 );
 
+// ============================== WP-C5.3d-0: non-Copy movement through ValueSlot --
+// The movement shapes CD-058 lists as C5.3d-0's initial scope. Each was inexpressible before the
+// slot foundation: the block-dispatch loop made Rust's borrow checker reject moves that verified
+// MIR proves sound.
+
+three_engine_test!(
+    cross_block_non_copy_moves_agree,
+    "slot_cross",
+    completes,
+    r#"struct Point { x: Int32, y: Int32 }
+
+fn sum(p: Point) -> Int32 {
+    p.x + p.y
+}
+
+fn scale(p: Point, k: Int32) -> Point {
+    Point { x: p.x * k, y: p.y * k }
+}
+
+fn main() {
+    // Shape 1: a whole-local move across a basic-block boundary (the assert between them is
+    // what splits the blocks).
+    let p: Point = Point { x: 3, y: 4 };
+    assert_eq(p.x, 3);
+    assert_eq(sum(p), 7);
+
+    // Shape 4: a non-Copy value as both a direct-call argument AND a return value.
+    let q: Point = Point { x: 2, y: 5 };
+    assert_eq(q.y, 5);
+    let doubled: Point = scale(q, 2);
+    assert_eq(doubled.x, 4);
+    assert_eq(doubled.y, 10);
+
+    // Shape 5: whole-value reassignment after the previous value was explicitly moved out.
+    let mut r: Point = Point { x: 1, y: 1 };
+    assert_eq(sum(r), 2);
+    r = Point { x: 6, y: 6 };
+    assert_eq(sum(r), 12);
+}
+"#
+);
+
+// Shape 2: conditional construction followed by a discriminant read, on a NON-Copy enum. This is
+// the case C5.3b had to mark `impl Copy` to express at all -- construction lands in one basic
+// block and the match in another.
+three_engine_test!(
+    conditionally_constructed_non_copy_enums_agree,
+    "slot_enum",
+    completes,
+    r#"enum Colour { Red, Green, Other(Int32) }
+
+fn value(c: Colour) -> Int32 {
+    match c {
+        Colour::Red => 1,
+        Colour::Green => 2,
+        Colour::Other(n) => n,
+    }
+}
+
+fn main() {
+    let mut i: Int32 = 0;
+    let mut total: Int32 = 0;
+    while i < 3 {
+        let c: Colour = if i == 0 {
+            Colour::Red
+        } else if i == 1 {
+            Colour::Green
+        } else {
+            Colour::Other(40)
+        };
+        total = total + value(c);
+        i = i + 1;
+    }
+    assert_eq(total, 43);
+}
+"#
+);
+
 // ========================================================= review regressions --
 // CD-052's fixed defects, re-pinned as three-engine agreement rather than per-engine assertions.
 
