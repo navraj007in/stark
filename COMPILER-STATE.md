@@ -1768,12 +1768,11 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     to-do.
 
   - Validation: `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
-    --all-features -- -D warnings` clean, `three_engine_differential` 20/20, and every suite the
-    harness touches green (`mir_differential`, all five `native_c5_*`). The full-workspace run was
-    still executing when this was committed — zero failures across every suite that had reported;
-    the remaining suites are confirmed in the commit that follows. The only production change in
-    this pass is a visibility widening (`TrapCategory::message()` → `pub`), which cannot change
-    behaviour.
+    --all-features -- -D warnings` clean, `three_engine_differential` 20/20, `mir_differential`
+    and all five `native_c5_*` suites green, and **`cargo test --workspace` green: 818 passed /
+    0 failed / 2 ignored across 40 test binaries** (up from 798 — the 20 new harness tests). The
+    only production change in this pass is a visibility widening
+    (`TrapCategory::message()` → `pub`).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

@@ -532,6 +532,6 @@ against the roadmap bullet is deliberate and is recorded here so the discrepancy
 
 `cargo fmt --all -- --check` clean; `cargo clippy --workspace --all-targets --all-features --
 -D warnings` clean; `three_engine_differential` 20/20; `mir_differential` and all five
-`native_c5_*` suites green. The full-workspace run was still executing at commit time with zero
-failures across every suite that had reported — confirmed in the following commit. The pass's
-only production change is a visibility widening (`TrapCategory::message()` → `pub`).
+`native_c5_*` suites green; `cargo test --workspace` green — **818 passed / 0 failed / 2 ignored
+across 40 test binaries** (up from 798, the 20 new harness tests). The pass's only production
+change is a visibility widening (`TrapCategory::message()` → `pub`).
