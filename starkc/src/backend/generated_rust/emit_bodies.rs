@@ -23,6 +23,7 @@
 
 use super::emit_places::TyEnv;
 use super::{emit_places, emit_types, mangle, BackendDiagnostic};
+use crate::mir::drop_plan::{self, DropPlan};
 use crate::mir::{
     AggKind, Callee, CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand,
     Rvalue, SourceInfo, Statement, Terminator, TrapCategory, TrapInfo, TypeContext,
@@ -448,9 +449,12 @@ fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, B
 /// assignment is well-typed, so the destination's type IS the aggregate's type.
 /// A MIR `Drop(place)`, lowered to `slot.drop_with(|v| <glue>)`.
 ///
-/// The glue is built from the type context, not reconstructed from source: the destructor
-/// instance named by `drop_impls`, then fields in reverse declaration order — the same order
-/// `mir::interp::drop_in_place` uses, because that function is the semantic authority.
+/// WP-C5.3d-1b (CD-062): the glue is an APPLICATION of `mir::drop_plan`, the canonical plan the
+/// MIR interpreter also consumes. This function decides only how a step is spelled in Rust —
+/// which destructor symbol to call, how to reach a component, how to bind a variant payload. It
+/// decides nothing about order, coverage, or which components carry an obligation. Those were
+/// previously reconstructed here independently of the interpreter, and the reconstruction had
+/// already drifted (CD-060: the enum arm dropped no payload at all).
 fn emit_drop(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     if !place.projection.is_empty() {
         return Err(BackendDiagnostic::Unsupported(format!(
@@ -474,69 +478,49 @@ fn emit_drop(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDi
 
 /// The destructor sequence for `ty`, applied to the Rust expression `value` (an `&mut`).
 fn emit_drop_glue(ty: &MirTy, value: &str, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    let plan = drop_plan::plan_for(ty, env.types)
+        .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
+    emit_drop_plan(&plan, value)
+}
+
+/// Apply one [`DropPlan`] to the Rust `&mut` expression `value`.
+///
+/// Every ordering question — destructor before components, components back to front, one arm per
+/// variant, `Copy` components absent — is already answered by the plan's SHAPE. This function
+/// walks it in the order given.
+fn emit_drop_plan(plan: &DropPlan, value: &str) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
-    let (item, args) = match ty {
-        MirTy::Struct(item, args) => (item.0, args.clone()),
-        MirTy::Enum(crate::mir::EnumRef::User(item), args) => (item.0, args.clone()),
-        other => {
-            return Err(BackendDiagnostic::Unsupported(format!(
-                "drop glue for {other:?} is not in the WP-C5.3d-0 subset"
-            )))
+    match plan {
+        DropPlan::Noop => {}
+        // The type's own destructor, taking `&mut self` -- the same receiver shape
+        // `mir::interp` passes. `then` is emitted after it because the plan nests it there.
+        DropPlan::Destructor { symbol, then } => {
+            let name = mangle::function_name_for_symbol(symbol);
+            out.push_str(&format!("{name}({value}); "));
+            out.push_str(&emit_drop_plan(then, value)?);
         }
-    };
-    // The type's own destructor first, taking `&mut self` -- the same receiver shape
-    // `mir::interp` passes.
-    if let Some(symbol) = env.types.drop_impls.get(&(item, args.clone())) {
-        let name = mangle::function_name_for_symbol(symbol);
-        out.push_str(&format!("{name}({value}); "));
-    }
-    // Then the value's own components, in REVERSE declaration order -- mirroring
-    // `mir::interp::drop_in_place`, which drops fields/payload back to front.
-    //
-    // A struct walks its field table. An ENUM must first establish which variant is live and then
-    // drop THAT variant's payload: an earlier version of this function looked only at
-    // `struct_fields`, so dropping a whole non-Copy enum marked the slot dead and silently
-    // skipped its payload. Miri could not report it because the slot module's tests ignore leaks
-    // by design, and a leak is exactly what it produced.
-    match ty {
-        MirTy::Struct(..) => {
-            if let Some(fields) = env.types.struct_fields.get(&(item, args.clone())) {
-                for (i, field_ty) in fields.iter().enumerate().rev() {
-                    if emit_types::mir_ty_is_copy(field_ty, env.types) {
-                        continue;
-                    }
-                    let field = format!("(&mut {value}.{})", emit_types::field_name(i as u32));
-                    out.push_str(&emit_drop_glue(field_ty, &field, env)?);
-                }
+        DropPlan::Fields { base, fields } => {
+            for field in fields {
+                let access = component_access(base, field.index, value)?;
+                out.push_str(&emit_drop_plan(&field.plan, &access)?);
             }
         }
-        MirTy::Enum(enum_ref, _) => {
-            let variants =
-                emit_types::variant_payloads(enum_ref, &args, env.types).ok_or_else(|| {
-                    BackendDiagnostic::Unsupported(format!("no variant table for {ty:?}"))
-                })?;
-            let name = emit_types::nominal_type_name(ty).ok_or_else(|| {
-                BackendDiagnostic::Unsupported(format!("no generated name for {ty:?}"))
+        DropPlan::Variants { base, variants } => {
+            let name = emit_types::nominal_type_name(base).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("no generated name for {base:?}"))
             })?;
-            // Every variant gets an arm -- including the ones whose payloads need no glue -- so
-            // the match is exhaustive without a catch-all, and a new variant cannot silently
-            // acquire a no-op drop.
+            // One arm per variant -- including the ones whose payloads need no glue -- so the
+            // match is exhaustive without a catch-all, and a variant added to the plan cannot
+            // silently acquire a no-op arm here.
             let mut arms = Vec::with_capacity(variants.len());
-            for (v, payload) in variants.iter().enumerate() {
-                let droppable: Vec<usize> = payload
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, field_ty)| !emit_types::mir_ty_is_copy(field_ty, env.types))
-                    .map(|(i, _)| i)
-                    .collect();
+            for (v, variant) in variants.iter().enumerate() {
                 let mut binders: Vec<String> =
-                    (0..payload.len()).map(|_| "_".to_string()).collect();
-                for i in &droppable {
-                    binders[*i] = format!("__p{i}");
-                }
+                    (0..variant.arity).map(|_| "_".to_string()).collect();
                 let mut body = String::new();
-                for i in droppable.iter().rev() {
-                    body.push_str(&emit_drop_glue(&payload[*i], &format!("__p{i}"), env)?);
+                for field in &variant.fields {
+                    let binder = format!("__p{}", field.index);
+                    binders[field.index as usize] = binder.clone();
+                    body.push_str(&emit_drop_plan(&field.plan, &binder)?);
                 }
                 arms.push(format!(
                     "{name}::{}({}) => {{ {body} }}",
@@ -546,9 +530,36 @@ fn emit_drop_glue(ty: &MirTy, value: &str, env: &TyEnv) -> Result<String, Backen
             }
             out.push_str(&format!("match {value} {{ {} }}; ", arms.join(", ")));
         }
-        _ => {}
+        DropPlan::Array { len, elem } => {
+            for i in drop_plan::array_order(*len) {
+                out.push_str(&emit_drop_plan(elem, &format!("(&mut {value}[{i}])"))?);
+            }
+        }
+        // `Vec`/`Box` own an allocation the generated crate has no representation for yet; the
+        // plan names the step, and refusing it is the honest outcome rather than emitting glue
+        // that destroys the elements and leaks the buffer.
+        DropPlan::VecElements { .. } | DropPlan::BoxInner { .. } => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "drop glue for {plan:?} needs the owning-runtime-type representation, which is \
+                 outside the C5.3 subset"
+            )))
+        }
     }
     Ok(out)
+}
+
+/// How to reach component `index` of an aggregate whose `&mut` expression is `value`.
+///
+/// The two spellings exist because §6.2 maps a MIR tuple to a Rust tuple (`.0`) and a MIR struct
+/// to a generated named type (`.f0`) — the same split `emit_places` resolves for reads.
+fn component_access(base: &MirTy, index: u32, value: &str) -> Result<String, BackendDiagnostic> {
+    match base {
+        MirTy::Struct(..) => Ok(format!("(&mut {value}.{})", emit_types::field_name(index))),
+        MirTy::Tuple(..) => Ok(format!("(&mut {value}.{index})")),
+        other => Err(BackendDiagnostic::Unsupported(format!(
+            "drop plan named a field of {other:?}, which has no component syntax"
+        ))),
+    }
 }
 
 /// Emit one assignment statement, choosing the form the destination requires.
@@ -1153,19 +1164,259 @@ mod tests {
 
     /// A `Copy` payload field carries no drop obligation, so it must NOT be bound or dropped --
     /// binding it would be harmless but dropping it would be wrong.
+    ///
+    /// WP-C5.3d-1b sharpened this: since the plan omits `Noop` components entirely, an enum whose
+    /// payloads are ALL `Copy` produces no glue at all, and the mixed case below is what proves
+    /// the `_` binder.
     #[test]
     fn enum_drop_glue_skips_copy_payload_fields() {
         let mut types = TypeContext::default();
+        types.struct_fields.insert((1, vec![]), vec![MirTy::Int32]);
         types
-            .enum_variants
-            .insert((3, vec![]), vec![vec![MirTy::Int32]]);
+            .drop_impls
+            .insert((1, vec![]), "Inner::drop@[]".to_string());
+        // V0 mixes a Copy field with a droppable one; V1 is entirely Copy.
+        types.enum_variants.insert(
+            (3, vec![]),
+            vec![
+                vec![MirTy::Int32, MirTy::Struct(crate::hir::ItemId(1), vec![])],
+                vec![MirTy::Bool],
+            ],
+        );
         let body = env_body();
         let env = TyEnv::new(&body, &types);
         let ty = MirTy::Enum(EnumRef::User(crate::hir::ItemId(3)), vec![]);
         let glue = emit_drop_glue(&ty, "__v", &env).expect("glue must emit");
         assert!(
-            glue.contains("::V0(_)"),
+            glue.contains("::V0(_, __p1)"),
             "a Copy payload must be ignored, not bound: {glue}"
+        );
+        assert!(
+            glue.contains("::V1(_)"),
+            "an all-Copy variant still needs an arm, with nothing bound: {glue}"
+        );
+    }
+
+    /// The `Copy`-only case, now that the plan collapses it: no glue, no match, nothing to run.
+    #[test]
+    fn an_enum_with_no_drop_obligation_anywhere_emits_no_glue() {
+        let mut types = TypeContext::default();
+        types
+            .enum_variants
+            .insert((3, vec![]), vec![vec![MirTy::Int32], vec![]]);
+        let body = env_body();
+        let env = TyEnv::new(&body, &types);
+        let ty = MirTy::Enum(EnumRef::User(crate::hir::ItemId(3)), vec![]);
+        assert_eq!(
+            emit_drop_glue(&ty, "__v", &env).expect("glue must emit"),
+            "",
+            "a plan with no obligation must emit nothing, not an empty match"
+        );
+    }
+
+    // ---- WP-C5.3d-1b: the plan and its application are one mechanism ----
+    //
+    // These are the mutation cases CD-062 requires. Each one takes the shared plan, corrupts it in
+    // exactly the way a hand-written reconstruction used to get wrong, and shows the corruption
+    // reaches the generated Rust. Together they establish that the emitter APPLIES the plan
+    // rather than re-deriving it -- if it re-derived, a corrupted plan would leave the output
+    // unchanged and every one of these would fail.
+
+    fn plan_fixture() -> (TypeContext, MirTy) {
+        let mut types = TypeContext::default();
+        types.struct_fields.insert((1, vec![]), vec![MirTy::Int32]);
+        types
+            .drop_impls
+            .insert((1, vec![]), "Inner::drop@[]".to_string());
+        let inner = MirTy::Struct(crate::hir::ItemId(1), vec![]);
+        types
+            .enum_variants
+            .insert((2, vec![]), vec![vec![], vec![inner.clone(), inner]]);
+        (
+            types,
+            MirTy::Enum(EnumRef::User(crate::hir::ItemId(2)), vec![]),
+        )
+    }
+
+    /// Mutation: delete a variant from the plan. The generated `match` must lose its arm, which
+    /// is what makes the emitted code stop compiling rather than silently skip a variant.
+    #[test]
+    fn mutating_the_plan_to_omit_a_variant_removes_its_arm() {
+        let (types, ty) = plan_fixture();
+        let mut plan = drop_plan::plan_for(&ty, &types).unwrap();
+        let DropPlan::Variants { variants, .. } = &mut plan else {
+            panic!("expected a variant plan");
+        };
+        variants.pop();
+        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        assert!(
+            !glue.contains("::V1("),
+            "the omitted variant must not survive into the output: {glue}"
+        );
+    }
+
+    /// Mutation: delete a payload field from a variant. Its destructor call must disappear.
+    #[test]
+    fn mutating_the_plan_to_omit_a_payload_field_removes_its_destructor_call() {
+        let (types, ty) = plan_fixture();
+        let mut plan = drop_plan::plan_for(&ty, &types).unwrap();
+        let DropPlan::Variants { variants, .. } = &mut plan else {
+            panic!("expected a variant plan");
+        };
+        variants[1].fields.pop();
+        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        assert_eq!(
+            glue.matches(&mangle::function_name_for_symbol("Inner::drop@[]"))
+                .count(),
+            1,
+            "one of the two payload destructor calls must be gone: {glue}"
+        );
+    }
+
+    /// Mutation: reverse the plan's field order. The emitted order must follow it, which proves
+    /// the emitter is not imposing an order of its own.
+    #[test]
+    fn mutating_the_plan_field_order_changes_the_emitted_order() {
+        let (types, ty) = plan_fixture();
+        let mut plan = drop_plan::plan_for(&ty, &types).unwrap();
+        let DropPlan::Variants { variants, .. } = &mut plan else {
+            panic!("expected a variant plan");
+        };
+        variants[1].fields.reverse();
+        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        let arm = glue
+            .split_once("__p1) => {")
+            .expect("the payload arm must bind both fields")
+            .1;
+        assert!(
+            arm.find("__p0").unwrap() < arm.find("__p1").unwrap(),
+            "the emitted order must follow the mutated plan: {glue}"
+        );
+    }
+
+    /// Mutation: try to make the components run BEFORE the type's own destructor.
+    ///
+    /// The plan's nesting makes that unrepresentable -- `Destructor { then }` contains its
+    /// components, so there is no rearrangement that sequences them ahead of it *at the same
+    /// value*. The nearest thing the shape allows is to push the destructor down onto a
+    /// component, and the assertion below is that doing so is not a quiet reordering: the
+    /// destructor is then applied to the FIELD, so the generated crate fails to compile
+    /// (`Outer::drop` receiving `&mut Inner`). A misordering here cannot reach a running program.
+    #[test]
+    fn the_plan_shape_makes_fields_before_the_destructor_unrepresentable() {
+        let mut types = TypeContext::default();
+        types.struct_fields.insert((1, vec![]), vec![MirTy::Int32]);
+        types
+            .drop_impls
+            .insert((1, vec![]), "Inner::drop@[]".to_string());
+        types.struct_fields.insert(
+            (2, vec![]),
+            vec![MirTy::Struct(crate::hir::ItemId(1), vec![])],
+        );
+        types
+            .drop_impls
+            .insert((2, vec![]), "Outer::drop@[]".to_string());
+        let ty = MirTy::Struct(crate::hir::ItemId(2), vec![]);
+
+        let plan = drop_plan::plan_for(&ty, &types).unwrap();
+        let outer = mangle::function_name_for_symbol("Outer::drop@[]");
+        let inner = mangle::function_name_for_symbol("Inner::drop@[]");
+        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        assert!(
+            glue.find(&outer).unwrap() < glue.find(&inner).unwrap(),
+            "the canonical plan runs the type's own destructor first: {glue}"
+        );
+
+        // The only rearrangement the shape permits: push the destructor down onto the field.
+        let DropPlan::Destructor { symbol, then } = plan else {
+            panic!("expected a destructor at the root");
+        };
+        let pushed_down = match *then {
+            DropPlan::Fields { base, mut fields } => {
+                fields[0].plan = DropPlan::Destructor {
+                    symbol,
+                    then: Box::new(fields[0].plan.clone()),
+                };
+                DropPlan::Fields { base, fields }
+            }
+            other => panic!("expected fields under the destructor, got {other:?}"),
+        };
+        let glue = emit_drop_plan(&pushed_down, "__v").unwrap();
+        assert!(
+            glue.contains(&format!("{outer}((&mut __v.f0))")),
+            "the displaced destructor must land on the FIELD, not the value -- which is a type \
+             error in the generated crate rather than a silent reordering: {glue}"
+        );
+    }
+
+    /// Mutation: put a `Copy` component back into the plan. A destructor call appears for it --
+    /// so "do not drop a Copy field" is enforced by the derivation, in one place, and not by a
+    /// filter each consumer has to remember.
+    #[test]
+    fn mutating_the_plan_to_include_a_copy_field_emits_a_drop_for_it() {
+        let mut types = TypeContext::default();
+        types.struct_fields.insert((1, vec![]), vec![MirTy::Int32]);
+        types
+            .drop_impls
+            .insert((1, vec![]), "Inner::drop@[]".to_string());
+        types.struct_fields.insert(
+            (2, vec![]),
+            vec![MirTy::Int32, MirTy::Struct(crate::hir::ItemId(1), vec![])],
+        );
+        let ty = MirTy::Struct(crate::hir::ItemId(2), vec![]);
+
+        let mut plan = drop_plan::plan_for(&ty, &types).unwrap();
+        let DropPlan::Fields { fields, .. } = &mut plan else {
+            panic!("expected a field plan");
+        };
+        assert_eq!(
+            fields.len(),
+            1,
+            "the Copy field must be absent to begin with"
+        );
+        fields.push(crate::mir::drop_plan::PlannedField {
+            index: 0,
+            plan: DropPlan::Destructor {
+                symbol: "Inner::drop@[]".to_string(),
+                then: Box::new(DropPlan::Noop),
+            },
+        });
+        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        assert!(
+            glue.contains("__v.f0"),
+            "a plan that names the Copy field makes the emitter drop it: {glue}"
+        );
+    }
+
+    /// Tuples and arrays reach the emitter only through the plan; before it, `emit_drop_glue`
+    /// refused everything that was not a struct or a user enum.
+    #[test]
+    fn tuple_and_array_components_get_their_rust_spellings_from_the_plan() {
+        let mut types = TypeContext::default();
+        types.struct_fields.insert((1, vec![]), vec![MirTy::Int32]);
+        types
+            .drop_impls
+            .insert((1, vec![]), "Inner::drop@[]".to_string());
+        let inner = MirTy::Struct(crate::hir::ItemId(1), vec![]);
+        let body = env_body();
+        let env = TyEnv::new(&body, &types);
+
+        let tuple = MirTy::Tuple(vec![MirTy::Int32, inner.clone()]);
+        let glue = emit_drop_glue(&tuple, "__v", &env).expect("tuple glue must emit");
+        assert!(
+            glue.contains("(&mut __v.1)"),
+            "a tuple component is `.1`, not `.f1`: {glue}"
+        );
+
+        let array = MirTy::Array(Box::new(inner), 3);
+        let glue = emit_drop_glue(&array, "__v", &env).expect("array glue must emit");
+        let at = |i: usize| {
+            glue.find(&format!("__v[{i}]"))
+                .expect("every element drops")
+        };
+        assert!(
+            at(2) < at(1) && at(1) < at(0),
+            "array elements destroy back to front: {glue}"
         );
     }
 }

@@ -487,11 +487,84 @@ is a bare Rust reference rather than a slot, one driving two out-of-lane shapes 
 reference, a reference carried across blocks) and requiring each to be refused **before rustc**,
 failing loudly if any reaches rustc and fails there instead.
 
+## C5.3d-1b — The canonical `DropPlan`
+
+Done. `starkc/src/mir/drop_plan.rs`.
+
+Destruction order used to exist twice: `mir::interp::drop_in_place` walked the type context at run
+time, and `emit_bodies::emit_drop_glue` walked it again at emit time. They agreed only because
+they were written to agree, and they had already drifted once — CD-060 found the emitter's enum
+path walking `struct_fields`, so a whole non-`Copy` enum marked its slot dead and dropped no
+payload at all. Fixing that instance left the *class* in place: two independent reconstructions of
+one semantic rule.
+
+`DropPlan` is now the single derivation, taken from `MirTy` + `TypeContext`. It is
+representation-neutral — it names components by MIR index and carries MIR types, and says nothing
+about frames, slots, Rust syntax, or generated names. **MIR v0.1 is unchanged**: no node, no
+terminator, no type is added, and the runtime surface is untouched.
+
+### Four invariants carried by the shape rather than by convention
+
+| Invariant | How the shape carries it |
+| --- | --- |
+| The type's own destructor runs first | `Destructor { symbol, then }` **nests** the component plan inside it. There is no representable plan that sequences components ahead of the destructor at the same value. |
+| Components run in reverse declaration order | The derivation reverses; consumers iterate forward. Arrays get `array_order(len)`, a named function, so reversing it in one consumer is a visible edit rather than a plausible-looking `for i in 0..len`. |
+| Every enum variant is covered | `Variants` is indexed by variant number and always carries one entry per variant, with the variant's **full** arity beside its droppable fields. A `match` built from it is exhaustive without a catch-all. |
+| A component with no obligation is absent | Any component whose plan is `Noop` is omitted, and a parent all of whose components are `Noop` (with no destructor of its own) is itself `Noop`. "Do not drop a `Copy` field" is a property of the derivation, not a filter each consumer must remember. |
+
+Two design points:
+
+- **`Vec`/`Box` name their element by TYPE, not by an inlined sub-plan.** They are Core v1's only
+  indirection and therefore its only route to a recursive type
+  (`enum List { Nil, Cons(Int32, Box<List>) }`); inlining would not terminate. Every other
+  component is stored inline, is necessarily finite, and is planned eagerly. The MIR interpreter
+  derives the element plan once when it actually has a value.
+- **The variant payload table moved into the same module** (`drop_plan::variant_payloads`). It
+  previously existed three times — in `mir::interp`, `mir::verify` and `emit_types` — with the
+  variant indices agreeing only by inspection. All three now read the one table.
+
+The interpreter memoises plans per type (`Rc<DropPlan>`, keyed by `MirTy`). The walk this replaced
+was lazy and did its table lookups per drop; a `Drop` inside a loop executes once per iteration, so
+without the cache the eager derivation would become a per-iteration cost.
+
+### What each consumer kept
+
+`mir::interp::run_drop_plan` applies a step by pushing a projection onto a place path or issuing a
+call. `emit_bodies::emit_drop_plan` applies one by spelling a Rust component access, a binder, or a
+function name. Neither decides order, coverage, or obligation. The emitter's `Vec`/`Box` steps are
+refused rather than approximated — the generated crate has no owning-runtime-type representation
+yet, and glue that destroyed the elements while leaking the buffer would be worse than a refusal.
+
+Tuples and arrays reach the native drop path for the first time as a consequence: before the plan,
+`emit_drop_glue` refused everything that was not a struct or a user enum.
+
+### Evidence
+
+14 derivation tests in `drop_plan.rs` (order, coverage, index preservation, `Noop` collapse, core
+enums, deferred `Vec`/`Box`, a recursive type through `Box`, missing tables erroring rather than
+silently planning nothing), plus CD-062's mutation set in `emit_bodies.rs`. Each mutation corrupts
+the **shared plan** and shows the corruption reaching the generated Rust — which is what
+establishes that the emitter *applies* the plan rather than re-deriving it. Had it re-derived, a
+corrupted plan would leave the output unchanged and every one of these would fail:
+
+| CD-062 mutation | Test | Result |
+| --- | --- | --- |
+| Omit an enum variant | `mutating_the_plan_to_omit_a_variant_removes_its_arm` | The arm disappears; the generated `match` stops compiling rather than silently skipping a variant. |
+| Omit a payload field | `mutating_the_plan_to_omit_a_payload_field_removes_its_destructor_call` | One of the two destructor calls is gone. |
+| Reverse the required order | `mutating_the_plan_field_order_changes_the_emitted_order` | Emitted order follows the plan, so the emitter imposes none of its own. |
+| Run fields before the user destructor | `the_plan_shape_makes_fields_before_the_destructor_unrepresentable` | **Unrepresentable.** The nearest rearrangement the shape allows pushes the destructor onto a *field*, which is a type error in the generated crate (`Outer::drop` receiving `&mut Inner`) — not a quiet reordering. |
+| Drop a `Copy` field | `mutating_the_plan_to_include_a_copy_field_emits_a_drop_for_it` | Re-adding the omitted `Copy` component makes the emitter drop it, confirming the exclusion lives in the derivation. |
+| Execute `Drop` after a trap | already covered: `mir_differential.rs` (trap-abort agreement), `gate3_execution.rs::trap_aborts_without_running_pending_destructors`, `native_c5_3_aggregates_enums.rs` (a destructor side effect that must not appear after a native trap) | Unchanged by this package; the plan carries no trap semantics. |
+
+Validated with the **full workspace suite**, not the scoped set: `interp.rs` is the semantic
+authority and every differential fixture consumes it.
+
 ## C5.3d-1 — Bounded Drop proof
 
-Not started. Follows C5.3c. Contains the dedicated observable destruction fixture and the final
-exactly-once, ordering, and no-Drop-after-trap proof. The storage decision it was previously
-blocked on is resolved (CD-058) and its foundation is C5.3d-0's deliverable.
+C5.3d-1a (references) and C5.3d-1b (canonical `DropPlan`) are done. Remaining: **C5.3d-1c**, the
+dedicated observable destruction fixture and the final exactly-once, ordering, and
+no-`Drop`-after-trap proof across all three engines. The storage decision it was previously blocked
+on is resolved (CD-058) and its foundation is C5.3d-0's deliverable.
 
 ## C5.3 exit
 

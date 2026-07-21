@@ -2023,35 +2023,22 @@ fn may_need_drop(ty: &MirTy) -> bool {
     }
 }
 
+/// WP-C5.3d-1b: the table is `drop_plan::variant_payloads`, the one derivation the verifier, the
+/// interpreter's place typing, the drop plan, and the backend's type emission all read. It had
+/// been written out three times — here, in `interp`, and in `emit_types` — with the variant
+/// indices agreeing only by inspection.
+///
+/// A2 (CE3): `Ordering` has exactly three fieldless variants (`Less` = 0, `Equal` = 1,
+/// `Greater` = 2); any other index is invalid and fails verification, which falls out of indexing
+/// the table.
 fn variant_payload(
     program: &MirProgram,
     enum_ref: &EnumRef,
     args: &[MirTy],
     variant: u32,
 ) -> Option<Vec<MirTy>> {
-    match enum_ref {
-        EnumRef::CoreOption => match variant {
-            0 => Some(Vec::new()),
-            1 => Some(vec![args.first()?.clone()]),
-            _ => None,
-        },
-        EnumRef::CoreResult => match variant {
-            0 => Some(vec![args.first()?.clone()]),
-            1 => Some(vec![args.get(1)?.clone()]),
-            _ => None,
-        },
-        // A2 (CE3): Ordering has exactly three fieldless variants (Less=0, Equal=1, Greater=2);
-        // any other index is an invalid `CoreOrdering` variant and fails verification.
-        EnumRef::CoreOrdering => match variant {
-            0..=2 => Some(Vec::new()),
-            _ => None,
-        },
-        EnumRef::User(item) => program
-            .types
-            .enum_variants
-            .get(&(item.0, args.to_vec()))
-            .and_then(|variants| variants.get(variant as usize).cloned()),
-    }
+    super::drop_plan::variant_payloads(enum_ref, args, &program.types)
+        .and_then(|variants| variants.get(variant as usize).cloned())
 }
 
 fn is_vec_runtime_fn(rt: RuntimeFn) -> bool {

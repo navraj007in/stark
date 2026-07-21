@@ -113,7 +113,23 @@ destructors compile and run natively. One deviation from CD-062's wording is fla
 owner: `cmp` consumes its borrow by a `Deref` READ, not by a direct call, because lowering inlines
 primitive comparison.
 
-Next: **C5.3d-1b — the canonical `DropPlan`**, then C5.3d-1c's observable evidence. C5.3e (layout
+**C5.3d-1b DONE** — `mir::drop_plan` is the single derivation of destruction order, consumed by
+BOTH the MIR interpreter and the native emitter. It removes the defect class CD-060 was an instance
+of: two independent reconstructions of one rule. Four invariants are now carried by the plan's
+SHAPE rather than by convention — the type's own destructor nests *outside* its components (so
+"fields before the destructor" is unrepresentable, not merely discouraged), components are stored
+in destruction order, `Variants` is indexed by variant number with complete coverage and full
+arity, and any component with no obligation is absent (which is where "never drop a `Copy` field"
+now lives). `Vec`/`Box` name their element by type rather than inlining a sub-plan, because they
+are Core v1's only indirection and therefore its only route to a recursive type. **MIR v0.1
+unchanged**; runtime surface untouched. The variant-payload table, which existed three times,
+moved into the same module. Tuples and arrays reach the native drop path for the first time as a
+consequence. Evidence: 14 derivation tests plus CD-062's five representable mutations, each
+corrupting the *shared* plan and showing the corruption reach the generated Rust — which is what
+proves application rather than re-derivation; the sixth (Drop after a trap) was already covered by
+existing differential/native fixtures and is unaffected by this package.
+
+Next: **C5.3d-1c — observable closure evidence**, then close C5.3d-1. C5.3e (layout
 manifest) remains independent and parallelisable. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
@@ -2419,6 +2435,63 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   - Validation, scoped: fmt clean, clippy clean, stark-runtime 23/23, `backend::` 42/42,
     `three_engine_differential` 41/41, `native_c5_3_aggregates_enums` 14/14, earlier native suites
     green.
+
+- CD-064 [2026-07-22, C5.3d-1b DONE] **`mir::drop_plan` is the canonical destruction plan, derived
+  once and consumed by both the MIR interpreter and the native emitter** — CD-062 decision 4
+  discharged.
+
+  - **The defect class, not the instance.** CD-060 fixed the emitter's enum drop glue after it was
+    found walking `struct_fields` and dropping no payload at all. The cause was structural: two
+    independent reconstructions of one semantic rule, agreeing only because they were written to.
+    `drop_plan::plan_for(ty, types)` is now the only derivation; `interp::run_drop_plan` and
+    `emit_bodies::emit_drop_plan` each APPLY it and decide nothing about order, coverage or
+    obligation.
+
+  - **Four invariants moved from convention into the plan's SHAPE**: (a) `Destructor { symbol,
+    then }` **nests** the components inside the destructor, so "fields before the user destructor"
+    is *unrepresentable* rather than merely discouraged; (b) components are stored in destruction
+    order and consumers iterate forward, with `array_order(len)` a named function so reversing it
+    is a visible edit; (c) `Variants` is indexed by variant number, always complete, and carries
+    each variant's **full arity** beside its droppable fields, so a generated `match` is exhaustive
+    without a catch-all; (d) any component whose plan is `Noop` is absent, and an all-`Noop` parent
+    with no destructor is itself `Noop` — which is where "never drop a `Copy` field" now lives,
+    once, instead of as a filter each consumer must remember.
+
+  - **`Vec`/`Box` name their element by TYPE, not by an inlined sub-plan.** They are Core v1's only
+    indirection and therefore its only route to a recursive type (`enum List { Nil, Cons(Int32,
+    Box<List>) }`); inlining would not terminate. Everything else is inline, finite, and planned
+    eagerly.
+
+  - **MIR v0.1 unchanged**, runtime surface untouched — this centralises an existing derivation.
+    The variant-payload table (previously written out three times — `interp`, `verify`,
+    `emit_types` — with the variant indices agreeing only by inspection) moved into the same
+    module, and all three now read it. The interpreter memoises plans per type (`Rc<DropPlan>`),
+    since the walk this replaced was lazy and a `Drop` inside a loop runs once per iteration.
+    Tuples and arrays reach the native drop path for the first time as a consequence;
+    `Vec`/`Box` steps are **refused** by the emitter rather than approximated, since glue that
+    destroyed elements while leaking the buffer would be worse than a refusal.
+
+  - **FLAGGED, carried forward unchanged, not silently corrected.** The remaining `Core` types —
+    `String`, `HashMap`, `HashSet`, the iterators, `File` — plan to `Noop`, exactly reproducing
+    what `interp::drop_in_place` already did. For a `HashMap<K, V>` whose `V` has a destructor that
+    is arguably wrong, but it is the reference semantics as they stand, and changing it here would
+    move the oracle without an owner decision. Recorded in the module so the question is
+    answerable rather than lost.
+
+  - **Evidence**: 14 derivation tests (order, coverage, index preservation, `Noop` collapse, core
+    enums, deferred `Vec`/`Box`, a recursive type through `Box`, missing tables erroring rather
+    than silently planning nothing) plus CD-062's mutation set. Each mutation corrupts the SHARED
+    plan and shows the corruption reach the generated Rust — which is what establishes application
+    rather than re-derivation, since a re-deriving emitter would ignore a corrupted plan and every
+    one of these would fail. Five of the six are representable: omitted variant, omitted payload
+    field, reversed order, re-added `Copy` field, and destructor ordering — that last one resolving
+    to *unrepresentable*, with the nearest permitted rearrangement landing the destructor on a
+    field and thus failing to compile. The sixth (`Drop` after a trap) was already covered by
+    `mir_differential`, `gate3_execution::trap_aborts_without_running_pending_destructors` and
+    `native_c5_3_aggregates_enums`, and carries no plan semantics.
+
+  - Validated with the **full workspace suite**, not the scoped set: `interp.rs` is the semantic
+    authority and every differential fixture consumes it.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

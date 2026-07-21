@@ -29,6 +29,7 @@
 //!   (shared by design; compensating spec tests live in `tests/canonical_float.rs`).
 //! - A fuel guard turns runaway loops from lowering bugs into clean internal errors.
 
+use super::drop_plan::{self, DropPlan};
 use super::*;
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -149,6 +150,7 @@ pub fn run_program(
         next_generation: 0,
         output: String::new(),
         fuel: FUEL,
+        drop_plans: std::collections::BTreeMap::new(),
     };
     match cx.call(main_index, Vec::new()) {
         Ok(_) => Ok(MirExecution {
@@ -170,6 +172,14 @@ struct Interp<'a> {
     next_generation: u64,
     output: String,
     fuel: u64,
+    /// WP-C5.3d-1b: derived destruction plans, memoised per type.
+    ///
+    /// The plan is derived from the type context, not from the value, so it is the same on every
+    /// execution of the same `Drop` — and a `Drop` inside a loop executes once per iteration. The
+    /// walk this replaced was lazy and did its table lookups per drop; caching keeps the eager
+    /// derivation from being a per-iteration cost. `Rc` so a cached plan can be handed to
+    /// `run_drop_plan` without holding a borrow of `self`.
+    drop_plans: std::collections::BTreeMap<MirTy, std::rc::Rc<DropPlan>>,
 }
 
 impl<'a> Interp<'a> {
@@ -414,38 +424,22 @@ impl<'a> Interp<'a> {
         args: &[MirTy],
         variant: u32,
     ) -> Result<Vec<MirTy>, MirRunError> {
-        match enum_ref {
-            EnumRef::CoreOption => Ok(if variant == 1 {
-                vec![args
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| MirRunError::Internal("Option without argument".into()))?]
-            } else {
-                Vec::new()
-            }),
-            EnumRef::CoreResult => Ok(vec![args
-                .get(variant as usize)
-                .cloned()
-                .ok_or_else(|| MirRunError::Internal("Result variant out of range".into()))?]),
-            // A2 (CE3): Ordering's three variants are all fieldless.
-            EnumRef::CoreOrdering => Ok(Vec::new()),
-            EnumRef::User(item) => self
-                .program
-                .types
-                .enum_variants
-                .get(&(item.0, args.to_vec()))
-                .and_then(|variants| variants.get(variant as usize))
-                .cloned()
-                .ok_or_else(|| {
-                    MirRunError::Internal(format!("no variant table for enum #{}", item.0))
-                }),
-        }
+        // WP-C5.3d-1b: the table itself comes from `drop_plan::variant_payloads`, the single
+        // derivation shared with the drop plan and the backend's type emission.
+        drop_plan::variant_payloads(enum_ref, args, &self.program.types)
+            .and_then(|variants| variants.get(variant as usize).cloned())
+            .ok_or_else(|| {
+                MirRunError::Internal(format!("no payload for variant {variant} of {enum_ref:?}"))
+            })
     }
 
-    /// Recursive drop glue for the value at (frame, local, path): call the type's own
-    /// destructor instance through an `&mut` reference (mutations stay visible to the field
-    /// destruction that follows, matching the oracle), then destroy fields/payload in
-    /// reverse declaration order.
+    /// Drop glue for the value at (frame, local, path).
+    ///
+    /// WP-C5.3d-1b (CD-062): the ORDER is no longer decided here. `mir::drop_plan` derives the
+    /// canonical plan from the type and the type context, and this function only applies it —
+    /// projecting a component becomes a path push, running a destructor becomes a call. The
+    /// native emitter applies the same plan with its own two operations. Before this split, the
+    /// two consumers reconstructed the order independently and had already disagreed (CD-060).
     fn drop_in_place(
         &mut self,
         frame: usize,
@@ -453,100 +447,102 @@ impl<'a> Interp<'a> {
         path: Vec<ConcreteProj>,
         ty: &MirTy,
     ) -> Result<(), MirRunError> {
-        match ty {
-            MirTy::Struct(item, args) => {
-                if let Some(symbol) = self.program.types.drop_impls.get(&(item.0, args.clone())) {
-                    let Some(&idx) = self.by_symbol.get(symbol.as_str()) else {
-                        return self.internal(format!("dtor instance {symbol} not lowered"));
-                    };
-                    let receiver = MirValue::Ref {
-                        frame,
-                        generation: self.frames[frame].generation,
-                        local,
-                        path: path.clone(),
-                    };
-                    self.call(idx, vec![receiver])?;
-                }
-                let fields = self
-                    .program
-                    .types
-                    .struct_fields
-                    .get(&(item.0, args.clone()))
-                    .cloned()
-                    .ok_or_else(|| {
-                        MirRunError::Internal(format!("no field table for struct #{}", item.0))
-                    })?;
-                for (i, fty) in fields.iter().enumerate().rev() {
+        let plan = self.drop_plan_for(ty)?;
+        self.run_drop_plan(frame, local, path, &plan)
+    }
+
+    /// The memoised plan for `ty`.
+    fn drop_plan_for(&mut self, ty: &MirTy) -> Result<std::rc::Rc<DropPlan>, MirRunError> {
+        if let Some(plan) = self.drop_plans.get(ty) {
+            return Ok(plan.clone());
+        }
+        let plan = std::rc::Rc::new(
+            drop_plan::plan_for(ty, &self.program.types).map_err(|e| MirRunError::Internal(e.0))?,
+        );
+        self.drop_plans.insert(ty.clone(), plan.clone());
+        Ok(plan)
+    }
+
+    /// Apply a [`DropPlan`] to the value at (frame, local, path).
+    ///
+    /// The destructor call takes an `&mut` receiver so that mutations it makes stay visible to
+    /// the component destruction that follows — matching the oracle. That ordering is the plan's
+    /// (`Destructor { then }` nests the components inside), not this function's.
+    fn run_drop_plan(
+        &mut self,
+        frame: usize,
+        local: u32,
+        path: Vec<ConcreteProj>,
+        plan: &DropPlan,
+    ) -> Result<(), MirRunError> {
+        match plan {
+            DropPlan::Noop => {}
+            DropPlan::Destructor { symbol, then } => {
+                let Some(&idx) = self.by_symbol.get(symbol.as_str()) else {
+                    return self.internal(format!("dtor instance {symbol} not lowered"));
+                };
+                let receiver = MirValue::Ref {
+                    frame,
+                    generation: self.frames[frame].generation,
+                    local,
+                    path: path.clone(),
+                };
+                self.call(idx, vec![receiver])?;
+                self.run_drop_plan(frame, local, path, then)?;
+            }
+            DropPlan::Fields { fields, .. } => {
+                for field in fields {
                     let mut p = path.clone();
-                    p.push(ConcreteProj::Field(i as u32));
-                    self.drop_in_place(frame, local, p, fty)?;
+                    p.push(ConcreteProj::Field(field.index));
+                    self.run_drop_plan(frame, local, p, &field.plan)?;
                 }
             }
-            MirTy::Enum(enum_ref, args) => {
-                if let EnumRef::User(item) = enum_ref {
-                    if let Some(symbol) = self.program.types.drop_impls.get(&(item.0, args.clone()))
-                    {
-                        let Some(&idx) = self.by_symbol.get(symbol.as_str()) else {
-                            return self.internal(format!("dtor instance {symbol} not lowered"));
-                        };
-                        let receiver = MirValue::Ref {
-                            frame,
-                            generation: self.frames[frame].generation,
-                            local,
-                            path: path.clone(),
-                        };
-                        self.call(idx, vec![receiver])?;
-                    }
-                }
+            DropPlan::Variants { variants, .. } => {
                 let value = self.read_resolved(frame, local, &path)?;
                 let MirValue::Enum { variant, .. } = value else {
                     return self.internal("Drop glue: enum-typed place holds a non-enum value");
                 };
-                let payload = self.variant_payload_tys(enum_ref, args, variant)?;
-                for (i, fty) in payload.iter().enumerate().rev() {
+                let Some(arm) = variants.get(variant as usize) else {
+                    return self.internal(format!("drop plan has no arm for variant {variant}"));
+                };
+                // `arm.fields` is cloned so the borrow of `self.program` ends before the
+                // recursive calls; the plan is small and this runs once per enum drop.
+                for field in arm.fields.clone() {
                     let mut p = path.clone();
-                    p.push(ConcreteProj::Variant(variant, i as u32));
-                    self.drop_in_place(frame, local, p, fty)?;
+                    p.push(ConcreteProj::Variant(variant, field.index));
+                    self.run_drop_plan(frame, local, p, &field.plan)?;
                 }
             }
-            MirTy::Tuple(elems) => {
-                for (i, ety) in elems.iter().enumerate().rev() {
-                    let mut p = path.clone();
-                    p.push(ConcreteProj::Field(i as u32));
-                    self.drop_in_place(frame, local, p, ety)?;
-                }
-            }
-            MirTy::Array(elem, len) => {
-                for i in (0..*len).rev() {
+            DropPlan::Array { len, elem } => {
+                for i in drop_plan::array_order(*len) {
                     let mut p = path.clone();
                     p.push(ConcreteProj::Index(i as usize));
-                    self.drop_in_place(frame, local, p, elem)?;
+                    self.run_drop_plan(frame, local, p, elem)?;
                 }
             }
             // A1 (CD-031) §5a: Vec<T> drops its elements through STARK glue in REVERSE index
             // order (matched to the oracle), then reclaims the buffer (unobservable). Elements
             // are opaque to projections, so they drop from the read-out value via a scratch
             // slot rather than a place path.
-            MirTy::Core(crate::hir::CoreType::Vec, args) => {
-                let elem_ty = args.first().cloned().unwrap_or(MirTy::Unit);
+            DropPlan::VecElements { elem } => {
+                let elem_plan = self.drop_plan_for(elem)?;
                 if let MirValue::Vec(mut elems) = self.read_resolved(frame, local, &path)? {
                     while let Some(e) = elems.pop() {
-                        self.drop_owned_value(frame, e, &elem_ty)?;
+                        self.drop_owned_value(frame, e, &elem_plan)?;
                     }
                 }
             }
             // 0.1-A7: dropping a `Box<T>` drops the contained `T` exactly once, then releases
             // the allocation (unobservable). A box consumed by `into_inner` no longer holds the
             // value — ownership moved to the caller — so nothing is dropped twice.
-            MirTy::Core(crate::hir::CoreType::Box, args) => {
-                let inner_ty = args.first().cloned().unwrap_or(MirTy::Unit);
+            DropPlan::BoxInner { inner } => {
+                let inner_plan = self.drop_plan_for(inner)?;
                 if let MirValue::Aggregate(mut fields) = self.read_resolved(frame, local, &path)? {
-                    if let Some(inner) = fields.pop() {
-                        self.drop_owned_value(frame, inner, &inner_ty)?;
+                    if let Some(value) = fields.pop() {
+                        self.drop_owned_value(frame, value, &inner_plan)?;
                     }
                 }
             }
-            _ => {}
         }
         Ok(())
     }
@@ -586,11 +582,11 @@ impl<'a> Interp<'a> {
         &mut self,
         frame: usize,
         value: MirValue,
-        ty: &MirTy,
+        plan: &DropPlan,
     ) -> Result<(), MirRunError> {
         let scratch = self.frames[frame].locals.len() as u32;
         self.frames[frame].locals.push(Some(value));
-        let result = self.drop_in_place(frame, scratch, Vec::new(), ty);
+        let result = self.run_drop_plan(frame, scratch, Vec::new(), plan);
         self.frames[frame].locals.truncate(scratch as usize);
         result
     }

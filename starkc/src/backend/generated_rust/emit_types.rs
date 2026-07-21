@@ -19,26 +19,12 @@ pub fn field_name(i: u32) -> String {
 /// The variant payload table for ANY enum, core or user — the single source the generated
 /// definition, the discriminant match, and every payload projection all read.
 ///
-/// Mirrors `mir::verify::variant_payload` exactly, which is the authority: `Option` is
-/// `None = 0` / `Some(T) = 1`; `Result` is `Ok(T) = 0` / `Err(E) = 1`; `Ordering` is three
-/// fieldless variants `Less`/`Equal`/`Greater`. Deriving them here rather than special-casing
-/// each use site is what stops the three consumers from disagreeing about a variant index.
-pub fn variant_payloads(
-    enum_ref: &crate::mir::EnumRef,
-    args: &[MirTy],
-    types: &TypeContext,
-) -> Option<Vec<Vec<MirTy>>> {
-    use crate::mir::EnumRef;
-    match enum_ref {
-        EnumRef::CoreOption => Some(vec![vec![], vec![args.first()?.clone()]]),
-        EnumRef::CoreResult => Some(vec![
-            vec![args.first()?.clone()],
-            vec![args.get(1)?.clone()],
-        ]),
-        EnumRef::CoreOrdering => Some(vec![vec![], vec![], vec![]]),
-        EnumRef::User(item) => types.enum_variants.get(&(item.0, args.to_vec())).cloned(),
-    }
-}
+/// WP-C5.3d-1b: re-exported from `mir::drop_plan`, which now owns the one derivation the drop
+/// plan, the interpreter's place typing, and this module all read: `Option` is `None = 0` /
+/// `Some(T) = 1`; `Result` is `Ok(T) = 0` / `Err(E) = 1`; `Ordering` is three fieldless variants
+/// `Less`/`Equal`/`Greater`. Sharing it is what stops the consumers from disagreeing about a
+/// variant index.
+pub use crate::mir::drop_plan::variant_payloads;
 
 /// The generated Rust type name for any nominal instance, core or user. Core enums get a
 /// distinct key space (`option`/`result`/`ordering`) so they cannot collide with a user item id.
