@@ -179,8 +179,51 @@ WP-C5.2a; this WP's changes are additive and narrowly scoped to `backend::genera
 
 ## C5.2d — Direct functions and calls
 
-**Not started.** Concrete instances, parameters, return destinations, call continuations — this
-is also where `emit_program.rs`'s current C5.1b-only single-body-program restriction lifts.
+### Status: CLOSED 2026-07-21 (CD-050).
+
+Delivered per `WP-C5-ENTRY.md` §14:
+
+- **Multi-function programs** — `emit_program.rs`'s single-body restriction (present since
+  WP-C5.1b) is lifted. Every body in `program.bodies` is emitted as its own Rust item; the entry
+  instance is still special-cased as Rust's literal `fn main()` with the version-check prologue
+  (a Rust requirement, not a STARK one), every other body goes through the new
+  `emit_bodies::emit_function`. `lower_program`'s own doc comment already guarantees the body set
+  is self-contained and transitively-reachable ("the entry `main` plus every transitively-called
+  supported function"), so no separate reachability/linking logic was needed here.
+- **Real parameters** — `emit_bodies::emit_param_list` maps each `body.params[j]` to the local
+  whose `LocalKind` is `Param(j)` (a local's `LocalId`/position and its parameter INDEX are not
+  the same number and must not be assumed to line up positionally) and emits it as a `mut`
+  Rust function parameter under that local's own `_N` name, so the body's existing statement
+  emission needs no special-casing to read a parameter — it is just another local. Parameters are
+  `mut` for the same reason every other local is: MIR does not distinguish a reassignable
+  parameter from any other local, so nothing here tries to prove one is never reassigned.
+  `emit_block_body`'s local-declaration loop now explicitly `continue`s past `Param`-kinded
+  locals rather than declaring them a second time.
+- **Direct calls** — `Terminator::Call` with `Callee::Instance` lowers to an ordinary Rust call
+  expression, `{name}({args})`, using the same `mangle::function_name_for_symbol` naming
+  authority for both defining a function and calling it (the entry symbol always maps to `main`,
+  every other symbol to its sanitized form) — one source of truth, not two conventions that could
+  drift. `Callee::FnValue` (indirect) stays deferred to WP-C5.4c; `Callee::Runtime` stays deferred
+  to wherever the first `RuntimeFn` group lands.
+
+**No bug this time** — unlike C5.2b (the entry Unit-return check needed relocating) and C5.2c
+(the uninitialised-locals soundness gap), the parameter-shadowing hazard this WP's own design
+raised (declaring a `Param`-kinded local a second time inside the block body would silently
+shadow the real argument with a fabricated default, since `emit_block_body`'s default-init loop
+runs over every local by position) was caught in review before writing the test, not by the test
+failing — the loop explicitly `continue`s past `Param`-kinded locals rather than defaulting them.
+Both new end-to-end tests passed on the first run.
+
+**Test approach:** `starkc/tests/native_c5_2d_calls.rs` — a two-parameter `add` called from
+`main`, and a richer case (a three-parameter `clamp` helper feeding an `if`, plus a second
+`Float64`-parameter/`Bool`-returning helper) proving parameter-index-to-local mapping and
+multi-function symbol naming both hold beyond the single-call trivial case — plus the C5.1b/
+C5.2b/C5.2c proofs re-run unchanged as regressions.
+
+**Validation:** `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings` clean, scoped tests green (`backend::` 18/18, new test 2/2, prior
+regressions 8/8), `cargo test --test exec_snapshots` green (4/4). Full workspace suite not
+re-run this WP per the test-run-frequency policy.
 
 ## C5.2e — Trap path
 

@@ -26,6 +26,20 @@ pub fn sanitize_symbol(symbol: &str) -> String {
     out
 }
 
+/// WP-C5.2d: the entry instance is always emitted as Rust's literal `fn main()` (required by
+/// Rust, not a choice), never its sanitized symbol -- used both when *defining* the entry
+/// function (`emit_program.rs`) and when *calling* it (`emit_bodies::emit_call`'s `Callee::
+/// Instance` case), so a direct call that happened to target the entry symbol (not exercised by
+/// any STARK source today, but not structurally impossible) would still resolve to the same
+/// function it was defined as, rather than a second, differently-named, never-defined one.
+pub fn function_name_for_symbol(symbol: &str) -> String {
+    if symbol == ENTRY_SYMBOL {
+        "main".to_string()
+    } else {
+        sanitize_symbol(symbol)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,6 +49,19 @@ mod tests {
         let a = sanitize_symbol("foo@[Int32]");
         let b = sanitize_symbol("foo@[Int64]");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn entry_symbol_names_to_main() {
+        assert_eq!(function_name_for_symbol(ENTRY_SYMBOL), "main");
+    }
+
+    #[test]
+    fn non_entry_symbol_names_to_its_sanitized_form() {
+        assert_eq!(
+            function_name_for_symbol("foo@[]"),
+            sanitize_symbol("foo@[]")
+        );
     }
 
     #[test]

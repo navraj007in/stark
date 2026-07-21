@@ -1,23 +1,24 @@
 # STARK Compiler STATE
 Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 CLOSED IN FULL
 (CD-042/043/044/045/046), WP-C5.2a CLOSED (CD-047), WP-C5.2b CLOSED (CD-048), WP-C5.2c CLOSED
-(CD-049).** The owner's DEV-089 close-out directive was executed: user `Display` dispatch
-implemented in both engines, non-`Copy` array iteration and cross-file `const` use rejected in
-the front end, all validation green. WP-C5.1 (Runtime ABI and Layout Design) closed in full —
-representation contract, backend/runtime skeleton with a proven native empty-`main` executable,
-and the owner-approved Native Provider ABI v0.1. WP-C5.2 (scalar native lowering) is open; C5.2a
-(primitive values/constants), C5.2b (locals/places/copies/moves), and C5.2c (operations and
-control flow) are closed — real arithmetic with correct overflow/div-by-zero/shift trapping,
-comparisons, `if`/`else`, and `while` loops now compile and run natively via a block-index
-dispatch loop, matching the MIR interpreter oracle exactly. Next: WP-C5.2d (direct functions and
-calls). **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
-not every intermediate change, per owner feedback.
+(CD-049), WP-C5.2d CLOSED (CD-050).** The owner's DEV-089 close-out directive was executed: user
+`Display` dispatch implemented in both engines, non-`Copy` array iteration and cross-file `const`
+use rejected in the front end, all validation green. WP-C5.1 (Runtime ABI and Layout Design)
+closed in full — representation contract, backend/runtime skeleton with a proven native
+empty-`main` executable, and the owner-approved Native Provider ABI v0.1. WP-C5.2 (scalar native
+lowering) is open; C5.2a-d are closed — real arithmetic with correct overflow/div-by-zero/shift
+trapping, comparisons, `if`/`else`, `while` loops, and now multi-function programs with real
+parameters and direct calls all compile and run natively via a block-index dispatch loop,
+matching the MIR interpreter oracle exactly. Next: WP-C5.2e (trap path — the real trap ABI
+replacing `abort_minimal`'s placeholder). **Process note:** full-workspace test runs are now
+reserved for WP/gate closure points, not every intermediate change, per owner feedback.
 
 ## Position
 Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
 WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
-native lowering) OPEN; C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048), C5.2c CLOSED (CD-049).**
-Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved
+native lowering) OPEN; C5.2a CLOSED (CD-047), C5.2b CLOSED (CD-048), C5.2c CLOSED (CD-049), C5.2d
+CLOSED (CD-050).** Gate **C4 CLOSED 2026-07-21** by owner directive, after the last blocker
+(DEV-089) was resolved
 rather than
 deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
 implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
@@ -1477,6 +1478,32 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   (`backend::` 16/16, new test 5/5, prior regressions 3/3), `exec_snapshots` 4/4 — full workspace
   suite not re-run per the test-run-frequency policy. WP-C5.2c CLOSED; next is WP-C5.2d (direct
   functions and calls).
+
+- CD-050 [2026-07-21, WP-C5.2d] **Multi-function programs, real parameters, and direct calls
+  delivered — `emit_program.rs`'s single-body restriction (present since WP-C5.1b) is lifted.**
+  Full record: `STARKLANG/docs/compiler/work-packages/WP-C5.2.md` §C5.2d. Every body in
+  `program.bodies` is emitted as its own Rust item (`lower_program`'s own doc comment already
+  guarantees the set is self-contained and transitively-reachable, so no separate linking logic
+  was needed); the entry instance stays specially wrapped as Rust's literal `fn main()` with the
+  version-check prologue, every other body goes through new `emit_bodies::emit_function`.
+  `emit_param_list` maps each `body.params[j]` to the local whose `LocalKind` is `Param(j)` (a
+  local's position and its parameter index are NOT the same number) and emits it as a `mut` Rust
+  parameter under that local's own `_N` name, so ordinary statement emission needs no
+  special-casing to read a parameter. `Terminator::Call` with `Callee::Instance` lowers to an
+  ordinary Rust call, using `mangle::function_name_for_symbol` as the one naming authority for
+  both defining and calling a function (entry symbol → `main`, everything else → its sanitized
+  form) rather than two conventions that could drift apart. `Callee::FnValue`/`Callee::Runtime`
+  stay deferred to WP-C5.4c and wherever the first `RuntimeFn` group lands, respectively. **No
+  bug this time** — unlike C5.2b/c, the one real hazard this WP's design raised (declaring a
+  `Param`-kinded local a second time in the block body would silently shadow the real argument
+  with a fabricated default) was caught in review before writing the test (`emit_block_body`'s
+  default-init loop explicitly `continue`s past `Param`-kinded locals), not discovered by a
+  failing build. Two new end-to-end native tests (`native_c5_2d_calls.rs`: a two-parameter `add`
+  call, and a three-parameter `clamp` helper feeding an `if` plus a second `Float64`/`Bool`
+  helper) passed on the first run, plus the C5.1b/C5.2b/C5.2c proofs re-run unchanged as
+  regressions. Validation: `cargo fmt`, `cargo clippy -D warnings`, scoped tests (`backend::`
+  18/18, new test 2/2, prior regressions 8/8), `exec_snapshots` 4/4 — full workspace suite not
+  re-run per the test-run-frequency policy. WP-C5.2d CLOSED; next is WP-C5.2e (trap path).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

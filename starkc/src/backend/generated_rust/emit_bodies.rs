@@ -1,4 +1,5 @@
-//! WP-C5.2c — pure rvalues, checked terminators, branches, switches, loops, and returns.
+//! WP-C5.2d — concrete instances, parameters, return destinations, and direct call
+//! continuations, on top of WP-C5.2c's arbitrary control flow.
 //!
 //! Arbitrary MIR control flow (any CFG shape, including cycles for loops) is emitted as a
 //! block-index dispatch loop: `let mut __bb: u32 = <entry>; loop { match __bb { 0 => { ... },
@@ -9,48 +10,75 @@
 //! "this is a loop" versus "this is a branch": both are just `__bb = target; continue;`.
 //!
 //! `Rvalue::Aggregate`/`Discriminant` (WP-C5.3), `Rvalue::RefOf` (not yet scheduled to a
-//! specific sub-WP), and `Terminator::Call`/`Drop`/`Trap` (WP-C5.2d/e) remain `Unsupported`.
+//! specific sub-WP), and indirect (`Callee::FnValue`) / runtime (`Callee::Runtime`) calls and
+//! `Drop`/`Trap` terminators (WP-C5.4c / WP-C5.2e / wherever `RuntimeFn` support lands) remain
+//! `Unsupported`.
 
-use super::{emit_places, emit_types, BackendDiagnostic};
+use super::{emit_places, emit_types, mangle, BackendDiagnostic};
 use crate::mir::{
-    CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand, Rvalue, Statement,
-    Terminator, TrapCategory,
+    Callee, CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand, Rvalue,
+    Statement, Terminator, TrapCategory,
 };
 
-/// Emits a function body for the WP-C5.2c-supported shape: zero parameters, every local
-/// `Return`/`Param`/`User`/`Temp`-kinded, every statement a `Nop` or an assignment whose
-/// `Rvalue` is `Use`/`UnOp`/`BinOp`/`LayoutQuery`, and every terminator `Goto`/`SwitchInt`/
-/// `Checked`/`Return`/`Unreachable`. Calls and Drop are WP-C5.2d/e.
-pub fn emit_body(body: &MirBody) -> Result<String, BackendDiagnostic> {
-    if !body.params.is_empty() {
-        return Err(BackendDiagnostic::Unsupported(
-            "WP-C5.2c supports only a zero-parameter entry body; parameters land in WP-C5.2d"
-                .into(),
-        ));
-    }
+/// A complete `fn name(params) -> ret { ... }` for an ordinary (non-entry) function. The entry
+/// instance is emitted separately, by `emit_program.rs`, as Rust's literal `fn main()` with the
+/// version-check prologue prepended -- `emit_block_body` is the shared piece both use.
+pub fn emit_function(body: &MirBody, name: &str) -> Result<String, BackendDiagnostic> {
+    let params = emit_param_list(body)?;
+    let ret_ty = emit_types::emit_ty(&body.ret)?;
+    let block = emit_block_body(body)?;
+    Ok(format!("fn {name}({params}) -> {ret_ty} {block}"))
+}
 
+fn emit_param_list(body: &MirBody) -> Result<String, BackendDiagnostic> {
+    let mut param_locals: Vec<Option<u32>> = vec![None; body.params.len()];
+    for (i, decl) in body.locals.iter().enumerate() {
+        if let LocalKind::Param(j) = decl.kind {
+            let slot = param_locals.get_mut(j as usize).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!(
+                    "Param index {j} out of range for a {}-parameter body",
+                    body.params.len()
+                ))
+            })?;
+            *slot = Some(i as u32);
+        }
+    }
+    let mut parts = Vec::with_capacity(body.params.len());
+    for (j, ty) in body.params.iter().enumerate() {
+        let local = param_locals[j].ok_or_else(|| {
+            BackendDiagnostic::Unsupported(format!("no local declares LocalKind::Param({j})"))
+        })?;
+        let rust_ty = emit_types::emit_ty(ty)?;
+        // `mut`: a parameter binding is immutable by default in Rust; MIR does not distinguish
+        // a reassignable parameter from any other local, so this matches every other local's
+        // uniform `let mut` treatment rather than trying to prove a parameter is never
+        // reassigned.
+        parts.push(format!("mut {}: {rust_ty}", emit_places::local_name(local)));
+    }
+    Ok(parts.join(", "))
+}
+
+/// Emits a function body for the WP-C5.2d-supported shape: every local `Return`/`Param`/`User`/
+/// `Temp`-kinded, every statement a `Nop` or an assignment whose `Rvalue` is `Use`/`UnOp`/
+/// `BinOp`/`LayoutQuery`, and every terminator `Goto`/`SwitchInt`/`Checked`/`Call` (direct only)/
+/// `Return`/`Unreachable`.
+pub fn emit_block_body(body: &MirBody) -> Result<String, BackendDiagnostic> {
     let mut out = String::from("{\n");
 
-    // Every local is declared `let mut`, DEFAULT-INITIALISED, up front. WP-C5.2b left locals
-    // genuinely uninitialised on the theory that rustc's definite-assignment analysis would
-    // catch a lowering-bug read-before-write -- true only for a single straight-line block.
-    // Once a body has more than one block (this WP), each `match __bb { N => { ... } }` arm is,
-    // from rustc's point of view, an independent branch of one ordinary match statement; it has
-    // no notion that arm 1 is only reachable after arm 0 already ran and assigned a local (that
-    // fact lives in the *data flowing through* `__bb`, which rustc does not track across
-    // `continue`). A real STARK program assigning `_4` in bb0 before reading it in bb1 was
-    // rejected by rustc as "used binding `_4` isn't initialized" (E0381) the first time this was
-    // tried against a real multi-block body, not a hypothetical concern. Default-initialising
-    // every local is the standard fix for this class of CFG-to-match-dispatch codegen and is
-    // what every block after the first now relies on; it trades away the free
-    // lowering-bug-catches-itself property WP-C5.2b noted, which MIR's own verifier (V-MOVE-1)
-    // remains responsible for instead.
+    // Every non-parameter local is declared `let mut`, DEFAULT-INITIALISED, up front (WP-C5.2c's
+    // record explains why default-initialisation, not left uninitialised, is required once a
+    // body has more than one block). `Param`-kinded locals are NOT re-declared here: they are
+    // already bound by the Rust function signature (`emit_param_list`), under the exact same
+    // `_N` name (`emit_places::local_name`); declaring them again here would shadow the actual
+    // argument with a fabricated default, so every parameter would read as its default value
+    // rather than the value passed in.
     for (i, decl) in body.locals.iter().enumerate() {
         match &decl.kind {
-            LocalKind::Return | LocalKind::Param(_) | LocalKind::User(_) | LocalKind::Temp => {}
+            LocalKind::Return | LocalKind::User(_) | LocalKind::Temp => {}
+            LocalKind::Param(_) => continue,
             other => {
                 return Err(BackendDiagnostic::Unsupported(format!(
-                    "WP-C5.2c supports only Return/Param/User/Temp locals; {other:?} lands \
+                    "WP-C5.2d supports only Return/Param/User/Temp locals; {other:?} lands \
                      alongside indexing/Drop lowering (WP-C5.3)"
                 )))
             }
@@ -130,6 +158,17 @@ fn emit_terminator(
             out.push_str(&format!("                {dest_place} = {expr};\n"));
             out.push_str(&format!("                __bb = {}; continue;\n", target.0));
         }
+        Terminator::Call {
+            callee,
+            args,
+            dest,
+            target,
+        } => {
+            let dest_place = emit_places::emit_place(dest)?;
+            let call_expr = emit_call(callee, args)?;
+            out.push_str(&format!("                {dest_place} = {call_expr};\n"));
+            out.push_str(&format!("                __bb = {}; continue;\n", target.0));
+        }
         Terminator::Return => {
             out.push_str(&format!(
                 "                break {};\n",
@@ -148,12 +187,33 @@ fn emit_terminator(
         }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "Terminator {other:?} has no WP-C5.2c representation yet -- Call/Drop/Trap land \
-                 in WP-C5.2d/e"
+                "Terminator {other:?} has no WP-C5.2d representation yet -- Drop/Trap land in \
+                 WP-C5.2e/C5.3"
             )))
         }
     }
     Ok(())
+}
+
+/// Direct calls only (`Callee::Instance`). Indirect calls through a function value
+/// (`Callee::FnValue`) are WP-C5.4c's job (function values as first-class values need the same
+/// representation decisions as everywhere else they appear, not a special case here); runtime
+/// calls (`Callee::Runtime`) land alongside whichever `RuntimeFn` group first gets lowered.
+fn emit_call(callee: &Callee, args: &[Operand]) -> Result<String, BackendDiagnostic> {
+    match callee {
+        Callee::Instance(instance) => {
+            let name = mangle::function_name_for_symbol(&instance.symbol);
+            let mut arg_exprs = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_exprs.push(emit_operand(arg)?);
+            }
+            Ok(format!("{name}({})", arg_exprs.join(", ")))
+        }
+        other => Err(BackendDiagnostic::Unsupported(format!(
+            "Callee {other:?} has no WP-C5.2d representation yet -- indirect calls land in \
+             WP-C5.4c, runtime calls land alongside their RuntimeFn support"
+        ))),
+    }
 }
 
 fn emit_rvalue(rvalue: &Rvalue) -> Result<String, BackendDiagnostic> {
