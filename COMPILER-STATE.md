@@ -1,17 +1,22 @@
 # STARK Compiler STATE
 Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5-ENTRY.md APPROVED (CD-042), WP-C5.1a
-CLOSED (CD-043), WP-C5.1b CLOSED (CD-044).** The owner's DEV-089 close-out directive was executed:
-user `Display` dispatch implemented in both engines, non-`Copy` array iteration and cross-file
-`const` use rejected in the front end, all validation green. The Gate C5 entry plan is approved at
-its recommended §19 choices; WP-C5.1a (representation decision) closed the `MirTy` matrix and host
-targets; WP-C5.1b (backend/runtime skeleton) delivered a working `starkc/src/backend/` +
-`starkc/stark-runtime/` and proved an empty `fn main() { }` compiles and runs as a real native
-executable on the primary target. Next: WP-C5.1c (Native Provider ABI v0.1 specification).
+CLOSED (CD-043), WP-C5.1b CLOSED (CD-044), WP-C5.1c DRAFTED pending owner CE4 review (CD-045).**
+The owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both
+engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all
+validation green. The Gate C5 entry plan is approved at its recommended §19 choices; WP-C5.1a
+(representation decision) closed the `MirTy` matrix and host targets; WP-C5.1b (backend/runtime
+skeleton) delivered a working `starkc/src/backend/` + `starkc/stark-runtime/` and proved an empty
+`fn main() { }` compiles and runs as a real native executable on the primary target; WP-C5.1c
+(Native Provider ABI v0.1) drafted the document plus a compile-time validator and mock fixtures,
+but **WP-C5.1 does not close until the owner reviews the document's actual design** (CD-042's
+blanket approval covered writing a v0.1 doc, not this doc's content). Next: owner CE4 review of
+`STARKLANG/docs/compiler/native-provider-abi-v0.1.md`.
 
 ## Position
 Gate: **C5 (native compilation) — OPEN, entry plan APPROVED (CD-042), WP-C5.1a CLOSED (CD-043),
-WP-C5.1b CLOSED (CD-044).** Gate **C4 CLOSED 2026-07-21** by owner directive, after the last
-blocker (DEV-089) was resolved rather than deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
+WP-C5.1b CLOSED (CD-044), WP-C5.1c DRAFTED pending owner CE4 review (CD-045).** Gate **C4 CLOSED
+2026-07-21** by owner directive, after the last blocker (DEV-089) was resolved rather than
+deferred. The full WP-C4.7 close-out landed in two directives: the first (CD-038/039/040)
 implemented DEV-086, deferred DEV-083, ratified surface revs 11/12, and refreshed the corpus to
 1.2.0; the second (this one) resolved DEV-089 and the two residual over-rejections. Final
 validation: workspace tests green, `cargo fmt` clean, `cargo clippy` clean on 1.93 and 1.97, corpus
@@ -1345,6 +1350,34 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   return-slot elaboration) — fixed to read `body.entry` specifically and require every other
   block be trivially dead, discovered by dumping real MIR rather than assumed. WP-C5.1b CLOSED;
   next is WP-C5.1c (Native Provider ABI v0.1 specification).
+
+- CD-045 [2026-07-21, WP-C5.1c] **Native Provider ABI v0.1 document DRAFTED (status `PROPOSED`)
+  with a compile-time validator and mock fixtures delivered; owner CE4 review of the document's
+  technical content is still open — this is NOT a closure entry.** CD-042 approved *writing* a
+  v0.1 ABI document as one of `WP-C5-ENTRY.md`'s recommended §19 choices; it did not pre-approve
+  this document's actual design, which is new substantive content drafted in this WP (the same
+  distinction WP-C4.1's `mir.md` draft-then-CE3-review-then-CD-028-approval sequence already
+  established as the pattern for this project — a design document is not self-approving just
+  because writing one was authorized). Full record: `STARKLANG/docs/compiler/
+  native-provider-abi-v0.1.md` (17/17 of §10.1's required points covered) and `STARKLANG/docs/
+  compiler/work-packages/WP-C5.1.md` §C5.1c. Delivered: the document itself; real `#[repr(C)]`
+  ABI types in `starkc/stark-runtime/src/provider_abi.rs` (`ResourceHandle`, `BorrowedBuffer`,
+  `BorrowedBufferMut`, `ProviderStatus`); a compile-time metadata validator in `starkc/src/
+  backend/provider_abi.rs` (`validate(&ProviderMetadata) -> Result<(), Vec<AbiViolation>>`,
+  returns every violation found, not just the first, matching the MIR verifier's own convention);
+  a fictional illustrative `example-kv` mock provider plus 6 deliberately-invalid fixtures, one
+  per violation class — 7/7 tests pass. No provider feature expansion beyond the document +
+  validator + fixtures (§10.2): no dynamic loading, no real `extern "C"` linkage, no file/network
+  provider implementation. **One cross-reference defect found and fixed before this entry was
+  written, not after:** the document's own §10.1-point citations drifted during drafting (three
+  headings cited the wrong point number against the entry plan's 17-item list — §10 cited "point
+  16" instead of 17, §15 cited "points 14 and 15" instead of "14 and 16", §16 cited "point 14"
+  instead of 15); caught by a deliberate grep-and-recount sweep against the source list before
+  commit, not by the owner. Validation: `cargo fmt`, `cargo clippy -D warnings`, full workspace
+  suite, and `exec_snapshots` all green. **WP-C5.1c: document/validator/fixtures DELIVERED; the
+  design itself awaits owner CE4 review before WP-C5.1 overall can close** (provider execution is
+  not required for the C5 MVP, so this blocks only the design-review checkbox, not
+  implementation).
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

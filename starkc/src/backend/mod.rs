@@ -4,4 +4,5 @@
 //! the §9.2 version-identity fields this compiler build contributes to every generated crate.
 
 pub mod generated_rust;
+pub mod provider_abi;
 pub mod version;

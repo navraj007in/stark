@@ -192,18 +192,70 @@ unaffected by the new workspace member.
 
 ## C5.1c — Native Provider ABI specification
 
-**Not started.** Deliverable: `STARKLANG/docs/compiler/native-provider-abi-v0.1.md` per §10.1, plus
-a compile-time ABI validator and mock provider metadata fixture per §10.2. No provider feature
-expansion.
+### Status: document DRAFTED and validator DELIVERED 2026-07-21 (CD-045) — **owner CE4 review of the document's content is still open.** Not the same as C5.1a/b's closure: CD-042 approved *writing* a v0.1 ABI document, not this document's actual technical content, which is new design surface drafted in this WP.
+
+Delivered per `WP-C5-ENTRY.md` §10:
+
+- **The ABI document** — `STARKLANG/docs/compiler/native-provider-abi-v0.1.md`, status
+  `PROPOSED`, covering all 17 required points from §10.1: provider identity/semver, integrity
+  hash/origin, target triples, capability declaration, the exported function table, the opaque
+  `ResourceHandle` (§7 of the doc), ownership transfer in both directions, the two borrowed-buffer
+  shapes, `ProviderStatus` error returns, the three-way distinction between provider error/STARK
+  trap/host failure, resource close/Drop semantics (exactly-one-close-function-per-resource-type),
+  the `may_block` declaration, the callback prohibition (enforced structurally — the closed
+  `AbiType` enum has no function-pointer variant, so a callback cannot be expressed, not merely
+  forbidden by convention), the three-check compiler/runtime/provider compatibility gate, and the
+  closed `AbiType` vocabulary that structurally forbids crossing an internal generated-Rust
+  aggregate (§10 of the doc — the same closure that rules out callbacks also rules this out, one
+  mechanism for two of §10.1's seventeen points).
+- **Runtime-side ABI types** — `starkc/stark-runtime/src/provider_abi.rs` now carries the real
+  `#[repr(C)]` definitions (`ResourceHandle`, `BorrowedBuffer`, `BorrowedBufferMut`,
+  `ProviderStatus`) a real provider implementation and a generated binary would both compile
+  against. No `extern "C"` linkage, dynamic loading, or invocation logic —§10.2 explicitly defers
+  those to the package that first needs a real provider.
+- **Compile-time metadata validator** — `starkc/src/backend/provider_abi.rs`:
+  `ProviderMetadata`/`FunctionDecl`/`AbiType`/`AbiViolation` plus `validate(&ProviderMetadata) ->
+  Result<(), Vec<AbiViolation>>`, checking every mechanically-checkable rule (ABI version,
+  non-empty target triples/capabilities, function↔capability reachability in both directions,
+  exactly-one-close-function-per-resource-type, and `is_close_for` referencing only a declared
+  resource type). Returns every violation found, matching the MIR verifier's own convention
+  (`starkc/src/mir/verify.rs`) rather than failing fast on the first one.
+- **Mock provider fixtures** — a fictional, illustrative `example-kv` key-value-store provider
+  (explicitly not a committed capability or tied to any real stdlib type) exercising a resource
+  handle, a paired open/close pair, and `BorrowedBuffer`-taking functions; one valid-provider test
+  and six deliberately-invalid fixtures (wrong ABI version, missing close function, two close
+  functions for one resource type, an unreachable capability, a function claiming an undeclared
+  capability, empty target-triples/capabilities), each asserting `validate` catches exactly that
+  violation. 7/7 pass.
+
+**No provider feature expansion beyond the document + validator + fixtures** — no dynamic loading,
+no real `extern "C"` calls, no file/network provider implementation. That is explicitly out of
+this WP's scope per §10.2.
+
+**What still needs owner action before this sub-WP is CLOSED (not before WP-C5.1 overall, since
+provider execution isn't required for the C5 MVP — see the C5.1 exit note below):** a CE4 review
+pass over the document's actual technical choices (the C-ABI-idiom error convention in §11 —
+status code + out-parameters, chosen specifically to avoid a hand-rolled unsafe tagged union;
+the no-borrowed-handle-in-v0.1 decision in §8; the closed `AbiType` vocabulary in §6/§10 as the
+mechanism enforcing both the callback prohibition and the no-aggregate-crossing rule) — the same
+draft-then-review pattern `mir.md` went through under CE3 (WP-C4.1, CD-028), not a rubber stamp.
+
+**Validation:** `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings` clean, full workspace suite green (0 failures), `cargo test --test
+exec_snapshots` green (4/4).
 
 ## C5.1 exit
 
-Not yet reached — C5.1c (Native Provider ABI v0.1 specification) is still open. Per
-`WP-C5-ENTRY.md` §14: CE4 decision recorded (done, CD-042), one verified empty/scalar MIR program
-becomes a standalone executable on both pinned targets (primary proven locally, secondary pending
-the next CI run — C5.1b), runtime/backend/compiler version checks demonstrated (C5.1b), no
-language semantics hidden in the runtime (C5.1b: `trap`/`value`/`provider_abi` are placeholders by
-design, not because logic was hidden elsewhere).
+**Not yet reached.** Per `WP-C5-ENTRY.md` §14's own checklist (CE4 decision recorded; one verified
+empty/scalar MIR program becomes a standalone executable on both pinned targets; runtime/backend/
+compiler version checks demonstrated; no language semantics hidden in the runtime), every item is
+technically satisfied by C5.1a/b. The blocker is narrower and self-imposed by the ABI document
+itself: `native-provider-abi-v0.1.md`'s own status line states "WP-C5.1 does not close until this
+is either approved as drafted or revised and re-reviewed" — a draft-then-CE4-review gate, the same
+pattern `mir.md` went through (WP-C4.1, CD-028), not a formality. Provider execution is not
+required for the C5 MVP (§10.2), so this is a documentation/design review blocker, not an
+implementation one.
 
-**C5.1a CLOSED 2026-07-21. C5.1b CLOSED 2026-07-21 (CD-044). Next: WP-C5.1c (Native Provider ABI
-v0.1 specification).**
+**C5.1a CLOSED 2026-07-21 (CD-043). C5.1b CLOSED 2026-07-21 (CD-044). C5.1c DRAFTED 2026-07-21 —
+document + validator + fixtures delivered, owner CE4 review of the document's technical content
+still open. WP-C5.1 overall: not yet closed, pending that review.**
