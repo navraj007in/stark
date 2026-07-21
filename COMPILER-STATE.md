@@ -19,6 +19,20 @@ shipped or executed against it). (4) DEV-095 (build-key completeness) is confirm
 until every semantic input affecting generated code is in the build key, with cache-invalidation
 tests.
 
+**CD-054 (owner directive, 2026-07-21).** The WP-C5.2 closure was reviewed and **approved**; three
+bounded corrections were required and made (the outcome comparison extracted into a testable
+`compare_outcomes` helper and driven with deliberately disagreeing triples; the "implements §15.1
+literally" claim replaced with the precise statement that it implements the §15.1 three-engine
+pipeline with normalised trap comparison, raw stderr byte equality being uncomparable because the
+HIR oracle has no canonical stderr format; and the full-workspace evidence completed —
+884 passed / 0 failed / 2 ignored across 52 binaries). **CE4 Amendment 1 is APPROVED at revision 3
+and applied in full**: the closed `AbiParam` model, the raw/owning handle split, and four new
+normative rules (consumed-handle error, output initialisation, close failure, physical ABI
+mapping). The close-function question was ruled: **exactly one parameter, the consumed handle,
+nothing else** — MIR's `Drop(place)` supplies no argument list, so a close with a second parameter
+is one generated code cannot call. ABI version stays `0.1`. No provider executes; §10.2's boundary
+is unchanged.
+
 Preceding context (unchanged): the
 owner's DEV-089 close-out directive was executed: user `Display` dispatch implemented in both
 engines, non-`Copy` array iteration and cross-file `const` use rejected in the front end, all
@@ -1781,6 +1795,80 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     than quietly overwritten, because "the number moved and nobody said why" is worse than the
     original error.
 
+- CD-054 [2026-07-21, CE4 Amendment 1 approved and implemented] **The owner approved revision 2's
+  design with five required changes, ruled the flagged close-function question, and directed that
+  the amendment, the approved ABI document, both implementation files, the fixtures and the
+  violation tests land in one commit. Done — CE4 Amendment 1 to Native Provider ABI v0.1 is
+  APPROVED (ABI version stays `0.1`) and applied.**
+
+  - **Approved from revision 2**: the closed `AbiParam` model; the fixed physical `ProviderStatus`
+    return; explicit output channels; typed borrowed/consumed/output handles; borrowed buffer
+    semantics; the `RawResourceHandle`/`OwnedResourceHandle` separation; owning handles being
+    non-`Clone`, non-`Copy` and without Rust `Drop`; version `0.1`; the corrected example-provider
+    shapes.
+
+  - **The close-function ruling.** A close function takes **exactly one parameter** —
+    `HandleConsumed { resource_type: rt }` — and nothing else. Revision 2's permissive reading
+    (additional pure inputs such as a `flush: Bool` allowed) is withdrawn. The reason is
+    architectural: **MIR's `Drop(place)` terminator supplies only the resource being dropped**, so
+    a close function with a second parameter is one the generated code cannot call — every extra
+    argument would have to be invented by the backend. The consequence is a design rule, not just
+    a validation rule: any flush/completion/fallible operation needing arguments must be a
+    separate provider function invoked BEFORE Drop.
+
+  - **Four new normative rules** (amendment §4.6-§4.9, landed as ABI doc §8, §11.1, §13.2, §6.1):
+    - **Consumed-handle error rule.** Ownership transfers at call ENTRY; a `HandleConsumed` value
+      is dead regardless of what `ProviderStatus` reports. Ownership returning on failure would
+      make a handle's liveness depend on a runtime value, so use-after-transfer could not be
+      decided by MIR verification and exactly-once close would stop being a static property. An
+      operation wanting ownership back on failure declares an explicit `HandleOut` (a *fresh*
+      handle, not a resurrected one) or borrows instead.
+    - **Output initialisation rule.** `ScalarOut`/`HandleOut` storage is uninitialised before the
+      call and valid only on success: allocate through `MaybeUninit`, never read or wrap on
+      failure, and validate a successful raw handle's resource type before constructing the owning
+      wrapper. `ScalarInOut`/`BufferInOut` stay caller-initialised and caller-owned across the
+      call. The asymmetry is the point — an `Out` slot is a promise kept only on success; an
+      `InOut` slot is the caller's own memory, lent for one call.
+    - **Close-failure rule.** A close function's nonzero status cannot become a recoverable
+      `Result::Err`, because a `Drop` terminator has no result destination. It is a distinct fatal
+      provider-close/host failure: abort without unwinding, do not retry, treat the handle as
+      consumed, run no further pending Drop glue. Recoverable work (flush/commit/sync) must be a
+      separate operation performed before close.
+    - **Physical ABI mapping.** Every `AbiParam` variant mapped to its exact C parameter, plus the
+      requirement that all raw↔owned conversions go through isolated reviewed boundary helpers,
+      never generated ad hoc field access. Two pairs are physically identical and deliberately
+      distinct in metadata: `ScalarOut`/`ScalarInOut` (both `*mut T`, differing in the
+      initialisation contract) and `HandleBorrowed`/`HandleConsumed` (both a raw handle by value,
+      differing in the ownership contract) — the C signature cannot carry either difference, which
+      is exactly why the declaration must.
+
+  - **Implemented in one commit**, per the directive: the ABI document updated (§6 rewritten, §6.1
+    /§11.1/§13.1/§13.2 added, §7/§8/§10/§12/§17/§18 amended, each marked *(amended, CD-054)*);
+    `starkc/src/backend/provider_abi.rs` (`ScalarTy`, `AbiParam`, `returns`-less `FunctionDecl`,
+    `HandleResourceTypeUndeclared` and `CloseFunctionShape`/`CloseShapeProblem` violations, and
+    the two new validator rules); `starkc/stark-runtime/src/provider_abi.rs` (the raw/owning split
+    and the three boundary helpers, with resource-type validation inside `from_raw_checked` so it
+    cannot be skipped by a call site that forgets it); and the fixtures rewritten to conform.
+    **`example-kv` now works as an example**: `kv_open` writes its handle into a `HandleOut`,
+    `kv_get` borrows the store and has somewhere to put the value it retrieves, and `kv_close`
+    consumes exactly one handle. Tests: 14 in the validator module, up from 7 — five new
+    negatives (an undeclared handle resource type, and one per close-shape problem: an extra
+    parameter, an added output, a borrowed rather than consumed handle, a consumed handle of the
+    wrong resource type) plus two new positives (ordinary operations borrow rather than consume;
+    every value result is an explicit output form) — and 3 in the runtime module.
+
+  - **What is NOT claimed.** No provider executes; §10.2's boundary is unchanged. Every rule in
+    the four new sections is a statement about code that does not exist yet — the validator, the
+    type definitions and the fixtures are what exist. The call-site generation that must obey the
+    output-initialisation and boundary-helper rules belongs to whichever package first makes a
+    provider execute. `WP-C5.1.md` records which four of its own C5.1c statements this
+    supersedes, rather than being silently edited.
+
+  - Validation: `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+    --all-features -- -D warnings` clean, **`cargo test --workspace` green: 894 passed / 0 failed
+    / 2 ignored across 52 test binaries** (up from 884 — the seven new validator tests and three
+    new runtime tests).
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
@@ -2019,17 +2107,13 @@ evidence in the C0/C1/C2 exit reports.
       begin aggregate or Drop-bearing native generation** until every semantic input affecting
       generated code is in the build key AND covered by cache-invalidation tests. This is an
       entry condition on the package, not a task inside it.
-- [ ] **Native Provider ABI v0.1 — CE4 amendment 1, REVISION 2, awaiting owner decision
-      (CD-052 raised, CD-053 directed the revision)**:
-      `STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md`. Revision 1 was **not
-      approved**; its principles were, and revision 2 additionally resolves the four omitted
-      issues (buffers are borrowed call-duration views, not ownership transfer; ordinary resource
-      operations need a non-consuming borrowed-handle form; every handle parameter/output names
-      its declared resource type; direction and ownership are separated into a closed `AbiParam`
-      enum instead of a `Direction × AbiType` product). ABI version stays `0.1`. **Neither
-      `provider_abi.rs` changes until revision 2 is approved.** One discretionary reading is
-      flagged in §4.4 for the owner to rule on (may a close function take additional pure
-      inputs?).
+- [x] **Native Provider ABI v0.1 — CE4 Amendment 1. CLOSED 2026-07-21, CD-054**: approved at
+      revision 3 and applied in full (ABI document, both `provider_abi.rs` files, fixtures,
+      violation tests). Revision 1 was not approved; revision 2's design was approved with five
+      required changes; revision 3 incorporates them. The close-function question was ruled —
+      exactly one parameter, the consumed handle, nothing else, because MIR's `Drop(place)`
+      supplies no argument list. ABI version stays `0.1`. Record:
+      `STARKLANG/docs/compiler/native-provider-abi-v0.1-CE4-amendment-1.md`.
 - [x] DEV-060: dispose before C3 workload freeze (C3-ENTRY blocker). **Closed 2026-07-19,
       CD-024 — fixed in `borrowck.rs::method_receiver`.**
 Completed follow-ups through Gate C2 are archived verbatim in the state-archive file.

@@ -1,22 +1,22 @@
-# Native Provider ABI v0.1 — CE4 Amendment 1 (PROPOSED, revision 2)
+# Native Provider ABI v0.1 — CE4 Amendment 1 (APPROVED, revision 3)
 
-**Status**: PROPOSED, revision 2 — resubmitted for owner CE4 decision. Nothing in this document
-has been applied; `starkc/src/backend/provider_abi.rs` and `starkc/stark-runtime/src/
-provider_abi.rs` are unchanged, per the owner's direction that neither implementation changes
-before this amendment is approved.
+**Status**: **APPROVED** — CE4 Amendment 1 to Native Provider ABI v0.1, approved by the owner
+2026-07-21 under CD-054, conditional on the required changes recorded in §0.1, which revision 3
+incorporates. The approved ABI document and both implementation files are updated in the same
+commit that records this approval.
 **Raised**: 2026-07-21, from external review of head `37828a07`.
-**Revised**: 2026-07-21, on owner direction (CD-053) — revision 1 was **not approved** in its
-submitted form.
+**Revised**: revision 2 on owner direction (CD-053, revision 1 not approved); revision 3 on owner
+direction (CD-054 — revision 2's design approved *with required changes*).
 **Amends**: `STARKLANG/docs/compiler/native-provider-abi-v0.1.md` (approved CD-046).
 **Affects**: `starkc/src/backend/provider_abi.rs`, `starkc/stark-runtime/src/provider_abi.rs`.
 **ABI version**: stays **`0.1`** (owner decision — nothing has shipped or executed against this
-ABI, so correcting a pre-execution contract is an amendment, not a version bump). This document
-is the record of CE4 Amendment 1 to v0.1.
-**Recorded in**: `COMPILER-STATE.md` CD-052 (raised), CD-053 (owner direction and this revision).
+ABI, so correcting a pre-execution contract is an amendment, not a version bump).
+**Recorded in**: `COMPILER-STATE.md` CD-052 (raised), CD-053 (revision 2), CD-054 (this revision
+and its approval).
 
 ---
 
-## 0. What changed in revision 2
+## 0. Revision history
 
 Revision 1 raised two contradictions and recommended fixes. The owner approved the *principles*
 but rejected the *shape*, because revision 1 left four issues unresolved and its recommended
@@ -38,6 +38,26 @@ verbatim, resolves the four omissions, and replaces the recommended model.
 
 Revision 1's Item 3 (a dangling `§12` cross-reference that should read `§13`) is editorial, was
 approved, and is carried forward unchanged in §6 below.
+
+### 0.1 What changed in revision 3 (owner-required, CD-054)
+
+Revision 2's design was approved — the closed `AbiParam` model, the fixed physical
+`ProviderStatus` return, explicit output channels, typed borrowed/consumed/output handles,
+borrowed buffer semantics, the `RawResourceHandle`/`OwnedResourceHandle` separation, owning
+handles being non-`Clone`/non-`Copy`/no-`Drop`, ABI version `0.1`, and the corrected
+example-provider shapes. Five changes were required before approval could be recorded, and are
+incorporated here:
+
+1. **The flagged close-function question is ruled.** A close function takes **exactly one
+   parameter** — the consumed handle — and nothing else (§4.4). Revision 2's permissive reading
+   (additional pure inputs allowed) is withdrawn.
+2. **Consumed-handle error rule** — new §4.6.
+3. **Output initialisation rule** — new §4.7.
+4. **Close-failure rule** — new §4.8.
+5. **Physical ABI mapping** — new §4.9, including the requirement that all raw↔owned conversions
+   go through isolated reviewed boundary helpers rather than generated ad hoc field access.
+
+---
 
 ---
 
@@ -324,37 +344,39 @@ pub enum AbiViolation {
 /// collapsed into one string, so a violation says what to fix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloseShapeProblem {
-    /// No `HandleConsumed` parameter at all -- e.g. the handle is declared `HandleBorrowed`,
-    /// which would close a resource the caller still believes it owns.
-    NoConsumedHandle,
-    /// More than one `HandleConsumed` parameter.
-    MultipleConsumedHandles,
+    /// The function does not take exactly one parameter. A close function's whole signature is
+    /// the resource being closed -- see the rule below for why this is architectural.
+    NotExactlyOneParameter { found: usize },
+    /// The single parameter is not a `HandleConsumed` -- e.g. it is `HandleBorrowed`, which
+    /// would close a resource the caller still believes it owns.
+    ParameterIsNotAConsumedHandle,
     /// The consumed handle's resource type is not the one `is_close_for` names.
     ConsumedHandleWrongResourceType { found: String },
-    /// A handle parameter of some other form is also present (`HandleBorrowed`/`HandleOut`).
-    ExtraHandleParam,
-    /// An output-bearing parameter is present (`ScalarOut`/`ScalarInOut`/`BufferInOut`).
-    HasValueOutput,
 }
 ```
 
-**The close-function rule (owner direction).** A function with `is_close_for: Some(rt)` must have:
+**The close-function rule (owner ruling, CD-054).** A function with `is_close_for: Some(rt)` must
+take **exactly one parameter**:
 
-- **exactly one** `HandleConsumed { resource_type }` parameter, whose `resource_type == rt`;
-- **no other handle parameter** of any form (no second consumed handle, no borrowed handle, no
-  `HandleOut`);
-- **no ordinary value output** — no `ScalarOut`, no `ScalarInOut`, no `BufferInOut`.
+```rust
+HandleConsumed { resource_type: rt }
+```
 
-Its only result is the `ProviderStatus` every function returns. A close that could also hand back
-a value would be a close that is also something else, and the "exactly once" reasoning in §13
-depends on close being nothing else.
+No additional scalar, buffer, handle, or output parameter of any kind. Its only result is the
+`ProviderStatus` every function returns.
 
-> **One discretionary reading, flagged for the owner rather than assumed.** The rule above permits
-> a close function to take additional *pure inputs* (`ScalarIn`, `BufferIn`) — e.g. a
-> `flush: Bool`. That is consistent with the letter of the direction (which constrains consumed
-> handles and outputs, not inputs), but it is an inference, not something the direction stated.
-> If close must take the handle and nothing else, say so and the rule tightens to "exactly one
-> parameter".
+The reason is architectural rather than stylistic, and it is worth stating because the permissive
+reading revision 2 floated (allow pure inputs like `flush: Bool`) looks harmless until you ask who
+would supply them. **MIR's `Drop(place)` terminator supplies only the resource being dropped.**
+There is no argument list at a drop site and no place to put one — the drop is implicit in the
+STARK program's control flow, not a call the programmer wrote. A close function with a second
+parameter is therefore a function the generated code *cannot call*: every additional argument
+would have to be invented by the backend out of nothing.
+
+The consequence is a design rule, not just a validation rule: **any flush option, completion mode,
+or other fallible operation that needs arguments must be a separate, explicitly invoked provider
+function, called before Drop.** That is also the only way such an operation can report failure
+usefully — see §4.8, where a close function's own failure has nowhere to go.
 
 ### 4.5 The §17 fixtures, corrected
 
@@ -373,9 +395,109 @@ a declared destination; `kv_get`'s retrieved value now has somewhere to go; `kv_
 longer consume the store they operate on; `kv_close` consumes it exactly once, and the validator
 can now say so.
 
-Two new invalid fixtures accompany the two new violation classes (one handle naming an undeclared
-resource type; one close function with an extra output), matching §17's existing
-one-fixture-per-violation-class discipline.
+New invalid fixtures accompany each new violation class — a handle naming an undeclared resource
+type, and one per `CloseShapeProblem` variant (a close taking a second parameter, a close whose
+single parameter is `HandleBorrowed` rather than `HandleConsumed`, and a close consuming the wrong
+resource type) — matching §17's existing one-fixture-per-violation-class discipline.
+
+### 4.6 Consumed-handle error rule (owner-required, CD-054)
+
+**Ownership transfers at provider-call entry.** A `HandleConsumed` value is dead to generated
+STARK code the moment the call is made — *regardless of what `ProviderStatus` reports*. There is
+no "the call failed, so you still own it" path.
+
+This is the only rule that makes the consumed form analysable at all. The alternative — ownership
+returning to the caller on failure — would make a handle's liveness depend on a runtime value, so
+whether a later use is a use-after-transfer could not be decided by MIR verification, only
+observed at runtime. Exactly-once close would stop being a static property.
+
+An operation that wants ownership back on failure must say so structurally, and has two ways to:
+
+- declare an explicit `HandleOut` channel, so a failed call can hand back a *fresh* owned handle
+  (a new value, not the resurrection of a dead one); or
+- take the handle as `HandleBorrowed`, so ownership never moved and the question does not arise.
+
+The second is the right answer for almost every operation. `HandleConsumed` should be rare: close,
+and operations that genuinely end a resource's life.
+
+### 4.7 Output initialisation rule (owner-required, CD-054)
+
+`ScalarOut` and `HandleOut` storage is **uninitialised before the call** and **valid only when
+`ProviderStatus` reports success**. Generated code must:
+
+- allocate the raw output slot through `MaybeUninit` — never a fabricated zero value, which would
+  be indistinguishable from a real result the provider wrote;
+- **never read or wrap it on failure**, and never run any conversion over it;
+- for `HandleOut`, **validate the returned raw handle's `resource_type` against the declared
+  resource type before constructing the owning wrapper** (§4.9's boundary helper is where this
+  check lives, so it cannot be skipped by a code path that forgets it). A mismatch is a provider
+  contract violation — a STARK trap per §12's middle row, not a provider error.
+
+`ScalarInOut` and `BufferInOut` are different and stay different: both are **caller-initialised
+and caller-owned across the call**. The provider reads and may overwrite them; it never allocates
+them, and their validity does not depend on the status code.
+
+The asymmetry is the point. An `Out` slot is a promise the provider only keeps on success; an
+`InOut` slot is the caller's own memory, lent for the duration of the call.
+
+### 4.8 Close-failure rule (owner-required, CD-054)
+
+**A close function's nonzero `ProviderStatus` cannot become a recoverable `Result::Err`.** MIR's
+`Drop` terminator has no result destination — there is no place in the STARK program for the value
+to land, because the program never wrote the call. §12's first row (provider error → recoverable
+`Result::Err`) therefore does not apply to close, and this is the one place where a nonzero status
+is not an ordinary expected failure.
+
+Treat it as a distinct **fatal provider-close/host failure**:
+
+- **abort without unwinding** (`WP-C5-ENTRY.md` §7.7's trap discipline);
+- **do not retry close** — the handle's state after a failed close is undefined by this ABI;
+- **consider the handle consumed** regardless (§4.6 applies to close like any other consuming
+  call);
+- **do not run further pending Drop glue** — the same rule a trap already follows, and for the
+  same reason: once a close has failed, the runtime's resource invariants can no longer be
+  trusted, so continuing to close *other* resources is guesswork.
+
+Explicit recoverable work — flushing, committing, syncing, anything whose failure the program
+should be able to handle — must be a **separate provider operation performed before close**, where
+its status has somewhere to go. This is the same conclusion §4.4's ruling reaches from the other
+direction: close takes no arguments *and* returns nothing recoverable, so anything that needs
+either is not close.
+
+### 4.9 Physical ABI mapping (owner-required, CD-054)
+
+Every `AbiParam` variant maps to exactly one C ABI parameter. Stated explicitly so no
+implementation has to infer it:
+
+| `AbiParam` variant | C ABI parameter |
+|---|---|
+| `ScalarIn(T)` | `T` |
+| `ScalarOut(T)` | `*mut T` |
+| `ScalarInOut(T)` | `*mut T` |
+| `BufferIn` | `BorrowedBuffer` |
+| `BufferInOut` | `BorrowedBufferMut` |
+| `HandleBorrowed { .. }` | `RawResourceHandle` (boundary-confined) |
+| `HandleConsumed { .. }` | `RawResourceHandle` (boundary-confined) |
+| `HandleOut { .. }` | `*mut RawResourceHandle` |
+| *physical function return* | `ProviderStatus` |
+
+Two observations this table makes plain, both intentional:
+
+- **`ScalarOut` and `ScalarInOut` are physically identical** (`*mut T`). Their difference is a
+  *contract* difference (§4.7: uninitialised-and-valid-only-on-success vs. caller-initialised),
+  not a representational one. That is exactly why they are separate `AbiParam` variants rather
+  than one — the metadata carries a distinction the C signature cannot.
+- **`HandleBorrowed` and `HandleConsumed` are also physically identical** (a `RawResourceHandle`
+  by value). Their difference is the ownership contract (§4.6). A provider author reading only
+  the C signature cannot tell them apart; the declaration is what says which it is, and the
+  validator is what enforces it.
+
+**Boundary-helper requirement.** All raw→owned and owned→raw conversions must go through the
+isolated, reviewed boundary helpers in `stark-runtime` — never through generated ad hoc field
+access on `RawResourceHandle`. Generated code must not read or write `id`/`resource_type`
+directly. This is what keeps the unsafe-adjacent surface reviewable: the resource-type validation
+of §4.7, and the "confined to the boundary" property of the raw form, are both properties of a
+small named set of helpers rather than of every generated call site.
 
 ---
 
@@ -384,14 +506,16 @@ one-fixture-per-violation-class discipline.
 | § | Change |
 |---|---|
 | §6 | `FunctionDecl` loses `returns`; `params` becomes `Vec<AbiParam>`; `AbiType` is replaced by `AbiParam` + `ScalarTy` |
-| §7 | "may copy it, pass it, store it, and drop it" corrected — the owning form is non-`Copy`, non-`Clone`, and has no Rust `Drop`; the raw `Copy` form is boundary-confined; "constructed only as a provider function's return value" becomes "written only into a `HandleOut` parameter" |
-| §8 | buffers removed from the ownership rules (§3.1); the borrowed-handle prohibition lifted (§3.2); the `§12` cross-reference corrected to `§13` (§6 below) |
+| §6.1 (new) | the physical ABI mapping table (§4.9) and the boundary-helper requirement |
+| §7 | "may copy it, pass it, store it, and drop it" corrected — the owning form is non-`Copy`, non-`Clone`, and has no Rust `Drop`; the raw `Copy` form is boundary-confined; "constructed only as a provider function's return value" becomes "written only into a `HandleOut` parameter, through the boundary helper, after resource-type validation" |
+| §8 | buffers removed from the ownership rules (§3.1); the borrowed-handle prohibition lifted (§3.2); the consumed-handle error rule added (§4.6); the `§12` cross-reference corrected to `§13` (§6 below) |
 | §9 | unchanged in substance; §8 no longer contradicts it |
 | §10 | the closed-vocabulary statement restated over `AbiParam`/`ScalarTy`; `ProviderStatus` is named as the fixed return rather than a member of the type vocabulary |
-| §11 | unchanged in substance — this amendment makes the model match what §11 already required; the rationale paragraph stands as written |
-| §13 | the close-function rule gains the shape requirement (§4.4); the exactly-once obligation is stated as belonging to verified MIR, with the no-Rust-`Drop` consequence (principle 5) |
-| §17 | `valid_example_kv` rewritten (§4.5); two new invalid fixtures; the validator's rule list updated |
-| §18 | the "what may generated code do with it" and "how does a provider report success vs. failure" questions re-answered against the revised model |
+| §11 / §11.1 (new) | the output initialisation rule added as §11.1 (§4.7); the existing rationale paragraph stands as written |
+| §12 | gains the close-failure exception — a failed close is the fatal provider-close/host failure of §13.2, not the table's first (recoverable) row |
+| §13 / §13.1 / §13.2 (new) | the close-function shape rule as §13.1 (§4.4) and the close-failure rule as §13.2 (§4.8); the exactly-once obligation stated as belonging to verified MIR, with the no-Rust-`Drop` consequence |
+| §17 | `valid_example_kv` rewritten (§4.5); new invalid fixtures per new violation class; the validator's rule list updated |
+| §18 | the "what may generated code do with it", "how does a provider report success vs. failure", and "what must be true about a resource type's close function" questions re-answered against the revised model |
 
 ---
 
@@ -403,17 +527,25 @@ failure". The pointer reads §13 after this amendment.
 
 ---
 
-## 7. What is being asked of the owner
+## 7. Approval and implementation
 
-1. **Approve the revised parameter model** (§4.1/§4.2) — the closed `AbiParam` enum covering the
-   seven enumerated forms, replacing revision 1's rejected `Direction × AbiType` product.
-2. **Approve the revised runtime types** (§4.3) — the `RawResourceHandle` (`Copy`, boundary-only)
-   / `OwnedResourceHandle` (non-`Copy`, non-`Clone`, no `Drop`) split.
-3. **Approve the close-function rule** (§4.4), and rule on the single flagged discretionary
-   reading: may a close function take additional pure inputs, or exactly the consumed handle and
-   nothing else?
-4. **Confirm the §8 corrections** (§3.1 buffers, §3.2 borrowed handles) and the §5 edit list.
+Approval is recorded in the header: **CE4 Amendment 1 to Native Provider ABI v0.1, APPROVED
+2026-07-21 (CD-054)**, conditional on the §0.1 changes, which this revision incorporates. Nothing
+in this amendment remains open for decision.
 
-On approval, the edits land in `native-provider-abi-v0.1.md` and both `provider_abi.rs` files in
-one pass, with the §17 fixtures rewritten and the two new violation classes covered by tests.
-Until then, neither implementation changes.
+Implementation lands in a single commit, per the owner's direction:
+
+1. `native-provider-abi-v0.1.md` updated per §5's edit list (the ABI document remains the
+   normative contract; this amendment is the record of *why* it changed);
+2. `starkc/src/backend/provider_abi.rs` — `ScalarTy`, `AbiParam`, the `returns`-less
+   `FunctionDecl`, the new violation classes, and the validator rules of §4.4;
+3. `starkc/stark-runtime/src/provider_abi.rs` — the `RawResourceHandle`/`OwnedResourceHandle`
+   split and the §4.9 boundary helpers, which are the only sanctioned raw↔owned conversions;
+4. §17's fixtures rewritten to conform, with one negative fixture per violation class.
+
+Note on scope, unchanged from revision 1: no provider executes in the C5 MVP (§17, per
+`WP-C5-ENTRY.md` §10.2). This amendment corrects a contract *before* anything is built against
+it — which is why it is cheap now and why every rule in §4.6-§4.9 is a statement about code that
+does not exist yet. The validator, the type definitions, and the fixtures are what exist; the
+call-site code generation that must obey §4.7 and §4.9 belongs to whichever package first makes a
+provider execute.

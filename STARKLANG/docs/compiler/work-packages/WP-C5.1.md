@@ -247,6 +247,29 @@ Document status flipped `PROPOSED` → `APPROVED`.
 --all-features -- -D warnings` clean, full workspace suite green (0 failures), `cargo test --test
 exec_snapshots` green (4/4).
 
+### Superseded in part by CE4 Amendment 1 (CD-054, 2026-07-21)
+
+The C5.1c record above is left as written, because it is the accurate record of what was built and
+approved at the time. Four of its statements no longer describe the current contract, and are
+corrected here rather than edited in place:
+
+- **`AbiType` no longer exists.** It is replaced by `AbiParam` (a closed parameter vocabulary) plus
+  `ScalarTy`. The callback prohibition and the no-aggregate-crossing rule are still enforced
+  structurally, by the closure of `AbiParam` instead of `AbiType`.
+- **`FunctionDecl` has no `returns` field.** The physical return is always `ProviderStatus`, which
+  is what §11 required all along — the old model could not express that convention, and the
+  validator's own "valid" fixture violated it.
+- **`ResourceHandle` is now a raw/owning pair** — `RawResourceHandle` (`Copy`, boundary-confined)
+  and `OwnedResourceHandle` (not `Copy`, not `Clone`, no Rust `Drop`).
+- **The "no borrowed handle in v0.1" decision in §8 is reversed.** Consuming-only handles made this
+  document's own `example-kv` fixture unusable after a single `kv_get`; ordinary operations now
+  borrow.
+
+The CD-046 review approved the document as drafted; CD-052's external review then found the
+contradictions the review had not, which is worth recording plainly rather than leaving the
+"approved as drafted, no changes required" line to stand alone. See
+`native-provider-abi-v0.1-CE4-amendment-1.md` for the full record.
+
 ## C5.1 exit
 
 **Reached 2026-07-21.** Per `WP-C5-ENTRY.md` §14's checklist: CE4 decision recorded (CD-042 for
