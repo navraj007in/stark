@@ -1070,6 +1070,95 @@ fn main() {
 "#
 );
 
+// DEV-100 (CD-068): a layout query inside a GENERIC body. Its ordinary composition of two
+// capabilities C5 already has -- monomorphised generic functions and layout queries -- previously
+// diverged: MIR and native answered (they monomorphise) while the HIR oracle refused, because the
+// oracle had no generic type substitution at all. The checker sees a generic body ONCE with
+// `Ty::Param`, so there is no per-instantiation answer to precompute; the oracle now installs the
+// call site's instantiation and substitutes at the query.
+//
+// The divergence was newly VISIBLE rather than newly created: before WP-C5.3e both engines
+// answered a hardcoded 8 and agreed by being equally wrong.
+
+three_engine_test!(
+    layout_query_in_a_generic_body_agrees,
+    "layout_generic",
+    completes,
+    r#"fn layout<T>() -> UInt64 {
+    size_of::<T>()
+}
+fn alignment<T>() -> UInt64 {
+    align_of::<T>()
+}
+fn main() {
+    assert_eq(layout::<Int32>(), 4);
+    assert_eq(layout::<Int64>(), 8);
+    assert_eq(layout::<Bool>(), 1);
+    assert_eq(alignment::<Int64>(), 8);
+    assert_eq(alignment::<Bool>(), 1);
+}
+"#
+);
+
+// Substitution must recurse, not just swap a bare `Ty::Param`: an array of `T`, a tuple over `T`,
+// a generic nominal `Pair<T>`, and `Option<T>` are the holes that open immediately otherwise.
+three_engine_test!(
+    layout_query_substitutes_through_composite_types,
+    "layout_generic_nested",
+    completes,
+    r#"struct Pair<T> { a: T, b: T }
+fn array_size<T>() -> UInt64 {
+    size_of::<[T; 4]>()
+}
+fn pair_size<T>() -> UInt64 {
+    size_of::<Pair<T>>()
+}
+fn tuple_size<T>() -> UInt64 {
+    size_of::<(T, Int8)>()
+}
+fn option_size<T>() -> UInt64 {
+    size_of::<Option<T>>()
+}
+fn main() {
+    assert_eq(array_size::<Int32>(), 16);
+    assert_eq(array_size::<Int8>(), 4);
+    assert_eq(pair_size::<Int32>(), 8);
+    assert_eq(pair_size::<Int64>(), 16);
+    assert_eq(tuple_size::<Int8>(), 2);
+    assert_eq(tuple_size::<Int32>(), 8);
+    assert_eq(option_size::<Int32>(), 8);
+    assert_eq(option_size::<Int64>(), 16);
+}
+"#
+);
+
+// A generic body calling ANOTHER generic body: the inner frame must be the inner call's
+// instantiation, and the outer one must be restored when it returns. A stack that pushed without
+// popping, or resolved against the outermost frame, gives the wrong answer here rather than an
+// error -- which is why the two instantiations are interleaved and re-checked after the call.
+three_engine_test!(
+    nested_and_repeated_instantiations_each_see_their_own_frame,
+    "layout_generic_nested_calls",
+    completes,
+    r#"fn inner<T>() -> UInt64 {
+    size_of::<T>()
+}
+fn outer<T>() -> UInt64 {
+    let mine: UInt64 = size_of::<T>();
+    let theirs: UInt64 = inner::<Int8>();
+    let mine_again: UInt64 = size_of::<T>();
+    assert_eq(mine, mine_again);
+    mine * 100 + theirs
+}
+fn main() {
+    // Two different instantiations of the SAME generic body in one execution.
+    assert_eq(outer::<Int32>(), 401);
+    assert_eq(outer::<Int64>(), 801);
+    assert_eq(inner::<Int16>(), 2);
+}
+"#
+);
+
 // The trap side of indexing: out of bounds must trap, with the same category and the same source
 // location, in all three engines. Both ends of the range, since an off-by-one in the bounds check
 // would pass one and fail the other.

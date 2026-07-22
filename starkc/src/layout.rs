@@ -108,7 +108,7 @@ pub enum Scalar {
 ///   changes, which is an observable change to programs;
 /// - `compiler_layout_revision` is the implementation's revision — bumped when this compiler's
 ///   realisation of the same contract changes without changing any declared value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct LayoutIdentity {
     pub target_contract: String,
     pub layout_contract_version: u32,

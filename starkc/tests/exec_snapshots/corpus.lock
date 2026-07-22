@@ -12,7 +12,14 @@
 # methods, trait default + override, a cross-file Drop, and source provenance; its `helper.stark`
 # is a corpus FILE but not a CASE, having no `main`) and extends the array/slice case with
 # DEV-086's consuming array pattern over droppable elements. All 1.0.0 hashes remain unchanged.
-corpus_version = 1.2.0
+# corpus_version 1.3.0 (WP-C5.3e, 2026-07-23, CD-067/CD-069): RE-PIN, not new coverage. The
+# layout-query lines of option_result__03_box_and_layout_queries recorded the pre-contract
+# placeholder — size_of::<Int32>() = 8, align_of::<Bool>() = 8 — from when every consumer answered
+# one machine word for every type. Under the named target contract `stark-64-v1` they are 4 and 1.
+# Exactly one file changes and exactly two output lines within it; every other 1.0.0/1.1.0/1.2.0
+# hash is unchanged, so the original baseline survives byte-identically everywhere else. MIR
+# amendment A4 predicted this re-pin as the cost of its option (b).
+corpus_version = 1.3.0
 base_commit = 7a7b3e00bed8dcac47efced56e36456e7e69c5ec
 file_count = 61
 #
@@ -51,7 +58,7 @@ bb112acf315a767144b3aa351cd0a9a2f866e096ed1383ef5bc8c19260283474  multi_file__01
 9e3839eda381de6084bb7d8fbb35ebe1f0a1e8818d6272d2db980035f240a5b4  option_result__01_option_construction_and_match.stark
 d98dd4222f3b87a92833e1360e94a7f40d970c5319968bab76b31e29a0c3cce5  option_result__02_result_and_try_propagation.snap
 7214656a2d65f9224e634d57d096693009ed3f65a1881ff31f211964e3bef2e3  option_result__02_result_and_try_propagation.stark
-6f89e34513f450e74ba5e17f02ffdb264d91e7cf682dddafc2655a36f144fba4  option_result__03_box_and_layout_queries.snap
+8a343a631e47a50d90b3a73bcd2e6311d6aabf7ea3e59da29fc2ba18c17b34e9  option_result__03_box_and_layout_queries.snap
 108015fa14b92b3cf63cd1b6b562807bccb07f04ba78475350a15e3efe48b1a2  option_result__03_box_and_layout_queries.stark
 72ba49dceb3edddc38f546c51e881130fbc31c31a2599d94ce8883eae59b8336  ownership_drop__01_move_and_drop_order.snap
 9e45dfeee2b331bc2fe3ace01814ab44991bcc00660b77f8a9acd0dd2893ad57  ownership_drop__01_move_and_drop_order.stark

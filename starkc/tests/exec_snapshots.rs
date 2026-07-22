@@ -117,9 +117,16 @@ fn corpus_lock_matches_frozen_snapshot() {
     // pattern folded into the array/slice case. All 48 hashes from 1.0.0 remain unchanged across
     // both bumps, so the original baseline survives byte-identically and comparisons against it
     // stay valid.
+    // 1.2.0 → 1.3.0 (WP-C5.3e, 2026-07-23, CD-067/CD-069): a RE-PIN rather than new coverage, and
+    // the first bump that changes an existing expectation instead of adding cases. The layout
+    // lines of `option_result__03_box_and_layout_queries` recorded the pre-contract placeholder —
+    // every consumer answered one machine word for every type — so `size_of::<Int32>()` was 8 and
+    // `align_of::<Bool>()` was 8. Under the named target contract `stark-64-v1` they are 4 and 1.
+    // One file, two output lines; every other hash from 1.0.0 onward is untouched. MIR amendment
+    // A4 predicted this re-pin as the cost of its option (b).
     assert_eq!(
         version.as_deref(),
-        Some("1.2.0"),
+        Some("1.3.0"),
         "corpus.lock corpus_version changed without updating this assertion (freeze governance)"
     );
 

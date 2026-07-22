@@ -701,20 +701,63 @@ missing gap. Rewritten on `(Int8, Int32, Int8)` — 12 correct, 8 mutant.
 **DEV-099 fixed as a prerequisite**: `hir_field_ty` now handles an array type, so
 `size_of::<[Int32; 4]>()` lowers. It previously died with "field type form (C4.5)".
 
-### DEV-100 — an engine divergence this work exposed
+### DEV-100 — fixed (CD-068), not deferred
 
-`size_of::<T>()` inside a generic body: MIR and native answer correctly (monomorphised); the oracle
-refuses. **The HIR oracle has no generic type substitution at all** — no `param_subst`, no
-`Ty::Param` handling anywhere — and the checker records one answer per query expression, while a
-generic body is checked once with `Ty::Param`.
+`size_of::<T>()` inside a generic body diverged: MIR and native answered (they monomorphise), the
+oracle refused. Root cause was broader than the query — **the HIR oracle had no generic type
+substitution at all**.
 
-The divergence is newly *visible*, not newly created: both engines previously answered a hardcoded
-8 and agreed by being equally wrong. Not reachable from the frozen matrix (all concrete types), but
-it is an engine divergence under the charter's six-clause rule and needs an owner disposition.
+The owner refused deferral on the grounds that this is the ordinary COMPOSITION of two capabilities
+C5 already has, and that A4 states a generic layout query is instantiated with the active
+substitution. Its absence from the frozen matrix meant the matrix was incomplete for the
+interaction, not that the interaction was out of scope.
+
+**What was added.** `Interpreter::generic_frames`, a stack of call-time substitutions behind an
+RAII guard, pushed from the checker's `generic_insts` paired with the callee's own parameter names
+and popped on every path including traps. It carries type substitutions and nothing else — no body
+specialisation, no effect on value execution, no inference. A missing entry or arity mismatch
+installs nothing, so the query fails as an unsubstituted parameter rather than answering from a
+partial frame; a surviving `Ty::Param` is an oracle defect, never a fallback layout. Substitution
+recurses through tuples, arrays, references, nominal arguments, core parameterised types and
+function types — handling only a bare `Ty::Param` would leave `size_of::<[T; 4]>()` and
+`size_of::<Pair<T>>()` broken immediately.
+
+**A design correction fell out of it.** The published table changed from `layout_answers`
+(precomputed `Layout`) to `layout_queries` (the queried `Ty`) plus a published `LayoutTables`,
+because a precomputed answer cannot exist for a generic body — the checker sees it once with
+`Ty::Param`. The walker consequently lives in one place instead of being duplicated between the
+checker and the oracle.
+
+**A second gap the fixture found**: a nominal reachable ONLY through a layout query was never
+registered in the type context — nothing in `size_of::<Pair<Int32>>()` constructs a `Pair<Int32>` —
+so MIR failed at run time with "no field table for struct #0" on an accepted program.
+`register_reachable_nominal_instances` now visits `Rvalue::LayoutQuery`'s type.
+
+**Evidence**: three three-engine cases (generic body at several instantiations; composite
+substitution through `[T; 4]`, `Pair<T>`, `(T, Int8)`, `Option<T>`; nested and repeated
+instantiations, re-reading `size_of::<T>()` after an inner generic call so a leaked or unrestored
+frame gives a wrong answer rather than an error) and three substitution unit tests including the
+mutation that removes the push.
+
+### The frozen corpus re-pin (CD-069)
+
+`option_result__03_box_and_layout_queries.snap` recorded the pre-contract placeholder —
+`size_of::<Int32>()` → `8`, `align_of::<Bool>()` → `8`. Under `stark-64-v1` they are `4` and `1`.
+A4's option (b) predicted this ("breaks the current differential's shared placeholder in a way that
+must be re-pinned in BOTH engines").
+
+`corpus_version` 1.2.0 → 1.3.0, owner-authorized. **Exactly one corpus file changed and exactly two
+output lines within it**; every hash from 1.0.0 onward is otherwise untouched, so the original
+baseline survives byte-identically. This is the first bump that changes an existing expectation
+rather than adding cases, which is why the scope was verified before regenerating rather than after.
 
 ## C5.3 exit
 
 §14's dimensions are all discharged: aggregate values (C5.3a), payload variants (C5.3b), match
 paths, Option/Result and `?` (C5.3c), the dedicated C5 Drop fixture (C5.3d-1c), and target layout
-queries — **exact values under one versioned contract, per CD-058 as amended by CD-067**. DEV-100
-is open and needs disposition before closure is claimed.
+queries — **exact values under one versioned contract, per CD-058 as amended by CD-067**, including
+the generic-body interaction (DEV-100, fixed under CD-068).
+
+Closure per the owner's ruling requires: DEV-100 fixed (done), the generic layout-query interaction
+agreeing across three engines (done), the full workspace suite green, and the final C5.3 evidence
+totals recorded.

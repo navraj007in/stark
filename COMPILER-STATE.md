@@ -2782,6 +2782,76 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     substitution: push each call's `generic_insts` entry, resolve `Ty::Param` at the query) or
     record as a bounded deferral.
 
+- CD-068 [2026-07-23, DEV-100 FIXED by owner directive — deferral refused] **`size_of::<T>()`
+  inside a generic body now agrees across all three engines. The HIR oracle has a call-time generic
+  substitution stack, which it previously lacked entirely.**
+
+  - **Owner's ruling on why it blocked closure**: a layout query in a generic function is not an
+    exotic adjacent feature but the ordinary COMPOSITION of two capabilities already inside C5 —
+    monomorphised generic functions and layout queries — and MIR amendment A4 states that a generic
+    layout query is instantiated with the active substitution. Deferring would have meant claiming
+    "generic functions work, and layout queries work, but their ordinary composition does not work
+    in the reference oracle". The absence from the frozen matrix meant the MATRIX was incomplete
+    for this interaction, not that the interaction fell outside Core.
+
+  - **Delivered**: `Interpreter::generic_frames`, a stack of call-time substitutions behind an RAII
+    guard (`GenericFrame`). Pushed from the checker's `generic_insts` entry paired with the
+    callee's own generic parameter names; popped on every completion path including traps and
+    interpreter errors. `Rc<RefCell<_>>` so the guard owns a handle rather than borrowing `self` —
+    a guard holding `&mut self.generic_frames` cannot coexist with the `&mut self` call it wraps.
+
+  - **Bounded exactly as directed.** The stack carries call-time type substitutions and nothing
+    else: no HIR body cloning or specialisation, no effect on value execution, no inference, no
+    second type checker. A missing `generic_insts` entry or an arity mismatch installs NOTHING, so
+    the query then fails as an unsubstituted parameter rather than answering from a partial or
+    stale frame. `ty_contains_param` makes a surviving parameter an oracle DEFECT, never a
+    fallback layout.
+
+  - **Substitution recurses**, per the directive's warning against handling only a bare
+    `Ty::Param`: tuples, arrays, references, nominal generic arguments, `Option`/`Result`/core
+    parameterised types, and function types.
+
+  - **Design correction made while fixing it.** The published table changed from
+    `layout_answers: HashMap<ExprId, Layout>` to `layout_queries: HashMap<ExprId, Ty>` plus a
+    published `LayoutTables`. A precomputed answer cannot work for a generic body — the checker
+    sees it ONCE with `Ty::Param`, so there is no per-instantiation answer to precompute. The
+    checker now publishes the declaration-ordered nominal tables and generic parameter names
+    instead, and the walker lives in one place (`LayoutTables::layout_of`) rather than being
+    duplicated between checker and oracle.
+
+  - **A second real gap the fixture exposed**: a nominal instance reachable ONLY through a layout
+    query was never registered in the type context — nothing in `size_of::<Pair<Int32>>()`
+    constructs a `Pair<Int32>`, and `register_reachable_nominal_instances` walked only local
+    declaration types. MIR failed at run time with "no field table for struct #0" on a program the
+    front end accepted. Fixed by also visiting `Rvalue::LayoutQuery`'s type.
+
+  - **Evidence**: three three-engine cases (a generic body with `size_of` and `align_of` at several
+    instantiations; composite substitution through `[T; 4]`, `Pair<T>`, `(T, Int8)` and
+    `Option<T>`; nested and repeated instantiations where the inner frame must not leak and the
+    outer must be restored — checked by re-reading `size_of::<T>()` after an inner generic call),
+    plus three substitution unit tests including the directive's mutation case: with the push
+    removed the parameter survives and is DETECTED rather than silently laid out.
+
+- CD-069 [2026-07-23, owner-authorized] **Frozen corpus `corpus_version` 1.2.0 → 1.3.0 — a RE-PIN,
+  and the first bump that changes an existing expectation rather than adding coverage.**
+
+  - `option_result__03_box_and_layout_queries.snap` recorded the pre-contract placeholder from when
+    every consumer answered one machine word for every type: `size_of::<Int32>()` → `8`,
+    `align_of::<Bool>()` → `8`. Under the named target contract `stark-64-v1` they are `4` and `1`.
+
+  - **Scope, verified before regenerating**: exactly ONE corpus file changed and exactly TWO output
+    lines within it. Every hash from 1.0.0, 1.1.0 and 1.2.0 is otherwise untouched, so the original
+    baseline survives byte-identically everywhere else and comparisons against it stay valid.
+
+  - MIR amendment A4 predicted this precisely: its option (b) says real reference numbers "break
+    the current differential's shared placeholder in a way that must be re-pinned in BOTH engines".
+
+  - **Performed as four deliberate steps**, per WP-C3-ENTRY/CD-025: regenerate the `.snap`, bump
+    `corpus_version` with a dated note in `corpus.lock`, update the changed hash line, and update
+    the freeze-governance assertion in `exec_snapshots.rs`. That assertion exists as a speed bump
+    against exactly this situation, so the bump was **held for explicit owner authorization** and
+    not performed as a side effect of the change that caused it.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,

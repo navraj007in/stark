@@ -33,6 +33,10 @@ fn execute_snippet(source: &str) -> String {
     interp::run(&hir, file, &checked.tables).unwrap().output
 }
 
+/// WP-C5.3e (CD-067): these are the values of the named target contract `stark-64-v1`, not of any
+/// backend's representation. The expectation was `8\n8\n` when every consumer answered one machine
+/// word for every type; `size_of::<Int32>()` is now `4`. `align_of::<Float64>()` was already `8`
+/// and stays `8` — which is the point of listing both: one moved and one did not.
 #[test]
 fn test_size_of_and_align_of() {
     let source = "
@@ -42,7 +46,7 @@ fn test_size_of_and_align_of() {
         }
     ";
     let output = execute_snippet(source);
-    assert_eq!(output, "8\n8\n");
+    assert_eq!(output, "4\n8\n");
 }
 
 #[test]

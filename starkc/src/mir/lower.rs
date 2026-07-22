@@ -391,6 +391,17 @@ fn register_reachable_nominal_instances(
         for decl in &body.locals {
             visit.push(decl.ty.clone());
         }
+        // WP-C5.3e: a `LayoutQuery` names a type that need not appear in ANY local — nothing in
+        // `size_of::<Pair<Int32>>()` constructs a `Pair<Int32>`. Without this, the queried
+        // nominal has no field table and the layout walk fails at run time on a program the front
+        // end accepted. Found by the DEV-100 composite-substitution fixture.
+        for block in &body.blocks {
+            for (statement, _) in &block.statements {
+                if let Statement::Assign(_, Rvalue::LayoutQuery { ty, .. }) = statement {
+                    visit.push(ty.clone());
+                }
+            }
+        }
     }
     let mut seen: BTreeSet<(u32, Vec<MirTy>)> = BTreeSet::new();
     while let Some(ty) = visit.pop() {

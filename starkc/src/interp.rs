@@ -906,6 +906,35 @@ struct Interpreter<'a> {
     pending_propagation: Option<Value>,
     const_cache: HashMap<ItemId, Value>,
     const_stack: Vec<ItemId>,
+    /// DEV-100: the active generic instantiations, innermost last.
+    ///
+    /// The ONLY generic machinery the oracle has, and deliberately so — before this it had none at
+    /// all, which is why `size_of::<T>()` inside a generic body could not be answered. It carries
+    /// call-time type substitutions and nothing else: no specialised bodies, no effect on value
+    /// execution, no inference.
+    ///
+    /// Behind `Rc<RefCell<_>>` so the RAII guard can own a handle instead of borrowing `self` —
+    /// a guard holding `&mut self.generic_frames` would conflict with the `&mut self` call it is
+    /// meant to wrap.
+    generic_frames: std::rc::Rc<std::cell::RefCell<Vec<HashMap<String, Ty>>>>,
+}
+
+/// RAII guard for one entry of [`Interpreter::generic_frames`].
+///
+/// A guard rather than a manual pop because the oracle's call paths return early through `?` on
+/// traps and interpreter errors, and a missed pop would leave a stale instantiation installed for
+/// every later query in the run — a silent wrong ANSWER rather than a visible failure.
+struct GenericFrame {
+    frames: std::rc::Rc<std::cell::RefCell<Vec<HashMap<String, Ty>>>>,
+    pushed: bool,
+}
+
+impl Drop for GenericFrame {
+    fn drop(&mut self) {
+        if self.pushed {
+            self.frames.borrow_mut().pop();
+        }
+    }
 }
 
 impl<'a> Interpreter<'a> {
@@ -1041,6 +1070,7 @@ impl<'a> Interpreter<'a> {
             pending_propagation: None,
             const_cache: HashMap::new(),
             const_stack: Vec::new(),
+            generic_frames: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
     }
 
@@ -2244,6 +2274,12 @@ impl<'a> Interpreter<'a> {
                         let callable = self.item_callable(*item).ok_or_else(|| {
                             RuntimeError::new("item is not callable", self.hir.expr(callee).span)
                         })?;
+                        // DEV-100: a call to a GENERIC item installs its instantiation for the
+                        // duration of the callee, so a layout query inside the body can resolve
+                        // `Ty::Param`. Pushed and popped around the call on every path — the
+                        // guard's `Drop` covers traps and interpreter errors too, which a manual
+                        // pop after `?` would not.
+                        let _frame = self.push_generic_frame(*item, callee);
                         self.call_callable(callable, None, values, span)
                             .map(Flow::Value)
                     }
@@ -2332,31 +2368,88 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    /// WP-C5.3e (CD-067): answer `size_of::<T>()` / `align_of::<T>()` from the selected named
-    /// target CONTRACT.
+    /// WP-C5.3e (CD-067) / DEV-100: answer `size_of::<T>()` / `align_of::<T>()` from the selected
+    /// named target CONTRACT, over the queried type with the ACTIVE generic instantiation applied.
     ///
     /// The oracle previously returned a hardcoded `8` for every query without reading the queried
-    /// type at all. It still does not walk types itself: the CHECKER computes the contract layout,
-    /// because it already owns type conversion, generic substitution and the nominal field and
-    /// variant tables, and reproducing those here would be a fourth derivation of machinery that
-    /// exists. The oracle reads the recorded answer.
+    /// type at all. It still does not own a type walker: the checker publishes `LayoutTables`,
+    /// because it owns the declaration-ordered nominal tables and generic parameter names, and a
+    /// second walker here would be a fourth derivation of machinery that exists.
+    ///
+    /// An unsubstituted parameter surviving to here is an oracle DEFECT, not a fallback: answering
+    /// a layout query for an unknown type would be inventing an observable value.
     fn layout_query(
         &mut self,
         builtin: Builtin,
         callee: ExprId,
         span: Span,
     ) -> Result<Value, RuntimeError> {
-        let Some(layout) = self.tables.layout_answers.get(&callee).copied() else {
+        let Some(queried) = self.tables.layout_queries.get(&callee).cloned() else {
             return Err(RuntimeError::new(
-                "the target layout contract does not describe this query's type",
+                "layout query with no recorded type argument",
                 span,
             ));
         };
+        let concrete = match self.generic_frames.borrow().last() {
+            Some(map) => crate::typecheck::substitute_ty(&queried, map),
+            None => queried,
+        };
+        if crate::typecheck::ty_contains_param(&concrete) {
+            return Err(RuntimeError::new(
+                format!(
+                    "layout query on {concrete:?} still contains an unsubstituted generic \
+                     parameter: the active instantiation did not cover it"
+                ),
+                span,
+            ));
+        }
+        let layout = self
+            .tables
+            .layout
+            .layout_of(&concrete)
+            .map_err(|e| RuntimeError::new(e.0, span))?;
         Ok(Value::Int(i128::from(if builtin == Builtin::SizeOf {
             layout.size
         } else {
             layout.align
         })))
+    }
+
+    /// DEV-100: install the generic instantiation recorded for this call site, if the callee is
+    /// generic, returning a guard that removes it again.
+    ///
+    /// Deliberately narrow. This is a call-time substitution CONTEXT and nothing more: it does not
+    /// clone or specialise HIR bodies, does not touch value execution, does not infer missing
+    /// arguments, and never falls back to a partial map. A generic item whose call site has no
+    /// recorded instantiation, or whose arity disagrees, installs NOTHING — the query then fails
+    /// as an unsubstituted parameter rather than silently answering from a stale or partial frame.
+    fn push_generic_frame(&mut self, item: ItemId, callee: ExprId) -> GenericFrame {
+        let names: Vec<String> = match &self.hir.item(item).kind {
+            hir::ItemKind::Fn(def) => def
+                .sig
+                .generics
+                .iter()
+                .map(|p| self.text(p.name).to_string())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let pushed = if names.is_empty() {
+            false
+        } else {
+            match self.tables.generic_insts.get(&callee) {
+                Some(args) if args.len() == names.len() => {
+                    let map: HashMap<String, Ty> =
+                        names.into_iter().zip(args.iter().cloned()).collect();
+                    self.generic_frames.borrow_mut().push(map);
+                    true
+                }
+                _ => false,
+            }
+        };
+        GenericFrame {
+            frames: self.generic_frames.clone(),
+            pushed,
+        }
     }
 
     fn call_builtin(

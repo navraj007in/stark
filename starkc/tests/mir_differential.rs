@@ -1651,8 +1651,12 @@ fn user_ord_borrows_and_drops_normally_agree() {
 
 // ---- WP-C4.6 A4-1: size_of/align_of + Option/Result unwrap_or (no runtime-surface amendment) ----
 
-/// `size_of::<T>()` / `align_of::<T>()` lower to the fixed word constant the reference
-/// implementation reports, agreeing with the oracle.
+/// `size_of::<T>()` / `align_of::<T>()` agree between the oracle and MIR.
+///
+/// WP-C5.3e (CD-067): both engines now answer from the named target contract `stark-64-v1` rather
+/// than from the one-machine-word placeholder this test was written against. It asserts AGREEMENT
+/// rather than values, so it needed no change when the values became real — which is exactly what
+/// a differential test is for. The exact values are pinned in `three_engine_differential.rs`.
 #[test]
 fn size_of_align_of_agree() {
     differential(

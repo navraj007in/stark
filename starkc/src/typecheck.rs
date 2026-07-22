@@ -158,15 +158,10 @@ pub struct TypeChecker<'a> {
     /// containing `Ty::Infer` once inference completes is rejected with E0004
     /// (TYPE-GENERIC-001 / TYPE-FN-002 — the DEV-064 fix).
     generic_insts: HashMap<ExprId, Vec<Ty>>,
-    /// WP-C5.3e: the CONTRACT layout of each `size_of::<T>()` / `align_of::<T>()` type argument,
-    /// keyed by the builtin's own path expression. Kept OUT of `generic_insts` deliberately: that
-    /// table drives MIR monomorphisation of generic fn instances, and a layout query is not one.
-    ///
-    /// Computed here rather than in the HIR oracle because this is where type conversion, generic
-    /// substitution and the nominal field/variant tables already live.
-    layout_answers: HashMap<ExprId, crate::layout::Layout>,
-    /// The named target contract layout answers come from (CD-067).
-    layout: crate::layout::TargetLayout,
+    /// WP-C5.3e: the queried type of each `size_of::<T>()` / `align_of::<T>()`, keyed by the
+    /// builtin's own path expression. Kept OUT of `generic_insts` deliberately: that table drives
+    /// MIR monomorphisation of generic fn instances, and a layout query is not one.
+    layout_queries: HashMap<ExprId, Ty>,
 
     // Scopes context
     current_self_ty: Option<Ty>,
@@ -209,6 +204,308 @@ pub struct TypeChecker<'a> {
     allow_half_type: bool,
 }
 
+/// WP-C5.3e / DEV-100: everything needed to answer a layout query over a CHECKER type, in one
+/// place that outlives the checker.
+///
+/// It exists because the layout walk needs three things the raw `Ty` does not carry — declaration
+/// order for a struct's fields (the checker's own map is name-keyed and has none), a nominal's
+/// variant payloads, and a nominal's generic parameter NAMES so `Ty::Param` can be substituted.
+/// The checker owns all three during analysis; the HIR oracle needs them afterwards. Publishing
+/// them is what lets there be ONE checker-side walker rather than a second one in the oracle.
+#[derive(Clone, Debug, Default)]
+pub struct LayoutTables {
+    /// The named target contract layout answers come from (CD-067).
+    pub contract: crate::layout::TargetLayout,
+    /// Field types in DECLARATION order — layout depends on order, so a name-keyed map will not do.
+    pub struct_fields: HashMap<ItemId, Vec<Ty>>,
+    /// Variant payloads in declaration order, each payload in declaration order.
+    pub enum_variants: HashMap<ItemId, Vec<Vec<Ty>>>,
+    /// Generic parameter names in declaration order, per nominal item.
+    pub nominal_params: HashMap<ItemId, Vec<String>>,
+}
+
+/// Substitute generic parameters throughout a type.
+///
+/// DEV-100 requires this to recurse everywhere a parameter can hide, not just to swap a bare
+/// `Ty::Param`: `size_of::<[T; 4]>()` and `size_of::<Pair<T>>()` are the immediate next holes if
+/// it does not. Mirrors `TypeChecker::instantiate_ty`, which does the same job while the checker
+/// is still alive.
+pub fn substitute_ty(ty: &Ty, map: &HashMap<String, Ty>) -> Ty {
+    match ty {
+        Ty::Param(name) => map.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        Ty::Ref { mutable, inner } => Ty::Ref {
+            mutable: *mutable,
+            inner: Box::new(substitute_ty(inner, map)),
+        },
+        Ty::Struct(item, args) => {
+            Ty::Struct(*item, args.iter().map(|a| substitute_ty(a, map)).collect())
+        }
+        Ty::Enum(item, args) => {
+            Ty::Enum(*item, args.iter().map(|a| substitute_ty(a, map)).collect())
+        }
+        Ty::Core(core, args) => {
+            Ty::Core(*core, args.iter().map(|a| substitute_ty(a, map)).collect())
+        }
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| substitute_ty(e, map)).collect()),
+        Ty::Array(elem, len) => Ty::Array(Box::new(substitute_ty(elem, map)), *len),
+        Ty::Slice(elem) => Ty::Slice(Box::new(substitute_ty(elem, map))),
+        Ty::Fn { params, ret } => Ty::Fn {
+            params: params.iter().map(|p| substitute_ty(p, map)).collect(),
+            ret: Box::new(substitute_ty(ret, map)),
+        },
+        Ty::Range(elem) => Ty::Range(Box::new(substitute_ty(elem, map))),
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod layout_substitution_tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, Ty)]) -> HashMap<String, Ty> {
+        pairs
+            .iter()
+            .map(|(n, t)| ((*n).to_string(), t.clone()))
+            .collect()
+    }
+
+    fn param(name: &str) -> Ty {
+        Ty::Param(name.to_string())
+    }
+
+    /// DEV-100's mutation case: substitution must RECURSE. A version that only swapped a bare
+    /// `Ty::Param` would leave every one of these unchanged, and each is a shape a real query
+    /// takes — `size_of::<[T; 4]>()`, `size_of::<Pair<T>>()`, `size_of::<Option<T>>()`.
+    #[test]
+    fn substitution_reaches_every_position_a_parameter_can_hide_in() {
+        let m = map(&[("T", Ty::Primitive(Primitive::Int32))]);
+        let int32 = Ty::Primitive(Primitive::Int32);
+
+        let cases: Vec<(Ty, Ty)> = vec![
+            (param("T"), int32.clone()),
+            (
+                Ty::Array(Box::new(param("T")), 4),
+                Ty::Array(Box::new(int32.clone()), 4),
+            ),
+            (
+                Ty::Tuple(vec![param("T"), Ty::Primitive(Primitive::Int8)]),
+                Ty::Tuple(vec![int32.clone(), Ty::Primitive(Primitive::Int8)]),
+            ),
+            (
+                Ty::Struct(ItemId(7), vec![param("T")]),
+                Ty::Struct(ItemId(7), vec![int32.clone()]),
+            ),
+            (
+                Ty::Enum(ItemId(9), vec![param("T")]),
+                Ty::Enum(ItemId(9), vec![int32.clone()]),
+            ),
+            (
+                Ty::Core(CoreType::Option, vec![param("T")]),
+                Ty::Core(CoreType::Option, vec![int32.clone()]),
+            ),
+            (
+                Ty::Core(CoreType::Result, vec![param("T"), param("T")]),
+                Ty::Core(CoreType::Result, vec![int32.clone(), int32.clone()]),
+            ),
+            (
+                Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(param("T")),
+                },
+                Ty::Ref {
+                    mutable: false,
+                    inner: Box::new(int32.clone()),
+                },
+            ),
+            (
+                Ty::Fn {
+                    params: vec![param("T")],
+                    ret: Box::new(param("T")),
+                },
+                Ty::Fn {
+                    params: vec![int32.clone()],
+                    ret: Box::new(int32.clone()),
+                },
+            ),
+            // Nested two deep: `[(T, Int8); 2]`.
+            (
+                Ty::Array(
+                    Box::new(Ty::Tuple(vec![param("T"), Ty::Primitive(Primitive::Int8)])),
+                    2,
+                ),
+                Ty::Array(
+                    Box::new(Ty::Tuple(vec![
+                        int32.clone(),
+                        Ty::Primitive(Primitive::Int8),
+                    ])),
+                    2,
+                ),
+            ),
+        ];
+
+        for (before, expected) in cases {
+            let after = substitute_ty(&before, &m);
+            assert_eq!(after, expected, "substitution missed {before:?}");
+            assert!(
+                ty_contains_param(&before),
+                "the case must actually contain a parameter: {before:?}"
+            );
+            assert!(
+                !ty_contains_param(&after),
+                "a parameter survived substitution in {before:?}"
+            );
+        }
+    }
+
+    /// The mutation the directive names: remove the PUSH (substitute against an empty frame). The
+    /// parameter survives and `ty_contains_param` catches it, which is what turns a missing frame
+    /// into a visible oracle defect instead of a wrong observable answer.
+    #[test]
+    fn without_a_substitution_frame_the_parameter_survives_and_is_detected() {
+        let empty = HashMap::new();
+        let queried = Ty::Array(Box::new(param("T")), 4);
+        let after = substitute_ty(&queried, &empty);
+        assert_eq!(after, queried, "an empty frame must change nothing");
+        assert!(
+            ty_contains_param(&after),
+            "an unsubstituted parameter must be detectable, not silently laid out"
+        );
+    }
+
+    /// A frame that binds a DIFFERENT parameter is not a partial match to fall back on.
+    #[test]
+    fn an_unrelated_frame_leaves_the_parameter_in_place() {
+        let m = map(&[("U", Ty::Primitive(Primitive::Int64))]);
+        let after = substitute_ty(&param("T"), &m);
+        assert!(ty_contains_param(&after));
+    }
+}
+
+/// Whether any generic parameter survives anywhere in `ty`. DEV-100 requires an unsubstituted
+/// parameter to be an oracle DEFECT rather than a fallback layout.
+pub fn ty_contains_param(ty: &Ty) -> bool {
+    ty_contains(ty, &|t| matches!(t, Ty::Param(_)))
+}
+
+impl LayoutTables {
+    /// The CHECKER-type walker into the shared layout combinators (`crate::layout`).
+    ///
+    /// One of the contract's two adapters; the other walks `MirTy` for the MIR interpreter and the
+    /// native backend. They cannot share a traversal — the representations genuinely differ — so
+    /// the *algorithm* is shared and only the walk is duplicated.
+    pub fn layout_of(&self, ty: &Ty) -> Result<crate::layout::Layout, crate::layout::LayoutError> {
+        use crate::layout::{LayoutError, Scalar};
+        let t = &self.contract;
+        let unsupported = |what: String| {
+            LayoutError(format!(
+                "the {} layout contract does not describe {what}",
+                t.identity.target_contract
+            ))
+        };
+        Ok(match ty {
+            Ty::Primitive(p) => t.scalar(match p {
+                Primitive::Int8 => Scalar::Int8,
+                Primitive::Int16 => Scalar::Int16,
+                Primitive::Int32 => Scalar::Int32,
+                Primitive::Int64 => Scalar::Int64,
+                Primitive::UInt8 => Scalar::UInt8,
+                Primitive::UInt16 => Scalar::UInt16,
+                Primitive::UInt32 => Scalar::UInt32,
+                Primitive::UInt64 => Scalar::UInt64,
+                Primitive::Float32 => Scalar::Float32,
+                Primitive::Float64 => Scalar::Float64,
+                Primitive::Bool => Scalar::Bool,
+                Primitive::Char => Scalar::Char,
+                Primitive::Unit => Scalar::Unit,
+                other => return Err(unsupported(format!("the primitive {other:?}"))),
+            }),
+            Ty::Ref { .. } => t.scalar(Scalar::Reference),
+            Ty::Fn { .. } => t.scalar(Scalar::FnValue),
+            Ty::Tuple(elems) => {
+                let mut fields = Vec::with_capacity(elems.len());
+                for elem in elems {
+                    fields.push(self.layout_of(elem)?);
+                }
+                t.aggregate(fields)
+            }
+            Ty::Array(elem, len) => {
+                let elem = self.layout_of(elem)?;
+                t.array(elem, *len)
+            }
+            Ty::Struct(item, args) => {
+                let field_tys = self
+                    .struct_fields
+                    .get(item)
+                    .ok_or_else(|| unsupported(format!("struct item {item:?}")))?;
+                let map = self.param_map(*item, args);
+                let mut fields = Vec::with_capacity(field_tys.len());
+                for field_ty in field_tys {
+                    fields.push(self.layout_of(&substitute_ty(field_ty, &map))?);
+                }
+                t.aggregate(fields)
+            }
+            Ty::Enum(item, args) => {
+                let variants = self
+                    .enum_variants
+                    .get(item)
+                    .ok_or_else(|| unsupported(format!("enum item {item:?}")))?;
+                let map = self.param_map(*item, args);
+                let mut laid_out = Vec::with_capacity(variants.len());
+                for payload in variants {
+                    let mut fields = Vec::with_capacity(payload.len());
+                    for field_ty in payload {
+                        fields.push(self.layout_of(&substitute_ty(field_ty, &map))?);
+                    }
+                    laid_out.push(t.aggregate(fields));
+                }
+                t.sum(laid_out)
+            }
+            // The core enums' payloads are derived from their type arguments, exactly as
+            // `mir::drop_plan::variant_payloads` derives them for the other adapter.
+            Ty::Core(CoreType::Option, args) => {
+                let inner = args
+                    .first()
+                    .ok_or_else(|| unsupported("Option without a type argument".to_string()))?;
+                let inner = self.layout_of(inner)?;
+                t.sum([t.aggregate([]), t.aggregate([inner])])
+            }
+            Ty::Core(CoreType::Result, args) => {
+                let ok = args
+                    .first()
+                    .ok_or_else(|| unsupported("Result without an Ok argument".to_string()))?;
+                let err = args
+                    .get(1)
+                    .ok_or_else(|| unsupported("Result without an Err argument".to_string()))?;
+                let ok = self.layout_of(ok)?;
+                let err = self.layout_of(err)?;
+                t.sum([t.aggregate([ok]), t.aggregate([err])])
+            }
+            Ty::Core(CoreType::Ordering, _) => {
+                t.sum([t.aggregate([]), t.aggregate([]), t.aggregate([])])
+            }
+            other => {
+                return Err(unsupported(format!(
+                    "{other:?}: owning runtime types, unsized types and unsubstituted generic \
+                     parameters have no contract entry"
+                )))
+            }
+        })
+    }
+
+    fn param_map(&self, item: ItemId, args: &[Ty]) -> HashMap<String, Ty> {
+        self.nominal_params
+            .get(&item)
+            .map(|names| {
+                names
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TypeTables {
     pub expr_types: HashMap<ExprId, Ty>,
@@ -225,11 +522,16 @@ pub struct TypeTables {
     /// the enclosing instantiation substitutes its own arguments. Entries never contain
     /// `Ty::Infer` — undetermined instantiations are rejected during checking (E0004).
     pub generic_insts: HashMap<ExprId, Vec<Ty>>,
-    /// WP-C5.3e: the contract layout of each layout query's type argument, keyed by the builtin's
-    /// path expression. The HIR oracle reads this to answer `size_of`/`align_of`; before it
-    /// existed the oracle returned a hardcoded `8` without even looking at the queried type.
-    /// Absent when the contract does not describe the type, which every engine then refuses.
-    pub layout_answers: HashMap<ExprId, crate::layout::Layout>,
+    /// WP-C5.3e: the QUERIED TYPE of each layout query, keyed by the builtin's path expression.
+    /// Before it existed the oracle returned a hardcoded `8` without even looking at the type.
+    ///
+    /// DEV-100: the type rather than a precomputed layout, because inside a generic body it still
+    /// contains `Ty::Param` — the checker sees a generic body ONCE, so there is no
+    /// per-instantiation answer for it to precompute. The oracle substitutes from its call-time
+    /// substitution stack and then resolves through [`LayoutTables`].
+    pub layout_queries: HashMap<ExprId, Ty>,
+    /// WP-C5.3e: the tables and contract a layout query is resolved against.
+    pub layout: LayoutTables,
 }
 
 #[derive(Debug, Clone)]
@@ -278,8 +580,7 @@ pub fn analyze_with_options(
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
         generic_insts: HashMap::new(),
-        layout_answers: HashMap::new(),
-        layout: crate::layout::TargetLayout::default(),
+        layout_queries: HashMap::new(),
         current_self_ty: None,
         current_assoc_types: HashMap::new(),
         current_fn_ret: None,
@@ -340,7 +641,12 @@ pub fn analyze_with_options(
         }
         generic_insts.insert(expr_id, grounded);
     }
-    let layout_answers = checker.layout_answers.clone();
+    let layout_queries: HashMap<ExprId, Ty> = checker
+        .layout_queries
+        .iter()
+        .map(|(&expr_id, ty)| (expr_id, checker.ground(ty)))
+        .collect();
+    let layout = checker.build_layout_tables();
 
     undetermined.sort_by_key(|span| (span.lo, span.hi));
     for span in undetermined {
@@ -367,7 +673,8 @@ pub fn analyze_with_options(
         local_mutability: checker.local_mutability,
         fn_types,
         generic_insts,
-        layout_answers,
+        layout_queries,
+        layout,
     };
     diagnostics.extend(crate::interp::check_constants(hir, file, &tables));
     TypeCheckResult {
@@ -3891,9 +4198,7 @@ impl<'a> TypeChecker<'a> {
                                     // answer needs the real type.
                                     let ty = self.convert_hir_type(*type_id);
                                     let ty = self.ground(&ty);
-                                    if let Ok(layout) = self.contract_layout(&ty) {
-                                        self.layout_answers.insert(expr_id, layout);
-                                    }
+                                    self.layout_queries.insert(expr_id, ty);
                                 }
                             }
                         }
@@ -5024,136 +5329,72 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    /// WP-C5.3e (CD-067): the CHECKER-type walker into the shared layout combinators.
+    /// WP-C5.3e / DEV-100: publish the tables a layout walk needs so the walk itself can live in
+    /// ONE place ([`LayoutTables::layout_of`]) and outlive the checker.
     ///
-    /// One of the two adapters the contract needs. The other walks `MirTy` and serves the MIR
-    /// interpreter and the native backend. They cannot share a walk — the representations
-    /// genuinely differ — so the *algorithm* is shared instead (`crate::layout`'s combinators) and
-    /// only the traversal is duplicated. Same producer/consumer split as `TypeContext::is_copy`.
-    ///
-    /// Declaration order is read from the HIR item, not from the checker's name-keyed
-    /// `struct_fields` map: layout depends on field order and a `HashMap` has none.
-    fn contract_layout(
-        &self,
-        ty: &Ty,
-    ) -> Result<crate::layout::Layout, crate::layout::LayoutError> {
-        use crate::layout::{LayoutError, Scalar};
-        let t = &self.layout;
-        let unsupported = |what: String| {
-            LayoutError(format!(
-                "the {} layout contract does not describe {what}",
-                t.identity.target_contract
-            ))
-        };
-        Ok(match ty {
-            Ty::Primitive(p) => t.scalar(match p {
-                Primitive::Int8 => Scalar::Int8,
-                Primitive::Int16 => Scalar::Int16,
-                Primitive::Int32 => Scalar::Int32,
-                Primitive::Int64 => Scalar::Int64,
-                Primitive::UInt8 => Scalar::UInt8,
-                Primitive::UInt16 => Scalar::UInt16,
-                Primitive::UInt32 => Scalar::UInt32,
-                Primitive::UInt64 => Scalar::UInt64,
-                Primitive::Float32 => Scalar::Float32,
-                Primitive::Float64 => Scalar::Float64,
-                Primitive::Bool => Scalar::Bool,
-                Primitive::Char => Scalar::Char,
-                Primitive::Unit => Scalar::Unit,
-                other => return Err(unsupported(format!("the primitive {other:?}"))),
-            }),
-            Ty::Ref { .. } => t.scalar(Scalar::Reference),
-            Ty::Fn { .. } => t.scalar(Scalar::FnValue),
-            Ty::Tuple(elems) => {
-                let mut fields = Vec::with_capacity(elems.len());
-                for elem in elems {
-                    fields.push(self.contract_layout(elem)?);
-                }
-                t.aggregate(fields)
-            }
-            Ty::Array(elem, len) => {
-                let elem = self.contract_layout(elem)?;
-                t.array(elem, *len)
-            }
-            Ty::Struct(item, args) => {
-                let hir::ItemKind::Struct { fields, .. } = &self.hir.item(*item).kind else {
-                    return Err(unsupported(format!("struct item {item:?}")));
-                };
-                let table = self.struct_fields.get(item).ok_or_else(|| {
-                    unsupported(format!("struct item {item:?} without a field table"))
-                })?;
-                let map = self.nominal_param_map(*item, args);
-                let mut laid_out = Vec::with_capacity(fields.len());
-                for field in fields {
-                    let name: String = self.item_text(*item, field.name).to_string();
-                    let field_ty = table
-                        .get(name.as_str())
-                        .ok_or_else(|| unsupported(format!("struct field `{name}`")))?;
-                    let field_ty = self.instantiate_ty(field_ty, &map);
-                    laid_out.push(self.contract_layout(&field_ty)?);
-                }
-                t.aggregate(laid_out)
-            }
-            Ty::Enum(item, args) => {
-                let variants = self
-                    .enum_variants
-                    .get(item)
-                    .ok_or_else(|| unsupported(format!("enum item {item:?}")))?;
-                let map = self.nominal_param_map(*item, args);
-                let mut laid_out = Vec::with_capacity(variants.len());
-                for variant in variants {
-                    let payload =
-                        match &variant.fields {
-                            VariantFields::Unit => Vec::new(),
-                            VariantFields::Tuple(tys) => tys.clone(),
-                            // A struct-shaped variant's fields live in a `HashMap`, which has no
-                            // declaration order — and layout depends on order. Refused rather than
-                            // laid out in an arbitrary one.
-                            VariantFields::Struct(_) => return Err(unsupported(
-                                "a struct-shaped enum variant, whose field order this table does \
-                                 not preserve"
-                                    .to_string(),
-                            )),
-                        };
-                    let mut fields = Vec::with_capacity(payload.len());
-                    for field_ty in &payload {
-                        let field_ty = self.instantiate_ty(field_ty, &map);
-                        fields.push(self.contract_layout(&field_ty)?);
+    /// Declaration ORDER is read from the HIR items, not from the checker's own `struct_fields`
+    /// map: layout depends on field order and that map is name-keyed. A struct-shaped enum variant
+    /// is omitted rather than laid out in an arbitrary order — its fields live in a `HashMap` too,
+    /// and a wrong order is a wrong observable answer.
+    fn build_layout_tables(&self) -> LayoutTables {
+        let mut struct_fields: HashMap<ItemId, Vec<Ty>> = HashMap::new();
+        let mut enum_variants: HashMap<ItemId, Vec<Vec<Ty>>> = HashMap::new();
+        let mut nominal_params: HashMap<ItemId, Vec<String>> = HashMap::new();
+
+        for (&item, table) in &self.struct_fields {
+            let hir::ItemKind::Struct { fields, .. } = &self.hir.item(item).kind else {
+                continue;
+            };
+            let mut ordered = Vec::with_capacity(fields.len());
+            let mut complete = true;
+            for field in fields {
+                let name: String = self.item_text(item, field.name).to_string();
+                match table.get(name.as_str()) {
+                    Some(ty) => ordered.push(ty.clone()),
+                    None => {
+                        complete = false;
+                        break;
                     }
-                    laid_out.push(t.aggregate(fields));
                 }
-                t.sum(laid_out)
             }
-            // The core enums' payloads are derived from their type arguments, exactly as
-            // `mir::drop_plan::variant_payloads` derives them for the other adapter.
-            Ty::Core(CoreType::Option, args) => {
-                let inner = args
-                    .first()
-                    .ok_or_else(|| unsupported("Option without a type argument".to_string()))?;
-                let inner = self.contract_layout(inner)?;
-                t.sum([t.aggregate([]), t.aggregate([inner])])
+            if complete {
+                struct_fields.insert(item, ordered);
             }
-            Ty::Core(CoreType::Result, args) => {
-                let ok = args
-                    .first()
-                    .ok_or_else(|| unsupported("Result without an Ok argument".to_string()))?;
-                let err = args
-                    .get(1)
-                    .ok_or_else(|| unsupported("Result without an Err argument".to_string()))?;
-                let ok = self.contract_layout(ok)?;
-                let err = self.contract_layout(err)?;
-                t.sum([t.aggregate([ok]), t.aggregate([err])])
+        }
+
+        for (&item, variants) in &self.enum_variants {
+            let mut ordered = Vec::with_capacity(variants.len());
+            let mut complete = true;
+            for variant in variants {
+                match &variant.fields {
+                    VariantFields::Unit => ordered.push(Vec::new()),
+                    VariantFields::Tuple(tys) => ordered.push(tys.clone()),
+                    VariantFields::Struct(_) => {
+                        complete = false;
+                        break;
+                    }
+                }
             }
-            Ty::Core(CoreType::Ordering, _) => {
-                t.sum([t.aggregate([]), t.aggregate([]), t.aggregate([])])
+            if complete {
+                enum_variants.insert(item, ordered);
             }
-            other => {
-                return Err(unsupported(format!(
-                    "{other:?}: owning runtime types, unsized types and unsubstituted generic \
-                     parameters have no contract entry"
-                )))
-            }
-        })
+        }
+
+        for item in struct_fields.keys().chain(enum_variants.keys()) {
+            let names: Vec<String> = self
+                .item_generic_params(*item)
+                .iter()
+                .map(|param| self.item_text(*item, param.name).to_string())
+                .collect();
+            nominal_params.insert(*item, names);
+        }
+
+        LayoutTables {
+            contract: crate::layout::TargetLayout::default(),
+            struct_fields,
+            enum_variants,
+            nominal_params,
+        }
     }
 
     fn instantiate_ty(&self, ty: &Ty, map: &HashMap<String, Ty>) -> Ty {
