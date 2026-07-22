@@ -1159,6 +1159,52 @@ fn main() {
 "#
 );
 
+// DEV-098 (CD-070): exclusive references across the call boundary.
+//
+// The adversarial premise was that a `&mut` used twice in one block reaches rustc, because
+// `validate_ephemeral_references` never counts uses. The validator indeed does not count uses —
+// but the shape turns out to be unreachable from valid STARK source: passing a `&mut` binding to
+// another function twice is rejected by the FRONT END with `E0100 use of moved value`, since
+// STARK has no implicit reborrow at the source level. So the "refused before rustc" promise holds,
+// for a different reason than either the old record or the finding stated.
+//
+// Investigating it did find two defects that WERE reachable, and this fixture covers them:
+//   - passing `&mut x` to any user function was refused outright ("move out of the non-slot
+//     place"), because a reference is non-`Copy` at MIR level but is never slot-backed;
+//   - a mutable `RefOf` emitted `&mut _1.get()` — borrowing a `&T` as mutable — and then
+//     `&mut _1.get_mut()`, a `&mut &mut T` over a temporary. Only the destructor path had
+//     exercised `&mut` before, and that one is emitted by the drop glue rather than through
+//     `Rvalue::RefOf`.
+three_engine_test!(
+    exclusive_references_cross_the_call_boundary_and_mutate,
+    "ref_mut_calls",
+    completes,
+    r#"struct Counter { n: Int32 }
+
+fn bump(c: &mut Counter, by: Int32) -> Unit {
+    c.n = c.n + by;
+}
+
+fn read(c: &mut Counter) -> Int32 {
+    let first: Int32 = c.n;
+    let second: Int32 = c.n;
+    first + second
+}
+
+fn main() {
+    let mut c: Counter = Counter { n: 0 };
+    bump(&mut c, 1);
+    bump(&mut c, 2);
+    assert_eq(c.n, 3);
+    // Two reads THROUGH one `&mut` parameter in a single block: the reference itself is used
+    // twice here, as `Deref` projections rather than as a bare reference operand.
+    assert_eq(read(&mut c), 6);
+    bump(&mut c, 4);
+    assert_eq(c.n, 7);
+}
+"#
+);
+
 // The trap side of indexing: out of bounds must trap, with the same category and the same source
 // location, in all three engines. Both ends of the range, since an off-by-one in the bounds check
 // would pass one and fail the other.

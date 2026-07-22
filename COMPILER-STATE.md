@@ -152,6 +152,19 @@ closed with a real per-unit operation: `HelperOp::Drop` wrappers over
 not every intermediate change, per owner feedback.
 
 ## Position
+**WP-C5.3 (aggregates, enums, error values, Drop, layout) CLOSED 2026-07-23** by owner directive
+after the adversarial review dispositions (CD-070). Sub-packages: C5.3a (CD-056), C5.3b, C5.3c
+(CD-061), C5.3d-0 (CD-059), C5.3d-1a (CD-063), C5.3d-1b (CD-064), C5.3d-1c + C5.3d-1 (CD-066), the
+`Copy` consolidation fold-in (CD-065), C5.3e (CD-067) with DEV-100 fixed (CD-068) and the corpus
+re-pinned to 1.3.0 (CD-069). Every §14 exit dimension is discharged with three-engine agreement:
+aggregate values, payload variants, match paths, `Option`/`Result`, `?`, the dedicated Drop
+fixture (seven observable properties), and exact layout-query values under the versioned
+`stark-64-v1` contract. Two bounded boundaries are recorded and enforced deterministically before
+rustc rather than left latent: multi-unit enum payload partial moves (CD-070) and the wider
+non-`Copy` cross-block cases, both deferred to C6. **Next: WP-C5.4 (linkage and function values).**
+The two open C5.3-adjacent items carried into the C5.4/C5.6 reviews are DEV-098's defensive
+reborrow reasoning and the C6-deferred ownership boundaries.
+
 Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
 WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
 native lowering) CLOSED 2026-07-21 in full**: C5.2a (CD-047), C5.2b (CD-048), C5.2c (CD-049),
@@ -2851,6 +2864,59 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     the freeze-governance assertion in `exec_snapshots.rs`. That assertion exists as a speed bump
     against exactly this situation, so the bump was **held for explicit owner authorization** and
     not performed as a side effect of the change that caused it.
+
+- CD-070 [2026-07-23, C5.3 adversarial review dispositions] **Both review items resolved. The
+  premise of one was wrong; investigating it found two other live defects. The other found a real
+  defect exactly as intended.**
+
+  - **Validation policy, approved and adopted**: `cargo test --workspace --all-targets
+    --no-fail-fast` whenever a change can alter observable output, traps or spans, layout values,
+    snapshots, diagnostics, Drop events, or serialization/manifest values. The fail-fast run
+    stopped at binary 21 and hid later stale pins. Also preserved as a distinction worth keeping:
+    `gate4a_prelude_traits` is an exact-value test and had to change; `size_of_align_of_agree` is a
+    differential AGREEMENT test and correctly survived the values becoming real.
+
+  - **DEV-098 — the stated risk is NOT reachable; two other defects were.** The review was right
+    that `validate_ephemeral_references` never counts uses. But passing a `&mut` binding to another
+    function twice is rejected by the FRONT END (`E0100 use of moved value`), because STARK has no
+    implicit source-level reborrow — so the double-use shape does not arise from valid source and
+    the "refused before rustc" promise held, for a different reason than either the old record or
+    the finding gave. **Both `a(c); a(c);` and every other route were probed; the only `&mut`
+    operand a body actually produces is a `Move` of a freshly created borrow temp.**
+
+    Investigating it found two defects that WERE reachable and are now fixed: (a) `Operand::Move`
+    on a reference went to `emit_move_out` and was refused outright ("move out of the non-slot
+    place") — a reference is non-`Copy` at MIR level but is never slot-backed, so **passing
+    `&mut x` to any user function failed**; (b) a mutable `Rvalue::RefOf` emitted `&mut _1.get()`
+    (borrowing a `&T` as mutable) and then, once corrected, `&mut _1.get_mut()` (a `&mut &mut T`
+    over a temporary) — the accessor for a whole slot-backed local already IS the reference. Only
+    the destructor path had exercised `&mut` before, and that one is emitted by the drop glue
+    rather than through `RefOf`, which is why both stayed hidden.
+
+    `Operand::Copy` on a `&mut` now emits a reborrow (`&mut *p`) as directed. It is defensive
+    rather than fixing a reachable bug, and is recorded as such.
+
+  - **Multi-unit enum payload — a REAL defect, found exactly as the review intended.**
+    `enum E { V(A, B) }` with `match e { E::V(a, b) => take_a(a) }` **compiled and then aborted at
+    run time** inside `slot_violation`, whose own message reads "STARK compiler defect, not a
+    program fault". No deterministic refusal existed at all — the worst of both outcomes.
+
+    Cause: an enum payload has no raw-pointer projection, so a payload move goes through
+    `move_field_whole`, which requires a complete value and leaves the slot `Partial`. With more
+    than one payload unit, the second move — or the whole-enum drop of the survivor — then needs
+    `Whole` over partial storage.
+
+    **Boundary recorded and now enforced before rustc**: *C5 supports whole enum payload movement
+    and the approved single-unit consuming-match shapes. Partial movement of one field from a
+    multi-drop-unit enum payload, followed by projected destruction of a sibling payload unit, is
+    deferred to broad ownership/reference completion in C6.* Evidence: the adversarial fixture in
+    both its unbound-sibling and both-bound forms, each required to be refused as `Unsupported`
+    naming the boundary, plus a single-unit negative control — a refusal that rejected every
+    payload move would pass the first test while breaking `Option`/`Result` entirely.
+
+  - Lowering emits **no projected `Drop` on a `VariantField`** for either fixture, so the
+    `HelperOp::Drop` + `Whole` refusal added under CD-066 stays correct and is now backed by a
+    source fixture rather than by an explanatory comment alone.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

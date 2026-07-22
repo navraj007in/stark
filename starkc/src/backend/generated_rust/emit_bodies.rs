@@ -638,11 +638,33 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
         // across blocks, so this never needs reference STORAGE -- it is a borrow expression the
         // validator has already proved is consumed in the same block.
         Rvalue::RefOf { mutable, place } => {
-            let borrowed = emit_places::emit_place(place, env)?;
+            // DEV-098: two corrections, both of which stayed hidden because only the destructor
+            // path exercised `&mut` before, and that one is emitted by the drop glue rather than
+            // through here.
+            //
+            // 1. A MUTABLE borrow must reach the place mutably. `emit_place`'s read mode spells a
+            //    slot-backed local as `_1.get()`, an `&T`, so `&mut _1.get()` is "cannot borrow
+            //    data in a `&` reference as mutable".
+            // 2. A WHOLE slot-backed local's accessor already RETURNS the reference -- `get_mut()`
+            //    is `&mut T` -- so wrapping it again builds `&mut &mut T` over a temporary and
+            //    fails with "temporary value dropped while borrowed". Only a projected place
+            //    (`_1.get_mut().f0`) is a Rust place expression needing the borrow operator.
+            let whole_slot =
+                place.projection.is_empty() && emit_places::is_slot_local(place.local.0, env)?;
             Ok(if *mutable {
-                format!("(&mut {borrowed})")
+                let base = emit_places::emit_place_mut(place, env)?;
+                if whole_slot {
+                    base
+                } else {
+                    format!("(&mut {base})")
+                }
             } else {
-                format!("(&{borrowed})")
+                let base = emit_places::emit_place(place, env)?;
+                if whole_slot {
+                    base
+                } else {
+                    format!("(&{base})")
+                }
             })
         }
         Rvalue::Discriminant(place) => {
@@ -780,7 +802,22 @@ fn emit_binop(op: MirBinOp, l: String, r: String) -> Result<String, BackendDiagn
 fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match operand {
         Operand::Const(c) => emit_types::emit_constant(c),
-        Operand::Copy(place) => emit_places::emit_place(place, env),
+        // DEV-098 (CD-070): `Operand::Copy` means "read WITHOUT consuming". For an exclusive
+        // reference that is a REBORROW, not a bare read -- a bare read of a Rust `&mut` is a
+        // move, so a second use of the same reference in the same block would fail to compile.
+        //
+        // The previous record claimed the ephemeral-reference lane contained this by enforcing
+        // single use. It does not: `validate_ephemeral_references` checks where a reference is
+        // created, that it stays in one block, and that it is never stored or returned -- it
+        // never counts uses. So the shape reached rustc, which is exactly what the lane promises
+        // cannot happen. Emitting the reborrow states the MIR meaning directly and needs no
+        // artificial one-use restriction.
+        Operand::Copy(place) => {
+            if matches!(env.place_ty(place)?, MirTy::Ref { mutable: true, .. }) {
+                return Ok(format!("(&mut *{})", emit_places::emit_place(place, env)?));
+            }
+            emit_places::emit_place(place, env)
+        }
         // WP-C5.3d-0. A move out of a Copy place is a read like any other -- MIR only marks it
         // `Move` for uniformity, and Rust copies. A move out of a NON-Copy place must go through
         // the slot, which records that the source unit is now dead; that record is the whole
@@ -788,6 +825,14 @@ fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, BackendDiagnos
         Operand::Move(place) => {
             let ty = env.place_ty(place)?;
             if emit_types::mir_ty_is_copy(&ty, env.types) {
+                return emit_places::emit_place(place, env);
+            }
+            // DEV-098: a reference is non-`Copy` at MIR level but is never slot-backed, so it has
+            // no per-unit liveness to update and `emit_move_out` would refuse it outright. Moving
+            // a reference IS a plain Rust move of the reference value. Without this, passing
+            // `&mut x` to a user function failed with "move out of the non-slot place" -- the
+            // lane admitted the shape and the emitter then could not spell it.
+            if matches!(ty, MirTy::Ref { .. }) {
                 return emit_places::emit_place(place, env);
             }
             emit_places::emit_move_out(place, env)

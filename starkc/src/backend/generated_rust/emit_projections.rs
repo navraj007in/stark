@@ -198,7 +198,43 @@ fn collect_place(
     let form = match (&projection, &base_ty) {
         (Projection::Field(_), MirTy::Struct(..) | MirTy::Tuple(_))
         | (Projection::ConstIndex(_), MirTy::Array(..)) => ProjectionForm::Raw,
-        (Projection::VariantField(..), MirTy::Enum(..)) => ProjectionForm::Whole,
+        (Projection::VariantField(variant, _), MirTy::Enum(enum_ref, args)) => {
+            // CD-070: an enum payload has no raw projection, so moving one unit out goes through
+            // `move_field_whole`, which REQUIRES a complete value and leaves the slot `Partial`.
+            // With more than one payload unit, the second move — or the whole-enum drop of a
+            // surviving sibling — then hits a `Whole` requirement over partial storage.
+            //
+            // Found by an adversarial fixture: `enum E { V(A, B) }` with `match e { E::V(a, b) =>
+            // take_a(a) }` COMPILED and aborted at run time inside `slot_violation`, whose own
+            // message says "STARK compiler defect, not a program fault". Refusing here restores
+            // the promise that an out-of-subset shape is rejected deterministically before rustc.
+            //
+            // Single-unit payloads are unaffected, which is what `Option`/`Result` and the
+            // approved consuming-match shapes use.
+            let arity = emit_types::variant_payloads(enum_ref, args, env.types)
+                .and_then(|variants: Vec<Vec<MirTy>>| {
+                    variants.get(*variant as usize).map(|p| p.len())
+                })
+                .ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "variant v{variant} unresolvable for {base_ty:?}"
+                    ))
+                })?;
+            if arity > 1 {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "moving one unit out of a MULTI-UNIT enum payload ({place:?}, variant \
+                     v{variant} has {arity} fields) is outside the C5 subset: an enum \
+                     payload has no raw projection, so the move goes through \
+                     `move_field_whole`, which requires a complete value and leaves the \
+                     slot partial -- the sibling unit could then be neither moved nor \
+                     destroyed. C5 supports whole enum payload movement and single-unit \
+                     consuming-match shapes; partial movement of one field from a \
+                     multi-unit payload is deferred to broad ownership/reference \
+                     completion (C6)"
+                )));
+            }
+            ProjectionForm::Whole
+        }
         _ => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "sub-place move/drop through {projection:?} on {base_ty:?} is not in the \

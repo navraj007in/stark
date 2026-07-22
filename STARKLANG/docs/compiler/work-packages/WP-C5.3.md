@@ -1,5 +1,10 @@
 # WP-C5.3 — Aggregates, Enums, and Error Values
 
+**STATUS: CLOSED 2026-07-23 (CD-070).** Every §14 exit dimension is discharged with three-engine
+agreement; two bounded ownership boundaries (multi-unit enum payload partial moves; wider
+non-`Copy` cross-block moves) are recorded and refused deterministically before rustc, deferred to
+C6. Sub-package closures are dated in each section below. Next: WP-C5.4.
+
 Gate: C5 (Native Core Backend MVP). Scope from `COMPILER-ROADMAP.md` WP-C5.3, detailed by
 `WP-C5-ENTRY.md` §14 (C5.3a-d). Opened 2026-07-21 by owner directive, after DEV-095 (build-key
 completeness) discharged its blocking entry condition under CD-055.
@@ -750,6 +755,49 @@ must be re-pinned in BOTH engines").
 output lines within it**; every hash from 1.0.0 onward is otherwise untouched, so the original
 baseline survives byte-identically. This is the first bump that changes an existing expectation
 rather than adding cases, which is why the scope was verified before regenerating rather than after.
+
+## C5.3 adversarial review (CD-070)
+
+Two dispositions, both resolved.
+
+**DEV-098 — the premise was wrong, and the investigation found two other live defects.** The
+review correctly observed that `validate_ephemeral_references` never counts uses. But the
+double-use shape is unreachable from valid STARK source: passing a `&mut` binding to another
+function twice is rejected by the FRONT END with `E0100 use of moved value`, since STARK has no
+implicit source-level reborrow. The "refused before rustc" promise held — for a different reason
+than either the old record or the finding gave.
+
+Two defects that *were* reachable, now fixed:
+
+| Defect | Effect |
+| --- | --- |
+| `Operand::Move` on a reference went to `emit_move_out` | **Passing `&mut x` to any user function was refused outright** — a reference is non-`Copy` at MIR level but is never slot-backed, so it has no slot to move out of |
+| Mutable `Rvalue::RefOf` emitted `&mut _1.get()` | Borrowing a `&T` as mutable; and once corrected to `get_mut()`, `&mut _1.get_mut()` is a `&mut &mut T` over a temporary. A whole slot-backed local's accessor already IS the reference |
+
+Both stayed hidden because only the destructor path had exercised `&mut`, and that one is emitted
+by the drop glue rather than through `Rvalue::RefOf`. `Operand::Copy` on a `&mut` now emits a
+reborrow (`&mut *p`) as directed — defensive rather than fixing a reachable bug, and recorded as
+such.
+
+**Multi-unit enum payload — a real defect, found exactly as intended.**
+`enum E { V(A, B) }` with `match e { E::V(a, b) => take_a(a) }` **compiled and then aborted at run
+time** inside `slot_violation`, whose own message reads "STARK compiler defect, not a program
+fault". There was no deterministic refusal at all.
+
+An enum payload has no raw-pointer projection, so a payload move goes through `move_field_whole`,
+which requires a complete value and leaves the slot `Partial`. With more than one payload unit the
+second move — or the whole-enum drop of the survivor — then needs `Whole` over partial storage.
+
+> **Boundary.** C5 supports whole enum payload movement and the approved single-unit
+> consuming-match shapes. Partial movement of one field from a multi-drop-unit enum payload,
+> followed by projected destruction of a sibling payload unit, is deferred to broad
+> ownership/reference completion in C6.
+
+Enforced before rustc, with the adversarial fixture in both forms required to be refused by name,
+plus a single-unit negative control — a refusal that rejected every payload move would pass the
+first test while breaking `Option`/`Result` entirely. Lowering emits **no projected `Drop` on a
+`VariantField`** for either fixture, so CD-066's `HelperOp::Drop` + `Whole` refusal stays correct
+and is now backed by a source fixture rather than an explanatory comment.
 
 ## C5.3 exit
 

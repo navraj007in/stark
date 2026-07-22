@@ -922,3 +922,99 @@ fn an_unknown_target_contract_is_rejected_before_emission() {
         other => panic!("expected an Unsupported refusal, got {other:?}"),
     }
 }
+
+// ------------------------- CD-070: the multi-unit enum payload boundary (adversarial) --
+
+/// **The adversarial fixture the C5.3 review required, and it found a real defect.**
+///
+/// `enum E { V(A, B) }` with `match e { E::V(a, b) => take_a(a) }` moves one non-`Copy` payload
+/// unit out and leaves a droppable sibling. Before this test the program **compiled and then
+/// aborted at run time** inside `slot_violation`, whose own message says "STARK compiler defect,
+/// not a program fault" — the worst of both outcomes, since the backend's promise is that an
+/// out-of-subset shape is refused deterministically BEFORE rustc.
+///
+/// Cause: an enum payload has no raw-pointer projection, so a payload move goes through
+/// `move_field_whole`, which requires a complete value and leaves the slot `Partial`. With more
+/// than one payload unit, the second move — or the whole-enum drop of the survivor — then needs
+/// `Whole` over partial storage.
+///
+/// The boundary is now recorded and enforced: C5 supports whole enum payload movement and
+/// single-unit consuming-match shapes; partial movement of one field out of a multi-unit payload
+/// is deferred to broad ownership/reference completion in C6.
+#[test]
+fn a_partial_move_out_of_a_multi_unit_enum_payload_is_refused_before_rustc() {
+    let sources = [
+        // One unit consumed, the sibling unbound but still owing a destructor.
+        r#"struct A { x: Int32 }
+impl Drop for A { fn drop(&mut self) { let r: Int32 = self.x; } }
+struct B { x: Int32 }
+impl Drop for B { fn drop(&mut self) { let r: Int32 = self.x; } }
+enum E { V(A, B) }
+fn take_a(a: A) -> Int32 { a.x }
+fn main() {
+    let e: E = E::V(A { x: 1 }, B { x: 2 });
+    let n: Int32 = match e { E::V(a, b) => take_a(a) };
+    assert_eq(n, 1);
+}
+"#,
+        // Both units bound and both used: the second access follows the first move.
+        r#"struct A { x: Int32 }
+impl Drop for A { fn drop(&mut self) { let r: Int32 = self.x; } }
+struct B { x: Int32 }
+impl Drop for B { fn drop(&mut self) { let r: Int32 = self.x; } }
+enum E { V(A, B) }
+fn take_a(a: A) -> Int32 { a.x }
+fn main() {
+    let e: E = E::V(A { x: 1 }, B { x: 2 });
+    let n: Int32 = match e { E::V(a, b) => take_a(a) + b.x };
+    assert_eq(n, 3);
+}
+"#,
+    ];
+    for (i, source) in sources.iter().enumerate() {
+        match build(source, &format!("multiunit{i}")) {
+            Err(BackendDiagnostic::Unsupported(message)) => {
+                assert!(
+                    message.contains("MULTI-UNIT enum payload"),
+                    "case {i} must name the boundary it refuses: {message}"
+                );
+            }
+            Err(other) => panic!(
+                "case {i} must be refused as Unsupported BEFORE rustc, not fail later: {other:?}"
+            ),
+            Ok(_) => panic!(
+                "case {i} built. If multi-unit enum payload partial moves are now genuinely \
+                 supported, move this to a positive three-engine test -- but a build that then \
+                 aborts in slot_violation at run time is NOT support"
+            ),
+        }
+    }
+}
+
+/// The negative control for the refusal above: a SINGLE-unit payload move is the approved
+/// consuming-match shape and must keep working. A refusal that rejected every payload move would
+/// pass the test above while breaking `Option`/`Result` entirely.
+#[test]
+fn a_single_unit_enum_payload_move_still_works() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct A { x: Int32 }
+impl Drop for A { fn drop(&mut self) { let r: Int32 = self.x; } }
+enum E { V(A) }
+fn take_a(a: A) -> Int32 { a.x }
+fn main() {
+    let e: E = E::V(A { x: 7 });
+    let n: Int32 = match e { E::V(a) => take_a(a) };
+    assert_eq(n, 7);
+}
+"#;
+    let (_, run) = build(source, "singleunit").expect("a single-unit payload move must build");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
