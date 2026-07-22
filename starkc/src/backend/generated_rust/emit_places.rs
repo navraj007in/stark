@@ -26,11 +26,23 @@ pub fn local_name(local: u32) -> String {
 pub struct TyEnv<'a> {
     pub body: &'a MirBody,
     pub types: &'a TypeContext,
+    /// WP-C5.3e: the named target layout contract a `LayoutQuery` is answered from. Threaded
+    /// rather than defaulted at the use site, so a build cannot silently answer from a contract
+    /// it was not given (CD-067).
+    pub layout: &'a crate::layout::TargetLayout,
 }
 
 impl<'a> TyEnv<'a> {
-    pub fn new(body: &'a MirBody, types: &'a TypeContext) -> Self {
-        TyEnv { body, types }
+    pub fn new(
+        body: &'a MirBody,
+        types: &'a TypeContext,
+        layout: &'a crate::layout::TargetLayout,
+    ) -> Self {
+        TyEnv {
+            body,
+            types,
+            layout,
+        }
     }
 
     pub(super) fn local_ty(&self, local: u32) -> Result<MirTy, BackendDiagnostic> {
@@ -337,7 +349,8 @@ mod tests {
     fn bare_local_emits_its_dump_name() {
         let body = body_with(vec![MirTy::Unit, MirTy::Int32, MirTy::Int32, MirTy::Int32]);
         let types = TypeContext::default();
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
         assert_eq!(emit_place(&Place::local(LocalId(3)), &env).unwrap(), "_3");
     }
 
@@ -357,7 +370,8 @@ mod tests {
         types
             .struct_fields
             .insert((0, vec![]), vec![MirTy::Int32, MirTy::Bool]);
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
 
         let tuple_field = Place {
             local: LocalId(0),
@@ -394,7 +408,8 @@ mod tests {
             (0, vec![]),
             vec![MirTy::Int32, MirTy::Tuple(vec![MirTy::Bool, MirTy::Int64])],
         );
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
         let place = Place {
             local: LocalId(0),
             projection: vec![Projection::Field(1), Projection::Field(0)],
@@ -409,7 +424,8 @@ mod tests {
     fn array_indices_emit_both_forms() {
         let body = body_with(vec![MirTy::Array(Box::new(MirTy::Int32), 3), MirTy::Int64]);
         let types = TypeContext::default();
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
 
         let constant = Place {
             local: LocalId(0),
@@ -429,7 +445,8 @@ mod tests {
     fn variant_field_is_still_unsupported() {
         let body = body_with(vec![MirTy::Int32]);
         let types = TypeContext::default();
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
         let place = Place {
             local: LocalId(0),
             projection: vec![Projection::VariantField(0, 0)],

@@ -19,6 +19,7 @@ pub struct GeneratedSource {
 pub fn emit(
     program: &MirProgram,
     versions: &BuildVersions,
+    layout: &crate::layout::TargetLayout,
 ) -> Result<GeneratedSource, BackendDiagnostic> {
     let entry = program
         .bodies
@@ -56,7 +57,7 @@ pub fn emit(
     // WP-C5.3d-0: the generated projection helpers, collected from the bodies below. Emitted
     // before them so the module is in scope, and so the ONE place unsafe appears in a generated
     // program is visible at the top of the file rather than buried.
-    let projections = emit_projections::collect(program)?;
+    let projections = emit_projections::collect(program, layout)?;
     main_rs.push_str(&emit_projections::emit(&projections, &program.types)?);
 
     for body in &program.bodies {
@@ -67,6 +68,7 @@ pub fn emit(
                 versions,
                 &program.files,
                 &program.types,
+                layout,
             )?);
         } else {
             let name = mangle::function_name_for_symbol(&body.instance.symbol);
@@ -75,6 +77,7 @@ pub fn emit(
                 &name,
                 &program.files,
                 &program.types,
+                layout,
             )?);
         }
         main_rs.push('\n');
@@ -88,8 +91,9 @@ fn emit_entry_fn(
     versions: &BuildVersions,
     files: &[std::sync::Arc<crate::source::SourceFile>],
     types: &crate::mir::TypeContext,
+    layout: &crate::layout::TargetLayout,
 ) -> Result<String, BackendDiagnostic> {
-    let block = emit_bodies::emit_block_body(entry, files, types)?;
+    let block = emit_bodies::emit_block_body(entry, files, types, layout)?;
     let mut out = String::new();
     out.push_str("fn main() {\n");
     out.push_str("    let __stark_build_versions = ");

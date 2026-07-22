@@ -104,6 +104,18 @@ wrong one:
 
 ## 4. Consumer contract (the single override point)
 
+> **SUPERSEDED IN PART by CD-067 (WP-C5.3e, 2026-07-23).** This section's `reference_layout` no
+> longer exists. The layout service it called for was built as `starkc/src/layout.rs`: a versioned
+> named contract (`stark-64-v1`) that ALL THREE engines read — the HIR oracle included, which this
+> amendment expected to leave untouched. A4's structural claim held exactly as written (the
+> question survives into MIR, and one named service answers it); what changed is that the service
+> is shared rather than per-consumer, and that a backend does **not** answer from "its target's
+> real layout" in the sense of its own physical representation. Under CD-067 the contract is
+> declared and the backend's representation is unobservable and need not equal it. This is the
+> amendment's own option **(b)**, taken in C5 rather than C4 as it recommended.
+>
+> Read the rest of this section as the historical rationale for the shape, which is unchanged.
+
 Each consumer answers `LayoutQuery` from a **layout service**, not inline:
 
 - **The C4 reference interpreter** gets one function, `fn reference_layout(ty: &MirTy) -> (u64, u64)`

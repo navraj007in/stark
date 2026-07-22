@@ -44,6 +44,7 @@ fn build(source: &str, tag: &str) -> Result<(String, std::process::Output), Back
         &verified,
         &NativeBuildOptions {
             target_dir: target_dir.clone(),
+            target_contract: "stark-64-v1".to_string(),
         },
     )?;
     let generated = std::fs::read_to_string(artifact.build_dir.join("src/main.rs")).unwrap();
@@ -616,6 +617,7 @@ fn main() {
             &verified,
             &NativeBuildOptions {
                 target_dir: target_dir.clone(),
+                target_contract: "stark-64-v1".to_string(),
             },
         );
         let _ = std::fs::remove_dir_all(&target_dir);
@@ -786,4 +788,137 @@ fn main() {
         generated.contains("move_field") && generated.contains("drop_field_with"),
         "the partial-move path needs both a move and a per-unit drop wrapper:\n{generated}"
     );
+}
+
+// ----------------------------- WP-C5.3e: the target-layout contract in the backend --
+
+/// **CD-067.** A layout query answers from the named target CONTRACT, emitted as a constant. It
+/// must not be `core::mem::size_of::<T>()`: that reports this backend's private physical
+/// representation, which would make an observable language answer depend on a transitional
+/// backend and on `repr(Rust)`'s deliberately unspecified field ordering.
+///
+/// The generated crate also asserts NOTHING about its own layout, and its nominals are not
+/// `#[repr(C)]`. A host-layout assertion would enforce a rule Core v1 does not have — that the
+/// contract equal the backend's representation — and would obstruct a later backend implementing
+/// the same contract over a different one.
+#[test]
+fn layout_queries_emit_contract_constants_and_assert_nothing_about_rust_layout() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct Padded { a: Int8, b: Int64 }
+
+fn main() {
+    assert_eq(size_of::<Int32>(), 4);
+    assert_eq(align_of::<Int64>(), 8);
+    assert_eq(size_of::<Padded>(), 16);
+    assert_eq(size_of::<[Int32; 4]>(), 16);
+    assert_eq(size_of::<Option<Int32>>(), 8);
+}
+"#;
+    let (generated, run) = build(source, "layoutcontract").expect("layout queries must build");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    assert!(
+        !generated.contains("core::mem::size_of") && !generated.contains("core::mem::align_of"),
+        "a layout query must not read the host representation:\n{generated}"
+    );
+    // The contract's values appear as plain constants.
+    for constant in ["4u64", "8u64", "16u64"] {
+        assert!(
+            generated.contains(constant),
+            "expected the contract constant {constant} in the generated source:\n{generated}"
+        );
+    }
+    // No host-layout cross-check, and no repr(C) added for one.
+    assert!(
+        !generated.contains("repr(C)"),
+        "generated nominals must stay repr(Rust); CD-067 rejected repr(C)-for-cross-check:\n{generated}"
+    );
+    assert!(
+        !generated.contains("assert!(core::mem::"),
+        "the generated crate must assert nothing about its own physical layout:\n{generated}"
+    );
+}
+
+/// The contract's identity reaches the build report, so a build's observable layout answers can be
+/// attributed to a named contract at a stated version.
+///
+/// Built inline rather than through `build()`, which deletes its target directory on the way out.
+#[test]
+fn the_build_report_records_the_layout_contract_identity() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = "fn main() { assert_eq(size_of::<Int32>(), 4); }\n";
+    let file = Arc::new(SourceFile::new("c5_3_report.stark", source.to_string()));
+    let (ast, _) = parse(&file, ParseMode::Program);
+    let (hir, _) = resolve(&ast, file.clone());
+    let checked = typecheck::analyze(&hir, file.clone());
+    let Ok(program) = lower_program(&hir, &checked.tables, file) else {
+        panic!("must lower");
+    };
+    let verified = verify_program(&program).unwrap_or_else(|e| panic!("must verify: {e:?}"));
+    let target_dir = std::env::temp_dir().join(format!("stark_c5_3_report_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&target_dir);
+    let artifact = emit_native_debug(
+        &verified,
+        &NativeBuildOptions {
+            target_dir: target_dir.clone(),
+            target_contract: "stark-64-v1".to_string(),
+        },
+    )
+    .expect("must build");
+    let manifest =
+        std::fs::read_to_string(artifact.build_dir.join("build.json")).expect("build.json");
+    let _ = std::fs::remove_dir_all(&target_dir);
+    for field in [
+        "\"target_contract\": \"stark-64-v1\"",
+        "\"layout_contract_version\": 1",
+        "\"compiler_layout_revision\": 1",
+    ] {
+        assert!(
+            manifest.contains(field),
+            "the build report must carry {field}:\n{manifest}"
+        );
+    }
+}
+
+/// An unknown target contract is REJECTED before emission, not silently defaulted: a layout answer
+/// is observable and target-specific (LAYOUT-ABI-001).
+#[test]
+fn an_unknown_target_contract_is_rejected_before_emission() {
+    let source = "fn main() { assert_eq(size_of::<Int32>(), 4); }\n";
+    let file = Arc::new(SourceFile::new("c5_3_badtarget.stark", source.to_string()));
+    let (ast, _) = parse(&file, ParseMode::Program);
+    let (hir, _) = resolve(&ast, file.clone());
+    let checked = typecheck::analyze(&hir, file.clone());
+    let Ok(program) = lower_program(&hir, &checked.tables, file) else {
+        panic!("must lower");
+    };
+    let verified = verify_program(&program).unwrap_or_else(|e| panic!("must verify: {e:?}"));
+    let result = emit_native_debug(
+        &verified,
+        &NativeBuildOptions {
+            target_dir: std::env::temp_dir().join("stark_c5_3_badtarget"),
+            target_contract: "stark-128-v9".to_string(),
+        },
+    );
+    let Err(err) = result else {
+        panic!("an unknown contract must be refused");
+    };
+    match err {
+        BackendDiagnostic::Unsupported(message) => assert!(
+            message.contains("no layout contract named"),
+            "unexpected refusal: {message}"
+        ),
+        other => panic!("expected an Unsupported refusal, got {other:?}"),
+    }
 }

@@ -289,6 +289,7 @@ fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> Outco
     let _ = std::fs::remove_dir_all(&target_dir);
     let options = NativeBuildOptions {
         target_dir: target_dir.clone(),
+        target_contract: "stark-64-v1".to_string(),
     };
     let artifact = emit_native_debug(&verified, &options)
         .unwrap_or_else(|e| panic!("{name}: native build failed: {e:?}"));
@@ -944,37 +945,127 @@ three_engine_test!(
 "#
 );
 
-// LAYOUT QUERIES ARE DELIBERATELY NOT ASSERTED FOR VALUE AGREEMENT HERE -- see CD-056.
+// ============================ WP-C5.3e: the target-layout contract, EXACT values --
 //
-// §14's C5.3 exit lists "target layout queries" among the dimensions requiring three-engine
-// agreement, but the three engines cannot currently agree on layout VALUES and it is not obvious
-// they should: both interpreters answer 8 for every type (`mir::interp::reference_layout`'s
-// "reference target", whose own doc says a real per-type algorithm is the backend's job), while
-// the native engine answers its actual Rust target layout (`size_of::<i32>() == 4`). The harness
-// found this immediately: `assert_eq(size_of::<Int32>(), 4)` traps in both interpreters and
-// succeeds natively.
+// CD-058 required exact values under one injectable manifest; CD-056's relations-only placeholder
+// that used to live here is gone. CD-067 settled what "exact" is measured against: the named
+// target CONTRACT (`stark-64-v1`), not any backend's physical representation. All three engines
+// read `crate::layout`; the native backend emits contract CONSTANTS rather than
+// `core::mem::size_of`, and asserts nothing about the generated crate's own layout -- generated
+// types stay `repr(Rust)` and remain free to reorder fields and use niches, which no STARK
+// program can observe.
 //
-// That is a semantic question about what LAYOUT-ABI-001's target-dependence means for a
-// three-engine comparator, not a backend defect, and it is with the owner. Until it is settled
-// this file asserts only that a layout query RUNS in all three engines and agrees on
-// completion-vs-trap -- which is real coverage of the emission path without pretending the value
-// question is answered.
+// These values are FROZEN. Changing either a manifest entry or a combinator rule breaks them,
+// which is what makes the contract falsifiable on its own terms.
+
 three_engine_test!(
-    layout_queries_run_in_all_three_engines,
-    "agg_layout",
+    layout_primitives_agree_exactly,
+    "layout_prim",
     completes,
     r#"fn main() {
-    let a: UInt64 = size_of::<Int32>();
-    let b: UInt64 = align_of::<Int32>();
-    let c: UInt64 = size_of::<Bool>();
-    let d: UInt64 = align_of::<Char>();
-    // Only relations that hold under BOTH layout answers are asserted: a query is deterministic
-    // within one engine, and alignment is never larger than size for these primitives.
-    let a2: UInt64 = size_of::<Int32>();
-    assert_eq(a, a2);
-    assert(b <= a);
-    assert(c >= 1);
-    assert(d >= 1);
+    assert_eq(size_of::<Int8>(), 1);
+    assert_eq(size_of::<Int16>(), 2);
+    assert_eq(size_of::<Int32>(), 4);
+    assert_eq(size_of::<Int64>(), 8);
+    assert_eq(size_of::<UInt8>(), 1);
+    assert_eq(size_of::<UInt16>(), 2);
+    assert_eq(size_of::<UInt32>(), 4);
+    assert_eq(size_of::<UInt64>(), 8);
+    assert_eq(size_of::<Float32>(), 4);
+    assert_eq(size_of::<Float64>(), 8);
+    assert_eq(size_of::<Bool>(), 1);
+    assert_eq(size_of::<Char>(), 4);
+    assert_eq(size_of::<Unit>(), 0);
+    assert_eq(align_of::<Int8>(), 1);
+    assert_eq(align_of::<Int32>(), 4);
+    assert_eq(align_of::<Int64>(), 8);
+    assert_eq(align_of::<Float64>(), 8);
+    assert_eq(align_of::<Bool>(), 1);
+    assert_eq(align_of::<Char>(), 4);
+    assert_eq(align_of::<Unit>(), 1);
+}
+"#
+);
+
+// Padding is where a layout algorithm is actually decided, so the tuple cases are chosen to make
+// each rule fail on its own: inter-field padding, trailing padding, and the fact that declaration
+// ORDER matters (which is precisely what `repr(Rust)` is free to optimise away and the contract is
+// not).
+three_engine_test!(
+    layout_tuples_agree_exactly,
+    "layout_tuple",
+    completes,
+    r#"fn main() {
+    assert_eq(size_of::<(Int32, Int32)>(), 8);
+    assert_eq(align_of::<(Int32, Int32)>(), 4);
+    assert_eq(size_of::<(Int8, Int32)>(), 8);
+    assert_eq(size_of::<(Int32, Int8)>(), 8);
+    assert_eq(size_of::<(Int8, Int8, Int32)>(), 8);
+    assert_eq(size_of::<(Int8, Int64)>(), 16);
+    assert_eq(align_of::<(Int8, Int64)>(), 8);
+    assert_eq(size_of::<(Bool, Bool)>(), 2);
+    assert_eq(align_of::<(Bool, Bool)>(), 1);
+}
+"#
+);
+
+// DEV-099: `size_of::<[T; N]>()` did not lower at all before WP-C5.3e -- an array type in a
+// turbofish fell through to "field type form (C4.5)". Arrays are in the C5.3a subset and the exit
+// matrix requires fixed-array coverage, so this is a required shape, not an adjacent one.
+three_engine_test!(
+    layout_arrays_agree_exactly,
+    "layout_array",
+    completes,
+    r#"fn main() {
+    assert_eq(size_of::<[Int32; 4]>(), 16);
+    assert_eq(align_of::<[Int32; 4]>(), 4);
+    assert_eq(size_of::<[Int8; 3]>(), 3);
+    assert_eq(size_of::<[Int64; 2]>(), 16);
+    assert_eq(align_of::<[Int64; 2]>(), 8);
+    // A padded element strides by its PADDED size: 8, not 5.
+    assert_eq(size_of::<[(Int32, Int8); 3]>(), 24);
+    assert_eq(size_of::<[[Int32; 2]; 3]>(), 24);
+}
+"#
+);
+
+three_engine_test!(
+    layout_structs_agree_exactly,
+    "layout_struct",
+    completes,
+    r#"struct Pair { a: Int32, b: Int32 }
+struct Padded { a: Int8, b: Int64 }
+struct Nested { p: Pair, c: Bool }
+fn main() {
+    assert_eq(size_of::<Pair>(), 8);
+    assert_eq(align_of::<Pair>(), 4);
+    assert_eq(size_of::<Padded>(), 16);
+    assert_eq(align_of::<Padded>(), 8);
+    assert_eq(size_of::<Nested>(), 12);
+    assert_eq(align_of::<Nested>(), 4);
+}
+"#
+);
+
+// The contract always declares a real discriminant. A backend may niche-optimise its own
+// representation; that difference is unobservable and deliberately unasserted (CD-067).
+three_engine_test!(
+    layout_enums_and_core_enums_agree_exactly,
+    "layout_enum",
+    completes,
+    r#"enum Fieldless { A, B, C }
+enum Payload { N, I(Int32), L(Int64) }
+fn main() {
+    assert_eq(size_of::<Fieldless>(), 4);
+    assert_eq(align_of::<Fieldless>(), 4);
+    assert_eq(size_of::<Payload>(), 16);
+    assert_eq(align_of::<Payload>(), 8);
+    assert_eq(size_of::<Ordering>(), 4);
+    assert_eq(size_of::<Option<Int32>>(), 8);
+    assert_eq(align_of::<Option<Int32>>(), 4);
+    assert_eq(size_of::<Option<Int64>>(), 16);
+    assert_eq(size_of::<Result<Int32, Int32>>(), 8);
+    assert_eq(size_of::<Result<Int8, Int64>>(), 16);
 }
 "#
 );

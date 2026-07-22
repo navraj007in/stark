@@ -33,6 +33,21 @@ pub struct NativeBuildOptions {
     /// stable default (and the `target/stark/debug/<binary-name>` user-facing path from §12.3)
     /// is WP-C5.5a's job.
     pub target_dir: PathBuf,
+    /// WP-C5.3e (CD-067): the named layout contract this build answers `size_of`/`align_of` from.
+    /// Resolved through `layout::contract_for`, which REJECTS a name this compiler has no contract
+    /// for rather than falling back to a default -- the answer is observable and target-specific
+    /// (LAYOUT-ABI-001), so a silent default would let a build report values for a target it was
+    /// not asked about. Its identity is part of the build key.
+    pub target_contract: String,
+}
+
+impl Default for NativeBuildOptions {
+    fn default() -> Self {
+        Self {
+            target_dir: PathBuf::from("target/stark"),
+            target_contract: "stark-64-v1".to_string(),
+        }
+    }
 }
 
 pub struct NativeArtifact {

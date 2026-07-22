@@ -22,6 +22,7 @@ pub mod flow;
 pub mod formatter;
 pub mod hir;
 pub mod interp;
+pub mod layout;
 pub mod lexer;
 pub mod literal;
 pub mod lsp;

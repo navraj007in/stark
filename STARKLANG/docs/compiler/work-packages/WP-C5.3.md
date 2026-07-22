@@ -633,10 +633,88 @@ MIR's flags skip the moved-out one; the emitter follows. Per-unit liveness is MI
 closure) are all done. The storage decision it was blocked on is resolved (CD-058) and its
 foundation was C5.3d-0's deliverable.
 
+## C5.3e — the target-layout contract
+
+Done. `starkc/src/layout.rs`.
+
+### What the three engines used to answer
+
+| Engine | Before |
+| --- | --- |
+| HIR oracle | `Value::Int(8)` — hardcoded, and it never read the queried type at all |
+| MIR interpreter | `reference_layout(_ty) = (8, 8)` — type-erased by construction |
+| Native backend | `core::mem::size_of::<RustTy>()` — the real HOST representation (`Int32` → 4) |
+
+`assert_eq(size_of::<Int32>(), 4)` succeeded natively and trapped in both interpreters. Only a
+relations-only placeholder test hid it.
+
+### The authority question, and the decision that settled it
+
+`07-Modules-and-Packages.md` LAYOUT-QUERY-001 says these return "positive **target-contract**
+values" and LAYOUT-ABI-001 says values "may differ between named targets and compiler versions". A
+layout query answers from a *declared contract*, so the **native backend was the non-conforming
+engine** — it reported `repr(Rust)` instead of a contract.
+
+**CD-067 then overruled a recommendation to cross-check the contract against Rust's physical
+layout.** That check would have enforced a stronger rule Core v1 does not have — *the contract must
+equal the generated-Rust backend's representation* — making the contract backend-dependent,
+conflating the language contract with the backend representation and the provider ABI, costing
+field reordering and niche optimisation for no observable gain, and validating agreement with one
+Rust representation rather than the contract's own coherence. Generated nominals therefore stay
+`repr(Rust)`, and the generated crate asserts nothing about its own layout.
+
+Falsifiability comes from the declared algorithm and the frozen values instead.
+
+### What is in place
+
+- **One versioned contract**, `stark-64-v1`, with an identity of `target_contract`,
+  `layout_contract_version` (bumped when a declared value changes — observable) and
+  `compiler_layout_revision` (bumped when the implementation changes without changing a value).
+- **One set of combinators** — `aggregate` (declaration order, natural alignment, tail padding),
+  `array` (stride = element contract size), `sum` (tag + widest variant). Their resemblance to the
+  C rules is a consequence of wanting a deterministic order-preserving rule, not a commitment.
+- **`contract_for` rejects an unknown target** rather than defaulting: a layout answer is
+  observable and target-specific, so a silent fallback would report values for a target nobody
+  asked about.
+- **Two adapters, deliberately.** `TypeChecker::contract_layout` walks checker `Ty`;
+  `TargetLayout::layout_of` walks `MirTy` for the MIR interpreter and the backend. The oracle does
+  not walk types itself — the checker already owns type conversion, generic substitution and the
+  nominal field/variant tables, and reproducing them in the oracle would have been a fourth
+  derivation. Same producer/consumer split as `TypeContext::is_copy`.
+- **Native emits constants** (`4u64`), never `core::mem::size_of`.
+- **Identity in the build key and `build.json`**, with a test pinning that changing a *value*
+  without bumping the *identity* leaves the key stable — deliberate, since the identity is what a
+  build is accountable to and hashing the values would hide exactly the drift it exists to expose.
+
+### Evidence
+
+Five frozen exact-value matrices agreeing across all three engines — primitives, tuples (the
+padding rules, chosen so each fails independently), arrays, structs, and enums including
+`Option`/`Result`/`Ordering`. Eight mutation tests: change a primitive entry, drop the inter-field
+alignment rule, drop trailing padding, take the first variant instead of the widest, change the
+tag, reorder fields, request an unknown target, and check the identity.
+
+**One mutation test initially could not fail.** The field-alignment mutant first used
+`(Int8, Int64)`, where correct and mutant both give 16 because the trailing round-up hides the
+missing gap. Rewritten on `(Int8, Int32, Int8)` — 12 correct, 8 mutant.
+
+**DEV-099 fixed as a prerequisite**: `hir_field_ty` now handles an array type, so
+`size_of::<[Int32; 4]>()` lowers. It previously died with "field type form (C4.5)".
+
+### DEV-100 — an engine divergence this work exposed
+
+`size_of::<T>()` inside a generic body: MIR and native answer correctly (monomorphised); the oracle
+refuses. **The HIR oracle has no generic type substitution at all** — no `param_subst`, no
+`Ty::Param` handling anywhere — and the checker records one answer per query expression, while a
+generic body is checked once with `Ty::Param`.
+
+The divergence is newly *visible*, not newly created: both engines previously answered a hardcoded
+8 and agreed by being equally wrong. Not reachable from the frozen matrix (all concrete types), but
+it is an engine divergence under the charter's six-clause rule and needs an owner disposition.
+
 ## C5.3 exit
 
-**One condition outstanding.** §14 requires three-engine agreement for aggregate values (C5.3a:
-done), payload variants (C5.3b: done), match paths (done), Option/Result (C5.3c: done), `?` (C5.3c:
-done), the dedicated C5 Drop fixture (**C5.3d-1c: done**), and target layout queries — **defined by
-CD-058 as exact values under one injectable target-layout manifest; the current relations-only case
-is a placeholder, not evidence**. C5.3e is therefore the only remaining C5.3 exit item.
+§14's dimensions are all discharged: aggregate values (C5.3a), payload variants (C5.3b), match
+paths, Option/Result and `?` (C5.3c), the dedicated C5 Drop fixture (C5.3d-1c), and target layout
+queries — **exact values under one versioned contract, per CD-058 as amended by CD-067**. DEV-100
+is open and needs disposition before closure is claimed.

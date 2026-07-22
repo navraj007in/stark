@@ -25,8 +25,13 @@ pub fn build_and_link(
         .to_string();
     let versions = version::build_versions(rustc_version, target_triple);
 
-    let source = emit_program::emit(program, &versions)?;
-    let build_key = compute_build_key(program, &versions);
+    // WP-C5.3e (CD-067): resolve the requested named contract BEFORE emitting. An unknown name
+    // is rejected here rather than defaulted, because a layout answer is observable and
+    // target-specific -- a silent fallback would report values for a target nobody asked about.
+    let layout = crate::layout::contract_for(&options.target_contract)
+        .map_err(|e| BackendDiagnostic::Unsupported(e.0))?;
+    let source = emit_program::emit(program, &versions, &layout)?;
+    let build_key = compute_build_key(program, &versions, &layout);
     let crate_dir = options.target_dir.join("debug").join(&build_key);
     let src_dir = crate_dir.join("src");
     std::fs::create_dir_all(&src_dir)
@@ -40,7 +45,7 @@ pub fn build_and_link(
     write_file(&src_dir.join("main.rs"), &source.main_rs)?;
     write_file(
         &crate_dir.join("build.json"),
-        &build_manifest_json(&versions, &build_key),
+        &build_manifest_json(&versions, &build_key, &layout),
     )?;
 
     // §11.3 offline rule: `stark-runtime` is dependency-free, so `--offline` never needs a
@@ -142,9 +147,13 @@ fn generated_cargo_toml(runtime_path: &Path) -> String {
 /// it was recorded rather than fixed at the time. It is fixed **before** WP-C5.3 makes it
 /// reachable, which is what "opening condition" means: the key covers every semantic input that
 /// can affect generated code, not merely the ones the current backend happens to read.
-fn compute_build_key(program: &MirProgram, versions: &BuildVersions) -> String {
+fn compute_build_key(
+    program: &MirProgram,
+    versions: &BuildVersions,
+    layout: &crate::layout::TargetLayout,
+) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(build_key_input(program, versions).as_bytes());
+    hasher.update(build_key_input(program, versions, layout).as_bytes());
     let digest = hasher.finalize();
     digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -169,7 +178,11 @@ fn compute_build_key(program: &MirProgram, versions: &BuildVersions) -> String {
 ///   `drop_impls` determines which destructor a `Drop` terminator dispatches to; `copy_types`
 ///   determines whether a move is a copy. None of these appear in `dump()`. This is DEV-095.
 /// - **bodies** — `dump()`, which is already the contract's deterministic body serialization.
-fn build_key_input(program: &MirProgram, versions: &BuildVersions) -> String {
+fn build_key_input(
+    program: &MirProgram,
+    versions: &BuildVersions,
+    layout: &crate::layout::TargetLayout,
+) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
 
@@ -186,6 +199,23 @@ fn build_key_input(program: &MirProgram, versions: &BuildVersions) -> String {
     let _ = writeln!(out, "rustc={}", versions.rustc_version);
     let _ = writeln!(out, "target={}", versions.target_triple);
     let _ = writeln!(out, "profile={}", versions.profile);
+
+    // WP-C5.3e (CD-067): the layout contract's IDENTITY, not its values. Two builds that answer
+    // `size_of` differently must not share a cache entry, and the identity is what a build report
+    // can be held to. The contract version and the compiler's revision of it move independently:
+    // the first changes observable answers, the second does not.
+    let _ = writeln!(out, "[layout]");
+    let _ = writeln!(out, "target-contract={}", layout.identity.target_contract);
+    let _ = writeln!(
+        out,
+        "layout-contract-version={}",
+        layout.identity.layout_contract_version
+    );
+    let _ = writeln!(
+        out,
+        "compiler-layout-revision={}",
+        layout.identity.compiler_layout_revision
+    );
 
     let _ = writeln!(out, "[entry]");
     let _ = writeln!(out, "{}", super::mangle::ENTRY_SYMBOL);
@@ -243,11 +273,19 @@ fn join_tys<'a>(tys: impl Iterator<Item = &'a crate::mir::MirTy>) -> String {
     tys.map(crate::mir::dump_ty).collect::<Vec<_>>().join(", ")
 }
 
-fn build_manifest_json(versions: &BuildVersions, build_key: &str) -> String {
+/// WP-C5.3e (CD-067): the report carries the layout contract's IDENTITY, so a build's observable
+/// `size_of`/`align_of` answers can always be attributed to a named contract at a stated version.
+fn build_manifest_json(
+    versions: &BuildVersions,
+    build_key: &str,
+    layout: &crate::layout::TargetLayout,
+) -> String {
     format!(
         "{{\n  \"build_key\": {},\n  \"compiler_version\": {},\n  \"mir_version\": {},\n  \
          \"mir_runtime_surface\": {},\n  \"runtime_version\": {},\n  \"backend_version\": {},\n  \
-         \"rustc_version\": {},\n  \"target_triple\": {},\n  \"profile\": {}\n}}\n",
+         \"rustc_version\": {},\n  \"target_triple\": {},\n  \"profile\": {},\n  \
+         \"target_contract\": {},\n  \"layout_contract_version\": {},\n  \
+         \"compiler_layout_revision\": {}\n}}\n",
         json_str(build_key),
         json_str(&versions.compiler_version),
         json_str(&versions.mir_version),
@@ -257,6 +295,9 @@ fn build_manifest_json(versions: &BuildVersions, build_key: &str) -> String {
         json_str(&versions.rustc_version),
         json_str(&versions.target_triple),
         json_str(&versions.profile),
+        json_str(&layout.identity.target_contract),
+        layout.identity.layout_contract_version,
+        layout.identity.compiler_layout_revision,
     )
 }
 
@@ -290,6 +331,7 @@ mod tests {
     //! the input that stopped being covered rather than reporting "the key changed" or not.
 
     use super::*;
+    use crate::layout::Layout;
     use crate::mir::{MirProgram, MirTy};
     use crate::parser::{parse, ParseMode};
     use crate::resolve::resolve;
@@ -325,7 +367,7 @@ mod tests {
     }
 
     fn key(p: &MirProgram) -> String {
-        compute_build_key(p, &versions())
+        compute_build_key(p, &versions(), &crate::layout::TargetLayout::default())
     }
 
     /// Baseline: the key is a pure function of its inputs. Without this, every "the key changed"
@@ -473,7 +515,7 @@ mod tests {
     fn every_version_axis_changes_the_key() {
         let p = trivial();
         let base = versions();
-        let baseline = compute_build_key(&p, &base);
+        let baseline = compute_build_key(&p, &base, &crate::layout::TargetLayout::default());
 
         let axes: Vec<VersionMutation> = vec![
             (
@@ -515,10 +557,57 @@ mod tests {
             mutate(&mut v);
             assert_ne!(
                 baseline,
-                compute_build_key(&p, &v),
+                compute_build_key(&p, &v, &crate::layout::TargetLayout::default()),
                 "{label}: version axis is not in the build key"
             );
         }
+    }
+
+    /// WP-C5.3e (CD-067): two builds whose layout contract identity differs answer `size_of`
+    /// differently, so they must not share a cache entry. The contract VERSION and the compiler's
+    /// revision of it move independently and both count.
+    #[test]
+    fn the_build_key_changes_with_the_layout_contract_identity() {
+        let p = trivial();
+        let v = versions();
+        let base = crate::layout::TargetLayout::default();
+        let baseline = compute_build_key(&p, &v, &base);
+
+        let mut renamed = base.clone();
+        renamed.identity.target_contract = "stark-32-v1".to_string();
+        assert_ne!(
+            baseline,
+            compute_build_key(&p, &v, &renamed),
+            "the target contract name is not in the build key"
+        );
+
+        let mut revised = base.clone();
+        revised.identity.layout_contract_version = 2;
+        assert_ne!(
+            baseline,
+            compute_build_key(&p, &v, &revised),
+            "the layout contract version is not in the build key"
+        );
+
+        let mut reimplemented = base.clone();
+        reimplemented.identity.compiler_layout_revision = 2;
+        assert_ne!(
+            baseline,
+            compute_build_key(&p, &v, &reimplemented),
+            "the compiler layout revision is not in the build key"
+        );
+
+        // The VALUES are deliberately not hashed -- the identity is what a build is accountable
+        // to, and hashing values as well would make the key change without the identity changing,
+        // which is precisely the drift the identity exists to make visible.
+        let mut silently_changed = base.clone();
+        silently_changed.int32 = Layout::new(8, 8);
+        assert_eq!(
+            baseline,
+            compute_build_key(&p, &v, &silently_changed),
+            "changing a value without bumping the identity must be visible as a STALE key, not \
+             hidden behind a new one"
+        );
     }
 
     /// The encoding is what tests can diff; this pins that it actually carries every section, so
@@ -526,9 +615,14 @@ mod tests {
     /// weakening every other test in this module.
     #[test]
     fn the_key_input_carries_every_documented_section() {
-        let input = build_key_input(&trivial(), &versions());
+        let input = build_key_input(
+            &trivial(),
+            &versions(),
+            &crate::layout::TargetLayout::default(),
+        );
         for section in [
             "[versions]",
+            "[layout]",
             "[entry]",
             "[sources]",
             "[types.struct_fields]",

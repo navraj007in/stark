@@ -2229,6 +2229,12 @@ impl<'a> Interpreter<'a> {
     ) -> Result<Flow, RuntimeError> {
         match &self.hir.expr(callee).kind {
             hir::ExprKind::Path { res, .. } => match res {
+                // WP-C5.3e: a layout query is intercepted here rather than in `call_builtin`,
+                // because the answer depends on the TYPE ARGUMENT and only the callee expression
+                // identifies it. `call_builtin` receives evaluated values and cannot.
+                Res::Builtin(b @ (Builtin::SizeOf | Builtin::AlignOf)) => {
+                    self.layout_query(*b, callee, span).map(Flow::Value)
+                }
                 Res::Builtin(builtin) => match self.eval_call_arguments(args)? {
                     Ok(values) => self.call_builtin(*builtin, values, span).map(Flow::Value),
                     Err(propagated) => Ok(Flow::Propagate(propagated)),
@@ -2326,6 +2332,33 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// WP-C5.3e (CD-067): answer `size_of::<T>()` / `align_of::<T>()` from the selected named
+    /// target CONTRACT.
+    ///
+    /// The oracle previously returned a hardcoded `8` for every query without reading the queried
+    /// type at all. It still does not walk types itself: the CHECKER computes the contract layout,
+    /// because it already owns type conversion, generic substitution and the nominal field and
+    /// variant tables, and reproducing those here would be a fourth derivation of machinery that
+    /// exists. The oracle reads the recorded answer.
+    fn layout_query(
+        &mut self,
+        builtin: Builtin,
+        callee: ExprId,
+        span: Span,
+    ) -> Result<Value, RuntimeError> {
+        let Some(layout) = self.tables.layout_answers.get(&callee).copied() else {
+            return Err(RuntimeError::new(
+                "the target layout contract does not describe this query's type",
+                span,
+            ));
+        };
+        Ok(Value::Int(i128::from(if builtin == Builtin::SizeOf {
+            layout.size
+        } else {
+            layout.align
+        })))
+    }
+
     fn call_builtin(
         &mut self,
         builtin: Builtin,
@@ -2399,7 +2432,13 @@ impl<'a> Interpreter<'a> {
                 }
                 Ok(Value::Unit)
             }
-            Builtin::SizeOf | Builtin::AlignOf => Ok(Value::Int(8)),
+            // WP-C5.3e: unreachable -- `eval_call` intercepts layout queries, which need the
+            // type argument this entry point does not receive. Kept as a loud failure rather
+            // than deleted, so a new call path that misses the interception is caught.
+            Builtin::SizeOf | Builtin::AlignOf => Err(RuntimeError::new(
+                "layout query reached call_builtin, which has no type argument",
+                span,
+            )),
             Builtin::Swap => {
                 let b = args
                     .pop()

@@ -82,10 +82,13 @@ pub fn helper_name(base_ty: &MirTy, projection: &Projection, op: HelperOp) -> St
 
 /// Walk every body and collect the projections that need helpers: sub-place moves, and sub-place
 /// drops. Deduplicated and ordered by helper name.
-pub fn collect(program: &MirProgram) -> Result<Vec<ProjectionHelper>, BackendDiagnostic> {
+pub fn collect(
+    program: &MirProgram,
+    layout: &crate::layout::TargetLayout,
+) -> Result<Vec<ProjectionHelper>, BackendDiagnostic> {
     let mut found: BTreeMap<String, ProjectionHelper> = BTreeMap::new();
     for body in &program.bodies {
-        let env = emit_places::TyEnv::new(body, &program.types);
+        let env = emit_places::TyEnv::new(body, &program.types, layout);
         for block in &body.blocks {
             for (statement, _) in &block.statements {
                 if let Statement::Assign(_, rvalue) = statement {

@@ -150,6 +150,7 @@ pub fn run_program(
         next_generation: 0,
         output: String::new(),
         fuel: FUEL,
+        layout: crate::layout::TargetLayout::default(),
         drop_plans: std::collections::BTreeMap::new(),
     };
     match cx.call(main_index, Vec::new()) {
@@ -172,6 +173,10 @@ struct Interp<'a> {
     next_generation: u64,
     output: String,
     fuel: u64,
+    /// WP-C5.3e: the named target layout contract this run answers `size_of`/`align_of` from.
+    /// Replaces the C4 `reference_layout` stub, whose own doc recorded that it reported one
+    /// machine word for every type until a real target contract existed.
+    layout: crate::layout::TargetLayout,
     /// WP-C5.3d-1b: derived destruction plans, memoised per type.
     ///
     /// The plan is derived from the type context, not from the value, so it is the same on every
@@ -877,14 +882,19 @@ impl<'a> Interp<'a> {
                 };
                 MirValue::Int(i128::from(variant))
             }
-            // A4 (CD-036): answered by the reference layout service — the ONE place a consumer
-            // decides target layout. A C5 backend overrides `reference_layout` and changes
-            // nothing else.
+            // A4 (CD-036) established that a layout query is answered by ONE layout service.
+            // WP-C5.3e (CD-067): answered from the selected named target CONTRACT, not from any
+            // representation this interpreter happens to use for values. A type the contract does
+            // not describe is refused rather than guessed, so no engine can answer a query
+            // another engine must refuse.
             Rvalue::LayoutQuery { kind, ty } => {
-                let (size, align) = reference_layout(ty);
+                let layout = self
+                    .layout
+                    .layout_of(ty, &self.program.types)
+                    .map_err(|e| MirRunError::Internal(e.0))?;
                 MirValue::Int(i128::from(match kind {
-                    LayoutKind::SizeOf => size,
-                    LayoutKind::AlignOf => align,
+                    LayoutKind::SizeOf => layout.size,
+                    LayoutKind::AlignOf => layout.align,
                 }))
             }
             // C4.5b-2: real reference creation (C4.5f-1: stamped with the pointee frame's
@@ -2047,21 +2057,6 @@ fn option_value(v: Option<MirValue>) -> MirValue {
             fields: Vec::new(),
         },
     }
-}
-
-/// The C4 **reference target's** layout service (MIR amendment A4, CD-036): the single point at
-/// which a consumer of MIR decides what `size_of::<T>()` / `align_of::<T>()` answer.
-///
-/// The reference target reports one machine word for every type, which is what both engines have
-/// always reported (WP-C4.6 A4-1's `Const 8` and the HIR oracle's `Value::Int(8)`) — **A4 changed
-/// the representation, not the answer**, so every existing expectation is unchanged and the
-/// `size_of_align_of_agree` differential stays green untouched.
-///
-/// LAYOUT-ABI-001 makes these values target- and version-dependent by design, and CD-015 (C2.9)
-/// fixed no per-type numbers, so a real per-type layout algorithm is **C5.1's target contract**,
-/// not C4's. A backend replaces this function and nothing else.
-fn reference_layout(_ty: &MirTy) -> (u64, u64) {
-    (8, 8)
 }
 
 /// Outcome of a checked/trapping primitive (A5). `Trap(None)` traps with the terminator's own

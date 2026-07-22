@@ -52,6 +52,7 @@ fn compile_and_run(source: &str, tag: &str) -> std::process::Output {
     let _ = std::fs::remove_dir_all(&target_dir);
     let options = NativeBuildOptions {
         target_dir: target_dir.clone(),
+        target_contract: "stark-64-v1".to_string(),
     };
     let artifact = emit_native_debug(&verified, &options)
         .unwrap_or_else(|e| panic!("{tag} native build failed: {e:?}"));

@@ -39,10 +39,11 @@ pub fn emit_function(
     name: &str,
     files: &[Arc<SourceFile>],
     types: &TypeContext,
+    layout: &crate::layout::TargetLayout,
 ) -> Result<String, BackendDiagnostic> {
     let params = emit_param_list(body, types)?;
     let ret_ty = emit_types::emit_ty(&body.ret)?;
-    let block = emit_block_body(body, files, types)?;
+    let block = emit_block_body(body, files, types, layout)?;
     Ok(format!("fn {name}({params}) -> {ret_ty} {block}"))
 }
 
@@ -98,8 +99,9 @@ pub fn emit_block_body(
     body: &MirBody,
     files: &[Arc<SourceFile>],
     types: &TypeContext,
+    layout: &crate::layout::TargetLayout,
 ) -> Result<String, BackendDiagnostic> {
-    let env = &TyEnv::new(body, types);
+    let env = &TyEnv::new(body, types, layout);
     validate_ephemeral_references(body, env)?;
     let mut out = String::from("{\n");
 
@@ -727,15 +729,20 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
                 }
             })
         }
+        // WP-C5.3e (CD-067): a layout query answers from the selected named target CONTRACT,
+        // emitted as a CONSTANT. It must NOT be `core::mem::size_of::<T>()`: that would report
+        // this backend's private physical representation, making the observable answer depend on
+        // a transitional backend and on `repr(Rust)`'s deliberately unspecified field ordering.
+        // The generated crate is free to lay its types out however rustc likes -- nothing here
+        // asserts the two agree, because no STARK program can observe that they do.
         Rvalue::LayoutQuery { kind, ty } => {
-            let rust_ty = emit_types::emit_ty(ty)?;
+            let layout = env
+                .layout
+                .layout_of(ty, env.types)
+                .map_err(|e| BackendDiagnostic::Unsupported(format!("layout query: {}", e.0)))?;
             Ok(match kind {
-                crate::mir::LayoutKind::SizeOf => {
-                    format!("(core::mem::size_of::<{rust_ty}>() as u64)")
-                }
-                crate::mir::LayoutKind::AlignOf => {
-                    format!("(core::mem::align_of::<{rust_ty}>() as u64)")
-                }
+                crate::mir::LayoutKind::SizeOf => format!("{}u64", layout.size),
+                crate::mir::LayoutKind::AlignOf => format!("{}u64", layout.align),
             })
         } // No catch-all: every `Rvalue` variant is handled as of WP-C5.3d-1a (`RefOf` was the
           // last), so a new one stops compilation instead of silently degrading.
@@ -1145,7 +1152,8 @@ mod tests {
         );
 
         let body = env_body();
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
         let ty = MirTy::Enum(EnumRef::User(crate::hir::ItemId(2)), vec![]);
         let glue = emit_drop_glue(&ty, "__v", &env).expect("enum glue must emit");
 
@@ -1201,7 +1209,8 @@ mod tests {
             ],
         );
         let body = env_body();
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
         let ty = MirTy::Enum(EnumRef::User(crate::hir::ItemId(3)), vec![]);
         let glue = emit_drop_glue(&ty, "__v", &env).expect("glue must emit");
         assert!(
@@ -1222,7 +1231,8 @@ mod tests {
             .enum_variants
             .insert((3, vec![]), vec![vec![MirTy::Int32], vec![]]);
         let body = env_body();
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
         let ty = MirTy::Enum(EnumRef::User(crate::hir::ItemId(3)), vec![]);
         assert_eq!(
             emit_drop_glue(&ty, "__v", &env).expect("glue must emit"),
@@ -1416,7 +1426,8 @@ mod tests {
             .insert((1, vec![]), "Inner::drop@[]".to_string());
         let inner = MirTy::Struct(crate::hir::ItemId(1), vec![]);
         let body = env_body();
-        let env = TyEnv::new(&body, &types);
+        let layout = crate::layout::TargetLayout::default();
+        let env = TyEnv::new(&body, &types, &layout);
 
         let tuple = MirTy::Tuple(vec![MirTy::Int32, inner.clone()]);
         let glue = emit_drop_glue(&tuple, "__v", &env).expect("tuple glue must emit");

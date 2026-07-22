@@ -1025,6 +1025,26 @@ impl<'a> FnLowerer<'a> {
                 mutable: *mutable,
                 inner: Box::new(self.hir_field_ty(*inner)?),
             }),
+            // DEV-099 (WP-C5.3e): an ARRAY in a type position. Previously this fell through to
+            // "field type form (C4.5)", so `size_of::<[Int32; 4]>()` failed to lower even though
+            // arrays are inside the C5.3a aggregate subset and the layout exit matrix requires
+            // fixed-array coverage.
+            //
+            // The length is read the same way `typecheck::convert_hir_type` reads it — HIR stores
+            // only the length's SPAN, so both sides parse the literal text. The checker falls back
+            // to 0 on a non-literal length; refusing here instead is deliberate, because a wrong
+            // length silently changes an observable layout answer whereas a refusal is
+            // deterministic and visible.
+            hir::TypeKind::Array { elem, len } => {
+                let text = self.text(*len);
+                let Ok(count) = text.parse::<u64>() else {
+                    return unsupported(
+                        format!("array length `{text}` is not a literal count (C4.5)"),
+                        span,
+                    );
+                };
+                Ok(MirTy::Array(Box::new(self.hir_field_ty(*elem)?), count))
+            }
             hir::TypeKind::Tuple(elems) => Ok(MirTy::Tuple(
                 elems
                     .iter()

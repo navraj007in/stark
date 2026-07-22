@@ -158,6 +158,15 @@ pub struct TypeChecker<'a> {
     /// containing `Ty::Infer` once inference completes is rejected with E0004
     /// (TYPE-GENERIC-001 / TYPE-FN-002 — the DEV-064 fix).
     generic_insts: HashMap<ExprId, Vec<Ty>>,
+    /// WP-C5.3e: the CONTRACT layout of each `size_of::<T>()` / `align_of::<T>()` type argument,
+    /// keyed by the builtin's own path expression. Kept OUT of `generic_insts` deliberately: that
+    /// table drives MIR monomorphisation of generic fn instances, and a layout query is not one.
+    ///
+    /// Computed here rather than in the HIR oracle because this is where type conversion, generic
+    /// substitution and the nominal field/variant tables already live.
+    layout_answers: HashMap<ExprId, crate::layout::Layout>,
+    /// The named target contract layout answers come from (CD-067).
+    layout: crate::layout::TargetLayout,
 
     // Scopes context
     current_self_ty: Option<Ty>,
@@ -216,6 +225,11 @@ pub struct TypeTables {
     /// the enclosing instantiation substitutes its own arguments. Entries never contain
     /// `Ty::Infer` — undetermined instantiations are rejected during checking (E0004).
     pub generic_insts: HashMap<ExprId, Vec<Ty>>,
+    /// WP-C5.3e: the contract layout of each layout query's type argument, keyed by the builtin's
+    /// path expression. The HIR oracle reads this to answer `size_of`/`align_of`; before it
+    /// existed the oracle returned a hardcoded `8` without even looking at the queried type.
+    /// Absent when the contract does not describe the type, which every engine then refuses.
+    pub layout_answers: HashMap<ExprId, crate::layout::Layout>,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +278,8 @@ pub fn analyze_with_options(
         const_types: HashMap::new(),
         alias_stack: Vec::new(),
         generic_insts: HashMap::new(),
+        layout_answers: HashMap::new(),
+        layout: crate::layout::TargetLayout::default(),
         current_self_ty: None,
         current_assoc_types: HashMap::new(),
         current_fn_ret: None,
@@ -324,6 +340,8 @@ pub fn analyze_with_options(
         }
         generic_insts.insert(expr_id, grounded);
     }
+    let layout_answers = checker.layout_answers.clone();
+
     undetermined.sort_by_key(|span| (span.lo, span.hi));
     for span in undetermined {
         checker.diags.push(
@@ -349,6 +367,7 @@ pub fn analyze_with_options(
         local_mutability: checker.local_mutability,
         fn_types,
         generic_insts,
+        layout_answers,
     };
     diagnostics.extend(crate::interp::check_constants(hir, file, &tables));
     TypeCheckResult {
@@ -3858,7 +3877,23 @@ impl<'a> TypeChecker<'a> {
                         if let Some(ref args) = turbofish {
                             for arg in &args.args {
                                 if let hir::GenericArg::Type(type_id) = arg {
-                                    self.type_from_hir_without_diagnostics(*type_id);
+                                    // WP-C5.3e: the resolved type's CONTRACT LAYOUT is recorded
+                                    // now. It was previously computed and discarded, which is
+                                    // why the HIR oracle had no way to answer per type. A type
+                                    // the contract does not describe records nothing, and every
+                                    // engine then refuses the query rather than inventing a
+                                    // number.
+                                    // WP-C5.3e: the FULL conversion, not
+                                    // `type_from_hir_without_diagnostics` -- that helper handles
+                                    // only primitives, bare nominals and references, dropping
+                                    // generic arguments and mapping tuples/arrays to `Ty::Error`.
+                                    // It was adequate when the result was discarded; a layout
+                                    // answer needs the real type.
+                                    let ty = self.convert_hir_type(*type_id);
+                                    let ty = self.ground(&ty);
+                                    if let Ok(layout) = self.contract_layout(&ty) {
+                                        self.layout_answers.insert(expr_id, layout);
+                                    }
                                 }
                             }
                         }
@@ -4987,6 +5022,138 @@ impl<'a> TypeChecker<'a> {
             }
             hir::PatKind::Error => Ty::Error,
         }
+    }
+
+    /// WP-C5.3e (CD-067): the CHECKER-type walker into the shared layout combinators.
+    ///
+    /// One of the two adapters the contract needs. The other walks `MirTy` and serves the MIR
+    /// interpreter and the native backend. They cannot share a walk — the representations
+    /// genuinely differ — so the *algorithm* is shared instead (`crate::layout`'s combinators) and
+    /// only the traversal is duplicated. Same producer/consumer split as `TypeContext::is_copy`.
+    ///
+    /// Declaration order is read from the HIR item, not from the checker's name-keyed
+    /// `struct_fields` map: layout depends on field order and a `HashMap` has none.
+    fn contract_layout(
+        &self,
+        ty: &Ty,
+    ) -> Result<crate::layout::Layout, crate::layout::LayoutError> {
+        use crate::layout::{LayoutError, Scalar};
+        let t = &self.layout;
+        let unsupported = |what: String| {
+            LayoutError(format!(
+                "the {} layout contract does not describe {what}",
+                t.identity.target_contract
+            ))
+        };
+        Ok(match ty {
+            Ty::Primitive(p) => t.scalar(match p {
+                Primitive::Int8 => Scalar::Int8,
+                Primitive::Int16 => Scalar::Int16,
+                Primitive::Int32 => Scalar::Int32,
+                Primitive::Int64 => Scalar::Int64,
+                Primitive::UInt8 => Scalar::UInt8,
+                Primitive::UInt16 => Scalar::UInt16,
+                Primitive::UInt32 => Scalar::UInt32,
+                Primitive::UInt64 => Scalar::UInt64,
+                Primitive::Float32 => Scalar::Float32,
+                Primitive::Float64 => Scalar::Float64,
+                Primitive::Bool => Scalar::Bool,
+                Primitive::Char => Scalar::Char,
+                Primitive::Unit => Scalar::Unit,
+                other => return Err(unsupported(format!("the primitive {other:?}"))),
+            }),
+            Ty::Ref { .. } => t.scalar(Scalar::Reference),
+            Ty::Fn { .. } => t.scalar(Scalar::FnValue),
+            Ty::Tuple(elems) => {
+                let mut fields = Vec::with_capacity(elems.len());
+                for elem in elems {
+                    fields.push(self.contract_layout(elem)?);
+                }
+                t.aggregate(fields)
+            }
+            Ty::Array(elem, len) => {
+                let elem = self.contract_layout(elem)?;
+                t.array(elem, *len)
+            }
+            Ty::Struct(item, args) => {
+                let hir::ItemKind::Struct { fields, .. } = &self.hir.item(*item).kind else {
+                    return Err(unsupported(format!("struct item {item:?}")));
+                };
+                let table = self.struct_fields.get(item).ok_or_else(|| {
+                    unsupported(format!("struct item {item:?} without a field table"))
+                })?;
+                let map = self.nominal_param_map(*item, args);
+                let mut laid_out = Vec::with_capacity(fields.len());
+                for field in fields {
+                    let name: String = self.item_text(*item, field.name).to_string();
+                    let field_ty = table
+                        .get(name.as_str())
+                        .ok_or_else(|| unsupported(format!("struct field `{name}`")))?;
+                    let field_ty = self.instantiate_ty(field_ty, &map);
+                    laid_out.push(self.contract_layout(&field_ty)?);
+                }
+                t.aggregate(laid_out)
+            }
+            Ty::Enum(item, args) => {
+                let variants = self
+                    .enum_variants
+                    .get(item)
+                    .ok_or_else(|| unsupported(format!("enum item {item:?}")))?;
+                let map = self.nominal_param_map(*item, args);
+                let mut laid_out = Vec::with_capacity(variants.len());
+                for variant in variants {
+                    let payload =
+                        match &variant.fields {
+                            VariantFields::Unit => Vec::new(),
+                            VariantFields::Tuple(tys) => tys.clone(),
+                            // A struct-shaped variant's fields live in a `HashMap`, which has no
+                            // declaration order — and layout depends on order. Refused rather than
+                            // laid out in an arbitrary one.
+                            VariantFields::Struct(_) => return Err(unsupported(
+                                "a struct-shaped enum variant, whose field order this table does \
+                                 not preserve"
+                                    .to_string(),
+                            )),
+                        };
+                    let mut fields = Vec::with_capacity(payload.len());
+                    for field_ty in &payload {
+                        let field_ty = self.instantiate_ty(field_ty, &map);
+                        fields.push(self.contract_layout(&field_ty)?);
+                    }
+                    laid_out.push(t.aggregate(fields));
+                }
+                t.sum(laid_out)
+            }
+            // The core enums' payloads are derived from their type arguments, exactly as
+            // `mir::drop_plan::variant_payloads` derives them for the other adapter.
+            Ty::Core(CoreType::Option, args) => {
+                let inner = args
+                    .first()
+                    .ok_or_else(|| unsupported("Option without a type argument".to_string()))?;
+                let inner = self.contract_layout(inner)?;
+                t.sum([t.aggregate([]), t.aggregate([inner])])
+            }
+            Ty::Core(CoreType::Result, args) => {
+                let ok = args
+                    .first()
+                    .ok_or_else(|| unsupported("Result without an Ok argument".to_string()))?;
+                let err = args
+                    .get(1)
+                    .ok_or_else(|| unsupported("Result without an Err argument".to_string()))?;
+                let ok = self.contract_layout(ok)?;
+                let err = self.contract_layout(err)?;
+                t.sum([t.aggregate([ok]), t.aggregate([err])])
+            }
+            Ty::Core(CoreType::Ordering, _) => {
+                t.sum([t.aggregate([]), t.aggregate([]), t.aggregate([])])
+            }
+            other => {
+                return Err(unsupported(format!(
+                    "{other:?}: owning runtime types, unsized types and unsubstituted generic \
+                     parameters have no contract entry"
+                )))
+            }
+        })
     }
 
     fn instantiate_ty(&self, ty: &Ty, map: &HashMap<String, Ty>) -> Ty {
@@ -7243,25 +7410,6 @@ impl<'a> TypeChecker<'a> {
             hir::TypeKind::Ref { mutable, inner } => Ty::Ref {
                 mutable: *mutable,
                 inner: Box::new(self.impl_self_ty_with_args(item, *inner)),
-            },
-            _ => Ty::Error,
-        }
-    }
-
-    fn type_from_hir_without_diagnostics(&self, id: TypeId) -> Ty {
-        match &self.hir.ty(id).kind {
-            hir::TypeKind::Primitive(primitive) => Ty::Primitive(*primitive),
-            hir::TypeKind::Path {
-                res: Res::Item(item),
-                ..
-            } => match &self.hir.item(*item).kind {
-                hir::ItemKind::Struct { .. } => Ty::Struct(*item, Vec::new()),
-                hir::ItemKind::Enum { .. } => Ty::Enum(*item, Vec::new()),
-                _ => Ty::Error,
-            },
-            hir::TypeKind::Ref { mutable, inner } => Ty::Ref {
-                mutable: *mutable,
-                inner: Box::new(self.type_from_hir_without_diagnostics(*inner)),
             },
             _ => Ty::Error,
         }

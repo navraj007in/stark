@@ -2639,6 +2639,149 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
 
   - **C5.3e is now the ONLY remaining C5.3 exit condition** — every other §14 item is discharged.
 
+- DEV-099 [2026-07-23, found while scoping C5.3e, PRE-EXISTING] **A layout query on an ARRAY type
+  fails to lower.** `size_of::<[Int32; 4]>()` reaches lowering and dies with "field type form
+  (C4.5)" — `hir_field_ty` does not handle an array type in a turbofish position. Every other
+  queryable shape works: primitives, tuples, structs, user enums, `String`, and a monomorphised
+  generic parameter. Not introduced by C5.3e; recorded because arrays are inside the C5.3a subset,
+  so the gap is visible from the layout-query exit condition. Bounded front-end work, not a
+  semantic question.
+
+- CD-067 [2026-07-23, owner decision, RECOMMENDATION OVERRULED] **The generated crate must NOT
+  cross-check the STARK layout contract against Rust's physical layout, and generated internal
+  nominals must NOT be `#[repr(C)]` for that purpose.**
+
+  - **The authority analysis stands**: the named versioned `TargetLayout` contract is the
+    observable result; physical representation stays unobservable and backend-private. Native
+    lowering emits `4u64`, not `core::mem::size_of::<i32>() as u64`.
+
+  - **Why the recommendation was wrong.** The proposed assertion enforces a stronger, different
+    rule — *the target contract must equal the generated-Rust backend's physical representation* —
+    which Core v1 does not require. It would (a) make the contract **backend-dependent**, so a
+    later Cranelift backend using a different representation while implementing the same contract
+    would be obstructed; (b) **conflate three separate contracts** — the observable language
+    layout contract, the internal backend representation, and the separately versioned provider
+    ABI — when LAYOUT-ABI-001 explicitly says equal `size_of`/`align_of` does not establish
+    interoperation compatibility, so blanket `#[repr(C)]` could later be misread as an internal ABI
+    commitment; (c) **sacrifice representation freedom for no Core-visible gain**, since field
+    reordering and niche optimisation are unobservable and forcing a full `Option` discriminant
+    pays a physical cost for no normative guarantee; and (d) **not actually validate the abstract
+    contract** — it checks agreement with one Rust representation, not that the algorithm is
+    internally coherent, that arrays follow the declared stride, that alignment combinators hold,
+    that enum formulas cover every variant, that all three engines use the same named target, or
+    that the manifest matches its recorded contract version.
+
+  - **The concern about unfalsifiability was valid; the remedy was not.** Falsifiability comes
+    from making the **declared algorithm and manifest independently testable**, not from
+    redefining the contract as "whatever Rust physically chose".
+
+  - **Required instead**: one versioned `TargetLayout`; one deterministic combinator
+    implementation; an explicit target-contract identifier (`target_contract`,
+    `layout_contract_version`, `compiler_layout_revision`); exact FROZEN values for the C5 layout
+    matrix (primitives, tuples, arrays, structs, user enums, `Option`, `Result`, function values,
+    and every other admitted C5 value); independent HIR-type and MIR-type walks; native constants
+    from the same manifest; mutation tests that alter a primitive, an aggregate rule, or a manifest
+    entry and break agreement; manifest identity in the build key and build report; and rejection
+    when the requested target and manifest identity disagree.
+
+  - **A host-layout comparison may later exist as a non-normative diagnostic** (`--audit-host-layout`)
+    that REPORTS rather than rejects, unless a particular representation explicitly declares
+    `physical_layout_matches_target_contract = true` — useful for provider-ABI types, serialization
+    buffers, memory-mapped structures, or a backend optimisation deliberately relying on physical
+    equivalence. Never for ordinary internal STARK values.
+
+  - **DEV-099 is promoted to a MANDATORY C5.3e prerequisite**, not an adjacent limitation: arrays
+    are in the approved C5 aggregate subset and the exit matrix explicitly requires fixed-array
+    layout coverage, so a deterministic front-end failure on a required layout shape would leave
+    C5.3e incomplete.
+
+  - **Plan correction required** in `WP-C5-ENTRY.md`: replace the language saying generated Rust
+    answers layout queries from its actual generated representation with — "`size_of<T>` and
+    `align_of<T>` return values from the selected versioned STARK `TargetLayout` contract. HIR, MIR
+    and native execution consume that same contract. A backend's internal physical representation
+    is not observable and need not equal those values unless a separate representation contract
+    explicitly requires equivalence."
+
+## C5.3e — target-layout manifest (IN PROGRESS)
+
+**Where the three engines stand today.** They do not agree, and only a relations-only placeholder
+test hides it:
+
+| Engine | Current answer |
+| --- | --- |
+| HIR oracle (`interp.rs`) | `Value::Int(8)` — hardcoded, and it does not even look at the queried type |
+| MIR interpreter | `reference_layout(_ty) = (8, 8)` — type-erased by construction |
+| Native backend | `core::mem::size_of::<RustTy>()` — the real HOST representation (`Int32` → 4) |
+
+`assert_eq(size_of::<Int32>(), 4)` succeeds natively and traps in both interpreters.
+
+**The authority question is already settled by the normative spec, so this is NOT CE-shaped.**
+`07-Modules-and-Packages.md` LAYOUT-QUERY-001 says the queries return "positive **target-contract**
+values", and LAYOUT-ABI-001 says "layout-query values may differ between named targets and compiler
+versions". A layout query answers from a *declared target contract*, not from a measurement of
+whatever the host compiler chose. On that reading the native backend is currently the
+**non-conforming** engine: it reports the host's `repr(Rust)` representation instead of a contract.
+Addresses, offsets, niches and discriminant representation are all explicitly unobservable, so
+nothing in a STARK program can depend on the contract matching the host layout.
+
+**Design.** One injectable `TargetLayout` manifest is the authority; all three engines read it and
+the native backend emits its constants rather than `core::mem::size_of`. The algorithm lives in one
+place as combinators (`primitive`, `aggregate`, `enum_layout`) and each engine walks its own type
+representation into them — the type representations genuinely differ (HIR/checker types vs.
+`MirTy`), so this is the same producer/consumer split as `TypeContext::is_copy`, and it gets the
+same treatment: an empirical agreement check rather than a shared walk.
+
+**The cross-check sub-decision was RESOLVED AGAINST the recommendation by CD-067** — see that
+entry. Falsifiability comes from testing the declared algorithm and the frozen manifest values, not
+from comparing against Rust's private representation. The generated crate emits contract constants
+and asserts nothing about its own physical layout; generated nominals stay `repr(Rust)` and remain
+free to reorder fields and use niches, none of which a STARK program can observe.
+
+**Delivered (7 of 7 directive items).** `src/layout.rs` is the contract: `stark-64-v1`, identity
+`(target_contract, layout_contract_version, compiler_layout_revision)`, one set of combinators
+(`aggregate` / `array` / `sum`), and `contract_for` REJECTING an unknown target rather than
+defaulting. Two independent adapters, as the directive required: `TypeChecker::contract_layout`
+walks checker `Ty` (it owns type conversion, generic substitution and the nominal tables — the
+oracle reproducing them would have been a fourth derivation) and `TargetLayout::layout_of` walks
+`MirTy` for the MIR interpreter and the backend. Native emits `4u64`, never `core::mem::size_of`.
+Five frozen exact-value matrices agree across all three engines (primitives, tuples, arrays,
+structs, enums+`Option`/`Result`/`Ordering`); the CD-056 relations-only placeholder is deleted.
+Eight mutation tests. Layout identity is in the build key and `build.json`, with a test that a
+value changed WITHOUT bumping the identity leaves the key stable — deliberately, since the identity
+is what a build is accountable to and hashing values would hide the drift it exists to expose.
+DEV-099 fixed (`hir_field_ty` now handles arrays).
+
+**Two things found while building it, both reported rather than absorbed:**
+
+- **A mutation test that could not fail.** `dropping_the_field_alignment_rule_changes_the_answer`
+  first used `(Int8, Int64)`, where correct and mutant both give 16 because the trailing round-up
+  hides the missing gap. Rewritten on `(Int8, Int32, Int8)` — 12 correct, 8 mutant. A mutation
+  test that cannot fail is worse than none.
+- **DEV-100**, below: a real engine divergence the contract work exposed.
+
+- DEV-100 [2026-07-23, found by WP-C5.3e, BLOCKS nothing in the frozen matrix but is a live engine
+  divergence] **`size_of::<T>()` inside a generic body: the MIR interpreter answers correctly and
+  the HIR oracle refuses.**
+
+  - `fn f<T>() -> UInt64 { size_of::<T>() }` called as `f::<Int32>()` → MIR/native answer 4; the
+    oracle errors with "the target layout contract does not describe this query's type".
+
+  - **Root cause: the HIR oracle has NO generic type substitution at all** — `grep` finds no
+    `param_subst`, no `type_args`, no `Ty::Param` handling anywhere in `interp.rs`. It is a fully
+    dynamic interpreter that never needed instantiation types. The checker records one layout
+    answer per query expression, and a generic body is checked ONCE with `Ty::Param`, so there is
+    no per-instantiation answer to record.
+
+  - **This divergence is newly VISIBLE, not newly created.** Before C5.3e both engines answered a
+    hardcoded 8 for every type — they agreed by being equally wrong. Making the answer real made
+    the oracle's missing machinery observable.
+
+  - **Not reachable from the C5.3e exit evidence**: the frozen layout matrix is entirely concrete
+    types, and the three-engine harness runs concrete programs. But it is an engine divergence
+    under the charter's six-clause rule and needs an owner disposition — fix (oracle-side
+    substitution: push each call's `generic_insts` entry, resolve `Ty::Param` at the query) or
+    record as a bounded deferral.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
