@@ -9,6 +9,7 @@ pub mod emit_program;
 pub mod emit_projections;
 pub mod emit_runtime;
 pub mod emit_types;
+pub mod linkage;
 pub mod mangle;
 pub mod source_map;
 

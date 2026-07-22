@@ -1299,5 +1299,37 @@ values and indirect calls only. Output support remains future work.
 
 ### 22.2 Sub-package log
 
-_(dated entries appended as each sub-package closes)_
+#### C5.4a — linkage preflight and deterministic symbols — CLOSED 2026-07-23
+
+**Delivered:**
+- `backend/generated_rust/linkage.rs`: the read-only preflight (§6). One `LinkageIndex` keyed by
+  canonical symbol; `LinkageIndex::resolve` proves §6.2.4 identity consistency. It discovers,
+  resolves, monomorphises, and repairs nothing (§6.4) — it validates and refuses.
+- The §6.3 shared exhaustive operand/instance walker (`visit_instance_refs`), matching every
+  `Statement`/`Rvalue`/`Terminator`/`Callee`/`Operand`/`Constant` variant with **no wildcard**, so
+  a new MIR variant fails to compile until the walker is updated.
+- Validations: strict canonical-symbol sort (§6.2.1), symbol uniqueness (§6.2.2), generated-name
+  uniqueness (§6.2.3), referenced-instance completeness + identity match (§6.2.4), exactly one
+  entry (§6.2.5), no non-entry→`main` (§6.2.6), param/return C5-representability via the shared
+  `emit_ty` oracle (§6.2.7).
+- Wired into `emit_program::emit` as the deterministic pre-rustc refusal boundary. Existing
+  `mangle.rs` injectivity/round-trip tests preserved unchanged.
+
+**Evidence (`starkc/tests/native_c5_4_linkage.rs`, 12 tests, all green):** hand-built refusals for
+unsorted / duplicate / missing-body (direct AND function-value) / one-symbol-two-identities /
+no-entry; the function-value-only reference resolving through the same path (§10.5 in miniature);
+the shared walker collecting both ref kinds; and source-driven **real cross-package** proofs — a
+two-package workspace links and **runs natively** (exit 0, cross-package symbol package-qualified
+and emitted exactly once), relocation to a different absolute path leaves canonical symbols
+byte-identical (§11.4/§13.6), and two clean lowerings agree and are already in canonical order.
+
+**No regressions:** native C5.1b/2b/2c/2d/2e/3 + three-engine (57) suites green; `cargo fmt`/`cargo
+clippy --tests` clean.
+
+**Boundaries recorded:** the generated-name-collision and non-entry→`main` checks are
+structurally unreachable from valid input (mangle injectivity + `function_name_for_symbol`
+returning `"main"` only for `ENTRY_SYMBOL`); they are retained as defensive backstops guarding a
+future non-injective sanitiser (mutation guard §13.5 #5), not as reachable refusals. Duplicate
+identical symbols are caught by the strict-sort guard before the duplicate-insert guard; both
+refuse.
 

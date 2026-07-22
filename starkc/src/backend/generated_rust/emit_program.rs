@@ -8,7 +8,7 @@
 //! `emit_bodies::emit_function` with its symbol's sanitized name. Indirect calls through a
 //! function value remain WP-C5.4c.
 
-use super::{emit_bodies, emit_projections, emit_types, mangle, BackendDiagnostic};
+use super::{emit_bodies, emit_projections, emit_types, linkage, mangle, BackendDiagnostic};
 use crate::mir::{MirBody, MirProgram, MirTy};
 use stark_runtime::version::BuildVersions;
 
@@ -21,6 +21,12 @@ pub fn emit(
     versions: &BuildVersions,
     layout: &crate::layout::TargetLayout,
 ) -> Result<GeneratedSource, BackendDiagnostic> {
+    // WP-C5.4a §6: the linkage preflight is the deterministic refusal boundary. It validates the
+    // body set (unique/sorted canonical symbols, unique generated names, every referenced instance
+    // resolving to exactly one body with matching identity) BEFORE any source is assembled, so no
+    // internally-inconsistent or out-of-subset program reaches rustc.
+    let _linkage = linkage::build(program)?;
+
     let entry = program
         .bodies
         .iter()
