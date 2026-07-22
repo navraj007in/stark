@@ -22,7 +22,7 @@
 //! alternative to §13.1's compact-span-ID-plus-runtime-lookup design, not an oversight.
 
 use super::emit_places::TyEnv;
-use super::{emit_places, emit_types, mangle, BackendDiagnostic};
+use super::{emit_places, emit_projections, emit_types, mangle, BackendDiagnostic};
 use crate::mir::drop_plan::{self, DropPlan};
 use crate::mir::{
     AggKind, Callee, CheckedOp, Constant, LocalKind, MirBinOp, MirBody, MirTy, MirUnOp, Operand,
@@ -455,19 +455,36 @@ fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, B
 /// decides nothing about order, coverage, or which components carry an obligation. Those were
 /// previously reconstructed here independently of the interpreter, and the reconstruction had
 /// already drifted (CD-060: the enum arm dropped no payload at all).
+/// WP-C5.3d-1c: a **sub-place** `Drop` goes through a generated `stark_proj` wrapper instead.
+///
+/// This is not an edge case. MIR's drop elaboration decomposes any aggregate with more than one
+/// drop unit into per-unit, flag-guarded `Drop`s on projected places — `drop _1.1` then
+/// `drop _1.0` — so a plain two-droppable-field struct arrives here projected. Collapsing that
+/// into a whole-local drop would violate §7.6 (it would destroy a unit MIR's flags say is already
+/// gone), which is why the previous refusal was correct and why the fix is a real per-unit
+/// operation rather than a relaxation.
 fn emit_drop(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
-    if !place.projection.is_empty() {
-        return Err(BackendDiagnostic::Unsupported(format!(
-            "dropping a SUB-PLACE ({place:?}) needs per-drop-unit liveness in the emitted body; \
-             WP-C5.3d-1. Collapsing it into a whole-local drop would violate §7.6, so it is \
-             refused rather than approximated"
-        )));
-    }
     let ty = env.place_ty(place)?;
     if emit_types::mir_ty_is_copy(&ty, env.types) {
         return Err(BackendDiagnostic::Unsupported(format!(
             "MIR emitted Drop on the Copy type {ty:?}, which has no destructor and no slot"
         )));
+    }
+    if !place.projection.is_empty() {
+        if !emit_places::is_slot_local(place.local.0, env)? {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "sub-place Drop of {place:?} whose base local is not slot-backed: there is no \
+                 per-unit liveness to update"
+            )));
+        }
+        // The wrapper carries the plan; the call site carries none of it, so an emitted body
+        // still contains no destruction logic and no `unsafe`.
+        let helper =
+            emit_projections::collect_for_place(place, env, emit_projections::HelperOp::Drop)?;
+        return Ok(format!(
+            "stark_proj::{helper}(&mut {});",
+            emit_places::local_name(place.local.0)
+        ));
     }
     let glue = emit_drop_glue(&ty, "__v", env)?;
     Ok(format!(
@@ -488,7 +505,7 @@ fn emit_drop_glue(ty: &MirTy, value: &str, env: &TyEnv) -> Result<String, Backen
 /// Every ordering question — destructor before components, components back to front, one arm per
 /// variant, `Copy` components absent — is already answered by the plan's SHAPE. This function
 /// walks it in the order given.
-fn emit_drop_plan(plan: &DropPlan, value: &str) -> Result<String, BackendDiagnostic> {
+pub(super) fn emit_drop_plan(plan: &DropPlan, value: &str) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
     match plan {
         DropPlan::Noop => {}

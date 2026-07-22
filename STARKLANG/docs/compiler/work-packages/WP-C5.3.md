@@ -559,16 +559,84 @@ corrupted plan would leave the output unchanged and every one of these would fai
 Validated with the **full workspace suite**, not the scoped set: `interp.rs` is the semantic
 authority and every differential fixture consumes it.
 
+## C5.3d-1c — Observable destruction closure
+
+Done. Eight three-engine cases in `three_engine_differential.rs`, two native structural cases in
+`native_c5_3_aggregates_enums.rs`, and one implementation gap the fixtures exposed and closed.
+
+### The observation channel, and why the cases are shaped the way they are
+
+The natural way to prove destruction order is a destructor that prints, with the trace compared
+across engines. **That is unavailable natively**: `Callee::Runtime` is entirely unsupported in the
+generated-Rust backend (WP-C5.4c), so there is no native `println` and `NATIVE_STDOUT_SUPPORTED` is
+still `false`. STARK has no globals and no reference fields, so a destructor also cannot record its
+own firing anywhere a later assertion could read it.
+
+What *is* observable in all three engines is a trap: its category and its exact file:line:column.
+So these cases use a **trapping destructor as a position probe**. Traps abort, so the first
+destructor to run is the one that traps, and the trap's line names it. Each case is built so that
+exactly one ordering question decides which line is reported, and destructors that must not both be
+able to fire are given different types so they occupy different lines.
+
+This is a real limitation, not a workaround dressed up: it reads out one bit of order per run.
+Full destruction *tracing* natively is blocked on `RuntimeFn` support and belongs to WP-C5.4c.
+
+### The seven properties
+
+| Property | Case | Probe |
+| --- | --- | --- |
+| A type's own destructor runs before its fields | `own_destructor_runs_before_fields` | `Outer`'s destructor traps; `Inner`'s never entered |
+| Fields destroy in reverse declaration order | `struct_fields_are_destroyed_in_reverse_declaration_order` | last-declared field's destructor is the one reported |
+| An enum destroys its ACTIVE variant's payload | `enum_destroys_the_active_variant_payload_a` / `_b` | mirrored pair; one alone would be satisfied by always destroying variant 0 |
+| A moved value is destroyed by its new owner | `a_moved_value_is_destroyed_by_its_new_owner` | callee's scope end beats a deliberately false assertion in the caller |
+| No destructor runs after a trap | `no_destructor_runs_after_a_trap` | reported outcome is the `DivideByZero`, not the live value's destructor |
+| Exactly once | `a_moved_value_is_destroyed_exactly_once` | completes; a second destruction hits the MIR interpreter's poisoned slot or the native `ValueSlot`'s `Whole` assertion |
+| Partial move with a droppable sibling | `a_partially_moved_value_destroys_only_the_surviving_field` | only the surviving unit's destructor is reached |
+
+Exactly-once is the one property a trap probe cannot show, because a trap aborts on the first
+destruction and a second would never be reached. It is stated as a completing case, and what makes
+completion meaningful is engine-specific: the MIR interpreter poisons a local's slot on `Drop`, and
+the native `ValueSlot` asserts `Whole` in `drop_with`, so a second destruction is a violation rather
+than a silent repeat in both.
+
+### What the fixtures exposed: per-unit (sub-place) destruction
+
+Two cases failed to build, and **not only the partial-move one**. MIR's drop elaboration does not
+emit one whole-local `Drop` for an aggregate with several drop units — it emits **one flag-guarded
+`Drop` per unit, on a projected place**:
+
+```text
+_2, _3: Bool [dropflag]
+bb4:  drop _1.1 -> bb5        // reverse unit order, each guarded by its own flag
+bb6:  drop _1.0 -> bb7
+```
+
+So a plain struct with two droppable fields and no destructor of its own arrives at the backend as
+projected drops. The backend refused those outright, which meant the C5 subset could not compile
+that struct at all. The refusal was **right rather than merely conservative**: collapsing per-unit
+drops into a whole-local one would destroy a unit MIR's flags say is already gone (§7.6).
+
+Closed with a real per-unit operation, not a relaxation: `HelperOp::Drop` generates one wrapper per
+(base type, projection) around `ValueSlot::drop_field_with`, with the unit's `DropPlan` baked into
+the wrapper — a wrapper is already per-(type, projection), which fixes the field type, which fixes
+the plan. Call sites stay plain safe calls, so an emitted body still contains no `unsafe` and no
+destruction logic of its own. A projected `Drop` of an **enum payload** is refused with a stated
+reason: an enum's payload is destroyed by the whole-enum plan's variant match, and the `&mut T`
+projection form needs a complete value the drop is in the middle of dismantling.
+
+Note what the emitter does *not* decide here. MIR sequences the units (`_1.1` before `_1.0`) and
+MIR's flags skip the moved-out one; the emitter follows. Per-unit liveness is MIR's, per §7.6.
+
 ## C5.3d-1 — Bounded Drop proof
 
-C5.3d-1a (references) and C5.3d-1b (canonical `DropPlan`) are done. Remaining: **C5.3d-1c**, the
-dedicated observable destruction fixture and the final exactly-once, ordering, and
-no-`Drop`-after-trap proof across all three engines. The storage decision it was previously blocked
-on is resolved (CD-058) and its foundation is C5.3d-0's deliverable.
+**Closed.** C5.3d-1a (references), C5.3d-1b (canonical `DropPlan`) and C5.3d-1c (observable
+closure) are all done. The storage decision it was blocked on is resolved (CD-058) and its
+foundation was C5.3d-0's deliverable.
 
 ## C5.3 exit
 
-Not reached. §14 requires three-engine agreement for aggregate values (C5.3a: done), payload
-variants (C5.3b: done), match paths (done), Option/Result (C5.3c: done), `?` (C5.3c: done), target
-layout queries (**defined by CD-058: exact values under one injectable target-layout manifest;
-the current relations-only case is a placeholder, not evidence**), and the dedicated C5 Drop fixture.
+**One condition outstanding.** §14 requires three-engine agreement for aggregate values (C5.3a:
+done), payload variants (C5.3b: done), match paths (done), Option/Result (C5.3c: done), `?` (C5.3c:
+done), the dedicated C5 Drop fixture (**C5.3d-1c: done**), and target layout queries — **defined by
+CD-058 as exact values under one injectable target-layout manifest; the current relations-only case
+is a placeholder, not evidence**. C5.3e is therefore the only remaining C5.3 exit item.

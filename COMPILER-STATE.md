@@ -135,10 +135,20 @@ explicitly: `NativeOperation` IR, operation-planning abstractions, dashboards, p
 retroactive work-package conversion, general references, liveness bitmaps. Two process items
 survive: an adversarial review at C5.3 closure and a gate-exit review at C5.6.
 
-Next: **C5.3d-1c — observable closure evidence** (now evidence work, including one partial-move
-case with a droppable sibling — the last ownership seam likely to expose implementation work), then
-close C5.3d-1. C5.3e (layout
-manifest) remains independent and parallelisable. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
+**C5.3d-1c DONE — and it was not purely evidence work.** The owner's predicted seam was real and
+WIDER than predicted: the partial-move fixture failed to build, and so did the plain
+**reverse-field-order** fixture. MIR's drop elaboration emits **one flag-guarded `Drop` per drop
+unit on a PROJECTED place** (`drop _1.1` then `drop _1.0`), not one whole-local `Drop` — so any
+struct with two droppable fields and no destructor of its own could not compile natively at all.
+The backend's refusal of projected `Drop` was right rather than merely conservative (collapsing
+per-unit drops into a whole-local one destroys a unit MIR's flags say is gone, §7.6), so it was
+closed with a real per-unit operation: `HelperOp::Drop` wrappers over
+`ValueSlot::drop_field_with`, plan baked into the wrapper, call sites still safe and glue-free.
+
+**C5.3d-1 is CLOSED** (1a references, 1b `DropPlan`, 1c observable closure).
+
+**C5.3e is now the ONLY remaining C5.3 exit condition.** Everything else in §14 is discharged.
+**Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
 ## Position
@@ -2577,6 +2587,57 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
     changed: renaming or splitting `Operand::Copy` would be a MIR contract change.
 
   - The check is scoped to exclude `&mut` and is retained as a live guard for every other type.
+
+- CD-066 [2026-07-22, C5.3d-1c DONE; C5.3d-1 CLOSED] **The observable destruction closure is
+  evidence for seven properties across three engines — and it exposed a missing backend operation
+  that was wider than the partial-move seam it was aimed at.**
+
+  - **The observation channel is a real constraint, stated rather than worked around.** Native
+    `println` does not exist (`Callee::Runtime` is wholly unsupported until WP-C5.4c) and
+    `NATIVE_STDOUT_SUPPORTED` is still `false`; STARK has no globals and no reference fields, so a
+    destructor cannot record its own firing for a later assertion either. The cases therefore use a
+    **trapping destructor as a position probe**: traps abort, so the first destructor to run is the
+    one that traps and the trap's exact line names it. Each case is built so one ordering question
+    decides the reported line, and destructors that must not both fire get different types so they
+    occupy different lines. This reads out one bit of order per run. Full native destruction
+    *tracing* is blocked on `RuntimeFn` and belongs to WP-C5.4c.
+
+  - **Seven properties, eight three-engine cases**: own destructor before fields; fields in reverse
+    declaration order; active-variant payload only (a MIRRORED pair, because one case alone would
+    be satisfied by an engine that always destroyed variant 0); a moved value destroyed by its new
+    owner (the caller's assertion is deliberately false, so caller-scope destruction would report a
+    different line — a probe, not a tautology); no destructor after a trap; exactly once; and the
+    partial move with a droppable sibling. Every `expected_line` is derived from the language rule
+    and carries an `expected_span_reason` note, per CD-062.
+
+  - **Exactly-once is the one property a trap probe cannot show** (a trap aborts on the first
+    destruction, so a second is never reached). Stated as a completing case instead, and what makes
+    completion meaningful is engine-specific: the MIR interpreter poisons a local's slot on `Drop`
+    and the native `ValueSlot` asserts `Whole` in `drop_with`, so a second destruction is a
+    violation in both rather than a silent repeat.
+
+  - **THE FINDING — per-unit (sub-place) destruction was missing, and not only for partial moves.**
+    Two fixtures failed to build. MIR's drop elaboration decomposes an aggregate with several drop
+    units into **one flag-guarded `Drop` per unit on a projected place** — `drop _1.1` then
+    `drop _1.0`, each behind its own `Bool [dropflag]` — so a plain two-droppable-field struct with
+    no destructor of its own arrives projected. The backend refused all projected `Drop`s, so that
+    struct could not compile natively at all. **The refusal was correct, not merely conservative**:
+    collapsing per-unit drops into a whole-local one would destroy a unit MIR's flags say is
+    already gone (§7.6).
+
+  - **Closed with a real operation, not a relaxation.** `HelperOp::Drop` generates one wrapper per
+    (base type, projection) around `ValueSlot::drop_field_with` — the primitive already existed
+    from C5.3d-0 — with the unit's `DropPlan` **baked into the wrapper**, since a wrapper is
+    already per-(type, projection) and that fixes the field type and hence the plan. Call sites
+    stay plain safe calls, so an emitted body still contains no `unsafe` and no destruction logic.
+    A projected `Drop` of an **enum payload** is refused with a stated reason: an enum's payload is
+    destroyed by the whole-enum plan's variant match, and the `&mut T` projection form needs a
+    complete value the drop is in the middle of dismantling.
+
+  - **What the emitter does NOT decide.** MIR sequences the units and MIR's flags skip the
+    moved-out one; the emitter follows. Per-unit liveness stays MIR's, per §7.6.
+
+  - **C5.3e is now the ONLY remaining C5.3 exit condition** — every other §14 item is discharged.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

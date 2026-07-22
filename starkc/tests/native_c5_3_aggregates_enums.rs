@@ -678,3 +678,112 @@ fn main() {
         "the shared borrow should appear as a borrow expression:\n{generated}"
     );
 }
+
+// ------------------------------- WP-C5.3d-1c: per-unit (sub-place) destruction --
+
+/// **The shape C5.3d-1c's partial-move fixture exposed.**
+///
+/// MIR's drop elaboration does not emit one whole-local `Drop` for an aggregate with several drop
+/// units. It emits one flag-guarded `Drop` per unit, on a PROJECTED place — `drop _1.1` then
+/// `drop _1.0` — so a plain two-droppable-field struct needs sub-place destruction. The backend
+/// used to refuse that outright, which meant the C5 subset could not compile a struct with two
+/// droppable fields at all.
+///
+/// The refusal was right, not merely conservative: collapsing per-unit drops into a whole-local
+/// one would destroy a unit MIR's flags say is already gone (§7.6). The fix is a real per-unit
+/// operation — a generated wrapper over `ValueSlot::drop_field_with` — not a relaxation.
+#[test]
+fn sub_place_drops_go_through_generated_wrappers_in_reverse_unit_order() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct First { x: Int32 }
+impl Drop for First {
+    fn drop(&mut self) { let r: Int32 = self.x; }
+}
+struct Second { x: Int32 }
+impl Drop for Second {
+    fn drop(&mut self) { let r: Int32 = self.x; }
+}
+struct Pair { a: First, b: Second }
+
+fn main() {
+    let p: Pair = Pair { a: First { x: 1 }, b: Second { x: 2 } };
+    assert_eq(p.a.x + p.b.x, 3);
+}
+"#;
+    let (generated, run) = build(source, "subdrop").expect("per-unit drops must build");
+    assert_eq!(run.status.code(), Some(0));
+
+    let (projections, bodies) = split_projection_module(&generated);
+    // Each unit gets its own wrapper, and the wrapper -- not the body -- carries the plan.
+    assert!(
+        projections.contains("drop_field_with"),
+        "sub-place destruction must go through the slot's per-unit primitive:\n{projections}"
+    );
+    // The call sites are plain safe calls: no `unsafe`, no destruction logic inlined into a body.
+    let f0 = bodies
+        .find("_23f0(&mut _1)")
+        .expect("field 0's drop wrapper must be called");
+    let f1 = bodies
+        .find("_23f1(&mut _1)")
+        .expect("field 1's drop wrapper must be called");
+    assert!(
+        f1 < f0,
+        "MIR sequences the drop units back to front, and the emitter must follow:\n{bodies}"
+    );
+    let stray: Vec<&str> = bodies
+        .lines()
+        .filter(|line| line.contains("unsafe"))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "sub-place destruction must not put `unsafe` in a body; found: {stray:?}"
+    );
+}
+
+/// The partial-move case: one unit is moved out, its sibling still owes a destructor. The moved
+/// unit's drop is skipped at run time by MIR's own flag, and the emitter has no say in it — which
+/// is the point, since per-unit liveness is MIR's to track (§7.6).
+#[test]
+fn a_partially_moved_aggregate_still_destroys_its_surviving_unit() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"struct First { x: Int32 }
+impl Drop for First {
+    fn drop(&mut self) { let r: Int32 = self.x; }
+}
+struct Second { x: Int32 }
+impl Drop for Second {
+    fn drop(&mut self) { let r: Int32 = self.x; }
+}
+struct Pair { a: First, b: Second }
+
+fn consume(v: First) -> Int32 {
+    v.x
+}
+
+fn main() {
+    let p: Pair = Pair { a: First { x: 1 }, b: Second { x: 2 } };
+    assert_eq(consume(p.a), 1);
+}
+"#;
+    let (generated, run) = build(source, "partialdrop").expect("partial moves must build");
+    // Exit 0 is the load-bearing assertion. A double destruction of the moved-out unit would hit
+    // `ValueSlot`'s state machine and abort through `slot_violation`, not pass quietly.
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    // Both the move wrapper and the surviving unit's drop wrapper are generated over the SAME
+    // slot: that pairing is what makes partial liveness expressible at all.
+    assert!(
+        generated.contains("move_field") && generated.contains("drop_field_with"),
+        "the partial-move path needs both a move and a per-unit drop wrapper:\n{generated}"
+    );
+}

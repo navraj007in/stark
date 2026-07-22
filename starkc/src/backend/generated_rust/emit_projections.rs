@@ -42,6 +42,10 @@ pub enum HelperOp {
     Move,
     /// Reads a `Copy` field without disturbing liveness: `ValueSlot::copy_field`.
     Copy,
+    /// Destroys ONE drop unit in place: `ValueSlot::drop_field_with` (WP-C5.3d-1c). The unit's
+    /// destruction plan is baked into the wrapper, because a wrapper is already per-(base type,
+    /// projection) and that fixes the field type.
+    Drop,
 }
 
 /// One helper to generate.
@@ -62,6 +66,7 @@ pub fn helper_name(base_ty: &MirTy, projection: &Projection, op: HelperOp) -> St
     let verb = match op {
         HelperOp::Move => "move",
         HelperOp::Copy => "copy",
+        HelperOp::Drop => "drop",
     };
     let selector = match projection {
         Projection::Field(i) => format!("f{i}"),
@@ -98,8 +103,12 @@ pub fn collect(program: &MirProgram) -> Result<Vec<ProjectionHelper>, BackendDia
                 Terminator::SwitchInt { scrut, .. } => {
                     collect_operand(scrut, &env, &program.types, &mut found)?
                 }
+                // WP-C5.3d-1c: MIR's drop elaboration decomposes an aggregate with more than
+                // one drop unit into per-unit, flag-guarded `Drop`s on PROJECTED places, so this
+                // is the ordinary shape for any struct with two droppable fields -- not an edge
+                // case. Each one needs a wrapper around `drop_field_with`.
                 Terminator::Drop { place, .. } if !place.projection.is_empty() => {
-                    collect_place(place, &env, HelperOp::Move, &mut found)?
+                    collect_place(place, &env, HelperOp::Drop, &mut found)?
                 }
                 _ => {}
             }
@@ -312,6 +321,40 @@ pub fn emit(
                     "a Copy read of an enum payload uses the `get()` path, not a helper"
                         .to_string(),
                 ))
+            }
+            // WP-C5.3d-1c. The destruction plan is baked in here rather than passed from the call
+            // site: a wrapper is already per-(base type, projection), which fixes the field type,
+            // which fixes the plan. It also keeps the call site free of glue, so an emitted MIR
+            // body still contains no `unsafe` and no destruction logic of its own.
+            (HelperOp::Drop, ProjectionForm::Raw) => {
+                let plan = crate::mir::drop_plan::plan_for(&helper.field_ty, types)
+                    .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
+                let glue = super::emit_bodies::emit_drop_plan(&plan, "__v")?;
+                out.push_str(&format!(
+                    "\n    /// Destroys ONE drop unit in place, leaving its siblings alone. Raw \
+                     projection, so\n    /// it is valid over storage a sibling has already been \
+                     moved out of.\n    pub fn {}(slot: &mut stark_runtime::slot::ValueSlot<{base}>) {{\n         \
+                     \x20       // SAFETY: one fixed projection into THIS slot's storage; MIR's drop \
+                     flags\n         \x20       // guarantee the unit is live and destroyed at most once.\n         \
+                     \x20       unsafe {{\n             \x20           slot.drop_field_with({projection}, |__p: *mut {field}| {{\n                 \
+                     \x20               // SAFETY: the unit is live, so its bytes are a valid `{field}`.\n                 \
+                     \x20               let __v: &mut {field} = unsafe {{ &mut *__p }};\n                 \
+                     \x20               {glue}\n             \x20           }})\n         \x20       }}\n    }}\n",
+                    helper.name
+                ))
+            }
+            // A variant payload has no raw projection, so its drop unit cannot be destroyed
+            // through this path. MIR does not ask it to: an enum's payload is destroyed by the
+            // WHOLE-enum plan, whose `Variants` arm matches the live variant. If a projected
+            // `Drop` on a payload ever appears, it needs its own design rather than the `Whole`
+            // form, which requires a complete value the drop is in the middle of dismantling.
+            (HelperOp::Drop, ProjectionForm::Whole) => {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "a projected Drop of the enum payload {:?} is not in the C5.3d-1c subset: an \
+                     enum's payload is destroyed by the whole-enum plan's variant match, and the \
+                     `&mut T` projection form needs a complete value",
+                    helper.base_ty
+                )))
             }
         }
     }

@@ -1457,6 +1457,244 @@ fn main() {
 "#
 );
 
+// ================================ WP-C5.3d-1c: observable destruction closure --
+//
+// **The observation channel, and why these cases are shaped the way they are.**
+//
+// The natural way to prove destruction order is a destructor that prints, and a trace compared
+// across engines. That is unavailable natively: `Callee::Runtime` is entirely unsupported in the
+// generated-Rust backend (WP-C5.4c), so there is no native `println` and `NATIVE_STDOUT_SUPPORTED`
+// is still `false`. STARK has no globals and no reference fields, so a destructor also cannot
+// record its own firing anywhere a later assertion could read.
+//
+// What IS observable in all three engines is a trap: its category and its exact file:line:column.
+// So these cases use a **trapping destructor as a position probe**. Traps abort, so the FIRST
+// destructor to run is the one that traps, and the trap's line names it. A probe therefore reads
+// out one bit of destruction order per run — which is enough, because each case is built so that
+// exactly one ordering question decides which line is reported.
+//
+// Two destructors that must not both be able to fire are given DIFFERENT types, so they occupy
+// different lines and the outcome distinguishes them. A destructor that must NOT fire is written
+// to trap as well, so the case fails loudly if it does.
+//
+// Every `expected_line` below is derived from the language rule, not from any engine's answer.
+
+// Property 1 — a type's OWN destructor runs before its fields.
+//
+// expected_span_reason: `Outer` has both an `impl Drop` and a droppable field. 05-Memory-Model's
+// destruction order runs the value's own destructor first and its fields afterwards, so `Outer`'s
+// destructor (line 7) traps before `Inner`'s (line 3) is ever entered. Reporting line 3 would mean
+// the fields ran first.
+three_engine_test!(
+    own_destructor_runs_before_fields,
+    "drop_own_first",
+    traps(TrapCategory::AssertFailure, 7),
+    r#"struct Inner { x: Int32 }
+impl Drop for Inner {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+struct Outer { inner: Inner }
+impl Drop for Outer {
+    fn drop(&mut self) { assert(self.inner.x > 100); }
+}
+fn main() {
+    let o: Outer = Outer { inner: Inner { x: 1 } };
+    assert_eq(o.inner.x, 1);
+}
+"#
+);
+
+// Property 2 — fields are destroyed in REVERSE declaration order.
+//
+// expected_span_reason: `Pair` declares `a: First` then `b: Second` and has no destructor of its
+// own, so destruction runs back to front: `b` first. `Second`'s destructor is line 7. Reporting
+// line 3 would mean forward order.
+three_engine_test!(
+    struct_fields_are_destroyed_in_reverse_declaration_order,
+    "drop_reverse",
+    traps(TrapCategory::AssertFailure, 7),
+    r#"struct First { x: Int32 }
+impl Drop for First {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+struct Second { x: Int32 }
+impl Drop for Second {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+struct Pair { a: First, b: Second }
+fn main() {
+    let p: Pair = Pair { a: First { x: 1 }, b: Second { x: 2 } };
+    assert_eq(p.a.x + p.b.x, 3);
+}
+"#
+);
+
+// Property 3 — an enum destroys the payload of its ACTIVE variant, and only that one.
+//
+// The pair of cases is the point: same program shape, different variant constructed, different
+// destructor reported. One case alone would be satisfied by an engine that always destroyed
+// variant 0's payload.
+//
+// expected_span_reason: `Held::B` is live, so its `Second` payload is destroyed and traps at line
+// 7. `First`'s destructor (line 3) belongs to the inactive variant and must never be entered.
+three_engine_test!(
+    enum_destroys_the_active_variant_payload_b,
+    "drop_variant_b",
+    traps(TrapCategory::AssertFailure, 7),
+    r#"struct First { x: Int32 }
+impl Drop for First {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+struct Second { x: Int32 }
+impl Drop for Second {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+enum Held { A(First), B(Second) }
+fn main() {
+    let h: Held = Held::B(Second { x: 2 });
+    assert_eq(1, 1);
+}
+"#
+);
+
+// expected_span_reason: the mirror of the previous case. `Held::A` is live, so `First`'s
+// destructor (line 3) is the one entered. Together the two cases show the destroyed payload
+// tracks the live variant rather than a fixed one.
+three_engine_test!(
+    enum_destroys_the_active_variant_payload_a,
+    "drop_variant_a",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct First { x: Int32 }
+impl Drop for First {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+struct Second { x: Int32 }
+impl Drop for Second {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+enum Held { A(First), B(Second) }
+fn main() {
+    let h: Held = Held::A(First { x: 1 });
+    assert_eq(1, 1);
+}
+"#
+);
+
+// Property 4 — a MOVED value is destroyed by its new owner, at the new owner's scope end.
+//
+// expected_span_reason: `a` is moved into `take`, so it is destroyed when `take`'s parameter goes
+// out of scope — before control returns to `main`. The destructor traps at line 3. Line 12's
+// assertion is deliberately FALSE: if `a` were instead still owned by `main` and destroyed at
+// main's scope end, line 12 would run first and the trap would be reported there. The two answers
+// are distinguishable, which is what makes this a probe rather than a tautology.
+three_engine_test!(
+    a_moved_value_is_destroyed_by_its_new_owner,
+    "drop_moved",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn take(v: Loud) -> Int32 {
+    let r: Int32 = v.x;
+    r
+}
+fn main() {
+    let a: Loud = Loud { x: 5 };
+    let n: Int32 = take(a);
+    assert_eq(n, 999);
+}
+"#
+);
+
+// Property 5 — destructors do NOT run after a trap.
+//
+// expected_span_reason: 03-Type-System makes division by zero a trap, and the abstract machine
+// aborts on a trap without running destructors. `a` is live and owes a destructor that would trap
+// at line 3 if it ran. The reported outcome must be the DivideByZero at line 8 — the original
+// trap, uncontaminated by any destruction the abort might otherwise trigger.
+three_engine_test!(
+    no_destructor_runs_after_a_trap,
+    "drop_after_trap",
+    traps(TrapCategory::DivideByZero, 8),
+    r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let a: Loud = Loud { x: 1 };
+    let z: Int32 = 0;
+    let boom: Int32 = 10 / z;
+    assert_eq(boom, 0);
+}
+"#
+);
+
+// Property 6 — exactly once.
+//
+// This is the one property a trap probe cannot show, because a trap aborts on the FIRST
+// destruction and a second one would never be reached. It is stated as a completing case instead,
+// and what makes completion meaningful differs per engine: the MIR interpreter poisons a local's
+// slot on `Drop`, so a second destruction is an internal error rather than a silent repeat, and
+// the native engine's `ValueSlot` asserts `Whole` in `drop_with`, so a second destruction calls
+// `slot_violation` and aborts. Exit 0 from all three is therefore evidence of exactly-once, not
+// merely of "no assertion failed".
+three_engine_test!(
+    a_moved_value_is_destroyed_exactly_once,
+    "drop_once",
+    completes,
+    r#"struct Counted { x: Int32 }
+impl Drop for Counted {
+    fn drop(&mut self) { assert(self.x == 5); }
+}
+fn take(v: Counted) -> Int32 {
+    v.x
+}
+fn main() {
+    let a: Counted = Counted { x: 5 };
+    let n: Int32 = take(a);
+    assert_eq(n, 5);
+}
+"#
+);
+
+// Property 7 — THE PARTIAL-MOVE SEAM (CD-065).
+//
+// `p.a` is moved out; `p.b` is not. At main's scope end exactly one of the two fields still owes a
+// destructor. This is the case that decides whether the bounded C5 subset needs sub-place `Drop`
+// emission: the native emitter currently REFUSES a `Drop` terminator with a non-empty projection,
+// so if lowering emits `Drop(p.b)` this case cannot build, and if it instead emits a flag-guarded
+// whole-local drop the case builds and passes.
+//
+// expected_span_reason: `Quiet`'s destructor is deliberately non-trapping, so it cannot mask the
+// result; `Loud`'s traps at line 7. Reaching line 7 means the surviving field was destroyed.
+// Reaching line 3's `Quiet` destructor a second time would be a double drop, which the MIR
+// interpreter's poisoned slot and the native `ValueSlot` both turn into a violation rather than a
+// silent repeat.
+three_engine_test!(
+    a_partially_moved_value_destroys_only_the_surviving_field,
+    "drop_partial",
+    traps(TrapCategory::AssertFailure, 7),
+    r#"struct Quiet { x: Int32 }
+impl Drop for Quiet {
+    fn drop(&mut self) { let r: Int32 = self.x; }
+}
+struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+struct Pair { a: Quiet, b: Loud }
+fn consume(v: Quiet) -> Int32 {
+    v.x
+}
+fn main() {
+    let p: Pair = Pair { a: Quiet { x: 1 }, b: Loud { x: 2 } };
+    let n: Int32 = consume(p.a);
+    assert_eq(n, 1);
+}
+"#
+);
+
 // ========================================================= review regressions --
 // CD-052's fixed defects, re-pinned as three-engine agreement rather than per-engine assertions.
 
