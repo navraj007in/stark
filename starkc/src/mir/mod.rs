@@ -528,6 +528,37 @@ pub struct TypeContext {
     pub copy_types: std::collections::BTreeSet<(u32, Vec<MirTy>)>,
 }
 
+impl TypeContext {
+    /// Whether MIR classifies `ty` as `Copy` — **the one rule every CONSUMER reads** (CD-065,
+    /// folded into WP-C5.3d-1c). `mir::verify`'s V-COPY-1 and the backend's storage and drop
+    /// decisions all route here; it had been written out identically in both, which is the same
+    /// defect shape CD-064 closed for destruction order.
+    ///
+    /// `mir::lower::is_copy` deliberately does NOT delegate: it is the PRODUCER. It answers the
+    /// nominal case from the HIR (`type_has_copy_impl`) precisely because it is what fills
+    /// `copy_types`, and cannot read a table it has not written yet. Its structural arms must stay
+    /// in step with these, which is what `lowered_copy_classification_matches_the_type_context`
+    /// checks.
+    ///
+    /// An unmarked all-`Copy`-fields STARK struct is still Move; only an `impl Copy` makes it
+    /// Copy, and the front end has already validated the all-Copy-fields / no-`Drop` rules for
+    /// that impl to exist. §7.4 forbids a backend broadening the set from Rust traits, which is
+    /// why the backend asks this rather than asking Rust.
+    pub fn is_copy(&self, ty: &MirTy) -> bool {
+        match ty {
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                self.copy_types.contains(&(item.0, args.clone()))
+            }
+            MirTy::Enum(_, args) => args.iter().all(|a| self.is_copy(a)),
+            MirTy::Tuple(elems) => elems.iter().all(|e| self.is_copy(e)),
+            MirTy::Array(elem, _) => self.is_copy(elem),
+            MirTy::Ref { mutable, .. } => !*mutable,
+            MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
+            _ => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct MirProgram {
     /// Interned source files; `FileId` indexes here.

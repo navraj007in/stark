@@ -71,6 +71,95 @@ fn oracle_fragment(category: TrapCategory) -> &'static str {
     }
 }
 
+/// CD-065: **the producer and the consumers of the `Copy` classification must agree.**
+///
+/// `mir::lower::is_copy` PRODUCES `TypeContext::copy_types` and therefore answers the nominal case
+/// from the HIR; `TypeContext::is_copy` is what every consumer (the verifier, the native backend's
+/// storage and drop decisions) reads afterwards. Their structural arms must stay in step, and
+/// nothing forced that before: unlike destruction order, no single function could be shared,
+/// because one of the two exists to fill the table the other reads.
+///
+/// The observable consequence is checked instead. Lowering emits `Operand::Copy` exactly where its
+/// own classifier said "Copy" and `Operand::Move` everywhere else, so if the two classifiers drift,
+/// some `Operand::Copy` will name a place the type context calls non-`Copy` — a value the backend
+/// would then try to duplicate through a `ValueSlot` that only supports moving it.
+///
+/// Limited to unprojected places on purpose: their type is the local's declared type, so the check
+/// needs no re-implementation of projection typing (which would itself be a fourth derivation of
+/// something that already exists twice). Every differential program and the whole frozen corpus run
+/// through here.
+fn assert_copy_classification_agrees(name: &str, program: &starkc::mir::MirProgram) {
+    use starkc::mir::{Operand, Rvalue, Statement, Terminator};
+
+    let check = |body: &starkc::mir::MirBody, op: &Operand, where_: &str| {
+        let Operand::Copy(place) = op else { return };
+        if !place.projection.is_empty() {
+            return;
+        }
+        let ty = &body.locals[place.local.0 as usize].ty;
+        // DEV-098: `&mut` references are excluded, because lowering emits `Operand::Copy` on them
+        // DELIBERATELY — a `&mut` handed to a callee or a bounds check is REBORROWED, not moved,
+        // or MIR would lose the reference. `is_copy` answers a different question about the same
+        // type ("does binding it elsewhere consume it?": yes) and both answers are right. Running
+        // this check without the exclusion found exactly 11 sites across the whole corpus and
+        // frozen suite, every one of them `Ref { mutable: true, .. }` and no other type — which is
+        // what says the two classifiers agree everywhere the question is the same one.
+        if matches!(ty, starkc::mir::MirTy::Ref { mutable: true, .. }) {
+            return;
+        }
+        assert!(
+            program.types.is_copy(ty),
+            "{name}: {} {where_}: lowering emitted `Operand::Copy(_{})` for {ty:?}, which \
+             `TypeContext::is_copy` classifies NON-Copy. The producer (`lower::is_copy`) and the \
+             consumers have drifted.",
+            body.instance.symbol,
+            place.local.0
+        );
+    };
+
+    for body in &program.bodies {
+        for block in &body.blocks {
+            for (statement, _) in &block.statements {
+                let Statement::Assign(_, rvalue) = statement else {
+                    continue;
+                };
+                match rvalue {
+                    Rvalue::Use(a) | Rvalue::UnOp(_, a) => check(body, a, "assign"),
+                    Rvalue::BinOp(_, a, b) => {
+                        check(body, a, "assign");
+                        check(body, b, "assign");
+                    }
+                    Rvalue::Aggregate(_, ops) => {
+                        for op in ops {
+                            check(body, op, "aggregate");
+                        }
+                    }
+                    Rvalue::Discriminant(_) | Rvalue::RefOf { .. } | Rvalue::LayoutQuery { .. } => {
+                    }
+                }
+            }
+            match &block.terminator.0 {
+                Terminator::Call { args, .. } | Terminator::Checked { args, .. } => {
+                    for arg in args {
+                        check(body, arg, "call argument");
+                    }
+                }
+                // A `SwitchInt` scrutinee is always an integer or a drop flag, but checking it
+                // costs nothing and would catch a lowering that switched on an aggregate.
+                Terminator::SwitchInt { scrut, .. } => check(body, scrut, "switch scrutinee"),
+                Terminator::Trap {
+                    message: Some(op), ..
+                } => check(body, op, "trap message"),
+                Terminator::Goto { .. }
+                | Terminator::Drop { .. }
+                | Terminator::Trap { .. }
+                | Terminator::Return
+                | Terminator::Unreachable => {}
+            }
+        }
+    }
+}
+
 fn differential(name: &str, source: String) {
     let front = front_end(name, source);
 
@@ -82,6 +171,7 @@ fn differential(name: &str, source: String) {
         Ok(program) => program,
         Err(e) => panic!("{name}: lowering failed: {} @ {:?}", e.what, e.span),
     };
+    assert_copy_classification_agrees(name, &program);
     let verified = match verify_program(&program) {
         Ok(verified) => verified,
         Err(errors) => panic!("{name}: verifier rejected lowered MIR:\n{errors:#?}"),

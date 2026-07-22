@@ -129,7 +129,15 @@ corrupting the *shared* plan and showing the corruption reach the generated Rust
 proves application rather than re-derivation; the sixth (Drop after a trap) was already covered by
 existing differential/native fixtures and is unaffected by this package.
 
-Next: **C5.3d-1c — observable closure evidence**, then close C5.3d-1. C5.3e (layout
+**CD-065: the process-driven re-engineering phase of C5 is CLOSED by owner assessment.** What
+remains is evidence, manifest, linkage, build UX and qualification — not architecture. Deferred
+explicitly: `NativeOperation` IR, operation-planning abstractions, dashboards, process metrics,
+retroactive work-package conversion, general references, liveness bitmaps. Two process items
+survive: an adversarial review at C5.3 closure and a gate-exit review at C5.6.
+
+Next: **C5.3d-1c — observable closure evidence** (now evidence work, including one partial-move
+case with a droppable sibling — the last ownership seam likely to expose implementation work), then
+close C5.3d-1. C5.3e (layout
 manifest) remains independent and parallelisable. **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
@@ -2492,6 +2500,83 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
 
   - Validated with the **full workspace suite**, not the scoped set: `interp.rs` is the semantic
     authority and every differential fixture consumes it.
+
+- CD-065 [2026-07-22, owner assessment after `888d9c5`] **The process-driven re-engineering phase
+  of C5 is CLOSED. Stop improving the process; finish the evidence, the manifest, linkage, build UX
+  and exit qualification. Carry the broader process lessons into C6.**
+
+  - **Owner's finding**: `DropPlan` genuinely replaces the duplicated derivations rather than
+    merely documenting them; the emitter's remaining responsibility is only how to spell a planned
+    step. Two sources of future drift are gone (destruction traversal; variant-payload definitions).
+    No comparable structural refactor is judged outstanding. Another general abstraction now would
+    be diminishing returns.
+
+  - **DEFERRED explicitly**: `NativeOperation` IR, broad operation-planning abstractions,
+    architecture dashboards, process metrics, retroactive conversion of old work packages, general
+    references, runtime liveness bitmaps.
+
+  - **Only two process items remain**: one adversarial review at C5.3 closure (Drop reachability,
+    partial moves, layout evidence, rejected adjacent cases), and one gate-exit review at C5.6
+    against the twelve C5 outcome conditions and the final supported-subset claim.
+
+  - **Bounded caveat recorded for the future owning-core-representation package, not for C5.3.**
+    `DropPlan` maps `String`/`HashMap`/`HashSet`/iterators/`File` to `Noop`, preserving interpreter
+    semantics. Not a C5 blocker, because the generated backend still REJECTS those representations
+    rather than silently compiling them. But before an owning core representation (e.g. a native
+    Rust `String`) is admitted, STARK must distinguish **STARK semantic Drop glue** from **native
+    representation reclamation**: a type may have no user-visible STARK destructor while still
+    requiring its buffer or allocation to be reclaimed. To be solved by that package, not
+    speculatively inside C5.3.
+
+  - **Remaining C5 work, owner's ordering**: (1) C5.3d-1c observable Drop closure — now evidence
+    work, not architecture: exactly-once, destructor-before-fields, reverse field/payload order,
+    a moved value destroyed only by its new owner, no destructor after a trap, **plus one
+    partial-move case with a genuinely droppable sibling** (the emitter still refuses projected
+    `Drop` terminators, so this case settles whether the bounded C5 subset needs sub-place `Drop`
+    emission or whether every approved fixture legally avoids it — the last ownership seam likely
+    to expose implementation work); (2) C5.3e exact layout manifest; (3) C5.4 linkage and function
+    values — function-instance constants, function-value storage/copying, indirect calls,
+    cross-package references, the frozen three-package workspace; (4) C5.5 `stark build` as a
+    user-facing route; (5) C5.6 qualification, including **hosted CI as a real exit item, not a
+    formality** — `888d9c5` carries no GitHub status checks despite locally reported validation.
+
+  - **Owner maturity estimate**: C5.3 approximately 90–93% complete; full Gate C5 approximately
+    76–80%. Highest-risk architectural section (non-`Copy` ownership and destruction) judged under
+    control.
+
+  - **Copy consolidation FOLDED IN to C5.3d-1c by owner direction, and DONE.** The classification
+    had been derived three times — `lower::is_copy`, `verify::mir_is_copy`,
+    `emit_types::mir_ty_is_copy` — the same defect class CD-064 closed for destruction. The two
+    CONSUMERS now share `TypeContext::is_copy`; `lower::is_copy` deliberately does not delegate,
+    because it is the PRODUCER and answers the nominal case from the HIR precisely to fill the
+    table the others read. Since no single function could cover both, the producer/consumer
+    agreement is enforced empirically instead: `assert_copy_classification_agrees` runs over every
+    differential program and the whole frozen corpus, checking that lowering never emits
+    `Operand::Copy` for a place the type context calls non-`Copy`.
+
+- DEV-098 [2026-07-22, found by the CD-065 fold-in, NOT a regression] **`Operand::Copy` on a `&mut`
+  reference is a deliberate, verifier-accepted MIR shape that the `Copy` classification does not
+  describe.**
+
+  - The producer/consumer agreement check, run unrestricted, flagged **exactly 11 sites** across
+    the corpus and the full differential suite — and **every one was `Ref { mutable: true, .. }`,
+    no other type at all**. That uniformity is the result: the two classifiers agree everywhere the
+    question is the same one.
+
+  - It is not a defect in either. A `&mut` handed to a callee or a bounds check is **reborrowed**,
+    not moved, or MIR would lose the reference; `is_copy` answers a different question about the
+    same type ("does binding it elsewhere consume it?" — yes). Both answers are correct for their
+    own question. `Operand::Copy` therefore means "read without consuming", which for `&mut` is a
+    reborrow rather than a duplication.
+
+  - **Why it matters to C5 and where it is contained.** The native backend does not slot-back
+    references, so `Operand::Copy` on a `&mut` local emits a plain Rust read — which for `&mut`
+    is a *move* in Rust, not a copy. A second read of the same reference local would therefore not
+    compile. Contained today by the C5.3d-1a lane's single-use/same-block validator (refusal before
+    rustc) and by rustc itself as the backstop. Flagged for the C5.3 adversarial review rather than
+    changed: renaming or splitting `Operand::Copy` would be a MIR contract change.
+
+  - The check is scoped to exclude `&mut` and is retained as a live guard for every other type.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

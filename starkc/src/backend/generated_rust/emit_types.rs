@@ -120,27 +120,14 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
     })
 }
 
-/// Whether MIR classifies `ty` as `Copy`. **Mirrors `mir::lower::is_copy` exactly**, which is
-/// the semantic authority — §7.4 is explicit that the backend must not independently broaden the
-/// Copy set based on Rust traits, so this reads MIR's own classification (`TypeContext::
-/// copy_types` for nominals, structural rules for everything else) rather than asking Rust.
+/// Whether MIR classifies `ty` as `Copy`.
 ///
-/// An unmarked all-`Copy`-fields STARK struct is still Move; only an `impl Copy` makes it Copy,
-/// and the front end has already validated the all-Copy-fields/no-Drop rules for that impl to
-/// exist.
+/// CD-065: the rule is `TypeContext::is_copy`, shared with `mir::verify`. It had been written out
+/// here identically — the same defect shape CD-064 closed for destruction order, and the one §7.4
+/// most cares about, since a backend that broadened the Copy set from Rust traits would duplicate
+/// a value MIR says must move.
 pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
-    match ty {
-        MirTy::Struct(item, args) => types.copy_types.contains(&(item.0, args.clone())),
-        MirTy::Enum(crate::mir::EnumRef::User(item), args) => {
-            types.copy_types.contains(&(item.0, args.clone()))
-        }
-        MirTy::Enum(_, args) => args.iter().all(|a| mir_ty_is_copy(a, types)),
-        MirTy::Tuple(elems) => elems.iter().all(|e| mir_ty_is_copy(e, types)),
-        MirTy::Array(elem, _) => mir_ty_is_copy(elem, types),
-        MirTy::Ref { mutable, .. } => !*mutable,
-        MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
-        _ => true,
-    }
+    types.is_copy(ty)
 }
 
 /// Whether a local of this type is backed by a `ValueSlot`. **The single rule**, shared by the

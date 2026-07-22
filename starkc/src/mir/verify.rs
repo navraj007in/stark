@@ -1521,20 +1521,11 @@ impl<'a> BodyCx<'a> {
     /// A1: is `ty` `Copy` at the MIR level? Primitives/refs/fn-values/all-Copy aggregates are
     /// Copy; user nominals are Copy iff `TypeContext::copy_types` records an `impl Copy`;
     /// String/Vec and mutable refs are not.
+    ///
+    /// CD-065: the rule itself is `TypeContext::is_copy`, shared with the backend. This wrapper
+    /// stays so V-COPY-1's call sites read as verification rather than as table access.
     fn mir_is_copy(&self, ty: &MirTy) -> bool {
-        match ty {
-            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => self
-                .program
-                .types
-                .copy_types
-                .contains(&(item.0, args.clone())),
-            MirTy::Enum(_, args) => args.iter().all(|a| self.mir_is_copy(a)),
-            MirTy::Tuple(elems) => elems.iter().all(|e| self.mir_is_copy(e)),
-            MirTy::Array(elem, _) => self.mir_is_copy(elem),
-            MirTy::Ref { mutable, .. } => !*mutable,
-            MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
-            _ => true,
-        }
+        self.program.types.is_copy(ty)
     }
 
     // ---- V-DROP-2 read half: drop flags are read only by SwitchInt ----
