@@ -504,6 +504,52 @@ fn test_workspace_boundary_rejected() {
     let _ = std::fs::remove_dir_all(&workspace);
 }
 
+#[test]
+fn test_noncanonical_root_uses_canonical_workspace_paths() {
+    let workspace = setup_temp_workspace("noncanonical_root");
+    let app_dir = workspace.join("app");
+    let dep_dir = workspace.join("dep");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    std::fs::create_dir_all(dep_dir.join("src")).unwrap();
+    std::fs::write(app_dir.join("src/main.stark"), "fn main() {}").unwrap();
+    std::fs::write(
+        dep_dir.join("src/main.stark"),
+        "pub fn value() -> Int32 { 1 }",
+    )
+    .unwrap();
+    std::fs::write(
+        app_dir.join("starkpkg.json"),
+        r#"{
+        "name": "app",
+        "version": "0.1.0",
+        "entry": "src/main.stark",
+        "dependencies": {
+            "dep": { "path": "../dep" }
+        }
+    }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dep_dir.join("starkpkg.json"),
+        r#"{
+        "name": "dep",
+        "version": "0.1.0",
+        "entry": "src/main.stark"
+    }"#,
+    )
+    .unwrap();
+
+    let noncanonical_manifest = app_dir.join("..").join("app").join("starkpkg.json");
+    let graph = PackageGraph::load_from_root(&noncanonical_manifest).unwrap();
+    assert_eq!(graph.workspace_root, workspace.canonicalize().unwrap());
+    assert_eq!(
+        graph.packages["app"].manifest_path,
+        app_dir.join("starkpkg.json").canonicalize().unwrap()
+    );
+
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
 /// WP-C1.2 (checklist item 8): `use`-ing a package that exists elsewhere in the same workspace
 /// but is NOT listed in the *importing* package's own `starkpkg.json` dependencies -- distinct
 /// from a dependency that fails to fetch/resolve (test_missing_manifest_rejected,

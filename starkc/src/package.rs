@@ -920,10 +920,20 @@ impl PackageGraph {
         locked: bool,
         offline: bool,
     ) -> Result<Self, String> {
-        let root_package = Package::from_manifest(root_manifest_path)?;
-        let workspace_root = get_workspace_root(root_manifest_path);
+        // Dependency paths are canonicalized while parsing their manifests. Canonicalize the
+        // graph root as well so workspace containment compares paths in the same representation.
+        // This is required on Windows, where canonicalization adds the `\\?\` prefix.
+        let root_manifest_path = root_manifest_path.canonicalize().map_err(|error| {
+            format!(
+                "failed to read manifest at '{}': {}",
+                root_manifest_path.display(),
+                error
+            )
+        })?;
+        let root_package = Package::from_manifest(&root_manifest_path)?;
+        let workspace_root = get_workspace_root(&root_manifest_path);
 
-        if !is_within_workspace(root_manifest_path, &workspace_root) {
+        if !is_within_workspace(&root_manifest_path, &workspace_root) {
             return Err("root package is outside the permitted workspace".to_string());
         }
 
