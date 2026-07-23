@@ -6258,6 +6258,19 @@ mod tests {
         escaped
     }
 
+    fn portable_filename_component(value: &str) -> String {
+        value
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn generated_source_paths_escape_stark_string_metacharacters() {
         assert_eq!(
@@ -6267,6 +6280,10 @@ mod tests {
         assert_eq!(
             stark_string_literal_contents("quoted\"line\ncarriage\r tab\t"),
             "quoted\\\"line\\ncarriage\\r tab\\t"
+        );
+        assert_eq!(
+            portable_filename_component("interp::tests::file/resource"),
+            "interp__tests__file_resource"
         );
     }
 
@@ -7104,10 +7121,12 @@ mod tests {
 
     #[test]
     fn file_is_a_first_class_noncopy_resource() {
+        let test_name =
+            portable_filename_component(std::thread::current().name().unwrap_or("test"));
         let path = std::env::temp_dir().join(format!(
             "stark-c2-11-file-{}-{}.txt",
             std::process::id(),
-            std::thread::current().name().unwrap_or("test")
+            test_name
         ));
         let source_path = stark_string_literal_contents(&path.to_string_lossy());
         let source = format!(
