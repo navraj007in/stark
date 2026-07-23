@@ -1,0 +1,3 @@
+# Execution snapshots are a byte-for-byte frozen corpus. Keep their checked-out
+# representation identical on every host so Windows cannot rewrite LF to CRLF.
+starkc/tests/exec_snapshots/** text eol=lf
