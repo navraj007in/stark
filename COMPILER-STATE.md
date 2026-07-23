@@ -2,7 +2,9 @@
 Updated: 2026-07-23 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
 WP-C6.0 contract freeze CLOSED (CD-078), WP-C6.1 (ownership and Drop parity, Track A) CLOSED
 (CD-080…CD-084), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
-CLOSED (CD-086). Remaining C6: WP-C6.2b…e (generics/traits), WP-C6.3 (runtime values and
+CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
+F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
+Remaining C6: WP-C6.2b findings, C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
 exit.**
 
@@ -3084,6 +3086,39 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
   - **Validation at closure:** `cargo fmt --check` and strict workspace `clippy` clean; full
     `cargo test --workspace --all-targets --no-fail-fast` green. Evidence lives in
     `starkc/tests/native_c6_1_ownership.rs` (24) and `three_engine_differential.rs`'s `c61e_*` (12).
+
+- CD-087 [2026-07-23, **WP-C6.2b PARTIAL — DEV-102 closed; §18 matrix probed; F1–F6 opened**]
+  The §18 method-resolution matrix was driven end-to-end
+  (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`). Eleven of the
+  fifteen rows are green natively, and two rejections were confirmed **correct**: two traits
+  supplying `go` is E0203 (ambiguity), and `let r = &mut p; r.bump(); p.get()` is E0101 (Core v1
+  borrows are lexically scoped to end-of-block — there is no NLL, so this is conformant, not a bug).
+  - **DEV-102 CLOSED.** TYPE-METHOD-001 requires fully qualified `Trait::method(&recv)` and requires
+    it to *bypass trait-name lookup*. Lowering gained a `Res::TraitMember` arm selecting through a
+    new **trait-filtered** `find_trait_impl_fn`. Reusing `find_impl_fn` would have been wrong: it
+    answers "what does `recv.m()` mean", so it prefers inherent methods and takes any in-scope
+    trait. The qualified form is the spec's own remedy for E0203, proven by `A::go(&s)` and
+    `B::go(&s)` selecting different impls while `s.go()` still prefers the inherent method. Because
+    the receiver is written explicitly, no auto-borrow/auto-deref applies, so every argument lowers
+    as an ordinary operand — which is why the arm is small. Not a CE3 (existing MIR ops only).
+    Covered: plain call, the disambiguation pair, inherent-shadowing, default bodies, extra
+    arguments, `&mut` receivers, `Drop`-bearing receivers; E0203/E0005 asserted to persist.
+  - **F1–F6 opened, awaiting disposition** (`C6-GENERICS-TRAITS-MATRIX.md` §7). **F1 is the only one
+    that accepts invalid programs**: private impl members (methods, associated fns) and private
+    struct fields are reachable cross-module, though module-level items *are* enforced — a violation
+    of MOD-VIS-001 and TYPE-METHOD-001 step 5, in Track B's front-end area. **F3 is a scope gap, not
+    just a defect**: `let r = &p; r.get()` is refused by the backend ("C5 ephemeral reference lane"),
+    yet §18 lists shared/nested-reference receivers as C6.2b rows while the C5 exit report defers
+    "general references" to "C6" without naming a sub-package — so no C6 package currently owns it,
+    and C6.3b's slices/Box ("borrow/deref", "returned-reference provenance") depend on it. F2
+    (trait impl on a specific generic instantiation), F4 (nested-reference receivers; `&&T` is
+    unspellable and inferred `&&T` fails MIR verify though TYPE-METHOD-002 makes repeated auto-deref
+    normative), F5 (impl-head bounds invisible in method bodies — the §2 carry-forward, still open)
+    and F6 (impl signatures do not normalise `Self`) are over-rejections.
+  - **Doc defect:** repo `CLAUDE.md` says method calls "auto-deref one reference level"; normative
+    TYPE-METHOD-002 says auto-dereference "repeatedly removes one leading `&`/`&mut`".
+  - **Evidence:** `native_c6_2_generics_traits.rs` now 20 tests (8 new `c62b_*`). Scoped regression
+    across ten at-risk suites green; `fmt --check` and strict workspace `clippy` clean.
 
   - **Remaining C6:** WP-C6.2 (generics and static trait dispatch) and WP-C6.3 (runtime
     values and collections — String/Vec/Box/iterators/maps/**output**/files, Track C) are the bulk of

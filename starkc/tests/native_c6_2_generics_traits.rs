@@ -390,3 +390,137 @@ fn a_mismatched_item_is_still_rejected() {
 }
 
 fn _unused(_: &Path) {}
+
+// ============================================================ WP-C6.2b / DEV-102 ==
+//
+// Fully qualified trait calls. 03-Type-System TYPE-METHOD-001: "Fully qualified
+// `Trait::method(receiver, ...)` bypasses trait-name lookup but still requires a unique coherent
+// impl", and "Trait methods can always be called in fully-qualified function form". Before C6.2b
+// the front end and the HIR oracle accepted these while MIR lowering refused them
+// (`LOWER: callee form (C4.5)`), so no such program could be built natively.
+//
+// The disambiguation pair below is the load-bearing case: it is the spec's own remedy for the
+// §18 ambiguity error (E0203), so `A::go` and `B::go` MUST select different impls.
+
+#[test]
+fn c62b_fully_qualified_trait_call() {
+    agree(
+        "fq_user_trait",
+        "trait Shape { fn area(&self) -> Int32; }\nstruct Sq { s: Int32 }\n\
+         impl Shape for Sq { fn area(&self) -> Int32 { self.s * self.s } }\n\
+         fn main() { let q = Sq { s: 3 }; assert_eq(Shape::area(&q), 9); }",
+    );
+}
+
+#[test]
+fn c62b_fully_qualified_selects_the_named_trait() {
+    // Both traits supply `go`; `s.go()` is E0203. Each qualified form must pick its own impl.
+    const DECLS: &str = "trait A { fn go(&self) -> Int32; }\ntrait B { fn go(&self) -> Int32; }\n\
+         struct S { v: Int32 }\n\
+         impl A for S { fn go(&self) -> Int32 { 1 } }\n\
+         impl B for S { fn go(&self) -> Int32 { 2 } }\n";
+    agree(
+        "fq_pick_a",
+        &format!("{DECLS}fn main() {{ let s = S {{ v: 0 }}; assert_eq(A::go(&s), 1); }}"),
+    );
+    agree(
+        "fq_pick_b",
+        &format!("{DECLS}fn main() {{ let s = S {{ v: 0 }}; assert_eq(B::go(&s), 2); }}"),
+    );
+}
+
+#[test]
+fn c62b_fully_qualified_ignores_an_inherent_method_of_the_same_name() {
+    // `s.go()` prefers the inherent method (TYPE-METHOD-001); `A::go(&s)` must not.
+    agree(
+        "fq_ignores_inherent",
+        "trait A { fn go(&self) -> Int32; }\nstruct S { v: Int32 }\n\
+         impl A for S { fn go(&self) -> Int32 { 2 } }\nimpl S { fn go(&self) -> Int32 { 1 } }\n\
+         fn main() { let s = S { v: 0 }; assert_eq(A::go(&s), 2); assert_eq(s.go(), 1); }",
+    );
+}
+
+#[test]
+fn c62b_fully_qualified_reaches_a_trait_default_body() {
+    agree(
+        "fq_default_body",
+        "trait G { fn base(&self) -> Int32; fn twice(&self) -> Int32 { self.base() * 2 } }\n\
+         struct S { v: Int32 }\nimpl G for S { fn base(&self) -> Int32 { self.v } }\n\
+         fn main() { let s = S { v: 5 }; assert_eq(G::twice(&s), 10); }",
+    );
+}
+
+#[test]
+fn c62b_fully_qualified_passes_further_arguments_and_a_mut_receiver() {
+    agree(
+        "fq_with_args",
+        "trait Add2 { fn add(&self, o: Int32) -> Int32; }\nstruct S { v: Int32 }\n\
+         impl Add2 for S { fn add(&self, o: Int32) -> Int32 { self.v + o } }\n\
+         fn main() { let s = S { v: 5 }; assert_eq(Add2::add(&s, 3), 8); }",
+    );
+    agree(
+        "fq_mut_receiver",
+        "trait Bump { fn bump(&mut self); fn get(&self) -> Int32; }\nstruct S { v: Int32 }\n\
+         impl Bump for S { fn bump(&mut self) { self.v = self.v + 1; } fn get(&self) -> Int32 { self.v } }\n\
+         fn main() { let mut s = S { v: 1 }; Bump::bump(&mut s); assert_eq(Bump::get(&s), 2); }",
+    );
+}
+
+#[test]
+fn c62b_fully_qualified_on_a_drop_bearing_receiver() {
+    agree(
+        "fq_drop_receiver",
+        "struct D { v: Int32 }\nimpl Drop for D { fn drop(&mut self) { } }\n\
+         trait Take { fn peek(&self) -> Int32; }\nimpl Take for D { fn peek(&self) -> Int32 { self.v } }\n\
+         fn main() { let d = D { v: 4 }; assert_eq(Take::peek(&d), 4); }",
+    );
+}
+
+#[test]
+fn c62b_ambiguous_unqualified_call_is_still_rejected() {
+    // The qualified form is the spec's remedy for this error, so the error must remain.
+    let src = "trait A { fn go(&self) -> Int32; }\ntrait B { fn go(&self) -> Int32; }\n\
+         struct S { v: Int32 }\n\
+         impl A for S { fn go(&self) -> Int32 { 1 } }\nimpl B for S { fn go(&self) -> Int32 { 2 } }\n\
+         fn main() { let s = S { v: 0 }; assert_eq(s.go(), 1); }";
+    let file = Arc::new(SourceFile::new("ambig.stark".to_string(), src.to_string()));
+    let (ast, _) = parse(&file, ParseMode::Program);
+    let (hir, _) = resolve(&ast, file.clone());
+    let checked = typecheck::analyze(&hir, file);
+    let codes: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .filter_map(|d| d.code.clone())
+        .collect();
+    assert!(
+        codes.iter().any(|c| c == "E0203"),
+        "expected E0203, got {codes:?}"
+    );
+}
+
+#[test]
+fn c62b_receiverless_qualified_call_is_rejected_by_the_checker() {
+    // `Mk::make()` has no receiver argument, so the implementing type is unrecoverable. The
+    // checker refuses it (E0005) — lowering's matching guard is defensive, never reached here.
+    let src = "trait Mk { fn make() -> Self; fn val(&self) -> Int32; }\nstruct G { v: Int32 }\n\
+         impl Mk for G { fn make() -> Self { G { v: 8 } } fn val(&self) -> Int32 { self.v } }\n\
+         fn main() { let g = Mk::make(); assert_eq(g.val(), 8); }";
+    let file = Arc::new(SourceFile::new(
+        "recvless.stark".to_string(),
+        src.to_string(),
+    ));
+    let (ast, _) = parse(&file, ParseMode::Program);
+    let (hir, _) = resolve(&ast, file.clone());
+    let checked = typecheck::analyze(&hir, file);
+    let codes: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .filter_map(|d| d.code.clone())
+        .collect();
+    assert!(
+        codes.iter().any(|c| c == "E0005"),
+        "expected E0005, got {codes:?}"
+    );
+}

@@ -1,7 +1,7 @@
 # C6-GENERICS-TRAITS-MATRIX — Track B / WP-C6.2
 
-**Status:** C6.2a CLOSED (CD-086) — canonical callable identity corrected; the dispatch shapes it
-unblocked are classified below. C6.2b…e remain open.
+**Status:** C6.2a CLOSED (CD-086). C6.2b IN PROGRESS — §18 matrix probed end-to-end (§5), DEV-102
+closed (§6); five findings await disposition (§7). C6.2c…e remain open.
 **Base:** `main`, post-WP-C6.1 closure (CD-085)
 **Authorship:** the file is **Track B**-owned (`C6-FILE-OWNERSHIP.md §1`). The C6.2a section was
 written by Track A under the owner's C6.2a ruling, because the defect was in *lowering identity*,
@@ -55,7 +55,7 @@ the separate lowering gap (14).
 | 11 | cross-package trait method call | refused (identity) | ✅ native | `c62a_cross_package_trait_method_call` |
 | 12 | nested generic nominal | ✅ (already) | ✅ native | probe |
 | 13 | generic nominal with `Drop` | ✅ (already) | ✅ native | probe |
-| 14 | **fully-qualified call** `Shape::area(&q)` | `LOWER: callee form (C4.5)` | ❌ **still open** | **DEV-102** → C6.2b |
+| 14 | **fully-qualified call** `Shape::area(&q)` | `LOWER: callee form (C4.5)` | ✅ native (C6.2b) | `c62b_fully_qualified_*` |
 
 Rows 9 and 10 matter beyond dispatch: they early-discharge part of WP-C6-ENTRY **§20 (C6.2d)** —
 **STARK's own impls must run, not Rust equivalents**. They do not close §20, which also covers
@@ -78,15 +78,88 @@ item is still refused (`a_mismatched_item_is_still_rejected`) — the check is i
 
 ---
 
-## 4. Open for C6.2b and later
+## 4. Remaining C6.2 sub-package scope
+
+The §18 matrix itself is now probed — see §5. What stays open beyond it:
 
 | Item | Owner |
 |---|---|
-| **DEV-102** — fully-qualified call form `Trait::method(&recv)`; a missing callee-lowering form, unrelated to the identity defect | C6.2b (method-resolution completion) |
 | **DEV-083** — candidate-local inference snapshots / declaration-order-independent candidate evaluation (deferred by CD-040(b)) | C6.2b |
-| the rest of §18's resolution matrix (`Self` in default methods, nested-reference receivers, ambiguity, privacy, inherent-vs-trait preference) | C6.2b |
 | §19 associated types beyond the single-binding case (multiple bindings, bounds on associated types, projection in signatures) | C6.2c |
 | §20 the remainder of operator/`CoreTrait` semantics (arithmetic and comparison desugaring, `Ordering` totality, operator trap behaviour) | C6.2d |
-| generic-impl-head receiver inference recheck (WP-C6-ENTRY §2 carry-forward) | C6.2b |
 | §21 deterministic instance identity under rebuild/relocation/dependency reorder for methods and trait instances | C6.2e |
 | generic collections and iterators | C6.3 (Track C) interface |
+| the six C6.2b findings in §7 | **awaiting disposition** |
+
+
+---
+
+## 5. C6.2b — the §18 method-resolution matrix, probed
+
+Every row driven `parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`.
+
+| §18 row | Status | Note |
+|---|---|---|
+| inherent | ✅ native | C6.2a |
+| user trait | ✅ native | C6.2a |
+| CoreTrait | ✅ native | `Clone`, `Default`, `Eq`, `Ord` all dispatch to the user impl |
+| default trait method | ✅ native | C6.2a; also reachable fully qualified |
+| **fully qualified call** | ✅ native | **DEV-102 closed by C6.2b** — see §6 |
+| generic-parameter method | ✅ native | `fn f<T: Sh>(t: T) { t.a() }` |
+| **`Self` in default method** | ✅ native | `self`-typed locals and `Self::assoc()` in default bodies both work |
+| shared-reference receiver | ⚠️ **blocked** | `let r = &p; r.get()` — **F3**, reference-lane |
+| mutable-reference receiver | ✅ native | `p.bump()`; `let r = &mut p; r.bump(); p.get()` correctly rejected (E0101 — Core v1 borrows are lexically scoped, no NLL) |
+| nested-reference receiver | ⚠️ **blocked** | **F4** — `&&T` unspellable; inferred `&&T` fails MIR verify |
+| associated function | ✅ native | C6.2a |
+| associated type | ✅ native | C6.2a |
+| **ambiguity** | ✅ correct | two traits supplying `go` → **E0203**; inherent shadows trait; qualified form disambiguates |
+| **privacy** | ❌ **under-rejects** | **F1** — private impl members and private fields are reachable cross-module |
+| cross-package impl | ✅ native | C6.2a |
+
+Recheck of the WP-C6-ENTRY §2 carry-forward: the **generic impl-head receiver-inference limitation
+is still open** — **F5**.
+
+---
+
+## 6. DEV-102 CLOSED — fully qualified trait calls
+
+TYPE-METHOD-001 requires the form ("Trait methods can always be called in fully-qualified function
+form"; it "bypasses trait-name lookup but still requires a unique coherent impl"). The front end and
+the HIR oracle accepted it; only MIR lowering had no `Res::TraitMember` callee arm.
+
+Lowering now selects through `find_trait_impl_fn` — a **trait-filtered** lookup, deliberately
+separate from `find_impl_fn`. `find_impl_fn` answers "what does `recv.m()` mean", so it prefers
+inherent methods and accepts any in-scope trait; the qualified form must do neither. That separation
+is what makes the form usable as the spec's own remedy for the E0203 ambiguity error.
+
+Covered: plain call; **`A::go(&s)` vs `B::go(&s)` selecting different impls**; ignoring an inherent
+method of the same name (while `s.go()` still prefers it); reaching a trait default body; extra
+arguments; `&mut` receivers; a `Drop`-bearing receiver. E0203 and E0005 rejections are asserted to
+persist. Because the receiver is written explicitly, no auto-borrow/auto-deref applies
+(TYPE-METHOD-002 governs `recv.m()` only) — every argument lowers as an ordinary operand in source
+order, which is why the arm is small.
+
+Not covered, and **deliberately not broadened**: `Trait::assoc()` with no receiver (checker rejects
+with E0005 — the implementing type is unrecoverable), and a trait implemented for a *specific*
+instantiation of a generic nominal (`impl Get for W<Int32>` → E0500, a front-end limitation ahead of
+lowering) — **F2**.
+
+---
+
+## 7. C6.2b findings awaiting disposition
+
+Ordered by severity. F1 is the only one that **accepts invalid programs**; the rest are
+over-rejections or unassigned scope.
+
+| # | Finding | Evidence | Normative basis |
+|---|---|---|---|
+| **F1** | **Privacy under-rejection.** A private inherent method, a private associated function, and a **private struct field** are all reachable from outside the defining module. Module-level items *are* enforced (private `fn`/`struct` correctly rejected in `resolve`), so the hole is specifically **impl members and fields**. | `m::S::secret()`, `s.hidden()`, `s.v` all run to exit 0 cross-module | MOD-VIS-001 ("Fields and enum variants follow their declarations' explicit visibility rules"); 07 §"Accessing a private item outside its module is a compile-time error"; TYPE-METHOD-001 step 5 |
+| **F2** | Trait impl on a *specific* instantiation of a generic nominal (`impl Get for W<Int32>`) is not seen: E0500 "trait is not implemented for receiver type". | `fq_generic_nominal` probe | 03 coherence/impl matching |
+| **F3** | **A reference stored in a user local is refused by the backend** — "outside the C5 ephemeral reference lane". `let r = &p; r.get()` cannot be built, though the front end and HIR oracle accept it. | `recv_shared`, `generic_impl_head_inference` probes | C5 exit report §205 defers "general references" to "C6" **without a sub-package**; §18 nevertheless lists shared/nested-reference receivers as C6.2b rows |
+| **F4** | Nested-reference receivers: `&&T` is **unspellable as a type** (parser: "expected a type, found `&&`"), and an inferred `&&T` receiver passes typecheck but fails MIR verify (MIR-0005). | `recv_nested_ref`, `F6_two_ref_via_arg` probes | TYPE-METHOD-002: auto-deref "repeatedly removes one leading `&`/`&mut`" — nested receivers are normative. Mostly downstream of F3 |
+| **F5** | Impl-head bounds are invisible in method bodies: `impl<T: Sh> W<T> { fn go(&self) { self.v.a() } }` → E0302 "method 'a' not found for type 'T'". | `generic_impl_head_bounded` probe | The WP-C6-ENTRY §2 carry-forward, confirmed still open |
+| **F6** | Impl signatures do not normalise `Self`: writing the concrete type where the trait declares `Self` (`fn make() -> G` for `fn make() -> Self`, or `o: &G` for `o: &Self`) is rejected E0500. Writing `Self` works. | `F4_impl_writes_concrete`, `F4_param_Self` probes | 03 impl/trait signature matching — spec does not obviously require the concrete spelling to be accepted |
+
+**Doc defect found while grounding F4:** the repo `CLAUDE.md` summary says method calls "auto-deref
+**one** reference level", but normative TYPE-METHOD-002 says auto-dereference "repeatedly removes one
+leading `&`/`&mut`". The summary is wrong and should be corrected.

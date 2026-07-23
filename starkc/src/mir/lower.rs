@@ -4312,6 +4312,127 @@ impl<'a> FnLowerer<'a> {
                     );
                     Ok(())
                 }
+                // WP-C6.2b / DEV-102: fully qualified trait call `Trait::method(&recv, args...)`.
+                // 03-Type-System TYPE-METHOD-001: "Trait methods can always be called in
+                // fully-qualified function form ... since a method is an ordinary function whose
+                // first parameter is the receiver", and the form "bypasses trait-name lookup but
+                // still requires a unique coherent impl". Selection is therefore filtered to the
+                // NAMED trait (`find_trait_impl_fn`) rather than reusing ordinary method lookup,
+                // which takes any in-scope trait supplying the name — that difference is the whole
+                // point of the form, since it is how §18's ambiguity case is disambiguated.
+                //
+                // Because the receiver is written explicitly, no auto-borrow or auto-deref applies
+                // (TYPE-METHOD-002 governs `recv.m()` only): every argument, receiver included,
+                // lowers as an ordinary operand in source order.
+                Res::TraitMember(trait_item, member) => {
+                    let (trait_item, member) = (*trait_item, *member);
+                    let ItemKind::Trait {
+                        items: trait_items, ..
+                    } = &self.hir.item(trait_item).kind
+                    else {
+                        return unsupported("fully qualified call through a non-trait path", span);
+                    };
+                    let Some(hir::TraitItem::Method { sig, .. }) = trait_items.get(member as usize)
+                    else {
+                        return unsupported(
+                            "fully qualified call to a non-method trait member",
+                            span,
+                        );
+                    };
+                    if sig.receiver.is_none() {
+                        // Defensive only: the checker already rejects `Trait::assoc()` with E0005
+                        // ("qualified trait method requires a receiver"), since without a receiver
+                        // argument the implementing type is not recoverable. Kept so a future
+                        // front-end relaxation surfaces here rather than mis-selecting an impl.
+                        return unsupported(
+                            "fully qualified call to a receiverless trait member",
+                            span,
+                        );
+                    }
+                    let name_text = self.meta.item_text(trait_item, sig.name).to_string();
+                    let Some((&recv_expr, _rest)) = args.split_first() else {
+                        return unsupported(
+                            "fully qualified trait call without a receiver argument",
+                            span,
+                        );
+                    };
+                    let (peeled, _) = Self::peel_refs(self.expr_mir_ty(recv_expr)?);
+                    let (nominal, nominal_args) = match &peeled {
+                        MirTy::Struct(item, a) | MirTy::Enum(EnumRef::User(item), a) => {
+                            (*item, a.clone())
+                        }
+                        other => {
+                            return unsupported(
+                                format!(
+                                    "fully qualified trait call on non-nominal receiver {other:?}"
+                                ),
+                                span,
+                            )
+                        }
+                    };
+                    let Some(key) =
+                        self.find_trait_impl_fn(nominal, trait_item, &name_text, &nominal_args)
+                    else {
+                        return unsupported(
+                            format!("no impl of the named trait supplies {name_text}"),
+                            span,
+                        );
+                    };
+                    // Method-level generic arguments come from the checker's per-call-site
+                    // recording, exactly as for `recv.m::<T>(...)` (WP-C4.7-8.4).
+                    let method_args = match self.tables.generic_insts.get(&expr) {
+                        Some(tys) => tys
+                            .iter()
+                            .map(|t| self.mir_ty(t, span))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        None => Vec::new(),
+                    };
+                    let key = match key {
+                        FnKey::ImplFn {
+                            impl_item,
+                            member,
+                            type_args,
+                            ..
+                        } => FnKey::ImplFn {
+                            impl_item,
+                            member,
+                            type_args,
+                            method_args,
+                        },
+                        FnKey::TraitDefault {
+                            trait_item,
+                            member,
+                            self_item,
+                            self_args,
+                            ..
+                        } => FnKey::TraitDefault {
+                            trait_item,
+                            member,
+                            self_item,
+                            self_args,
+                            method_args,
+                        },
+                        other => other,
+                    };
+                    let instance = self.instance_from_key(&key)?;
+                    self.discovered_callees.push(key);
+                    let ops = args
+                        .iter()
+                        .map(|&a| self.lower_expr_to_operand(a))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let after = self.new_block();
+                    self.terminate(
+                        Terminator::Call {
+                            callee: Callee::Instance(instance),
+                            args: ops,
+                            dest,
+                            target: after,
+                        },
+                        self.info(span),
+                        after,
+                    );
+                    Ok(())
+                }
                 _ => unsupported("callee form (C4.5)", span),
             },
             _ => unsupported("indirect callee expression (C4.5)", span),
@@ -4588,6 +4709,81 @@ impl<'a> FnLowerer<'a> {
             }
         }
         inherent.or(via_trait).or(via_default)
+    }
+
+    /// WP-C6.2b: locate the implementation of a **specific** trait's method for `nominal`.
+    ///
+    /// `find_impl_fn` answers "what does `recv.m()` mean here", so it prefers inherent methods and
+    /// accepts any in-scope trait supplying the name. A fully qualified `Trait::m(&recv)` asks a
+    /// different question — TYPE-METHOD-001's "bypasses trait-name lookup but still requires a
+    /// unique coherent impl" — and must ignore both inherent methods and other traits. Keeping the
+    /// two lookups separate is what lets `A::go(&s)` and `B::go(&s)` disambiguate the §18 ambiguity
+    /// case instead of both resolving to whichever impl is found first.
+    ///
+    /// Coherence (one impl of a trait per type) is enforced upstream, so the first match is the
+    /// unique one; an overriding `impl` member wins over the trait's default body, as elsewhere.
+    fn find_trait_impl_fn(
+        &self,
+        nominal: ItemId,
+        trait_item: ItemId,
+        name: &str,
+        type_args: &[MirTy],
+    ) -> Option<FnKey> {
+        for (idx, item) in self.hir.items.iter().enumerate() {
+            let ItemKind::Impl {
+                trait_: Some(trait_ref),
+                items,
+                ..
+            } = &item.kind
+            else {
+                continue;
+            };
+            let impl_item = ItemId(idx as u32);
+            if impl_self_item(self.hir, impl_item) != Some(nominal) {
+                continue;
+            }
+            if trait_ref.res != Res::Item(trait_item) {
+                continue;
+            }
+            for (member, impl_member) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_member else {
+                    continue;
+                };
+                if self.meta.item_text(impl_item, def.sig.name) != name
+                    || def.sig.receiver.is_none()
+                {
+                    continue;
+                }
+                return Some(FnKey::ImplFn {
+                    impl_item,
+                    member: member as u32,
+                    type_args: type_args.to_vec(),
+                    method_args: Vec::new(),
+                });
+            }
+            // Not overridden by this impl — the trait's own default body.
+            if let ItemKind::Trait {
+                items: trait_items, ..
+            } = &self.hir.item(trait_item).kind
+            {
+                for (member, trait_member) in trait_items.iter().enumerate() {
+                    let hir::TraitItem::Method { sig, body: Some(_) } = trait_member else {
+                        continue;
+                    };
+                    if self.meta.item_text(trait_item, sig.name) != name || sig.receiver.is_none() {
+                        continue;
+                    }
+                    return Some(FnKey::TraitDefault {
+                        trait_item,
+                        member: member as u32,
+                        self_item: nominal,
+                        self_args: type_args.to_vec(),
+                        method_args: Vec::new(),
+                    });
+                }
+            }
+        }
+        None
     }
 
     /// Lower `receiver.method(args)` — evaluation order: receiver first (CD-007/CD-010).

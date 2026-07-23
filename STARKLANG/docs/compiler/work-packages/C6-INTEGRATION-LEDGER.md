@@ -72,6 +72,7 @@ begin from `db73afe`.
 | C6.1d | A | Claude | (post-C6.1c) | `mir/lower.rs` (lease), `borrowck.rs` (lease) | SHARED-CONTRACTS v1 | none (unroll with existing `ConstIndex`; no new MIR op — Option (a)) | `native_c6_1_ownership.rs` (+12 `c61d_*`), `gate2_valid` accept flip | G2 fixed; DEV-090 closed | §7J:3 | CANDIDATE-COMPLETE (CD-083) |
 | C6.1e | A | Claude | (post-C6.1d) | `C6-DROP-PATH-MATRIX.md` (new); `three_engine_differential.rs` (lease, tests only) | SHARED-CONTRACTS v1 | none (evidence only — no source change) | `three_engine_differential.rs` (+12 `c61e_*`) | none | §7J:5 (evidence) | **CANDIDATE-COMPLETE** |
 | C6.2a | A | Claude | (post-C6.1e) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` (new) | SHARED-CONTRACTS v1 §3 (`Instance` identity) | none (conformance correction — the contract was violated, not changed) | `native_c6_2_generics_traits.rs` (12) | **DEV-102 opened** (fully-qualified call form) | §7J:3 | **CLOSED (CD-086)** |
+| C6.2b | A | Claude | (post-C6.2a) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` | SHARED-CONTRACTS v1 | none (new callee arm using existing MIR ops) | `native_c6_2_generics_traits.rs` (+8 `c62b_*`, 20 total) | **DEV-102 CLOSED**; F1–F6 opened | §7J:3 | **PARTIAL** — DEV-102 closed, §18 matrix probed; F1–F6 await disposition |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
 
@@ -92,6 +93,7 @@ state/doc update.
 | `mir/lower.rs` | A | C6.1d G2: `lower_for_over_array_unrolled` — unroll non-Copy array iteration | post-C6.1c | narrow: new private helper; Copy path unchanged | `native_c6_1_ownership.rs` `c61d_*` | C6.1d | C6.1d (landed) |
 | `borrowck.rs` | A | C6.1d G2: remove the DEV-090 E0104 rejection now that MIR lowers non-Copy array iteration | post-C6.1c | none (removes a rejection) | `gate2_valid` accept test | C6.1d | C6.1d (landed) |
 | `three_engine_differential.rs` | A | C6.1e: add 12 drop-path probe cases (tests only; reuses the existing trap comparator and sits with the sibling C5.3d-1c drop cases) | post-C6.1d | none (no comparator/normalisation change) | the cases themselves | C6.1e | C6.1e (landed) |
+| `mir/lower.rs` | A | C6.2b: `Res::TraitMember` callee arm + `find_trait_impl_fn` — fully qualified trait calls (DEV-102). | post-C6.2a | narrow: one new private helper + one match arm; `find_impl_fn` untouched | `native_c6_2_generics_traits.rs` `c62b_*` | C6.2b | C6.2b (landed) |
 | `mir/lower.rs` | A | C6.2a: `instance_from_key` — the single canonical `Instance` constructor; all 7 construction sites routed through it (owner ruling). Track B's area, but the defect is in lowering identity, not method selection; Track B informed & excluded until release. | post-C6.1e | narrow: one new private helper; 6 call sites and the body site now call it instead of building `Instance` inline | `native_c6_2_generics_traits.rs` (12) | C6.2a | C6.2a (landed) |
 
 ---
@@ -168,10 +170,30 @@ Drop-log comparison and IO/provider-failure cleanup wait on C6.3 output/resource
   `symbol`/`item`/`type_args`. Track A leased `mir/lower.rs`; Track B informed and excluded until
   release. **The fully-qualified call gap is deliberately kept separate** — see DEV-102 / C6.2b.
 
-- **DEV-102 [2026-07-23, C6.2a] — fully-qualified call form not lowered.** `Trait::method(&recv)`
-  still reports `LOWER: callee form (C4.5)`. Per the owner ruling this is a **missing
-  callee-lowering form, unrelated to the identity defect**, and is recorded independently under
-  **C6.2b (method-resolution completion)** rather than broadened into the identity correction.
+- **DEV-102 [2026-07-23, opened C6.2a, CLOSED C6.2b] — fully-qualified call form not lowered.**
+  `Trait::method(&recv)` reported `LOWER: callee form (C4.5)`. Per the C6.2a ruling it was kept
+  separate as a **missing callee-lowering form, unrelated to the identity defect**, and closed in
+  C6.2b: lowering gained a `Res::TraitMember` arm selecting through a new **trait-filtered**
+  `find_trait_impl_fn`. TYPE-METHOD-001 requires the form and requires it to bypass trait-name
+  lookup, so reusing `find_impl_fn` (which prefers inherent methods and takes any in-scope trait)
+  would have been wrong — the qualified form is the spec's own remedy for the E0203 ambiguity error,
+  proven by `A::go(&s)`/`B::go(&s)` selecting different impls. Not a CE3: existing MIR ops only.
+
+- **C6.2b findings F1–F6 [2026-07-23] — AWAITING OWNER DISPOSITION.** The §18 matrix was probed
+  end-to-end; details and normative citations in `C6-GENERICS-TRAITS-MATRIX.md` §7.
+  - **F1 — privacy under-rejection (the only one that ACCEPTS invalid programs).** Private impl
+    members (methods, associated fns) and private struct fields are reachable cross-module, though
+    module-level items are correctly enforced. Violates MOD-VIS-001 and TYPE-METHOD-001 step 5.
+    Front-end area (Track B owned); needs a lease or a Track B assignment.
+  - **F2** trait impl on a specific generic instantiation (`impl Get for W<Int32>`) not matched.
+  - **F3 — general reference storage is unassigned scope.** `let r = &p; r.get()` is refused by the
+    backend ("C5 ephemeral reference lane"), yet §18 lists shared/nested-reference receivers as
+    C6.2b rows and the C5 exit report defers "general references" to "C6" **without naming a
+    sub-package**. This is a **scope gap in the C6 plan**, not merely a defect.
+  - **F4** nested-reference receivers: `&&T` unspellable (parser); inferred `&&T` fails MIR verify
+    though TYPE-METHOD-002 makes repeated auto-deref normative. Largely downstream of F3.
+  - **F5** impl-head bounds invisible in method bodies (E0302) — the §2 carry-forward, still open.
+  - **F6** impl signatures do not normalise `Self` to the implementing type (E0500).
 
 - **Owner ruling [2026-07-23, C6.1d] — Option (a) unconditional array-iteration unrolling, NOT a
   CE3.** By-value iteration over a non-`Copy` fixed array unrolls into `N` `ConstIndex(i)` moves (no
