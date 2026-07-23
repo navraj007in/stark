@@ -26,7 +26,7 @@ open gaps for C6.1 are **narrow and specific**:
 
 | Gap | Shape | Current | C6.1 owner |
 |---|---|---|---|
-| G1 | Multi-**unit** enum-payload consuming match / partial move (bind or move ≥2 non-`Copy` payload fields of one variant) | BACKEND-REFUSED | **C6.1c** |
+| G1 | Multi-**unit** enum-payload consuming match / partial move (bind or move ≥2 non-`Copy` payload fields of one variant) | ~~BACKEND-REFUSED~~ **FIXED (C6.1c)** | **C6.1c** |
 | G2 | Non-`Copy` **array by-value iteration** (`for x in arr`) | FRONT-END ("not yet supported") | **C6.1d** |
 | G3 | **Multi-level (depth ≥2) partial move/drop** through a projection chain (`o.a.x`) — only one projection level was implemented | ~~BACKEND-REFUSED~~ **FIXED (C6.1b)** | **C6.1b** |
 | G4 | **Loop-carried reassignment of a no-`Drop` non-`Copy` local** — the slot is never reset by a MIR `Drop` (verifier emits none for a non-droppable type), so a loop back-edge reassignment hit `write`'s dead-slot check and **aborted at run time** (compile-then-abort) | ~~COMPILE-THEN-ABORT~~ **FIXED (C6.1b)** | **C6.1b** (newly surfaced) |
@@ -76,7 +76,7 @@ non-`Copy` movement" claim and is recorded here so C6.1b's acceptance set includ
 | **multi-level** field move (`o.a.x`) | `Outer{a:Inner{x:S},b:S}` | Move | projection depth 2 | **BACKEND-REFUSED** (probe 20) | SUPPORTED | `nested_partial_move` | depth-2 collapse → duplicate-drop | **G3** | OPEN-G3 |
 | tuple field move | `(S, Int32)` | Move | `Field(i)` | SUPPORTED (fn-value tuple, C5.4c) | same | `tuple_field_move` | — | — | PARITY |
 | single-unit enum payload consuming match | `E{V(D)}` | Move+Drop | `VariantField(0,0)` whole | SUPPORTED (probe 23) | same | `singleunit_enum_move` | — | — | PARITY |
-| **multi-unit** enum payload destructure/partial move | `E{V(S,S)}` | Move | `VariantField(0,k)` ≥2 | **BACKEND-REFUSED** (probe 10/24) | SUPPORTED | `enum_multiunit_partial`,`enum_multiunit_bind_both` | collapse-to-whole → duplicate-drop; unbound-sibling & both-bound refusals | **G1** | OPEN-G1 |
+| **multi-unit** enum payload destructure/partial move | `E{V(S,S)}` | Move | tuple decomposition + `Field(k)` | ~~BACKEND-REFUSED~~ **FIXED (C6.1c)** | SUPPORTED | `c61c_*` (7) | duplicate-drop via exit-0 slot_violation guard | **G1** | FIXED |
 | function-value aggregate (struct field of `fn`) | `H{f:fn(..)->..}` | field Copy | `Field` read | SUPPORTED (probe 18) | same | `fnvalue_aggregate` | fn-ptr treated non-Copy | — | PARITY |
 
 ### 3.3 Array elements
@@ -155,9 +155,19 @@ C6.1e observes marker **order and counts**, not just exit code.
 - [x] Current outcomes are probe-grounded, not assumed
 
 **Gaps:** **G3** (multi-level partial move) and **G4** (loop-carried no-`Drop` reassignment) are
-**FIXED in C6.1b** (see below). **G1** (multi-unit enum payload → C6.1c) and **G2** (non-`Copy`
-array by-value iteration → C6.1d) remain open. Vec/Box ownership is a Track A↔C interface (C6.3).
-Everything else is at native parity today.
+**FIXED in C6.1b**; **G1** (multi-unit enum payload) is **FIXED in C6.1c** (below). Only **G2**
+(non-`Copy` array by-value iteration → C6.1d) remains open. Vec/Box ownership is a Track A↔C
+interface (C6.3). Everything else is at native parity today.
+
+**C6.1c delivered (G1):** `mir::lower::materialize_consumed_variant_payload` decomposes a
+multi-field non-`Copy` variant payload into ONE canonical `Aggregate(Tuple, [VariantField(v,0..n)])`
+statement; per-field movement then uses ordinary tuple `Field` projections (raw-projectable, C6.1b).
+The backend recognises that exact statement shape (`emit_projections::variant_payload_decomposition`)
+and emits one destructuring `match e.take() { E::V(f0,f1) => (f0,f1), _ => unreachable!() }` — the
+whole enum is moved once, so no partial-slot access occurs. Single-field / all-`Copy` payloads keep
+the existing direct path (bounded diff: no `Option`/`Result` churn, no snapshot re-pin). Owner ruling
+(refined Option A) recorded in the ledger. Evidence: `native_c6_1_ownership.rs` `c61c_*` (7) +
+`native_c5_3` positive multi-unit test; frozen `exec_snapshots`/`corpus_lock` unchanged.
 
 **C6.1b delivered (G3 + G4):**
 - **G3** — `emit_projections` now generates a chained-`addr_of_mut!` raw helper for a projection

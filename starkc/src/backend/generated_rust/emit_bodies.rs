@@ -639,6 +639,35 @@ fn emit_assignment(
     ))
 }
 
+/// WP-C6.1c: recognise the canonical variant-payload decomposition aggregate that `mir::lower`'s
+/// `materialize_consumed_variant_payload` emits — a `Tuple` aggregate whose operands are exactly one
+/// enum slot's payload fields `VariantField(v, 0..n)`, in order — and emit ONE destructuring
+/// `match`: the whole enum is moved out (`take()`) once and rebuilt as a tuple, because Rust cannot
+/// address a variant field without a `match` and a `match` needs a whole value. After this, the
+/// tuple's fields move via ordinary raw-projectable machinery (C6.1b). Statement-local recognition
+/// only — no cross-block/arm analysis (owner ruling). Returns `None` for any other tuple aggregate.
+fn try_variant_payload_extraction(
+    operands: &[Operand],
+    env: &TyEnv,
+) -> Result<Option<String>, BackendDiagnostic> {
+    let Some((local, variant)) = emit_projections::variant_payload_decomposition(operands, env)?
+    else {
+        return Ok(None);
+    };
+    let enum_ty = env.local_ty(local)?;
+    let enum_name = emit_types::nominal_type_name(&enum_ty).ok_or_else(|| {
+        BackendDiagnostic::Unsupported(format!("no generated name for enum {enum_ty:?}"))
+    })?;
+    let binders: Vec<String> = (0..operands.len()).map(|i| format!("__f{i}")).collect();
+    let joined = binders.join(", ");
+    Ok(Some(format!(
+        "match {}.take() {{ {enum_name}::{}({joined}) => ({joined}), \
+         _ => unreachable!(\"C6.1c: verified discriminant\") }}",
+        emit_places::local_name(local),
+        emit_types::variant_name(variant),
+    )))
+}
+
 fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match rvalue {
         Rvalue::Use(operand) => emit_operand(operand, env),
@@ -720,6 +749,14 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
         // WP-C5.3a: aggregate construction. Each kind has a direct Rust constructor, so nothing
         // here reconstructs source syntax -- the operand order IS the MIR field/element order.
         Rvalue::Aggregate(kind, operands) => {
+            // WP-C6.1c: the canonical variant-payload decomposition (a Tuple aggregate of one
+            // enum's VariantField payload fields) emits as ONE destructuring `match`, not per-field
+            // moves — the only way to move >=2 fields out of an enum payload.
+            if matches!(kind, AggKind::Tuple) {
+                if let Some(expr) = try_variant_payload_extraction(operands, env)? {
+                    return Ok(expr);
+                }
+            }
             let mut parts = Vec::with_capacity(operands.len());
             for operand in operands {
                 parts.push(emit_operand(operand, env)?);

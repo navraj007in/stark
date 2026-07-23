@@ -924,28 +924,22 @@ fn an_unknown_target_contract_is_rejected_before_emission() {
     }
 }
 
-// ------------------------- CD-070: the multi-unit enum payload boundary (adversarial) --
+// ------------------ CD-070 → WP-C6.1c: the multi-unit enum payload boundary, now CLOSED --
 
-/// **The adversarial fixture the C5.3 review required, and it found a real defect.**
+/// The CD-070 adversarial fixture, **now a positive test**: WP-C6.1c closed the multi-unit
+/// enum-payload boundary. `enum E { V(A, B) }` with `match e { E::V(a, b) => … }` moves one
+/// non-`Copy` payload unit out while a droppable sibling remains — which the C5 backend refused
+/// (an enum payload has no raw projection, so the second `VariantField` move hit a partial slot).
 ///
-/// `enum E { V(A, B) }` with `match e { E::V(a, b) => take_a(a) }` moves one non-`Copy` payload
-/// unit out and leaves a droppable sibling. Before this test the program **compiled and then
-/// aborted at run time** inside `slot_violation`, whose own message says "STARK compiler defect,
-/// not a program fault" — the worst of both outcomes, since the backend's promise is that an
-/// out-of-subset shape is refused deterministically BEFORE rustc.
-///
-/// Cause: an enum payload has no raw-pointer projection, so a payload move goes through
-/// `move_field_whole`, which requires a complete value and leaves the slot `Partial`. With more
-/// than one payload unit, the second move — or the whole-enum drop of the survivor — then needs
-/// `Whole` over partial storage.
-///
-/// The boundary is now recorded and enforced: C5 supports whole enum payload movement and
-/// single-unit consuming-match shapes; partial movement of one field out of a multi-unit payload
-/// is deferred to broad ownership/reference completion in C6.
+/// C6.1c lowers the active-variant payload into ONE canonical tuple aggregate, which the backend
+/// emits as a single destructuring `match e.take() { E::V(f0, f1) => (f0, f1), … }`; after that,
+/// per-field movement is ordinary raw-projectable tuple-field machinery. The whole enum is moved
+/// once, so no partial-slot access ever occurs. These build AND run to a successful exit (the
+/// `assert_eq` observations hold, and no `slot_violation` fires from a mis-drop).
 #[test]
-fn a_partial_move_out_of_a_multi_unit_enum_payload_is_refused_before_rustc() {
+fn a_partial_move_out_of_a_multi_unit_enum_payload_builds_and_runs() {
     let sources = [
-        // One unit consumed, the sibling unbound but still owing a destructor.
+        // One unit consumed, the sibling unbound but still owing a destructor (dropped at arm end).
         r#"struct A { x: Int32 }
 impl Drop for A { fn drop(&mut self) { let r: Int32 = self.x; } }
 struct B { x: Int32 }
@@ -973,22 +967,19 @@ fn main() {
 "#,
     ];
     for (i, source) in sources.iter().enumerate() {
-        match build(source, &format!("multiunit{i}")) {
-            Err(BackendDiagnostic::Unsupported(message)) => {
-                assert!(
-                    message.contains("MULTI-UNIT enum payload"),
-                    "case {i} must name the boundary it refuses: {message}"
-                );
-            }
-            Err(other) => panic!(
-                "case {i} must be refused as Unsupported BEFORE rustc, not fail later: {other:?}"
-            ),
-            Ok(_) => panic!(
-                "case {i} built. If multi-unit enum payload partial moves are now genuinely \
-                 supported, move this to a positive three-engine test -- but a build that then \
-                 aborts in slot_violation at run time is NOT support"
-            ),
-        }
+        let (generated, run) = build(source, &format!("multiunit{i}"))
+            .unwrap_or_else(|e| panic!("case {i} must build now (C6.1c): {e:?}"));
+        assert!(
+            run.status.success(),
+            "case {i} must exit 0 (asserts hold, no slot_violation); stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        // Structural: exactly one destructuring extraction match for the payload.
+        assert_eq!(
+            generated.matches(".take() {").count(),
+            1,
+            "case {i}: the payload decomposition must emit exactly one `take()` destructure"
+        );
     }
 }
 

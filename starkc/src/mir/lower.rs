@@ -7858,6 +7858,35 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<(), LowerError> {
         let payload_tys = self.variant_payload_types(enum_ref, scrut_args, variant, span)?;
+
+        // WP-C6.1c (owner ruling, refined Option A). A MULTI-FIELD variant payload containing a
+        // non-`Copy` field cannot be moved out field-by-field: an enum payload has no raw
+        // projection, so the second `VariantField` move hits a partial slot (the CD-070 boundary).
+        // Decompose such a payload into ONE canonical tuple aggregate first, then move fields as
+        // ordinary tuple `Field` projections (raw-projectable — C6.1b). Single-field and all-`Copy`
+        // payloads keep the direct `VariantField` path: they already work, and decomposing them
+        // would churn every `Option`/`Result` match for no gain.
+        let use_tuple = mode == MatchMode::Consuming
+            && payload_tys.len() > 1
+            && payload_tys.iter().any(|t| !self.is_copy(t));
+        let source = if use_tuple {
+            self.materialize_consumed_variant_payload(scrut.clone(), variant, &payload_tys, span)?
+        } else {
+            scrut.clone()
+        };
+        // The already-projected place of payload field `i`: a tuple `Field` on the decomposition,
+        // else a `VariantField` on the scrutinee. Registration ORDER (below) is unchanged, so
+        // arm-end Drop order is preserved (DEV-080).
+        let field_place = |i: u32| -> Place {
+            let mut p = source.clone();
+            if use_tuple {
+                p.projection.push(Projection::Field(i));
+            } else {
+                p.projection.push(Projection::VariantField(variant, i));
+            }
+            p
+        };
+
         match &self.hir.pat(pat).kind {
             hir::PatKind::TupleVariant { pats, .. } => {
                 let pats = pats.clone();
@@ -7880,10 +7909,8 @@ impl<'a> FnLowerer<'a> {
                         }
                         let field_ty = payload_tys.get(i).cloned().unwrap_or(MirTy::Unit);
                         self.consume_field(
-                            scrut.clone(),
+                            field_place(i as u32),
                             mode,
-                            variant,
-                            i as u32,
                             &field_ty,
                             Some(*sub),
                             span,
@@ -7909,19 +7936,15 @@ impl<'a> FnLowerer<'a> {
                     let field_ty = payload_tys.get(index).cloned().unwrap_or(MirTy::Unit);
                     match (field_pat, field_local) {
                         (Some(sub), _) => self.consume_field(
-                            scrut.clone(),
+                            field_place(index as u32),
                             mode,
-                            variant,
-                            index as u32,
                             &field_ty,
                             Some(*sub),
                             span,
                         )?,
                         (None, Some(local)) => self.bind_field_local(
-                            scrut.clone(),
+                            field_place(index as u32),
                             mode,
-                            variant,
-                            index as u32,
                             name_text,
                             *local,
                             &field_ty,
@@ -7933,7 +7956,7 @@ impl<'a> FnLowerer<'a> {
                 // Unmentioned droppable fields still drop at arm end (Consuming only).
                 for (i, ty) in payload_tys.iter().enumerate() {
                     if !mentioned[i] {
-                        self.consume_field(scrut.clone(), mode, variant, i as u32, ty, None, span)?;
+                        self.consume_field(field_place(i as u32), mode, ty, None, span)?;
                     }
                 }
             }
@@ -7944,14 +7967,56 @@ impl<'a> FnLowerer<'a> {
         Ok(())
     }
 
-    /// Consume one variant payload field given its sub-pattern (`None` = unbound/Wild).
-    #[allow(clippy::too_many_arguments)]
-    fn consume_field(
+    /// WP-C6.1c: decompose the active variant's payload into ONE tuple aggregate (owner ruling,
+    /// refined Option A). Reads EVERY payload field in declaration order into a single
+    /// `Aggregate(Tuple, [...])` statement and returns the tuple temporary. It does NOT register
+    /// that temporary for whole-value Drop — its fields are consumed individually by the caller, so
+    /// it never owes (and must never take) a whole-tuple drop over partially-moved storage.
+    ///
+    /// This is a MIR CANONICALISATION using only existing operations (`Rvalue::Aggregate`,
+    /// `Projection::VariantField`): no new MIR variant, no changed operation meaning, no verifier
+    /// change. The generated-Rust backend recognises this exact statement-local shape and emits one
+    /// destructuring `match` (whole-enum `take()` + tuple rebuild); after it, movement is ordinary
+    /// tuple-field partial-move machinery.
+    fn materialize_consumed_variant_payload(
         &mut self,
         scrut: Place,
-        mode: MatchMode,
         variant: u32,
-        index: u32,
+        payload_tys: &[MirTy],
+        span: Span,
+    ) -> Result<Place, LowerError> {
+        let mut operands = Vec::with_capacity(payload_tys.len());
+        for (i, field_ty) in payload_tys.iter().enumerate() {
+            if self.ty_needs_drop(field_ty, span)? {
+                self.discover_drop_impls(field_ty)?;
+            }
+            let mut place = scrut.clone();
+            place
+                .projection
+                .push(Projection::VariantField(variant, i as u32));
+            operands.push(self.read_place(place, field_ty, span)?);
+        }
+        let tuple_local = self.new_temp(MirTy::Tuple(payload_tys.to_vec()));
+        self.emit(
+            Statement::Assign(
+                Place::local(tuple_local),
+                Rvalue::Aggregate(AggKind::Tuple, operands),
+            ),
+            self.synthetic(span, SyntheticKind::MatchDesugar),
+        );
+        Ok(Place::local(tuple_local))
+    }
+
+    /// Consume one variant payload field given its sub-pattern (`None` = unbound/Wild).
+    ///
+    /// WP-C6.1c: `field_place` is the ALREADY-PROJECTED place of the field — either
+    /// `scrut.VariantField(v, i)` (ByRef, and the single-field/all-Copy consuming fast paths) or a
+    /// `tuple.Field(i)` on the decomposed payload tuple (multi-field consuming). The caller chooses;
+    /// this reads from it uniformly.
+    fn consume_field(
+        &mut self,
+        field_place: Place,
+        mode: MatchMode,
         field_ty: &MirTy,
         sub: Option<hir::PatId>,
         span: Span,
@@ -7959,17 +8024,13 @@ impl<'a> FnLowerer<'a> {
         match sub.map(|s| &self.hir.pat(s).kind) {
             Some(hir::PatKind::Binding { name, local }) => {
                 let (name, local) = (self.text(*name).to_string(), *local);
-                self.bind_field_local(scrut, mode, variant, index, name, local, field_ty, span)
+                self.bind_field_local(field_place, mode, name, local, field_ty, span)
             }
             Some(hir::PatKind::Wild) | None => {
                 // ByRef: nothing is consumed — the referent keeps ownership of every payload.
                 if mode == MatchMode::Consuming && self.ty_needs_drop(field_ty, span)? {
                     self.discover_drop_impls(field_ty)?;
-                    let mut place = scrut;
-                    place
-                        .projection
-                        .push(Projection::VariantField(variant, index));
-                    let value = self.read_place(place, field_ty, span)?;
+                    let value = self.read_place(field_place, field_ty, span)?;
                     let tmp = self.new_temp(field_ty.clone());
                     self.emit(
                         Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
@@ -7988,13 +8049,10 @@ impl<'a> FnLowerer<'a> {
     /// register it to drop at arm end. ByRef: the field must be `Copy` (read by copy; a
     /// non-Copy binding would move out of the borrow — a front-end move-out-of-borrow gap,
     /// recorded, keeps such programs out of MIR).
-    #[allow(clippy::too_many_arguments)]
     fn bind_field_local(
         &mut self,
-        scrut: Place,
+        field_place: Place,
         mode: MatchMode,
-        variant: u32,
-        index: u32,
         name: String,
         hir_local: crate::hir::LocalId,
         field_ty: &MirTy,
@@ -8012,11 +8070,7 @@ impl<'a> FnLowerer<'a> {
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(hir_local.0, bound);
-        let mut place = scrut;
-        place
-            .projection
-            .push(Projection::VariantField(variant, index));
-        let value = self.read_place(place, field_ty, span)?;
+        let value = self.read_place(field_place, field_ty, span)?;
         self.emit(
             Statement::Assign(Place::local(bound), Rvalue::Use(value)),
             self.synthetic(span, SyntheticKind::MatchDesugar),

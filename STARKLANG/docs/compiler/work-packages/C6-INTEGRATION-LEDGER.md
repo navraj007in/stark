@@ -67,7 +67,8 @@ begin from `db73afe`.
 | # | Track | Agent | Base SHA | Owned/leased files | Contracts assumed | Proposed contract changes | Tests | New deviations | Merge order | Result |
 |---|---|---|---|---|---|---|---|---|---|---|
 | C6.1a | A | Claude | `db73afe` | `C6-OWNERSHIP-MATRIX.md` (new) | SHARED-CONTRACTS v1 | none | probe-grounded classification | **G3**, **G4** | §7J:3 | **CANDIDATE-COMPLETE** |
-| C6.1b | A | Claude | `db73afe` | `emit_projections.rs`, `emit_places.rs`, `slot.rs` (owned); `emit_bodies.rs` (lease) | SHARED-CONTRACTS v1 | none (`ValueSlot::reinit` is a NEW runtime method, additive, no ABI/behaviour change to existing ops) | `native_c6_1_ownership.rs` (5) | G3, G4 fixed | §7J:3 | **CANDIDATE-COMPLETE** |
+| C6.1b | A | Claude | `db73afe` | `emit_projections.rs`, `emit_places.rs`, `slot.rs` (owned); `emit_bodies.rs` (lease) | SHARED-CONTRACTS v1 | none (`ValueSlot::reinit` is a NEW runtime method, additive, no ABI/behaviour change to existing ops) | `native_c6_1_ownership.rs` (5) | G3, G4 fixed | §7J:3 | CANDIDATE-COMPLETE (CD-081) |
+| C6.1c | A | Claude | (post-C6.1b) | `emit_bodies.rs`, `emit_projections.rs` (owned/lease); `mir/lower.rs` (lease) | SHARED-CONTRACTS v1 | none (MIR canonicalisation with existing ops only — refined Option A) | `native_c6_1_ownership.rs` (+7 `c61c_*`), `native_c5_3` positive multi-unit | G1 fixed | §7J:3 (front-end lowering + backend) | **CANDIDATE-COMPLETE** |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
 
@@ -85,6 +86,8 @@ _(none yet — appended when a shared file is leased)_
 | file | track | reason | base SHA | API impact | tests | lease start | lease release |
 |---|---|---|---|---|---|---|---|
 | `emit_bodies.rs` | A | C6.1b G4: `emit_assignment` chooses `reinit` vs `write` by drop-obligation | `db73afe` | none (internal codegen choice) | `native_c6_1_ownership.rs` | C6.1b | C6.1b (landed) |
+| `mir/lower.rs` | A | C6.1c G1: `materialize_consumed_variant_payload` — tuple decomposition of multi-field non-Copy variant payloads (owner ruling). Track B informed & excluded from this file until release. | post-C6.1b | narrow: `consume_field`/`bind_field_local` take a pre-built `field_place`; new private helper | `native_c6_1_ownership.rs` `c61c_*` | C6.1c | C6.1c (landed) |
+| `emit_bodies.rs` | A | C6.1c G1: `try_variant_payload_extraction` destructuring emitter | post-C6.1b | none (statement-local codegen) | as above | C6.1c | C6.1c (landed) |
 
 ---
 
@@ -122,6 +125,18 @@ _(none yet — appended when a shared file is leased)_
   emitting it for a no-drop slot local. Not a CE4: `reinit` is a new helper method (Track A owned,
   WP-C6-ENTRY §10 "preserve `ValueSlot<T>`… route moves/writes through reviewed helpers"), additive,
   no change to any existing op, ABI, layout, or Drop glue. Recorded in `C6-SHARED-CONTRACTS.md §4`.
+
+- **Owner ruling [2026-07-23, C6.1c] — refined Option A (enum payload partial moves), NOT a CE3.**
+  Lower each consuming active-variant payload (multi-field, non-`Copy`) into ONE canonical
+  `Rvalue::Aggregate(AggKind::Tuple, [VariantField(v,0..n)])` MIR statement, then use ordinary
+  tuple-field movement (C6.1b). The backend implements a NARROW statement-local destructuring
+  emitter for that canonical aggregate; **cross-block backend analysis is prohibited** (that was the
+  rejected Option B). This uses only existing MIR operations — no new projection/rvalue/verifier
+  rule/enum-identity change — so it is **not a CE3**; changing MIR dumps is not itself a CE3. Track A
+  leased `mir/lower.rs`; Track B informed and excluded until release. Stop for CE3/CE4 if any of
+  `Projection::VariantPayload`, `Rvalue::TakeVariantPayload`, a new verifier atomicity rule, an enum
+  payload identity change in `TypeContext`, or altered MIR move semantics becomes necessary — none
+  did. Recorded under this commit's decision ID.
 
 _(CE3/CE4/CE8/CE9 recorded here before implementation continues — none yet.)_
 

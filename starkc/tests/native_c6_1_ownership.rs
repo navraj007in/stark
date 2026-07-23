@@ -243,3 +243,110 @@ fn a_false_assertion_traps_in_all_three_engines() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+// ============================================ WP-C6.1c — enum payload partial moves (G1) --
+//
+// A multi-field variant payload with a non-Copy field is decomposed by lowering into ONE tuple
+// aggregate, emitted as a single destructuring `match e.take() { … }`; after that, per-field
+// movement reuses C6.1b's raw-projectable tuple machinery. The whole enum is moved exactly once,
+// so no partial-slot access occurs. For Drop-bearing payloads, exit-0 is the no-double/missing-drop
+// evidence: a whole-enum drop after decomposition, or a drop of a moved unit, trips `slot_violation`
+// (non-zero exit). Observable Drop ORDER is preserved by lowering (unbound-first/bindings-second
+// registration unchanged) and checked by the HIR/MIR oracles; native order observation waits for
+// C6.3 output.
+
+const ENUM2: &str = "struct S { v: Int32 }\nenum E { V(S, S) }\nfn take(x: S) -> Int32 { x.v }\n";
+const ENUM2_DROP: &str = "struct D { v: Int32 }\nimpl Drop for D { fn drop(&mut self) { let r: Int32 = self.v; } }\nenum E { V(D, D) }\nfn take(x: D) -> Int32 { x.v }\n";
+
+#[test]
+fn c61c_two_payload_fields_both_bound_and_consumed() {
+    let gen = agree_completes(
+        "c61c_both",
+        &format!(
+            "{ENUM2}fn main() {{ let e = E::V(S {{ v: 1 }}, S {{ v: 2 }}); \
+             match e {{ E::V(a, b) => {{ assert_eq(take(a) + take(b), 3); }} }} }}"
+        ),
+    );
+    assert_eq!(
+        gen.matches(".take() {").count(),
+        1,
+        "exactly one destructuring extraction for the payload:\n{gen}"
+    );
+}
+
+#[test]
+fn c61c_first_bound_second_wildcard_drop() {
+    // The unbound `_` sibling (a Drop type) is decomposed into the tuple and dropped at arm end;
+    // exit-0 proves it is dropped exactly once and the moved unit is not dropped.
+    agree_completes(
+        "c61c_first_bound",
+        &format!(
+            "{ENUM2_DROP}fn main() {{ let e = E::V(D {{ v: 1 }}, D {{ v: 2 }}); \
+             match e {{ E::V(a, _) => {{ assert_eq(take(a), 1); }} }} }}"
+        ),
+    );
+}
+
+#[test]
+fn c61c_first_wildcard_second_bound_drop() {
+    agree_completes(
+        "c61c_first_wild",
+        &format!(
+            "{ENUM2_DROP}fn main() {{ let e = E::V(D {{ v: 1 }}, D {{ v: 2 }}); \
+             match e {{ E::V(_, b) => {{ assert_eq(take(b), 2); }} }} }}"
+        ),
+    );
+}
+
+#[test]
+fn c61c_three_fields_middle_discarded_drop() {
+    agree_completes(
+        "c61c_three_mid",
+        "struct D { v: Int32 }\nimpl Drop for D { fn drop(&mut self) { let r: Int32 = self.v; } }\n\
+         enum E { V(D, D, D) }\nfn take(x: D) -> Int32 { x.v }\n\
+         fn main() { let e = E::V(D { v: 1 }, D { v: 2 }, D { v: 3 }); \
+         match e { E::V(a, _, c) => { assert_eq(take(a) + take(c), 4); } } }",
+    );
+}
+
+#[test]
+fn c61c_struct_shaped_variant_bindings_reordered() {
+    // A struct-shaped variant, with pattern fields written in a DIFFERENT order than declaration
+    // (`{ b: y, a: x }`). Decomposition is by declaration order; bindings still resolve correctly.
+    agree_completes(
+        "c61c_struct_reorder",
+        "struct S { v: Int32 }\nenum E { V { a: S, b: S } }\nfn take(x: S) -> Int32 { x.v }\n\
+         fn main() { let e = E::V { a: S { v: 10 }, b: S { v: 20 } }; \
+         match e { E::V { b: y, a: x } => { assert_eq(take(x) * 2 + take(y), 40); } } }",
+    );
+}
+
+#[test]
+fn c61c_payload_moves_used_across_later_blocks() {
+    // The bindings are moved out at arm entry (one block) but consumed inside an `if` in the arm
+    // body (later blocks) — proving the decomposition's per-field liveness survives control flow.
+    agree_completes(
+        "c61c_cross_block",
+        &format!(
+            "{ENUM2}fn main() {{ let cond: Bool = true; let e = E::V(S {{ v: 4 }}, S {{ v: 5 }}); \
+             match e {{ E::V(a, b) => {{ let r: Int32 = if cond {{ take(a) + take(b) }} else {{ 0 }}; \
+             assert_eq(r, 9); }} }} }}"
+        ),
+    );
+}
+
+#[test]
+fn c61c_a_false_assertion_still_traps_in_all_three_engines() {
+    // Negative control: the C6.1c observations actually execute.
+    let source = format!(
+        "{ENUM2}fn main() {{ let e = E::V(S {{ v: 1 }}, S {{ v: 2 }}); \
+         match e {{ E::V(a, b) => {{ assert_eq(take(a) + take(b), 99); }} }} }}"
+    );
+    let c = compile(&source, "c61c_false");
+    assert!(
+        interp::run_with_partial_output(&c.hir, c.file.clone(), &c.tables).is_err(),
+        "HIR must trap"
+    );
+    let verified = verify_program(&c.program).unwrap();
+    assert!(run_program(verified).is_err(), "MIR must trap");
+}

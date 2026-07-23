@@ -20,9 +20,52 @@
 
 use super::{emit_places, emit_types, mangle, BackendDiagnostic};
 use crate::mir::{
-    MirProgram, MirTy, Operand, Place, Projection, Rvalue, Statement, Terminator, TypeContext,
+    AggKind, MirProgram, MirTy, Operand, Place, Projection, Rvalue, Statement, Terminator,
+    TypeContext,
 };
 use std::collections::BTreeMap;
+
+/// WP-C6.1c: whether `operands` are exactly one enum slot's payload fields `VariantField(v, 0..n)`
+/// in order — the canonical decomposition aggregate that `mir::lower::
+/// materialize_consumed_variant_payload` emits. Such an aggregate emits as ONE destructuring
+/// `take()` match, so it needs no per-field projection helper (`collect` skips its operands) and
+/// `emit_bodies` special-cases it. Returns `Some((base local, variant))` when it matches. The
+/// structural test is the single source of truth shared by `collect` and `emit_bodies`, so the two
+/// cannot disagree about which aggregate is a decomposition.
+pub(super) fn variant_payload_decomposition(
+    operands: &[Operand],
+    env: &emit_places::TyEnv,
+) -> Result<Option<(u32, u32)>, BackendDiagnostic> {
+    if operands.len() < 2 {
+        return Ok(None);
+    }
+    let mut base: Option<(u32, u32)> = None; // (base local, variant)
+    for (i, op) in operands.iter().enumerate() {
+        let place = match op {
+            Operand::Move(p) | Operand::Copy(p) => p,
+            Operand::Const(_) => return Ok(None),
+        };
+        let [Projection::VariantField(v, k)] = place.projection.as_slice() else {
+            return Ok(None);
+        };
+        if *k as usize != i {
+            return Ok(None); // fields must be exactly 0..n in order
+        }
+        match base {
+            None => base = Some((place.local.0, *v)),
+            Some((l, bv)) => {
+                if place.local.0 != l || bv != *v {
+                    return Ok(None); // all fields from ONE enum slot and variant
+                }
+            }
+        }
+    }
+    let (local, variant) = base.expect("operands is non-empty");
+    if !emit_places::is_slot_local(local, env)? {
+        return Ok(None);
+    }
+    Ok(Some((local, variant)))
+}
 
 /// Which projection syntax a sub-place needs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -146,6 +189,15 @@ pub fn collect(
         for block in &body.blocks {
             for (statement, _) in &block.statements {
                 if let Statement::Assign(_, rvalue) = statement {
+                    // WP-C6.1c: a variant-payload decomposition aggregate emits as one
+                    // `take()`+destructure match, needing no per-field projection helper — its
+                    // `VariantField` operands must NOT be collected (they cannot be raw-projected,
+                    // and collecting them would re-trip the multi-unit refusal here).
+                    if let Rvalue::Aggregate(AggKind::Tuple, operands) = rvalue {
+                        if variant_payload_decomposition(operands, &env)?.is_some() {
+                            continue;
+                        }
+                    }
                     for operand in rvalue_operands(rvalue) {
                         collect_operand(operand, &env, &program.types, &mut found)?;
                     }
