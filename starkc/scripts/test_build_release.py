@@ -53,13 +53,24 @@ class ReleasePackageTests(unittest.TestCase):
             )
             self.assert_checksum(archive, checksum)
             extracted = root / "extracted"
+            package_root_name = "stark-0.1.0-test-x86_64-unknown-linux-gnu"
             with tarfile.open(archive, "r:gz") as package:
-                package.extractall(extracted)
-            package_root = extracted / "stark-0.1.0-test-x86_64-unknown-linux-gnu"
+                for binary in build_release.BINARIES:
+                    # Check the archive's own metadata, not a post-extraction os.stat(): NTFS has
+                    # no POSIX executable bit, so a Windows host can never observe one on an
+                    # extracted file regardless of what the tar entry says.
+                    member = package.getmember(f"{package_root_name}/bin/{binary}")
+                    self.assertTrue(
+                        member.mode & stat.S_IXUSR,
+                        f"{binary} is missing the executable bit in the archive",
+                    )
+                package.extractall(extracted, filter="data")
+            package_root = extracted / package_root_name
             for binary in build_release.BINARIES:
                 path = package_root / "bin" / binary
                 self.assertTrue(path.is_file())
-                self.assertTrue(path.stat().st_mode & stat.S_IXUSR)
+                if os.name != "nt":
+                    self.assertTrue(path.stat().st_mode & stat.S_IXUSR)
             self.assertTrue(
                 (package_root / "lib/stark/stark-runtime/Cargo.toml").is_file()
             )
