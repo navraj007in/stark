@@ -1,6 +1,9 @@
 # STARK Compiler STATE
-Updated: 2026-07-23 — **Gate C5 CLOSED; WP-C5.1 through WP-C5.6 CLOSED (CD-077).
-Gate C6 is not yet open; C6 entry planning and owner approval are next.**
+Updated: 2026-07-23 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
+WP-C6.0 contract freeze CLOSED (CD-078), and WP-C6.1 (ownership and Drop parity, Track A) CLOSED
+(CD-080…CD-084). Remaining C6: WP-C6.2 (generics/traits, Track B), WP-C6.3 (runtime values and
+collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
+exit.**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -3037,6 +3040,54 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-078…CD-084 [2026-07-23, **GATE C6 OPENED; WP-C6.0 and WP-C6.1 CLOSED**] Gate C6 (Native
+  Semantic Parity) is a **three-track parallel** gate — Track A ownership/Drop (Claude), Track B
+  generics/traits (Gemini), Track C runtime/collections (Codex) — executing on `main` (the owner
+  waived the entry plan's §7C branch/worktree model). Governance lives in
+  `STARKLANG/docs/compiler/work-packages/C6-{SHARED-CONTRACTS,FILE-OWNERSHIP,INTEGRATION-LEDGER}.md`.
+
+  - **CD-078 — WP-C6.0 (contract freeze) CLOSED.** Froze the authority-bearing contracts every track
+    consumes (versions, `VerifiedMirProgram` precondition, `Instance`/canonical-symbol identity,
+    `ValueSlot` invariants, `DropPlan` authority, trap + runtime-call identity, the three-engine
+    comparator schema, Tier-1 targets, no-host-semantic-substitution), per-track file ownership with
+    a single-writer lease protocol, and the integration ledger. Integration base `db73afe`.
+  - **CD-079 — WP-C6-ENTRY APPROVED**, discharging §1's opening conditions.
+  - **CD-080…CD-084 — WP-C6.1 (ownership and Drop parity) CLOSED.** The C6.1a audit was
+    **probe-grounded** (24 shapes driven through the real backend) rather than assumed, and found the
+    C5 ownership surface far more complete than the exit report implied — all common cross-block
+    movement already at parity. It surfaced four concrete gaps, **all now closed**:
+    - **G3** multi-level (depth ≥2) partial move/drop — chained `addr_of_mut!` raw projection helpers
+      at any depth (C6.1b).
+    - **G4** loop-carried reassignment of a no-`Drop` non-`Copy` local — a **compile-then-abort** bug
+      (the slot is never reset by a MIR `Drop` for a non-droppable type); fixed with the additive
+      `ValueSlot::reinit` (C6.1b). Surfaced only because C6.1b re-probed by native *execution* — the
+      C6.1a probe had checked `emit` success alone. **Method correction recorded.**
+    - **G1** multi-unit enum-payload consuming match / partial move (the CD-070 boundary) — owner
+      ruling "refined Option A": lowering canonicalises the payload into ONE
+      `Aggregate(Tuple, [VariantField(v,0..n)])` statement and the backend emits a single
+      destructuring `take()` match; per-field movement is then ordinary tuple machinery. Not a CE3
+      (existing MIR ops only); cross-block backend analysis explicitly prohibited (C6.1c).
+    - **G2** non-`Copy` array by-value iteration — owner ruling "Option (a)": unconditional
+      unrolling into `ConstIndex(i)` moves with a fresh binding local per iteration; **DEV-090 fully
+      CLOSED** (the front-end E0104 rejection removed — the HIR oracle moves each element, so the
+      feared divergence does not exist) (C6.1d).
+    - **C6.1e** — the Drop-path matrix (`C6-DROP-PATH-MATRIX.md`), evidence only. Reuses C5.3d-1c's
+      **trapping-destructor position probe** (native has no stdout, but a trap's category and exact
+      `file:line:column` are comparable in all three engines), adding the §13 exit paths the C5.3d-1c
+      set did not reach: inner block scope, loop body per-iteration, `break`, `continue`, `return`,
+      `?`, match-arm end, failed pattern test; and no-cleanup-after-trap for overflow, cast, index
+      and assertion failures. Two rows genuinely wait on C6.3: byte-level Drop-*log* comparison and
+      IO/provider-failure cleanup.
+
+  - **Validation at closure:** `cargo fmt --check` and strict workspace `clippy` clean; full
+    `cargo test --workspace --all-targets --no-fail-fast` green. Evidence lives in
+    `starkc/tests/native_c6_1_ownership.rs` (24) and `three_engine_differential.rs`'s `c61e_*` (12).
+
+  - **Remaining C6:** WP-C6.2 (generics and static trait dispatch, Track B) and WP-C6.3 (runtime
+    values and collections — String/Vec/Box/iterators/maps/**output**/files, Track C) are the bulk of
+    the gate and have not started; then C6.4 Tier-1 platform matrix, C6.5 full differential/generated
+    corpus, C6.6 adversarial review and gate exit.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words

@@ -96,6 +96,27 @@ _(none yet — appended when a shared file is leased)_
 
 ---
 
+## 5b. WP-C6.1 closure (Track A)
+
+**WP-C6.1 — ownership and Drop parity — CLOSED 2026-07-23** (CD-080…CD-084). All five sub-packages
+delivered and all four surfaced gaps closed:
+
+| Sub-package | Deliverable | Commit |
+|---|---|---|
+| C6.1a | probe-grounded ownership acceptance matrix | CD-080 |
+| C6.1b | **G3** multi-level partial move/drop; **G4** loop-carried no-`Drop` reassignment (a compile-then-abort bug) | CD-081 |
+| C6.1c | **G1** multi-unit enum payload (canonical tuple decomposition; owner ruling, not a CE3) | CD-082 |
+| C6.1d | **G2** non-`Copy` array by-value iteration (unconditional unrolling); **DEV-090 closed** | CD-083 |
+| C6.1e | Drop-path matrix — every normative exit path, three-engine (`C6-DROP-PATH-MATRIX.md`) | CD-084 |
+
+**Contracts:** SHARED-CONTRACTS v1 held throughout. One additive amendment (`ValueSlot::reinit`,
+§4) — no CE3/CE4 was required; both strategy forks (C6.1c, C6.1d) were resolved by owner ruling and
+recorded in §7. All leases (`mir/lower.rs`, `emit_bodies.rs`, `borrowck.rs`,
+`three_engine_differential.rs`) are released.
+
+**Carried to other tracks:** Vec/Box element ownership is a Track A↔C interface (C6.3); byte-level
+Drop-log comparison and IO/provider-failure cleanup wait on C6.3 output/resources.
+
 ## 6. Integration barriers
 
 | Barrier | Required | Status |
