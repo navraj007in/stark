@@ -18,6 +18,18 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn normalize_diagnostic(diagnostic: &str) -> String {
+    diagnostic.replace("\r\n", "\n").replace('\\', "/")
+}
+
+#[test]
+fn diagnostic_golden_normalization_is_host_independent() {
+    assert_eq!(
+        normalize_diagnostic("  --> examples\\gate4\\bad_shape.stark:8:49\r\n"),
+        "  --> examples/gate4/bad_shape.stark:8:49\n"
+    );
+}
+
 #[test]
 fn valid_gate4_declarations_and_pipeline_check_cleanly() {
     for name in ["reference_resnet50.stark", "valid_pipeline.stark"] {
@@ -50,7 +62,11 @@ fn headline_defect_examples_fail_with_actionable_origins() {
         let output = check(&example(name), true);
         assert_eq!(output.status.code(), Some(1), "{name}");
         let diagnostic = stderr(&output);
-        assert_eq!(diagnostic, expected, "{name}");
+        assert_eq!(
+            normalize_diagnostic(&diagnostic),
+            normalize_diagnostic(expected),
+            "{name}"
+        );
     }
 }
 
