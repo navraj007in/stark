@@ -10,6 +10,7 @@ use super::{
 use crate::backend::version::{self, BuildVersions};
 use crate::mir::MirProgram;
 use sha2::{Digest, Sha256};
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Command;
 
@@ -51,18 +52,23 @@ pub fn build_and_link(
 
     // §11.3 offline rule: `stark-runtime` is dependency-free, so `--offline` never needs a
     // registry index and proves no accidental network dependency crept in.
-    let command = vec![
-        toolchain.cargo.display().to_string(),
-        "build".to_string(),
-        "--offline".to_string(),
-        "--manifest-path".to_string(),
-        crate_dir.join("Cargo.toml").display().to_string(),
+    let manifest_path = crate_dir.join("Cargo.toml");
+    let cargo_args = vec![
+        OsString::from("build"),
+        OsString::from("--offline"),
+        OsString::from("--manifest-path"),
+        manifest_path.into_os_string(),
     ];
+    let command: Vec<String> = std::iter::once(format!("RUSTC={}", toolchain.rustc.display()))
+        .chain(std::iter::once(toolchain.cargo.display().to_string()))
+        .chain(
+            cargo_args
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned()),
+        )
+        .collect();
     let output = Command::new(&toolchain.cargo)
-        .arg("build")
-        .arg("--offline")
-        .arg("--manifest-path")
-        .arg(crate_dir.join("Cargo.toml"))
+        .args(&cargo_args)
         .env("RUSTC", &toolchain.rustc)
         .output()
         .map_err(|e| {

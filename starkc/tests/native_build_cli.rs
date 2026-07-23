@@ -204,6 +204,7 @@ fn backend_failure_reports_and_retains_exact_generated_directory() {
     std::fs::set_permissions(&cargo_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_stark"))
         .args(["build", "--verbose"])
+        .env("STARK_RUSTC", "rustc")
         .env("STARK_CARGO", &cargo_wrapper)
         .current_dir(&package.root)
         .output()
@@ -213,6 +214,13 @@ fn backend_failure_reports_and_retains_exact_generated_directory() {
     assert!(error.contains("generated crate retained at "), "{error}");
     assert!(error.contains("rustc: "), "{error}");
     assert!(error.contains("cargo: "), "{error}");
+    assert!(
+        error.contains(&format!(
+            "command: RUSTC=rustc {} build --offline --manifest-path ",
+            cargo_wrapper.display()
+        )),
+        "{error}"
+    );
     assert!(error.contains("exit status: 23"), "{error}");
     assert!(error.contains("intentional-backend-failure"), "{error}");
     let build_dir = error
