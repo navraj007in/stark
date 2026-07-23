@@ -1596,24 +1596,26 @@ fn printing_requires_display() {
     );
 }
 
-/// DEV-090 (WP-C4.7 close-out §6): by-value iteration over a fixed-length array with a non-`Copy`
-/// element type is rejected in the front end (E0104), deterministically, before either engine —
-/// consuming each element moves it out of a place named by a runtime loop index, which no static
-/// constant-index projection can name, and copying it instead would double-free. `Copy`-element
-/// array iteration is unaffected.
+/// WP-C6.1d closed DEV-090: by-value iteration over a fixed-length non-`Copy` array is now
+/// supported (lowered by unrolling — each element moves via `ConstIndex(i)`), so the front end
+/// accepts it. The old E0104 rejection is gone.
 #[test]
-fn rejects_by_value_iteration_over_non_copy_array() {
-    let non_copy = "fn main() -> Unit {\n\
-        let arr = [String::from(\"a\"), String::from(\"b\")];\n\
-        for s in arr { println(s); }\n\
+fn accepts_by_value_iteration_over_non_copy_array() {
+    let non_copy = "struct S { v: Int32 }\n\
+        fn main() -> Unit {\n\
+        let arr = [S { v: 1 }, S { v: 2 }];\n\
+        for x in arr { let _n: Int32 = x.v; }\n\
     }\n";
     let diagnostics = analyze("noncopy_iter.stark", non_copy.to_string());
     assert!(
-        diagnostics
+        !diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "by-value iteration over a non-Copy array must now be accepted (C6.1d), got {diagnostics:?}"
+    );
+    assert!(
+        !diagnostics
             .iter()
             .any(|d| d.code.as_deref() == Some("E0104")),
-        "by-value iteration over a non-Copy array element must be rejected with E0104, got \
-         {diagnostics:?}"
+        "the DEV-090 E0104 rejection must no longer fire, got {diagnostics:?}"
     );
 }
 

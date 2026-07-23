@@ -5777,18 +5777,14 @@ impl<'a> FnLowerer<'a> {
         len: u64,
         span: Span,
     ) -> Result<(), LowerError> {
-        // A5 (CD-038) reaches consuming array PATTERNS, whose positions are statically known, but
-        // NOT by-value iteration over a non-`Copy` element: the loop index is a runtime counter,
-        // so no `ConstIndex` can name the element being consumed and V-MOVE-1 has nothing precise
-        // to track. Reading by copy instead would be UNSOUND — the array would still own the
-        // element and destroy it again, a double free for a `String` in a real backend — so this
-        // is refused rather than approximated. Closing it needs either loop unrolling (only sane
-        // for small N) or runtime-indexed drop flags, which is a design question beyond A5.
+        // WP-C6.1d (owner ruling, Option (a)): by-value iteration over a NON-`Copy` fixed array is
+        // lowered by unconditional unrolling. The dynamic-index/copy path below is unsound for a
+        // non-`Copy` element (the array would still own and re-destroy it), and a dynamic index
+        // cannot name a `ConstIndex` for move tracking — but a fixed `[T; N]` has statically known
+        // positions, so each element moves via `ConstIndex(i)` (the same machinery consuming array
+        // patterns use). The `Copy` path is preserved unchanged for `Copy` elements.
         if !self.is_copy(&elem) {
-            return unsupported(
-                "by-value iteration over an array with a non-Copy element type (the loop index is dynamic, so no ConstIndex names the consumed element)",
-                span,
-            );
+            return self.lower_for_over_array_unrolled(var, var_local, iter, body, elem, len, span);
         }
         let info = self.synthetic(span, SyntheticKind::ForLoopDesugar);
         // The array itself, materialized once (EXEC-FOR-001: the iterable evaluates once).
@@ -5903,6 +5899,99 @@ impl<'a> FnLowerer<'a> {
             after_incr,
         );
         self.terminate(Terminator::Goto { target: header }, info, exit);
+        Ok(())
+    }
+
+    /// WP-C6.1d (owner ruling, Option (a)): by-value iteration over a NON-`Copy` fixed array,
+    /// lowered by UNCONDITIONAL unrolling. The iterable is moved ONCE into a dedicated
+    /// per-element-drop-tracked array local; each of the `N` statically-known elements is moved out
+    /// with `ConstIndex(i)` (which clears exactly its own drop flag, via `read_place`) into a FRESH
+    /// binding local per iteration; and the loop body is lowered once per element.
+    ///
+    /// Scope nesting is `array owner` ⊃ `iteration binding` ⊃ `body locals`, so cleanup order is
+    /// body locals → current binding → remaining array elements: normal completion / `continue` /
+    /// `break` / `return` / `?` all drop the current binding (and body) via the loop's
+    /// binding-scope depth, and the array owner's scope drop at `exit` destroys the still-live
+    /// elements (reverse index order, per the array `DropPlan`). A trap aborts and performs no
+    /// cleanup. No `CheckIndex`, dynamic `Index`, element copy, or runtime array iterator appears.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_for_over_array_unrolled(
+        &mut self,
+        var: Span,
+        var_local: crate::hir::LocalId,
+        iter: ExprId,
+        body: hir::BlockId,
+        elem: MirTy,
+        len: u64,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let info = self.synthetic(span, SyntheticKind::ForLoopDesugar);
+        let arr_ty = MirTy::Array(Box::new(elem.clone()), len);
+        // Point 1: evaluate the iterable EXACTLY ONCE and take ownership into a dedicated array
+        // local, then register its per-element `ConstIndex` drop units (initially live).
+        let arr_value = self.lower_expr_to_operand(iter)?;
+        let arr_local = self.new_temp(arr_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(arr_local), Rvalue::Use(arr_value)),
+            info,
+        );
+        let array_scope_depth = self.scopes.len();
+        self.scopes.push(Vec::new());
+        self.register_droppable_local(arr_local, &arr_ty, true, span)?;
+
+        // The block every early/normal exit converges on; the array owner's remaining elements are
+        // destroyed here.
+        let exit = self.new_block();
+
+        for i in 0..len {
+            // Point 2: move element `i` out via `ConstIndex(i)` — `read_place` clears its flag.
+            let mut elem_place = Place::local(arr_local);
+            elem_place.projection.push(Projection::ConstIndex(i));
+            let value = self.read_place(elem_place, &elem, span)?;
+            // Point 3: a FRESH binding local per iteration; remap the HIR loop variable to it
+            // before lowering this iteration's copy of the body.
+            self.locals.push(LocalDecl {
+                ty: elem.clone(),
+                kind: LocalKind::User(self.text(var).to_string()),
+            });
+            let bound = LocalId((self.locals.len() - 1) as u32);
+            self.local_map.insert(var_local.0, bound);
+            self.emit(
+                Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+                info,
+            );
+
+            // Iteration binding scope (owns the yielded value for this iteration).
+            let binding_scope_depth = self.scopes.len();
+            self.scopes.push(Vec::new());
+            self.register_droppable_local(bound, &elem, true, span)?;
+
+            // `continue` restarts at the NEXT unrolled iteration; the last iteration continues to
+            // `exit`. `break` leaves the loop at `exit`. Both drop from the binding scope down.
+            let next = if i + 1 < len { self.new_block() } else { exit };
+            self.loops.push(LoopTargets {
+                continue_target: next,
+                break_target: exit,
+                scope_depth: binding_scope_depth,
+                value_target: None,
+            });
+            self.lower_block_value(body)?;
+            // Normal completion of this iteration: drop the binding (and any body locals).
+            self.emit_scope_drops_from(binding_scope_depth, span);
+            self.scopes.pop();
+            self.loops.pop();
+            self.terminate(Terminator::Goto { target: next }, info, next);
+        }
+        if len == 0 {
+            // The iterable was still evaluated once; no elements, so jump straight to the owner's
+            // (no-op) cleanup.
+            self.terminate(Terminator::Goto { target: exit }, info, exit);
+        }
+
+        // At `exit`: destroy the array owner's remaining live elements (none after full
+        // consumption; the unconsumed tail after a `break`).
+        self.emit_scope_drops_from(array_scope_depth, span);
+        self.scopes.pop();
         Ok(())
     }
 

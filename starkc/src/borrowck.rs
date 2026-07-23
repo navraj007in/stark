@@ -632,35 +632,10 @@ impl<'a> BorrowChecker<'a> {
                 self.check_block(*body);
             }
             hir::ExprKind::For { iter, body, .. } => {
-                // DEV-090 (WP-C4.7 close-out §6): by-value iteration over a fixed-length array
-                // whose element type is NOT `Copy` is not yet supported. Consuming each element
-                // moves it out of a place named by a runtime loop index, which no static
-                // constant-index projection (A5) can name — so ownership-transferring non-Copy
-                // array iteration is deferred to a later language-completion package (recorded in
-                // KNOWN-DEVIATIONS.md). Rejected HERE, deterministically, so the program never
-                // reaches an engine: the oracle would clone each element out while MIR refuses to
-                // lower it — an engine divergence this early rejection forecloses. `Copy` arrays
-                // iterate normally (each read is a copy, leaving the array intact).
-                let mut iter_ty = self.expr_types.get(iter);
-                while let Some(Ty::Ref { inner, .. }) = iter_ty {
-                    iter_ty = Some(inner.as_ref());
-                }
-                if let Some(Ty::Array(element, _)) = iter_ty {
-                    if !self.is_copy_type(element) {
-                        self.push_diag(
-                            Diagnostic::error(
-                                "by-value iteration over an array with a non-Copy element type is \
-                                 not yet supported",
-                                self.hir.expr(*iter).span,
-                            )
-                            .with_code("E0104")
-                            .with_label(
-                                "iterate over a borrow (e.g. bind by reference) instead of moving \
-                                 each element out of the array",
-                            ),
-                        );
-                    }
-                }
+                // WP-C6.1d closed DEV-090: by-value iteration over a fixed-length non-`Copy` array
+                // is now lowered by unrolling (each element moves via `ConstIndex(i)`), and the HIR
+                // and MIR engines agree, so the deterministic E0104 rejection that used to forecast
+                // an oracle/MIR divergence here is removed. `Copy` arrays still iterate by copy.
                 self.check_expr(*iter);
                 self.check_block(*body);
             }

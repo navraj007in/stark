@@ -350,3 +350,172 @@ fn c61c_a_false_assertion_still_traps_in_all_three_engines() {
     let verified = verify_program(&c.program).unwrap();
     assert!(run_program(verified).is_err(), "MIR must trap");
 }
+
+// ================================== WP-C6.1d — non-Copy array by-value iteration (G2) --
+//
+// `for x in arr` over `[T; N]` with a non-Copy `T` is lowered by unconditional unrolling: the array
+// is moved once into a per-element-drop-tracked owner, each element moves out via ConstIndex(i)
+// into a FRESH binding local, and the body is lowered once per element. Break/continue/return/?
+// drop the current binding; the array owner's scope drop destroys the unconsumed tail. Drop-bearing
+// exit-0 is the no-double/missing-drop evidence (a wrong drop trips slot_violation). The HIR oracle
+// moves each element and drops the remainder identically, so all three engines agree. Observable
+// Drop ORDER/COUNT needs stdout and is a C6.3 item.
+
+const ARR_S: &str = "struct S { v: Int32 }\nfn take(x: S) -> Int32 { x.v }\n";
+const ARR_D: &str = "struct D { v: Int32 }\nimpl Drop for D { fn drop(&mut self) { let r: Int32 = self.v; } }\nfn take(x: D) -> Int32 { x.v }\n";
+
+#[test]
+fn c61d_consuming_match_array_baseline_drop() {
+    // Owner test 1: the consuming-match array path (which shares the ConstIndex + array-drop
+    // machinery) agrees across engines, establishing the baseline before iteration.
+    agree_completes(
+        "c61d_match_baseline",
+        &format!(
+            "{ARR_D}fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}]; \
+             let n: Int32 = match arr {{ [a, b] => take(a) + take(b) }}; assert_eq(n, 3); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_zero_length_iterable_evaluated_once() {
+    agree_completes(
+        "c61d_zero",
+        &format!(
+            "{ARR_S}fn main() {{ let arr: [S; 0] = []; let mut sum: Int32 = 0; \
+             for x in arr {{ sum = sum + take(x); }} assert_eq(sum, 0); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_single_non_copy_element() {
+    agree_completes(
+        "c61d_one",
+        &format!(
+            "{ARR_S}fn main() {{ let arr = [S {{ v: 42 }}]; let mut sum: Int32 = 0; \
+             for x in arr {{ sum = sum + take(x); }} assert_eq(sum, 42); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_multiple_non_copy_elements_in_source_order() {
+    let gen = agree_completes(
+        "c61d_multi",
+        &format!(
+            "{ARR_S}fn main() {{ let arr = [S {{ v: 1 }}, S {{ v: 2 }}, S {{ v: 3 }}]; \
+             let mut acc: Int32 = 0; for x in arr {{ acc = acc * 10 + take(x); }} \
+             assert_eq(acc, 123); }}"
+        ),
+    );
+    // Structural: unrolled ConstIndex moves, NO dynamic index / CheckIndex in this path.
+    assert!(
+        !gen.contains("as usize]"),
+        "non-Copy array iteration must not use a dynamic index:\n{gen}"
+    );
+}
+
+#[test]
+fn c61d_multiple_drop_elements_full_consumption() {
+    agree_completes(
+        "c61d_drop_full",
+        &format!(
+            "{ARR_D}fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}, D {{ v: 3 }}]; \
+             let mut sum: Int32 = 0; for x in arr {{ sum = sum + take(x); }} assert_eq(sum, 6); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_continue_drops_binding_keeps_remaining() {
+    agree_completes(
+        "c61d_continue",
+        &format!(
+            "{ARR_D}fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}, D {{ v: 3 }}]; \
+             let mut sum: Int32 = 0; for x in arr {{ let k: Int32 = take(x); \
+             if k == 2 {{ continue; }} sum = sum + k; }} assert_eq(sum, 4); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_break_at_first_iteration_drops_remaining() {
+    // Break immediately: element 0 (bound) and elements 1,2 (unconsumed) all drop exactly once.
+    agree_completes(
+        "c61d_break_first",
+        &format!(
+            "{ARR_D}fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}, D {{ v: 3 }}]; \
+             let mut sum: Int32 = 0; for x in arr {{ sum = sum + take(x); break; }} \
+             assert_eq(sum, 1); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_break_in_the_middle_drops_remaining() {
+    agree_completes(
+        "c61d_break_mid",
+        &format!(
+            "{ARR_D}fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}, D {{ v: 3 }}, D {{ v: 4 }}]; \
+             let mut sum: Int32 = 0; for x in arr {{ sum = sum + take(x); if sum >= 3 {{ break; }} }} \
+             assert_eq(sum, 3); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_return_from_body_drops_remaining() {
+    agree_completes(
+        "c61d_return",
+        &format!(
+            "{ARR_D}fn first_ge(arr: [D; 3], threshold: Int32) -> Int32 {{ \
+             for x in arr {{ let k: Int32 = take(x); if k >= threshold {{ return k; }} }} 0 }}\n\
+             fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}, D {{ v: 3 }}]; \
+             assert_eq(first_ge(arr, 2), 2); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_question_mark_propagation_drops_remaining() {
+    agree_completes(
+        "c61d_try",
+        &format!(
+            "{ARR_D}fn checked(k: Int32) -> Result<Int32, Int32> {{ if k >= 2 {{ Err(k) }} else {{ Ok(k) }} }}\n\
+             fn sum_until(arr: [D; 3]) -> Result<Int32, Int32> {{ let mut sum: Int32 = 0; \
+             for x in arr {{ let k: Int32 = take(x); let v: Int32 = checked(k)?; sum = sum + v; }} Ok(sum) }}\n\
+             fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}, D {{ v: 3 }}]; \
+             let r: Int32 = match sum_until(arr) {{ Ok(n) => n, Err(e) => e + 100 }}; assert_eq(r, 102); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_iterable_returned_by_a_function() {
+    // The iterable is a function CALL — moved once into the array owner.
+    agree_completes(
+        "c61d_fn_iter",
+        &format!(
+            "{ARR_S}fn make() -> [S; 2] {{ [S {{ v: 10 }}, S {{ v: 20 }}] }}\n\
+             fn main() {{ let mut sum: Int32 = 0; for x in make() {{ sum = sum + take(x); }} \
+             assert_eq(sum, 30); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61d_a_trap_in_the_body_aborts_with_no_cleanup() {
+    // A body that traps: HIR and MIR both trap (no binding/remaining cleanup after an abort).
+    let source = format!(
+        "{ARR_S}fn main() {{ let arr = [S {{ v: 1 }}, S {{ v: 0 }}, S {{ v: 3 }}]; let mut acc: Int32 = 0; \
+         for x in arr {{ acc = acc + 10 / take(x); }} assert_eq(acc, 0); }}"
+    );
+    let c = compile(&source, "c61d_trap");
+    assert!(
+        interp::run_with_partial_output(&c.hir, c.file.clone(), &c.tables).is_err(),
+        "HIR must trap (divide by zero)"
+    );
+    let verified = verify_program(&c.program).unwrap();
+    assert!(run_program(verified).is_err(), "MIR must trap");
+}

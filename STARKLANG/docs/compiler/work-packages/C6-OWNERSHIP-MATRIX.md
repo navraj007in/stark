@@ -27,7 +27,7 @@ open gaps for C6.1 are **narrow and specific**:
 | Gap | Shape | Current | C6.1 owner |
 |---|---|---|---|
 | G1 | Multi-**unit** enum-payload consuming match / partial move (bind or move ≥2 non-`Copy` payload fields of one variant) | ~~BACKEND-REFUSED~~ **FIXED (C6.1c)** | **C6.1c** |
-| G2 | Non-`Copy` **array by-value iteration** (`for x in arr`) | FRONT-END ("not yet supported") | **C6.1d** |
+| G2 | Non-`Copy` **array by-value iteration** (`for x in arr`) | ~~FRONT-END E0104~~ **FIXED (C6.1d)** | **C6.1d** |
 | G3 | **Multi-level (depth ≥2) partial move/drop** through a projection chain (`o.a.x`) — only one projection level was implemented | ~~BACKEND-REFUSED~~ **FIXED (C6.1b)** | **C6.1b** |
 | G4 | **Loop-carried reassignment of a no-`Drop` non-`Copy` local** — the slot is never reset by a MIR `Drop` (verifier emits none for a non-droppable type), so a loop back-edge reassignment hit `write`'s dead-slot check and **aborted at run time** (compile-then-abort) | ~~COMPILE-THEN-ABORT~~ **FIXED (C6.1b)** | **C6.1b** (newly surfaced) |
 
@@ -85,7 +85,7 @@ non-`Copy` movement" claim and is recorded here so C6.1b's acceptance set includ
 |---|---|---|---|---|---|---|---|---|---|
 | move `arr[i]` (dynamic index) of non-`Copy` | `[S; N]` | Move | dynamic `Index` | **FRONT-END** "cannot move out of an indexed place" (probe 07) | unchanged | — | move-out-of-index rejected | — | LANG-RULE |
 | `arr[i]` of `Copy` element (read) | `[Int32; N]` | Copy | `Index` | SUPPORTED | same | (C5.3) | OOB traps | — | PARITY |
-| non-`Copy` by-value iteration (`for x in arr`) | `[S; N]` | Move | `ConstIndex` per element | **FRONT-END** "not yet supported" (probe 08) | SUPPORTED | `array_by_value_iter` | unconsumed-element cleanup after break/return; no whole-array drop after full consume; no cleanup after trap | **G2** | OPEN-G2 |
+| non-`Copy` by-value iteration (`for x in arr`) | `[S; N]` | Move | unrolled `ConstIndex(0..N)` moves | ~~FRONT-END E0104~~ **FIXED (C6.1d)** | SUPPORTED | `c61d_*` (12) | unconsumed-element cleanup after break/return/?; no whole-array drop after full consume; no cleanup after trap | **G2** | FIXED |
 | `Copy` element array iteration | `[Int32; N]` | Copy | element copy | SUPPORTED | same | (C5.3) | — | — | PARITY |
 
 ### 3.4 Container payloads (Option/Result; Vec/Box)
@@ -154,10 +154,20 @@ C6.1e observes marker **order and counts**, not just exit code.
 - [x] Every normative ownership shape has a current + target outcome and a named test
 - [x] Current outcomes are probe-grounded, not assumed
 
-**Gaps:** **G3** (multi-level partial move) and **G4** (loop-carried no-`Drop` reassignment) are
-**FIXED in C6.1b**; **G1** (multi-unit enum payload) is **FIXED in C6.1c** (below). Only **G2**
-(non-`Copy` array by-value iteration → C6.1d) remains open. Vec/Box ownership is a Track A↔C
-interface (C6.3). Everything else is at native parity today.
+**Gaps:** **G3**/**G4** FIXED in C6.1b; **G1** FIXED in C6.1c; **G2** FIXED in C6.1d (below). **All
+four surfaced ownership gaps are now closed.** Vec/Box ownership remains a Track A↔C interface
+(C6.3). Everything else is at native parity today.
+
+**C6.1d delivered (G2):** by-value iteration over a non-`Copy` fixed array is lowered by
+unconditional unrolling (owner ruling, Option (a)) in `mir::lower::lower_for_over_array_unrolled` —
+the array is moved once into a per-element-drop-tracked owner, each element moves out via
+`ConstIndex(i)` (auto-clearing its drop flag) into a FRESH binding local per iteration, and the body
+is lowered once per element. Scope nesting `array ⊃ binding ⊃ body` gives cleanup order body →
+binding → remaining elements; break/continue/return/`?` drop the current binding and the array
+owner's scope drop destroys the unconsumed tail (reverse order); a trap aborts with no cleanup. The
+`Copy` path is unchanged. The front-end E0104 rejection (DEV-090) is removed — the HIR oracle moves
+each element identically, so all three engines agree. Evidence: `native_c6_1_ownership.rs` `c61d_*`
+(12, incl. the consuming-`match` array baseline), `gate2_valid` accept test flipped.
 
 **C6.1c delivered (G1):** `mir::lower::materialize_consumed_variant_payload` decomposes a
 multi-field non-`Copy` variant payload into ONE canonical `Aggregate(Tuple, [VariantField(v,0..n)])`

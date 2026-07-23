@@ -68,7 +68,8 @@ begin from `db73afe`.
 |---|---|---|---|---|---|---|---|---|---|---|
 | C6.1a | A | Claude | `db73afe` | `C6-OWNERSHIP-MATRIX.md` (new) | SHARED-CONTRACTS v1 | none | probe-grounded classification | **G3**, **G4** | §7J:3 | **CANDIDATE-COMPLETE** |
 | C6.1b | A | Claude | `db73afe` | `emit_projections.rs`, `emit_places.rs`, `slot.rs` (owned); `emit_bodies.rs` (lease) | SHARED-CONTRACTS v1 | none (`ValueSlot::reinit` is a NEW runtime method, additive, no ABI/behaviour change to existing ops) | `native_c6_1_ownership.rs` (5) | G3, G4 fixed | §7J:3 | CANDIDATE-COMPLETE (CD-081) |
-| C6.1c | A | Claude | (post-C6.1b) | `emit_bodies.rs`, `emit_projections.rs` (owned/lease); `mir/lower.rs` (lease) | SHARED-CONTRACTS v1 | none (MIR canonicalisation with existing ops only — refined Option A) | `native_c6_1_ownership.rs` (+7 `c61c_*`), `native_c5_3` positive multi-unit | G1 fixed | §7J:3 (front-end lowering + backend) | **CANDIDATE-COMPLETE** |
+| C6.1c | A | Claude | (post-C6.1b) | `emit_bodies.rs`, `emit_projections.rs` (owned/lease); `mir/lower.rs` (lease) | SHARED-CONTRACTS v1 | none (MIR canonicalisation with existing ops only — refined Option A) | `native_c6_1_ownership.rs` (+7 `c61c_*`), `native_c5_3` positive multi-unit | G1 fixed | §7J:3 (front-end lowering + backend) | CANDIDATE-COMPLETE (CD-082) |
+| C6.1d | A | Claude | (post-C6.1c) | `mir/lower.rs` (lease), `borrowck.rs` (lease) | SHARED-CONTRACTS v1 | none (unroll with existing `ConstIndex`; no new MIR op — Option (a)) | `native_c6_1_ownership.rs` (+12 `c61d_*`), `gate2_valid` accept flip | G2 fixed; DEV-090 closed | §7J:3 | **CANDIDATE-COMPLETE** |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
 
@@ -88,6 +89,8 @@ _(none yet — appended when a shared file is leased)_
 | `emit_bodies.rs` | A | C6.1b G4: `emit_assignment` chooses `reinit` vs `write` by drop-obligation | `db73afe` | none (internal codegen choice) | `native_c6_1_ownership.rs` | C6.1b | C6.1b (landed) |
 | `mir/lower.rs` | A | C6.1c G1: `materialize_consumed_variant_payload` — tuple decomposition of multi-field non-Copy variant payloads (owner ruling). Track B informed & excluded from this file until release. | post-C6.1b | narrow: `consume_field`/`bind_field_local` take a pre-built `field_place`; new private helper | `native_c6_1_ownership.rs` `c61c_*` | C6.1c | C6.1c (landed) |
 | `emit_bodies.rs` | A | C6.1c G1: `try_variant_payload_extraction` destructuring emitter | post-C6.1b | none (statement-local codegen) | as above | C6.1c | C6.1c (landed) |
+| `mir/lower.rs` | A | C6.1d G2: `lower_for_over_array_unrolled` — unroll non-Copy array iteration | post-C6.1c | narrow: new private helper; Copy path unchanged | `native_c6_1_ownership.rs` `c61d_*` | C6.1d | C6.1d (landed) |
+| `borrowck.rs` | A | C6.1d G2: remove the DEV-090 E0104 rejection now that MIR lowers non-Copy array iteration | post-C6.1c | none (removes a rejection) | `gate2_valid` accept test | C6.1d | C6.1d (landed) |
 
 ---
 
@@ -125,6 +128,15 @@ _(none yet — appended when a shared file is leased)_
   emitting it for a no-drop slot local. Not a CE4: `reinit` is a new helper method (Track A owned,
   WP-C6-ENTRY §10 "preserve `ValueSlot<T>`… route moves/writes through reviewed helpers"), additive,
   no change to any existing op, ABI, layout, or Drop glue. Recorded in `C6-SHARED-CONTRACTS.md §4`.
+
+- **Owner ruling [2026-07-23, C6.1d] — Option (a) unconditional array-iteration unrolling, NOT a
+  CE3.** By-value iteration over a non-`Copy` fixed array unrolls into `N` `ConstIndex(i)` moves (no
+  size cap, no CE4 runtime bitmap; the `Copy` dynamic-index path stays). Uses only existing MIR ops,
+  so not a CE3. Move the iterable once into a per-element-drop-tracked owner; fresh MIR binding local
+  per iteration; scope cleanup body → binding → remaining elements; no cleanup after trap. **DEV-090
+  CLOSED** (the front-end E0104 rejection removed — the HIR oracle moves each element, so no engine
+  divergence). Pathological array length is a future compiler-resource-limit concern, not an
+  `Unsupported` feature gap.
 
 - **Owner ruling [2026-07-23, C6.1c] — refined Option A (enum payload partial moves), NOT a CE3.**
   Lower each consuming active-variant payload (multi-field, non-`Copy`) into ONE canonical

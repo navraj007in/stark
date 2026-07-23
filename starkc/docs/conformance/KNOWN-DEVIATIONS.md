@@ -2550,7 +2550,15 @@ WP-C1.5)
   `::dev089_formatter_result_and_argument_drop_timing_agrees`, `::dev089_trap_inside_fmt_agrees`;
   and the checker's positive/negative coverage in `gate2_valid.rs::printing_requires_display`.
 
-## DEV-090 — By-value iteration over a non-`Copy` array element is refused at MIR only; now rejected in the front end [CLOSED with a deterministic front-end rejection / feature DEFERRED, WP-C4.7 close-out §6, 2026-07-21]
+## DEV-090 — By-value iteration over a non-`Copy` array element [FULLY CLOSED — feature IMPLEMENTED, WP-C6.1d, 2026-07-23]
+
+- **Resolution (WP-C6.1d):** now SUPPORTED. Lowering unrolls the fixed-length iteration into `N`
+  `ConstIndex(i)` moves into a per-iteration fresh binding, with the array moved once into a
+  per-element-drop-tracked owner and correct break/continue/return/`?`/trap cleanup. The front-end
+  E0104 rejection is removed; HIR, MIR, and native execution agree (`native_c6_1_ownership.rs`
+  `c61d_*`). The text below is the historical record of the earlier deterministic-rejection state.
+
+
 
 - **What:** split from DEV-086. `for x in arr` over a fixed-length array whose element type is
   NOT `Copy` binds each element by value, moving it out of a place named by a **runtime** loop
