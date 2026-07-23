@@ -553,6 +553,11 @@ fn main() {
 /// Each source here is rejected by the front end or the backend; what the test pins is that the
 /// rejection happens on OUR side of the boundary. A reference that reached rustc and failed there
 /// would be a diagnostic defect even though the program is correctly not compiled.
+///
+/// **WP-C6.1f-b3:** the "store a reference in a user binding that outlives its block" case has been
+/// MOVED OUT of this list to `native_c61f_b3_stored_refs.rs` as a positive test — stored references
+/// are now supported, so this test followed its own instruction ("if it is now legitimately
+/// supported, move it to a positive test"). Returning a reference is still refused.
 #[test]
 fn references_outside_the_lane_are_refused_before_rustc() {
     for (tag, source) in [
@@ -566,20 +571,6 @@ fn references_outside_the_lane_are_refused_before_rustc() {
 fn main() {
     let x: Int32 = 1;
     let r: &Int32 = pick(&x);
-}
-"#,
-        ),
-        // Storing a reference in a user binding that outlives its block.
-        (
-            "store",
-            r#"fn main() {
-    let x: Int32 = 1;
-    let r: &Int32 = &x;
-    let mut i: Int32 = 0;
-    while i < 2 {
-        i = i + 1;
-    }
-    let y: Int32 = *r;
 }
 "#,
         ),

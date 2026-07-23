@@ -1,7 +1,7 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 boundaries (CD-092)** — see §9.
+**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 (CD-092)**; **b3 stored references COMPLETE (CD-093)** — §10.
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the
@@ -378,3 +378,79 @@ Substituting incorrectly here would produce a **silent miscompile** rather than 
 the one failure mode this whole package has so far been free of (§1.1). The boundary is therefore
 left explicitly unimplemented and reported, rather than approximated. It needs a small
 nominal-generic substitution helper first.
+
+
+---
+
+## 10. C6.1f-b3 — stored references (CD-093)
+
+### 10.1 The design question had the wrong answer
+
+§5 flagged the crux as `ValueSlot` versus Rust's borrow checker: a user borrow of a non-`Copy` owner
+must go through the slot, whose drop-flag machinery takes `&mut` on that same slot.
+
+**Probing with the lane disabled showed that is not the blocker.** A same-block borrow bound to a
+user local already built and ran — **including for a `Drop`-bearing owner**. What failed was:
+
+```text
+error[E0381]: used binding `_3` isn't initialized
+```
+
+**rustc's definite-assignment analysis, not its borrow checker.** A reference local is declared
+uninitialised before the generated block-dispatch `loop { match … }`, assigned inside one arm and
+read in another; rustc cannot follow that. No borrow error appeared in any case.
+
+This is the third time in C6 that probing overturned an assumption held before measuring, and the
+second where the *predicted* hard part was not the real one.
+
+### 10.2 The fix
+
+A reference bound to a **user** local is declared `Option<&T> = None` — definitely initialised at
+its declaration. MIR's own liveness rules still decide whether a read is legal; `unwrap` names a
+state MIR has already proven unreachable, the same posture as `slot_violation`.
+
+**Compiler temporaries keep the bare `&T` form.** They are same-block by construction, so rustc's
+definite-assignment check still guards them exactly as the lane intended, and every previously
+working reference path is byte-identical. The change is confined to the shapes that were refused.
+
+Two details that were not obvious:
+
+- **`Option<&mut T>` is not `Copy`.** Access must re-borrow out of the `Option`
+  (`(*_n.as_mut().unwrap())`) rather than move out of it; moving would make a second use fail.
+- **Borrowing needs a place expression.** Read mode may substitute a raw-projection **copy** helper
+  for a `Copy` field, and `&<copy>` would reference a temporary rather than the field — a silently
+  wrong reference, not a compile error. A distinct `PlaceMode::Borrow` keeps the place form.
+
+### 10.3 Lane checks after b3
+
+| # | Check | Status |
+|---|---|---|
+| 1 | `RefOf` through a projection | **kept** |
+| 2 | `RefOf` into a non-`Temp` local | **relaxed** — user bindings admitted; all other kinds refused |
+| 3 | reference into an aggregate or non-temporary | **relaxed** for user bindings; **aggregates still refused** |
+| 4 | reference temporary used in another block | **kept for temporaries**; user bindings may cross blocks |
+| 5 | body returning a reference | **kept** |
+
+Checks were narrowed, never deleted — §4's requirement. The `c61f_reference_boundary.rs` negative
+corpus passes unaltered, no-NLL case included.
+
+`native_c5_3_aggregates_enums.rs`'s lane test carried the instruction *"if it is now legitimately
+supported, move it to a positive test"*; its **store** case did exactly that, and its **ret** case
+stays refused.
+
+### 10.4 Rows now closed, and what is left
+
+Twelve shapes build and run natively: references in user locals (struct, primitive, two
+simultaneous shared borrows), across `if` and `while`, `&mut` in a user local, borrows of struct
+fields / nested fields / array elements, a `Drop`-bearing owner, borrow-then-move, and the b2
+annotated-local weakening that was waiting on the lane.
+
+Still open in C6.1f:
+
+| Item | Where |
+|---|---|
+| **returning a reference** (lane check 5) + provenance validation (OWN-RETURN-001's shortest-input-lifetime rule) | b3 continuation |
+| references stored in **aggregates** (lane check 3) | b3 continuation |
+| aggregate-field weakening; generic-callee argument weakening | b2 continuation |
+| `&&T` / `**x` unspellable (parser) | b4 |
+| the E0103 `if`-branch message | b5 |

@@ -145,6 +145,41 @@ pub fn is_slot_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic>
     Ok(emit_types::is_slot_backed(&ty, env.types))
 }
 
+/// WP-C6.1f-b3: whether a local is a **stored reference** — a user-visible binding holding a
+/// reference, as opposed to a compiler temporary.
+///
+/// The C5 ephemeral lane admitted references only in same-block temporaries, which rustc could see
+/// were assigned before use. A reference bound to a user local is assigned in one arm of the
+/// generated block-dispatch `loop { match … }` and read in another, so rustc's definite-assignment
+/// analysis cannot follow it and rejects the program with **E0381 "used binding isn't
+/// initialized"** — not a borrow error. Such locals are therefore declared `Option<&T> = None`,
+/// which is definitely initialised at declaration; MIR's own liveness rules still decide whether a
+/// read is legal, and `unwrap` marks the state MIR has already proven unreachable.
+///
+/// Compiler temporaries keep the bare `&T` form: they are same-block by construction, rustc can
+/// already see their assignment, and leaving them untouched keeps every previously working
+/// reference path byte-identical.
+pub fn is_stored_ref_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic> {
+    Ok(matches!(env.local_ty(local)?, MirTy::Ref { .. })
+        && matches!(
+            env.body.locals[local as usize].kind,
+            crate::mir::LocalKind::User(_)
+        ))
+}
+
+/// The Rust expression naming a stored reference's *referent-bearing* value. A shared reference is
+/// `Copy`, so `unwrap()` is free; a `&mut` is not, so it must be re-borrowed out of the `Option`
+/// rather than moved out of it — moving would make a second use fail to compile.
+fn stored_ref_access(local: u32, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    let mutable = matches!(env.local_ty(local)?, MirTy::Ref { mutable: true, .. });
+    let name = local_name(local);
+    Ok(if mutable {
+        format!("(*{name}.as_mut().unwrap())")
+    } else {
+        format!("{name}.unwrap()")
+    })
+}
+
 /// A place in READ position. A slot-backed local reads through `get()`, which borrows rather
 /// than moves — the whole point of the slot is that reading does not disturb liveness.
 pub fn emit_place(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
@@ -154,6 +189,11 @@ pub fn emit_place(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnosti
 /// A place in WRITE position: the base is accessed mutably. Only valid for a PROJECTED place —
 /// a whole-local assignment to a slot goes through `write()` instead, which is a statement, not
 /// a place expression. `emit_bodies` branches on that before calling here.
+/// A place about to be shared-borrowed. See [`PlaceMode::Borrow`].
+pub fn emit_place_to_borrow(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    emit_place_from(place, env, PlaceMode::Borrow)
+}
+
 pub fn emit_place_mut(place: &Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     emit_place_from(place, env, PlaceMode::Write)
 }
@@ -162,6 +202,12 @@ pub fn emit_place_mut(place: &Place, env: &TyEnv) -> Result<String, BackendDiagn
 enum PlaceMode {
     Read,
     Write,
+    /// WP-C6.1f-b3: the place is about to be **borrowed** (`&place`). Like `Read` in how it
+    /// reaches a slot (`get()`), but it must stay a Rust *place expression*: `Read` may substitute
+    /// a raw-projection COPY helper for a `Copy` field, and borrowing that would take a reference
+    /// to a temporary copy rather than to the field itself — a silently wrong reference, not a
+    /// compile error, which is why the two modes are distinguished rather than shared.
+    Borrow,
 }
 
 fn emit_place_from(
@@ -195,10 +241,14 @@ fn emit_place_from(
             ));
         }
     }
-    let mut rendered = local_name(place.local.0);
+    let mut rendered = if is_stored_ref_local(place.local.0, env)? {
+        stored_ref_access(place.local.0, env)?
+    } else {
+        local_name(place.local.0)
+    };
     if is_slot_local(place.local.0, env)? {
         rendered = match mode {
-            PlaceMode::Read => format!("{rendered}.get()"),
+            PlaceMode::Read | PlaceMode::Borrow => format!("{rendered}.get()"),
             PlaceMode::Write => format!("{rendered}.get_mut()"),
         };
     }

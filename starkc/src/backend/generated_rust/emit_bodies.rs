@@ -157,11 +157,24 @@ pub fn emit_block_body(
         // rustc a second check on the lane: a reference that escaped its block would fail to
         // compile as "possibly uninitialized" rather than silently reading a fabricated value.
         if matches!(decl.ty, MirTy::Ref { .. }) {
-            out.push_str(&format!(
-                "    let mut {}: {};\n",
-                emit_places::local_name(i as u32),
-                emit_types::emit_ty(&decl.ty)?
-            ));
+            // WP-C6.1f-b3: a reference bound to a USER local is declared `Option<&T> = None`, so it
+            // is definitely initialised at declaration and can be assigned in one dispatch-loop arm
+            // and read in another. A compiler temporary keeps the bare, uninitialised form: it is
+            // same-block by construction, so rustc's definite-assignment analysis still serves as a
+            // second check on it exactly as before.
+            if matches!(decl.kind, crate::mir::LocalKind::User(_)) {
+                out.push_str(&format!(
+                    "    let mut {}: Option<{}> = None;\n",
+                    emit_places::local_name(i as u32),
+                    emit_types::emit_ty(&decl.ty)?
+                ));
+            } else {
+                out.push_str(&format!(
+                    "    let mut {}: {};\n",
+                    emit_places::local_name(i as u32),
+                    emit_types::emit_ty(&decl.ty)?
+                ));
+            }
             continue;
         }
         if !slotted {
@@ -247,11 +260,14 @@ fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), Back
                     )));
                 }
                 let kind = &body.locals[place.local.0 as usize].kind;
-                if !matches!(kind, LocalKind::Temp) {
+                // WP-C6.1f-b3: a borrow may now land in a USER binding — those are declared
+                // `Option<&T> = None` and so are definitely initialised across dispatch-loop arms.
+                // Every other destination kind is still refused.
+                if !matches!(kind, LocalKind::Temp | LocalKind::User(_)) {
                     return Err(BackendDiagnostic::Unsupported(format!(
-                        "a borrow stored in a {kind:?} local is outside the C5 ephemeral \
-                         reference lane: references may live only in compiler-generated \
-                         temporaries, never in user bindings"
+                        "a borrow stored in a {kind:?} local is outside the reference lane: \
+                         references may live only in compiler-generated temporaries or user \
+                         bindings"
                     )));
                 }
                 created_here.insert(place.local.0);
@@ -266,13 +282,17 @@ fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), Back
                 if !created_here.contains(&src.local.0) {
                     continue;
                 }
-                let dest_is_temp = place.projection.is_empty()
-                    && matches!(body.locals[place.local.0 as usize].kind, LocalKind::Temp);
-                if matches!(rvalue, Rvalue::Aggregate(..)) || !dest_is_temp {
+                // WP-C6.1f-b3: a reference value may flow into a temporary or a user binding;
+                // aggregates still refuse it (a reference field has no `Option` treatment).
+                let dest_ok = place.projection.is_empty()
+                    && matches!(
+                        body.locals[place.local.0 as usize].kind,
+                        LocalKind::Temp | LocalKind::User(_)
+                    );
+                if matches!(rvalue, Rvalue::Aggregate(..)) || !dest_ok {
                     return Err(BackendDiagnostic::Unsupported(format!(
-                        "a reference flowing into {place:?} is outside the C5 ephemeral \
-                         reference lane: it may not be stored in an aggregate, written to a user \
-                         local, or returned"
+                        "a reference flowing into {place:?} is outside the reference lane: it \
+                         may not be stored in an aggregate or returned"
                     )));
                 }
                 created_here.insert(place.local.0);
@@ -287,6 +307,11 @@ fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), Back
                 if let Statement::Assign(_, rvalue) = statement {
                     for operand in super::emit_projections::rvalue_operands(rvalue) {
                         if let Operand::Copy(p) | Operand::Move(p) = operand {
+                            // WP-C6.1f-b3: a stored (user) reference is `Option`-backed and may
+                            // legitimately cross blocks; only TEMPORARIES remain same-block.
+                            if matches!(body.locals[p.local.0 as usize].kind, LocalKind::User(_)) {
+                                continue;
+                            }
                             if created_here.contains(&p.local.0) {
                                 return Err(BackendDiagnostic::Unsupported(format!(
                                     "reference temporary _{} is created in block {bi} and used in \
@@ -617,6 +642,14 @@ fn emit_assignment(
              this, so reaching it means either a new lowering shape or a compiler defect"
         )));
     }
+    // WP-C6.1f-b3: a whole-local write to a stored reference wraps, matching its `Option<&T>`
+    // declaration. A PROJECTED write goes through the normal path, which renders the access form.
+    if emit_places::is_stored_ref_local(place.local.0, env)? && place.projection.is_empty() {
+        return Ok(format!(
+            "{} = Some({value});",
+            emit_places::local_name(place.local.0)
+        ));
+    }
     if emit_places::is_slot_local(place.local.0, env)? && place.projection.is_empty() {
         // WP-C6.1b: a no-drop slot local's slot is never reset by a MIR `Drop` (the verifier emits
         // none for a non-droppable type), so on a loop back-edge it is still live when the next
@@ -707,7 +740,10 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
                     format!("(&mut {base})")
                 }
             } else {
-                let base = emit_places::emit_place(place, env)?;
+                // WP-C6.1f-b3: borrow mode, not read mode — a read may substitute a raw-projection
+                // COPY helper for a `Copy` field, and `&<copy>` would reference a temporary instead
+                // of the field.
+                let base = emit_places::emit_place_to_borrow(place, env)?;
                 if whole_slot {
                     base
                 } else {

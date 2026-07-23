@@ -5,8 +5,8 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f-a/b1 CLOSED; b2 CLOSED for 5 of 6 boundaries (CD-092, aggregate fields
-outstanding); array→slice moved to C6.3b; b3–b5 open**, F1
+Remaining C6: **WP-C6.1f-a/b1 CLOSED; b2 5-of-6 (CD-092); b3 stored references CLOSED (CD-093) —
+returning a reference and aggregates still open; b4/b5 open**, F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3047,6 +3047,39 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-093 [2026-07-24, **WP-C6.1f-b3 — stored references; the lane replaced, not deleted**]
+  - **The §5 design question had the wrong answer.** The matrix predicted the crux was `ValueSlot`
+    versus Rust's borrow checker. Probing with the lane disabled showed otherwise: a same-block
+    borrow bound to a user local **already built and ran, including for a `Drop`-bearing owner**.
+    The blocker was `E0381 "used binding isn't initialized"` — rustc's **definite-assignment**
+    analysis, not its borrow checker; a reference local is assigned in one arm of the generated
+    block-dispatch `loop { match … }` and read in another. **No borrow error appeared in any case.**
+    Third time in C6 that probing overturned a pre-measurement assumption.
+  - **Fix:** a reference bound to a **user** local is declared `Option<&T> = None`, definitely
+    initialised at its declaration; MIR liveness still decides legality and `unwrap` names a state
+    MIR proved unreachable (the `slot_violation` posture). **Compiler temporaries keep the bare
+    form** — same-block by construction, so rustc's definite-assignment check still guards them and
+    every previously working reference path is byte-identical.
+  - Two non-obvious details: **`Option<&mut T>` is not `Copy`**, so access re-borrows out of the
+    `Option` rather than moving out of it; and **borrowing needs a place expression**, since read
+    mode may substitute a raw-projection *copy* helper for a `Copy` field and `&<copy>` would
+    reference a temporary rather than the field — a silently wrong reference, not a compile error.
+    A distinct `PlaceMode::Borrow` keeps the place form.
+  - **Lane checks narrowed, never deleted** (§4's requirement): checks 1 and 5 kept intact; 2 and 3
+    admit user bindings only (aggregates still refused); 4 still binds temporaries to one block.
+    The negative corpus passes unaltered, no-NLL case included. `native_c5_3_aggregates_enums.rs`'s
+    lane test carried the instruction "if it is now legitimately supported, move it to a positive
+    test" — its **store** case did exactly that; its **ret** case stays refused.
+  - **Twelve shapes now build and run natively**, including references across `if`/`while`, `&mut`
+    in a user local, borrows of fields/nested fields/array elements, a `Drop`-bearing owner,
+    borrow-then-move, and the b2 annotated-local weakening that was waiting on the lane.
+  - **Still open in C6.1f:** returning a reference (check 5) with OWN-RETURN-001 provenance
+    validation; references in aggregates (check 3); b2's aggregate-field and generic-callee
+    weakening; b4's parser half; b5's E0103 message.
+  - **Validation: full workspace suite green — 65 suites, exit 0, zero failures** (warranted here:
+    `emit_places.rs`/`emit_bodies.rs` are cross-cutting for the whole backend); `fmt --check` and
+    strict `clippy` clean.
 
 - CD-092 [2026-07-24, **WP-C6.1f-b2 — expected-type reference weakening; 5 of 6 boundaries**]
   Two defects had to be fixed **together**, because either alone leaves the boundary unusable:
