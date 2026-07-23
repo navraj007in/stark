@@ -1,7 +1,7 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 (CD-092)**; **b3 stored references COMPLETE (CD-093)** — §10.
+**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 (CD-092)**; **b3 stored references COMPLETE (CD-093)** — §10; **returning a reference COMPLETE (CD-094)** — §11.
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the
@@ -124,9 +124,9 @@ inline as **→ (b1)** and explained in §8; §1 records the C6.1f-a state and i
 
 | Case | Result | Detail |
 |---|---|---|
-| `fn f(r: &P) -> &P { r }` | **BACKEND** | lane: "returning a reference is outside the lane" (a distinct check) |
-| `fn f(r: &P) -> &Int32 { &r.v }` | **BACKEND** | lane |
-| `fn get(&self) -> &Int32 { &self.v }` | **BACKEND** | lane |
+| `fn f(r: &P) -> &P { r }` | **BACKEND** → **✅ native (ret)** | §11 |
+| `fn f(r: &P) -> &Int32 { &r.v }` | **BACKEND** → **✅ native (ret)** | §11 |
+| `fn get(&self) -> &Int32 { &self.v }` | **BACKEND** → **✅ native (ret)** | §11 |
 
 ### Item 7 — owner move/drop while borrowed
 
@@ -449,8 +449,65 @@ Still open in C6.1f:
 
 | Item | Where |
 |---|---|
-| **returning a reference** (lane check 5) + provenance validation (OWN-RETURN-001's shortest-input-lifetime rule) | b3 continuation |
 | references stored in **aggregates** (lane check 3) | b3 continuation |
 | aggregate-field weakening; generic-callee argument weakening | b2 continuation |
 | `&&T` / `**x` unspellable (parser) | b4 |
 | the E0103 `if`-branch message | b5 |
+
+
+---
+
+## 11. Returning a reference (CD-094)
+
+The last of the five ephemeral-lane checks with real semantics behind it. Provenance —
+OWN-RETURN-001 rules 2/3, that a returned reference derives only from a reference *parameter* — is
+already enforced by the **front end** (E0103), so the backend does not re-check it; it emits, and
+the lane's blanket "a reference may never be returned" (check 5) is removed. What made the emission
+compile was two mechanisms, each found by probing rather than predicted:
+
+### 11.1 Definite assignment (the E0381 wall again)
+
+A reference that is a `Call` destination, or an `if`/`match` join result, is written in one basic
+block and read in another; the generated block-dispatch `loop { match … }` hides that from rustc,
+which rejects it E0381 — **exactly the b3 wall, in the caller and in join blocks rather than in a
+`let`.** b3's fix generalised cleanly: a reference **temporary that spans more than one block** is
+`Option<&T>`-backed, subsuming the two concrete triggers (call-dest, if-join) into the property that
+actually matters. Parameters (initialised at entry) and same-block ephemeral temporaries stay bare,
+so every previously working path is unchanged.
+
+Two supporting pieces:
+- **Return-position access moves out of the `Option`** (`unwrap()`), never re-borrows — a re-borrow
+  would borrow from the dying return-slot local and dangle.
+- **Projecting through a returned reference** (`f(&p).field`, `f(&p).method()`) materialises the
+  call result into a temp and projects through it — the same non-place fallback the `RefOf` and
+  receiver paths already used.
+
+### 11.2 Lifetimes (OWN-RETURN-001's shortest-input rule)
+
+`fn pick(a: &T, b: &T) -> &T` needs an explicit lifetime once there are **two or more** reference
+parameters (E0106); with zero or one, Rust's own elision suffices (which is why a `&self` accessor
+needed nothing). A **single shared `'a`** on every reference parameter and the return encodes the
+*shortest of all inputs* (03 rule 3) — the intersection of the input regions.
+
+**Conservative, and reported:** for `pick(a, b) -> a` STARK's shortest is `a`'s lifetime alone (the
+return provably derives from `a` only), but the shared `'a` also ties it to `b`. Sound — it never
+accepts a program STARK rejects — but it can reject a valid one whose return derives from a
+longer-lived subset. Precise per-path provenance (each parameter its own lifetime, the return tied
+only to those it derives from) is a later refinement.
+
+### 11.3 Still refused
+
+Returning a reference to a **local** stays E0103 (front end). A reference stored in an **aggregate**
+stays a backend refusal (lane check 3) — that is b3/aggregate continuation work. The
+`native_c5_3_aggregates_enums.rs` lane test's `ret` case followed its own "move it to a positive
+test" instruction (→ `native_c61f_ret_refs.rs`); its remaining case is now the aggregate one.
+
+### 11.4 Lane checks after returning-a-reference
+
+| # | Check | Status |
+|---|---|---|
+| 1 | `RefOf` through a projection | **kept** |
+| 2 | `RefOf` into a non-`Temp` local | admits user bindings **and the return slot**; else refused |
+| 3 | reference into an aggregate or disallowed place | **aggregates still refused**; return slot admitted |
+| 4 | reference temporary used in another block | temporaries that span blocks are now `Option`-backed rather than refused |
+| 5 | body returning a reference | **removed** — provenance is the front end's (E0103) |

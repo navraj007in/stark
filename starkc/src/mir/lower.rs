@@ -3699,8 +3699,25 @@ impl<'a> FnLowerer<'a> {
     /// carries the needed `Deref` projections and the returned type is the referent.
     fn lower_place_autoderef(&mut self, base: ExprId) -> Result<(Place, MirTy), LowerError> {
         let base_ty = self.expr_mir_ty(base)?;
-        let (peeled, layers) = Self::peel_refs(base_ty);
-        let mut place = self.lower_place(base)?;
+        let (peeled, layers) = Self::peel_refs(base_ty.clone());
+        // WP-C6.1f "returning a reference": the base may be a non-place VALUE — most importantly a
+        // call returning a reference (`pick(&a, &b).field`, `f(&x).method()`). A returned
+        // reference is a first-class value now, so projecting through one must work without an
+        // intervening `let`. Materialise the value into a temp and project through that, exactly as
+        // the `RefOf` and method-receiver paths already do for non-place operands. The temp carries
+        // the reference; the derefs below reach its referent.
+        let mut place = match self.lower_place(base) {
+            Ok(place) => place,
+            Err(_) => {
+                let value = self.lower_expr_to_operand(base)?;
+                let temp = self.new_temp(base_ty);
+                self.emit(
+                    Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                    self.info(self.hir.expr(base).span),
+                );
+                Place::local(temp)
+            }
+        };
         for _ in 0..layers {
             place.projection.push(Projection::Deref);
         }

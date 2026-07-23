@@ -5,8 +5,8 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f-a/b1 CLOSED; b2 5-of-6 (CD-092); b3 stored references CLOSED (CD-093) —
-returning a reference and aggregates still open; b4/b5 open**, F1
+Remaining C6: **WP-C6.1f-a/b1 CLOSED; b2 5-of-6 (CD-092); b3 stored references CLOSED (CD-093);
+returning a reference CLOSED (CD-094) — aggregates still open; b4/b5 open**, F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3047,6 +3047,40 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-094 [2026-07-24, **WP-C6.1f — returning a reference; lane check 5 removed**] The last of the
+  five lane checks with real semantics behind it. **Provenance is the front end's**: OWN-RETURN-001
+  rules 2/3 already reject (E0103) a returned reference not derived from a reference *parameter*, so
+  the backend does not re-check it — the blanket "a reference may never be returned" is removed.
+  Two mechanisms made the emission compile, both found by probing rather than predicted:
+  - **The E0381 wall again, in new places.** A reference that is a `Call` destination or an
+    `if`/`match` join result is written in one block and read in another — the same
+    definite-assignment problem b3 hit in a `let`, now in the caller and at join points. b3's fix
+    generalised: a reference **temporary spanning more than one block** is `Option<&T>`-backed,
+    subsuming both concrete triggers into the property that actually matters. **Parameters are
+    excluded** (initialised at entry by the caller) — an early over-broad version Option-backed them
+    and broke, which is what forced the distinction. Same-block ephemeral temporaries stay bare.
+  - **Return-position access moves out of the `Option`** (`unwrap()`), never re-borrows: a re-borrow
+    would borrow from the dying return-slot local and dangle.
+  - **Projecting through a returned reference** (`f(&p).field`, `f(&p).method()`) materialises the
+    call result into a temp, via the same non-place fallback `RefOf` and receivers already used.
+  - **Lifetimes = OWN-RETURN-001's shortest-input rule.** Two or more reference parameters leave the
+    output lifetime ambiguous (E0106); a **single shared `'a`** on every reference parameter and the
+    return encodes the intersection — the shortest of all inputs (03 rule 3). Zero or one reference
+    parameter is handled by Rust's own elision, which is why a `&self` accessor never needed it.
+    **Conservative and reported:** for `pick(a, b) -> a` STARK's shortest is `a`'s lifetime alone,
+    but the shared `'a` also ties it to `b` — sound (never accepts what STARK rejects) though it can
+    reject a valid program whose return derives from a longer-lived subset. Precise per-path
+    provenance is a later refinement.
+  - **Still refused:** returning a reference to a **local** (E0103, front end) and a reference stored
+    in an **aggregate** (lane check 3). The `native_c5_3_aggregates_enums.rs` lane test's `ret` case
+    followed its own "move it to a positive test" instruction — as `store` did at b3 — leaving the
+    aggregate case as its remaining negative.
+  - **Evidence:** `starkc/tests/native_c61f_ret_refs.rs` (8), incl. the two E0103 negatives; the
+    C6.1f negative corpus (6) passes unaltered.
+  - **Validation:** `fmt --check` and strict `clippy` clean. Full workspace suite **in progress at
+    commit time — 50 suites green, 0 failures** (it had also caught a clippy-only regression earlier,
+    now fixed); all scoped suites touching this change pass.
 
 - CD-093 [2026-07-24, **WP-C6.1f-b3 — stored references; the lane replaced, not deleted**]
   - **The §5 design question had the wrong answer.** The matrix predicted the crux was `ValueSlot`

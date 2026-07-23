@@ -554,23 +554,23 @@ fn main() {
 /// rejection happens on OUR side of the boundary. A reference that reached rustc and failed there
 /// would be a diagnostic defect even though the program is correctly not compiled.
 ///
-/// **WP-C6.1f-b3:** the "store a reference in a user binding that outlives its block" case has been
-/// MOVED OUT of this list to `native_c61f_b3_stored_refs.rs` as a positive test — stored references
-/// are now supported, so this test followed its own instruction ("if it is now legitimately
-/// supported, move it to a positive test"). Returning a reference is still refused.
+/// **WP-C6.1f:** two cases that were once here are now legitimately supported and MOVED OUT to
+/// positive tests, each following this test's own instruction ("if it is now legitimately
+/// supported, move it to a positive test"): storing a reference in a user binding (→
+/// `native_c61f_b3_stored_refs.rs`, b3) and **returning** a param-derived reference (→
+/// `native_c61f_ret_refs.rs`, b3's return step). What remains outside the lane is a reference stored
+/// in an **aggregate** — check 3, still a backend refusal.
 #[test]
 fn references_outside_the_lane_are_refused_before_rustc() {
     for (tag, source) in [
-        // Returning a reference.
+        // A reference stored in an aggregate (tuple field): lane check 3, still refused.
         (
-            "ret",
-            r#"fn pick(a: &Int32) -> &Int32 {
-    a
-}
-
-fn main() {
+            "ref_in_tuple",
+            r#"fn main() {
     let x: Int32 = 1;
-    let r: &Int32 = pick(&x);
+    let y: Int32 = 2;
+    let t: (&Int32, &Int32) = (&x, &y);
+    let r: &Int32 = t.0;
 }
 "#,
         ),

@@ -160,16 +160,113 @@ pub fn is_slot_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic>
 /// already see their assignment, and leaving them untouched keeps every previously working
 /// reference path byte-identical.
 pub fn is_stored_ref_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic> {
-    Ok(matches!(env.local_ty(local)?, MirTy::Ref { .. })
-        && matches!(
-            env.body.locals[local as usize].kind,
-            crate::mir::LocalKind::User(_)
-        ))
+    if !matches!(env.local_ty(local)?, MirTy::Ref { .. }) {
+        return Ok(false);
+    }
+    match env.body.locals[local as usize].kind {
+        // A user binding (b3) is always `Option`-backed.
+        crate::mir::LocalKind::User(_) => return Ok(true),
+        // A parameter arrives as a real `&T`/`&mut T` argument, definitely initialised at entry, so
+        // it is never `Option`-backed no matter how many blocks read it — the caller supplied it.
+        crate::mir::LocalKind::Param(_) => return Ok(false),
+        crate::mir::LocalKind::Temp | crate::mir::LocalKind::Return => {}
+        // A drop flag is a bool and an index proof is a token; neither is ever a reference, so the
+        // earlier `MirTy::Ref` guard has already returned. Reached only if that invariant breaks.
+        _ => return Ok(false),
+    }
+    // WP-C6.1f "returning a reference": a reference temporary that is mentioned in **more than one
+    // basic block** is cross-block, and so hits the same E0381 "used binding isn't initialized"
+    // wall a stored user reference did — it needs the same `Option` treatment. This generalises the
+    // two concrete triggers that surfaced (a `Call` destination, read in the call's target block;
+    // an `if`/`match` join result, written in each arm and read at the join) into the property that
+    // actually matters. Ephemeral receiver/`cmp` temporaries are created and consumed in one block
+    // by construction, so they span exactly one block and keep the bare, uninitialised form — every
+    // previously working reference path is unchanged. None of this could fire before
+    // reference-returning functions existed: no `Ref`-typed local outlived its creating block.
+    Ok(reference_local_spans_multiple_blocks(local, env.body))
 }
 
-/// The Rust expression naming a stored reference's *referent-bearing* value. A shared reference is
-/// `Copy`, so `unwrap()` is free; a `&mut` is not, so it must be re-borrowed out of the `Option`
-/// rather than moved out of it — moving would make a second use fail to compile.
+/// Whether a local is mentioned (written or read) in two or more basic blocks. A conservative
+/// over-approximation is sound: `Option`-backing a reference that did not strictly need it still
+/// works, whereas leaving a genuinely cross-block reference bare fails to compile.
+fn reference_local_spans_multiple_blocks(local: u32, body: &MirBody) -> bool {
+    use crate::mir::{Operand, Rvalue, Statement, Terminator};
+    fn place_mentions(p: &Place, local: u32) -> bool {
+        p.local.0 == local
+    }
+    fn operand_mentions(op: &Operand, local: u32) -> bool {
+        matches!(op, Operand::Copy(p) | Operand::Move(p) if place_mentions(p, local))
+    }
+    let mut seen_in: Option<usize> = None;
+    for (bi, block) in body.blocks.iter().enumerate() {
+        let mut here = false;
+        for (stmt, _) in &block.statements {
+            if let Statement::Assign(dest, rvalue) = stmt {
+                if place_mentions(dest, local) {
+                    here = true;
+                }
+                if let Rvalue::RefOf { place, .. } = rvalue {
+                    if place_mentions(place, local) {
+                        here = true;
+                    }
+                }
+                for op in super::emit_projections::rvalue_operands(rvalue) {
+                    if operand_mentions(op, local) {
+                        here = true;
+                    }
+                }
+            }
+        }
+        match &block.terminator.0 {
+            Terminator::Call { args, dest, .. } => {
+                if place_mentions(dest, local) || args.iter().any(|a| operand_mentions(a, local)) {
+                    here = true;
+                }
+            }
+            Terminator::Checked { args, dest, .. } => {
+                if dest.0 == local || args.iter().any(|a| operand_mentions(a, local)) {
+                    here = true;
+                }
+            }
+            Terminator::SwitchInt { scrut, .. } => {
+                if operand_mentions(scrut, local) {
+                    here = true;
+                }
+            }
+            Terminator::Drop { place, .. } => {
+                if place_mentions(place, local) {
+                    here = true;
+                }
+            }
+            Terminator::Return => {
+                if local == 0 {
+                    here = true;
+                }
+            }
+            _ => {}
+        }
+        if here {
+            match seen_in {
+                Some(prev) if prev != bi => return true,
+                Some(_) => {}
+                None => seen_in = Some(bi),
+            }
+        }
+    }
+    false
+}
+
+/// The stored reference **value itself**, moved out of its `Option`. Used where the reference is
+/// consumed and the local is finished — passing it onward as a returned value. A re-borrow would be
+/// wrong here: it would borrow from the `Option` local, which for a return would dangle. `unwrap()`
+/// moves the `&mut` (or copies the `&`) out, carrying the original borrow's provenance intact.
+pub fn stored_ref_read(local: u32, _env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    Ok(format!("{}.unwrap()", local_name(local)))
+}
+
+/// The Rust expression naming a stored reference's *referent-bearing* value in READ position. A
+/// shared reference is `Copy`, so `unwrap()` is free; a `&mut` is not, so it must be re-borrowed
+/// out of the `Option` rather than moved out of it — moving would make a second use fail to compile.
 fn stored_ref_access(local: u32, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     let mutable = matches!(env.local_ty(local)?, MirTy::Ref { mutable: true, .. });
     let name = local_name(local);

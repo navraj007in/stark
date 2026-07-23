@@ -41,17 +41,63 @@ pub fn emit_function(
     types: &TypeContext,
     layout: &crate::layout::TargetLayout,
 ) -> Result<String, BackendDiagnostic> {
-    let params = emit_param_list(body, types)?;
-    let ret_ty = emit_types::emit_ty(&body.ret)?;
+    // WP-C6.1f "returning a reference" — OWN-RETURN-001 native encoding. When a function returns a
+    // reference, Rust needs to know which input it borrows from. STARK's rule is the *shortest* of
+    // every reference parameter's lifetime (03 rule 3), and a **single shared lifetime `'a`** across
+    // all reference parameters and the return encodes exactly that intersection soundly.
+    //
+    // It is only needed when Rust's own lifetime elision cannot do it: with zero or one reference
+    // parameter, elision already ties the sole input to the output (this is why a `&self` accessor
+    // like `fn get(&self) -> &T` needed nothing). Two or more reference parameters is the case
+    // elision leaves ambiguous — E0106 — so `'a` is emitted only then.
+    //
+    // Conservative, and reported as such: for `pick(a, b) -> a`, STARK's shortest is `a`'s lifetime
+    // alone (the return can only derive from `a`), but the shared `'a` also ties it to `b`. Sound —
+    // it never accepts a program STARK rejects — but it can reject a valid one whose return provably
+    // derives from a longer-lived subset. Precise per-path provenance is left to a later step.
+    let ref_param_count = body
+        .params
+        .iter()
+        .filter(|t| matches!(t, MirTy::Ref { .. }))
+        .count();
+    let lifetime = matches!(body.ret, MirTy::Ref { .. }) && ref_param_count >= 2;
+    let generics = if lifetime { "<'a>" } else { "" };
+    let params = emit_param_list(body, types, lifetime)?;
+    let ret_ty = if lifetime {
+        emit_ref_ty_with_lifetime(&body.ret)?
+    } else {
+        emit_types::emit_ty(&body.ret)?
+    };
     let block = emit_block_body(body, files, types, layout)?;
-    Ok(format!("fn {name}({params}) -> {ret_ty} {block}"))
+    Ok(format!("fn {name}{generics}({params}) -> {ret_ty} {block}"))
+}
+
+/// Render a reference type with the shared `'a` lifetime on its outermost borrow: `&'a T` /
+/// `&'a mut T`. A non-reference type is unchanged. Only the outermost borrow is annotated; any
+/// inner reference keeps elided lifetimes, which suffices for the intersection encoding.
+fn emit_ref_ty_with_lifetime(ty: &MirTy) -> Result<String, BackendDiagnostic> {
+    match ty {
+        MirTy::Ref { mutable, inner } => {
+            let inner = emit_types::emit_ty(inner)?;
+            Ok(if *mutable {
+                format!("&'a mut {inner}")
+            } else {
+                format!("&'a {inner}")
+            })
+        }
+        other => emit_types::emit_ty(other),
+    }
 }
 
 /// A non-`Copy` parameter arrives as an ordinary Rust value (the caller moved it in), but the
 /// body needs it in a `ValueSlot` like every other non-`Copy` local. It is therefore bound under
 /// a distinct incoming name `__pN` and written into the slot in the prologue -- binding it as
 /// `_N` directly would collide with the slot the body declares.
-fn emit_param_list(body: &MirBody, types: &TypeContext) -> Result<String, BackendDiagnostic> {
+fn emit_param_list(
+    body: &MirBody,
+    types: &TypeContext,
+    lifetime: bool,
+) -> Result<String, BackendDiagnostic> {
     let mut param_locals: Vec<Option<u32>> = vec![None; body.params.len()];
     for (i, decl) in body.locals.iter().enumerate() {
         if let LocalKind::Param(j) = decl.kind {
@@ -69,7 +115,11 @@ fn emit_param_list(body: &MirBody, types: &TypeContext) -> Result<String, Backen
         let local = param_locals[j].ok_or_else(|| {
             BackendDiagnostic::Unsupported(format!("no local declares LocalKind::Param({j})"))
         })?;
-        let rust_ty = emit_types::emit_ty(ty)?;
+        let rust_ty = if lifetime {
+            emit_ref_ty_with_lifetime(ty)?
+        } else {
+            emit_types::emit_ty(ty)?
+        };
         // `mut`: a parameter binding is immutable by default in Rust; MIR does not distinguish
         // a reassignable parameter from any other local, so this matches every other local's
         // uniform `let mut` treatment rather than trying to prove a parameter is never
@@ -102,7 +152,7 @@ pub fn emit_block_body(
     layout: &crate::layout::TargetLayout,
 ) -> Result<String, BackendDiagnostic> {
     let env = &TyEnv::new(body, types, layout);
-    validate_ephemeral_references(body, env)?;
+    validate_ephemeral_references(body)?;
     let mut out = String::from("{\n");
 
     // Every non-parameter local is declared `let mut`, DEFAULT-INITIALISED, up front (WP-C5.2c's
@@ -157,12 +207,13 @@ pub fn emit_block_body(
         // rustc a second check on the lane: a reference that escaped its block would fail to
         // compile as "possibly uninitialized" rather than silently reading a fabricated value.
         if matches!(decl.ty, MirTy::Ref { .. }) {
-            // WP-C6.1f-b3: a reference bound to a USER local is declared `Option<&T> = None`, so it
-            // is definitely initialised at declaration and can be assigned in one dispatch-loop arm
-            // and read in another. A compiler temporary keeps the bare, uninitialised form: it is
+            // WP-C6.1f-b3 / "returning a reference": a reference local that is a USER binding, or a
+            // temporary that is a `Call` destination, is declared `Option<&T> = None` — definitely
+            // initialised at declaration, so it can be assigned in one dispatch-loop arm and read
+            // in another. Any OTHER reference temporary keeps the bare, uninitialised form: it is
             // same-block by construction, so rustc's definite-assignment analysis still serves as a
             // second check on it exactly as before.
-            if matches!(decl.kind, crate::mir::LocalKind::User(_)) {
+            if emit_places::is_stored_ref_local(i as u32, env)? {
                 out.push_str(&format!(
                     "    let mut {}: Option<{}> = None;\n",
                     emit_places::local_name(i as u32),
@@ -245,7 +296,7 @@ pub fn emit_block_body(
 /// lane's *purpose* holds; its stated consumption form does not. This validator therefore accepts
 /// same-block consumption by read as well as by call, and the difference is recorded in CD-063
 /// rather than quietly widened.
-fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), BackendDiagnostic> {
+fn validate_ephemeral_references(body: &MirBody) -> Result<(), BackendDiagnostic> {
     for (bi, block) in body.blocks.iter().enumerate() {
         let mut created_here: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for (statement, _) in &block.statements {
@@ -260,14 +311,16 @@ fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), Back
                     )));
                 }
                 let kind = &body.locals[place.local.0 as usize].kind;
-                // WP-C6.1f-b3: a borrow may now land in a USER binding — those are declared
-                // `Option<&T> = None` and so are definitely initialised across dispatch-loop arms.
-                // Every other destination kind is still refused.
-                if !matches!(kind, LocalKind::Temp | LocalKind::User(_)) {
+                // WP-C6.1f: a borrow may land in a USER binding (b3), a TEMP, or the RETURN local
+                // (returning a reference) — all definitely-initialised destinations. Aggregates and
+                // any other kind are still refused.
+                if !matches!(
+                    kind,
+                    LocalKind::Temp | LocalKind::User(_) | LocalKind::Return
+                ) {
                     return Err(BackendDiagnostic::Unsupported(format!(
                         "a borrow stored in a {kind:?} local is outside the reference lane: \
-                         references may live only in compiler-generated temporaries or user \
-                         bindings"
+                         references may live only in temporaries, user bindings, or the return slot"
                     )));
                 }
                 created_here.insert(place.local.0);
@@ -287,7 +340,7 @@ fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), Back
                 let dest_ok = place.projection.is_empty()
                     && matches!(
                         body.locals[place.local.0 as usize].kind,
-                        LocalKind::Temp | LocalKind::User(_)
+                        LocalKind::Temp | LocalKind::User(_) | LocalKind::Return
                     );
                 if matches!(rvalue, Rvalue::Aggregate(..)) || !dest_ok {
                     return Err(BackendDiagnostic::Unsupported(format!(
@@ -326,12 +379,12 @@ fn validate_ephemeral_references(body: &MirBody, env: &TyEnv) -> Result<(), Back
             }
         }
     }
-    // A reference may never be returned.
-    if matches!(env.local_ty(0)?, MirTy::Ref { .. }) {
-        return Err(BackendDiagnostic::Unsupported(
-            "returning a reference is outside the C5 ephemeral reference lane".to_string(),
-        ));
-    }
+    // WP-C6.1f "returning a reference": a reference return is now emitted (a single shared `'a`
+    // lifetime encodes OWN-RETURN-001's shortest-input rule; see `emit_function`). Provenance —
+    // that the returned reference derives only from a reference PARAMETER, never a local — is
+    // enforced by the front end (E0103, OWN-RETURN-001 rules 2/3), so the backend does not
+    // re-check it. What the lane still forbids (a reference into an aggregate; a `RefOf` through a
+    // projection) is unchanged above.
     Ok(())
 }
 
@@ -398,6 +451,11 @@ fn emit_terminator(
             // afterwards, which is exactly what `take` records.
             let ret = if emit_places::is_slot_local(0, env)? {
                 format!("{}.take()", emit_places::local_name(0))
+            } else if emit_places::is_stored_ref_local(0, env)? {
+                // WP-C6.1f "returning a reference": the return local is `Option`-backed when it is
+                // a `Call` destination (a function returning a reference derived from another
+                // call), so the return value is unwrapped out of the `Option`.
+                emit_places::stored_ref_read(0, env)?
             } else {
                 emit_places::local_name(0)
             };
