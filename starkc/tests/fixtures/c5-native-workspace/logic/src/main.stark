@@ -1,0 +1,27 @@
+// WP-C5.4d frozen reference workspace — middle package `logic`. Depends on `model`.
+// Higher-order functions, a function that RETURNS a cross-package function value, a cross-package
+// generic call, and its own generic function.
+
+use model::transform;
+use model::triple;
+use model::make_point;
+use model::point_sum;
+
+// Higher-order: takes a function value and invokes it indirectly.
+pub fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 { f(v) }
+
+// Returns a cross-package function value (a `Constant::FnPtr` to `model::triple`).
+pub fn get_triple() -> fn(Int32) -> Int32 { triple }
+
+// This package's own generic function, called cross-package (with type arguments) by `app`.
+pub fn wrap<T>(x: T) -> T { x }
+
+// A cross-package generic call at two concrete types, plus a checked cast.
+pub fn double_transform(a: Int32, b: Int64) -> Int64 {
+    let x: Int32 = transform(a);
+    let y: Int64 = transform(b);
+    (x as Int64) + y
+}
+
+// Cross-package struct construction and projection.
+pub fn point_demo() -> Int32 { point_sum(make_point(3, 4)) }

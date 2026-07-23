@@ -1,0 +1,19 @@
+{
+  "packages": [
+    {
+      "name": "logic",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "model": "0.1.0"
+      }
+    },
+    {
+      "name": "model",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    }
+  ]
+}

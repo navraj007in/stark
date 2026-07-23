@@ -124,6 +124,18 @@ struct ControlSummary {
     may_return: bool,
 }
 
+/// A deferred trait-bound obligation (DEV-067/DEV-101): the concrete type, the bounds it must
+/// satisfy, the call span to report against, the caller's enclosing generic environment, and the
+/// file that DECLARES the bounds (so a bound's path name reads against the right file when the
+/// obligation is discharged after `self.file` has moved on).
+type BoundsCheck = (
+    Ty,
+    Vec<hir::TraitRef>,
+    Span,
+    Vec<hir::GenericParam>,
+    Arc<SourceFile>,
+);
+
 pub struct TypeChecker<'a> {
     hir: &'a Hir,
     file: Arc<SourceFile>,
@@ -183,7 +195,11 @@ pub struct TypeChecker<'a> {
     /// every body, by which time `current_fn_generics` belongs to whatever was checked last, so
     /// an obligation on a caller's own type parameter cannot be discharged unless the enclosing
     /// bounds travel with it.
-    bounds_checks: Vec<(Ty, Vec<hir::TraitRef>, Span, Vec<hir::GenericParam>)>,
+    // DEV-101: a deferred trait-bound obligation carries the file that DECLARES the bounds — a
+    // bound's path name is only meaningful against its own file, and these obligations are
+    // discharged after `self.file` has returned to the root file, so the declaring file must
+    // travel with the obligation.
+    bounds_checks: Vec<BoundsCheck>,
 
     /// Enabled language extensions, threaded from the CLI through the whole
     /// front end (parse → resolve → typecheck).
@@ -708,6 +724,16 @@ impl<'a> TypeChecker<'a> {
             Some(file) => &file.src,
             None => &self.file.src,
         }
+    }
+
+    /// The `Arc<SourceFile>` that declares `item` (DEV-101), for obligations discharged later when
+    /// `self.file` no longer points at the declaring file. Falls back to the current file.
+    fn item_file(&self, item: ItemId) -> Arc<SourceFile> {
+        self.hir
+            .item_files
+            .get(&item)
+            .cloned()
+            .unwrap_or_else(|| self.file.clone())
     }
 
     /// Read a span belonging to `item`, against the file that declares it. Every cross-item read
@@ -1754,7 +1780,11 @@ impl<'a> TypeChecker<'a> {
         self.item_generic_params(item_id)
             .iter()
             .zip(args)
-            .map(|(param, arg)| (self.text(param.name).to_string(), arg.clone()))
+            // DEV-101: the nominal's parameter names are declared by `item_id`, so they read
+            // against its file — matching the `Ty::Param(name)` recorded in the nominal's field
+            // types (built under the nominal's own file). `self.text` (the caller's file) mismatched
+            // for a cross-file nominal, leaving generic fields unsubstituted.
+            .map(|(param, arg)| (self.item_text(item_id, param.name).to_string(), arg.clone()))
             .collect()
     }
 
@@ -2950,26 +2980,37 @@ impl<'a> TypeChecker<'a> {
 
         // Pass 3: Check trait bounds
         let bounds = std::mem::take(&mut self.bounds_checks);
-        for (concrete_ty, bounds_list, span, enclosing) in bounds {
+        for (concrete_ty, bounds_list, span, enclosing, decl_file) in bounds {
             // DEV-067(a): restore the generic environment this obligation was recorded in, so a
             // caller's own `T: Ord` can discharge a callee's `T: Ord` (TYPE-GENERIC-001).
-            let saved = self.current_fn_generics.replace(enclosing);
+            let saved_generics = self.current_fn_generics.replace(enclosing);
+            // DEV-101: a bound's path NAME is declared by the callee, so `satisfies_bound` (which
+            // identifies the trait by that text) and the diagnostic must read it against the
+            // callee's file. `self.file` has since returned to the root file, so select the
+            // declaring file for the reads and ALWAYS restore it before pushing a diagnostic, whose
+            // `span` belongs to the caller's call site. `ty_to_string` is item-aware, so the
+            // concrete type's name is unaffected by the temporary switch.
+            let saved_file = std::mem::replace(&mut self.file, decl_file);
+            let mut violations = Vec::new();
             for bound in bounds_list {
                 if !self.satisfies_bound(&concrete_ty, &bound) {
-                    self.diags.push(
-                        Diagnostic::error(
-                            format!(
-                                "type '{}' does not satisfy trait bound '{}'",
-                                self.ty_to_string(&concrete_ty),
-                                self.text(bound.path.span)
-                            ),
-                            span,
-                        )
-                        .with_code("E0500"),
-                    );
+                    violations.push((
+                        self.ty_to_string(&concrete_ty),
+                        self.text(bound.path.span).to_string(),
+                    ));
                 }
             }
-            self.current_fn_generics = saved;
+            self.file = saved_file;
+            self.current_fn_generics = saved_generics;
+            for (ty_str, bound_str) in violations {
+                self.diags.push(
+                    Diagnostic::error(
+                        format!("type '{ty_str}' does not satisfy trait bound '{bound_str}'"),
+                        span,
+                    )
+                    .with_code("E0500"),
+                );
+            }
         }
     }
 
@@ -5565,7 +5606,13 @@ impl<'a> TypeChecker<'a> {
             }
 
             for (param, arg) in generics.iter().zip(&args.args) {
-                let param_name = self.text(param.name).to_string();
+                // DEV-101: the generic parameter NAME is declared by the callee, so its span is
+                // only meaningful against the callee's file (`item_text`) — reading it with
+                // `self.text` (the CALLER's file) produced a wrong string for a cross-file/
+                // cross-package callee, so this key never matched the `Ty::Param(name)` recorded in
+                // `fn_sigs` (built under the callee's file) and the parameter stayed unsubstituted.
+                // The turbofish ARGUMENT below is the caller's, so it stays on `self.file`.
+                let param_name = self.item_text(item_id, param.name).to_string();
                 let arg_ty = match arg {
                     hir::GenericArg::Type(t) => self.convert_hir_type(*t),
                     _ => Ty::Error,
@@ -5578,13 +5625,19 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .collect();
                 let enclosing = self.current_fn_generics.clone().unwrap_or_default();
-                self.bounds_checks
-                    .push((arg_ty.clone(), trait_bounds, span, enclosing));
+                self.bounds_checks.push((
+                    arg_ty.clone(),
+                    trait_bounds,
+                    span,
+                    enclosing,
+                    self.item_file(item_id),
+                ));
                 map.insert(param_name, arg_ty);
             }
         } else {
             for param in generics {
-                let param_name = self.text(param.name).to_string();
+                // DEV-101: callee-declared name → callee's file.
+                let param_name = self.item_text(item_id, param.name).to_string();
                 let var = self.new_type_var();
                 let trait_bounds = param
                     .bounds
@@ -5593,8 +5646,13 @@ impl<'a> TypeChecker<'a> {
                     .cloned()
                     .collect();
                 let enclosing = self.current_fn_generics.clone().unwrap_or_default();
-                self.bounds_checks
-                    .push((var.clone(), trait_bounds, span, enclosing));
+                self.bounds_checks.push((
+                    var.clone(),
+                    trait_bounds,
+                    span,
+                    enclosing,
+                    self.item_file(item_id),
+                ));
                 map.insert(param_name, var);
             }
         }
@@ -5619,7 +5677,8 @@ impl<'a> TypeChecker<'a> {
             let ordered: Vec<Ty> = generics
                 .iter()
                 .map(|param| {
-                    let name = self.text(param.name).to_string();
+                    // DEV-101: callee-declared name → callee's file, matching the map keys above.
+                    let name = self.item_text(item_id, param.name).to_string();
                     map.get(&name).cloned().unwrap_or(Ty::Error)
                 })
                 .collect();
@@ -5630,14 +5689,22 @@ impl<'a> TypeChecker<'a> {
         // return such as `I::Item` becomes concrete at each instantiation of
         // `fn first<I: Iterator<Item = Int32>>(...)`.
         for param in generics {
-            let param_name = self.text(param.name).to_string();
+            // DEV-101: the parameter name and the associated-binding name are both callee-declared,
+            // so they read against the callee's file. (The binding TYPE `ty` is converted below;
+            // for a cross-file callee whose binding type names a callee-local type, that conversion
+            // still reads `self.file` — covered by the cross-package associated-type work, not the
+            // core unbounded/inference fix.)
+            let param_name = self.item_text(item_id, param.name).to_string();
             for bound in &param.bounds {
                 if let Some(args) = &bound.args {
                     for arg in &args.args {
                         if let hir::GenericArg::Binding { name, ty } = arg {
                             let binding = self.convert_hir_type(*ty);
                             let binding = self.instantiate_ty(&binding, &map);
-                            map.insert(format!("{param_name}::{}", self.text(*name)), binding);
+                            map.insert(
+                                format!("{param_name}::{}", self.item_text(item_id, *name)),
+                                binding,
+                            );
                         }
                     }
                 }

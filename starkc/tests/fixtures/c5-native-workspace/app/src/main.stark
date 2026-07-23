@@ -1,0 +1,68 @@
+// WP-C5.4d frozen reference workspace — root application `app`. Depends on `logic`.
+// Exercises cross-package direct, generic, and function-value paths. Observation is by
+// `assert`/`assert_eq` (C5 has no stdout surface); normal exit means every assertion held.
+
+use logic::apply;
+use logic::get_triple;
+use logic::wrap;
+use logic::double_transform;
+use logic::point_demo;
+
+// Referenced ONLY as a function value, never called directly.
+fn only_via_value(n: Int32) -> Int32 { n + 100 }
+
+fn main() {
+    // A cross-package function value, returned from `logic`, stored in a local, invoked indirectly.
+    let f: fn(Int32) -> Int32 = get_triple();
+    assert_eq(f(4), 12);
+
+    // Copied function value; passed as a parameter to the cross-package higher-order `apply`.
+    let g: fn(Int32) -> Int32 = f;
+    assert_eq(apply(g, 5), 15);
+
+    // A function reached only through a function value.
+    let h: fn(Int32) -> Int32 = only_via_value;
+    assert_eq(h(1), 101);
+
+    // Repeated references to the same function value prove single-definition emission.
+    assert_eq(f(2) + g(3), 15);
+
+    // Function value stored in a tuple, then invoked indirectly.
+    let t: (fn(Int32) -> Int32, Int32) = (f, 9);
+    let tf: fn(Int32) -> Int32 = t.0;
+    assert_eq(tf(t.1), 27);
+
+    // Cross-package concrete generic call from the application, at two instantiations.
+    let sv: Int32 = 7;
+    assert_eq(wrap::<Int32>(sv), 7);
+    let w: Int64 = 8;
+    assert_eq(wrap::<Int64>(w), 8);
+
+    // Cross-package call that instantiates model's generic at two types and casts.
+    assert_eq(double_transform(2, 3), 5);
+
+    // Cross-package struct construction and projection.
+    assert_eq(point_demo(), 7);
+
+    // Option payload, matched without crossing the multi-unit enum partial-move boundary.
+    let some: Option<Int32> = Some(41);
+    let ov: Int32 = match some { Some(n) => n, None => 0 };
+    assert_eq(ov, 41);
+
+    // A `while` loop with checked arithmetic.
+    let mut i: Int32 = 0;
+    let mut acc: Int32 = 0;
+    while i < 5 {
+        acc = acc + i;
+        i = i + 1;
+    }
+    assert_eq(acc, 10);
+
+    // A target-layout query.
+    assert_eq(size_of::<Int32>(), 4);
+
+    // A checked cast.
+    let big: Int64 = 300;
+    let casted: Int32 = big as Int32;
+    assert_eq(casted, 300);
+}

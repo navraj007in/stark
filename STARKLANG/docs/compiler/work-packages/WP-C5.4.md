@@ -1,6 +1,6 @@
 # WP-C5.4 — Multi-file/Package Linkage and Function Values
 
-**Status:** PROPOSED IMPLEMENTATION DIRECTIVE  
+**Status:** CLOSED 2026-07-23 (all sub-packages a–d delivered; see §22)  
 **Prepared:** 2026-07-23  
 **Repository baseline:** `0f39579d722b0851b7abe497df306222014f9730`  
 **Depends on:** WP-C5.1, WP-C5.2, WP-C5.3 — all closed  
@@ -1270,7 +1270,8 @@ C5.5 then exposes this already-proven pipeline through `stark build`, stable art
 
 ## 22. Implementation status and evidence
 
-**Status:** IN PROGRESS
+**Status:** CLOSED 2026-07-23 — C5.4a (CD-072), C5.4b (CD-073), C5.4c (CD-074), C5.4d + DEV-101
+(CD-075). All §18 closure conditions discharged.
 **Baseline reconciled:** 2026-07-23 at `0f39579`
 
 ### 22.1 Section 4 reconciliation (baseline `0f39579`)
@@ -1404,4 +1405,65 @@ by rustc — recorded as coherent, not a backend-only prohibition.
 values copied without slots; indirect calls target the correct instance; no closure/capture/
 signature-erased mechanism introduced; invalid shapes refused before rustc. Focused sweep (backend
 + MIR + native + three-engine, ~312 tests) green; `cargo fmt`/`clippy` clean.
+
+#### DEV-101 — cross-package generic instantiation was broken in typecheck (FIXED, owner-directed)
+
+Building the C5.4d workspace surfaced a **pre-existing type-checker defect**: a generic function
+or nominal declared in a dependency package could not be instantiated at all — every form
+(turbofish, inference, function-value coercion, fully-qualified, generic nominal) failed with
+`type mismatch: expected 'T', found '<concrete>'`, and a **satisfied** cross-package bound was
+wrongly rejected with a garbage bound name. Non-generic cross-package calls and all same-file
+generics (incl. inline `mod`+`use`) worked. The owner authorised a **surgical item-provenance
+fix** (same defect class as DEV-069), entirely within `typecheck` — no resolver/HIR/MIR/linkage/
+backend change.
+
+**Root cause:** `fn_sigs`/nominal field types are precomputed with `self.file` set to each item's
+declaring file, so their `Ty::Param(name)` carry the callee's-file text. But `instantiate_sig`,
+`nominal_param_map`, and the deferred bounds check read the parameter/bound NAMES with `self.text`
+(the *caller's* file) — a wrong string for a cross-file callee, so the substitution map key never
+matched and the deferred bound resolved the wrong trait.
+
+**Fix:**
+- `instantiate_sig`: read the generic parameter name and associated-binding name via
+  `item_text(item_id, …)` (four param-name sites + the binding name). The turbofish ARGUMENT stays
+  on `self.file` — it is the caller's.
+- `nominal_param_map`: read the nominal's parameter names via `item_text(item_id, …)`.
+- Deferred trait-bound checks now carry the declaring `Arc<SourceFile>` (`BoundsCheck` alias);
+  `satisfies_bound` (which identifies the trait by its path text) and the diagnostic read the
+  bound under the callee's file, then restore the caller's file before pushing the E0500 (whose
+  span is the caller's call site).
+
+**Tests (`starkc/tests/cross_package_generics.rs`, 11, all green):** explicit / inferred / fully-
+qualified cross-package generic calls; generic-as-function-value coercion; generic nominal
+substitution; bounded generic satisfied and unsatisfied (rejected naming the real `Ord` bound);
+dependency-to-dependency generic call; an adversarial case where the caller's file holds different
+text at the callee's `T` span; same-file and non-generic cross-package controls. Several build and
+run natively.
+
+**Bounded-scope note:** the tensor-kind detection (`single_segment_name` over a callee bound) and
+converting a callee-declared associated-binding TYPE that names a callee-local nominal still read
+`self.file`. Neither can cause a Core-v1 miscompile (tensor is an extension; primitive binding
+types are file-independent); recorded as a follow-up, not fixed here.
+
+#### C5.4d — frozen three-package reference workspace — CLOSED 2026-07-23
+
+**Delivered:** `starkc/tests/fixtures/c5-native-workspace/` — three packages (`app` → `logic` →
+`model`), source in `EXPECTED-SYMBOLS.txt`-frozen form, exercising every §12.3 shape: a public
+cross-package non-generic call, a cross-package generic function at two instantiations
+(`logic::wrap@[Int32/Int64]`), a dependency-to-dependency generic call
+(`logic::model::transform@[Int32/Int64]`), a cross-package `Constant::FnPtr` (`get_triple` →
+`model::triple`), function values in a local / copied / as a parameter / returned / in a tuple, an
+indirect invocation, a value-only reachability target (`only_via_value`), a struct, an `Option`
+payload match, a `while` loop, a layout query, and a checked cast — observed by `assert`/`assert_eq`.
+
+**Evidence (`starkc/tests/native_c5_4_workspace.rs`, 6 tests, green):** HIR and MIR agree and the
+workspace completes (exit 0); the 13 canonical symbols match the frozen list (byte-exact —
+no-duplicate / all-present / deterministic in one assertion); the linkage index accepts the body
+set with two `wrap` and two `transform` instances; **one standalone native executable builds and
+exits 0**; relocation to a different absolute path leaves canonical symbols byte-identical
+(§11.4/§13.6); and a false-assertion negative control traps in all three engines (§13.4).
+
+**Exit conditions (§14.4/§18.4):** one standalone executable; normal exit validating the frozen
+outcome; HIR/MIR/native agree; cross-package source provenance preserved; no duplicate concrete
+body; all referenced bodies present; relocation/order-independent symbols. **WP-C5.4 CLOSED.**
 

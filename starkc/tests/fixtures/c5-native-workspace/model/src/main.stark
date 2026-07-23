@@ -1,0 +1,16 @@
+// WP-C5.4d frozen reference workspace — leaf package `model`.
+// Provides a struct, a generic function, and non-capturing scalar functions used as function
+// values by the `logic` package. No dependencies.
+
+pub struct Point { x: Int32, y: Int32 }
+
+// A generic function defined in a dependency package; instantiated at two concrete types by
+// `logic::double_transform` (transform@[Int32], transform@[Int64]).
+pub fn transform<T>(x: T) -> T { x }
+
+// A non-capturing function used cross-package as a function value (`logic::get_triple`).
+pub fn triple(n: Int32) -> Int32 { n * 3 }
+
+pub fn make_point(a: Int32, b: Int32) -> Point { Point { x: a, y: b } }
+
+pub fn point_sum(p: Point) -> Int32 { p.x + p.y }

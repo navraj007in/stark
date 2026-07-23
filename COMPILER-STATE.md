@@ -2918,6 +2918,54 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     `HelperOp::Drop` + `Whole` refusal added under CD-066 stays correct and is now backed by a
     source fixture rather than by an explanatory comment alone.
 
+- CD-071..CD-075 [2026-07-23, WP-C5.4 CLOSED] **Deterministic native linkage, concrete generic
+  emission, non-capturing function values + indirect calls, and a frozen three-package standalone
+  executable — plus DEV-101, a cross-package generic typecheck fix surfaced by the workspace.**
+  See `STARKLANG/docs/compiler/work-packages/WP-C5.4.md` §22 for full evidence.
+
+  - **C5.4a (CD-072)** — `backend/generated_rust/linkage.rs`: a read-only preflight validating the
+    verified body set (strict-sorted/unique canonical symbols, unique generated names, every
+    referenced instance resolving to exactly one body with matching identity) and refusing before
+    rustc; one exhaustive instance-reference walker with no wildcard. 12 tests incl. a real
+    two-package native run and relocation symbol-stability.
+
+  - **C5.4b (CD-073)** — proof (no backend change) that monomorphised generics emit exactly-once
+    as concrete Rust with **no** generic parameter list; +4 three-engine value cases (identity at
+    Int32/Int64, recursion, mutual recursion, shared instance) and 3 generated-source structural
+    tests.
+
+  - **C5.4c (CD-074)** — `MirTy::FnPtr` → typed Rust `fn(..)->..` (coincides with the emitted
+    calling convention, no ABI wrapper); one aborting sentinel per distinct signature
+    (`mangle::fn_sentinel_name`); `default_value_expr(FnPtr)` = sentinel; `Constant::FnPtr` =
+    function item name; `Callee::FnValue` = `(operand)(args)`. +8 three-engine cases (local,
+    param, return, copy, tuple, struct, generic-as-value, and the mandatory §10.5 value-only
+    reachability), +4 verifier negatives, 8 structural/unit. §8.3 probe: `let f = main;` is valid
+    source and builds natively.
+
+  - **DEV-101 (in CD-075)** — cross-package (cross-file) generic instantiation was entirely broken
+    in `typecheck`: turbofish/inference/coercion/qualified/nominal all failed
+    (`expected 'T', found '<concrete>'`) and a satisfied cross-package bound was wrongly rejected
+    with a garbage name; non-generic cross-package and all same-file generics worked. **Owner-
+    directed surgical item-provenance fix** (same class as DEV-069), entirely within `typecheck`,
+    no resolver/HIR/MIR/linkage/backend change: read generic parameter / associated-binding /
+    trait-bound NAMES via `item_text(item_id, …)` (they are callee-declared), and carry the
+    declaring file with each deferred bound so `satisfies_bound` resolves the right trait. The
+    turbofish ARGUMENT stays on the caller's file. 11 tests in
+    `starkc/tests/cross_package_generics.rs`. **Bounded follow-up recorded (not fixed):** the
+    tensor-kind `single_segment_name` read and a callee-local associated-binding TYPE conversion
+    still read `self.file`; neither can cause a Core-v1 miscompile.
+
+  - **C5.4d (CD-075)** — frozen `starkc/tests/fixtures/c5-native-workspace/` (`app`→`logic`→
+    `model`) exercising every §12.3 shape; 13 canonical symbols frozen in `EXPECTED-SYMBOLS.txt`.
+    6 tests: HIR/MIR agreement + completion, byte-exact frozen symbols, linkage completeness (two
+    `wrap` + two `transform` instances), **one standalone native executable that exits 0**,
+    relocation symbol-stability, and a false-assertion negative control trapping in all three
+    engines.
+
+  - **Validation:** `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -D
+    warnings`, and `cargo test --workspace --all-targets --no-fail-fast` all clean/green. Native
+    tests build real crates via ONNX-free generated Rust + rustc on the host.
+
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
   now tested by name (was 3), reserved-word rejection confirmed in non-expression positions,
