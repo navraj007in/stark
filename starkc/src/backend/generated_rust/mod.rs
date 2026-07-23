@@ -59,10 +59,9 @@ impl NativeToolchainOptions {
 }
 
 pub struct NativeBuildOptions {
-    /// §11: the STARK target directory root generated crates are written under
-    /// (`<target_dir>/debug/<build-key>/`). WP-C5.1b's tests pass a scratch directory; a
-    /// stable default (and the `target/stark/debug/<binary-name>` user-facing path from §12.3)
-    /// is WP-C5.5a's job.
+    /// §11: the STARK target root. Generated crates live under
+    /// `<target_dir>/debug/<build-key>/`; the C5.5 CLI also installs the stable package-named
+    /// executable under `<target_dir>/debug/`.
     pub target_dir: PathBuf,
     /// WP-C5.3e (CD-067): the named layout contract this build answers `size_of`/`align_of` from.
     /// Resolved through `layout::contract_for`, which REJECTS a name this compiler has no contract
@@ -82,8 +81,8 @@ impl Default for NativeBuildOptions {
 }
 
 pub struct NativeArtifact {
-    /// The compiled binary's actual on-disk path (currently inside the generated crate's own
-    /// `target/debug/`, not yet the stable `stark build` output path -- §12.3 is WP-C5.5a).
+    /// The backend-local compiled binary inside the generated crate. The C5.5 build driver copies
+    /// it to the stable package-named output before optionally deleting `build_dir`.
     pub binary_path: PathBuf,
     pub build_dir: PathBuf,
 }

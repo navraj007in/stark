@@ -28,7 +28,7 @@ pub struct BuildCommandResult {
     pub artifact_path: PathBuf,
     pub generated_dir: Option<PathBuf>,
     pub generated_rust: Option<PathBuf>,
-    pub backend_artifact: PathBuf,
+    pub backend_artifact: Option<PathBuf>,
     pub mir_bodies: usize,
     pub toolchain: ToolchainInfo,
 }
@@ -143,6 +143,7 @@ pub fn build_current_package(
     let keep = options.keep_generated || options.emit_rust;
     let generated_dir = keep.then(|| artifact.build_dir.clone());
     let generated_rust = options.emit_rust.then_some(generated_rust_path);
+    let backend_artifact = keep.then(|| artifact.binary_path.clone());
     if !keep {
         std::fs::remove_dir_all(&artifact.build_dir).map_err(|error| BuildCommandError::Io {
             action: "removing generated crate".into(),
@@ -156,7 +157,7 @@ pub fn build_current_package(
         artifact_path: final_path,
         generated_dir,
         generated_rust,
-        backend_artifact: artifact.binary_path,
+        backend_artifact,
         mir_bodies,
         toolchain,
     })

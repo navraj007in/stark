@@ -249,10 +249,10 @@ fn build_key_input(
     let _ = writeln!(out, "[entry]");
     let _ = writeln!(out, "{}", super::mangle::ENTRY_SYMBOL);
 
-    // Package graph identity (§11.1's own list) has no separate representation at this scope: a
-    // C5 program is one compilation unit, and the source table below IS its identity. When
-    // multi-package linkage lands (WP-C5.4), it gets its own section here rather than being
-    // assumed covered.
+    // Package graph identity (§11.1's own list) has no separate representation at this scope.
+    // C5.4 linkage merges the verified package bodies into one compilation unit; the source table
+    // below plus the canonical bodies serialized later carry the inputs that affect generated
+    // code.
     let _ = writeln!(out, "[sources]");
     for (i, file) in program.files.iter().enumerate() {
         let mut content = Sha256::new();

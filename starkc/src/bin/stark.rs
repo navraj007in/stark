@@ -218,10 +218,9 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 if let Some(path) = &result.generated_dir {
                     println!("[stark build] generated crate: {}", path.display());
                 }
-                println!(
-                    "[stark build] backend binary: {}",
-                    result.backend_artifact.display()
-                );
+                if let Some(path) = &result.backend_artifact {
+                    println!("[stark build] backend binary: {}", path.display());
+                }
                 println!(
                     "[stark build] final artifact: {}",
                     result.artifact_path.display()

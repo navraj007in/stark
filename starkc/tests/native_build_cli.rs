@@ -94,6 +94,32 @@ fn build_places_and_runs_stable_artifact_then_replaces_it() {
 }
 
 #[test]
+fn verbose_default_build_reports_only_the_retained_final_artifact() {
+    let package = Package::new("verbose-cleanup", SCALAR);
+    let output = package.run(&["build", "--verbose"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        !text.contains("[stark build] backend binary:"),
+        "verbose output advertised a backend artifact deleted during cleanup:\n{text}"
+    );
+    assert!(!text.contains("[stark build] generated crate:"));
+
+    let final_path = text
+        .lines()
+        .find_map(|line| line.strip_prefix("[stark build] final artifact: "))
+        .expect("verbose output must report the stable final artifact");
+    assert!(Path::new(final_path).is_file());
+    assert!(
+        std::fs::read_dir(package.root.join("target/stark/debug"))
+            .unwrap()
+            .flatten()
+            .all(|entry| !entry.path().is_dir()),
+        "default verbose build leaked a generated crate"
+    );
+}
+
+#[test]
 fn retention_and_emit_rust_report_existing_paths() {
     let package = Package::new("retained", SCALAR);
     let output = package.run(&["build", "--emit-rust", "--verbose"]);
