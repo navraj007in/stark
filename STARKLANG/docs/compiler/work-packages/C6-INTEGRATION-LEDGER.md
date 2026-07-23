@@ -66,7 +66,8 @@ begin from `db73afe`.
 
 | # | Track | Agent | Base SHA | Owned/leased files | Contracts assumed | Proposed contract changes | Tests | New deviations | Merge order | Result |
 |---|---|---|---|---|---|---|---|---|---|---|
-| C6.1a | A | Claude | `db73afe` | `C6-OWNERSHIP-MATRIX.md` (new) | SHARED-CONTRACTS v1 | none | probe-grounded classification (probe removed; no committed test yet) | **G3** (multi-level partial move refused) | §7J:3 | **CANDIDATE-COMPLETE** |
+| C6.1a | A | Claude | `db73afe` | `C6-OWNERSHIP-MATRIX.md` (new) | SHARED-CONTRACTS v1 | none | probe-grounded classification | **G3**, **G4** | §7J:3 | **CANDIDATE-COMPLETE** |
+| C6.1b | A | Claude | `db73afe` | `emit_projections.rs`, `emit_places.rs`, `slot.rs` (owned); `emit_bodies.rs` (lease) | SHARED-CONTRACTS v1 | none (`ValueSlot::reinit` is a NEW runtime method, additive, no ABI/behaviour change to existing ops) | `native_c6_1_ownership.rs` (5) | G3, G4 fixed | §7J:3 | **CANDIDATE-COMPLETE** |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
 
@@ -83,6 +84,7 @@ _(none yet — appended when a shared file is leased)_
 
 | file | track | reason | base SHA | API impact | tests | lease start | lease release |
 |---|---|---|---|---|---|---|---|
+| `emit_bodies.rs` | A | C6.1b G4: `emit_assignment` chooses `reinit` vs `write` by drop-obligation | `db73afe` | none (internal codegen choice) | `native_c6_1_ownership.rs` | C6.1b | C6.1b (landed) |
 
 ---
 
@@ -110,6 +112,16 @@ _(none yet — appended when a shared file is leased)_
   (WP-C5.3d-0). Not named in WP-C6-ENTRY §2's re-pin (which listed multi-unit enum moves, wider
   cross-block moves, non-`Copy` array iteration). Assigned to **C6.1b**; its acceptance set now
   includes multi-level projected moves. Deterministic refusal, not a miscompile.
+
+- **G4 [2026-07-23, C6.1b, Track A] — loop-carried no-`Drop` reassignment aborted at run time.** A
+  no-`Drop` non-`Copy` local's slot is never reset by a MIR `Drop` (the verifier emits none for a
+  non-droppable type), so a loop back-edge reassignment tripped `ValueSlot::write`'s dead-slot check
+  and **aborted** (compile-then-abort — the CD-070 severity class). Newly surfaced by C6.1b native
+  execution (the C6.1a probe checked only `emit` success). **Fixed**: additive `ValueSlot::reinit`
+  (overwrite regardless of state, no drop — sound only for a no-drop type) + `emit_assignment`
+  emitting it for a no-drop slot local. Not a CE4: `reinit` is a new helper method (Track A owned,
+  WP-C6-ENTRY §10 "preserve `ValueSlot<T>`… route moves/writes through reviewed helpers"), additive,
+  no change to any existing op, ABI, layout, or Drop glue. Recorded in `C6-SHARED-CONTRACTS.md §4`.
 
 _(CE3/CE4/CE8/CE9 recorded here before implementation continues — none yet.)_
 

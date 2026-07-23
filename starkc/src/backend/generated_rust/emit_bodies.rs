@@ -618,8 +618,18 @@ fn emit_assignment(
         )));
     }
     if emit_places::is_slot_local(place.local.0, env)? && place.projection.is_empty() {
+        // WP-C6.1b: a no-drop slot local's slot is never reset by a MIR `Drop` (the verifier emits
+        // none for a non-droppable type), so on a loop back-edge it is still live when the next
+        // iteration reassigns it — `write`'s dead-slot check would falsely reject that. Such a
+        // reassignment leaks nothing, so it uses `reinit` (overwrite regardless of state). A
+        // droppable local keeps `write`, relying on MIR's explicit preceding `Drop`.
+        let ty = env.local_ty(place.local.0)?;
+        let no_drop = crate::mir::drop_plan::plan_for(&ty, env.types)
+            .map(|plan| plan.is_noop())
+            .unwrap_or(false);
+        let method = if no_drop { "reinit" } else { "write" };
         return Ok(format!(
-            "{}.write({value});",
+            "{}.{method}({value});",
             emit_places::local_name(place.local.0)
         ));
     }

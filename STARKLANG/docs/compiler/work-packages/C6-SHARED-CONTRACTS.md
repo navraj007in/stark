@@ -80,6 +80,12 @@ C6.1's general non-`Copy` cross-block movement must preserve `ValueSlot<T>` **or
 successor** (CE4) and route every move/write/Drop through these reviewed helpers. Confined `unsafe`
 lives only in reviewed runtime/helper modules, each invariant documented and tested.
 
+**C6.1b additive amendment (not a CE4):** `ValueSlot::reinit(value)` — overwrite the slot regardless
+of prior state, running no destructor. Sound ONLY for a no-drop type (a no-op `DropPlan`), where the
+old value owns nothing to release. Used by the backend for a no-drop slot local's reassignment,
+whose slot a MIR `Drop` never resets. Additive helper; no existing op, ABI, layout, or Drop-glue
+behaviour changes.
+
 ---
 
 ## 5. `DropPlan` authority (destruction)

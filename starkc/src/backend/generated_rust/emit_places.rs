@@ -74,58 +74,66 @@ impl<'a> TyEnv<'a> {
         base: &MirTy,
         projection: &Projection,
     ) -> Result<MirTy, BackendDiagnostic> {
-        match (projection, base) {
-            (Projection::Field(i), MirTy::Tuple(elems)) => {
-                elems.get(*i as usize).cloned().ok_or_else(|| {
-                    BackendDiagnostic::Unsupported(format!(
-                        "tuple field {i} out of range for {base:?}"
-                    ))
-                })
-            }
-            (Projection::Field(i), MirTy::Struct(item, args)) => {
-                let fields = self
-                    .types
-                    .struct_fields
-                    .get(&(item.0, args.clone()))
-                    .ok_or_else(|| {
-                        BackendDiagnostic::Unsupported(format!(
-                            "no type-context entry for struct instance {base:?} -- the nominal \
-                             type context does not reach this instance"
-                        ))
-                    })?;
-                fields.get(*i as usize).cloned().ok_or_else(|| {
-                    BackendDiagnostic::Unsupported(format!(
-                        "struct field {i} out of range for {base:?}"
-                    ))
-                })
-            }
-            (Projection::Index(_) | Projection::ConstIndex(_), MirTy::Array(elem, _)) => {
-                Ok((**elem).clone())
-            }
-            (Projection::Deref, MirTy::Ref { inner, .. }) => Ok((**inner).clone()),
-            (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => {
-                let variants = emit_types::variant_payloads(enum_ref, args, self.types)
-                    .ok_or_else(|| {
-                        BackendDiagnostic::Unsupported(format!(
-                            "no variant table for enum instance {base:?}"
-                        ))
-                    })?;
-                variants
-                    .get(*v as usize)
-                    .and_then(|payload| payload.get(*i as usize))
-                    .cloned()
-                    .ok_or_else(|| {
-                        BackendDiagnostic::Unsupported(format!(
-                            "variant field v{v}.{i} out of range for {base:?}"
-                        ))
-                    })
-            }
-            (projection, base) => Err(BackendDiagnostic::Unsupported(format!(
-                "projection {projection:?} on {base:?} has no WP-C5.3a representation yet -- \
-                 VariantField lands in WP-C5.3b, Deref needs references (not in the C5 subset), \
-                 and indexing a Slice/Vec needs their runtime representations"
-            ))),
+        project_ty_once(base, projection, self.types)
+    }
+}
+
+/// Resolve one projection step against `types` alone (no body/local context). WP-C6.1b: the
+/// chained projection-helper selector is built at emission time, where only a base `MirTy` and the
+/// `TypeContext` are in hand, so this is the types-only core `TyEnv::project_once` delegates to.
+pub(super) fn project_ty_once(
+    base: &MirTy,
+    projection: &Projection,
+    types: &TypeContext,
+) -> Result<MirTy, BackendDiagnostic> {
+    match (projection, base) {
+        (Projection::Field(i), MirTy::Tuple(elems)) => {
+            elems.get(*i as usize).cloned().ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("tuple field {i} out of range for {base:?}"))
+            })
         }
+        (Projection::Field(i), MirTy::Struct(item, args)) => {
+            let fields = types
+                .struct_fields
+                .get(&(item.0, args.clone()))
+                .ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "no type-context entry for struct instance {base:?} -- the nominal \
+                     type context does not reach this instance"
+                    ))
+                })?;
+            fields.get(*i as usize).cloned().ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!(
+                    "struct field {i} out of range for {base:?}"
+                ))
+            })
+        }
+        (Projection::Index(_) | Projection::ConstIndex(_), MirTy::Array(elem, _)) => {
+            Ok((**elem).clone())
+        }
+        (Projection::Deref, MirTy::Ref { inner, .. }) => Ok((**inner).clone()),
+        (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => {
+            let variants =
+                emit_types::variant_payloads(enum_ref, args, types).ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "no variant table for enum instance {base:?}"
+                    ))
+                })?;
+            variants
+                .get(*v as usize)
+                .and_then(|payload| payload.get(*i as usize))
+                .cloned()
+                .ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "variant field v{v}.{i} out of range for {base:?}"
+                    ))
+                })
+        }
+        (projection, base) => Err(BackendDiagnostic::Unsupported(format!(
+            "projection {projection:?} on {base:?} has no WP-C5.3a representation yet -- \
+             VariantField lands in WP-C5.3b, Deref needs references (not in the C5 subset), \
+             and indexing a Slice/Vec needs their runtime representations"
+        ))),
     }
 }
 
@@ -161,20 +169,18 @@ fn emit_place_from(
     env: &TyEnv,
     mode: PlaceMode,
 ) -> Result<String, BackendDiagnostic> {
-    // WP-C5.3d-0. A single-level READ of a `Copy` field out of a slot goes through a raw
-    // projection helper rather than `get()`, because it must keep working after a SIBLING drop
-    // unit has been moved out -- at which point the storage no longer holds a valid complete
-    // value and `get()` is correctly refused. Enum payload reads are excluded: they have no raw
-    // projection syntax, and an enum's payload is read while the value is still whole.
-    if mode == PlaceMode::Read && place.projection.len() == 1 && is_slot_local(place.local.0, env)?
+    // WP-C5.3d-0 / WP-C6.1b. A READ of a `Copy` field out of a slot goes through a raw projection
+    // helper rather than `get()`, because it must keep working after a SIBLING drop unit has been
+    // moved out -- at which point the storage no longer holds a valid complete value and `get()` is
+    // correctly refused. Valid for a raw chain of ANY depth (C6.1b generalises C5.3d-0's depth 1).
+    // Enum payload reads are excluded: they have no raw projection syntax, and an enum's payload is
+    // read while the value is still whole.
+    if mode == PlaceMode::Read && !place.projection.is_empty() && is_slot_local(place.local.0, env)?
     {
         let base_ty = env.local_ty(place.local.0)?;
         let field_ty = env.place_ty(place)?;
-        let raw_base = matches!(
-            (&place.projection[0], &base_ty),
-            (Projection::Field(_), MirTy::Struct(..) | MirTy::Tuple(_))
-                | (Projection::ConstIndex(_), MirTy::Array(..))
-        );
+        let raw_base =
+            super::emit_projections::chain_is_raw(&base_ty, &place.projection, env.types)?;
         if raw_base && emit_types::mir_ty_is_copy(&field_ty, env.types) {
             // Mirrors `emit_projections::collect_operand` case 2 exactly; the two must agree, or
             // emission would name a helper the collector never generated.
@@ -391,7 +397,7 @@ mod tests {
                 "stark_proj::{}(&_1)",
                 super::super::emit_projections::helper_name(
                     &MirTy::Struct(crate::hir::ItemId(0), vec![]),
-                    &Projection::Field(1),
+                    &[Projection::Field(1)],
                     super::super::emit_projections::HelperOp::Copy
                 )
             )
@@ -400,8 +406,11 @@ mod tests {
 
     #[test]
     fn nested_projections_resolve_through_the_type_context() {
-        // A struct whose second field is a tuple: `_0.f1.0` cannot be emitted without first
-        // resolving what `.f1` is.
+        // A struct whose second field is a tuple: the deep field `_0.f1.0` cannot be emitted
+        // without first resolving what `.f1` is. WP-C6.1b: a multi-level Copy field read on a slot
+        // local now goes through a raw projection helper (chained selector `.f1.0` inside the
+        // helper), so it keeps working after a sibling drop unit has been moved out — the depth-1
+        // pattern generalised to any depth.
         let body = body_with(vec![MirTy::Struct(crate::hir::ItemId(0), vec![])]);
         let mut types = TypeContext::default();
         types.struct_fields.insert(
@@ -414,10 +423,18 @@ mod tests {
             local: LocalId(0),
             projection: vec![Projection::Field(1), Projection::Field(0)],
         };
-        // `_0` is a non-Copy struct, hence slot-backed; the projection chain continues from
-        // the borrowed value.
-        assert_eq!(emit_place(&place, &env).unwrap(), "_0.get().f1.0");
         assert_eq!(env.place_ty(&place).unwrap(), MirTy::Bool);
+        assert_eq!(
+            emit_place(&place, &env).unwrap(),
+            format!(
+                "stark_proj::{}(&_0)",
+                super::super::emit_projections::helper_name(
+                    &MirTy::Struct(crate::hir::ItemId(0), vec![]),
+                    &[Projection::Field(1), Projection::Field(0)],
+                    super::super::emit_projections::HelperOp::Copy
+                )
+            )
+        );
     }
 
     #[test]

@@ -48,36 +48,90 @@ pub enum HelperOp {
     Drop,
 }
 
-/// One helper to generate.
+/// One helper to generate. WP-C6.1b: `projection` is the FULL chain (depth ≥1). A pure-`Raw` chain
+/// of any depth is valid over partially-moved storage; a `Whole` (enum-payload) form is depth-1
+/// only.
 #[derive(Clone)]
 pub struct ProjectionHelper {
     pub name: String,
     pub op: HelperOp,
     pub base_ty: MirTy,
     pub field_ty: MirTy,
-    pub projection: Projection,
+    pub projection: Vec<Projection>,
     pub form: ProjectionForm,
 }
 
-/// The generated helper name for one (base type, projection) pair. Deterministic and injective:
-/// it reuses [`mangle::sanitize_symbol`]'s encoding over a canonical key, so two distinct
-/// projections cannot collide any more than two distinct instances can.
-pub fn helper_name(base_ty: &MirTy, projection: &Projection, op: HelperOp) -> String {
+/// The canonical selector token for one projection level, used to key a helper name.
+fn projection_token(projection: &Projection) -> String {
+    match projection {
+        Projection::Field(i) => format!("f{i}"),
+        Projection::ConstIndex(n) => format!("i{n}"),
+        Projection::VariantField(v, i) => format!("v{v}f{i}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// The generated helper name for one (base type, projection CHAIN) pair. Deterministic and
+/// injective: it reuses [`mangle::sanitize_symbol`]'s encoding over a canonical key joining every
+/// level of the chain, so two distinct projection chains cannot collide any more than two distinct
+/// instances can.
+pub fn helper_name(base_ty: &MirTy, projection: &[Projection], op: HelperOp) -> String {
     let verb = match op {
         HelperOp::Move => "move",
         HelperOp::Copy => "copy",
         HelperOp::Drop => "drop",
     };
-    let selector = match projection {
-        Projection::Field(i) => format!("f{i}"),
-        Projection::ConstIndex(n) => format!("i{n}"),
-        Projection::VariantField(v, i) => format!("v{v}f{i}"),
-        other => format!("{other:?}"),
-    };
+    let selector: Vec<String> = projection.iter().map(projection_token).collect();
     mangle::sanitize_symbol(&format!(
-        "{verb}#{}#{selector}",
-        crate::mir::dump_ty(base_ty)
+        "{verb}#{}#{}",
+        crate::mir::dump_ty(base_ty),
+        selector.join(".")
     ))
+}
+
+/// WP-C6.1b: whether every level of `chain` has raw-pointer (`addr_of_mut!`) syntax over `base_ty`
+/// — a `Field` on a struct/tuple, or a `ConstIndex` on an array, at every level. A raw chain is
+/// valid over partially-moved storage at ANY depth, because `addr_of_mut!` computes a nested field
+/// address without dereferencing intermediates. A `VariantField` (enum) or a dynamic `Index` at any
+/// level is NOT raw.
+pub(super) fn chain_is_raw(
+    base_ty: &MirTy,
+    chain: &[Projection],
+    types: &TypeContext,
+) -> Result<bool, BackendDiagnostic> {
+    if chain.is_empty() {
+        return Ok(false);
+    }
+    let mut ty = base_ty.clone();
+    for projection in chain {
+        let raw = matches!(
+            (projection, &ty),
+            (Projection::Field(_), MirTy::Struct(..) | MirTy::Tuple(_))
+                | (Projection::ConstIndex(_), MirTy::Array(..))
+        );
+        if !raw {
+            return Ok(false);
+        }
+        ty = emit_places::project_ty_once(&ty, projection, types)?;
+    }
+    Ok(true)
+}
+
+/// The chained Rust selector for a raw chain, e.g. `.f0.f0` for two struct fields or `.f1.0[2]` for
+/// struct→tuple→array. Walks `types` to choose `.f{i}` (struct) vs `.{i}` (tuple) vs `[{n}]` (array)
+/// at each level. Precondition: [`chain_is_raw`] holds.
+fn raw_selector_chain(
+    base_ty: &MirTy,
+    chain: &[Projection],
+    types: &TypeContext,
+) -> Result<String, BackendDiagnostic> {
+    let mut out = String::new();
+    let mut ty = base_ty.clone();
+    for projection in chain {
+        out.push_str(&raw_selector(projection, &ty)?);
+        ty = emit_places::project_ty_once(&ty, projection, types)?;
+    }
+    Ok(out)
 }
 
 /// Walk every body and collect the projections that need helpers: sub-place moves, and sub-place
@@ -160,21 +214,13 @@ fn collect_operand(
     if !field_is_copy && matches!(operand, Operand::Move(_)) {
         return collect_place(place, env, HelperOp::Move, found); // case 1
     }
-    if field_is_copy && place.projection.len() == 1 && raw_projectable(place, env)? {
+    // WP-C6.1b: a `Copy` field read out of a slot uses a raw helper (so it survives a sibling
+    // move) for a raw chain of ANY depth, not just depth 1.
+    let base_ty = env.local_ty(place.local.0)?;
+    if field_is_copy && chain_is_raw(&base_ty, &place.projection, env.types)? {
         return collect_place(place, env, HelperOp::Copy, found); // case 2
     }
     Ok(())
-}
-
-/// Whether a single-level projection has raw-pointer syntax (`addr_of_mut!`). Enum payloads do
-/// not, which is why they take the `&mut T` path instead.
-fn raw_projectable(place: &Place, env: &emit_places::TyEnv) -> Result<bool, BackendDiagnostic> {
-    let base_ty = env.local_ty(place.local.0)?;
-    Ok(matches!(
-        (&place.projection[0], &base_ty),
-        (Projection::Field(_), MirTy::Struct(..) | MirTy::Tuple(_))
-            | (Projection::ConstIndex(_), MirTy::Array(..))
-    ))
 }
 
 fn collect_place(
@@ -183,22 +229,36 @@ fn collect_place(
     op: HelperOp,
     found: &mut BTreeMap<String, ProjectionHelper>,
 ) -> Result<(), BackendDiagnostic> {
-    if place.projection.len() != 1 {
-        return Err(BackendDiagnostic::Unsupported(format!(
-            "a sub-place move/drop through a projection chain of length {} ({place:?}) is not in \
-             the WP-C5.3d-0 subset: only ONE level is implemented, because each additional level \
-             needs its own helper over an intermediate type whose validity after a partial move \
-             has to be established separately. Refused before rustc rather than approximated",
-            place.projection.len()
-        )));
-    }
     let base_ty = env.local_ty(place.local.0)?;
-    let projection = place.projection[0].clone();
+    let projection = place.projection.clone();
     let field_ty = env.place_ty(place)?;
-    let form = match (&projection, &base_ty) {
-        (Projection::Field(_), MirTy::Struct(..) | MirTy::Tuple(_))
-        | (Projection::ConstIndex(_), MirTy::Array(..)) => ProjectionForm::Raw,
-        (Projection::VariantField(variant, _), MirTy::Enum(enum_ref, args)) => {
+
+    // WP-C6.1b: a raw chain (all `Field`/`ConstIndex` over struct/tuple/array) of ANY depth is
+    // valid over partially-moved storage, so a multi-level partial move/drop like `o.a.x` is a
+    // single raw helper whose `addr_of_mut!` selector chains through every level. This closes G3:
+    // C5.3d-0 only implemented depth 1.
+    if chain_is_raw(&base_ty, &projection, env.types)? {
+        let name = helper_name(&base_ty, &projection, op);
+        found.entry(name.clone()).or_insert(ProjectionHelper {
+            name,
+            op,
+            base_ty,
+            field_ty,
+            projection,
+            form: ProjectionForm::Raw,
+        });
+        return Ok(());
+    }
+
+    // Enum payload: a `Whole` (`&mut T` + `match`) form, valid ONLY at depth 1 and ONLY while the
+    // slot is whole. A multi-unit payload (arity > 1) is refused — the CD-070 boundary, C6.1c's
+    // work — and a `VariantField` nested inside a longer chain is likewise out of C6.1b's raw
+    // subset.
+    let form = match projection.as_slice() {
+        [Projection::VariantField(variant, _)] if matches!(base_ty, MirTy::Enum(..)) => {
+            let MirTy::Enum(enum_ref, args) = &base_ty else {
+                unreachable!("guarded by the match arm")
+            };
             // CD-070: an enum payload has no raw projection, so moving one unit out goes through
             // `move_field_whole`, which REQUIRES a complete value and leaves the slot `Partial`.
             // With more than one payload unit, the second move — or the whole-enum drop of a
@@ -237,8 +297,10 @@ fn collect_place(
         }
         _ => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "sub-place move/drop through {projection:?} on {base_ty:?} is not in the \
-                 WP-C5.3d-0 subset"
+                "sub-place move/drop through {projection:?} on {base_ty:?} is not in the C6.1b \
+                 subset: only a pure raw chain (struct/tuple `Field`, array `ConstIndex`) at any \
+                 depth, or a single-level single-unit enum payload, is supported. A `VariantField` \
+                 nested in a longer chain is enum-payload work (C6.1c)"
             )))
         }
     };
@@ -297,13 +359,16 @@ pub fn emit(
         // which is exactly the pairing the primitives' safety contract requires.
         let projection = match helper.form {
             ProjectionForm::Raw => {
-                let selector = raw_selector(&helper.projection, &helper.base_ty)?;
+                // WP-C6.1b: chained selector over every level, e.g. `.f0.f0`, so `addr_of_mut!`
+                // computes the deep field's address without dereferencing intermediates.
+                let selector = raw_selector_chain(&helper.base_ty, &helper.projection, types)?;
                 format!("|p: *mut {base}| unsafe {{ core::ptr::addr_of_mut!((*p){selector}) }}")
             }
             ProjectionForm::Whole => {
-                let Projection::VariantField(variant, index) = &helper.projection else {
+                let [Projection::VariantField(variant, index)] = helper.projection.as_slice()
+                else {
                     return Err(BackendDiagnostic::Unsupported(
-                        "whole-form projection outside an enum payload".to_string(),
+                        "whole-form projection is a single enum-payload level only".to_string(),
                     ));
                 };
                 let MirTy::Enum(enum_ref, args) = &helper.base_ty else {

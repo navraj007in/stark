@@ -28,9 +28,15 @@ open gaps for C6.1 are **narrow and specific**:
 |---|---|---|---|
 | G1 | Multi-**unit** enum-payload consuming match / partial move (bind or move ≥2 non-`Copy` payload fields of one variant) | BACKEND-REFUSED | **C6.1c** |
 | G2 | Non-`Copy` **array by-value iteration** (`for x in arr`) | FRONT-END ("not yet supported") | **C6.1d** |
-| G3 | **Multi-level (depth ≥2) partial move/drop** through a projection chain (`o.a.x`) — only one projection level is implemented | BACKEND-REFUSED | **C6.1b** (newly surfaced by this audit; not in the entry-plan sub-package list) |
+| G3 | **Multi-level (depth ≥2) partial move/drop** through a projection chain (`o.a.x`) — only one projection level was implemented | ~~BACKEND-REFUSED~~ **FIXED (C6.1b)** | **C6.1b** |
+| G4 | **Loop-carried reassignment of a no-`Drop` non-`Copy` local** — the slot is never reset by a MIR `Drop` (verifier emits none for a non-droppable type), so a loop back-edge reassignment hit `write`'s dead-slot check and **aborted at run time** (compile-then-abort) | ~~COMPILE-THEN-ABORT~~ **FIXED (C6.1b)** | **C6.1b** (newly surfaced) |
 
 Everything else in §3 is already `SUPPORTED` natively or is a permanent language rule.
+
+**Method correction:** the C6.1a probe classified shapes by **`emit` success**, which is necessary
+but not sufficient — G4 emitted cleanly and only aborted when the native binary *ran* (inside a
+loop). C6.1b re-probes by native **execution**, which is how G4 surfaced. The §3.5 loop-carried row
+is corrected accordingly.
 
 **G3 is a new finding.** It was not called out in WP-C6-ENTRY §2's re-pin (which named multi-unit
 enum moves, wider cross-block moves, and non-`Copy` array iteration). It belongs to C6.1b's "general
@@ -104,7 +110,8 @@ C consumes it for non-`Copy` Vec elements, iterator remaining-element Drop, and 
 | define block A, move block B | `S`/`D` | SUPPORTED (probe 03/13) | same | `cross_block_move` | — | — | PARITY |
 | conditional definition then join (`let a; if…{a=…}else{a=…}`) | `S` | SUPPORTED (probe 14) | same | `conditional_def_join` | use-before-def rejected | — | PARITY |
 | move in one branch only | `D` | SUPPORTED via drop flag (probe 13/21) | same | `move_one_branch`,`loop_break_move` | move-in-branch + use-after rejected (probe 15) | — | PARITY |
-| loop-carried value + reinit | `S` | SUPPORTED (probe 05/16) | same | `loop_carried`,`move_reinit_use` | — | — | PARITY |
+| move then reinit (straight-line) | `S` | SUPPORTED (probe 16, native exit 0) | same | `move_reinit_use` | — | — | PARITY |
+| **loop-carried** reassignment of a no-`Drop` non-`Copy` local | `S` | ~~emit-SUPPORTED but native-ABORTED~~ **FIXED (C6.1b `reinit`)** | SUPPORTED | `broad_cross_block_movement_still_agrees` | live-write mutation | **G4** | OPEN→FIXED |
 | `break`/`continue` with live value | `D` | SUPPORTED (probe 21) | same | `loop_break_move` | — | — | PARITY |
 | `return` / `?` transfer of non-`Copy` | `S`/`D` | SUPPORTED (probe 02/17) | same | `return_move`,`question_mark_transfer` | — | — | PARITY |
 | call-argument and return movement | `D` | SUPPORTED (probe 22) | same | `roundtrip_move` | — | — | PARITY |
@@ -147,9 +154,23 @@ C6.1e observes marker **order and counts**, not just exit code.
 - [x] Every normative ownership shape has a current + target outcome and a named test
 - [x] Current outcomes are probe-grounded, not assumed
 
-**Open gaps for C6.1 implementation:** **G1** (multi-unit enum payload → C6.1c), **G2** (non-`Copy`
-array by-value iteration → C6.1d), **G3** (multi-level partial move → C6.1b, newly surfaced). Vec/Box
-ownership is a Track A↔C interface (C6.3). Everything else is at native parity today.
+**Gaps:** **G3** (multi-level partial move) and **G4** (loop-carried no-`Drop` reassignment) are
+**FIXED in C6.1b** (see below). **G1** (multi-unit enum payload → C6.1c) and **G2** (non-`Copy`
+array by-value iteration → C6.1d) remain open. Vec/Box ownership is a Track A↔C interface (C6.3).
+Everything else is at native parity today.
 
-Next Track-A increment: **C6.1b** — general cross-block non-`Copy` movement, whose acceptance set now
-explicitly includes **G3** (multi-level projected moves), then **C6.1c** (G1) and **C6.1d** (G2).
+**C6.1b delivered (G3 + G4):**
+- **G3** — `emit_projections` now generates a chained-`addr_of_mut!` raw helper for a projection
+  chain of any depth (`.f0.f0`), and `emit_places` uses it for multi-level Copy reads; a raw chain
+  is valid over partially-moved storage at any depth. Chains through an enum `VariantField` stay
+  refused (that is G1/C6.1c).
+- **G4** — `ValueSlot::reinit` overwrites a no-`Drop` local's slot regardless of prior state (no
+  destructor owed), and `emit_bodies::emit_assignment` emits it (instead of `write`) for a no-drop
+  slot local, so a loop back-edge reassignment no longer trips `write`'s dead-slot check.
+
+Evidence: `starkc/tests/native_c6_1_ownership.rs` (5 tests: multi-level move / multi-level Drop move
+/ multi-level Copy-read-after-sibling-move / broad-cross-block+loop regression / false-assertion
+negative control), all three-engine-agreeing.
+
+Next Track-A increments: **C6.1c** (G1 — multi-unit enum payload) and **C6.1d** (G2 — non-`Copy`
+array by-value iteration).

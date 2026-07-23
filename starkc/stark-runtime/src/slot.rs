@@ -149,6 +149,23 @@ impl<T> ValueSlot<T> {
         self.state = SlotState::Whole;
     }
 
+    /// WP-C6.1b: overwrite the slot with `value` regardless of its prior state, running NO
+    /// destructor on any previous value.
+    ///
+    /// Sound ONLY for a type with **no drop obligation** (a no-op `DropPlan`): abandoning the
+    /// previous value then leaks nothing, since it owns no resources. The backend emits this
+    /// instead of [`write`](Self::write) for a no-drop slot local, because such a local's slot is
+    /// never reset by a MIR `Drop` — the verifier emits none for a non-droppable type — so on a
+    /// loop back-edge its slot is still `Whole` when the next iteration reassigns it, which
+    /// [`write`](Self::write)'s dead-slot check would (falsely, for a no-drop type) reject. A
+    /// droppable type keeps [`write`](Self::write), which relies on MIR's explicit preceding `Drop`.
+    pub fn reinit(&mut self, value: T) {
+        // No `ManuallyDrop::drop` of the previous contents: the caller guarantees `T` owns nothing
+        // to release, so the old bytes are simply replaced.
+        self.storage = MaybeUninit::new(ManuallyDrop::new(value));
+        self.state = SlotState::Whole;
+    }
+
     /// Shared place access. Requires `Whole`.
     pub fn get(&self) -> &T {
         self.require_whole("read of a dead slot");
