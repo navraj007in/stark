@@ -66,7 +66,7 @@ begin from `db73afe`.
 
 | # | Track | Agent | Base SHA | Owned/leased files | Contracts assumed | Proposed contract changes | Tests | New deviations | Merge order | Result |
 |---|---|---|---|---|---|---|---|---|---|---|
-| — | A | Claude | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:3 | pending |
+| C6.1a | A | Claude | `db73afe` | `C6-OWNERSHIP-MATRIX.md` (new) | SHARED-CONTRACTS v1 | none | probe-grounded classification (probe removed; no committed test yet) | **G3** (multi-level partial move refused) | §7J:3 | **CANDIDATE-COMPLETE** |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
 
@@ -103,6 +103,13 @@ _(none yet — appended when a shared file is leased)_
   "approve C6 entry" step. All ten §1 opening conditions are satisfied at Gate C5 closure
   (`db73afe`/CD-077). The §7C branch/worktree model is waived; all C6 tracks execute on `main`.
   Wave 1 is authorised.
+
+- **G3 [2026-07-23, C6.1a, Track A] — multi-level partial move/drop refused.** Probing for the
+  ownership matrix found that a partial move/drop through a projection chain of depth ≥2 (`o.a.x`,
+  `Place.projection` length 2) is `BACKEND-REFUSED` — only one projection level is implemented
+  (WP-C5.3d-0). Not named in WP-C6-ENTRY §2's re-pin (which listed multi-unit enum moves, wider
+  cross-block moves, non-`Copy` array iteration). Assigned to **C6.1b**; its acceptance set now
+  includes multi-level projected moves. Deterministic refusal, not a miscompile.
 
 _(CE3/CE4/CE8/CE9 recorded here before implementation continues — none yet.)_
 
