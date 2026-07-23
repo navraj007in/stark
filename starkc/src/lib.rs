@@ -27,6 +27,8 @@ pub mod lexer;
 pub mod literal;
 pub mod lsp;
 pub mod mir;
+pub mod native_build;
+pub mod native_toolchain;
 pub mod onnx;
 pub mod options;
 pub mod package;

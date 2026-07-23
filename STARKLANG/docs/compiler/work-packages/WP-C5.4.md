@@ -1333,3 +1333,28 @@ future non-injective sanitiser (mutation guard §13.5 #5), not as reachable refu
 identical symbols are caught by the strict-sort guard before the duplicate-insert guard; both
 refuse.
 
+#### C5.4b — concrete generic-instance emission — CLOSED 2026-07-23
+
+**Finding:** monomorphisation already occurs in lowering and `emit_program::emit` already emits one
+concrete Rust `fn` per body with a sanitised canonical-symbol name and no Rust generic parameter
+list. C5.4b required **no backend code change** — it is the proof that the existing emission
+satisfies §10. The one function-value-crossed generic case (§10.4 #4/#8) and the §10.5
+function-value-only reachability case require native `Constant::FnPtr` emission and are delivered
+in **C5.4c**, where that capability exists; C5.4a already proved their *linkage* resolution.
+
+**Evidence:**
+- `three_engine_differential.rs` (+4 cases, full suite 61 green): a value (not just `size_of`)
+  carried through `identity<T>` at Int32 **and** Int64; a recursive generic instance
+  (`depth@[Int32]` calling itself); mutual recursion among concrete bodies (`is_even`/`is_odd`);
+  one instance reached by two call paths computing correctly.
+- `native_c5_4_generics.rs` (3 tests, green) — generated-source structure via `emit_program::emit`
+  (no rustc): distinct type args → two distinct concrete definitions with the same item and
+  different type_args (defeats item-only dedup, guard §13.5 #2); one shared instance emitted
+  exactly once (§10.4 #5); a recursive instance is one self-calling definition; and **no generated
+  `fn` carries a Rust generic parameter list** (guard §13.5 #9), asserted by scanning every `fn `
+  header for a `<` before its `(`.
+
+**Exit conditions (§14.2) discharged:** Int32/Int64 instances execute correctly; same-instance
+multi-path reference emits once; a missing concrete instance is caught by the C5.4a linkage
+preflight; generated source contains only concrete Rust definitions. `cargo fmt`/`clippy` clean.
+

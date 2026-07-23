@@ -17,7 +17,8 @@ stark — package manager and builder for the STARK Core v1 language
 
 Usage:
   stark check                   Check the current package and dependencies.
-  stark build                   Compile the current package and dependencies.
+  stark build [--locked] [--offline] [--keep-generated] [--emit-rust] [--verbose]
+                                 Compile a native debug executable.
   stark run                     Compile and execute the package main entry point.
   stark test [name] [--ignored] [--show-output]
                                  Run `fn test_*()` functions in the package,
@@ -65,7 +66,11 @@ fn main() -> ExitCode {
         return cmd_doc(&args[1..]);
     }
 
-    if cmd != "check" && cmd != "build" && cmd != "run" {
+    if cmd == "build" {
+        return cmd_build(&args[1..]);
+    }
+
+    if cmd != "check" && cmd != "run" {
         eprint!("{USAGE}");
         return ExitCode::from(2);
     }
@@ -118,7 +123,7 @@ fn main() -> ExitCode {
         eprintln!("{}: package compilation failed", root_package_name);
         return ExitCode::FAILURE;
     }
-    if cmd == "check" || cmd == "build" {
+    if cmd == "check" {
         println!("{}: OK", root_package_name);
         return ExitCode::SUCCESS;
     }
@@ -153,6 +158,186 @@ fn main() -> ExitCode {
     }
     eprintln!("{}: package compilation failed", root_package_name);
     ExitCode::FAILURE
+}
+
+fn cmd_build(args: &[String]) -> ExitCode {
+    let mut options = starkc::native_build::BuildCommandOptions::default();
+    for arg in args {
+        match arg.as_str() {
+            "--locked" => options.locked = true,
+            "--offline" => options.offline = true,
+            "--keep-generated" => options.keep_generated = true,
+            "--emit-rust" => {
+                options.emit_rust = true;
+                options.keep_generated = true;
+            }
+            "--verbose" => options.verbose = true,
+            "--help" | "-h" => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            _ => {
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let current_dir = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("error: failed to get current working directory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match starkc::native_build::build_current_package(&current_dir, &options) {
+        Ok(result) => {
+            if options.verbose {
+                println!(
+                    "[stark build] package root: {}",
+                    result.package_root.display()
+                );
+                println!("[stark build] package: {}", result.package_name);
+                println!("[stark build] analysis: complete");
+                println!("[stark build] MIR bodies: {}", result.mir_bodies);
+                println!("[stark build] MIR verification: complete");
+                println!(
+                    "[stark build] rustc: {} ({})",
+                    result.toolchain.rustc.display(),
+                    result.toolchain.rustc_release
+                );
+                println!(
+                    "[stark build] cargo: {} ({})",
+                    result.toolchain.cargo.display(),
+                    result.toolchain.cargo_release
+                );
+                println!("[stark build] host: {}", result.toolchain.host_triple);
+                println!(
+                    "[stark build] runtime: {}",
+                    result.toolchain.runtime_crate.display()
+                );
+                if let Some(path) = &result.generated_dir {
+                    println!("[stark build] generated crate: {}", path.display());
+                }
+                println!(
+                    "[stark build] backend binary: {}",
+                    result.backend_artifact.display()
+                );
+                println!(
+                    "[stark build] final artifact: {}",
+                    result.artifact_path.display()
+                );
+            }
+            if let Some(path) = result.generated_dir {
+                println!("Generated crate -> {}", path.display());
+            }
+            if let Some(path) = result.generated_rust {
+                println!("Generated Rust -> {}", path.display());
+            }
+            println!(
+                "Built {} [debug] -> {}",
+                result.package_name,
+                result.artifact_path.display()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            render_build_error(&error, options.verbose);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn render_build_error(error: &starkc::native_build::BuildCommandError, verbose: bool) {
+    use starkc::native_build::BuildCommandError;
+    use starkc::native_toolchain::ToolchainError;
+    match error {
+        BuildCommandError::Package(message) => eprintln!("error: {message}"),
+        BuildCommandError::Analysis {
+            rendered,
+            package_name,
+        } => {
+            eprint!("{rendered}");
+            eprintln!("{package_name}: package compilation failed");
+        }
+        BuildCommandError::Lowering(message) => {
+            eprintln!("error: native build does not yet support this program: {message}")
+        }
+        BuildCommandError::MirVerification(detail) => {
+            eprintln!("error: internal compiler error: generated MIR failed verification");
+            if verbose {
+                eprintln!("{detail}");
+            }
+        }
+        BuildCommandError::Toolchain(ToolchainError::Missing {
+            tool,
+            attempted,
+            detail,
+        }) => {
+            eprintln!("error: Rust toolchain component '{tool}' not found");
+            eprintln!(
+                "help: install a supported Rust toolchain or set STARK_RUSTC and STARK_CARGO"
+            );
+            if verbose {
+                eprintln!("attempted {}: {detail}", attempted.display());
+            }
+        }
+        BuildCommandError::Toolchain(ToolchainError::InvalidVersion { tool, output }) => {
+            eprintln!("error: could not determine {tool} version");
+            if verbose {
+                eprintln!("probe output: {output}");
+            }
+        }
+        BuildCommandError::Toolchain(ToolchainError::TooOld { found, required }) => {
+            eprintln!("error: Rust compiler {found} is too old; STARK native builds require {required} or newer");
+        }
+        BuildCommandError::Toolchain(ToolchainError::RuntimeMissing { attempted }) => {
+            eprintln!("error: STARK native runtime installation is missing");
+            eprintln!("help: install stark-runtime with STARK or set STARK_RUNTIME_DIR");
+            if verbose {
+                for path in attempted {
+                    eprintln!("attempted: {}", path.display());
+                }
+            }
+        }
+        BuildCommandError::UnsupportedNative(message) => {
+            eprintln!("error: native build does not yet support this program: {message}")
+        }
+        BuildCommandError::BackendBuild {
+            detail,
+            generated_root,
+        } => {
+            eprintln!(
+                "error: the STARK native backend generated a crate that Cargo could not build"
+            );
+            eprintln!(
+                "note: generated files, when created, remain under {}",
+                generated_root.display()
+            );
+            if verbose {
+                eprintln!("{detail}");
+            }
+        }
+        BuildCommandError::ArtifactMissing(path) => eprintln!(
+            "error: native backend artifact is missing at {}",
+            path.display()
+        ),
+        BuildCommandError::ArtifactInstall { from, to, detail } => eprintln!(
+            "error: could not install native artifact from {} to {}: {detail}",
+            from.display(),
+            to.display()
+        ),
+        BuildCommandError::Io {
+            action,
+            path,
+            detail,
+        } => {
+            if let Some(path) = path {
+                eprintln!("error: {action} at {}: {detail}", path.display());
+            } else {
+                eprintln!("error: {action}: {detail}");
+            }
+        }
+    }
 }
 
 fn cmd_fmt(args: &[String]) -> ExitCode {

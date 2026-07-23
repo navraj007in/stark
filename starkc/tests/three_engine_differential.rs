@@ -1159,6 +1159,80 @@ fn main() {
 "#
 );
 
+// ================================================= WP-C5.4b — concrete generics --
+// The existing `layout_generic*` cases prove generic bodies emit and run, but only through
+// `size_of` — a value that never leaves the body. These cases carry a real VALUE through a
+// monomorphised body at two distinct type arguments, so a backend that collapsed the two
+// instances (or emitted one Rust generic) would return the wrong value, not merely the wrong size.
+
+three_engine_test!(
+    generic_identity_carries_a_value_at_two_types,
+    "generic_identity",
+    completes,
+    r#"fn identity<T>(x: T) -> T { x }
+fn main() {
+    let a: Int32 = 21;
+    let b: Int64 = 9000000000;
+    assert_eq(identity(a), 21);
+    assert_eq(identity(b), 9000000000);
+}
+"#
+);
+
+// §10.4 #6: a recursive generic instance. The recursion targets the SAME concrete instance
+// (`depth@[Int32]`), so it must be one definition that calls itself, not an unrolled chain.
+three_engine_test!(
+    recursive_generic_instance_agrees,
+    "generic_recursive",
+    completes,
+    r#"fn depth<T>(x: T, n: Int32) -> Int32 {
+    if n <= 0 { 0 } else { depth::<T>(x, n - 1) + 1 }
+}
+fn main() {
+    let seed: Int32 = 7;
+    assert_eq(depth::<Int32>(seed, 5), 5);
+    assert_eq(depth::<Int32>(seed, 0), 0);
+}
+"#
+);
+
+// §5.1 last bullet: mutual recursion among concrete bodies present in verified MIR. Two bodies
+// that call each other must both be emitted and linked — a reachability walk that stopped at the
+// first body, or a definition set missing one arm, fails here.
+three_engine_test!(
+    mutually_recursive_concrete_bodies_agree,
+    "mutual_recursion",
+    completes,
+    r#"fn is_even(n: Int32) -> Bool {
+    if n == 0 { true } else { is_odd(n - 1) }
+}
+fn is_odd(n: Int32) -> Bool {
+    if n == 0 { false } else { is_even(n - 1) }
+}
+fn main() {
+    assert(is_even(10));
+    assert(is_odd(7));
+    assert(is_even(0));
+}
+"#
+);
+
+// §10.4 #5 + mutation guard §13.5 #2: one concrete instance (`pick@[Int32]`) reached through two
+// distinct call paths must run correctly (the generated-source proof that it is emitted exactly
+// ONCE lives in `native_c5_4_generics.rs`, which a three-engine value comparison cannot see).
+three_engine_test!(
+    one_instance_reached_by_two_paths_agrees,
+    "generic_shared_instance",
+    completes,
+    r#"fn pick<T>(x: T) -> T { x }
+fn via_g() -> Int32 { pick(1) }
+fn via_h() -> Int32 { pick(2) }
+fn main() {
+    assert_eq(via_g() + via_h(), 3);
+}
+"#
+);
+
 // DEV-098 (CD-070): exclusive references across the call boundary.
 //
 // The adversarial premise was that a `&mut` used twice in one block reaches rustc, because
