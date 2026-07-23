@@ -1683,8 +1683,11 @@ Selection stops at the first dereference level with an applicable
 candidate. Auto-borrow never evaluates the receiver twice, never moves
 through a shared reference, and may create <code>&amp;mut</code> only
 from a mutable place not conflicting with a live borrow. No
-argument-position auto-borrow, auto-dereference, or user coercion
-exists.</p>
+argument-position auto-borrow or auto-dereference exists. Argument
+expressions may still undergo the closed set of built-in expected-type
+coercions defined in “Subtyping and Coercion” (the reference coercions
+and TYPE-COERCE-003); a function parameter is an expected-type boundary
+like any other. No user-defined coercion exists.</p>
 <h3 id="operators-and-traits">Operators and Traits</h3>
 <p>Operator expressions on <strong>primitive types</strong> have
 built-in meaning (Numeric Semantics below). Equality and ordering on

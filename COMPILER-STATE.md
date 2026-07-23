@@ -5,8 +5,8 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f-a and C6.1f-b1 CLOSED (CD-089/CD-090); b2 BLOCKED and mis-scoped (needs a
-ruling); b3–b5 open**, F1
+Remaining C6: **WP-C6.1f-a and C6.1f-b1 CLOSED (CD-089/CD-090); b2 REVISED by owner ruling (CD-091)
+to expected-type reference weakening; array→slice moved to C6.3b; b3–b5 open**, F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3048,6 +3048,37 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
 
+- CD-091 [2026-07-23, **OWNER RULING — b2 REVISED; my spec reading was wrong**] I claimed
+  argument-position conversion "does not exist" in CD-090, citing TYPE-METHOD-002. **That was
+  wrong, and the error was mine: I cited TYPE-METHOD-002 without checking the coercion rules it
+  defers to.** A function parameter is an **expected-type boundary**, and the closed set of built-in
+  coercions applies at expected-type boundaries: 03-Type-System "Reference Coercions" gives
+  `&mut T -> &T`, and **TYPE-COERCE-003** gives `&[T; N] -> &[T]`, `&mut [T; N] -> &mut [T]`, and
+  mutable-weakened-to-shared. TYPE-METHOD-002 prohibits argument-position **auto-borrow**,
+  **auto-dereference** and **user-defined** coercion — not the fixed built-in set. So **the checker
+  is correct to accept these forms and the verifier/backend refusal is an implementation gap, not
+  front-end over-acceptance**; rejecting them would have contradicted frozen Core v1 coercion rules.
+  - **TYPE-METHOD-002 clarified editorially** in `03-Type-System.md` (a clarification of existing
+    frozen semantics, not an amendment): argument expressions may still undergo the closed built-in
+    expected-type coercions. Spec regenerated; the 112-block fixture corpus stays in sync.
+  - **C6.1f-b2 REVISED, not dropped — "Expected-type reference weakening", Track A.** `&mut T -> &T`
+    at expected-type boundaries: ordinary function arguments, fully qualified trait-call arguments,
+    annotated local initialisation, assignment, return expressions, and aggregate fields where
+    applicable. Must **re-borrow rather than move**, preserving the lexical borrow rules b1 proved.
+    Does not depend on slice representation and does not wait for C6.3.
+  - **Array→slice coercion moves to C6.3b** with slice-parameter representability (TYPE-COERCE-003
+    native execution), covering `n(&a)`, `n(&mut a)` and `n(&a[0..3])` together. The prerequisite is
+    representation — `n(&a[0..3])`, with no coercion involved, is refused with "param 0 is not
+    C5-representable" — and that prerequisite does **not** justify rejecting `n(&a)`.
+  - **Checker behaviour fixed by the ruling:** it must not reject either normative coercion merely
+    because native support is incomplete. Native build may issue a deterministic unsupported-profile
+    diagnostic for slice parameters until C6.3b lands, but `check` must keep accepting valid Core
+    source. **C6 cannot close while either normative coercion remains unsupported.**
+  - **Probe of all six boundaries:** every one fails today, in two ways — five at MIR verification
+    (the weakening is never emitted) and three with **E0100 "use of moved value"** (borrowck moves
+    the `&mut` instead of re-borrowing). Both fixes land in **Track A files** (`borrowck.rs`,
+    `mir/lower.rs`), so b2 needs **no typecheck lease** and does not collide with Track B's F1 work.
+
 - CD-090 [2026-07-23, **WP-C6.1f-b1 CLOSED — receiver re-borrowing; b2 blocked**]
   - **A probe re-scoped both sub-packages before any code changed.** Explicit re-borrow syntax
     **already works end-to-end natively** (`f(&*m)`, `f(&mut *m); f(&mut *m);` all run). That makes
@@ -3072,6 +3103,8 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     natively representable at all**, which is Track C's C6.3. Recommended: drop b2 as a sub-package
     and fold the argument-position question into one decision (reject at the checker naming the
     explicit form), since that narrows the accepted language and is the owner's call.
+    **[SUPERSEDED by CD-091 — this recommendation rested on a wrong reading of the spec; the
+    coercions are normative and b2 was revised rather than dropped.]**
   - **Validation:** twelve at-risk suites green including all 441 lib tests, three-engine (83) and
     the C6.1f negative corpus; **no snapshot re-pin needed** despite changing a very common lowering
     path. `fmt --check` and strict `clippy` clean. Evidence: `starkc/tests/native_c61f_reborrow.rs`.

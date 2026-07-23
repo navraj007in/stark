@@ -1,7 +1,8 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 BLOCKED — see §8.**
+**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 REVISED by owner ruling —
+see §8 (amended, CD-091).**
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the
@@ -55,7 +56,8 @@ The nine **VERIFY** rows are not about storage at all. They are two absent conve
   `f(m)` where `f` takes `&P`. MIR passes `&mut P` where `&P` is required. *(§8 later split this by
   position: the receiver half was a real gap and is fixed; the argument half is a front-end
   over-acceptance.)*
-- **Array → slice unsizing** — `f(&a)` where `a: [Int32; 3]` and `f` takes `&[Int32]`.
+- **Array → slice unsizing** — `f(&a)` where `a: [Int32; 3]` and `f` takes `&[Int32]`. *(TYPE-COERCE-003;
+  moved to C6.3b by CD-091, since slice-parameter representability is its prerequisite.)*
 
 Plus a third at the front end: **`&mut` parameters are moved, not reborrowed**
 (`fn g(m: &mut P) { f(m); f(m); }` → E0100 "use of moved value"). The same missing concept surfaces
@@ -114,8 +116,8 @@ inline as **→ (b1)** and explained in §8; §1 records the C6.1f-a state and i
 
 | Case | Result | Detail |
 |---|---|---|
-| `fn g(m: &mut P) -> Int32 { f(m) }`, `f(r: &P)` | **VERIFY** | **argument** position — per TYPE-METHOD-002 no such coercion exists; the explicit `f(&*m)` already runs. Front-end over-acceptance, §8.4 |
-| `fn g(m: &mut P) { f(m); f(m); }` | **FRONT-END** | E0100 — **argument** position; explicit `f(&mut *m); f(&mut *m);` already runs, so E0100 may be conformant. §8.4 |
+| `fn g(m: &mut P) -> Int32 { f(m) }`, `f(r: &P)` | **VERIFY** | **argument** position — the `&mut T -> &T` reference coercion is normative here; an implementation gap. **Revised b2**, §8.4 |
+| `fn g(m: &mut P) { f(m); f(m); }` | **FRONT-END** | E0100 — must **re-borrow rather than move** the `&mut` at the expected-type boundary. **Revised b2**, §8.4 |
 | `fn f(m: &mut P) { m.bump(); m.bump(); }` | **VERIFY** → **✅ native (b1)** | receiver position; each re-borrow is a temporary borrow |
 | `fn f(m: &mut P) { m.bump(); m.get() }` | **VERIFY** → **✅ native (b1)** | receiver position |
 
@@ -142,9 +144,9 @@ inline as **→ (b1)** and explained in §8; §1 records the C6.1f-a state and i
 | `&a[1]` (array element) | **BACKEND** | lane |
 | `&p.v` / `&o.i` (struct field, nested) | **BACKEND** | lane |
 | `&v[0]` (Vec element) | **BACKEND** | lane |
-| `f(&a)` array→`&[Int32]` | **VERIFY** | §1.4 unsizing |
-| `f(&mut a)` array→`&mut [Int32]` | **VERIFY** | same |
-| `s[0]` on a `&[Int32]` param | **VERIFY** | same |
+| `f(&a)` array→`&[Int32]` | **VERIFY** | TYPE-COERCE-003 — normative; **moved to C6.3b** with slice representability (§8.4) |
+| `f(&mut a)` array→`&mut [Int32]` | **VERIFY** | same — **C6.3b** |
+| `s[0]` on a `&[Int32]` param | **VERIFY** | slice-parameter representability — **C6.3b** |
 | borrow a `Drop`-bearing owner (param) | **RUN** ✅ |
 | borrow a `Drop`-bearing owner (local) | **BACKEND** | lane |
 | `*b`, `(*b).v`, `b.get()` on `Box<T>` | **FRONT-END** | E0001 / E0304 — **`Box` deref is unimplemented in the front end** |
@@ -252,24 +254,36 @@ need no lane change and no CE3 — or whether the whole package waits on the b3 
 
 ## 8. C6.1f-b1 CLOSED, and why b2 cannot proceed as scoped (CD-090)
 
-### 8.1 The probe that changed the scope
+### 8.1 The probe that changed the scope — **AMENDED (CD-091)**
 
 Before implementing, the explicit forms were probed. **Explicit re-borrow syntax already works
 end-to-end natively**: `f(&*m)` and `f(&mut *m); f(&mut *m);` both run with all three engines at 0.
 
-That single result re-scoped both sub-packages, because it makes TYPE-METHOD-002's closing sentence
-operative rather than theoretical:
+> **CORRECTION (owner ruling, CD-091).** The original §8.1 read TYPE-METHOD-002's "no
+> argument-position ... user coercion exists" as excluding **all** argument-position conversion.
+> **That was wrong, and the error was mine: I cited TYPE-METHOD-002 without checking the coercion
+> rules it defers to.**
+>
+> A function parameter is an **expected-type boundary**, and the type system applies the closed set
+> of built-in coercions at expected-type boundaries. 03-Type-System "Reference Coercions" gives
+> `&mut T -> &T` normatively, and **TYPE-COERCE-003** gives `&[T; N] -> &[T]`,
+> `&mut [T; N] -> &mut [T]`, and mutable-weakened-to-shared. TYPE-METHOD-002 prohibits
+> argument-position **auto-borrow**, **auto-dereference**, and **user-defined** coercion — not the
+> fixed built-in set.
+>
+> Therefore **the checker is correct to accept these argument forms, and their later
+> verifier/backend refusal is an implementation gap, not front-end over-acceptance.** Rejecting them
+> would have contradicted frozen Core v1 coercion rules. TYPE-METHOD-002 has been clarified
+> editorially to prevent recurrence (a clarification of existing frozen semantics, not an
+> amendment).
 
-> "No argument-position auto-borrow, auto-dereference, or user coercion exists."
-
-So the matrix's nine VERIFY rows are **not one problem**. They split by position:
+What survives from the original analysis is the **position split**, which is still real and is what
+b1 acted on:
 
 - **Receiver position** — TYPE-METHOD-002 *requires* auto-deref and auto-borrow. A real lowering
-  gap. **This is b1, and it is now closed.**
-- **Argument position** — the spec says the conversion **does not exist**, and the explicit form the
-  user is expected to write already works. These rows are a **front-end over-acceptance** (the
-  checker admits `f(m)` and the MIR verifier catches it late), not a lowering gap. Fixing them means
-  **rejecting earlier with a better message**, not lowering a coercion. See §8.4.
+  gap. **This is b1, and it is closed.**
+- **Argument position** — no auto-borrow/auto-deref, **but the built-in coercions do apply**. These
+  rows are an implementation gap in the verifier/backend. **This is the revised b2** (§8.4).
 
 ### 8.2 What b1 changed
 
@@ -297,22 +311,25 @@ Per the F4 ruling this covers the **MIR/reference-representation** half only. Th
 (`&&T` and `**x` are unspellable — the lexer never splits those tokens) is untouched, and repeated
 auto-deref *selection* remains Track B's.
 
-### 8.4 b2 is blocked and was mis-scoped — **needs a ruling**
+### 8.4 b2 REVISED — expected-type reference weakening (owner ruling, CD-091)
 
-b2 was proposed as "array → slice unsizing at argument position". Deeper probing shows it cannot be
-completed as scoped, for two independent reasons:
+b2 is **retained and narrowed**, not dropped:
 
-1. **It is argument-position coercion**, which TYPE-METHOD-002 says does not exist. Implementing it
-   would contradict the sentence that b1's split relies on.
-2. **Even the explicit form fails.** `n(&a[0..3])` — writing the slice explicitly, no coercion
-   involved — is refused at emission: *"linkage: body `n@[]` param 0 is not C5-representable"*.
-   **Slice parameters are not natively representable at all**, which is Track C's C6.3
-   representability work, not a reference-lane or coercion issue.
+> **C6.1f-b2 — Expected-type reference weakening.** Track A implements `&mut T -> &T` at
+> expected-type boundaries, at minimum: ordinary function arguments; fully qualified trait-call
+> arguments; annotated local initialisation; assignment; return expressions; and aggregate fields
+> where applicable. It must **re-borrow rather than move** the `&mut`, preserving the lexical borrow
+> rules b1 already proved. This does **not** depend on slice representation and does not wait for
+> C6.3.
 
-So the array→slice rows are blocked behind C6.3 regardless of what b2 does, and the coercion half may
-not be wanted at all.
+**Array-to-slice coercion moves to C6.3b.** TYPE-COERCE-003 native execution becomes part of C6.3b
+slice representability, covering `n(&a)`, `n(&mut a)` and the already-explicit `n(&a[0..3])`
+together. The evidence for the move: `n(&a[0..3])` — no coercion involved — is refused at emission
+with *"param 0 is not C5-representable"*, so **slice parameter representation is the prerequisite**.
+That prerequisite does **not** justify rejecting `n(&a)` once representation exists; C6.3 already
+owns slices, shared/mutable views, range slicing and returned-reference provenance.
 
-**Recommended:** drop b2 as a distinct sub-package. Fold the argument-position question (both the
-`&mut T` → `&T` rows and the array→slice rows) into **one decision** — reject at the checker with a
-message naming the explicit form, per TYPE-METHOD-002 — and let slice representability arrive from
-C6.3. That decision narrows the accepted language, so it is recorded here rather than taken.
+**Checker behaviour is fixed by the ruling:** the checker must **not** reject either normative
+coercion merely because native support is incomplete. Until C6.3b lands, native build may issue a
+deterministic unsupported-profile diagnostic for slice parameters, but `check` must continue to
+accept valid Core source. **C6 cannot close while either normative coercion remains unsupported.**
