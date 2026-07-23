@@ -20,7 +20,10 @@ use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Front {
     hir: starkc::hir::Hir,
@@ -31,6 +34,21 @@ struct Front {
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/c5-native-workspace")
+}
+
+/// A private copy of the fixture workspace. `compile_workspace` writes a lockfile into the
+/// package root it's given (§7 manifest resolution); tests must never point that at the
+/// checked-in fixture directly; `cargo test` runs tests in this file concurrently, and
+/// concurrent writers to the same `stark.lock` race (fatal on Windows: "os error 32").
+fn isolated_fixture_root() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "stark_c5_4d_isolated_{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&fixture_root(), &dir);
+    dir
 }
 
 /// Front end → verified-ready MIR for the workspace rooted at `root/app`.
@@ -103,7 +121,8 @@ fn the_canonical_symbols_match_the_frozen_list() {
     // relocation-independent (no absolute paths appear in a symbol), so a byte comparison against
     // the checked-in list is a real freeze — it catches a dropped body, an extra body, a renamed
     // instance, or a changed monomorphisation, in one assertion.
-    let front = compile_workspace(&fixture_root());
+    let root = isolated_fixture_root();
+    let front = compile_workspace(&root);
     let syms = symbols(&front.program); // already in canonical sorted order
     let frozen = std::fs::read_to_string(fixture_root().join("EXPECTED-SYMBOLS.txt")).unwrap();
     let expected: Vec<String> = frozen.lines().map(|l| l.to_string()).collect();
@@ -111,11 +130,13 @@ fn the_canonical_symbols_match_the_frozen_list() {
         syms, expected,
         "canonical symbol set drifted from EXPECTED-SYMBOLS.txt"
     );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn hir_and_mir_agree_and_the_workspace_completes() {
-    let front = compile_workspace(&fixture_root());
+    let root = isolated_fixture_root();
+    let front = compile_workspace(&root);
 
     // Engine 1: HIR oracle.
     let hir_exec =
@@ -133,11 +154,13 @@ fn hir_and_mir_agree_and_the_workspace_completes() {
     // Agreement (both completed, same exit, no output).
     assert_eq!(hir_exec.status, mir_exec.status);
     assert_eq!(hir_exec.output, mir_exec.output);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn the_linked_body_set_is_complete_and_consistent() {
-    let front = compile_workspace(&fixture_root());
+    let root = isolated_fixture_root();
+    let front = compile_workspace(&root);
     // Reuses the C5.4a preflight: every referenced instance resolves to exactly one body, symbols
     // strictly sorted and unique, generated names unique — i.e. no duplicate concrete body and no
     // missing referenced body (§14.4 exit).
@@ -161,6 +184,7 @@ fn the_linked_body_set_is_complete_and_consistent() {
         transforms, 2,
         "transform instantiated at two types: {syms:?}"
     );
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -169,7 +193,8 @@ fn the_workspace_builds_one_native_executable_that_exits_normally() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
-    let front = compile_workspace(&fixture_root());
+    let root = isolated_fixture_root();
+    let front = compile_workspace(&root);
     let verified = verify_program(&front.program).expect("verify");
     let out = std::env::temp_dir().join(format!("stark_c5_4d_ws_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
@@ -190,6 +215,7 @@ fn the_workspace_builds_one_native_executable_that_exits_normally() {
         String::from_utf8_lossy(&run.stderr)
     );
     let _ = std::fs::remove_dir_all(&out);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
