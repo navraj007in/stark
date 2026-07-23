@@ -1,0 +1,5 @@
+fn main() {
+    let left: Int8 = 120i8;
+    let right: Int8 = 100i8;
+    let overflow = left + right;
+}

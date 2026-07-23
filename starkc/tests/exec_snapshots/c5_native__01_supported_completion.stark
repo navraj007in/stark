@@ -1,0 +1,44 @@
+struct Pair {
+    left: Int32,
+    right: Int32,
+}
+
+fn identity<T>(value: T) -> T {
+    value
+}
+
+fn increment(value: Int32) -> Int32 {
+    value + 1
+}
+
+fn apply(function: fn(Int32) -> Int32, value: Int32) -> Int32 {
+    function(value)
+}
+
+fn maybe(flag: Bool, value: Int32) -> Option<Int32> {
+    if flag { Some(value) } else { None }
+}
+
+fn main() {
+    let pair = Pair { left: 19, right: 23 };
+    assert_eq(pair.left + pair.right, 42);
+    assert_eq(identity::<Int64>(42), 42);
+
+    let values = [10, 20, 12];
+    let mut index = 0;
+    let mut sum = 0;
+    while index < 3 {
+        sum = sum + values[index];
+        index = index + 1;
+    }
+    assert_eq(sum, 42);
+
+    match maybe(true, sum) {
+        Some(value) => assert_eq(value, 42),
+        None => assert(false),
+    }
+
+    let function: fn(Int32) -> Int32 = increment;
+    assert_eq(apply(function, 41), 42);
+    assert_eq(size_of::<Pair>(), 8);
+}

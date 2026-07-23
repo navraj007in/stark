@@ -1,7 +1,6 @@
 # STARK Compiler STATE
-Updated: 2026-07-23 — **Gate C4 CLOSED, Gate C5 OPEN; WP-C5.1 through WP-C5.4 CLOSED;
-WP-C5.5 IMPLEMENTATION COMPLETE AND READY FOR OWNER CLOSURE; next after closure: WP-C5.6 gate
-qualification.**
+Updated: 2026-07-23 — **Gate C4 CLOSED, Gate C5 OPEN; WP-C5.1 through WP-C5.5 CLOSED;
+WP-C5.6 OPEN for final Gate C5 qualification (CD-076).**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -152,12 +151,14 @@ closed with a real per-unit operation: `HelperOp::Drop` wrappers over
 not every intermediate change, per owner feedback.
 
 ## Position
-**WP-C5.5 (debug build experience) is implementation-complete and ready for owner closure.** The
-C5.4 dependency is satisfied by CD-075. Production `stark build` now passes the discovered rustc,
-Cargo, and runtime paths into the generated-Rust backend; generated builds are always offline;
-backend process failures preserve and report their exact generated crate; and the frozen relocated
-three-package C5.4 workspace builds and runs through the real CLI. No closure directive or CD number
-has been inferred. After owner approval, the next package is **WP-C5.6 (Gate C5 qualification).**
+**WP-C5.5 (debug build experience) CLOSED 2026-07-23 by owner directive CD-076; WP-C5.6 is OPEN.**
+Production `stark build` passes the discovered rustc, Cargo, and runtime paths into the
+generated-Rust backend; generated builds are always offline; backend process failures preserve and
+report their exact generated crate; and the frozen relocated three-package C5.4 workspace builds
+and runs through the real CLI. The post-review stale verbose backend-path defect was fixed by
+`496406c`, and the final evidence record landed in `6c00f67`. CD-076 also approves execution-
+snapshot corpus v1.4.0: two exact C5-native cases (one completion, one overflow trap) are frozen for
+WP-C5.6 replay through HIR, MIR, and native.
 
 **WP-C5.3 (aggregates, enums, error values, Drop, layout) CLOSED 2026-07-23** by owner directive
 after the adversarial review dispositions (CD-070). Sub-packages: C5.3a (CD-056), C5.3b, C5.3c
@@ -2974,8 +2975,16 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     warnings`, and `cargo test --workspace --all-targets --no-fail-fast` all clean/green. Native
     tests build real crates via ONNX-free generated Rust + rustc on the host.
 
-- WP-C5.5 implementation record [2026-07-23, commits `2c96d99`, `e94e760`, `496406c`, **READY FOR
-  OWNER CLOSURE; no CD assigned**]
+- CD-076 [2026-07-23, **WP-C5.5 CLOSED; WP-C5.6 OPEN**] Owner accepts the C5.5 implementation and
+  its post-review corrections (`2c96d99`, `e94e760`, `496406c`, evidence commit `6c00f67`). The
+  stale verbose backend-artifact report is resolved, the final 1,096/0/2 validation is accepted,
+  and no C5.5 user-experience blocker remains. For the carried WP-C2.12 replay obligation, owner
+  approves corpus v1.4.0: `c5_native__01_supported_completion` and
+  `c5_native__02_supported_overflow_trap` are the exact non-String C5-native subset and must replay
+  through both the frozen snapshot harness and HIR/MIR/native comparator during WP-C5.6.
+
+- WP-C5.5 implementation record [2026-07-23, commits `2c96d99`, `e94e760`, `496406c`, **CLOSED
+  CD-076**]
   **Debug build integration is complete without changing C5.4 semantics or the `NativeArtifact`
   contract.** The production native-build driver supplies its resolved rustc, Cargo, and runtime
   paths explicitly to the generated-Rust backend. The selected rustc handles target discovery and

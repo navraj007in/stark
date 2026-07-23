@@ -124,9 +124,12 @@ fn corpus_lock_matches_frozen_snapshot() {
     // `align_of::<Bool>()` was 8. Under the named target contract `stark-64-v1` they are 4 and 1.
     // One file, two output lines; every other hash from 1.0.0 onward is untouched. MIR amendment
     // A4 predicted this re-pin as the cost of its option (b).
+    // 1.3.0 → 1.4.0 (WP-C5.6, 2026-07-23, CD-076): adds the two exact source cases approved for
+    // C5 cross-backend replay. They use only the frozen C5 native subset: one comprehensive
+    // completion and one deterministic overflow trap. Existing hashes remain unchanged.
     assert_eq!(
         version.as_deref(),
-        Some("1.3.0"),
+        Some("1.4.0"),
         "corpus.lock corpus_version changed without updating this assertion (freeze governance)"
     );
 
@@ -178,6 +181,9 @@ fn corpus_lock_matches_frozen_snapshot() {
 /// Filenames are `<category>__<NN>_<description>.stark`; the matching golden file is the same
 /// name with a `.snap` extension.
 const CASES: &[&str] = &[
+    // corpus_version 1.4.0 (WP-C5.6): exact sources replayed by the three-engine harness.
+    "c5_native__01_supported_completion",
+    "c5_native__02_supported_overflow_trap",
     "expr_stmt__01_arithmetic_and_precedence",
     "expr_stmt__02_if_else_and_block_tail",
     "expr_stmt__03_loops_break_continue",

@@ -1,6 +1,6 @@
 # WP-C5.5 — Debug Build Experience and Parallel Pre-Integration Plan
 
-**Status:** IMPLEMENTATION COMPLETE — READY FOR OWNER CLOSURE
+**Status:** CLOSED 2026-07-23 — CD-076
 **Parallel status:** `C5.5-PRE` completed; `C5.5-INTEGRATION` completed after WP-C5.4
 **Formal closure dependency:** satisfied by WP-C5.4d closure at `6e150b1`
 **Prepared:** 2026-07-23  
@@ -8,7 +8,7 @@
 **Intended parallel implementer:** Codex or Gemini while Claude implements WP-C5.4  
 **Depends on now:** WP-C5.1, WP-C5.2, WP-C5.3 — closed  
 **Depends on for final integration:** WP-C5.4 — multi-package linkage, concrete generics, and function values  
-**Next after closure:** WP-C5.6 — Gate C5 qualification  
+**Next:** WP-C5.6 — Gate C5 qualification
 **Authority:** `COMPILER-CHARTER.md`, `COMPILER-STATE.md`, `COMPILER-ROADMAP.md`, `WP-C5-ENTRY.md`, this document
 
 ---
@@ -1780,8 +1780,8 @@ After C5.4d closes and merges:
 
 ## 29. C5.5-INTEGRATION implementation record (2026-07-23)
 
-**Status: implementation and all required evidence complete. Ready for owner closure; no CD number
-is invented or reserved here.**
+**Status: CLOSED by owner directive CD-076.** Implementation, adversarial review, and all required
+C5.5 evidence are complete; WP-C5.6 owns final Gate C5 qualification.
 
 Integration began from the completed C5.4 handoff at
 `6e150b1` (`CD-075: close C5.4d and WP-C5.4`). The final C5.4 backend entry and

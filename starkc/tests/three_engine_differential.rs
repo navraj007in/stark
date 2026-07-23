@@ -478,6 +478,37 @@ macro_rules! three_engine_test {
     };
 }
 
+// WP-C5.6 / CD-076: exact replay of the approved C5-native subset of the frozen WP-C2.12
+// execution-snapshot corpus. These are `include_str!` references rather than copied source, so a
+// corpus edit necessarily changes both the HIR snapshot result and the HIR/MIR/native comparison.
+const C5_SNAPSHOT_COMPLETION: &str =
+    include_str!("exec_snapshots/c5_native__01_supported_completion.stark");
+const C5_SNAPSHOT_OVERFLOW: &str =
+    include_str!("exec_snapshots/c5_native__02_supported_overflow_trap.stark");
+
+#[test]
+fn c5_snapshot_completion_replays_through_all_three_engines() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    agree_completing("c5_snapshot_completion", C5_SNAPSHOT_COMPLETION);
+}
+
+#[test]
+fn c5_snapshot_overflow_replays_through_all_three_engines() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    agree_trapping(
+        "c5_snapshot_overflow",
+        C5_SNAPSHOT_OVERFLOW,
+        TrapCategory::IntegerOverflow,
+        4,
+    );
+}
+
 // ======================================================= §14 exit condition 1 --
 // scalar arithmetic
 
