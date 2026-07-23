@@ -69,7 +69,8 @@ begin from `db73afe`.
 | C6.1a | A | Claude | `db73afe` | `C6-OWNERSHIP-MATRIX.md` (new) | SHARED-CONTRACTS v1 | none | probe-grounded classification | **G3**, **G4** | §7J:3 | **CANDIDATE-COMPLETE** |
 | C6.1b | A | Claude | `db73afe` | `emit_projections.rs`, `emit_places.rs`, `slot.rs` (owned); `emit_bodies.rs` (lease) | SHARED-CONTRACTS v1 | none (`ValueSlot::reinit` is a NEW runtime method, additive, no ABI/behaviour change to existing ops) | `native_c6_1_ownership.rs` (5) | G3, G4 fixed | §7J:3 | CANDIDATE-COMPLETE (CD-081) |
 | C6.1c | A | Claude | (post-C6.1b) | `emit_bodies.rs`, `emit_projections.rs` (owned/lease); `mir/lower.rs` (lease) | SHARED-CONTRACTS v1 | none (MIR canonicalisation with existing ops only — refined Option A) | `native_c6_1_ownership.rs` (+7 `c61c_*`), `native_c5_3` positive multi-unit | G1 fixed | §7J:3 (front-end lowering + backend) | CANDIDATE-COMPLETE (CD-082) |
-| C6.1d | A | Claude | (post-C6.1c) | `mir/lower.rs` (lease), `borrowck.rs` (lease) | SHARED-CONTRACTS v1 | none (unroll with existing `ConstIndex`; no new MIR op — Option (a)) | `native_c6_1_ownership.rs` (+12 `c61d_*`), `gate2_valid` accept flip | G2 fixed; DEV-090 closed | §7J:3 | **CANDIDATE-COMPLETE** |
+| C6.1d | A | Claude | (post-C6.1c) | `mir/lower.rs` (lease), `borrowck.rs` (lease) | SHARED-CONTRACTS v1 | none (unroll with existing `ConstIndex`; no new MIR op — Option (a)) | `native_c6_1_ownership.rs` (+12 `c61d_*`), `gate2_valid` accept flip | G2 fixed; DEV-090 closed | §7J:3 | CANDIDATE-COMPLETE (CD-083) |
+| C6.1e | A | Claude | (post-C6.1d) | `C6-DROP-PATH-MATRIX.md` (new); `three_engine_differential.rs` (lease, tests only) | SHARED-CONTRACTS v1 | none (evidence only — no source change) | `three_engine_differential.rs` (+12 `c61e_*`) | none | §7J:5 (evidence) | **CANDIDATE-COMPLETE** |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
 
@@ -91,6 +92,7 @@ _(none yet — appended when a shared file is leased)_
 | `emit_bodies.rs` | A | C6.1c G1: `try_variant_payload_extraction` destructuring emitter | post-C6.1b | none (statement-local codegen) | as above | C6.1c | C6.1c (landed) |
 | `mir/lower.rs` | A | C6.1d G2: `lower_for_over_array_unrolled` — unroll non-Copy array iteration | post-C6.1c | narrow: new private helper; Copy path unchanged | `native_c6_1_ownership.rs` `c61d_*` | C6.1d | C6.1d (landed) |
 | `borrowck.rs` | A | C6.1d G2: remove the DEV-090 E0104 rejection now that MIR lowers non-Copy array iteration | post-C6.1c | none (removes a rejection) | `gate2_valid` accept test | C6.1d | C6.1d (landed) |
+| `three_engine_differential.rs` | A | C6.1e: add 12 drop-path probe cases (tests only; reuses the existing trap comparator and sits with the sibling C5.3d-1c drop cases) | post-C6.1d | none (no comparator/normalisation change) | the cases themselves | C6.1e | C6.1e (landed) |
 
 ---
 

@@ -1380,6 +1380,241 @@ fn main() {
 "#
 );
 
+// ======================================= WP-C6.1e — the Drop-path matrix (Track A) --
+//
+// Same observation channel as C5.3d-1c: a TRAPPING DESTRUCTOR as a position probe. Native still has
+// no stdout, but a trap's category and exact file:line:column ARE observable in all three engines,
+// so each case is built so exactly one question decides which line is reported.
+//
+// Two shapes:
+//   * NORMAL exits — the destructor MUST fire, so the reported trap is the destructor's own line.
+//     Reporting anything else (or completing) means the value was never destroyed.
+//   * ABNORMAL exits — the destructor must NOT fire, so the reported trap is the ORIGINAL trap's
+//     category and line. Reporting the destructor's line would mean cleanup ran after an abort.
+//
+// C5.3d-1c already covered own-before-fields, reverse field order, enum payload, moved-value
+// transfer, exactly-once, partial-move survivor, and one no-drop-after-trap. C6.1e adds the exit
+// paths §13 requires that those did not reach.
+
+// --- normal exits: the destructor MUST run ---
+
+three_engine_test!(
+    c61e_a_loop_body_local_is_destroyed_each_iteration,
+    "drop_loop_body",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let mut i: Int32 = 0;
+    while i < 3 {
+        let d: D = D { x: 1 };
+        i = i + 1;
+    }
+}
+"#
+);
+
+three_engine_test!(
+    c61e_a_local_live_at_break_is_destroyed,
+    "drop_at_break",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let mut i: Int32 = 0;
+    while i < 3 {
+        let d: D = D { x: 1 };
+        break;
+    }
+}
+"#
+);
+
+three_engine_test!(
+    c61e_a_local_live_at_continue_is_destroyed,
+    "drop_at_continue",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let mut i: Int32 = 0;
+    while i < 3 {
+        let d: D = D { x: 1 };
+        i = i + 1;
+        continue;
+    }
+}
+"#
+);
+
+three_engine_test!(
+    c61e_a_local_is_destroyed_on_return,
+    "drop_at_return",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn f(flag: Bool) -> Int32 {
+    let d: D = D { x: 1 };
+    if flag { return 7; }
+    0
+}
+fn main() {
+    let n: Int32 = f(true);
+    assert_eq(n, 7);
+}
+"#
+);
+
+three_engine_test!(
+    c61e_a_local_is_destroyed_when_question_mark_propagates,
+    "drop_at_try",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn inner() -> Result<Int32, Int32> { Err(1) }
+fn outer() -> Result<Int32, Int32> {
+    let d: D = D { x: 1 };
+    let v: Int32 = inner()?;
+    Ok(v)
+}
+fn main() {
+    let r: Result<Int32, Int32> = outer();
+    assert(true);
+}
+"#
+);
+
+three_engine_test!(
+    c61e_a_match_arm_binding_is_destroyed_at_arm_end,
+    "drop_at_arm_end",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+enum E { V(D) }
+fn main() {
+    let e: E = E::V(D { x: 1 });
+    match e { E::V(d) => { assert_eq(d.x, 1); } }
+}
+"#
+);
+
+three_engine_test!(
+    c61e_an_inner_block_local_is_destroyed_at_block_end,
+    "drop_at_block_end",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let outer: Int32 = 1;
+    { let d: D = D { x: 1 }; }
+    assert_eq(outer, 1);
+}
+"#
+);
+
+// A FAILED pattern test must neither consume nor leak the scrutinee: the first arm does not match,
+// the second does, and its binding is destroyed at arm end (reporting the destructor's line). A
+// scrutinee lost by the failed test would complete instead.
+three_engine_test!(
+    c61e_a_failed_pattern_test_leaves_the_scrutinee_for_the_matching_arm,
+    "drop_failed_pattern",
+    traps(TrapCategory::AssertFailure, 3),
+    r#"struct D { x: Int32 }
+impl Drop for D {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+enum E { A(D), B(D) }
+fn main() {
+    let e: E = E::B(D { x: 1 });
+    match e { E::A(d) => { assert_eq(d.x, 0); }, E::B(d) => { assert_eq(d.x, 1); } }
+}
+"#
+);
+
+// --- abnormal exits: the destructor must NOT run (the ORIGINAL trap is reported) ---
+
+three_engine_test!(
+    c61e_no_destructor_runs_after_an_overflow_trap,
+    "drop_after_overflow",
+    traps(TrapCategory::IntegerOverflow, 8),
+    r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let a: Loud = Loud { x: 1 };
+    let big: Int32 = 2147483647;
+    let boom: Int32 = big + 1;
+    assert_eq(boom, 0);
+}
+"#
+);
+
+three_engine_test!(
+    c61e_no_destructor_runs_after_a_cast_trap,
+    "drop_after_cast",
+    traps(TrapCategory::CastFailure, 8),
+    r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let a: Loud = Loud { x: 1 };
+    let big: Int64 = 4000000000;
+    let boom: Int32 = big as Int32;
+    assert_eq(boom, 0);
+}
+"#
+);
+
+three_engine_test!(
+    c61e_no_destructor_runs_after_an_index_trap,
+    "drop_after_index",
+    traps(TrapCategory::IndexOutOfBounds, 9),
+    r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let a: Loud = Loud { x: 1 };
+    let arr: [Int32; 2] = [1, 2];
+    let i: Int32 = 5;
+    let boom: Int32 = arr[i];
+    assert_eq(boom, 0);
+}
+"#
+);
+
+three_engine_test!(
+    c61e_no_destructor_runs_after_an_assertion_failure,
+    "drop_after_assert",
+    traps(TrapCategory::AssertFailure, 8),
+    r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { assert(self.x > 100); }
+}
+fn main() {
+    let a: Loud = Loud { x: 1 };
+    let never: Bool = false;
+    assert(never);
+}
+"#
+);
+
 // DEV-098 (CD-070): exclusive references across the call boundary.
 //
 // The adversarial premise was that a `&mut` used twice in one block reaches rustc, because
