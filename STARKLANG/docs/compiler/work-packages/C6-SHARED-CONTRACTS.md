@@ -20,7 +20,7 @@ C6.0 adds no Core feature and changes no behaviour.
 | MIR runtime surface | `0.1-A8` | `starkc/src/mir/mod.rs` `MIR_RUNTIME_SURFACE` |
 | Generated-Rust backend version | `0.1` | `starkc/src/backend/version.rs` `BACKEND_VERSION` |
 | Native runtime version | `0.1` | `starkc/stark-runtime/src/version.rs` `RUNTIME_VERSION` |
-| Target-layout contract | `stark-64-v1` (rev `1`) | `starkc/src/layout` (`contract_for`) |
+| Target-layout contract | `stark-64-v1` (rev `1`) | `starkc/src/layout.rs` (`contract_for`) |
 
 Changing any value is a CE3 (MIR/version) or CE4 (runtime) escalation. A runtime-version bump
 requires generated-code tests, installed-layout tests, and an offline-build proof (WP-C6.3 §30).

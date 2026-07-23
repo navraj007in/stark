@@ -29,6 +29,14 @@ closure (WP-C6-ENTRY §7K).
 | Open deviation list | C5 exit report §5 (DEV-098 defensive; DEV-101 follow-ups) |
 | C6 deferral list | C5 exit report §3 |
 
+**WP-C6-ENTRY §2 recheck items (re-pinned at `db73afe`), assigned to tracks:** multi-unit
+enum-payload partial moves → **C6.1c (A)**; wider non-`Copy` cross-block moves → **C6.1b (A)**;
+non-`Copy` by-value fixed-array iteration → **C6.1d (A)**; the **generic-impl receiver-inference
+limitation** (recheck if still open) → **C6.2b (B)**; the WP-C2.12 deterministic generated corpus
+and full cross-backend replay → **C6.5 (B/integration)**. (The first three appear in exit report §3;
+the receiver-inference recheck and the WP-C2.12 corpus half are pinned here explicitly since they
+are recheck/carry-forward items rather than C5 refusals.)
+
 Handoff is read from these artifacts, not reconstructed from commit messages.
 
 ---
