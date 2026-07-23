@@ -1787,7 +1787,9 @@ Integration began from the completed C5.4 handoff at
 `6e150b1` (`CD-075: close C5.4d and WP-C5.4`). The final C5.4 backend entry and
 `NativeArtifact { binary_path, build_dir }` contract were unchanged. The frozen workspace is
 `starkc/tests/fixtures/c5-native-workspace/`. The C5.5 integration implementation and its closure
-evidence are committed at `2c96d99` (`C5.5: complete native build integration`).
+evidence are committed at `2c96d99` (`C5.5: complete native build integration`), with reviewed
+follow-ups at `e94e760` (reproducible backend-command evidence) and `496406c` (retained-artifact
+lifecycle correction).
 
 ### 29.1 Delivered integration
 
@@ -1814,12 +1816,15 @@ evidence are committed at `2c96d99` (`C5.5: complete native build integration`).
   probe and offline build command.
 - A deliberately failing Cargo wrapper proves exit-status/stderr classification and that the
   exact generated crate (including `src/main.rs`) remains available after failure.
+- A normal unretained `stark build --verbose` returns no backend-artifact path after deleting the
+  generated crate. The result models that path as `Option<PathBuf>` and prints it only while the
+  generated crate is retained; the stable final artifact remains reported and verified to exist.
 
 ### 29.2 Focused evidence
 
 ```text
 cargo test --test native_build_cli --no-fail-fast
-  8 passed; 0 failed; 0 ignored
+  9 passed; 0 failed; 0 ignored
 
 cargo test --lib native_toolchain
   2 passed; 0 failed; 0 ignored; 437 filtered out
@@ -1834,7 +1839,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
   passed
 
 cargo test --workspace --all-targets --no-fail-fast
-  1095 passed; 0 failed; 2 ignored across 55 test-bearing binaries
+  1096 passed; 0 failed; 2 ignored across 55 test-bearing binaries
 ```
 
 ### 29.3 Adversarial closure dispositions
@@ -1846,7 +1851,9 @@ cargo test --workspace --all-targets --no-fail-fast
 3. **Toolchain hiding source errors:** no; analysis/lowering/verification precede preflight.
 4. **Old executable misreported:** no; installation occurs only after a new backend artifact and
    success is printed only after sibling-temp rename and final existence validation.
-5. **Hashed final path:** no; only the stable package-derived sibling is reported as final.
+5. **Hashed/deleted backend path presented as live:** no; an unretained verbose build reports only
+   the stable package-derived final artifact, while retained builds may also report the existing
+   backend-local path.
 6. **Missing runtime reaching Cargo:** no; runtime structure is preflighted first.
 7. **rustc failure shown as source typing:** no; it is a structured backend-build failure.
 8. **`--emit-rust` deleting output:** no; it implies retention and validates `src/main.rs`.
@@ -1863,7 +1870,7 @@ cargo test --workspace --all-targets --no-fail-fast
     passes.
 17. **Installed operation outside checkout:** installed-layout discovery and relocated-runtime
     manifest use are both proven.
-18. **Stale expected output:** no; focused suites, fmt, strict clippy, and the 1,095-test workspace
+18. **Stale expected output:** no; focused suites, fmt, strict clippy, and the 1,096-test workspace
     pass are green against the final implementation.
 19. **Scalar-only closure:** no; closure uses the frozen three-package C5.4 workspace through the
     real CLI and runs its executable.

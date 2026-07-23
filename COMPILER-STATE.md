@@ -2974,8 +2974,8 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     warnings`, and `cargo test --workspace --all-targets --no-fail-fast` all clean/green. Native
     tests build real crates via ONNX-free generated Rust + rustc on the host.
 
-- WP-C5.5 implementation record [2026-07-23, commit `2c96d99`, **READY FOR OWNER CLOSURE; no CD
-  assigned**]
+- WP-C5.5 implementation record [2026-07-23, commits `2c96d99`, `e94e760`, `496406c`, **READY FOR
+  OWNER CLOSURE; no CD assigned**]
   **Debug build integration is complete without changing C5.4 semantics or the `NativeArtifact`
   contract.** The production native-build driver supplies its resolved rustc, Cargo, and runtime
   paths explicitly to the generated-Rust backend. The selected rustc handles target discovery and
@@ -2996,9 +2996,13 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     runtime path in the generated manifest.
   - **Failure-retention proof:** a Cargo wrapper exiting 23 proves backend classification, status
     and stderr transport, the exact retained-directory note, and retained `src/main.rs`.
-  - **Focused validation:** 8 CLI tests; 2 native-toolchain unit tests; 27 C5.3/C5.4 native
+  - **Artifact-lifecycle correction (`496406c`):** `BuildCommandResult.backend_artifact` is present
+    only when the generated crate is retained. A normal `stark build --verbose` no longer
+    advertises the backend-local binary after cleanup; it still reports and verifies the stable
+    final artifact. The stale C5.1/C5.4 future-tense backend comments were corrected with the fix.
+  - **Focused validation:** 9 CLI tests; 2 native-toolchain unit tests; 27 C5.3/C5.4 native
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
-    **1,095 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
+    **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
 
 ## Conformance summary
