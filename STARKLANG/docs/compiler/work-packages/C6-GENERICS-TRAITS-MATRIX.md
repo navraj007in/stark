@@ -1,7 +1,8 @@
 # C6-GENERICS-TRAITS-MATRIX — Track B / WP-C6.2
 
 **Status:** C6.2a CLOSED (CD-086). C6.2b IN PROGRESS — §18 matrix probed end-to-end (§5), DEV-102
-closed (§6); five findings await disposition (§7). C6.2c…e remain open.
+closed (§6); F1–F6 dispositioned by owner ruling (§7). **F1 is a C6.2b blocker assigned to Track B**
+and must be fixed before F2, F5, DEV-083 or C6.2c. C6.2c…e remain open.
 **Base:** `main`, post-WP-C6.1 closure (CD-085)
 **Authorship:** the file is **Track B**-owned (`C6-FILE-OWNERSHIP.md §1`). The C6.2a section was
 written by Track A under the owner's C6.2a ruling, because the defect was in *lowering identity*,
@@ -146,10 +147,21 @@ lowering) — **F2**.
 
 ---
 
-## 7. C6.2b findings awaiting disposition
+## 7. C6.2b findings — owner dispositions (2026-07-23)
 
 Ordered by severity. F1 is the only one that **accepts invalid programs**; the rest are
 over-rejections or unassigned scope.
+
+**Dependency order (ruled): F1 → C6.1f/F3 → F4 → remaining F2/F5/F6 → C6.3b.**
+
+| Finding | Disposition |
+|---|---|
+| **F1** | **Track B, C6.2b BLOCKER** — fix before F2, F5, DEV-083 or C6.2c. No lease needed (`resolve.rs`, `typecheck.rs`, the C6.2 tests and this matrix are Track B-owned); request a narrow lease only if shared authority-bearing files become necessary. Enforce at the **semantic access point**, not the three discovered examples: field projection, method-call selection, associated-function selection, fully qualified calls to private impl members, generic and cross-package versions, defining-module access still accepted, public members of a private type not making it externally nameable, and inherent-member privacy kept distinct from trait-member accessibility. |
+| **F2** | After C6.1f. Track B. |
+| **F3** | **New package `WP-C6.1f` — General Reference Storage, Reborrowing, and Provenance, Track A.** Not absorbed into C6.2b. See `WP-C6.1f.md`. |
+| **F4** | **Split.** Nested-reference type parsing + MIR/reference representation → C6.1f (Track A); repeated auto-deref *selection* → Track B, after C6.1f. |
+| **F5** | After C6.1f. Track B. |
+| **F6** | After C6.1f. Track B. |
 
 | # | Finding | Evidence | Normative basis |
 |---|---|---|---|
@@ -160,6 +172,8 @@ over-rejections or unassigned scope.
 | **F5** | Impl-head bounds are invisible in method bodies: `impl<T: Sh> W<T> { fn go(&self) { self.v.a() } }` → E0302 "method 'a' not found for type 'T'". | `generic_impl_head_bounded` probe | The WP-C6-ENTRY §2 carry-forward, confirmed still open |
 | **F6** | Impl signatures do not normalise `Self`: writing the concrete type where the trait declares `Self` (`fn make() -> G` for `fn make() -> Self`, or `o: &G` for `o: &Self`) is rejected E0500. Writing `Self` works. | `F4_impl_writes_concrete`, `F4_param_Self` probes | 03 impl/trait signature matching — spec does not obviously require the concrete spelling to be accepted |
 
-**Doc defect found while grounding F4:** the repo `CLAUDE.md` summary says method calls "auto-deref
+**Doc defect found while grounding F4:** the repo `CLAUDE.md` summary said method calls "auto-deref
 **one** reference level", but normative TYPE-METHOD-002 says auto-dereference "repeatedly removes one
-leading `&`/`&mut`". The summary is wrong and should be corrected.
+leading `&`/`&mut`". **Corrected in `0873308`** — it stated a limitation the language does not have
+and would have led a future agent to implement single-level auto-deref and treat nested-reference
+receivers as out of scope.

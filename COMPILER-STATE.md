@@ -1,10 +1,12 @@
 # STARK Compiler STATE
 Updated: 2026-07-23 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
-WP-C6.0 contract freeze CLOSED (CD-078), WP-C6.1 (ownership and Drop parity, Track A) CLOSED
-(CD-080…CD-084), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
+WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop parity, Track A) CLOSED
+(CD-080…CD-084) with WP-C6.1f OPEN** (general reference storage — the C5 deferral the C6 entry plan
+never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: WP-C6.2b findings, C6.2c…e, WP-C6.3 (runtime values and
+Remaining C6: **WP-C6.1f (Track A, next)**, F1 privacy (Track B blocker), C6.2b's other findings,
+C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
 exit.**
 
@@ -3044,7 +3046,38 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
 
-- CD-078…CD-084 [2026-07-23, **GATE C6 OPENED; WP-C6.0 and WP-C6.1 CLOSED**] Gate C6 (Native
+- CD-088 [2026-07-23, **C6.2b F1/F3 OWNER RULINGS; WP-C6.1f OPENED**] Dispositions for the six
+  C6.2b findings, and a scope correction to Gate C6.
+  - **F1 → Track B, C6.2b BLOCKER.** The privacy under-rejection is fixed before F2, F5, DEV-083 or
+    C6.2c. No lease: `resolve.rs`, `typecheck.rs`, the C6.2 tests and the generics/traits matrix are
+    Track B-owned; a narrow lease is requested only if shared authority-bearing files prove
+    necessary. Enforcement must sit at the **semantic access point** rather than block-listing the
+    three discovered examples — field projection, method-call selection, associated-function
+    selection, fully qualified calls to private impl members, generic and cross-package versions,
+    defining-module access still accepted, public members of a private type not making that type
+    externally nameable, and inherent-member privacy kept distinct from trait-member accessibility.
+    Ranked first because it is the only finding that **expands the accepted language beyond Core
+    v1** rather than temporarily rejecting valid code.
+  - **F3 → new WP-C6.1f, Track A.** *General Reference Storage, Reborrowing, and Provenance*
+    (`STARKLANG/docs/compiler/work-packages/WP-C6.1f.md`). NOT absorbed into C6.2b: method
+    resolution merely exposed it, while the problem is reference storage, liveness, provenance, MIR
+    verification and native emission. Track A owns it as semantic integration lead — the work
+    intersects ownership-liveness, MIR lowering/verification, `ValueSlot` conventions and backend
+    place emission; Track C is prohibited from changing ownership-liveness, and Track B keeps
+    method-selection behaviour built on top of the resulting contract. **Status wording corrected to
+    "C6.1a–e closed; C6.1f open because the C5 general-reference deferral was not assigned during
+    C6 planning" — a scope correction, not evidence the completed Drop/ownership work was invalid.**
+    Ten scope items incl. **no NLL expansion**; explicitly ruled that **removing a validator check
+    so `let r = &p` passes would be an unsafe patch, not an implementation of F3**. CE3 for
+    MIR/verifier contract changes, CE4 for runtime representation/ABI.
+  - **Dependency order: F1 → C6.1f/F3 → F4 → remaining F2/F5/F6 → C6.3b.** F4 stays split —
+    nested-reference type parsing and MIR/reference representation to C6.1f, repeated auto-deref
+    *selection* to Track B afterwards.
+  - **`CLAUDE.md` corrected immediately** (`0873308`, narrow docs commit): its "auto-deref one
+    reference level" contradicted normative TYPE-METHOD-002 and would have led a future agent to
+    implement the wrong limitation.
+
+- CD-078…CD-084 [2026-07-23, **GATE C6 OPENED; WP-C6.0 and WP-C6.1a–e CLOSED**] Gate C6 (Native
   Semantic Parity) is a **three-track parallel** gate — Track A ownership/Drop (Claude), Track B
   generics/traits (Gemini), Track C runtime/collections (Codex) — executing on `main` (the owner
   waived the entry plan's §7C branch/worktree model). Governance lives in

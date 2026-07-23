@@ -72,6 +72,7 @@ begin from `db73afe`.
 | C6.1d | A | Claude | (post-C6.1c) | `mir/lower.rs` (lease), `borrowck.rs` (lease) | SHARED-CONTRACTS v1 | none (unroll with existing `ConstIndex`; no new MIR op — Option (a)) | `native_c6_1_ownership.rs` (+12 `c61d_*`), `gate2_valid` accept flip | G2 fixed; DEV-090 closed | §7J:3 | CANDIDATE-COMPLETE (CD-083) |
 | C6.1e | A | Claude | (post-C6.1d) | `C6-DROP-PATH-MATRIX.md` (new); `three_engine_differential.rs` (lease, tests only) | SHARED-CONTRACTS v1 | none (evidence only — no source change) | `three_engine_differential.rs` (+12 `c61e_*`) | none | §7J:5 (evidence) | **CANDIDATE-COMPLETE** |
 | C6.2a | A | Claude | (post-C6.1e) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` (new) | SHARED-CONTRACTS v1 §3 (`Instance` identity) | none (conformance correction — the contract was violated, not changed) | `native_c6_2_generics_traits.rs` (12) | **DEV-102 opened** (fully-qualified call form) | §7J:3 | **CLOSED (CD-086)** |
+| C6.1f | A | Claude | (post-C6.2b) | `WP-C6.1f.md` (new); further files per its matrix | SHARED-CONTRACTS v1 | none yet (CE3 if MIR/verifier contract; CE4 if runtime/ABI) | `C6-REFERENCE-MATRIX.md` then native regressions | F3 (owns), F4 (representation half) | §7J:3 | **OPEN** — authorised by the F3 ruling |
 | C6.2b | A | Claude | (post-C6.2a) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` | SHARED-CONTRACTS v1 | none (new callee arm using existing MIR ops) | `native_c6_2_generics_traits.rs` (+8 `c62b_*`, 20 total) | **DEV-102 CLOSED**; F1–F6 opened | §7J:3 | **PARTIAL** — DEV-102 closed, §18 matrix probed; F1–F6 await disposition |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
@@ -100,7 +101,11 @@ state/doc update.
 
 ## 5b. WP-C6.1 closure (Track A)
 
-**WP-C6.1 — ownership and Drop parity — CLOSED 2026-07-23** (CD-080…CD-084). All five sub-packages
+**WP-C6.1a–e — ownership and Drop parity — CLOSED 2026-07-23** (CD-080…CD-084). **C6.1a–e closed; C6.1f OPEN** because the C5 general-reference deferral was not assigned during
+C6 planning (owner ruling, C6.2b F3, 2026-07-23). This is a **scope correction, not evidence that
+the completed Drop and ownership work was invalid** — see `WP-C6.1f.md`.
+
+All five sub-packages
 delivered and all four surfaced gaps closed:
 
 | Sub-package | Deliverable | Commit |
@@ -179,7 +184,49 @@ Drop-log comparison and IO/provider-failure cleanup wait on C6.3 output/resource
   would have been wrong — the qualified form is the spec's own remedy for the E0203 ambiguity error,
   proven by `A::go(&s)`/`B::go(&s)` selecting different impls. Not a CE3: existing MIR ops only.
 
-- **C6.2b findings F1–F6 [2026-07-23] — AWAITING OWNER DISPOSITION.** The §18 matrix was probed
+- **Owner ruling [2026-07-23, C6.2b F1] — privacy under-rejection assigned to Track B as a C6.2b
+  BLOCKER.** *"F1 → Track B, C6.2b blocker, fix before further C6.2 closure work. No lease for
+  Track B-owned files; request a narrow lease only if shared authority-bearing files become
+  necessary."* Track B fixes F1 **before** F2, F5, DEV-083 or C6.2c. `resolve.rs`, `typecheck.rs`,
+  the C6.2 tests and the generics/traits matrix are already Track B-owned, so no lease is needed;
+  the lease protocol applies only if the correction turns out to require shared MIR/backend files.
+  Enforcement must be at the **semantic access point**, not a block-list of the three discovered
+  examples, covering: field projection `s.private_field`; method-call selection
+  `s.private_method()`; associated-function selection `S::private_assoc()`; fully qualified calls to
+  private impl members; generic and cross-package versions of each; access from the defining module
+  still accepted; public members of a private type not making that type externally nameable; and
+  inherent-member privacy kept **distinct** from trait-member accessibility. Rationale: F1 is the
+  only finding that **expands the accepted language beyond Core v1** rather than temporarily
+  rejecting valid code, and the matrix already isolates it to fields and impl members since
+  module-item privacy works.
+
+- **Owner ruling [2026-07-23, C6.2b F3] — general reference storage becomes WP-C6.1f, Track A.**
+  F3 is **not** absorbed into C6.2b: method resolution merely exposed it, while the actual problem
+  is reference storage, liveness, provenance, MIR verification and native emission. New package
+  **`WP-C6.1f` — General Reference Storage, Reborrowing, and Provenance** (`WP-C6.1f.md`), owned by
+  **Track A** as semantic integration lead, because the work intersects ownership-liveness, MIR
+  lowering/verification, `ValueSlot` conventions and backend place emission — Track C is prohibited
+  from changing ownership-liveness, and Track B keeps method-selection behaviour built on top of the
+  resulting reference contract. **This is a scope correction, not evidence that the completed Drop
+  and ownership work was invalid**: C5 formally deferred general references to "C6", and the C6
+  entry plan distributed the *consumers* across C6.2b (§18 receivers) and C6.3b (slice provenance,
+  `Box` borrow/deref, mutable views, returned references) without assigning the shared prerequisite.
+  Explicitly ruled: **removing a validator check so `let r = &p` passes would be an unsafe patch,
+  not an implementation of F3** — the current validator intentionally admits only compiler
+  temporaries within one basic block and rejects user bindings, cross-block flow, aggregate storage
+  and returned references. Scope: the ten items in `WP-C6.1f.md` §2, including **no NLL expansion**.
+  CE3 for MIR/verifier contract changes, CE4 for runtime representation/ABI.
+
+- **Owner ruling [2026-07-23, C6.2b] — dependency order and the F4 split.** Sequence:
+  **F1 → C6.1f/F3 → F4 → remaining F2/F5/F6 → C6.3b.** F4 stays **split**: nested-reference *type
+  parsing* and MIR/reference representation depend on C6.1f (Track A); *repeated auto-deref method
+  selection* remains Track B work once that foundation exists. The `CLAUDE.md` auto-deref statement
+  was corrected immediately in a narrow docs commit (`0873308`) because it contradicts the normative
+  repeated-auto-dereference rule and would otherwise lead a future agent to implement the wrong
+  limitation.
+
+- **C6.2b findings F1–F6 [2026-07-23] — DISPOSITIONS: F1 → Track B (blocker); F3 → WP-C6.1f
+  (Track A); F4 → split across C6.1f and Track B; F2/F5/F6 → after C6.1f.** The §18 matrix was probed
   end-to-end; details and normative citations in `C6-GENERICS-TRAITS-MATRIX.md` §7.
   - **F1 — privacy under-rejection (the only one that ACCEPTS invalid programs).** Private impl
     members (methods, associated fns) and private struct fields are reachable cross-module, though
