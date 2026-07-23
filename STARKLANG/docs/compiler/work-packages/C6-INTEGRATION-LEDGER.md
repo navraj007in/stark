@@ -96,9 +96,15 @@ _(none yet — appended when a shared file is leased)_
 
 ---
 
-## 7. CE escalations
+## 7. Decisions and CE escalations
 
-_(none yet — CE3/CE4/CE8/CE9 recorded here before implementation continues)_
+- **CD-079 [2026-07-23] — WP-C6-ENTRY APPROVED.** Owner approved the Gate C6 entry plan
+  (`starkc/docs/WP-C6-ENTRY.md`), discharging §1's last opening condition and the Wave-0
+  "approve C6 entry" step. All ten §1 opening conditions are satisfied at Gate C5 closure
+  (`db73afe`/CD-077). The §7C branch/worktree model is waived; all C6 tracks execute on `main`.
+  Wave 1 is authorised.
+
+_(CE3/CE4/CE8/CE9 recorded here before implementation continues — none yet.)_
 
 ---
 
