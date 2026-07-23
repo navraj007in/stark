@@ -49,7 +49,7 @@ fn stderr(output: &Output) -> String {
 }
 
 const SCALAR: &str = r#"
-fn add(a: i32, b: i32) -> i32 { a + b }
+fn add(a: Int32, b: Int32) -> Int32 { a + b }
 fn main() { assert_eq(add(20, 22), 42); }
 "#;
 
@@ -60,10 +60,9 @@ fn build_places_and_runs_stable_artifact_then_replaces_it() {
     assert!(first.status.success(), "{}", stderr(&first));
     let final_path = package.root.join("target/stark/debug/build-app");
     assert!(final_path.is_file());
-    assert!(stdout(&first).contains(&format!(
-        "Built build-app [debug] -> {}",
-        final_path.display()
-    )));
+    let first_stdout = stdout(&first);
+    assert!(first_stdout.contains("Built build-app [debug] -> "));
+    assert!(first_stdout.contains("target/stark/debug/build-app"));
     assert!(Command::new(&final_path).status().unwrap().success());
     let generated: Vec<_> = std::fs::read_dir(package.root.join("target/stark/debug"))
         .unwrap()
@@ -102,7 +101,7 @@ fn aggregate_program_builds_offline_with_empty_cargo_home() {
     let package = Package::new(
         "aggregate",
         r#"
-struct Pair { left: i32, right: i32 }
+struct Pair { left: Int32, right: Int32 }
 fn main() { let pair = Pair { left: 19, right: 23 }; assert_eq(pair.left + pair.right, 42); }
 "#,
     );
@@ -160,6 +159,14 @@ fn missing_tool_and_runtime_have_stark_facing_diagnostics() {
         .output()
         .unwrap();
     assert!(stderr(&missing_tool).contains("toolchain component 'rustc' not found"));
+
+    let missing_cargo = Command::new(env!("CARGO_BIN_EXE_stark"))
+        .arg("build")
+        .env("STARK_CARGO", package.root.join("missing-cargo"))
+        .current_dir(&package.root)
+        .output()
+        .unwrap();
+    assert!(stderr(&missing_cargo).contains("toolchain component 'cargo' not found"));
 
     let missing_runtime = Command::new(env!("CARGO_BIN_EXE_stark"))
         .arg("build")

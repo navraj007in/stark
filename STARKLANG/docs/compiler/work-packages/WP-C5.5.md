@@ -1689,3 +1689,89 @@ At final WP-C5.5 closure:
 > A user can enter the frozen three-package STARK workspace, run `stark build`, and receive a runnable native debug executable at a stable path without invoking Cargo manually. The command preserves the compiler’s semantic pipeline, uses the completed C5.4 linker and function-value backend without duplicating them, operates offline with the installed STARK runtime, and reports source, toolchain, unsupported-feature, backend, and environmental failures through clear STARK-facing diagnostics.
 
 C5.6 then qualifies the complete Gate C5 claim through the full supported snapshot subset, platform/CI evidence, and the final exit report.
+
+---
+
+## 28. C5.5-PRE implementation record (2026-07-23)
+
+**Status: C5.5-PRE-COMPLETE. WP-C5.5 remains OPEN pending C5.4d closure and C5.5-INTEGRATION.**
+
+Recorded at repository head `fef84d85c65be8e121a2da8c1b4114ad289ac367` while C5.4 changes were
+present in the shared worktree. The PRE implementation did not edit any file under
+`starkc/src/backend/generated_rust/` and did not alter C5.4 linkage, concrete-instance, symbol,
+or function-value semantics.
+
+### 28.1 Delivered PRE contract
+
+- `stark build` has a distinct native-build path; `check` and interpreter-backed `run` retain
+  their previous execution models.
+- The binary parses `--locked`, `--offline`, `--keep-generated`, `--emit-rust`, and `--verbose`;
+  `--emit-rust` implies retention and invalid flags/positionals exit 2.
+- `native_build` owns package discovery, canonical project analysis, MIR lowering, mandatory MIR
+  verification, backend invocation, stable artifact installation, cleanup, and structured
+  outcomes/errors.
+- `native_toolchain` implements `STARK_RUSTC`/`RUSTC`/PATH and
+  `STARK_CARGO`/`CARGO`/PATH precedence, numeric Rust version-floor checking (`1.85.0`), host and
+  sysroot probes, and runtime discovery through override, installed layout, then development
+  fallback.
+- Stable debug artifacts are installed at `<package-root>/target/stark/debug/<package-name>` by
+  copying to a process-local sibling and renaming only after the backend artifact exists.
+- Successful default builds remove the hashed generated crate. Retention and emitted-Rust modes
+  return and print exact existing paths. Backend failure preserves the generated root and states
+  the PRE limitation that the exact failed hashed directory is not yet available.
+- Source diagnostics precede toolchain probes. MIR verification, unsupported-native, missing
+  toolchain/runtime, backend build, missing artifact, installation, and filesystem failures have
+  distinct STARK-facing categories.
+
+### 28.2 PRE evidence
+
+Host: `aarch64-apple-darwin`.
+
+Toolchain:
+
+```text
+rustc 1.93.0 (254b59607 2026-01-19)
+cargo 1.93.0 (083ac5135 2025-12-15)
+```
+
+Focused evidence:
+
+```text
+cargo test --test native_build_cli --no-fail-fast
+  6 passed; 0 failed; 0 ignored
+
+cargo test --lib native_
+  3 passed; 0 failed; 0 ignored; 435 filtered out
+
+cargo fmt --all -- --check
+  passed
+
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+  passed
+```
+
+The CLI suite observes a scalar final executable and an aggregate final executable, stable
+package-derived output naming, repeated replacement, default cleanup, retained crate/source,
+verbose stages, source-error-before-toolchain ordering, old-artifact non-claim, missing rustc,
+missing Cargo, missing runtime, usage exit 2, and an empty-`CARGO_HOME` offline build.
+
+Full closure evidence:
+
+```text
+cargo test --workspace --all-targets --no-fail-fast
+  1067 passed; 0 failed; 2 ignored across 52 test-bearing binaries
+```
+
+### 28.3 Integration-only items (intentionally deferred)
+
+After C5.4d closes and merges:
+
+1. extend `NativeBuildOptions` with the discovered rustc, Cargo, and runtime paths and use them in
+   generated-backend process/manifest construction;
+2. enrich `BackendDiagnostic::BuildFailed` with exact build directory, command, status, stdout,
+   and stderr;
+3. route the frozen C5.4 three-package workspace through the CLI and run the direct-call,
+   concrete-generic, and function-value/indirect-call proofs;
+4. map final C5.4 linkage diagnostics without inspecting or repairing MIR in C5.5 code;
+5. prove the installed runtime layout outside the source checkout and workspace relocation;
+6. update `COMPILER-STATE.md` once and perform the final adversarial closure review.
