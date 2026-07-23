@@ -12,10 +12,10 @@ representation or ABI change stops for **CE4**.
 ## 1. Why this package exists
 
 C5 explicitly deferred *"General references and full borrow/lifetime representation"* to C6 (C5 exit
-report §205). The C6 entry plan then distributed that deferral's **consumers** across two packages —
-C6.2b needs shared and nested-reference receivers (§18), C6.3b needs slice provenance, `Box`
-borrow/deref, mutable views and returned references (§25) — **without assigning the shared
-prerequisite itself to any package.**
+report, "Listed deviations and future ownership"). The C6 entry plan then distributed that
+deferral's **consumers** across two packages — C6.2b needs shared and nested-reference receivers
+(WP-C6-ENTRY §18), C6.3b needs slice provenance, `Box` borrow/deref, mutable views and returned
+references (WP-C6-ENTRY §25) — **without assigning the shared prerequisite itself to any package.**
 
 C6.2b's §18 probe surfaced the consequence as finding **F3**: `let r = &p; r.get()` is refused by
 the backend as outside the C5 *ephemeral reference lane*, though the front end and the HIR oracle
