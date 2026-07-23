@@ -1,6 +1,6 @@
 # STARK Compiler STATE
-Updated: 2026-07-23 — **Gate C4 CLOSED, Gate C5 OPEN; WP-C5.1 through WP-C5.5 CLOSED;
-WP-C5.6 OPEN for final Gate C5 qualification (CD-076).**
+Updated: 2026-07-23 — **Gate C5 CLOSED; WP-C5.1 through WP-C5.6 CLOSED (CD-077).
+Gate C6 is not yet open; C6 entry planning and owner approval are next.**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -151,14 +151,14 @@ closed with a real per-unit operation: `HelperOp::Drop` wrappers over
 not every intermediate change, per owner feedback.
 
 ## Position
-**WP-C5.5 (debug build experience) CLOSED 2026-07-23 by owner directive CD-076; WP-C5.6 is OPEN.**
-Production `stark build` passes the discovered rustc, Cargo, and runtime paths into the
-generated-Rust backend; generated builds are always offline; backend process failures preserve and
-report their exact generated crate; and the frozen relocated three-package C5.4 workspace builds
-and runs through the real CLI. The post-review stale verbose backend-path defect was fixed by
-`496406c`, and the final evidence record landed in `6c00f67`. CD-076 also approves execution-
-snapshot corpus v1.4.0: two exact C5-native cases (one completion, one overflow trap) are frozen for
-WP-C5.6 replay through HIR, MIR, and native.
+**Gate C5 and WP-C5.6 CLOSED 2026-07-23 by owner directive CD-077.** Verdict:
+**NATIVE-CORE-MVP-WITH-LISTED-DEVIATIONS.** The production `stark build` pipeline, relocated
+three-package reference workspace, exact C5-native snapshot replay, 188-test focused matrix,
+1,098/0/2 complete workspace run, runtime-version checks, formatting, strict clippy, and hosted CI
+are green against qualification head `19254086d5f71db169fd1a1020bf30bddd284686`. The exact
+supported subset, explicit String/output delta, deferred native features, toolchain identity,
+artifact contract, and evidence are frozen in `starkc/docs/compiler/C5-exit-report.md`. Gate C6 is
+not automatically open; an owner-approved C6 entry plan is next.
 
 **WP-C5.3 (aggregates, enums, error values, Drop, layout) CLOSED 2026-07-23** by owner directive
 after the adversarial review dispositions (CD-070). Sub-packages: C5.3a (CD-056), C5.3b, C5.3c
@@ -174,7 +174,7 @@ function values under CD-071..CD-075.
 The two open C5.3-adjacent items carried into the C5.4/C5.6 reviews are DEV-098's defensive
 reborrow reasoning and the C6-deferred ownership boundaries.
 
-Gate: **C5 (native compilation) — OPEN. WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
+Gate: **C5 (native compilation) — CLOSED 2026-07-23 (CD-077). WP-C5.1 CLOSED 2026-07-21 in full** (entry plan CD-042,
 WP-C5.1a CD-043, WP-C5.1b CD-044, WP-C5.1c CD-045 drafted/CD-046 approved). **WP-C5.2 (scalar
 native lowering) CLOSED 2026-07-21 in full**: C5.2a (CD-047), C5.2b (CD-048), C5.2c (CD-049),
 C5.2d (CD-050), C5.2e (CD-051), and the §14 exit condition discharged by the three-engine
@@ -2982,6 +2982,30 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
   approves corpus v1.4.0: `c5_native__01_supported_completion` and
   `c5_native__02_supported_overflow_trap` are the exact non-String C5-native subset and must replay
   through both the frozen snapshot harness and HIR/MIR/native comparator during WP-C5.6.
+
+- CD-077 [2026-07-23, **WP-C5.6 CLOSED; GATE C5 CLOSED**] Owner accepts
+  `starkc/docs/compiler/C5-exit-report.md` and the verdict
+  **NATIVE-CORE-MVP-WITH-LISTED-DEVIATIONS** against exact qualification head
+  `19254086d5f71db169fd1a1020bf30bddd284686`.
+
+  - **Qualification green:** focused C5.6 matrix 188/0/0; complete
+    `cargo test --workspace --all-targets --all-features --no-fail-fast` 1,098/0/2 across 55
+    test-bearing binaries; `stark-runtime` 23/0/0; formatting clean; strict all-target/all-feature
+    clippy clean. GitHub Actions run `29981161896` succeeded for the exact SHA on both configured
+    jobs.
+  - **Required replay discharged:** corpus v1.4.0's two owner-approved C5-native sources pass the
+    frozen snapshot harness and the HIR/MIR/native comparator. The older String/collection cases
+    remain valid HIR corpus evidence but are not misrepresented as native coverage.
+  - **Reference product proof:** a relocated `app -> logic -> model` workspace builds through the
+    production CLI with `--locked --offline --emit-rust --verbose`; all 13 canonical bodies link;
+    the stable `app/target/stark/debug/app` executable runs with status 0.
+  - **Scope ruling:** CD-077 explicitly accepts the entry-plan Output/Display delta. C5 native has
+    no source `String`/`str`, string constants, print/eprint, or Display-to-output runtime calls;
+    those and the other exact report boundaries are C6-or-later work and are rejected before
+    rustc. There is no known miscompilation, invalid-MIR acceptance, ownership unsoundness, or
+    unexplained divergence inside the admitted native subset.
+  - **Next state:** Gate C6 is not opened by implication. C6 entry planning and owner approval are
+    next, with the exit report's deferred-feature matrix as mandatory input.
 
 - WP-C5.5 implementation record [2026-07-23, commits `2c96d99`, `e94e760`, `496406c`, **CLOSED
   CD-076**]

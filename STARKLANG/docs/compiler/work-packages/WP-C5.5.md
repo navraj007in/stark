@@ -8,7 +8,7 @@
 **Intended parallel implementer:** Codex or Gemini while Claude implements WP-C5.4  
 **Depends on now:** WP-C5.1, WP-C5.2, WP-C5.3 — closed  
 **Depends on for final integration:** WP-C5.4 — multi-package linkage, concrete generics, and function values  
-**Next:** WP-C5.6 — Gate C5 qualification
+**Successor:** WP-C5.6 — Gate C5 qualification, closed by CD-077
 **Authority:** `COMPILER-CHARTER.md`, `COMPILER-STATE.md`, `COMPILER-ROADMAP.md`, `WP-C5-ENTRY.md`, this document
 
 ---

@@ -1,9 +1,9 @@
 # WP-C5-ENTRY — Native Core Backend MVP Execution Plan
 
-**Status:** APPROVED (owner, 2026-07-21, CD-042) — entry plan cleared for WP-C5.1 execution  
+**Status:** APPROVED (owner, 2026-07-21, CD-042), EXECUTED; Gate C5 closed by CD-077
 **Prepared:** 2026-07-21  
 **Repository baseline:** `f87402d6f299f572599b44e9f424f2157050af21`  
-**Current position:** Gate C4 closed; Gate C5 open  
+**Current position:** Gate C5 closed 2026-07-23 by CD-077; C6 entry approval is next
 **Initial backend:** generated Rust consuming verified MIR  
 **MIR contract:** STARK MIR v0.1, frozen for backend consumption  
 **Escalation:** CE4 owner approval — RECORDED (CD-042). The §19 decision table is approved at its recommended choices.
