@@ -71,9 +71,18 @@ def add_tar_tree(archive: tarfile.TarFile, root: Path, archive_root: str) -> Non
         info.uname = info.gname = ""
         info.mtime = 0
         if path.is_file():
+            # NTFS has no POSIX executable bit, so `gettarinfo`'s host-`stat`-derived mode loses
+            # it when packaging runs on a Windows host; set it explicitly from the archive layout
+            # instead of trusting the host filesystem to have preserved a `chmod` call.
+            executable = path.parent.name == "bin" or path.name in {
+                "install.sh",
+                "uninstall.sh",
+            }
+            info.mode = 0o755 if executable else 0o644
             with path.open("rb") as source:
                 archive.addfile(info, source)
         else:
+            info.mode = 0o755
             archive.addfile(info)
 
 
