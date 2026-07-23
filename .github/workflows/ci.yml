@@ -107,7 +107,7 @@ jobs:
           try {
             & (Join-Path $prefix "bin/stark.exe") run
             if ($LASTEXITCODE -ne 0) { throw "installed stark run failed" }
-            & (Join-Path $prefix "bin/stark.exe") build --locked --offline
+            & (Join-Path $prefix "bin/stark.exe") build --locked --offline --verbose
             if ($LASTEXITCODE -ne 0) { throw "installed stark build failed" }
             & ".\target\stark\debug\app.exe"
             if ($LASTEXITCODE -ne 0) { throw "installed native artifact failed" }

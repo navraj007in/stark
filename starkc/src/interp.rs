@@ -6243,6 +6243,33 @@ mod tests {
         typecheck::analyze(&hir, file).diagnostics
     }
 
+    fn stark_string_literal_contents(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len());
+        for character in value.chars() {
+            match character {
+                '\\' => escaped.push_str("\\\\"),
+                '"' => escaped.push_str("\\\""),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                '\t' => escaped.push_str("\\t"),
+                _ => escaped.push(character),
+            }
+        }
+        escaped
+    }
+
+    #[test]
+    fn generated_source_paths_escape_stark_string_metacharacters() {
+        assert_eq!(
+            stark_string_literal_contents(r"C:\Users\runner\file.txt"),
+            r"C:\\Users\\runner\\file.txt"
+        );
+        assert_eq!(
+            stark_string_literal_contents("quoted\"line\ncarriage\r tab\t"),
+            "quoted\\\"line\\ncarriage\\r tab\\t"
+        );
+    }
+
     fn execute(source: &str) -> Result<Execution, RuntimeError> {
         let file = Arc::new(SourceFile::new("test.stark", source));
         let (ast, parse_diags) = parse(&file, ParseMode::Program);
@@ -7082,6 +7109,7 @@ mod tests {
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
+        let source_path = stark_string_literal_contents(&path.to_string_lossy());
         let source = format!(
             "fn main() {{ \
                  let mut output: File = File::create(\"{}\").unwrap(); \
@@ -7091,8 +7119,7 @@ mod tests {
                  println(input.read_to_string().unwrap()); \
                  input.close().unwrap(); \
              }}",
-            path.display(),
-            path.display()
+            source_path, source_path
         );
         let execution = execute(&source).unwrap();
         assert_eq!(execution.output, "5\nhello\n");

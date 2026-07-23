@@ -94,7 +94,10 @@ pub fn build_and_link(
         )));
     }
 
-    let binary_path = crate_dir.join("target").join("debug").join(BIN_NAME);
+    let binary_path = crate_dir
+        .join("target")
+        .join("debug")
+        .join(generated_binary_filename(std::env::consts::EXE_SUFFIX));
     if !binary_path.exists() {
         return Err(BackendDiagnostic::BuildFailed(Box::new(
             BackendBuildFailure {
@@ -118,6 +121,10 @@ pub fn build_and_link(
 }
 
 const BIN_NAME: &str = "stark_program";
+
+fn generated_binary_filename(executable_suffix: &str) -> String {
+    format!("{BIN_NAME}{executable_suffix}")
+}
 
 fn query_rustc_verbose(rustc: &Path) -> Result<String, BackendDiagnostic> {
     let output = Command::new(rustc)
@@ -408,6 +415,12 @@ mod tests {
         // the sorted body order are what guarantee this).
         let p = trivial();
         assert_eq!(key(&p), key(&p));
+    }
+
+    #[test]
+    fn generated_binary_filename_is_platform_aware() {
+        assert_eq!(generated_binary_filename(""), "stark_program");
+        assert_eq!(generated_binary_filename(".exe"), "stark_program.exe");
     }
 
     #[test]
