@@ -1959,8 +1959,45 @@ impl<'a> FnLowerer<'a> {
         }
     }
 
+    /// WP-C6.2a: the ONE place a `FnKey` becomes an `Instance`.
+    ///
+    /// `Instance` identity is `(item, type_args, symbol)`, and the frozen canonical-identity
+    /// contract requires a reference to a callable to carry the SAME triple as the body that
+    /// defines it. The defining item is the callable's definition — the function item for a
+    /// top-level fn, the `impl` item for an implementation method, the trait item for an
+    /// un-overridden default — never the receiver nominal, which is separate contextual
+    /// information. Call sites previously passed the receiver nominal, so every method / trait /
+    /// operator / associated-function call produced one canonical symbol with two item identities;
+    /// the linkage preflight (correctly) refused them all. Routing BOTH `MirBody.instance` and
+    /// every `FnKey`-derived `Callee::Instance` through this constructor removes the defect class
+    /// rather than its individual manifestations.
+    ///
+    /// Note `ImplFn` carries impl-level `type_args` AND the method's own `method_args`; the
+    /// instance's `type_args` are the IMPL's, matching what the body records (the method's own
+    /// arguments are already folded into the canonical `symbol`).
+    fn instance_from_key(&self, key: &FnKey) -> Result<Instance, LowerError> {
+        let symbol = key_symbol(self.hir, self.meta, key)?;
+        let (item, type_args) = match key {
+            FnKey::Top(item, type_args) => (*item, type_args.clone()),
+            FnKey::ImplFn {
+                impl_item,
+                type_args,
+                ..
+            } => (*impl_item, type_args.clone()),
+            FnKey::TraitDefault {
+                trait_item,
+                self_args,
+                ..
+            } => (*trait_item, self_args.clone()),
+        };
+        Ok(Instance {
+            item,
+            type_args,
+            symbol,
+        })
+    }
+
     fn lower_body(&mut self) -> Result<MirBody, LowerError> {
-        let symbol = key_symbol(self.hir, self.meta, &self.key)?;
         let key = self.key.clone();
         let (sig, body_block, self_ty) = self.fn_parts()?;
         let sig_span = sig.span;
@@ -2155,25 +2192,10 @@ impl<'a> FnLowerer<'a> {
             .drain(..)
             .map(|b| b.expect("every allocated block must be sealed"))
             .collect();
-        let (instance_item, instance_type_args) = match &self.key {
-            FnKey::Top(item, type_args) => (*item, type_args.clone()),
-            FnKey::ImplFn {
-                impl_item,
-                type_args,
-                ..
-            } => (*impl_item, type_args.clone()),
-            FnKey::TraitDefault {
-                trait_item,
-                self_args,
-                ..
-            } => (*trait_item, self_args.clone()),
-        };
+        // WP-C6.2a: the body's identity comes from the SAME constructor every call reference uses.
+        let instance = self.instance_from_key(&key)?;
         Ok(MirBody {
-            instance: Instance {
-                item: instance_item,
-                type_args: instance_type_args,
-                symbol,
-            },
+            instance,
             params,
             ret,
             locals: std::mem::take(&mut self.locals),
@@ -4251,11 +4273,7 @@ impl<'a> FnLowerer<'a> {
                             method_args: Vec::new(),
                         }
                     };
-                    let symbol = key_symbol(self.hir, self.meta, &key)?;
-                    let instance_args = match &key {
-                        FnKey::ImplFn { type_args, .. } => type_args.clone(),
-                        _ => Vec::new(),
-                    };
+                    let instance = self.instance_from_key(&key)?;
                     self.discovered_callees.push(key);
                     let ops = args
                         .iter()
@@ -4264,11 +4282,7 @@ impl<'a> FnLowerer<'a> {
                     let after = self.new_block();
                     self.terminate(
                         Terminator::Call {
-                            callee: Callee::Instance(Instance {
-                                item: nominal,
-                                type_args: instance_args,
-                                symbol,
-                            }),
+                            callee: Callee::Instance(instance),
                             args: ops,
                             dest,
                             target: after,
@@ -4389,17 +4403,13 @@ impl<'a> FnLowerer<'a> {
         };
         let lhs_ref = self.borrow_value_ref(lhs, span)?;
         let rhs_ref = self.borrow_value_ref(rhs, span)?;
-        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        let instance = self.instance_from_key(&key)?;
         self.discovered_callees.push(key);
         let eq_dest = self.new_temp(MirTy::Bool);
         let after = self.new_block();
         self.terminate(
             Terminator::Call {
-                callee: Callee::Instance(Instance {
-                    item: nominal,
-                    type_args: type_args.to_vec(),
-                    symbol,
-                }),
+                callee: Callee::Instance(instance),
                 args: vec![lhs_ref, rhs_ref],
                 dest: Place::local(eq_dest),
                 target: after,
@@ -4445,7 +4455,7 @@ impl<'a> FnLowerer<'a> {
         };
         let lhs_ref = self.borrow_value_ref(lhs, span)?;
         let rhs_ref = self.borrow_value_ref(rhs, span)?;
-        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        let instance = self.instance_from_key(&key)?;
         self.discovered_callees.push(key);
         // cmp(&a, &b) -> Ordering
         let ord_ty = MirTy::Enum(EnumRef::CoreOrdering, Vec::new());
@@ -4453,11 +4463,7 @@ impl<'a> FnLowerer<'a> {
         let after = self.new_block();
         self.terminate(
             Terminator::Call {
-                callee: Callee::Instance(Instance {
-                    item: nominal,
-                    type_args: type_args.to_vec(),
-                    symbol,
-                }),
+                callee: Callee::Instance(instance),
                 args: vec![lhs_ref, rhs_ref],
                 dest: Place::local(ord_dest),
                 target: after,
@@ -4775,7 +4781,7 @@ impl<'a> FnLowerer<'a> {
                 return unsupported("method-syntax call to a receiverless fn", span);
             }
         };
-        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        let instance = self.instance_from_key(&key)?;
         self.discovered_callees.push(key);
         let mut ops = vec![receiver_op];
         for &arg in args {
@@ -4784,11 +4790,7 @@ impl<'a> FnLowerer<'a> {
         let after = self.new_block();
         self.terminate(
             Terminator::Call {
-                callee: Callee::Instance(Instance {
-                    item: nominal,
-                    type_args: nominal_args.clone(),
-                    symbol,
-                }),
+                callee: Callee::Instance(instance),
                 args: ops,
                 dest,
                 target: after,
@@ -6029,7 +6031,7 @@ impl<'a> FnLowerer<'a> {
         // rather than three drops at loop exit. `break` also destroys the current iteration's
         // value before leaving.
         let elem_needs_drop = self.ty_needs_drop(&elem, span)?;
-        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        let instance = self.instance_from_key(&key)?;
         self.discovered_callees.push(key);
 
         // Materialize the iterator into a registered local (it may itself be droppable).
@@ -6074,11 +6076,7 @@ impl<'a> FnLowerer<'a> {
         let after = self.new_block();
         self.terminate(
             Terminator::Call {
-                callee: Callee::Instance(Instance {
-                    item,
-                    type_args: targs,
-                    symbol,
-                }),
+                callee: Callee::Instance(instance),
                 args: vec![Operand::Copy(Place::local(iter_ref))],
                 dest: Place::local(nxt),
                 target: after,
@@ -6648,17 +6646,13 @@ impl<'a> FnLowerer<'a> {
         };
 
         // Ordinary static call to the selected `Display::fmt(&self) -> String`.
-        let symbol = key_symbol(self.hir, self.meta, &key)?;
+        let instance = self.instance_from_key(&key)?;
         self.discovered_callees.push(key);
         let str_result = self.new_temp(MirTy::String);
         let after_fmt = self.new_block();
         self.terminate(
             Terminator::Call {
-                callee: Callee::Instance(Instance {
-                    item: nominal,
-                    type_args: nominal_args.clone(),
-                    symbol,
-                }),
+                callee: Callee::Instance(instance),
                 args: vec![recv_op],
                 dest: Place::local(str_result),
                 target: after_fmt,

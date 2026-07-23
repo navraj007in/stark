@@ -71,6 +71,7 @@ begin from `db73afe`.
 | C6.1c | A | Claude | (post-C6.1b) | `emit_bodies.rs`, `emit_projections.rs` (owned/lease); `mir/lower.rs` (lease) | SHARED-CONTRACTS v1 | none (MIR canonicalisation with existing ops only — refined Option A) | `native_c6_1_ownership.rs` (+7 `c61c_*`), `native_c5_3` positive multi-unit | G1 fixed | §7J:3 (front-end lowering + backend) | CANDIDATE-COMPLETE (CD-082) |
 | C6.1d | A | Claude | (post-C6.1c) | `mir/lower.rs` (lease), `borrowck.rs` (lease) | SHARED-CONTRACTS v1 | none (unroll with existing `ConstIndex`; no new MIR op — Option (a)) | `native_c6_1_ownership.rs` (+12 `c61d_*`), `gate2_valid` accept flip | G2 fixed; DEV-090 closed | §7J:3 | CANDIDATE-COMPLETE (CD-083) |
 | C6.1e | A | Claude | (post-C6.1d) | `C6-DROP-PATH-MATRIX.md` (new); `three_engine_differential.rs` (lease, tests only) | SHARED-CONTRACTS v1 | none (evidence only — no source change) | `three_engine_differential.rs` (+12 `c61e_*`) | none | §7J:5 (evidence) | **CANDIDATE-COMPLETE** |
+| C6.2a | A | Claude | (post-C6.1e) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` (new) | SHARED-CONTRACTS v1 §3 (`Instance` identity) | none (conformance correction — the contract was violated, not changed) | `native_c6_2_generics_traits.rs` (12) | **DEV-102 opened** (fully-qualified call form) | §7J:3 | **CLOSED (CD-086)** |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
 
@@ -83,8 +84,6 @@ state/doc update.
 
 ## 5. Lease log
 
-_(none yet — appended when a shared file is leased)_
-
 | file | track | reason | base SHA | API impact | tests | lease start | lease release |
 |---|---|---|---|---|---|---|---|
 | `emit_bodies.rs` | A | C6.1b G4: `emit_assignment` chooses `reinit` vs `write` by drop-obligation | `db73afe` | none (internal codegen choice) | `native_c6_1_ownership.rs` | C6.1b | C6.1b (landed) |
@@ -93,6 +92,7 @@ _(none yet — appended when a shared file is leased)_
 | `mir/lower.rs` | A | C6.1d G2: `lower_for_over_array_unrolled` — unroll non-Copy array iteration | post-C6.1c | narrow: new private helper; Copy path unchanged | `native_c6_1_ownership.rs` `c61d_*` | C6.1d | C6.1d (landed) |
 | `borrowck.rs` | A | C6.1d G2: remove the DEV-090 E0104 rejection now that MIR lowers non-Copy array iteration | post-C6.1c | none (removes a rejection) | `gate2_valid` accept test | C6.1d | C6.1d (landed) |
 | `three_engine_differential.rs` | A | C6.1e: add 12 drop-path probe cases (tests only; reuses the existing trap comparator and sits with the sibling C5.3d-1c drop cases) | post-C6.1d | none (no comparator/normalisation change) | the cases themselves | C6.1e | C6.1e (landed) |
+| `mir/lower.rs` | A | C6.2a: `instance_from_key` — the single canonical `Instance` constructor; all 7 construction sites routed through it (owner ruling). Track B's area, but the defect is in lowering identity, not method selection; Track B informed & excluded until release. | post-C6.1e | narrow: one new private helper; 6 call sites and the body site now call it instead of building `Instance` inline | `native_c6_2_generics_traits.rs` (12) | C6.2a | C6.2a (landed) |
 
 ---
 
@@ -151,6 +151,27 @@ Drop-log comparison and IO/provider-failure cleanup wait on C6.3 output/resource
   emitting it for a no-drop slot local. Not a CE4: `reinit` is a new helper method (Track A owned,
   WP-C6-ENTRY §10 "preserve `ValueSlot<T>`… route moves/writes through reviewed helpers"), additive,
   no change to any existing op, ABI, layout, or Drop glue. Recorded in `C6-SHARED-CONTRACTS.md §4`.
+
+- **Owner ruling [2026-07-23, C6.2a] — canonical callable identity, NOT a CE3.** `Instance` identity
+  is `(item, type_args, symbol)`; bodies derived `item` from the `FnKey` while call sites passed the
+  **receiver nominal**, so one canonical symbol carried two item identities and the C5.4a linkage
+  preflight (correctly) refused every method, trait, operator and associated-function call before
+  rustc. This is a **violation** of `C6-SHARED-CONTRACTS.md §3`, not a change to it: no MIR shape,
+  verifier rule, `mir_version`, symbol scheme, ABI, or accepted-language semantics moves, so it is
+  not a CE3 or CE4. Fix per ruling: **do not patch the six sites independently** — introduce ONE
+  lowering-internal constructor `FnLowerer::instance_from_key(&FnKey) -> Instance` and route every
+  `Instance` through it (`MirBody.instance`, ordinary methods, trait-impl calls, default trait calls,
+  `Eq` dispatch, `Ord` dispatch, associated functions), removing the defect class rather than its
+  manifestations. The **linkage consistency check is not weakened** — `a_mismatched_item_is_still_-
+  rejected` proves it still fires. Coverage per ruling: all ten required shapes as native executable
+  tests, plus a direct assertion that each `Callee::Instance` reference and its body share identical
+  `symbol`/`item`/`type_args`. Track A leased `mir/lower.rs`; Track B informed and excluded until
+  release. **The fully-qualified call gap is deliberately kept separate** — see DEV-102 / C6.2b.
+
+- **DEV-102 [2026-07-23, C6.2a] — fully-qualified call form not lowered.** `Trait::method(&recv)`
+  still reports `LOWER: callee form (C4.5)`. Per the owner ruling this is a **missing
+  callee-lowering form, unrelated to the identity defect**, and is recorded independently under
+  **C6.2b (method-resolution completion)** rather than broadened into the identity correction.
 
 - **Owner ruling [2026-07-23, C6.1d] — Option (a) unconditional array-iteration unrolling, NOT a
   CE3.** By-value iteration over a non-`Copy` fixed array unrolls into `N` `ConstIndex(i)` moves (no

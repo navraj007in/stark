@@ -1,7 +1,8 @@
 # STARK Compiler STATE
 Updated: 2026-07-23 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
-WP-C6.0 contract freeze CLOSED (CD-078), and WP-C6.1 (ownership and Drop parity, Track A) CLOSED
-(CD-080…CD-084). Remaining C6: WP-C6.2 (generics/traits, Track B), WP-C6.3 (runtime values and
+WP-C6.0 contract freeze CLOSED (CD-078), WP-C6.1 (ownership and Drop parity, Track A) CLOSED
+(CD-080…CD-084), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
+CLOSED (CD-086). Remaining C6: WP-C6.2b…e (generics/traits), WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
 exit.**
 
@@ -3084,10 +3085,48 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     `cargo test --workspace --all-targets --no-fail-fast` green. Evidence lives in
     `starkc/tests/native_c6_1_ownership.rs` (24) and `three_engine_differential.rs`'s `c61e_*` (12).
 
-  - **Remaining C6:** WP-C6.2 (generics and static trait dispatch, Track B) and WP-C6.3 (runtime
+  - **Remaining C6:** WP-C6.2 (generics and static trait dispatch) and WP-C6.3 (runtime
     values and collections — String/Vec/Box/iterators/maps/**output**/files, Track C) are the bulk of
-    the gate and have not started; then C6.4 Tier-1 platform matrix, C6.5 full differential/generated
-    corpus, C6.6 adversarial review and gate exit.
+    the gate; then C6.4 Tier-1 platform matrix, C6.5 full differential/generated corpus, C6.6
+    adversarial review and gate exit.
+
+- CD-086 [2026-07-23, **WP-C6.2a — canonical callable identity; native dispatch unblocked**]
+  A probe of twelve generics/trait shapes found **nine refused before rustc** (two already worked;
+  one is a separate lowering gap) — every method, trait, operator and associated-function call among
+  them. Cause: `Instance` identity is
+  `(item, type_args, symbol)`, and while **bodies** derived `item` from the `FnKey`, **call sites**
+  passed the **receiver nominal**, so one canonical symbol carried two item identities and the C5.4a
+  linkage preflight (correctly) refused the program. The full suite had stayed green only because no
+  native test exercised an ordinary method call — destructors resolve through
+  `TypeContext::drop_impls`, a different path. This confirms C6.1b's method correction a second time:
+  **coverage of a mechanism is not coverage of the surface that uses it.**
+  - **Owner ruling — a conformance correction, NOT a CE3/CE4.** `C6-SHARED-CONTRACTS.md §3` was
+    *violated*, not changed; no MIR shape, verifier rule, `mir_version`, symbol scheme, ABI or
+    accepted-language semantics moves. Ruling further directed: **do not patch the six sites
+    independently** — introduce ONE lowering-internal constructor
+    `FnLowerer::instance_from_key(&FnKey) -> Instance` and route **every** `Instance` through it
+    (`MirBody.instance`, ordinary methods, trait-impl calls, default trait calls, `Eq` dispatch,
+    `Ord` dispatch, associated functions), removing the defect *class*. Implemented exactly so.
+  - **Result:** eleven of the twelve probe shapes now build and run natively, as do two further
+    shapes added as regressions (a method on a generic nominal, and a cross-package trait call) —
+    inherent, generic-nominal and
+    method-level-generic methods; user-trait dispatch; bounded-generic bound calls; default trait
+    methods; associated types and associated functions; cross-package trait calls. **`Eq` and `Ord`
+    operator dispatch are proven adversarially** (an always-true `eq` and a reversed `cmp` both give
+    answers a Rust `derive` would contradict), discharging §20's "STARK's impls, not Rust's".
+  - **The linkage consistency check was not weakened** — `a_mismatched_item_is_still_rejected`
+    proves it still fires; and every case now asserts directly that each `Callee::Instance` reference
+    and its defining body share identical `symbol`/`item`/`type_args`.
+  - **DEV-102 opened, deliberately kept separate** per the ruling: fully-qualified `Trait::method(&r)`
+    still reports `LOWER: callee form (C4.5)`. It is a missing callee-lowering form unrelated to the
+    identity defect, and belongs to **C6.2b method-resolution completion** (alongside the deferred
+    DEV-083), not to this correction.
+  - **Evidence:** `starkc/tests/native_c6_2_generics_traits.rs` (12) and
+    `STARKLANG/docs/compiler/work-packages/C6-GENERICS-TRAITS-MATRIX.md`. Scoped regression across
+    the ten at-risk suites (lib 441, `mir_differential`, `mir_lowering`, `mir_verify`,
+    `exec_snapshots`, `conformance`, `three_engine_differential` 83, `native_c6_1_ownership` 24,
+    `native_c5_3_aggregates_enums`, `gate4a_prelude_traits`) green; `fmt --check` and strict
+    workspace `clippy` clean.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
