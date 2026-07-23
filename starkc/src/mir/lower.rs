@@ -2161,6 +2161,9 @@ impl<'a> FnLowerer<'a> {
         let body_span = self.hir.block(body_block).span;
         let tail = self.lower_block_value(body_block)?;
         if let Some(op) = tail {
+            // C6.1f-b2: a tail expression is a return-position expected-type boundary, so
+            // `fn g(m: &mut P) -> &P { m }` weakens rather than mismatching.
+            let op = self.weaken_ref_to(op, &ret, body_span)?;
             self.emit(
                 Statement::Assign(Place::local(LocalId(0)), Rvalue::Use(op)),
                 self.synthetic(body_span, SyntheticKind::ReturnSlot),
@@ -2292,6 +2295,8 @@ impl<'a> FnLowerer<'a> {
                 self.register_droppable_local(mir_local, &mir_ty, false, *name)?;
                 if let Some(init) = init {
                     let value = self.lower_expr_to_operand(*init)?;
+                    // C6.1f-b2: `let r: &P = m;` where `m: &mut P`.
+                    let value = self.weaken_ref_to(value, &mir_ty, *name)?;
                     self.emit(
                         Statement::Assign(Place::local(mir_local), Rvalue::Use(value)),
                         self.info(span),
@@ -2303,6 +2308,9 @@ impl<'a> FnLowerer<'a> {
             StmtKind::Return(value) => {
                 if let Some(value) = value {
                     let op = self.lower_expr_to_operand(*value)?;
+                    // C6.1f-b2: `fn g(m: &mut P) -> &P { return m; }`.
+                    let ret_ty = self.locals[0].ty.clone();
+                    let op = self.weaken_ref_to(op, &ret_ty, span)?;
                     self.emit(
                         Statement::Assign(Place::local(LocalId(0)), Rvalue::Use(op)),
                         self.info(span),
@@ -2677,6 +2685,9 @@ impl<'a> FnLowerer<'a> {
                 let place = self.lower_place(*lhs)?;
                 match op {
                     AssignOp::Assign => {
+                        // C6.1f-b2: an assignment destination is an expected-type boundary.
+                        let want = self.expr_mir_ty(*lhs)?;
+                        let rhs_op = self.weaken_ref_to(rhs_op, &want, span)?;
                         self.lower_overwriting_assign(place, rhs_op, span)?;
                         Ok(())
                     }
@@ -3617,6 +3628,73 @@ impl<'a> FnLowerer<'a> {
         (t, layers)
     }
 
+    /// WP-C6.1f-b2: the built-in **expected-type reference weakening**, `&mut T` → `&T`.
+    ///
+    /// 03-Type-System "Reference Coercions" makes `&mut T -> &T` normative, and a function
+    /// parameter, an annotated `let`, an assignment destination and a return position are all
+    /// **expected-type boundaries** — TYPE-METHOD-002 excludes argument-position auto-borrow,
+    /// auto-dereference and *user-defined* coercion, not this fixed built-in set.
+    ///
+    /// Per the C6.1f-b2 ruling the `&mut` is **re-borrowed, not moved**, so the source stays
+    /// usable afterwards. Each re-borrow is a *temporary* borrow that ends with its statement
+    /// (03, "References and Lifetimes" rule 4), so no borrow duration changes and Core v1's
+    /// lexical rule is untouched — the same property b1 relied on.
+    ///
+    /// It also covers the **same-mutability** case: passing `&mut T` where `&mut T` is expected
+    /// must re-borrow too, or the source reference would be *moved* and a second use would fail
+    /// V-MOVE-1 — the MIR-level twin of the E0100 that borrowck used to raise.
+    ///
+    /// A no-op unless the operand really is a `&mut T` place read at a reference-typed boundary.
+    fn weaken_ref_to(
+        &mut self,
+        op: Operand,
+        expected: &MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let MirTy::Ref {
+            mutable: want_mut,
+            inner: want,
+        } = expected
+        else {
+            return Ok(op);
+        };
+        let (Operand::Copy(place) | Operand::Move(place)) = &op else {
+            return Ok(op);
+        };
+        // Only a whole reference local is handled; a projected place is not a `&mut T` value.
+        if !place.projection.is_empty() {
+            return Ok(op);
+        }
+        let have = match &self.locals[place.local.0 as usize].ty {
+            MirTy::Ref {
+                mutable: true,
+                inner,
+            } => inner.clone(),
+            _ => return Ok(op),
+        };
+        if have != *want {
+            return Ok(op);
+        }
+        let mut deref = place.clone();
+        deref.projection.push(Projection::Deref);
+        let ref_ty = MirTy::Ref {
+            mutable: *want_mut,
+            inner: want.clone(),
+        };
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(
+                Place::local(temp),
+                Rvalue::RefOf {
+                    mutable: *want_mut,
+                    place: deref,
+                },
+            ),
+            self.info(span),
+        );
+        self.read_place(Place::local(temp), &ref_ty, span)
+    }
+
     /// A place for `base`, auto-dereffed: if `base`'s type is a reference, the returned place
     /// carries the needed `Deref` projections and the returned type is the referent.
     fn lower_place_autoderef(&mut self, base: ExprId) -> Result<(Place, MirTy), LowerError> {
@@ -4195,11 +4273,31 @@ impl<'a> FnLowerer<'a> {
                 Res::Item(item) => {
                     // C4.5c: generic callees resolve to a concrete monomorphised instance
                     // through the checker's recorded instantiation.
-                    let instance = self.top_fn_instance(*item, callee, span)?;
-                    let ops = args
-                        .iter()
-                        .map(|&a| self.lower_expr_to_operand(a))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let item = *item;
+                    let instance = self.top_fn_instance(item, callee, span)?;
+                    // C6.1f-b2: a parameter is an expected-type boundary, so `&mut T` weakens to
+                    // `&T` here. The checker's grounded signature supplies the expected types.
+                    // The checker's grounded signature supplies the expected types. For a GENERIC
+                    // callee these may still be `Ty::Param` — the caller's substitution cannot
+                    // ground the callee's own parameters — so resolution is best-effort: an
+                    // unresolvable parameter type simply means no weakening is applied to that
+                    // argument, never a lowering failure. (Resolving them would need the callee's
+                    // substitution, which is a separate concern from this coercion.)
+                    let param_tys: Vec<Option<MirTy>> = match self.tables.fn_types.get(&item) {
+                        Some((tys, _)) => {
+                            let tys = tys.clone();
+                            tys.iter().map(|t| self.mir_ty(t, span).ok()).collect()
+                        }
+                        None => Vec::new(),
+                    };
+                    let mut ops = Vec::with_capacity(args.len());
+                    for (i, &a) in args.iter().enumerate() {
+                        let op = self.lower_expr_to_operand(a)?;
+                        ops.push(match param_tys.get(i).and_then(|t| t.clone()) {
+                            Some(expected) => self.weaken_ref_to(op, &expected, span)?,
+                            None => op,
+                        });
+                    }
                     let after = self.new_block();
                     self.terminate(
                         Terminator::Call {
@@ -4339,6 +4437,7 @@ impl<'a> FnLowerer<'a> {
                             span,
                         );
                     };
+                    let receiver_kind = sig.receiver.unwrap_or(hir::Receiver::Ref);
                     if sig.receiver.is_none() {
                         // Defensive only: the checker already rejects `Trait::assoc()` with E0005
                         // ("qualified trait method requires a receiver"), since without a receiver
@@ -4416,10 +4515,21 @@ impl<'a> FnLowerer<'a> {
                     };
                     let instance = self.instance_from_key(&key)?;
                     self.discovered_callees.push(key);
-                    let ops = args
-                        .iter()
-                        .map(|&a| self.lower_expr_to_operand(a))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    // C6.1f-b2: the receiver argument is an expected-type boundary too — a
+                    // `&self` method reached through a `&mut` receiver weakens to `&Self`.
+                    let recv_expected = MirTy::Ref {
+                        mutable: matches!(receiver_kind, hir::Receiver::RefMut),
+                        inner: Box::new(peeled.clone()),
+                    };
+                    let mut ops = Vec::with_capacity(args.len());
+                    for (i, &a) in args.iter().enumerate() {
+                        let op = self.lower_expr_to_operand(a)?;
+                        ops.push(if i == 0 {
+                            self.weaken_ref_to(op, &recv_expected, span)?
+                        } else {
+                            op
+                        });
+                    }
                     let after = self.new_block();
                     self.terminate(
                         Terminator::Call {

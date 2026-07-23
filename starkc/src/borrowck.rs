@@ -206,6 +206,27 @@ impl<'a> BorrowChecker<'a> {
             }
             return;
         }
+        // WP-C6.1f-b2: an argument of type `&mut T` **re-borrows** rather than moving.
+        //
+        // A parameter is an expected-type boundary, and 03-Type-System's reference coercions make
+        // `&mut T -> &T` normative there — but even passing `&mut T` unchanged must not consume the
+        // caller's reference, or `f(m); f(m);` would be rejected. 03 "References and Lifetimes"
+        // rule 4 settles the duration: a borrow not bound to a variable "ends at the end of its
+        // enclosing statement, so `f(&x); g(&mut x);` is legal". The re-borrow therefore lives for
+        // the call and no longer, which is exactly the property b1 relied on for receivers.
+        //
+        // Exclusivity is unchanged: the source stays frozen for the statement, and
+        // `check_place_available` still rejects a re-borrow of an already-moved place. Only the
+        // spurious *move* is removed.
+        if matches!(
+            self.expr_types.get(&expr_id),
+            Some(Ty::Ref { mutable: true, .. })
+        ) {
+            if let Some(place) = self.place_of(expr_id) {
+                self.check_place_available(&place, self.hir.expr(expr_id).span);
+                return;
+            }
+        }
         self.check_expr(expr_id);
     }
 

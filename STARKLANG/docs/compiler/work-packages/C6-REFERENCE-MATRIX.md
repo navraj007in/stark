@@ -1,8 +1,7 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 REVISED by owner ruling —
-see §8 (amended, CD-091).**
+**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 boundaries (CD-092)** — see §9.
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the
@@ -333,3 +332,49 @@ owns slices, shared/mutable views, range slicing and returned-reference provenan
 coercion merely because native support is incomplete. Until C6.3b lands, native build may issue a
 deterministic unsupported-profile diagnostic for slice parameters, but `check` must continue to
 accept valid Core source. **C6 cannot close while either normative coercion remains unsupported.**
+
+
+---
+
+## 9. C6.1f-b2 — expected-type reference weakening (CD-092)
+
+Two defects had to be fixed **together**; either alone leaves the boundary unusable.
+
+| Layer | Defect | Fix |
+|---|---|---|
+| `borrowck.rs` | a `&mut` argument was **consumed**, so `f(m); f(m);` was E0100 | argument-position `&mut T` **re-borrows** (`check_place_available`, no move mark) |
+| `mir/lower.rs` | the conversion was never emitted, so MIR verification rejected the call | `weaken_ref_to` re-borrows at the **expected mutability** |
+
+`weaken_ref_to` also covers the **same-mutability** case: passing `&mut T` where `&mut T` is
+expected must re-borrow too, or the reference is moved and a second use fails V-MOVE-1 — the
+MIR-level twin of the borrowck E0100. Both halves were needed for `f(m); f(m);`.
+
+Each re-borrow is a *temporary* borrow ending with its statement (03 rule 4), so **no borrow
+duration changed**: the §3 negative corpus passes unaltered, no-NLL case included.
+
+### Boundary status
+
+| Boundary | Status |
+|---|---|
+| ordinary function arguments | ✅ **native** |
+| fully qualified trait-call arguments | ✅ **native** |
+| annotated local initialisation (`let r: &P = m;`) | ✅ weakening emitted — **reaches the lane (b3)** |
+| assignment (`r = m;`) | ✅ weakening emitted — **reaches the lane (b3)** |
+| return expressions (both `return m;` and a tail `m`) | ✅ weakening emitted — **reaches the lane (b3)** |
+| **aggregate fields** (`H<&P> { r: m }`) | ❌ **NOT DONE** — see below |
+
+Three boundaries now fail only at the ephemeral-reference lane, which is b3's job, not b2's: the
+weakening itself is correct and the MIR interpreter runs them.
+
+### The one gap, and why it was not guessed at
+
+Aggregate fields need the **expected field types of a generic nominal instantiation** — for
+`H<&P> { r: m }`, the declared field type is the parameter `T` and the instantiation supplies
+`&P`. `TypeContext::struct_fields` is populated at program level, not inside `FnLowerer`, and no
+nominal-generic substitution helper exists in lowering (`impl_generic_subst` covers impl heads,
+not struct instantiations).
+
+Substituting incorrectly here would produce a **silent miscompile** rather than a refusal, which is
+the one failure mode this whole package has so far been free of (§1.1). The boundary is therefore
+left explicitly unimplemented and reported, rather than approximated. It needs a small
+nominal-generic substitution helper first.

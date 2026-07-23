@@ -5,8 +5,8 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f-a and C6.1f-b1 CLOSED (CD-089/CD-090); b2 REVISED by owner ruling (CD-091)
-to expected-type reference weakening; array→slice moved to C6.3b; b3–b5 open**, F1
+Remaining C6: **WP-C6.1f-a/b1 CLOSED; b2 CLOSED for 5 of 6 boundaries (CD-092, aggregate fields
+outstanding); array→slice moved to C6.3b; b3–b5 open**, F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3047,6 +3047,34 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-092 [2026-07-24, **WP-C6.1f-b2 — expected-type reference weakening; 5 of 6 boundaries**]
+  Two defects had to be fixed **together**, because either alone leaves the boundary unusable:
+  **borrowck** consumed a `&mut` argument (so `f(m); f(m);` was E0100) and now **re-borrows**;
+  **lowering** never emitted the conversion (so MIR verification rejected the call) and now
+  re-borrows at the expected mutability. `weaken_ref_to` also covers the **same-mutability** case —
+  passing `&mut T` where `&mut T` is expected must re-borrow too, or the reference is moved and a
+  second use fails V-MOVE-1, the MIR-level twin of the borrowck E0100.
+  - Each re-borrow is a *temporary* borrow ending with its statement (03 rule 4), so **no borrow
+    duration changed**: the C6.1f-a negative corpus passes unaltered, no-NLL case included.
+  - **Boundaries:** function arguments ✅ native; fully qualified trait-call arguments ✅ native;
+    annotated local init, assignment, and return expressions (both `return m;` and a tail `m`) all
+    emit the weakening correctly and now **reach the ephemeral-reference lane**, i.e. they are
+    blocked only by b3. **Aggregate fields are NOT done** — they need the expected field types of a
+    generic nominal instantiation, and no nominal-generic substitution helper exists in lowering
+    (`impl_generic_subst` covers impl heads, not struct instantiations). Substituting wrongly there
+    would produce a **silent miscompile** rather than a refusal — the one failure mode this package
+    has been free of — so it is reported rather than approximated.
+  - **A full-suite run caught 6 regressions the scoped set missed**, all from one root cause: the
+    call-arm resolved the callee's `fn_types` at the call site, but for a **generic** callee those
+    are still `Ty::Param`, which the caller's substitution cannot ground. Expected-type resolution
+    is now best-effort — an unresolvable parameter type means no weakening for that argument, never
+    a lowering failure. Consequence to note: **generic callees do not yet get argument weakening.**
+  - **Validation:** the six previously-failing suites re-run green (`native_c6_2_generics_traits`,
+    `native_c5_4_workspace`, `exec_snapshots`, `three_engine_differential`, `cross_package_generics`)
+    plus the C6.1f suites and the negative corpus; `fmt --check` and strict `clippy` clean. A second
+    full-workspace run was deliberately **not** performed — the failing suites plus the scoped set
+    are the signal, and b2 is not a closure point.
 
 - CD-091 [2026-07-23, **OWNER RULING — b2 REVISED; my spec reading was wrong**] I claimed
   argument-position conversion "does not exist" in CD-090, citing TYPE-METHOD-002. **That was
