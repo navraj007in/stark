@@ -1786,7 +1786,8 @@ is invented or reserved here.**
 Integration began from the completed C5.4 handoff at
 `6e150b1` (`CD-075: close C5.4d and WP-C5.4`). The final C5.4 backend entry and
 `NativeArtifact { binary_path, build_dir }` contract were unchanged. The frozen workspace is
-`starkc/tests/fixtures/c5-native-workspace/`.
+`starkc/tests/fixtures/c5-native-workspace/`. The C5.5 integration implementation and its closure
+evidence are committed at `2c96d99` (`C5.5: complete native build integration`).
 
 ### 29.1 Delivered integration
 

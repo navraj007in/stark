@@ -2974,7 +2974,8 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     warnings`, and `cargo test --workspace --all-targets --no-fail-fast` all clean/green. Native
     tests build real crates via ONNX-free generated Rust + rustc on the host.
 
-- WP-C5.5 implementation record [2026-07-23, **READY FOR OWNER CLOSURE; no CD assigned**]
+- WP-C5.5 implementation record [2026-07-23, commit `2c96d99`, **READY FOR OWNER CLOSURE; no CD
+  assigned**]
   **Debug build integration is complete without changing C5.4 semantics or the `NativeArtifact`
   contract.** The production native-build driver supplies its resolved rustc, Cargo, and runtime
   paths explicitly to the generated-Rust backend. The selected rustc handles target discovery and
