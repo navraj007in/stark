@@ -77,11 +77,14 @@ fn build_places_and_runs_stable_artifact_then_replaces_it() {
         .join(format!("build-app{}", std::env::consts::EXE_SUFFIX));
     assert!(final_path.is_file());
     let first_stdout = stdout(&first);
-    assert!(first_stdout.contains("Built build-app [debug] -> "));
-    assert!(first_stdout.contains(&format!(
-        "target/stark/debug/build-app{}",
-        std::env::consts::EXE_SUFFIX
-    )));
+    let reported_path = first_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Built build-app [debug] -> "))
+        .expect("build output must report the stable artifact path");
+    assert_eq!(
+        Path::new(reported_path).canonicalize().unwrap(),
+        final_path.canonicalize().unwrap()
+    );
     assert!(Command::new(&final_path).status().unwrap().success());
     let generated: Vec<_> = std::fs::read_dir(package.root.join("target/stark/debug"))
         .unwrap()
