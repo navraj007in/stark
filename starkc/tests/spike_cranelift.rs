@@ -831,10 +831,23 @@ fn front_end(name: &str) -> Front {
 
 const RUNTIME_C: &str = r#"#include <stdio.h>
 #include <stdlib.h>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 void stark_println_i64(long long x) { printf("%lld\n", x); }
 void stark_println_bool(signed char x) { printf(x ? "true\n" : "false\n"); }
 extern void stark_main(void);
-int main(void) { stark_main(); return 0; }
+int main(void) {
+#ifdef _WIN32
+    /* The C runtime's stdout defaults to text mode on Windows, which rewrites every "\n" this
+       shim prints to "\r\n" before the test harness ever sees it. Binary mode keeps stdout
+       byte-identical to the interpreter oracle's output, which the test compares against. */
+    _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    stark_main();
+    return 0;
+}
 "#;
 
 fn cc_available() -> bool {
