@@ -82,7 +82,11 @@ conflict table.
   exists only for the uninferable case.
 - Operators on generic parameters desugar to traits: `==`→`Eq`, `<`→`Ord`,
   arithmetic→`Num` (compiler-known, primitives only). Method calls auto-borrow
-  the receiver (`&`/`&mut`) and auto-deref one reference level.
+  the receiver (`&`/`&mut`) and auto-dereference **repeatedly** — TYPE-METHOD-002
+  removes one leading `&`/`&mut` at a time, trying by-value, shared- then
+  exclusive-borrow form at each level, and stops at the first level with an
+  applicable candidate. (Nested-reference receivers are therefore normative, not
+  excluded.)
 - Copy/Drop soundness: `Copy` requires all-Copy fields; `Copy`+`Drop` is
   forbidden; destructors run exactly once (drop flags); no explicit
   `Drop::drop` calls; no moves out of indexed places or `Drop` types.
