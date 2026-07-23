@@ -1,7 +1,9 @@
 //! Library-owned orchestration for `stark build`.
 
 use crate::analysis::{analyze_project, ProjectInput};
-use crate::backend::generated_rust::{emit_native_debug, BackendDiagnostic, NativeBuildOptions};
+use crate::backend::generated_rust::{
+    emit_native_debug_with_toolchain, BackendDiagnostic, NativeBuildOptions, NativeToolchainOptions,
+};
 use crate::mir::{lower::lower_program, verify::verify_program};
 use crate::native_toolchain::{self, ToolchainError, ToolchainInfo};
 use crate::options::LanguageOptions;
@@ -42,10 +44,7 @@ pub enum BuildCommandError {
     MirVerification(String),
     Toolchain(ToolchainError),
     UnsupportedNative(String),
-    BackendBuild {
-        detail: String,
-        generated_root: PathBuf,
-    },
+    BackendBuild(Box<NativeBackendBuildError>),
     ArtifactMissing(PathBuf),
     ArtifactInstall {
         from: PathBuf,
@@ -57,6 +56,12 @@ pub enum BuildCommandError {
         path: Option<PathBuf>,
         detail: String,
     },
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeBackendBuildError {
+    pub failure: crate::backend::generated_rust::BackendBuildFailure,
+    pub toolchain: ToolchainInfo,
 }
 
 pub fn build_current_package(
@@ -112,14 +117,19 @@ pub fn build_current_package(
         .map_err(BuildCommandError::Toolchain)?;
     let target_root = package_root.join("target/stark");
     let final_dir = target_root.join("debug");
-    let artifact = emit_native_debug(
+    let artifact = emit_native_debug_with_toolchain(
         &verified,
         &NativeBuildOptions {
             target_dir: target_root.clone(),
             ..NativeBuildOptions::default()
         },
+        &NativeToolchainOptions {
+            rustc: toolchain.rustc.clone(),
+            cargo: toolchain.cargo.clone(),
+            runtime_crate: toolchain.runtime_crate.clone(),
+        },
     )
-    .map_err(|error| map_backend_error(error, final_dir.clone()))?;
+    .map_err(|error| map_backend_error(error, &toolchain))?;
     if !artifact.binary_path.is_file() {
         return Err(BuildCommandError::ArtifactMissing(artifact.binary_path));
     }
@@ -152,15 +162,20 @@ pub fn build_current_package(
     })
 }
 
-fn map_backend_error(error: BackendDiagnostic, generated_root: PathBuf) -> BuildCommandError {
+fn map_backend_error(error: BackendDiagnostic, toolchain: &ToolchainInfo) -> BuildCommandError {
     match error {
         BackendDiagnostic::Unsupported(message) => BuildCommandError::UnsupportedNative(message),
-        BackendDiagnostic::BuildFailed(detail) | BackendDiagnostic::Io(detail) => {
-            BuildCommandError::BackendBuild {
-                detail,
-                generated_root,
-            }
+        BackendDiagnostic::BuildFailed(failure) => {
+            BuildCommandError::BackendBuild(Box::new(NativeBackendBuildError {
+                failure: *failure,
+                toolchain: toolchain.clone(),
+            }))
         }
+        BackendDiagnostic::Io(detail) => BuildCommandError::Io {
+            action: "running the native backend".to_string(),
+            path: None,
+            detail,
+        },
     }
 }
 

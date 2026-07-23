@@ -623,9 +623,10 @@ fn main() {
         let _ = std::fs::remove_dir_all(&target_dir);
         match result {
             Err(BackendDiagnostic::Unsupported(_)) => {}
-            Err(BackendDiagnostic::BuildFailed(output)) => panic!(
+            Err(BackendDiagnostic::BuildFailed(failure)) => panic!(
                 "{tag}: a reference outside the lane reached rustc and failed THERE; the backend \
-                 must refuse it first:\n{output}"
+                 must refuse it first:\n{}",
+                failure.stderr
             ),
             Err(other) => panic!("{tag}: expected an Unsupported refusal, got {other:?}"),
             Ok(_) => panic!(

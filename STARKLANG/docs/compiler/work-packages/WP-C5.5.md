@@ -1,8 +1,8 @@
 # WP-C5.5 — Debug Build Experience and Parallel Pre-Integration Plan
 
-**Status:** PROPOSED IMPLEMENTATION DIRECTIVE  
-**Parallel status:** `C5.5-PRE` may execute in parallel with WP-C5.4  
-**Formal closure dependency:** WP-C5.5 cannot close before WP-C5.4d closes  
+**Status:** IMPLEMENTATION COMPLETE — READY FOR OWNER CLOSURE
+**Parallel status:** `C5.5-PRE` completed; `C5.5-INTEGRATION` completed after WP-C5.4
+**Formal closure dependency:** satisfied by WP-C5.4d closure at `6e150b1`
 **Prepared:** 2026-07-23  
 **Repository baseline:** `0f39579d722b0851b7abe497df306222014f9730`  
 **Intended parallel implementer:** Codex or Gemini while Claude implements WP-C5.4  
@@ -1775,3 +1775,96 @@ After C5.4d closes and merges:
 4. map final C5.4 linkage diagnostics without inspecting or repairing MIR in C5.5 code;
 5. prove the installed runtime layout outside the source checkout and workspace relocation;
 6. update `COMPILER-STATE.md` once and perform the final adversarial closure review.
+
+---
+
+## 29. C5.5-INTEGRATION implementation record (2026-07-23)
+
+**Status: implementation and all required evidence complete. Ready for owner closure; no CD number
+is invented or reserved here.**
+
+Integration began from the completed C5.4 handoff at
+`6e150b1` (`CD-075: close C5.4d and WP-C5.4`). The final C5.4 backend entry and
+`NativeArtifact { binary_path, build_dir }` contract were unchanged. The frozen workspace is
+`starkc/tests/fixtures/c5-native-workspace/`.
+
+### 29.1 Delivered integration
+
+- Added an explicit production backend entry accepting resolved rustc, Cargo, and runtime paths.
+  The older direct-backend entry remains as a development/test compatibility wrapper; production
+  backend construction contains no hidden source-checkout or literal-tool command assumption.
+  The CLI's documented development runtime fallback remains last in the §11.2 precedence order.
+- The selected rustc is used for backend version/host queries and is passed to Cargo through
+  `RUSTC`; the selected Cargo executable performs the always-offline generated-crate build; the
+  selected runtime path is written into the generated manifest.
+- `BackendDiagnostic::BuildFailed` now carries a boxed structured record: summary, stdout,
+  stderr, exact build directory, command, and optional exit status. Default CLI output classifies
+  it as a native-backend build failure and prints the retained directory; verbose output includes
+  all process evidence plus the preflighted rustc/Cargo paths and versions.
+- The frozen relocated `app → logic → model` workspace builds through
+  `stark build --locked --offline --emit-rust`, places the executable at
+  `<relocated-app>/target/stark/debug/app`, retains generated Rust, and the executable exits 0.
+  This consumes C5.4 linkage validation and concrete/function-value bodies without duplicating or
+  inspecting linkage semantics in the CLI.
+- Installed-layout discovery is proven from `bin/stark` to
+  `lib/stark/stark-runtime`; a separate CLI proof supplies a relocated runtime through
+  `STARK_RUNTIME_DIR`, verifies that exact canonical path reaches the generated Cargo manifest,
+  uses an empty `CARGO_HOME`, and observes the selected Cargo wrapper receive both its version
+  probe and offline build command.
+- A deliberately failing Cargo wrapper proves exit-status/stderr classification and that the
+  exact generated crate (including `src/main.rs`) remains available after failure.
+
+### 29.2 Focused evidence
+
+```text
+cargo test --test native_build_cli --no-fail-fast
+  8 passed; 0 failed; 0 ignored
+
+cargo test --lib native_toolchain
+  2 passed; 0 failed; 0 ignored; 437 filtered out
+
+cargo test --test native_c5_4_workspace --test native_c5_3_aggregates_enums --no-fail-fast
+  27 passed; 0 failed; 0 ignored
+
+cargo fmt --all -- --check
+  passed
+
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+  passed
+
+cargo test --workspace --all-targets --no-fail-fast
+  1095 passed; 0 failed; 2 ignored across 55 test-bearing binaries
+```
+
+### 29.3 Adversarial closure dispositions
+
+1. **Check-only success:** impossible; `build` has its own driver and requires final artifact
+   installation before success.
+2. **MIR verification bypass:** impossible through the backend API; both backend entries require
+   `VerifiedMirProgram`.
+3. **Toolchain hiding source errors:** no; analysis/lowering/verification precede preflight.
+4. **Old executable misreported:** no; installation occurs only after a new backend artifact and
+   success is printed only after sibling-temp rename and final existence validation.
+5. **Hashed final path:** no; only the stable package-derived sibling is reported as final.
+6. **Missing runtime reaching Cargo:** no; runtime structure is preflighted first.
+7. **rustc failure shown as source typing:** no; it is a structured backend-build failure.
+8. **`--emit-rust` deleting output:** no; it implies retention and validates `src/main.rs`.
+9. **Default generated-crate leak:** no; successful unretained builds remove the hashed crate.
+10. **CLI linkage duplication:** none; C5.4 diagnostics cross the backend category boundary.
+11. **Relocation changing binary name:** no; the relocated frozen workspace still emits `app`.
+12. **Package-name path escape:** rejected by safe-component validation before building.
+13. **Environment-secret output:** environment values are not printed; resolved paths and
+    versions appear only in verbose mode.
+14. **Unsupported feature reaching rustc:** C5.4/C5.3 preflight tests remain green; unsupported
+    backend shapes map to `UnsupportedNative`.
+15. **`run` engine drift:** none; `run` remains HIR-interpreter-backed.
+16. **Cargo network access:** generated builds always pass `--offline`; empty-`CARGO_HOME` proof
+    passes.
+17. **Installed operation outside checkout:** installed-layout discovery and relocated-runtime
+    manifest use are both proven.
+18. **Stale expected output:** no; focused suites, fmt, strict clippy, and the 1,095-test workspace
+    pass are green against the final implementation.
+19. **Scalar-only closure:** no; closure uses the frozen three-package C5.4 workspace through the
+    real CLI and runs its executable.
+20. **C5.4 semantic alteration:** none; integration changes only build/toolchain orchestration and
+    diagnostic transport.

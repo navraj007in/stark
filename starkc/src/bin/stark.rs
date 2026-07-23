@@ -302,19 +302,40 @@ fn render_build_error(error: &starkc::native_build::BuildCommandError, verbose: 
         BuildCommandError::UnsupportedNative(message) => {
             eprintln!("error: native build does not yet support this program: {message}")
         }
-        BuildCommandError::BackendBuild {
-            detail,
-            generated_root,
-        } => {
+        BuildCommandError::BackendBuild(error) => {
+            let failure = &error.failure;
             eprintln!(
                 "error: the STARK native backend generated a crate that Cargo could not build"
             );
             eprintln!(
-                "note: generated files, when created, remain under {}",
-                generated_root.display()
+                "note: generated crate retained at {}",
+                failure.build_dir.display()
             );
             if verbose {
-                eprintln!("{detail}");
+                eprintln!(
+                    "rustc: {} ({})",
+                    error.toolchain.rustc.display(),
+                    error.toolchain.rustc_release
+                );
+                eprintln!(
+                    "cargo: {} ({})",
+                    error.toolchain.cargo.display(),
+                    error.toolchain.cargo_release
+                );
+                eprintln!("summary: {}", failure.summary);
+                eprintln!("command: {}", failure.command.join(" "));
+                eprintln!(
+                    "exit status: {}",
+                    failure
+                        .status
+                        .map_or_else(|| "not started".to_string(), |code| code.to_string())
+                );
+                if !failure.stdout.is_empty() {
+                    eprintln!("--- Cargo stdout ---\n{}", failure.stdout);
+                }
+                if !failure.stderr.is_empty() {
+                    eprintln!("--- Cargo stderr ---\n{}", failure.stderr);
+                }
             }
         }
         BuildCommandError::ArtifactMissing(path) => eprintln!(

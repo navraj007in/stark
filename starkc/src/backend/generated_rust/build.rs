@@ -1,22 +1,24 @@
 //! §11/§11.1/§11.2/§12: generated-crate topology, the build-manifest schema, and driving
-//! `cargo build` on the generated crate. WP-C5.1b's version of this proves the pipeline end to
-//! end for the single-file, entry-only shape `emit_program` produces; splitting `src/main.rs`
-//! into `stark_types.rs`/`stark_functions.rs`/etc. (§11) happens as generated programs grow
-//! past WP-C5.1b's trivial case, and the stable `stark build` CLI/output path (§12.3) is
-//! WP-C5.5a's job -- this module is invoked directly by tests today, not by a CLI command yet.
+//! `cargo build` on the generated crate. The production `stark build` path supplies its resolved
+//! rustc, Cargo, and runtime paths explicitly; direct backend tests use the compatibility entry
+//! point in the parent module.
 
-use super::{emit_program, BackendDiagnostic, NativeArtifact, NativeBuildOptions};
+use super::{
+    emit_program, BackendBuildFailure, BackendDiagnostic, NativeArtifact, NativeBuildOptions,
+    NativeToolchainOptions,
+};
 use crate::backend::version::{self, BuildVersions};
 use crate::mir::MirProgram;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 pub fn build_and_link(
     program: &MirProgram,
     options: &NativeBuildOptions,
+    toolchain: &NativeToolchainOptions,
 ) -> Result<NativeArtifact, BackendDiagnostic> {
-    let rustc_verbose = query_rustc_verbose()?;
+    let rustc_verbose = query_rustc_verbose(&toolchain.rustc)?;
     let rustc_version = parse_rustc_field(&rustc_verbose, "release: ")
         .ok_or_else(|| BackendDiagnostic::Io("could not parse `release:` from rustc -vV".into()))?
         .to_string();
@@ -37,10 +39,9 @@ pub fn build_and_link(
     std::fs::create_dir_all(&src_dir)
         .map_err(|e| BackendDiagnostic::Io(format!("creating {}: {e}", src_dir.display())))?;
 
-    let runtime_path = runtime_crate_path();
     write_file(
         &crate_dir.join("Cargo.toml"),
-        &generated_cargo_toml(&runtime_path),
+        &generated_cargo_toml(&toolchain.runtime_crate),
     )?;
     write_file(&src_dir.join("main.rs"), &source.main_rs)?;
     write_file(
@@ -50,26 +51,57 @@ pub fn build_and_link(
 
     // §11.3 offline rule: `stark-runtime` is dependency-free, so `--offline` never needs a
     // registry index and proves no accidental network dependency crept in.
-    let output = Command::new("cargo")
+    let command = vec![
+        toolchain.cargo.display().to_string(),
+        "build".to_string(),
+        "--offline".to_string(),
+        "--manifest-path".to_string(),
+        crate_dir.join("Cargo.toml").display().to_string(),
+    ];
+    let output = Command::new(&toolchain.cargo)
         .arg("build")
         .arg("--offline")
         .arg("--manifest-path")
         .arg(crate_dir.join("Cargo.toml"))
+        .env("RUSTC", &toolchain.rustc)
         .output()
-        .map_err(|e| BackendDiagnostic::Io(format!("invoking cargo build: {e}")))?;
+        .map_err(|e| {
+            BackendDiagnostic::BuildFailed(Box::new(BackendBuildFailure {
+                summary: "could not start Cargo for the generated crate".to_string(),
+                stdout: String::new(),
+                stderr: e.to_string(),
+                build_dir: crate_dir.clone(),
+                command: command.clone(),
+                status: None,
+            }))
+        })?;
     if !output.status.success() {
-        return Err(BackendDiagnostic::BuildFailed(format!(
-            "generated-crate build failed:\n--- STDOUT ---\n{}\n--- STDERR ---\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+        return Err(BackendDiagnostic::BuildFailed(Box::new(
+            BackendBuildFailure {
+                summary: "generated-crate build failed".to_string(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                build_dir: crate_dir.clone(),
+                command,
+                status: output.status.code(),
+            },
         )));
     }
 
     let binary_path = crate_dir.join("target").join("debug").join(BIN_NAME);
     if !binary_path.exists() {
-        return Err(BackendDiagnostic::BuildFailed(format!(
-            "cargo build succeeded but the expected binary is missing at {}",
-            binary_path.display()
+        return Err(BackendDiagnostic::BuildFailed(Box::new(
+            BackendBuildFailure {
+                summary: format!(
+                    "Cargo succeeded but the expected binary is missing at {}",
+                    binary_path.display()
+                ),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                build_dir: crate_dir.clone(),
+                command,
+                status: output.status.code(),
+            },
         )));
     }
 
@@ -81,13 +113,11 @@ pub fn build_and_link(
 
 const BIN_NAME: &str = "stark_program";
 
-fn query_rustc_verbose() -> Result<String, BackendDiagnostic> {
-    let output = Command::new("rustc").arg("-vV").output().map_err(|e| {
-        BackendDiagnostic::Io(format!(
-            "invoking `rustc -vV`: {e} (no Rust toolchain found -- WP-C5.5b's missing-toolchain \
-             diagnostic supersedes this raw error)"
-        ))
-    })?;
+fn query_rustc_verbose(rustc: &Path) -> Result<String, BackendDiagnostic> {
+    let output = Command::new(rustc)
+        .arg("-vV")
+        .output()
+        .map_err(|e| BackendDiagnostic::Io(format!("invoking `{} -vV`: {e}", rustc.display())))?;
     if !output.status.success() {
         return Err(BackendDiagnostic::Io(
             "`rustc -vV` did not succeed".to_string(),
@@ -98,13 +128,6 @@ fn query_rustc_verbose() -> Result<String, BackendDiagnostic> {
 
 fn parse_rustc_field<'a>(verbose: &'a str, field: &str) -> Option<&'a str> {
     verbose.lines().find_map(|line| line.strip_prefix(field))
-}
-
-/// WP-C5.1b locates the runtime crate via this compiler build's own manifest directory. A real
-/// installed toolchain needs a different discovery mechanism -- WP-C5.5c's job ("installation
-/// and offline behaviour"), not reopened here.
-fn runtime_crate_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime")
 }
 
 fn generated_cargo_toml(runtime_path: &Path) -> String {

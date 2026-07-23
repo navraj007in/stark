@@ -164,6 +164,9 @@ fn validate_runtime(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn parses_supported_rust_versions() {
@@ -171,5 +174,27 @@ mod tests {
         assert_eq!(parse_version("1.93.0"), Some((1, 93, 0)));
         assert_eq!(parse_version("1.93.0-nightly"), Some((1, 93, 0)));
         assert_eq!(parse_version("not-a-version"), None);
+    }
+
+    #[test]
+    fn discovers_runtime_from_installed_toolchain_layout() {
+        let root = std::env::temp_dir().join(format!(
+            "stark_installed_runtime_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let runtime = root.join("lib/stark/stark-runtime");
+        std::fs::create_dir_all(runtime.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(
+            runtime.join("Cargo.toml"),
+            "[package]\nname='stark-runtime'\n",
+        )
+        .unwrap();
+        std::fs::write(runtime.join("src/lib.rs"), "").unwrap();
+
+        let found = discover_runtime(Some(&root.join("bin/stark"))).unwrap();
+        assert_eq!(found, runtime.canonicalize().unwrap());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

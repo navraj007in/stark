@@ -48,6 +48,19 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let destination = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &destination);
+        } else {
+            std::fs::copy(entry.path(), destination).unwrap();
+        }
+    }
+}
+
 const SCALAR: &str = r#"
 fn add(a: Int32, b: Int32) -> Int32 { a + b }
 fn main() { assert_eq(add(20, 22), 42); }
@@ -96,8 +109,11 @@ fn retention_and_emit_rust_report_existing_paths() {
     assert!(text.contains("[stark build] MIR verification: complete"));
 }
 
+#[cfg(unix)]
 #[test]
 fn aggregate_program_builds_offline_with_empty_cargo_home() {
+    use std::os::unix::fs::PermissionsExt;
+
     let package = Package::new(
         "aggregate",
         r#"
@@ -107,13 +123,103 @@ fn main() { let pair = Pair { left: 19, right: 23 }; assert_eq(pair.left + pair.
     );
     let cargo_home = package.root.join("empty-cargo-home");
     std::fs::create_dir(&cargo_home).unwrap();
+    let runtime = package.root.join("installed-runtime");
+    copy_dir(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime"),
+        &runtime,
+    );
+    let cargo_log = package.root.join("cargo-invocations.txt");
+    let cargo_wrapper = package.root.join("stark-cargo-wrapper");
+    std::fs::write(
+        &cargo_wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec cargo \"$@\"\n",
+            cargo_log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_stark"))
         .args(["build", "--offline", "--keep-generated"])
         .env("CARGO_HOME", &cargo_home)
+        .env("STARK_RUNTIME_DIR", &runtime)
+        .env("STARK_CARGO", &cargo_wrapper)
         .current_dir(&package.root)
         .output()
         .unwrap();
     assert!(output.status.success(), "{}", stderr(&output));
+    let invocations = std::fs::read_to_string(cargo_log).unwrap();
+    assert!(invocations.lines().any(|line| line == "--version"));
+    assert!(invocations
+        .lines()
+        .any(|line| line.starts_with("build --offline --manifest-path")));
+    let output_text = stdout(&output);
+    let generated = output_text
+        .lines()
+        .find_map(|line| line.strip_prefix("Generated crate -> "))
+        .unwrap();
+    let manifest = std::fs::read_to_string(Path::new(generated).join("Cargo.toml")).unwrap();
+    assert!(manifest.contains(runtime.canonicalize().unwrap().to_string_lossy().as_ref()));
+}
+
+#[test]
+fn frozen_three_package_workspace_builds_through_cli_after_relocation() {
+    let root = std::env::temp_dir().join(format!(
+        "stark_c5_5_workspace_{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    copy_dir(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/c5-native-workspace"),
+        &root,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_stark"))
+        .args(["build", "--locked", "--offline", "--emit-rust"])
+        .current_dir(root.join("app"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let binary = root
+        .join("app/target/stark/debug")
+        .join(format!("app{}", std::env::consts::EXE_SUFFIX));
+    assert!(binary.is_file());
+    assert!(Command::new(&binary).status().unwrap().success());
+    assert!(stdout(&output).contains("Built app [debug] -> "));
+    assert!(stdout(&output).contains("Generated Rust -> "));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
+fn backend_failure_reports_and_retains_exact_generated_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let package = Package::new("backend-failure", SCALAR);
+    let cargo_wrapper = package.root.join("failing-cargo");
+    std::fs::write(
+        &cargo_wrapper,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exec cargo \"$@\"; fi\necho intentional-backend-failure >&2\nexit 23\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_stark"))
+        .args(["build", "--verbose"])
+        .env("STARK_CARGO", &cargo_wrapper)
+        .current_dir(&package.root)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(error.contains("generated crate retained at "), "{error}");
+    assert!(error.contains("rustc: "), "{error}");
+    assert!(error.contains("cargo: "), "{error}");
+    assert!(error.contains("exit status: 23"), "{error}");
+    assert!(error.contains("intentional-backend-failure"), "{error}");
+    let build_dir = error
+        .lines()
+        .find_map(|line| line.strip_prefix("note: generated crate retained at "))
+        .unwrap();
+    assert!(Path::new(build_dir).join("src/main.rs").is_file());
 }
 
 #[test]

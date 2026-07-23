@@ -21,11 +21,41 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub enum BackendDiagnostic {
     Unsupported(String),
-    /// §12.5: the generated crate's own `cargo build` failed. Carries raw cargo/rustc output
-    /// for now; §12.5's STARK-facing classification (backend defect vs. toolchain vs.
-    /// environmental) is WP-C5.5b's deliverable.
-    BuildFailed(String),
+    /// WP-C5.5: the generated crate's Cargo process failed (or reported success without the
+    /// promised artifact). This is structured process evidence for the CLI, never a STARK
+    /// source diagnostic.
+    BuildFailed(Box<BackendBuildFailure>),
     Io(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct BackendBuildFailure {
+    pub summary: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub build_dir: PathBuf,
+    pub command: Vec<String>,
+    pub status: Option<i32>,
+}
+
+/// Explicit external inputs to generated-crate construction. The production CLI supplies these
+/// from `native_toolchain`; keeping them separate from semantic build options lets older direct
+/// backend callers retain the compatibility entry point below.
+#[derive(Clone, Debug)]
+pub struct NativeToolchainOptions {
+    pub rustc: PathBuf,
+    pub cargo: PathBuf,
+    pub runtime_crate: PathBuf,
+}
+
+impl NativeToolchainOptions {
+    fn development() -> Self {
+        Self {
+            rustc: PathBuf::from("rustc"),
+            cargo: PathBuf::from("cargo"),
+            runtime_crate: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime"),
+        }
+    }
 }
 
 pub struct NativeBuildOptions {
@@ -66,5 +96,15 @@ pub fn emit_native_debug(
     program: &VerifiedMirProgram<'_>,
     options: &NativeBuildOptions,
 ) -> Result<NativeArtifact, BackendDiagnostic> {
-    build::build_and_link(program.program(), options)
+    emit_native_debug_with_toolchain(program, options, &NativeToolchainOptions::development())
+}
+
+/// WP-C5.5 production entry point. Every external command and runtime path is an explicit,
+/// preflighted input rather than a source-checkout or PATH assumption hidden in the backend.
+pub fn emit_native_debug_with_toolchain(
+    program: &VerifiedMirProgram<'_>,
+    options: &NativeBuildOptions,
+    toolchain: &NativeToolchainOptions,
+) -> Result<NativeArtifact, BackendDiagnostic> {
+    build::build_and_link(program.program(), options, toolchain)
 }

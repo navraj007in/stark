@@ -1,7 +1,7 @@
 # STARK Compiler STATE
-Updated: 2026-07-21 — **Gate C4 CLOSED, Gate C5 OPEN, WP-C5.1 CLOSED IN FULL
-(CD-042/043/044/045/046), WP-C5.2 CLOSED IN FULL (CD-047/048/049/050/051 for C5.2a-e; CD-053 for
-the three-engine differential harness that satisfies §14's exit condition).**
+Updated: 2026-07-23 — **Gate C4 CLOSED, Gate C5 OPEN; WP-C5.1 through WP-C5.4 CLOSED;
+WP-C5.5 IMPLEMENTATION COMPLETE AND READY FOR OWNER CLOSURE; next after closure: WP-C5.6 gate
+qualification.**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -152,6 +152,13 @@ closed with a real per-unit operation: `HelperOp::Drop` wrappers over
 not every intermediate change, per owner feedback.
 
 ## Position
+**WP-C5.5 (debug build experience) is implementation-complete and ready for owner closure.** The
+C5.4 dependency is satisfied by CD-075. Production `stark build` now passes the discovered rustc,
+Cargo, and runtime paths into the generated-Rust backend; generated builds are always offline;
+backend process failures preserve and report their exact generated crate; and the frozen relocated
+three-package C5.4 workspace builds and runs through the real CLI. No closure directive or CD number
+has been inferred. After owner approval, the next package is **WP-C5.6 (Gate C5 qualification).**
+
 **WP-C5.3 (aggregates, enums, error values, Drop, layout) CLOSED 2026-07-23** by owner directive
 after the adversarial review dispositions (CD-070). Sub-packages: C5.3a (CD-056), C5.3b, C5.3c
 (CD-061), C5.3d-0 (CD-059), C5.3d-1a (CD-063), C5.3d-1b (CD-064), C5.3d-1c + C5.3d-1 (CD-066), the
@@ -161,7 +168,8 @@ aggregate values, payload variants, match paths, `Option`/`Result`, `?`, the ded
 fixture (seven observable properties), and exact layout-query values under the versioned
 `stark-64-v1` contract. Two bounded boundaries are recorded and enforced deterministically before
 rustc rather than left latent: multi-unit enum payload partial moves (CD-070) and the wider
-non-`Copy` cross-block cases, both deferred to C6. **Next: WP-C5.4 (linkage and function values).**
+non-`Copy` cross-block cases, both deferred to C6. WP-C5.4 subsequently closed linkage and
+function values under CD-071..CD-075.
 The two open C5.3-adjacent items carried into the C5.4/C5.6 reviews are DEV-098's defensive
 reborrow reasoning and the C6-deferred ownership boundaries.
 
@@ -2965,6 +2973,32 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
   - **Validation:** `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -D
     warnings`, and `cargo test --workspace --all-targets --no-fail-fast` all clean/green. Native
     tests build real crates via ONNX-free generated Rust + rustc on the host.
+
+- WP-C5.5 implementation record [2026-07-23, **READY FOR OWNER CLOSURE; no CD assigned**]
+  **Debug build integration is complete without changing C5.4 semantics or the `NativeArtifact`
+  contract.** The production native-build driver supplies its resolved rustc, Cargo, and runtime
+  paths explicitly to the generated-Rust backend. The selected rustc handles target discovery and
+  is exported to Cargo as `RUSTC`; the selected Cargo performs `build --offline`; and the selected
+  runtime path is the generated manifest dependency. `BackendDiagnostic::BuildFailed` carries a
+  boxed structured failure with summary, command, exit status, stdout, stderr, and exact retained
+  build directory. CLI diagnostics classify that boundary without parsing process text.
+
+  - **Real CLI closure proof:** a relocated copy of the frozen
+    `starkc/tests/fixtures/c5-native-workspace/` builds with
+    `stark build --locked --offline --emit-rust`, installs the stable executable at
+    `app/target/stark/debug/app`, and runs successfully. This exercises C5.4's cross-package direct
+    calls, concrete generics, function values/indirect calls, structs, `Option`, loops, layout, and
+    casts through the production build path.
+  - **Installed/offline proof:** unit coverage discovers the runtime beside an installed
+    `bin/stark` at `lib/stark/stark-runtime`; CLI coverage uses a relocated runtime and selected
+    Cargo wrapper with an empty `CARGO_HOME`, verifies `--offline`, and observes the exact canonical
+    runtime path in the generated manifest.
+  - **Failure-retention proof:** a Cargo wrapper exiting 23 proves backend classification, status
+    and stderr transport, the exact retained-directory note, and retained `src/main.rs`.
+  - **Focused validation:** 8 CLI tests; 2 native-toolchain unit tests; 27 C5.3/C5.4 native
+    regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
+    **1,095 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
+    toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
 
 ## Conformance summary
 - Lexical: WP-C1.1 requalification complete (2026-07-17). Strengthened: all 15 reserved words
