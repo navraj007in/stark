@@ -72,7 +72,8 @@ begin from `db73afe`.
 | C6.1d | A | Claude | (post-C6.1c) | `mir/lower.rs` (lease), `borrowck.rs` (lease) | SHARED-CONTRACTS v1 | none (unroll with existing `ConstIndex`; no new MIR op — Option (a)) | `native_c6_1_ownership.rs` (+12 `c61d_*`), `gate2_valid` accept flip | G2 fixed; DEV-090 closed | §7J:3 | CANDIDATE-COMPLETE (CD-083) |
 | C6.1e | A | Claude | (post-C6.1d) | `C6-DROP-PATH-MATRIX.md` (new); `three_engine_differential.rs` (lease, tests only) | SHARED-CONTRACTS v1 | none (evidence only — no source change) | `three_engine_differential.rs` (+12 `c61e_*`) | none | §7J:5 (evidence) | **CANDIDATE-COMPLETE** |
 | C6.2a | A | Claude | (post-C6.1e) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` (new) | SHARED-CONTRACTS v1 §3 (`Instance` identity) | none (conformance correction — the contract was violated, not changed) | `native_c6_2_generics_traits.rs` (12) | **DEV-102 opened** (fully-qualified call form) | §7J:3 | **CLOSED (CD-086)** |
-| C6.1f | A | Claude | (post-C6.2b) | `WP-C6.1f.md` (new); further files per its matrix | SHARED-CONTRACTS v1 | none yet (CE3 if MIR/verifier contract; CE4 if runtime/ABI) | `C6-REFERENCE-MATRIX.md` then native regressions | F3 (owns), F4 (representation half) | §7J:3 | **OPEN** — authorised by the F3 ruling |
+| C6.1f-a | A | Claude | (post-C6.2b) | `C6-REFERENCE-MATRIX.md` (new), `c61f_reference_boundary.rs` (new) | SHARED-CONTRACTS v1 | none (classification only — no source change) | 51 probe cases; 6 permanent negative tests | F3/F4 classified; **no new deviation — no miscompilation exists** | §7J:5 (evidence) | **CANDIDATE-COMPLETE (CD-089)** |
+| C6.1f-b… | A | Claude | (post-C6.1f-a) | per the matrix §7 split | SHARED-CONTRACTS v1 | none yet (CE3 if MIR/verifier contract; CE4 if runtime/ABI) | native regressions | — | §7J:3 | **BLOCKED** — matrix §7 split needs owner approval |
 | C6.2b | A | Claude | (post-C6.2a) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` | SHARED-CONTRACTS v1 | none (new callee arm using existing MIR ops) | `native_c6_2_generics_traits.rs` (+8 `c62b_*`, 20 total) | **DEV-102 CLOSED**; F1–F6 opened | §7J:3 | **PARTIAL** — DEV-102 closed, §18 matrix probed; F1–F6 await disposition |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
@@ -262,6 +263,27 @@ Drop-log comparison and IO/provider-failure cleanup wait on C6.3 output/resource
   `Projection::VariantPayload`, `Rvalue::TakeVariantPayload`, a new verifier atomicity rule, an enum
   payload identity change in `TypeContext`, or altered MIR move semantics becomes necessary — none
   did. Recorded under this commit's decision ID.
+
+- **C6.1f-a findings [2026-07-23] — classification complete, no CE escalation.** The reference
+  surface was probed across 51 cases. Four structural results:
+  (1) **no miscompilation exists** — every engine pair that ran agreed, no case was
+  accepted-but-wrong, so every gap is a *refusal*; C6.1f is a capability package, not a soundness
+  repair (the opposite of F1).
+  (2) **MIR already represents and executes references-in-locals correctly** — all fifteen
+  backend-refused rows verify *and run to a correct answer under the MIR interpreter*; the gap is
+  generated-Rust emission, not reference representation.
+  (3) **The lane boundary is "freshly-taken borrow", not "reference"** — reference *parameters*
+  already work natively, including stored in a user local; only materialising a new `RefOf` outside
+  a same-block temporary is refused.
+  (4) **Two mechanisms are missing that are not storage at all** — reborrow `&mut T` → `&T`, and
+  array → slice unsizing; plus `&mut` params being moved rather than reborrowed, which surfaces as
+  *two different failures in two different phases* (E0100 at typecheck, "move from possibly-moved
+  place" at MIR verify).
+  The six conformant refusals are now **locked by permanent tests** before implementation begins
+  (`c61f_reference_boundary.rs`), the no-NLL case among them. A sub-package split is proposed in
+  `C6-REFERENCE-MATRIX.md` §7 and **awaits owner approval**; the open question is whether the two
+  reborrow/unsizing sub-packages land first as independent conformance fixes (no lane change, no
+  CE3) or whether everything waits on the lane design.
 
 _(CE3/CE4/CE8/CE9 recorded here before implementation continues — none yet.)_
 

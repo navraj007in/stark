@@ -5,7 +5,8 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f (Track A, next)**, F1 privacy (Track B blocker), C6.2b's other findings,
+Remaining C6: **WP-C6.1f-a CLOSED (CD-089) — matrix done; C6.1f-b split awaits approval**, F1
+privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
 exit.**
@@ -3045,6 +3046,32 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-089 [2026-07-23, **WP-C6.1f-a COMPLETE — the reference matrix**] 51 cases driven end-to-end
+  across the ten `WP-C6.1f.md` §2 scope items. Classification only; no source change.
+  `STARKLANG/docs/compiler/work-packages/C6-REFERENCE-MATRIX.md`.
+  - **No miscompilation exists.** Every engine pair that ran agreed; nothing was accepted-but-wrong.
+    Every gap is a refusal, so C6.1f is a **capability** package, not a soundness repair — the
+    opposite of F1, which is why the ruling's ordering (F1 first) is right on severity grounds.
+  - **MIR already represents and executes references-in-locals correctly.** All fifteen
+    backend-refused rows verify *and run to a correct answer under the MIR interpreter*. The gap is
+    **generated-Rust emission, not reference representation** — this removes the package's largest
+    unknown, though not its difficulty.
+  - **The lane boundary is "freshly-taken borrow", not "reference".** Reference *parameters* work
+    natively today, including stored in a user local (`fn f(r: &P) { let q = r; q.get() }` runs).
+    Only materialising a new `RefOf` outside a same-block compiler temporary is refused.
+  - **Two missing mechanisms are not storage at all:** reborrow `&mut T` → `&T` (receiver and
+    argument position) and array → slice unsizing account for all nine MIR-verifier refusals. `&mut`
+    params are also **moved rather than reborrowed**, which surfaces as two different failures in
+    two different phases (E0100 at typecheck; "move from possibly-moved place" at MIR verify).
+  - **`Box` deref is a front-end gap** (E0001/E0304), separate from `Box`/`Vec`/`str`
+    representability, which is Track C's C6.3.
+  - **Six conformant refusals locked by permanent tests before implementation**
+    (`starkc/tests/c61f_reference_boundary.rs`), including the no-NLL case Rust's NLL accepts and
+    Core v1 does not. This is the §2 item 10 constraint made mechanical rather than aspirational.
+  - **Awaiting approval:** the five-way C6.1f-b split in matrix §7, and specifically whether the
+    reborrow and unsizing sub-packages land first as independent conformance fixes (they need no
+    lane change and no CE3) or whether all of it waits on the lane replacement design.
 
 - CD-088 [2026-07-23, **C6.2b F1/F3 OWNER RULINGS; WP-C6.1f OPENED**] Dispositions for the six
   C6.2b findings, and a scope correction to Gate C6.
