@@ -52,7 +52,9 @@ are unsupported".
 The nine **VERIFY** rows are not about storage at all. They are two absent conversions:
 
 - **Reborrow `&mut T` → `&T`** — `let m = &mut p; m.get()` (a `&self` method on a `&mut` receiver),
-  `f(m)` where `f` takes `&P`. MIR passes `&mut P` where `&P` is required.
+  `f(m)` where `f` takes `&P`. MIR passes `&mut P` where `&P` is required. *(§8 later split this by
+  position: the receiver half was a real gap and is fixed; the argument half is a front-end
+  over-acceptance.)*
 - **Array → slice unsizing** — `f(&a)` where `a: [Int32; 3]` and `f` takes `&[Int32]`.
 
 Plus a third at the front end: **`&mut` parameters are moved, not reborrowed**
@@ -67,6 +69,9 @@ its own.
 
 ## 2. The matrix
 
+Rows are as observed at **C6.1f-a**. Where a later sub-package changed a row, the change is marked
+inline as **→ (b1)** and explained in §8; §1 records the C6.1f-a state and is not rewritten.
+
 ### Item 1 — references stored in user locals
 
 | Case | Result | Detail |
@@ -75,7 +80,7 @@ its own.
 | `let r = &p; r.v` | **BACKEND** | same |
 | `let r = &x` (primitive) | **BACKEND** | same |
 | `let a = &p; let b = &p;` (two shared) | **BACKEND** | same |
-| `let r = &mut p; r.bump(); r.get()` | **VERIFY** | §1.4 reborrow `&mut`→`&` |
+| `let r = &mut p; r.bump(); r.get()` | **VERIFY** → **BACKEND (b1)** | reborrow fixed by b1; now only the lane blocks it |
 
 ### Item 2 — reference flow across basic blocks
 
@@ -101,7 +106,7 @@ its own.
 
 | Case | Result | Detail |
 |---|---|---|
-| `let r = &p; let rr = &r; rr.get()` | **VERIFY** | `&&P` where `&P` expected — repeated auto-deref not lowered (TYPE-METHOD-002 makes it normative) |
+| `let r = &p; let rr = &r; rr.get()` | **VERIFY** → **BACKEND (b1)** | repeated auto-deref now lowers and verifies (§8.3); only the lane blocks it |
 | `fn f(r: &&P)` | **FRONT-END (parse)** | "expected a type, found `&&`" — **`&&T` is unspellable**; the lexer's `&&` token is never split in type position |
 | `**rr` | **FRONT-END (parse)** | "expected an expression, found `**`" — same class, `**` in expression position |
 
@@ -109,10 +114,10 @@ its own.
 
 | Case | Result | Detail |
 |---|---|---|
-| `fn g(m: &mut P) -> Int32 { f(m) }`, `f(r: &P)` | **VERIFY** | reborrow `&mut`→`&` |
-| `fn g(m: &mut P) { f(m); f(m); }` | **FRONT-END** | E0100 "use of moved value 'm'" — `&mut` params move instead of reborrowing |
-| `fn f(m: &mut P) { m.bump(); m.bump(); }` | **VERIFY** | "move from possibly-moved place" — the same missing concept, different phase |
-| `fn f(m: &mut P) { m.bump(); m.get() }` | **VERIFY** | reborrow `&mut`→`&` |
+| `fn g(m: &mut P) -> Int32 { f(m) }`, `f(r: &P)` | **VERIFY** | **argument** position — per TYPE-METHOD-002 no such coercion exists; the explicit `f(&*m)` already runs. Front-end over-acceptance, §8.4 |
+| `fn g(m: &mut P) { f(m); f(m); }` | **FRONT-END** | E0100 — **argument** position; explicit `f(&mut *m); f(&mut *m);` already runs, so E0100 may be conformant. §8.4 |
+| `fn f(m: &mut P) { m.bump(); m.bump(); }` | **VERIFY** → **✅ native (b1)** | receiver position; each re-borrow is a temporary borrow |
+| `fn f(m: &mut P) { m.bump(); m.get() }` | **VERIFY** → **✅ native (b1)** | receiver position |
 
 ### Item 6 — reference returns and provenance
 
