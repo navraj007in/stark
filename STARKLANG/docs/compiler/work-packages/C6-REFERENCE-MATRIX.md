@@ -1,7 +1,7 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE — classification only, no source change
+**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 BLOCKED — see §8.**
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the
@@ -241,3 +241,73 @@ without touching the lane at all.
 
 Open question for the owner: whether **b1/b2 land first** as independent conformance fixes — they
 need no lane change and no CE3 — or whether the whole package waits on the b3 lane design.
+
+
+---
+
+## 8. C6.1f-b1 CLOSED, and why b2 cannot proceed as scoped (CD-090)
+
+### 8.1 The probe that changed the scope
+
+Before implementing, the explicit forms were probed. **Explicit re-borrow syntax already works
+end-to-end natively**: `f(&*m)` and `f(&mut *m); f(&mut *m);` both run with all three engines at 0.
+
+That single result re-scoped both sub-packages, because it makes TYPE-METHOD-002's closing sentence
+operative rather than theoretical:
+
+> "No argument-position auto-borrow, auto-dereference, or user coercion exists."
+
+So the matrix's nine VERIFY rows are **not one problem**. They split by position:
+
+- **Receiver position** — TYPE-METHOD-002 *requires* auto-deref and auto-borrow. A real lowering
+  gap. **This is b1, and it is now closed.**
+- **Argument position** — the spec says the conversion **does not exist**, and the explicit form the
+  user is expected to write already works. These rows are a **front-end over-acceptance** (the
+  checker admits `f(m)` and the MIR verifier catches it late), not a lowering gap. Fixing them means
+  **rejecting earlier with a better message**, not lowering a coercion. See §8.4.
+
+### 8.2 What b1 changed
+
+Lowering passed an already-reference receiver through as a value. That was wrong twice over: it never
+adjusted `&mut T` to `&T`, and it **moved** the reference (`&mut T` is not `Copy`). Receivers are now
+dereferenced via `lower_place_autoderef` and **re-borrowed at the method's required mutability**.
+
+Each re-borrow is a *temporary* borrow ending with its statement (03 rule 4), so no borrow duration
+changed and Core v1's lexical rule is untouched — the negative corpus still passes unaltered.
+
+| Row | Before | After |
+|---|---|---|
+| `&mut` receiver → `&self` method | VERIFY | ✅ native |
+| `&mut` receiver used twice (`m.bump(); m.bump();`) | VERIFY (V-MOVE-1) | ✅ native |
+| `&mut` receiver mixing `&mut self` and `&self` | VERIFY | ✅ native |
+
+### 8.3 Free gain: F4's representation half is done
+
+Because `lower_place_autoderef` peels **every** layer, **repeated auto-deref now lowers and verifies**
+— the F4 nested-receiver rows moved from **VERIFY** to **BACKEND (lane)**. They are pinned by
+`c61f_b1_nested_reference_receiver_now_lowers_and_verifies`, which deliberately stops at "lowers,
+verifies and runs under the MIR interpreter" so b3 does not have to rediscover the gain.
+
+Per the F4 ruling this covers the **MIR/reference-representation** half only. The **parser** half
+(`&&T` and `**x` are unspellable — the lexer never splits those tokens) is untouched, and repeated
+auto-deref *selection* remains Track B's.
+
+### 8.4 b2 is blocked and was mis-scoped — **needs a ruling**
+
+b2 was proposed as "array → slice unsizing at argument position". Deeper probing shows it cannot be
+completed as scoped, for two independent reasons:
+
+1. **It is argument-position coercion**, which TYPE-METHOD-002 says does not exist. Implementing it
+   would contradict the sentence that b1's split relies on.
+2. **Even the explicit form fails.** `n(&a[0..3])` — writing the slice explicitly, no coercion
+   involved — is refused at emission: *"linkage: body `n@[]` param 0 is not C5-representable"*.
+   **Slice parameters are not natively representable at all**, which is Track C's C6.3
+   representability work, not a reference-lane or coercion issue.
+
+So the array→slice rows are blocked behind C6.3 regardless of what b2 does, and the coercion half may
+not be wanted at all.
+
+**Recommended:** drop b2 as a distinct sub-package. Fold the argument-position question (both the
+`&mut T` → `&T` rows and the array→slice rows) into **one decision** — reject at the checker with a
+message naming the explicit form, per TYPE-METHOD-002 — and let slice representability arrive from
+C6.3. That decision narrows the accepted language, so it is recorded here rather than taken.

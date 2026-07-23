@@ -5,7 +5,8 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f-a CLOSED (CD-089) — matrix done; C6.1f-b split awaits approval**, F1
+Remaining C6: **WP-C6.1f-a and C6.1f-b1 CLOSED (CD-089/CD-090); b2 BLOCKED and mis-scoped (needs a
+ruling); b3–b5 open**, F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3046,6 +3047,34 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-090 [2026-07-23, **WP-C6.1f-b1 CLOSED — receiver re-borrowing; b2 blocked**]
+  - **A probe re-scoped both sub-packages before any code changed.** Explicit re-borrow syntax
+    **already works end-to-end natively** (`f(&*m)`, `f(&mut *m); f(&mut *m);` all run). That makes
+    TYPE-METHOD-002's closing sentence operative: *"No argument-position auto-borrow,
+    auto-dereference, or user coercion exists."* The matrix's nine verifier refusals are therefore
+    **two different problems split by position**: receiver position is a genuine lowering gap the
+    spec *requires* (b1); argument position is a **front-end over-acceptance** where the spec says
+    the conversion does not exist and the explicit form the user should write already works.
+  - **b1 implemented.** Lowering passed an already-reference receiver through as a value, which was
+    wrong twice: it never adjusted `&mut T` to `&T`, and it **moved** the reference (`&mut T` is not
+    `Copy`), so `m.bump(); m.bump();` failed V-MOVE-1. Receivers are now dereferenced via the
+    existing `lower_place_autoderef` and **re-borrowed at the method's required mutability**. Each
+    re-borrow is a temporary borrow ending with its statement (03 rule 4), so **no borrow duration
+    changed** — the C6.1f-a negative corpus passes unaltered, including the no-NLL case.
+  - **Free gain: F4's representation half is done.** Peeling every layer means repeated auto-deref
+    now lowers and verifies; the nested-receiver rows moved from verifier-refused to
+    backend-lane-refused, pinned by a test that stops at MIR so b3 need not rediscover it. The
+    parser half (`&&T`/`**x` unspellable) and selection (Track B) are untouched.
+  - **b2 is blocked and was mis-scoped — needs a ruling.** Array→slice unsizing is argument-position
+    coercion (which the spec says does not exist), *and* the explicit form fails anyway:
+    `n(&a[0..3])` is refused with "param 0 is not C5-representable" — **slice parameters are not
+    natively representable at all**, which is Track C's C6.3. Recommended: drop b2 as a sub-package
+    and fold the argument-position question into one decision (reject at the checker naming the
+    explicit form), since that narrows the accepted language and is the owner's call.
+  - **Validation:** twelve at-risk suites green including all 441 lib tests, three-engine (83) and
+    the C6.1f negative corpus; **no snapshot re-pin needed** despite changing a very common lowering
+    path. `fmt --check` and strict `clippy` clean. Evidence: `starkc/tests/native_c61f_reborrow.rs`.
 
 - CD-089 [2026-07-23, **WP-C6.1f-a COMPLETE — the reference matrix**] 51 cases driven end-to-end
   across the ten `WP-C6.1f.md` §2 scope items. Classification only; no source change.

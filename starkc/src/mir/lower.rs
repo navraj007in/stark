@@ -4941,36 +4941,54 @@ impl<'a> FnLowerer<'a> {
         let receiver_op = match receiver {
             Some(kind @ (hir::Receiver::Ref | hir::Receiver::RefMut)) => {
                 let mutable = matches!(kind, hir::Receiver::RefMut);
-                if base_ref_layers > 0 {
-                    // The receiver expression is already a reference (`self` inside a method
-                    // forwarding to a sibling): pass the reference value itself.
-                    self.lower_expr_to_operand(base)?
-                } else {
-                    // Borrow the receiver place (materialize a temp for non-place receivers,
-                    // e.g. a call result used as `make().method()`).
-                    let place = match self.lower_place(base) {
-                        Ok(place) => place,
-                        Err(_) => {
-                            let value = self.lower_expr_to_operand(base)?;
-                            let temp = self.new_temp(peeled_ty.clone());
-                            self.emit(
-                                Statement::Assign(Place::local(temp), Rvalue::Use(value)),
-                                self.info(span),
-                            );
-                            Place::local(temp)
+                // WP-C6.1f-b1. TYPE-METHOD-002: auto-dereference "examines `S`, then repeatedly
+                // removes one leading `&`/`&mut`; at each level receiver matching tries by-value,
+                // shared-borrow, then exclusive-borrow form". So a receiver that is ALREADY a
+                // reference is dereferenced and **re-borrowed at the method's required
+                // mutability** — it is not passed through.
+                //
+                // Passing it through (the pre-C6.1f-b1 behaviour) was wrong twice over:
+                //   * it never adjusted `&mut T` to `&T`, so a `&self` method reached through a
+                //     `&mut` receiver failed MIR verification with an argument-type mismatch; and
+                //   * it MOVED the reference — `&mut T` is not `Copy` — so `m.bump(); m.bump();`
+                //     failed V-MOVE-1 on the second call.
+                //
+                // Each re-borrow is a *temporary* borrow that ends with its statement
+                // (03-Type-System, "References and Lifetimes" rule 4: "`f(&x); g(&mut x);` is
+                // legal"), so this introduces no borrow the checker has not already approved —
+                // and indeed the front end already accepted both shapes; only lowering did not
+                // express them. Deriving the place through `lower_place_autoderef` also makes
+                // NESTED reference receivers fall out for free, since it peels every layer.
+                let place = match self.lower_place_autoderef(base) {
+                    Ok((place, _)) => place,
+                    Err(_) => {
+                        // Non-place receiver (`make().method()`): materialise the base at its own
+                        // type — which may itself be a reference — then project down to the
+                        // referent, so the temp's type and the projection stay consistent.
+                        let value = self.lower_expr_to_operand(base)?;
+                        let base_ty = self.expr_mir_ty(base)?;
+                        let temp = self.new_temp(base_ty);
+                        self.emit(
+                            Statement::Assign(Place::local(temp), Rvalue::Use(value)),
+                            self.info(span),
+                        );
+                        let mut place = Place::local(temp);
+                        for _ in 0..base_ref_layers {
+                            place.projection.push(Projection::Deref);
                         }
-                    };
-                    let ref_ty = MirTy::Ref {
-                        mutable,
-                        inner: Box::new(peeled_ty.clone()),
-                    };
-                    let temp = self.new_temp(ref_ty.clone());
-                    self.emit(
-                        Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
-                        self.info(span),
-                    );
-                    self.read_place(Place::local(temp), &ref_ty, span)?
-                }
+                        place
+                    }
+                };
+                let ref_ty = MirTy::Ref {
+                    mutable,
+                    inner: Box::new(peeled_ty.clone()),
+                };
+                let temp = self.new_temp(ref_ty.clone());
+                self.emit(
+                    Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
+                    self.info(span),
+                );
+                self.read_place(Place::local(temp), &ref_ty, span)?
             }
             Some(hir::Receiver::Value) => self.lower_expr_to_operand(base)?,
             None => {
