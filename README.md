@@ -241,7 +241,7 @@ Build and run:
 ```bash
 stark check                    # Check the project and dependencies
 stark run                      # Execute the entry point
-stark build                    # Compile (alias for check)
+stark build                    # Compile a native debug executable
 stark test                     # Run tests
 stark check --locked           # Use existing lock file (CI/CD)
 stark check --offline          # Use cache only (offline mode)
@@ -283,8 +283,8 @@ Run from any directory in a STARK project (looks up to `starkpkg.json`):
 ```bash
 # Project-oriented commands
 stark check                     # Check package and dependencies
-stark build                     # Build (alias for check)
-stark run                       # Run entry point
+stark build                     # Build target/stark/debug/<package>
+stark run                       # Run entry point with the reference interpreter
 stark test                      # Run tests
 
 # Build modes
@@ -292,6 +292,12 @@ stark check --locked            # Use existing stark.lock (reproducible, CI/CD)
 stark check --offline           # Use cache only (no network)
 stark check --locked --offline  # Both (maximum strictness)
 ```
+
+`stark build` requires Rust 1.85 or newer and uses the locally installed
+`stark-runtime` crate without network access. Cross-platform release archives
+for macOS, Linux, and Windows include the `stark`, `starkc`, and `starkide`
+binaries, that runtime, and platform installers; see
+[`starkc/README.md`](starkc/README.md#release-binaries).
 
 ## Terminal IDE
 

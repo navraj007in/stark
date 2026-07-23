@@ -10,8 +10,18 @@ env:
 
 jobs:
   build-and-test:
-    name: fmt, clippy, test
-    runs-on: ubuntu-latest
+    name: fmt, clippy, test (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-14
+          - name: windows-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: starkc
@@ -33,6 +43,77 @@ jobs:
         run: cargo test --workspace --all-targets --all-features
       - name: Execution snapshot verification (C3-ENTRY baseline)
         run: cargo test --test exec_snapshots
+      - name: Release package structure and installer tests
+        run: python scripts/test_build_release.py
+
+  release-package-smoke:
+    name: release package smoke (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-14
+          - name: windows-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: Build release package
+        run: python scripts/build-release.py --skip-tests
+      - name: Install and smoke test (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          archive="$(find target/packages -maxdepth 1 -name 'stark-*.tar.gz' -print -quit)"
+          test -n "$archive"
+          mkdir -p "$RUNNER_TEMP/stark-package"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/stark-package"
+          package_root="$(find "$RUNNER_TEMP/stark-package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          "$package_root/install.sh" --prefix "$RUNNER_TEMP/stark-install"
+          "$RUNNER_TEMP/stark-install/bin/stark" --help
+          test -f "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime/src/lib.rs"
+          (
+            cd tests/fixtures/c5-native-workspace/app
+            "$RUNNER_TEMP/stark-install/bin/stark" run
+            "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
+            ./target/stark/debug/app
+          )
+      - name: Install and smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem target/packages/stark-*.zip | Select-Object -First 1
+          if (-not $archive) { throw "release archive was not produced" }
+          $packageDir = Join-Path $env:RUNNER_TEMP "stark-package"
+          Expand-Archive $archive.FullName -DestinationPath $packageDir
+          $packageRoot = Get-ChildItem $packageDir -Directory | Select-Object -First 1
+          $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
+          & (Join-Path $packageRoot.FullName "install.ps1") -Prefix $prefix -NoPathUpdate
+          & (Join-Path $prefix "bin/stark.exe") --help
+          if (-not (Test-Path (Join-Path $prefix "lib/stark/stark-runtime/src/lib.rs"))) {
+            throw "installed native runtime is missing"
+          }
+          Push-Location tests/fixtures/c5-native-workspace/app
+          try {
+            & (Join-Path $prefix "bin/stark.exe") run
+            if ($LASTEXITCODE -ne 0) { throw "installed stark run failed" }
+            & (Join-Path $prefix "bin/stark.exe") build --locked --offline
+            if ($LASTEXITCODE -ne 0) { throw "installed stark build failed" }
+            & ".\target\stark\debug\app.exe"
+            if ($LASTEXITCODE -ne 0) { throw "installed native artifact failed" }
+          } finally {
+            Pop-Location
+          }
 
   fixture-conformance:
     name: spec fixture conformance

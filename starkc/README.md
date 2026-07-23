@@ -76,11 +76,13 @@ diagnostics appear in the messages pane. See
 
 ## Release binaries
 
-The dependency-free release builder packages both `starkc` and `starkide`
-with the license, README, build metadata, and a SHA-256 checksum:
+The dependency-free release builder packages the user-facing `stark` command,
+the lower-level `starkc` compiler, `starkide`, and the local native runtime
+required by `stark build`, together with installers, the license, README,
+build metadata, and a SHA-256 checksum:
 
 ```bash
-# macOS (build the current Intel or Apple Silicon host)
+# macOS or Linux (build the current host)
 python3 scripts/build-release.py
 
 # Windows PowerShell or Command Prompt
@@ -88,14 +90,41 @@ py -3 scripts/build-release.py
 ```
 
 Packages are written to `target/packages/`. macOS produces a `.tar.gz` and
-Windows produces a `.zip`. Each operating system and CPU architecture needs
-its own binary; one executable cannot run on both macOS and Windows.
+Linux produces a `.tar.gz`; Windows produces a `.zip`. Each operating system
+and CPU architecture needs its own package.
+
+After extracting a package:
+
+```bash
+# macOS/Linux; defaults to ~/.local
+./install.sh
+./install.sh --prefix /custom/prefix
+
+# uninstall
+~/.local/lib/stark/uninstall.sh
+```
+
+```powershell
+# Windows; defaults to %LOCALAPPDATA%\Programs\STARK and updates the user PATH
+.\install.ps1
+.\install.ps1 -Prefix C:\Tools\STARK -NoPathUpdate
+
+# uninstall
+& "$env:LOCALAPPDATA\Programs\STARK\lib\stark\uninstall.ps1"
+```
+
+The installed layout is `bin/{stark,starkc,starkide}` plus
+`lib/stark/stark-runtime`. The latter is required because native debug builds
+invoke the selected Cargo/rustc toolchain offline against that local runtime.
+Rust 1.85 or newer must be available for `stark build`; `stark run` uses the
+interpreter embedded in the `stark` executable.
 
 An explicit target is useful in CI or with a configured cross-linker:
 
 ```bash
 python3 scripts/build-release.py --target aarch64-apple-darwin
 python3 scripts/build-release.py --target x86_64-apple-darwin
+python3 scripts/build-release.py --target x86_64-unknown-linux-gnu
 py -3 scripts/build-release.py --target x86_64-pc-windows-msvc
 ```
 

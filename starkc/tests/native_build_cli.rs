@@ -71,11 +71,17 @@ fn build_places_and_runs_stable_artifact_then_replaces_it() {
     let package = Package::new("build-app", SCALAR);
     let first = package.run(&["build", "--offline"]);
     assert!(first.status.success(), "{}", stderr(&first));
-    let final_path = package.root.join("target/stark/debug/build-app");
+    let final_path = package
+        .root
+        .join("target/stark/debug")
+        .join(format!("build-app{}", std::env::consts::EXE_SUFFIX));
     assert!(final_path.is_file());
     let first_stdout = stdout(&first);
     assert!(first_stdout.contains("Built build-app [debug] -> "));
-    assert!(first_stdout.contains("target/stark/debug/build-app"));
+    assert!(first_stdout.contains(&format!(
+        "target/stark/debug/build-app{}",
+        std::env::consts::EXE_SUFFIX
+    )));
     assert!(Command::new(&final_path).status().unwrap().success());
     let generated: Vec<_> = std::fs::read_dir(package.root.join("target/stark/debug"))
         .unwrap()
@@ -269,7 +275,10 @@ fn invalid_build_arguments_exit_two() {
 #[test]
 fn source_errors_precede_toolchain_probes_and_old_artifact_is_not_claimed() {
     let package = Package::new("source-error", "fn main() { let value: bool = 42; }");
-    let old = package.root.join("target/stark/debug/source-error");
+    let old = package
+        .root
+        .join("target/stark/debug")
+        .join(format!("source-error{}", std::env::consts::EXE_SUFFIX));
     std::fs::create_dir_all(old.parent().unwrap()).unwrap();
     std::fs::write(&old, "old artifact").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_stark"))

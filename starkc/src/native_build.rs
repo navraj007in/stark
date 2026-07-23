@@ -235,17 +235,76 @@ fn install_artifact(source: &Path, destination: &Path) -> Result<(), BuildComman
     if !temp.is_file() {
         return Err(BuildCommandError::ArtifactMissing(temp));
     }
-    std::fs::rename(&temp, destination).map_err(|error| BuildCommandError::ArtifactInstall {
-        from: source.to_path_buf(),
-        to: destination.to_path_buf(),
-        detail: error.to_string(),
-    })?;
+    replace_artifact(&temp, destination, source)?;
     if !destination.is_file() {
         return Err(BuildCommandError::ArtifactMissing(
             destination.to_path_buf(),
         ));
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_artifact(
+    temp: &Path,
+    destination: &Path,
+    source: &Path,
+) -> Result<(), BuildCommandError> {
+    std::fs::rename(temp, destination).map_err(|error| BuildCommandError::ArtifactInstall {
+        from: source.to_path_buf(),
+        to: destination.to_path_buf(),
+        detail: error.to_string(),
+    })
+}
+
+#[cfg(windows)]
+fn replace_artifact(
+    temp: &Path,
+    destination: &Path,
+    source: &Path,
+) -> Result<(), BuildCommandError> {
+    // Windows rename does not replace an existing destination. Preserve the old executable
+    // until the new one is ready, and roll back if the second half of the swap fails.
+    let backup = destination.with_file_name(format!(
+        "{}.old-{}-{}",
+        destination.file_name().unwrap().to_string_lossy(),
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let had_destination = destination.is_file();
+    if had_destination {
+        std::fs::rename(destination, &backup).map_err(|error| {
+            BuildCommandError::ArtifactInstall {
+                from: source.to_path_buf(),
+                to: destination.to_path_buf(),
+                detail: format!("preserving previous artifact: {error}"),
+            }
+        })?;
+    }
+    match std::fs::rename(temp, destination) {
+        Ok(()) => {
+            if had_destination {
+                std::fs::remove_file(&backup).map_err(|error| {
+                    BuildCommandError::ArtifactInstall {
+                        from: source.to_path_buf(),
+                        to: destination.to_path_buf(),
+                        detail: format!("removing previous artifact backup: {error}"),
+                    }
+                })?;
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_destination {
+                let _ = std::fs::rename(&backup, destination);
+            }
+            Err(BuildCommandError::ArtifactInstall {
+                from: source.to_path_buf(),
+                to: destination.to_path_buf(),
+                detail: error.to_string(),
+            })
+        }
+    }
 }
 
 #[cfg(test)]

@@ -24,7 +24,9 @@ import zipfile
 
 CRATE_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = CRATE_DIR.parent
-BINARIES = ("starkc", "starkide")
+BINARIES = ("stark", "starkc", "starkide")
+RUNTIME_FILES = ("Cargo.toml",)
+RUNTIME_DIRS = ("src",)
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -89,7 +91,13 @@ def create_zip(staging: Path, output: Path, archive_root: str) -> None:
                 continue
             relative = path.relative_to(staging).as_posix()
             info = zipfile.ZipInfo(f"{archive_root}/{relative}", (1980, 1, 1, 0, 0, 0))
-            mode = 0o755 if path.name in BINARIES or path.suffix == ".exe" else 0o644
+            mode = (
+                0o755
+                if path.parent.name == "bin"
+                or path.name in {"install.sh", "uninstall.sh"}
+                or path.suffix == ".exe"
+                else 0o644
+            )
             info.external_attr = mode << 16
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
@@ -124,41 +132,44 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
-    target = args.target or host_target()
-    version = package_version()
+def package_release(
+    *, target: str, version: str, release_dir: Path, out_dir: Path
+) -> tuple[Path, Path]:
     windows = "windows" in target
     executable_suffix = ".exe" if windows else ""
     package_name = f"stark-{version}-{target}"
-    out_dir = args.out_dir.resolve()
+    out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    if not args.skip_tests:
-        run(["cargo", "test", "--locked", "--all-targets", "--all-features"])
-
-    run(
-        [
-            "cargo",
-            "build",
-            "--release",
-            "--locked",
-            "--all-features",
-            "--bins",
-            "--target",
-            target,
-        ]
-    )
-
-    release_dir = CRATE_DIR / "target" / target / "release"
     with tempfile.TemporaryDirectory(prefix="stark-release-") as temporary:
         staging = Path(temporary)
+        package_bin = staging / "bin"
+        package_bin.mkdir()
         for binary in BINARIES:
             source = release_dir / f"{binary}{executable_suffix}"
             if not source.is_file():
                 raise SystemExit(f"expected release binary was not produced: {source}")
-            destination = staging / source.name
+            destination = package_bin / source.name
             shutil.copy2(source, destination)
+            if not windows:
+                destination.chmod(0o755)
+
+        runtime_source = CRATE_DIR / "stark-runtime"
+        runtime_destination = staging / "lib" / "stark" / "stark-runtime"
+        runtime_destination.mkdir(parents=True)
+        for filename in RUNTIME_FILES:
+            shutil.copy2(runtime_source / filename, runtime_destination / filename)
+        for dirname in RUNTIME_DIRS:
+            shutil.copytree(runtime_source / dirname, runtime_destination / dirname)
+
+        dist_dir = CRATE_DIR / "dist"
+        installer_names = (
+            ("install.ps1", "uninstall.ps1")
+            if windows
+            else ("install.sh", "uninstall.sh")
+        )
+        for installer_name in installer_names:
+            destination = staging / installer_name
+            shutil.copy2(dist_dir / installer_name, destination)
             if not windows:
                 destination.chmod(0o755)
 
@@ -169,7 +180,8 @@ def main() -> int:
                 [
                     f"STARK {version}",
                     f"Rust target: {target}",
-                    "Included binaries: starkc, starkide",
+                    "Included binaries: stark, starkc, starkide",
+                    "Installed runtime: lib/stark/stark-runtime",
                     "These binaries are unsigned development releases.",
                     "",
                 ]
@@ -188,6 +200,37 @@ def main() -> int:
     checksum = write_checksum(archive)
     print(f"Release package: {archive}")
     print(f"SHA-256 file:   {checksum}")
+    return archive, checksum
+
+
+def main() -> int:
+    args = parse_args()
+    target = args.target or host_target()
+    version = package_version()
+
+    if not args.skip_tests:
+        run(["cargo", "test", "--locked", "--all-targets", "--all-features"])
+
+    run(
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--all-features",
+            "--bins",
+            "--target",
+            target,
+        ]
+    )
+
+    release_dir = CRATE_DIR / "target" / target / "release"
+    package_release(
+        target=target,
+        version=version,
+        release_dir=release_dir,
+        out_dir=args.out_dir,
+    )
     return 0
 
 
