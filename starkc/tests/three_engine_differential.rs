@@ -1233,6 +1233,122 @@ fn main() {
 "#
 );
 
+// ============================================ WP-C5.4c — function values / calls --
+// Non-capturing function values and indirect calls, observed for VALUE agreement across all three
+// engines. A backend that called the wrong instance, dropped a function-value-only body, or
+// mis-copied a function value would return the wrong number here, not merely link differently.
+
+three_engine_test!(
+    function_value_in_local_and_indirect_call,
+    "fnval_local",
+    completes,
+    r#"fn add_one(x: Int32) -> Int32 { x + 1 }
+fn main() {
+    let f: fn(Int32) -> Int32 = add_one;
+    assert_eq(f(41), 42);
+    assert_eq(f(f(10)), 12);
+}
+"#
+);
+
+three_engine_test!(
+    function_value_as_parameter,
+    "fnval_param",
+    completes,
+    r#"fn double(x: Int32) -> Int32 { x * 2 }
+fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 { f(v) }
+fn main() {
+    assert_eq(apply(double, 5), 10);
+    let g: fn(Int32) -> Int32 = double;
+    assert_eq(apply(g, 7), 14);
+}
+"#
+);
+
+three_engine_test!(
+    function_value_returned_from_a_function,
+    "fnval_return",
+    completes,
+    r#"fn inc(n: Int32) -> Int32 { n + 1 }
+fn make() -> fn(Int32) -> Int32 { inc }
+fn main() {
+    let f: fn(Int32) -> Int32 = make();
+    assert_eq(f(9), 10);
+}
+"#
+);
+
+// A function value is `Copy` (TYPE-FN-001): after `let g = f;` BOTH remain usable.
+three_engine_test!(
+    function_value_is_copied_not_moved,
+    "fnval_copy",
+    completes,
+    r#"fn inc(n: Int32) -> Int32 { n + 1 }
+fn main() {
+    let f: fn(Int32) -> Int32 = inc;
+    let g: fn(Int32) -> Int32 = f;
+    assert_eq(f(1) + g(2), 5);
+}
+"#
+);
+
+three_engine_test!(
+    function_value_stored_in_a_tuple,
+    "fnval_tuple",
+    completes,
+    r#"fn inc(n: Int32) -> Int32 { n + 1 }
+fn main() {
+    let t: (fn(Int32) -> Int32, Int32) = (inc, 5);
+    let f: fn(Int32) -> Int32 = t.0;
+    assert_eq(f(t.1), 6);
+}
+"#
+);
+
+three_engine_test!(
+    function_value_stored_in_a_struct_field,
+    "fnval_struct",
+    completes,
+    r#"struct Ops { op: fn(Int32) -> Int32 }
+fn inc(n: Int32) -> Int32 { n + 1 }
+fn main() {
+    let o: Ops = Ops { op: inc };
+    let f: fn(Int32) -> Int32 = o.op;
+    assert_eq(f(7), 8);
+}
+"#
+);
+
+// §10.4 #8: a concrete monomorphised generic function used as a function value.
+three_engine_test!(
+    generic_function_used_as_a_value,
+    "fnval_generic",
+    completes,
+    r#"fn id<T>(x: T) -> T { x }
+fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 { f(v) }
+fn main() {
+    let f: fn(Int32) -> Int32 = id;
+    assert_eq(f(41), 41);
+    assert_eq(apply(f, 7), 7);
+}
+"#
+);
+
+// §10.5 (MANDATORY): a function referenced ONLY through a function value, never directly called.
+// The native program must still link and invoke it indirectly — guarding against a
+// direct-call-only reachability assumption.
+three_engine_test!(
+    function_reached_only_through_a_value,
+    "fnval_only",
+    completes,
+    r#"fn only(x: Int32) -> Int32 { x * 3 }
+fn main() {
+    let f: fn(Int32) -> Int32 = only;
+    assert_eq(f(4), 12);
+}
+"#
+);
+
 // DEV-098 (CD-070): exclusive references across the call boundary.
 //
 // The adversarial premise was that a `&mut` used twice in one block reaches rustc, because

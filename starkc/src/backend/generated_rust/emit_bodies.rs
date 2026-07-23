@@ -423,23 +423,32 @@ fn emit_terminator(
     Ok(())
 }
 
-/// Direct calls only (`Callee::Instance`). Indirect calls through a function value
-/// (`Callee::FnValue`) are WP-C5.4c's job (function values as first-class values need the same
-/// representation decisions as everywhere else they appear, not a special case here); runtime
-/// calls (`Callee::Runtime`) land alongside whichever `RuntimeFn` group first gets lowered.
+/// Direct calls (`Callee::Instance`) and WP-C5.4c indirect calls through a function value
+/// (`Callee::FnValue`). Runtime calls (`Callee::Runtime`) land alongside whichever `RuntimeFn`
+/// group first gets lowered.
 fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, BackendDiagnostic> {
+    // Argument emission is IDENTICAL for direct and indirect calls (§9.2): the same left-to-right
+    // move/copy operand handling MIR already sequenced. Only the callee expression differs.
+    let mut arg_exprs = Vec::with_capacity(args.len());
+    for arg in args {
+        arg_exprs.push(emit_operand(arg, env)?);
+    }
     match callee {
         Callee::Instance(instance) => {
             let name = mangle::function_name_for_symbol(&instance.symbol);
-            let mut arg_exprs = Vec::with_capacity(args.len());
-            for arg in args {
-                arg_exprs.push(emit_operand(arg, env)?);
-            }
             Ok(format!("{name}({})", arg_exprs.join(", ")))
         }
-        other => Err(BackendDiagnostic::Unsupported(format!(
-            "Callee {other:?} has no WP-C5.2d representation yet -- indirect calls land in \
-             WP-C5.4c, runtime calls land alongside their RuntimeFn support"
+        // §9.1: the target is a typed Rust `fn` pointer read from the operand. No runtime signature
+        // switch and no reconstruction of source call order -- MIR verification already proved the
+        // operand has `MirTy::FnPtr` with matching arity/parameter/return types (§9.3), so the
+        // parenthesised operand is applied directly.
+        Callee::FnValue(operand) => {
+            let f = emit_operand(operand, env)?;
+            Ok(format!("({f})({})", arg_exprs.join(", ")))
+        }
+        Callee::Runtime(_) => Err(BackendDiagnostic::Unsupported(format!(
+            "Callee {callee:?} has no representation yet -- runtime calls land alongside their \
+             RuntimeFn support"
         ))),
     }
 }

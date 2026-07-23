@@ -226,6 +226,96 @@ fn rejects_runtime_call_signature_mismatch() {
     expect_code(&program_with(vec![b]), "MIR-0005");
 }
 
+// WP-C5.4c §9.3: the verifier — not the backend, and never rustc — is responsible for proving an
+// indirect call is well-typed. These four negatives pin that boundary so a malformed FnValue call
+// can never reach the generated crate.
+
+/// A body taking one function-value parameter and indirectly calling it with the given args/dest.
+/// The param is `Copy` (FnPtr), so `Operand::Copy` reads it without consuming.
+fn indirect_call_body(fnptr: MirTy, args: Vec<Operand>, dest_ty: MirTy) -> MirBody {
+    let mut b = body(
+        vec![
+            ret_local(),
+            LocalDecl {
+                ty: fnptr.clone(),
+                kind: LocalKind::Param(0),
+            },
+            local(dest_ty),
+        ],
+        vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::FnValue(Operand::Copy(Place::local(LocalId(1)))),
+                    args,
+                    dest: Place::local(LocalId(2)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    b.params = vec![fnptr];
+    b
+}
+
+fn fnptr_i32_to_i32() -> MirTy {
+    MirTy::FnPtr {
+        params: vec![MirTy::Int32],
+        ret: Box::new(MirTy::Int32),
+    }
+}
+
+#[test]
+fn rejects_indirect_call_through_a_non_fnptr_operand() {
+    // The FnValue-specific check: the operand's type must be `MirTy::FnPtr`. An `Int32` const is not.
+    let b = body(
+        vec![ret_local(), local(MirTy::Int32)],
+        vec![
+            block(
+                vec![],
+                Terminator::Call {
+                    callee: Callee::FnValue(Operand::Const(Constant::Int(0, MirTy::Int32))),
+                    args: vec![],
+                    dest: Place::local(LocalId(1)),
+                    target: BlockId(1),
+                },
+            ),
+            block(vec![], Terminator::Return),
+        ],
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_indirect_call_with_wrong_arity() {
+    // `fn(Int32) -> Int32` invoked with zero arguments.
+    let b = indirect_call_body(fnptr_i32_to_i32(), vec![], MirTy::Int32);
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_indirect_call_with_wrong_argument_type() {
+    // `fn(Int32) -> Int32` invoked with a `Bool` argument.
+    let b = indirect_call_body(
+        fnptr_i32_to_i32(),
+        vec![Operand::Const(Constant::Bool(true))],
+        MirTy::Int32,
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
+#[test]
+fn rejects_indirect_call_with_wrong_destination_type() {
+    // `fn(Int32) -> Int32`'s result assigned to a `Bool` destination.
+    let b = indirect_call_body(
+        fnptr_i32_to_i32(),
+        vec![Operand::Const(Constant::Int(0, MirTy::Int32))],
+        MirTy::Bool,
+    );
+    expect_code(&program_with(vec![b]), "MIR-0005");
+}
+
 #[test]
 fn rejects_use_after_move() {
     let b = body(

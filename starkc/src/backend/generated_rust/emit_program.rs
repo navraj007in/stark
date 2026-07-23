@@ -66,6 +66,11 @@ pub fn emit(
     let projections = emit_projections::collect(program, layout)?;
     main_rs.push_str(&emit_projections::emit(&projections, &program.types)?);
 
+    // WP-C5.4c (§7.5): one aborting sentinel per distinct function-pointer signature, emitted
+    // before ordinary bodies so a default-initialised `FnPtr` local (Copy, never slot-backed) has
+    // a valid Rust default that aborts rather than silently calling a real function.
+    main_rs.push_str(&emit_types::emit_fn_sentinels(program)?);
+
     for body in &program.bodies {
         main_rs.push_str(&format!("// STARK instance: {}\n", body.instance.symbol));
         if body.instance.symbol == mangle::ENTRY_SYMBOL {

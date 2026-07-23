@@ -72,6 +72,22 @@ pub fn type_name_for_nominal(item: u32, args: &[crate::mir::MirTy]) -> String {
     sanitize_symbol(&format!("ty#{item}@[{}]", rendered.join(", ")))
 }
 
+/// WP-C5.4c (§7.4): the generated name of the ABORTING SENTINEL for one distinct function-pointer
+/// signature. Reuses [`sanitize_symbol`]'s injective encoding over a canonical `dump_ty` string in
+/// a DEDICATED key space (`fn-sentinel#…`). The namespace is disjoint from source-function names
+/// (whose `key_symbol` strings can contain no `#`), from nominal type names (`ty#…`), and from
+/// core-enum names (`core#…`) -- the same source-language argument that keeps those three apart,
+/// since `#` is not a legal STARK identifier character. Distinct signatures produce distinct
+/// `dump_ty` and thus distinct names; identical signatures collapse to one, which is exactly the
+/// per-signature deduplication §7.5 requires.
+pub fn fn_sentinel_name(fnptr: &crate::mir::MirTy) -> String {
+    debug_assert!(
+        matches!(fnptr, crate::mir::MirTy::FnPtr { .. }),
+        "fn_sentinel_name is only defined for MirTy::FnPtr"
+    );
+    sanitize_symbol(&format!("fn-sentinel#{}", crate::mir::dump_ty(fnptr)))
+}
+
 /// The generated Rust type name for a CORE enum instance (`Option`/`Result`/`Ordering`). A
 /// separate key space from [`type_name_for_nominal`]'s numeric item ids, so a core instance can
 /// never collide with a user nominal however the item ids fall.

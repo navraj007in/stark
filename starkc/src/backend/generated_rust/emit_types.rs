@@ -110,6 +110,19 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         MirTy::Enum(..) => nominal_type_name(ty).ok_or_else(|| {
             BackendDiagnostic::Unsupported(format!("no generated name for enum {ty:?}"))
         })?,
+        // WP-C5.4c (§7.1/§7.2): a non-capturing function value is a typed Rust function pointer.
+        // This is exactly the calling convention emitted STARK functions already use -- the
+        // signature's parameter types are `emit_ty` VALUE types (`emit_param_list`), and the
+        // ValueSlot for a non-Copy parameter is an internal body detail, not part of the ABI -- so
+        // a `Constant::FnPtr`/sentinel coerces to this type with no wrapper. No `dyn Fn`, closure,
+        // `Box`, or raw pointer (§7.1).
+        MirTy::FnPtr { params, ret } => {
+            let mut ps = Vec::with_capacity(params.len());
+            for p in params {
+                ps.push(emit_ty(p)?);
+            }
+            format!("fn({}) -> {}", ps.join(", "), emit_ty(ret)?)
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \
@@ -393,12 +406,108 @@ pub fn default_value_expr(ty: &MirTy, types: &TypeContext) -> Result<String, Bac
             // what the local logically holds. MIR liveness governs that.
             format!("{name}::{}({})", variant_name(0), parts.join(", "))
         }
+        // WP-C5.4c (§7.4/§7.6): a bare Rust function pointer has no language default, but the CFG
+        // dispatch loop default-initialises every non-parameter local. The default is the ABORTING
+        // sentinel for this exact signature -- NOT null/zero/transmute and NOT an arbitrary real
+        // function (§7.4): a sentinel that returned a value could hide a use-before-init defect,
+        // whereas this one aborts if MIR liveness is ever wrong. A `FnPtr` local is Copy, so it is
+        // never slot-backed and this is the only place it acquires a starting value.
+        MirTy::FnPtr { .. } => mangle::fn_sentinel_name(ty),
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no WP-C5.3b default-value representation yet"
             )))
         }
     })
+}
+
+// ------------------------------------------------- WP-C5.4c function sentinels --
+
+/// §7.5: collect every DISTINCT `MirTy::FnPtr` reachable in the program, keyed by canonical
+/// `dump_ty` so identical signatures collapse and the set is deterministically ordered. Descends
+/// recursively through composite types, so a function pointer nested in a tuple, array, reference,
+/// nominal type argument (`Option<fn(..)>`), or another function-pointer signature is found. The
+/// type sources are every body's params/return/locals and every struct field / enum payload in the
+/// `TypeContext` (fields and payloads are where a function pointer hides without being a bare
+/// local type).
+pub fn collect_fnptr_signatures(program: &MirProgram) -> std::collections::BTreeMap<String, MirTy> {
+    let mut out = std::collections::BTreeMap::new();
+    for body in &program.bodies {
+        for p in &body.params {
+            walk_ty_for_fnptr(p, &mut out);
+        }
+        walk_ty_for_fnptr(&body.ret, &mut out);
+        for local in &body.locals {
+            walk_ty_for_fnptr(&local.ty, &mut out);
+        }
+    }
+    for fields in program.types.struct_fields.values() {
+        for f in fields {
+            walk_ty_for_fnptr(f, &mut out);
+        }
+    }
+    for variants in program.types.enum_variants.values() {
+        for payload in variants {
+            for f in payload {
+                walk_ty_for_fnptr(f, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn walk_ty_for_fnptr(ty: &MirTy, out: &mut std::collections::BTreeMap<String, MirTy>) {
+    match ty {
+        MirTy::FnPtr { params, ret } => {
+            out.insert(crate::mir::dump_ty(ty), ty.clone());
+            for p in params {
+                walk_ty_for_fnptr(p, out);
+            }
+            walk_ty_for_fnptr(ret, out);
+        }
+        MirTy::Tuple(elems) => {
+            for e in elems {
+                walk_ty_for_fnptr(e, out);
+            }
+        }
+        MirTy::Array(inner, _) | MirTy::Slice(inner) | MirTy::Ref { inner, .. } => {
+            walk_ty_for_fnptr(inner, out)
+        }
+        MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
+            for a in args {
+                walk_ty_for_fnptr(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// §7.4/§7.5: emit one aborting sentinel per distinct function-pointer signature, before ordinary
+/// bodies (item order is not semantically relevant, but generated source order must be
+/// deterministic — the `BTreeMap` guarantees it). Every parameter is accepted and ignored; the
+/// body aborts immediately, so `std::process::abort()`'s `!` coerces to the declared return type
+/// and the sentinel can never return an arbitrary value that would mask a use-before-init defect.
+pub fn emit_fn_sentinels(program: &MirProgram) -> Result<String, BackendDiagnostic> {
+    let sigs = collect_fnptr_signatures(program);
+    let mut out = String::new();
+    for ty in sigs.values() {
+        let MirTy::FnPtr { params, ret } = ty else {
+            continue;
+        };
+        let name = mangle::fn_sentinel_name(ty);
+        let mut param_decls = Vec::with_capacity(params.len());
+        for p in params {
+            param_decls.push(format!("_: {}", emit_ty(p)?));
+        }
+        out.push_str(&format!(
+            "// WP-C5.4c aborting sentinel for {}\n\
+             fn {name}({}) -> {} {{ std::process::abort() }}\n",
+            crate::mir::dump_ty(ty),
+            param_decls.join(", "),
+            emit_ty(ret)?,
+        ));
+    }
+    Ok(out)
 }
 
 /// A Rust expression, not necessarily a single literal token (e.g. a `Char` constant becomes
@@ -415,11 +524,17 @@ pub fn emit_constant(c: &Constant) -> Result<String, BackendDiagnostic> {
             format!("{value}{suffix}")
         }
         Constant::Float(value, ty) => emit_float_constant(*value, ty)?,
+        // WP-C5.4c (§8.1): a function value is the generated function item's name, coerced to the
+        // declared `fn(..) -> ..` pointer type by its use context. NOT an address, string lookup,
+        // switch table, closure, or environment wrapper (§8.1). The C5.4a linkage preflight has
+        // already proven this instance resolves to exactly one body with matching identity (§8.2),
+        // so this mapping is safe without re-searching -- identical to how `Callee::Instance`
+        // names its target.
+        Constant::FnPtr(instance) => mangle::function_name_for_symbol(&instance.symbol),
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "Constant {other:?} has no C5.2a generated-Rust representation yet -- `FnPtr` \
-                 lands in WP-C5.2d/C5.4c (function values), `Str` lands alongside String/output \
-                 support"
+                "Constant {other:?} has no C5.2a generated-Rust representation yet -- `Str` lands \
+                 alongside String/output support"
             )))
         }
     })

@@ -1358,3 +1358,50 @@ in **C5.4c**, where that capability exists; C5.4a already proved their *linkage*
 multi-path reference emits once; a missing concrete instance is caught by the C5.4a linkage
 preflight; generated source contains only concrete Rust definitions. `cargo fmt`/`clippy` clean.
 
+#### C5.4c — function values and indirect calls — CLOSED 2026-07-23
+
+**Delivered (backend):**
+- `emit_types::emit_ty` `MirTy::FnPtr` arm → `fn(P0, …) -> R` (§7.1/§7.2). This coincides with the
+  emitted STARK calling convention — signatures already use `emit_ty` VALUE param types
+  (`emit_param_list`), the `ValueSlot` for a non-Copy param being an internal body detail — so a
+  function item/sentinel coerces with **no wrapper** and there is no ABI mismatch.
+- `mangle::fn_sentinel_name` — one deterministic, injectively-sanitised sentinel name per distinct
+  `dump_ty`, in the dedicated `fn-sentinel#…` key space (disjoint from function/`ty#`/`core#` names
+  by the same `#`-not-in-identifiers argument).
+- `emit_types::collect_fnptr_signatures` + `emit_fn_sentinels` — recursive signature collection
+  (params/return/locals + struct fields + enum payloads, descending through composites) and one
+  aborting `std::process::abort()` sentinel per signature, emitted before ordinary bodies
+  (`emit_program`).
+- `emit_types::default_value_expr(FnPtr)` → the sentinel name (§7.6): the only way a Copy `FnPtr`
+  local acquires its CFG-loop default; never null/zero/transmute or an arbitrary real function.
+- `emit_types::emit_constant(Constant::FnPtr)` → the generated function item name (§8.1), safe
+  because C5.4a preflight already proved the instance resolves.
+- `emit_bodies::emit_call(Callee::FnValue)` → `(operand)(args)` (§9.1), reusing the identical
+  direct-call argument machinery (§9.2).
+
+**Evidence:**
+- `three_engine_differential.rs` (+8, suite 69 green): function value in a local + nested indirect
+  call; as a parameter (higher-order `apply`); **returned** from a function; **copied** (both
+  usable, TYPE-FN-001); stored in a tuple; stored in a struct field; a **generic** function used as
+  a value (§10.4 #8); and the **mandatory §10.5** function reached *only* through a value, invoked
+  indirectly — all agreeing HIR/MIR/native.
+- `mir_verify.rs` (+4): the verifier — not rustc — rejects an indirect call through a non-`FnPtr`
+  operand, wrong arity, wrong argument type, wrong destination type (§9.3). (The verifier already
+  enforced these; C5.4c pins them.)
+- `native_c5_4_function_values.rs` (8): `FnPtr`→Rust-pointer text incl. nested and
+  distinct-signature; an unsupported signature (`fn(String)->…`) refused before rustc (§5.2/§7.2);
+  `is_copy(FnPtr)==true` and **not slot-backed** (§7.3); default is the aborting sentinel (guard
+  §13.5 #6); exactly one sentinel per distinct signature and one shared across identical signatures
+  (§7.5); **no `dyn`/closure/`Box`/address-cast** for a function value (§7.1, guard #7); a
+  value-only target defined once and never direct-called (§10.5); and the **entry `main` as a
+  function value builds natively** and exits 0 (§8.3 — source-reachable AND coherent, so §15.5 holds).
+
+**§8.3 probe result:** `let f: fn() -> Unit = main;` is valid STARK source (parses/resolves/
+typechecks/lowers) and its generated reference (`_1 = main;`, coerced to `fn() -> ()`) is accepted
+by rustc — recorded as coherent, not a backend-only prohibition.
+
+**Exit conditions (§14.3):** all required function-value shapes agree across engines; function
+values copied without slots; indirect calls target the correct instance; no closure/capture/
+signature-erased mechanism introduced; invalid shapes refused before rustc. Focused sweep (backend
++ MIR + native + three-engine, ~312 tests) green; `cargo fmt`/`clippy` clean.
+
