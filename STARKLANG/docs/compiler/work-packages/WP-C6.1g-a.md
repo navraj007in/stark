@@ -130,3 +130,53 @@ lifetime-irreducible. Resolving it needs one of:
 Per §2 this stops here for an owner decision on the approach rather than proceeding into a
 representation change. The current deterministic pre-rustc refusal (CD-096) remains in force and
 sound in the meantime.
+
+---
+
+## 6. Follow-on: referent-storage stabilization (owner direction, 2026-07-24)
+
+Structural Copy is implemented and correct across spec + type checker + move checker + MIR +
+HIR interpreter + backend derive (the four engines share one predicate, `copy_eligible_types`).
+It is **held, not landed**, because it regresses one already-working shape:
+
+```stark
+fn wrap(r: &P) -> Option<&P> { Some(r) }
+fn main() { let p = P { v: 3 }; let o = wrap(&p); assert_eq(o.unwrap().get(), 3); }
+```
+
+fails native build with `E0506` once `struct P { v: Int32 }` becomes structurally `Copy`.
+
+**Diagnosis.** A `Copy` referent lowers to a plain, loop-reassigned local (`_1 = _2` in block 0).
+The returned borrow is held across the dispatch loop, and `Option::unwrap`'s panic-branch
+discriminant match adds enough blocks that rustc's back-edge reasoning flags `_1`'s own block-0
+assignment as conflicting. `H<&P>` returned passes only by having fewer blocks — luck, not a
+semantic difference. **This worked before structural Copy, when `P` was slot-backed.**
+
+**The fix is NOT to back out structural Copy** (it is the right semantic move) and **NOT a targeted
+refusal** (too shape-sensitive — it depends on caller lowering, `unwrap` expansion, and rustc
+back-edge behaviour; it would be a brittle "known bad pattern" rule, not a language rule). The bug
+is in **native storage for borrowed Copy referents.** Copy semantics do not require plain-reassigned
+backend storage: a value can be surface `Copy` while the backend gives it stable storage when it is
+borrowed. b3 already proved a `ValueSlot`-backed referent survives a cross-loop borrow.
+
+**Fix:** an address-taken Copy local whose borrow can escape across generated dispatch-loop blocks
+(through a call return, enum wrapper, `unwrap`/`match`, or a later block) is lowered into **stable
+(slot) storage** instead of being reassigned inside the loop. The intricate part is the read path:
+a Copy value read out of a slot must **deref-copy** (`*slot.get()`), never `take()` — a `take`
+would empty the slot and break Copy's defining multi-read.
+
+**Acceptance bar before the structural-Copy commit lands (all in one change):**
+
+Native green:
+- `wrap(&p).unwrap().get()` where `P` is structurally Copy
+- direct `Option<&P>` return
+- `H<&P>` return; local `H<&P>` across blocks
+- plain `&P` return
+- `Int32` / `Point` Copy reuse
+
+Negative (still Move):
+- `String` field; `Box`/`Vec` field; `&mut` field; a `Drop`-bearing nominal; a mixed
+  Copy/non-Copy nominal.
+
+Plus: OWN-COPY-001 regenerated into `STARK-Core-v1.md`; positive + negative spec fixtures; broad
+three-engine regression green.
