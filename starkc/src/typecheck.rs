@@ -16,6 +16,10 @@ use crate::source::{SourceFile, Span};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// WP-C6.2b-F1: a selected inherent/trait method candidate carried through visibility enforcement:
+/// (signature def, is-trait-method, impl substitution, impl self type, member is `pub`, impl item).
+type MethodCandidate<'a> = (&'a hir::FnDef, bool, HashMap<String, Ty>, Ty, bool, ItemId);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeVarId(pub u32);
 
@@ -188,6 +192,9 @@ pub struct TypeChecker<'a> {
     /// already looks up a bounded generic type parameter's trait methods. `None` everywhere
     /// else (ordinary functions, `impl` method bodies, where `self`'s type is already concrete).
     current_trait_id: Option<ItemId>,
+    /// WP-C6.2b-F1: the module of the item whose body is being checked (the use-site module for
+    /// member/field visibility). `None` before Pass 2.
+    current_module: Option<u32>,
 
     // Bounds checks to run at the end of checking
     /// Deferred trait-bound obligations. The 4th element is the generic environment ACTIVE
@@ -604,6 +611,7 @@ pub fn analyze_with_options(
         loop_contexts: Vec::new(),
         current_fn_generics: None,
         current_trait_id: None,
+        current_module: None,
         bounds_checks: Vec::new(),
         tensor_ctx: UnifyCtx::new(),
         dim_scope: HashMap::new(),
@@ -1797,6 +1805,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_field_initializers(
         &mut self,
+        owner: Option<ItemId>,
         expected_fields: &HashMap<String, Ty>,
         map: &HashMap<String, Ty>,
         fields: &[hir::FieldInit],
@@ -1807,6 +1816,11 @@ impl<'a> TypeChecker<'a> {
             let name = self.text(field.name).to_string();
             provided.insert(name.clone());
             if let Some(expected) = expected_fields.get(&name) {
+                // WP-C6.2b-F1: constructing with a private field is inaccessible outside its module.
+                if let Some(struct_id) = owner {
+                    let is_pub = self.struct_field_is_pub(struct_id, &name);
+                    self.check_member_visible(is_pub, struct_id, "field", &name, field.name);
+                }
                 if let Some(value) = field.expr {
                     let actual = self.check_expr(value);
                     let expected = self.instantiate_ty(expected, map);
@@ -2868,6 +2882,8 @@ impl<'a> TypeChecker<'a> {
                     .position(|i| std::ptr::eq(i, item))
                     .unwrap() as u32,
             );
+            // WP-C6.2b-F1: the use-site module for visibility checks inside this item's body.
+            self.current_module = self.hir.item_modules.get(&item_id).copied();
             if let Some(item_file) = self.hir.item_files.get(&item_id) {
                 self.file = item_file.clone();
             } else {
@@ -4575,21 +4591,33 @@ impl<'a> TypeChecker<'a> {
                 let name_str = self.text(*name);
                 match self.resolve(&base_ty) {
                     Ty::Struct(struct_id, args) => {
-                        if let Some(fields) = self.struct_fields.get(&struct_id) {
-                            if let Some(field_ty) = fields.get(name_str) {
-                                let field_ty = field_ty.clone();
-                                let map = self.nominal_param_map(struct_id, &args);
-                                self.instantiate_ty(&field_ty, &map)
-                            } else {
-                                self.diags.push(
-                                    Diagnostic::error(
-                                        format!("struct field '{}' not found", name_str),
-                                        *name,
-                                    )
-                                    .with_code("E0001"),
-                                );
-                                Ty::Error
-                            }
+                        let field_ty = self
+                            .struct_fields
+                            .get(&struct_id)
+                            .and_then(|fields| fields.get(name_str))
+                            .cloned();
+                        if let Some(field_ty) = field_ty {
+                            // WP-C6.2b-F1: a private field is inaccessible outside its module.
+                            let name_owned = name_str.to_string();
+                            let is_pub = self.struct_field_is_pub(struct_id, &name_owned);
+                            self.check_member_visible(
+                                is_pub,
+                                struct_id,
+                                "field",
+                                &name_owned,
+                                *name,
+                            );
+                            let map = self.nominal_param_map(struct_id, &args);
+                            self.instantiate_ty(&field_ty, &map)
+                        } else if self.struct_fields.contains_key(&struct_id) {
+                            self.diags.push(
+                                Diagnostic::error(
+                                    format!("struct field '{}' not found", name_str),
+                                    *name,
+                                )
+                                .with_code("E0001"),
+                            );
+                            Ty::Error
                         } else {
                             Ty::Error
                         }
@@ -4879,7 +4907,13 @@ impl<'a> TypeChecker<'a> {
                         .get(struct_id)
                         .cloned()
                         .unwrap_or_default();
-                    self.check_field_initializers(&expected, &map, fields, expr.span);
+                    self.check_field_initializers(
+                        Some(*struct_id),
+                        &expected,
+                        &map,
+                        fields,
+                        expr.span,
+                    );
                     Ty::Struct(*struct_id, args)
                 }
                 Res::Variant(enum_id, variant) => {
@@ -4894,7 +4928,7 @@ impl<'a> TypeChecker<'a> {
                             _ => None,
                         });
                     if let Some(expected) = expected {
-                        self.check_field_initializers(&expected, &map, fields, expr.span);
+                        self.check_field_initializers(None, &expected, &map, fields, expr.span);
                         Ty::Enum(*enum_id, args)
                     } else {
                         self.diags.push(
@@ -6092,7 +6126,7 @@ impl<'a> TypeChecker<'a> {
         let name = self.text(name_span).to_string();
         let mut inherent = Vec::new();
         let mut trait_candidates = Vec::new();
-        for item in &self.hir.items {
+        for (impl_idx, item) in self.hir.items.iter().enumerate() {
             let hir::ItemKind::Impl {
                 trait_,
                 self_ty,
@@ -6108,11 +6142,19 @@ impl<'a> TypeChecker<'a> {
             ) {
                 continue;
             }
+            let impl_item_id = ItemId(impl_idx as u32);
             let candidate = items.iter().find_map(|item| match item {
-                hir::ImplItem::Fn { def, .. }
+                // WP-C6.2b-F1: capture visibility + defining impl for the private-member check.
+                hir::ImplItem::Fn { vis, def }
                     if def.sig.receiver.is_none() && self.text(def.sig.name) == name =>
                 {
-                    Some((def.sig.clone(), *self_ty, generics.clone()))
+                    Some((
+                        def.sig.clone(),
+                        *self_ty,
+                        generics.clone(),
+                        matches!(vis, Some(crate::ast::Vis::Pub)),
+                        impl_item_id,
+                    ))
                 }
                 _ => None,
             });
@@ -6140,13 +6182,21 @@ impl<'a> TypeChecker<'a> {
             return Ty::Error;
         }
         let selected = candidates.into_iter().next();
-        let Some((sig, self_ty_id, impl_generics)) = selected else {
+        let Some((sig, self_ty_id, impl_generics, is_pub, impl_item_id)) = selected else {
             self.diags.push(
                 Diagnostic::error(format!("associated function '{name}' not found"), name_span)
                     .with_code("E0200"),
             );
             return Ty::Error;
         };
+        // WP-C6.2b-F1: a private associated function is inaccessible outside its defining module.
+        self.check_member_visible(
+            is_pub,
+            impl_item_id,
+            "associated function",
+            &name,
+            call_span,
+        );
 
         let self_ty = self.convert_hir_type(self_ty_id);
         let previous_self = self.current_self_ty.replace(self_ty);
@@ -6377,7 +6427,7 @@ impl<'a> TypeChecker<'a> {
                 };
 
                 for impl_item in items {
-                    if let hir::ImplItem::Fn { def, .. } = impl_item {
+                    if let hir::ImplItem::Fn { vis, def } = impl_item {
                         let method_name_str = self.item_text(impl_item_id, def.sig.name);
                         if method_name_str == name_str {
                             candidates.push((
@@ -6385,6 +6435,8 @@ impl<'a> TypeChecker<'a> {
                                 trait_.is_some(),
                                 map.clone(),
                                 impl_self_ty.clone(),
+                                matches!(vis, Some(crate::ast::Vis::Pub)),
+                                impl_item_id,
                             ));
                         }
                     }
@@ -6394,15 +6446,13 @@ impl<'a> TypeChecker<'a> {
 
         let inherent: Vec<_> = candidates
             .iter()
-            .filter(|(_, is_trait, _, _)| !is_trait)
+            .filter(|(_, is_trait, _, _, _, _)| !is_trait)
             .collect();
-        let selected = if let Some(candidate) = inherent.first() {
-            Some((
-                candidate.0,
-                candidate.1,
-                candidate.2.clone(),
-                candidate.3.clone(),
-            ))
+        // WP-C6.2b-F1: pick the chosen candidate, enforce its visibility, then hand the same
+        // 4-tuple downstream. A trait method is visible via its trait's own path rules; the
+        // private-impl-member check applies to inherent (and inherent-selected) methods.
+        let chosen: Option<MethodCandidate> = if let Some(candidate) = inherent.first() {
+            Some((**candidate).clone())
         } else if candidates.len() == 1 {
             candidates.first().cloned()
         } else if candidates.len() > 1 {
@@ -6413,6 +6463,13 @@ impl<'a> TypeChecker<'a> {
         } else {
             None
         };
+        if let Some((_, is_trait, _, _, is_pub, impl_item_id)) = &chosen {
+            if !is_trait {
+                self.check_member_visible(*is_pub, *impl_item_id, "method", &name_str, call_span);
+            }
+        }
+        let selected =
+            chosen.map(|(def, is_trait, map, self_ty, _, _)| (def, is_trait, map, self_ty));
 
         // WP-C1.3 (2026-07-17): fall back to a trait's own default method body when no impl
         // overrides it. `candidates` above only ever collects `ImplItem::Fn` overrides -- a
@@ -6692,6 +6749,47 @@ impl<'a> TypeChecker<'a> {
             }
             Ty::Error
         }
+    }
+
+    /// WP-C6.2b-F1: enforce member/field visibility. `defining_item` is the item that owns the
+    /// member (the impl block for a method/associated fn, the struct/enum for a field/variant).
+    /// A non-`pub` member is accessible only from its own defining module (private is exact-module,
+    /// matching `resolve::item_is_visible_from`). Returns true if accessible; otherwise emits E0207
+    /// and returns false.
+    /// WP-C6.2b-F1: whether a struct field is declared `pub`. Missing struct/field → treat as
+    /// public (an unrelated error already fired, or it is a tuple/core type).
+    fn struct_field_is_pub(&self, struct_id: ItemId, field: &str) -> bool {
+        if let hir::ItemKind::Struct { fields, .. } = &self.hir.item(struct_id).kind {
+            for f in fields {
+                if self.item_text(struct_id, f.name) == field {
+                    return f.is_pub;
+                }
+            }
+        }
+        true
+    }
+
+    fn check_member_visible(
+        &mut self,
+        is_pub: bool,
+        defining_item: ItemId,
+        kind: &str,
+        name: &str,
+        span: Span,
+    ) -> bool {
+        if is_pub {
+            return true;
+        }
+        let member_module = self.hir.item_modules.get(&defining_item).copied();
+        if member_module == self.current_module {
+            return true;
+        }
+        self.diags.push(
+            Diagnostic::error(format!("{kind} '{name}' is private"), span)
+                .with_code("E0207")
+                .with_label("private to its defining module"),
+        );
+        false
     }
 
     fn is_iterator_type(&self, receiver: &Ty) -> bool {

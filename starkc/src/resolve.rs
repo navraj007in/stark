@@ -167,6 +167,12 @@ pub fn resolve_with_options(
     // so MIR lowering's module-path walk can read them.
     resolver.hir.synthetic_spans = resolver.ast.synthetic_spans.clone();
 
+    // WP-C6.2b-F1: expose the module map so the type checker can enforce member/field visibility.
+    resolver.hir.item_modules = resolver
+        .item_modules
+        .iter()
+        .map(|(item, module)| (*item, module.0))
+        .collect();
     (resolver.hir, resolver.diags)
 }
 

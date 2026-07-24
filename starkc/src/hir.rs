@@ -230,6 +230,9 @@ pub struct Hir {
     pub blocks: Vec<BlockNode>,
     pub root: Root,
     pub item_files: std::collections::HashMap<ItemId, std::sync::Arc<crate::source::SourceFile>>,
+    /// WP-C6.2b-F1: the defining module id of each item, so the type checker can enforce member
+    /// and field visibility (private is exact-module, matching `resolve::item_is_visible_from`).
+    pub item_modules: std::collections::HashMap<ItemId, u32>,
     pub publicly_nameable_items: std::collections::HashSet<ItemId>,
     /// C4.5f-3c: names for synthetic spans (dependency-package `mod` wrappers use spans at
     /// `lo >= 0x8000_0000` that index no real file). Copied from the AST so consumers past

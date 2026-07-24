@@ -4,7 +4,7 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 (CD-080…CD-084) and **WP-C6.1f CLOSED (CD-099)** (general reference storage — the C5 deferral the C6
 entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
-F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
+**F1 (privacy) CLOSED (CD-102)**; F2/F5/F6 after C6.1g; F3 → WP-C6.1f (closed); F4 split.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
@@ -3082,6 +3082,26 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-102 [2026-07-24, **WP-C6.2b-F1 CLOSED — privacy enforcement for callable/member resolution**]
+  F1 (the accepted-invalid privacy hole) is fixed at the FRONT END; invalid access stops before
+  lowering. Module-level items were already enforced by `resolve::item_is_visible_from`; the gap was
+  impl members and fields, which resolve in `typecheck` with no visibility check. Fix: `resolve`
+  exposes its module map as `hir.item_modules`; `typecheck` tracks the use-site module
+  (`current_module`) and enforces one shared predicate `check_member_visible` (private is
+  exact-module, matching resolve; emits **E0207**) at four points — inherent-method selection,
+  associated-function resolution, struct-field read, and struct-literal construction. Trait/default
+  methods keep their trait-path visibility; a plain reference return etc. is unaffected.
+  - **Probe/inventory (§4), all now rejected pre-lowering:** private inherent method `s.hidden()`,
+    private associated fn `S::secret()`, private field read `s.v`, private field construction
+    `S { v }`, and neither method syntax nor qualified syntax bypasses. Same-module private and
+    public cross-module access stay accepted; private top-level fn stays enforced by resolve.
+  - **Evidence:** `tests/c62b_f1_privacy.rs` (11: 4 positive + 7 negative). Regression green with no
+    over-rejection: lib 441, `gate2_valid` 11, `native_c6_2_generics_traits` 11,
+    `three_engine_differential` 83, `conformance` 56, `cross_package_generics` 20 — the WP-C6.2a
+    canonical-identity fixtures unchanged. `fmt --check` and strict `clippy` clean.
+  - **C6.2b matrix:** F1 struck from the finding list. F2/F5/F6 remain (after C6.1g), F3 is closed
+    (→ WP-C6.1f), F4 is split. F1 no longer blocks C6.2b; the remaining findings do.
 
 - CD-101 [2026-07-24, **WP-C6.1g-a follow-up — 5 full-suite test-churn failures fixed**] The CD-100
   full run surfaced 5 failures, all test-churn from the semantic change, no code regressions: four
