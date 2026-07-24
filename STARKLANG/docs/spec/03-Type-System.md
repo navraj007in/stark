@@ -776,7 +776,7 @@ introduce an evaluation or ownership transfer merely to select a type,
 method, or trait implementation.
 
 ### Copy and Drop (Soundness Rules)
-**OWN-COPY-001 — Copy eligibility.**
+**OWN-COPY-001.** — Copy eligibility.
 
 A type is `Copy` if it is one of the language-defined `Copy` primitives (the
 built-in scalar primitives except `String`, `Unit`, `!`, and function values), a

@@ -79,11 +79,16 @@ fn c61f_returning_a_reference_to_a_local_is_refused() {
 
 #[test]
 fn c61f_moving_an_owner_while_borrowed_is_refused() {
+    // WP-C6.1g-a: `struct P { v: Int32 }` is now structurally Copy, so `take(p)` would COPY, not
+    // move -- there would be no move to conflict with the borrow. The owner must be a genuine Move
+    // type for "move while borrowed" to apply; a `Drop`-bearing struct is Move.
     rejected_with(
         "move_while_borrowed",
         "E0101",
-        &format!("{P}fn take(p: P) -> Int32 {{ p.v }}\n\
-                  fn main() {{ let p = P {{ v: 3 }}; let r = &p; let n = take(p); assert_eq(r.get(), 3); }}"),
+        "struct M { v: Int32 }\nimpl Drop for M { fn drop(&mut self) {} }\n\
+         impl M { fn get(&self) -> Int32 { self.v } }\n\
+         fn take(m: M) -> Int32 { m.v }\n\
+         fn main() { let m = M { v: 3 }; let r = &m; let n = take(m); assert_eq(r.get(), 3); }",
     );
 }
 

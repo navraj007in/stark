@@ -118,11 +118,13 @@ const NESTED: &str =
 
 #[test]
 fn multi_level_partial_move_agrees_across_engines() {
+    // WP-C6.1g-a: a partial move needs Move fields — an all-Copy `S` now copies. NESTED_DROP makes
+    // the leaf a `Drop`-bearing `D`, so the projection-helper move path this asserts is exercised.
     let gen = agree_completes(
         "multilevel_move",
         &format!(
-            "{NESTED}fn main() {{\n\
-             \x20   let o = Outer {{ a: Inner {{ x: S {{ v: 7 }} }}, b: S {{ v: 9 }} }};\n\
+            "{NESTED_DROP}fn main() {{\n\
+             \x20   let o = Outer {{ a: Inner {{ x: D {{ v: 7 }} }}, b: D {{ v: 9 }} }};\n\
              \x20   let y = o.a.x;\n\
              \x20   assert_eq(y.v, 7);\n\
              \x20   assert_eq(o.b.v, 9);\n\
@@ -260,10 +262,12 @@ const ENUM2_DROP: &str = "struct D { v: Int32 }\nimpl Drop for D { fn drop(&mut 
 
 #[test]
 fn c61c_two_payload_fields_both_bound_and_consumed() {
+    // WP-C6.1g-a: `struct S { v: Int32 }` is now Copy, so a match binding does not destructure-
+    // move. The Move (`Drop`-bearing) variant exercises the destructuring extraction this asserts.
     let gen = agree_completes(
         "c61c_both",
         &format!(
-            "{ENUM2}fn main() {{ let e = E::V(S {{ v: 1 }}, S {{ v: 2 }}); \
+            "{ENUM2_DROP}fn main() {{ let e = E::V(D {{ v: 1 }}, D {{ v: 2 }}); \
              match e {{ E::V(a, b) => {{ assert_eq(take(a) + take(b), 3); }} }} }}"
         ),
     );
@@ -401,10 +405,12 @@ fn c61d_single_non_copy_element() {
 
 #[test]
 fn c61d_multiple_non_copy_elements_in_source_order() {
+    // WP-C6.1g-a: an all-Copy-field `S` is now Copy (its iteration uses the dynamic-index Copy
+    // path); the non-Copy unrolled path this asserts needs a Move (`Drop`-bearing) element.
     let gen = agree_completes(
         "c61d_multi",
         &format!(
-            "{ARR_S}fn main() {{ let arr = [S {{ v: 1 }}, S {{ v: 2 }}, S {{ v: 3 }}]; \
+            "{ARR_D}fn main() {{ let arr = [D {{ v: 1 }}, D {{ v: 2 }}, D {{ v: 3 }}]; \
              let mut acc: Int32 = 0; for x in arr {{ acc = acc * 10 + take(x); }} \
              assert_eq(acc, 123); }}"
         ),
