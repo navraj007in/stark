@@ -4,7 +4,7 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 (CD-080…CD-084) and **WP-C6.1f CLOSED (CD-099)** (general reference storage — the C5 deferral the C6
 entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
-**F1 (privacy) CLOSED (CD-102)**; F2/F5/F6 after C6.1g; F3 → WP-C6.1f (closed); F4 split.**
+**F1 (privacy) CLOSED (CD-102); F5 (impl-head bounds) CLOSED (CD-103)**; F2/F6 open; F3 → WP-C6.1f (closed); F4 split.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
@@ -3082,6 +3082,17 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-103 [2026-07-24, **WP-C6.2b-F5 CLOSED — impl-head bounds visible in method bodies**] The
+  WP-C6-ENTRY §2 carry-forward. A method call on a bounded generic *function* parameter already
+  resolved through its bound, but a bound on the IMPL head (`impl<T: Sh> W<T> { fn go(&self) {
+  self.v.a() } }`) was invisible in the body (E0302 "method 'a' not found for type 'T'"). Fix:
+  `typecheck` tracks `current_impl_generics` (set around each impl's method bodies in Pass 2) and
+  consults it alongside `current_fn_generics` when resolving a method on a `Ty::Param` receiver.
+  An unbounded impl param still rejects the method (no over-accept). Evidence:
+  `tests/c62b_f5_impl_bounds.rs` (4, incl. native three-engine and the negative guard). Regression
+  green (lib 441, native_c6_2 11, three_engine 83, conformance 56, gate2_valid, cross_package);
+  `fmt --check` and strict `clippy` clean. C6.2b remaining: F2, F6.
 
 - CD-102 [2026-07-24, **WP-C6.2b-F1 CLOSED — privacy enforcement for callable/member resolution**]
   F1 (the accepted-invalid privacy hole) is fixed at the FRONT END; invalid access stops before

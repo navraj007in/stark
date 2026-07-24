@@ -186,6 +186,10 @@ pub struct TypeChecker<'a> {
     loop_nesting: u32,
     loop_contexts: Vec<LoopContext>,
     current_fn_generics: Option<Vec<hir::GenericParam>>,
+    /// WP-C6.2b-F5: the ENCLOSING impl's generic parameters (with their bounds), in scope while an
+    /// impl method body is checked so a bounded impl-head parameter's methods resolve — the impl
+    /// analog of `current_fn_generics`.
+    current_impl_generics: Option<Vec<hir::GenericParam>>,
     /// DEV-051: set while type-checking a trait's own default-method bodies (alongside
     /// `current_self_ty = Ty::Param("Self")`) so `resolve_method` can look up a sibling trait
     /// method called through `self` directly against *this* trait's item list, the same way it
@@ -610,6 +614,7 @@ pub fn analyze_with_options(
         loop_nesting: 0,
         loop_contexts: Vec::new(),
         current_fn_generics: None,
+        current_impl_generics: None,
         current_trait_id: None,
         current_module: None,
         bounds_checks: Vec::new(),
@@ -2898,9 +2903,16 @@ impl<'a> TypeChecker<'a> {
                 hir::ItemKind::Model(def) => {
                     self.check_model_def(item_id, def);
                 }
-                hir::ItemKind::Impl { self_ty, items, .. } => {
+                hir::ItemKind::Impl {
+                    self_ty,
+                    items,
+                    generics,
+                    ..
+                } => {
                     let prev_self = self.current_self_ty.take();
                     let prev_assoc = std::mem::take(&mut self.current_assoc_types);
+                    // WP-C6.2b-F5: bring the impl-head generics/bounds into scope for the bodies.
+                    let prev_impl_generics = self.current_impl_generics.replace(generics.clone());
                     self.current_self_ty = Some(self.convert_hir_type(*self_ty));
                     for impl_item in items {
                         if let hir::ImplItem::AssocType { name, ty } = impl_item {
@@ -2916,6 +2928,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     self.current_self_ty = prev_self;
                     self.current_assoc_types = prev_assoc;
+                    self.current_impl_generics = prev_impl_generics;
                 }
                 hir::ItemKind::Trait { items, .. } => {
                     let prev_self = self.current_self_ty.take();
@@ -6337,7 +6350,13 @@ impl<'a> TypeChecker<'a> {
         // concrete-type path below already did with `receiver_ty`; using the same peeled type
         // here makes the bounded-parameter path obey the same rule.
         if let Ty::Param(p_name) = &receiver_ty {
-            if let Some(generics) = self.current_fn_generics.clone() {
+            // WP-C6.2b-F5: consult the method's own generics AND the enclosing impl's generics, so
+            // a bound written on the impl head (`impl<T: Sh> W<T>`) is visible in the method body.
+            let mut generics = self.current_fn_generics.clone().unwrap_or_default();
+            if let Some(impl_generics) = &self.current_impl_generics {
+                generics.extend(impl_generics.iter().cloned());
+            }
+            if !generics.is_empty() {
                 for param in &generics {
                     if self.text(param.name) == p_name {
                         for bound in &param.bounds {
