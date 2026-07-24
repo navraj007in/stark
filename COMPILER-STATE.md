@@ -4,7 +4,7 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 (CD-080…CD-084) and **WP-C6.1f CLOSED (CD-099)** (general reference storage — the C5 deferral the C6
 entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
-**F1/F5/F2 CLOSED (CD-102/103/104)**; F6 open; F3 → WP-C6.1f (closed); F4 split.**
+**C6.2b matrix CLEARED: F1/F5/F2/F6 CLOSED (CD-102/103/104/105)**; F3 → WP-C6.1f (closed); F4 split (parser half open, selection is Track B).**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
@@ -3082,6 +3082,24 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-105 [2026-07-24, **WP-C6.2b-F6 CLOSED — impl signatures may spell the concrete type for
+  `Self`; C6.2b matrix cleared**] `impl Mk for G { fn make() -> G {..} }` for `trait Mk { fn make()
+  -> Self; }` was rejected E0500 "signature incompatible", because the compatibility check keyed
+  `Self` (trait) and the concrete `G` (impl) to different strings — yet in `impl … for G`, `Self`
+  IS `G`. Fix: `typecheck` keys the impl's self type in the SAME format a path produces
+  (`ty_signature_key`) and returns that for any `Self` mention, so `Self` and the written self type
+  (`G`, `&G`, `W<Int32>`) compare equal. A DIFFERENT concrete type (`-> H`) still mismatches and is
+  rejected — no over-accept. Evidence: `tests/c62b_f6_self_normalisation.rs` (5: return-Self-as-
+  concrete, return-Self-as-Self, param-`&Self`-as-concrete, generic-self via a `&Self` param, and
+  the wrong-type negative; native three-engine where applicable). **Found in passing (separate, not
+  fixed):** `W::<Int32>::make(7)` — a generic associated-fn call via turbofish — reports E0005
+  wrong-arity; unrelated to F6, worth a follow-up.
+  - **C6.2b matrix CLEARED.** F1 (privacy, the only accepted-invalid), F2, F5, F6 closed; F3 closed
+    (→ WP-C6.1f); F4 split (parser half `&&T`/`**x` — open; selection is Track B). C6.2b no longer
+    blocks Gate C6 on findings.
+  - `fmt --check` clean; F6 suite + lib 441 green. (Broad targeted regression not re-run for this
+    commit per owner instruction; last full green at CD-100 confirmation, 70 suites.)
 
 - CD-104 [2026-07-24, **WP-C6.2b-F2 CLOSED — specific-instance impl matches an inferred receiver**]
   `impl Get for W<Int32>` did not match `let w = W { v: 7 }; w.get()` (E0302, receiver `W<_infer>`).

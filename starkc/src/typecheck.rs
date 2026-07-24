@@ -3647,7 +3647,10 @@ impl<'a> TypeChecker<'a> {
             .enumerate()
             .map(|(index, param)| (self.text(param.name).to_string(), index))
             .collect();
-        let self_key = format!("{self_ty:?}");
+        // WP-C6.2b-F6: the self type's key in the SAME format `signature_type_key`
+        // produces for a path, so `Self` and the written concrete self type (`G`, `W<Int32>`)
+        // compare equal — an impl may spell either.
+        let self_key = self.ty_signature_key(self_ty);
         let params_match =
             trait_sig
                 .params
@@ -3674,6 +3677,32 @@ impl<'a> TypeChecker<'a> {
             }
     }
 
+    /// WP-C6.2b-F6: a `Ty`'s key in the exact format `signature_type_key` produces for the same
+    /// type written as a path, so the impl's self type and a `Self` mention share one key.
+    fn ty_signature_key(&self, ty: &Ty) -> String {
+        let ty = self.resolve(ty);
+        let keyed = |items: &[Ty]| {
+            items
+                .iter()
+                .map(|t| self.ty_signature_key(t))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        match &ty {
+            Ty::Primitive(p) => format!("p:{p:?}"),
+            Ty::Struct(id, args) | Ty::Enum(id, args) => {
+                format!("item:{}<{}>", id.0, keyed(args))
+            }
+            Ty::Core(core, args) => format!("core:{core:?}<{}>", keyed(args)),
+            Ty::Ref { mutable, inner } => format!("ref:{mutable}:{}", self.ty_signature_key(inner)),
+            Ty::Tuple(elems) => format!("tuple:{}", keyed(elems)),
+            Ty::Array(elem, n) => format!("array:{}:{n}", self.ty_signature_key(elem)),
+            Ty::Slice(elem) => format!("slice:{}", self.ty_signature_key(elem)),
+            Ty::Param(name) => format!("param:{name}"),
+            other => format!("{other:?}"),
+        }
+    }
+
     fn signature_type_key(
         &self,
         id: TypeId,
@@ -3684,6 +3713,9 @@ impl<'a> TypeChecker<'a> {
         match &self.hir.ty(id).kind {
             hir::TypeKind::Primitive(primitive) => format!("p:{primitive:?}"),
             hir::TypeKind::Path { res, args, .. } => {
+                if matches!(res, Res::SelfType) {
+                    return self_key.to_string();
+                }
                 let base = match res {
                     Res::SelfType => self_key.to_string(),
                     Res::SelfAssoc(name) => {

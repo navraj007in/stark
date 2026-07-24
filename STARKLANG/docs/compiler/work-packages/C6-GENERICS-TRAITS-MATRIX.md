@@ -161,7 +161,7 @@ over-rejections or unassigned scope.
 | **F3** | **New package `WP-C6.1f` — General Reference Storage, Reborrowing, and Provenance, Track A.** Not absorbed into C6.2b. See `WP-C6.1f.md`. |
 | **F4** | **Split.** Nested-reference type parsing + MIR/reference representation → C6.1f (Track A); repeated auto-deref *selection* → Track B, after C6.1f. |
 | **F5** | **CLOSED (CD-103)** — `current_impl_generics` consulted in bounded-`Ty::Param` method resolution. Was: | After C6.1f. Track B. |
-| **F6** | After C6.1f. Track B. |
+| **F6** | **CLOSED (CD-105)** — `ty_signature_key` normalises `Self` to the impl self type in signature compatibility. Was: | After C6.1f. Track B. |
 
 | # | Finding | Evidence | Normative basis |
 |---|---|---|---|
@@ -170,7 +170,7 @@ over-rejections or unassigned scope.
 | **F3** | **A reference stored in a user local is refused by the backend** — "outside the C5 ephemeral reference lane". `let r = &p; r.get()` cannot be built, though the front end and HIR oracle accept it. | `recv_shared`, `generic_impl_head_inference` probes | C5 exit report §205 defers "general references" to "C6" **without a sub-package**; §18 nevertheless lists shared/nested-reference receivers as C6.2b rows |
 | **F4** | Nested-reference receivers: `&&T` is **unspellable as a type** (parser: "expected a type, found `&&`"), and an inferred `&&T` receiver passes typecheck but fails MIR verify (MIR-0005). | `recv_nested_ref`, `F6_two_ref_via_arg` probes | TYPE-METHOD-002: auto-deref "repeatedly removes one leading `&`/`&mut`" — nested receivers are normative. Mostly downstream of F3 |
 | **F5** | **CLOSED (CD-103)** — `current_impl_generics` consulted in bounded-`Ty::Param` method resolution. Was: | Impl-head bounds are invisible in method bodies: `impl<T: Sh> W<T> { fn go(&self) { self.v.a() } }` → E0302 "method 'a' not found for type 'T'". | `generic_impl_head_bounded` probe | The WP-C6-ENTRY §2 carry-forward, confirmed still open |
-| **F6** | Impl signatures do not normalise `Self`: writing the concrete type where the trait declares `Self` (`fn make() -> G` for `fn make() -> Self`, or `o: &G` for `o: &Self`) is rejected E0500. Writing `Self` works. | `F4_impl_writes_concrete`, `F4_param_Self` probes | 03 impl/trait signature matching — spec does not obviously require the concrete spelling to be accepted |
+| **F6** | **CLOSED (CD-105)** — `ty_signature_key` normalises `Self` to the impl self type in signature compatibility. Was: | Impl signatures do not normalise `Self`: writing the concrete type where the trait declares `Self` (`fn make() -> G` for `fn make() -> Self`, or `o: &G` for `o: &Self`) is rejected E0500. Writing `Self` works. | `F4_impl_writes_concrete`, `F4_param_Self` probes | 03 impl/trait signature matching — spec does not obviously require the concrete spelling to be accepted |
 
 **Doc defect found while grounding F4:** the repo `CLAUDE.md` summary said method calls "auto-deref
 **one** reference level", but normative TYPE-METHOD-002 says auto-dereference "repeatedly removes one
