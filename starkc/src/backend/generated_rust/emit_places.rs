@@ -250,10 +250,8 @@ fn reference_local_spans_multiple_blocks(local: u32, body: &MirBody) -> bool {
                     here = true;
                 }
             }
-            Terminator::Return => {
-                if local == 0 {
-                    here = true;
-                }
+            Terminator::Return if local == 0 => {
+                here = true;
             }
             _ => {}
         }
