@@ -820,10 +820,16 @@ mod tests {
         if !status.status.success() {
             return true;
         }
+        // A per-call unique suffix: `process::id() + src.len()` alone COLLIDES across the parallel
+        // test threads (same pid) whenever two `src` strings share a length — e.g. `"hi"` and
+        // `0i32` are both length 4 — so one call's `remove_dir_all` could race another's rustc and
+        // fail it intermittently. An atomic counter makes every invocation's directory distinct.
+        static CHECK_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = CHECK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "stark_c5_2a_lit_check_{}_{}",
             std::process::id(),
-            src.len()
+            seq
         ));
         let _ = std::fs::create_dir_all(&dir);
         let file = dir.join("check.rs");
