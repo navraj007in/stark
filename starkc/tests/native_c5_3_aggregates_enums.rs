@@ -554,30 +554,23 @@ fn main() {
 /// rejection happens on OUR side of the boundary. A reference that reached rustc and failed there
 /// would be a diagnostic defect even though the program is correctly not compiled.
 ///
-/// **WP-C6.1f:** three cases that were once here are now legitimately supported and MOVED OUT to
+/// **WP-C6.1f:** four cases that were once here are now legitimately supported and MOVED OUT to
 /// positive tests, each following this test's own instruction ("if it is now legitimately
 /// supported, move it to a positive test"): storing a reference in a user binding (→
 /// `native_c61f_b3_stored_refs.rs`), **returning** a param-derived reference (→
-/// `native_c61f_ret_refs.rs`), and a **tuple/array of references** (→
-/// `native_c61f_aggregates.rs`). What remains refused is a **borrow-carrying NOMINAL** —
-/// `Option<&T>`, or a user generic instantiated at a reference — because a generated Rust
-/// struct/enum has no lifetime parameters. That refusal is deliberately raised HERE rather than
-/// left to rustc's `E0106`, which is precisely what this test exists to prevent.
+/// `native_c61f_ret_refs.rs`), a **tuple/array of references** (→ `native_c61f_aggregates.rs`),
+/// and `Option<&T>` (→ `native_c61f_nominals.rs`, once generated nominals gained lifetime
+/// parameters).
+///
+/// What remains refused is the narrower `ValueSlot`-versus-borrow-region case: a **slot-backed**
+/// (non-`Copy`) borrow-carrying nominal. The refusal is deliberately raised HERE rather than left
+/// to rustc's `E0502`, which is precisely what this test exists to prevent.
 #[test]
 fn references_outside_the_lane_are_refused_before_rustc() {
     for (tag, source) in [
-        // A borrow-carrying nominal: `Option<&T>` needs a lifetime parameter on the generated
-        // enum, which generated nominals do not have.
-        (
-            "ref_in_option",
-            r#"fn main() {
-    let x: Int32 = 1;
-    let o: Option<&Int32> = Some(&x);
-    let r: &Int32 = o.unwrap();
-}
-"#,
-        ),
-        // Same, for a user generic instantiated at a reference.
+        // A SLOT-BACKED borrow-carrying nominal: a user generic at a reference is non-Copy, so it
+        // lives in a `ValueSlot` whose destruction needs `&mut` while the stored reference still
+        // borrows its referent.
         (
             "ref_in_generic_struct",
             r#"struct H<T> { r: T }

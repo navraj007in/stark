@@ -54,7 +54,72 @@ pub fn variant_name(v: u32) -> String {
     format!("V{v}")
 }
 
+/// WP-C6.1f "borrow-carrying nominals": how lifetimes are spelled in a given syntactic position.
+///
+/// A generated nominal holding a reference needs a lifetime parameter, and Rust spells it two ways.
+/// Inside the type's own DECLARATION every lifetime must be the named parameter `'a` — `'_` is not
+/// allowed in a field type, which has no enclosing binder to infer from. Everywhere else (locals,
+/// slots, signatures, helper arguments) `'_` lets rustc infer it, which is what keeps the change
+/// from spreading into every use site's own lifetime bookkeeping.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LifetimePosition {
+    /// A use site: `Name<'_>`, `&T`. rustc infers.
+    Use,
+    /// Inside the generated declaration of a borrow-carrying nominal: `Name<'a>`, `&'a T`.
+    Declaration,
+}
+
+impl LifetimePosition {
+    /// The lifetime argument list for a borrow-carrying nominal in this position.
+    fn nominal_args(self) -> &'static str {
+        match self {
+            LifetimePosition::Use => "<'_>",
+            LifetimePosition::Declaration => "<'a>",
+        }
+    }
+    /// The lifetime prefix for a reference in this position (`&` vs `&'a `).
+    fn ref_prefix(self, mutable: bool) -> &'static str {
+        match (self, mutable) {
+            (LifetimePosition::Use, false) => "&",
+            (LifetimePosition::Use, true) => "&mut ",
+            (LifetimePosition::Declaration, false) => "&'a ",
+            (LifetimePosition::Declaration, true) => "&'a mut ",
+        }
+    }
+}
+
 pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
+    emit_ty_at(ty, LifetimePosition::Use)
+}
+
+/// Whether a nominal instance needs a lifetime parameter: exactly when its type arguments carry a
+/// borrow. Its generated definition then reads `Name<'a>` and every use `Name<'_>`.
+/// Which position a nominal's own field/payload types are rendered in: `Declaration` (so their
+/// references name the type's `'a`) only when the type actually declares one. A nominal WITHOUT a
+/// lifetime parameter has no `'a` in scope, so its fields must stay in `Use` position.
+fn decl_position(ty: &MirTy) -> LifetimePosition {
+    if nominal_needs_lifetime(ty) {
+        LifetimePosition::Declaration
+    } else {
+        LifetimePosition::Use
+    }
+}
+
+pub fn nominal_needs_lifetime(ty: &MirTy) -> bool {
+    match ty {
+        MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
+            args.iter().any(ty_carries_reference)
+        }
+        _ => false,
+    }
+}
+
+pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDiagnostic> {
+    let lt = if nominal_needs_lifetime(ty) {
+        at.nominal_args()
+    } else {
+        ""
+    };
     Ok(match ty {
         MirTy::Int8 => "i8".to_string(),
         MirTy::Int16 => "i16".to_string(),
@@ -75,7 +140,8 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         // is that `Projection::Field` has two Rust syntaxes depending on base type, which
         // `emit_places::TyEnv` resolves.
         MirTy::Tuple(elems) => {
-            let rendered: Result<Vec<String>, _> = elems.iter().map(emit_ty).collect();
+            let rendered: Result<Vec<String>, _> =
+                elems.iter().map(|e| emit_ty_at(e, at)).collect();
             let rendered = rendered?;
             // A 1-tuple needs Rust's trailing comma to stay a tuple rather than a parenthesised
             // expression; `()` for the empty case coincides with Unit, which is correct.
@@ -85,20 +151,17 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
                 _ => format!("({})", rendered.join(", ")),
             }
         }
-        MirTy::Array(elem, n) => format!("[{}; {n}]", emit_ty(elem)?),
+        MirTy::Array(elem, n) => format!("[{}; {n}]", emit_ty_at(elem, at)?),
         // WP-C5.3d-1a: the ephemeral borrowed-call reference lane (CD-062). Admitted ONLY in the
         // bounded shapes the lane allows -- a reference-typed function parameter, and a
         // same-block borrow consumed without being stored, returned, or carried across blocks.
         // The pre-emission validator is what enforces that; this only says how one is spelled.
         MirTy::Ref { mutable, inner } => {
-            let inner = emit_ty(inner)?;
-            if *mutable {
-                format!("&mut {inner}")
-            } else {
-                format!("&{inner}")
-            }
+            format!("{}{}", at.ref_prefix(*mutable), emit_ty_at(inner, at)?)
         }
-        MirTy::Struct(item, args) => mangle::type_name_for_nominal(item.0, args),
+        MirTy::Struct(item, args) => {
+            format!("{}{lt}", mangle::type_name_for_nominal(item.0, args))
+        }
         // WP-C5.3b: user enums only. `Option`/`Result`/`Ordering` (`EnumRef::Core*`) are
         // WP-C5.3c, where they arrive together with match/`?` lowering rather than being
         // half-supported here.
@@ -107,9 +170,12 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         // "if all observable semantics match"; a generated enum is used instead so that one
         // mechanism covers every enum, and so no Rust drop glue exists for a type MIR is
         // responsible for destroying. See CD-060.
-        MirTy::Enum(..) => nominal_type_name(ty).ok_or_else(|| {
-            BackendDiagnostic::Unsupported(format!("no generated name for enum {ty:?}"))
-        })?,
+        MirTy::Enum(..) => format!(
+            "{}{lt}",
+            nominal_type_name(ty).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(format!("no generated name for enum {ty:?}"))
+            })?
+        ),
         // WP-C5.4c (§7.1/§7.2): a non-capturing function value is a typed Rust function pointer.
         // This is exactly the calling convention emitted STARK functions already use -- the
         // signature's parameter types are `emit_ty` VALUE types (`emit_param_list`), and the
@@ -119,9 +185,9 @@ pub fn emit_ty(ty: &MirTy) -> Result<String, BackendDiagnostic> {
         MirTy::FnPtr { params, ret } => {
             let mut ps = Vec::with_capacity(params.len());
             for p in params {
-                ps.push(emit_ty(p)?);
+                ps.push(emit_ty_at(p, at)?);
             }
-            format!("fn({}) -> {}", ps.join(", "), emit_ty(ret)?)
+            format!("fn({}) -> {}", ps.join(", "), emit_ty_at(ret, at)?)
         }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
@@ -155,45 +221,50 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
 /// a reference, or a tuple/array/instantiation containing one. Declared reference *fields* are
 /// forbidden by 03 rule 1 and rejected by the front end, so a nominal only carries a borrow through
 /// its type arguments.
-/// WP-C6.1f "aggregates": refuse a **borrow-carrying nominal instance** — `Option<&T>`, or a user
-/// generic instantiated at a reference — deterministically, before rustc.
+/// WP-C6.1f "borrow-carrying nominals": the two shapes that still fail, refused **before rustc**.
 ///
-/// A generated nominal is a plain Rust `struct`/`enum` with no lifetime parameters, so a reference
-/// in one of its fields produces `error[E0106]: missing lifetime specifier` *in the generated
-/// crate*. That would break this backend's defining property: an unsupported program must be
-/// refused on OUR side of the boundary, as a named STARK limitation, never as a compiler error in
-/// code the user never wrote (`native_c5_3_aggregates_enums.rs` pins exactly this).
+/// Generated nominals now carry lifetime parameters (`Name<'a>` in their declaration, `Name<'_>` at
+/// use sites), which makes most borrow-carrying instances work — `Option<&T>`, nested ones, and
+/// ones inside tuples all build and run. Two do not, and both fail as `E0502` in the GENERATED
+/// crate, so they must be refused here rather than surfacing as errors in code the user never
+/// wrote:
 ///
-/// Tuples and arrays of references need no such refusal — they are structural Rust types whose
-/// lifetimes rustc infers, which is why they are supported while these are not. Lifting this needs
-/// lifetime parameters threaded through generated type declarations and every use site.
+/// 1. **A slot-backed borrow-carrying nominal.** A non-`Copy` instance (a user struct or enum at a
+///    reference) lives in a `ValueSlot`, whose `drop_value`/`take` need `&mut` on the slot — while
+///    the reference it stores still borrows its referent's slot immutably. Rust treats those as
+///    overlapping across the local's whole lexical region and rejects the program, even though MIR
+///    drops the borrower first. Removing the slot is not an escape: it also carries MOVE liveness,
+///    and without it the mover fails instead.
+///
+/// 2. **A function returning a borrow-carrying nominal.** The elided output lifetime ties the
+///    result to the input reference for the caller's whole region, which then conflicts with the
+///    referent's own slot drop at scope end.
+///
+/// Both are the `ValueSlot`-versus-Rust-borrow-region tension the C6.1f-a matrix flagged as this
+/// package's central design question (§5). It did not appear for plain references or tuples —
+/// neither is slot-backed — and it is isolated to these two shapes.
 fn refuse_borrow_carrying_nominals(program: &MirProgram) -> Result<(), BackendDiagnostic> {
-    let refuse = |ty: &MirTy| -> Result<(), BackendDiagnostic> {
-        let carries = match ty {
-            MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
-                args.iter().any(ty_carries_reference)
-            }
-            _ => false,
-        };
-        if carries {
+    for body in &program.bodies {
+        if nominal_needs_lifetime(&body.ret) {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "the borrow-carrying nominal instance `{}` is not representable yet: a generated \
-                 Rust struct/enum has no lifetime parameters, so a reference in a field cannot be \
-                 spelled. Tuples and arrays of references ARE supported. Lifting this needs \
-                 lifetime parameters on generated type declarations and their uses",
-                crate::mir::dump_ty(ty)
+                "returning the borrow-carrying nominal `{}` is not representable yet: the \
+                 generated function's elided output lifetime keeps the borrow live across the \
+                 referent's own slot destruction, which rustc rejects (E0502). Borrow-carrying \
+                 nominals in LOCALS are supported",
+                crate::mir::dump_ty(&body.ret)
             )));
         }
-        Ok(())
-    };
-    for body in &program.bodies {
         for local in &body.locals {
-            refuse(&local.ty)?;
+            if nominal_needs_lifetime(&local.ty) && is_slot_backed(&local.ty, &program.types) {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "the slot-backed borrow-carrying nominal `{}` is not representable yet: a \
+                     non-Copy instance lives in a `ValueSlot`, whose destruction needs `&mut` on \
+                     the slot while the reference it stores still borrows its referent (E0502). \
+                     `Copy` borrow-carrying nominals such as `Option<&T>` ARE supported",
+                    crate::mir::dump_ty(&local.ty)
+                )));
+            }
         }
-        for param in &body.params {
-            refuse(param)?;
-        }
-        refuse(&body.ret)?;
     }
     Ok(())
 }
@@ -249,9 +320,19 @@ pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendD
         if let Some(derives) = derives_for(&ty, &program.types) {
             out.push_str(&format!("{derives}\n"));
         }
-        out.push_str(&format!("enum {name} {{\n"));
+        // WP-C6.1f: a borrow-carrying instance is declared with a lifetime parameter, and its
+        // payload types are rendered in DECLARATION position so their references name it.
+        let generics = if nominal_needs_lifetime(&ty) {
+            "<'a>"
+        } else {
+            ""
+        };
+        out.push_str(&format!("enum {name}{generics} {{\n"));
         for (v, payload) in variants.iter().enumerate() {
-            let fields: Result<Vec<String>, _> = payload.iter().map(emit_ty).collect();
+            let fields: Result<Vec<String>, _> = payload
+                .iter()
+                .map(|f| emit_ty_at(f, decl_position(&ty)))
+                .collect();
             out.push_str(&format!(
                 "    {}({}),\n",
                 variant_name(v as u32),
@@ -275,9 +356,17 @@ pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendD
         if let Some(derives) = derives_for(&ty, &program.types) {
             out.push_str(&format!("{derives}\n"));
         }
-        out.push_str(&format!("enum {name} {{\n"));
+        let generics = if nominal_needs_lifetime(&ty) {
+            "<'a>"
+        } else {
+            ""
+        };
+        out.push_str(&format!("enum {name}{generics} {{\n"));
         for (v, payload) in variants.iter().enumerate() {
-            let fields: Result<Vec<String>, _> = payload.iter().map(emit_ty).collect();
+            let fields: Result<Vec<String>, _> = payload
+                .iter()
+                .map(|f| emit_ty_at(f, decl_position(&ty)))
+                .collect();
             // Every variant is a TUPLE variant, including empty ones (`V0()` is legal Rust).
             // Uniformity removes a special case from construction (`V0()`), from patterns
             // (`V0(..)` matches it), and from the discriminant match -- a unit variant would
@@ -301,12 +390,17 @@ pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendD
         if let Some(derives) = derives_for(&ty, &program.types) {
             out.push_str(&format!("{derives}\n"));
         }
-        out.push_str(&format!("struct {name} {{\n"));
+        let generics = if nominal_needs_lifetime(&ty) {
+            "<'a>"
+        } else {
+            ""
+        };
+        out.push_str(&format!("struct {name}{generics} {{\n"));
         for (i, field_ty) in fields.iter().enumerate() {
             out.push_str(&format!(
                 "    {}: {},\n",
                 field_name(i as u32),
-                emit_ty(field_ty)?
+                emit_ty_at(field_ty, decl_position(&ty))?
             ));
         }
         out.push_str("}\n\n");

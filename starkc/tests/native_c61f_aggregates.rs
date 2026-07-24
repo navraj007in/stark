@@ -12,12 +12,9 @@
 //! initialisation-deferred like a bare reference: `Option<T> = None` when they must cross basic
 //! blocks, bare-uninitialised when same-block.
 //!
-//! **Still refused, deliberately and before rustc:** a borrow-carrying *nominal* — `Option<&T>`, or
-//! a user generic at a reference. A generated Rust struct/enum has no lifetime parameters, so a
-//! reference in a field cannot be spelled and rustc would say `E0106`. Refusing it as a named STARK
-//! limitation instead is the whole point of the pre-rustc boundary; see
-//! `native_c5_3_aggregates_enums.rs`. Tuples and arrays need no such thing — they are structural
-//! Rust types whose lifetimes rustc infers, which is exactly why they work and nominals do not.
+//! Borrow-carrying **nominals** (`Option<&T>`, a user generic at a reference) are covered by
+//! `native_c61f_nominals.rs`: generated nominals now carry lifetime parameters, so most of them
+//! work; two shapes remain refused before rustc.
 
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::diag::Severity;
