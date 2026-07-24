@@ -147,3 +147,66 @@ fn c61f_b2_shared_arguments_and_borrows_still_work() {
         ),
     );
 }
+
+// ------------------------------------------- generic callees (b2 completion) --
+//
+// A generic callee's `fn_types` entry still mentions the callee's OWN parameters (`Ty::Param("T")`),
+// which the CALLER's substitution cannot ground — so the expected type was unresolvable and no
+// weakening was applied, leaving these to fail MIR verification. The call's concrete type arguments
+// are already computed for the instance and are in the callee's generic declaration order, so they
+// are exactly the substitution needed (`mir::lower::callee_param_types`).
+//
+// Resolving against the caller's map would have been worse than failing: inside a generic body with
+// a same-named parameter it would silently pick up the WRONG type rather than decline.
+
+const SH: &str = "trait Sh { fn a(&self) -> Int32; }\nstruct S { n: Int32 }\n\
+                  impl Sh for S { fn a(&self) -> Int32 { self.n } }\n";
+
+#[test]
+fn c61f_b2_generic_callee_gets_argument_weakening() {
+    agree(
+        "generic_callee",
+        &format!(
+            "{SH}fn f<T: Sh>(r: &T) -> Int32 {{ r.a() }}\n\
+                  fn g(m: &mut S) -> Int32 {{ f(m) }}\n\
+                  fn main() {{ let mut s = S {{ n: 4 }}; assert_eq(g(&mut s), 4); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61f_b2_a_weakened_generic_argument_is_reborrowed_not_moved() {
+    agree(
+        "generic_callee_twice",
+        &format!(
+            "{SH}fn f<T: Sh>(r: &T) -> Int32 {{ r.a() }}\n\
+                  fn g(m: &mut S) -> Int32 {{ f(m) + f(m) }}\n\
+                  fn main() {{ let mut s = S {{ n: 4 }}; assert_eq(g(&mut s), 8); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61f_b2_generic_callee_with_a_later_non_reference_parameter() {
+    // The substitution must line up positionally with the callee's declaration order.
+    agree(
+        "generic_two_params",
+        &format!(
+            "{SH}fn f<T: Sh>(r: &T, k: Int32) -> Int32 {{ r.a() + k }}\n\
+                  fn g(m: &mut S) -> Int32 {{ f(m, 1) }}\n\
+                  fn main() {{ let mut s = S {{ n: 4 }}; assert_eq(g(&mut s), 5); }}"
+        ),
+    );
+}
+
+#[test]
+fn c61f_b2_generic_callee_shared_argument_is_unaffected() {
+    agree(
+        "generic_shared",
+        &format!(
+            "{SH}fn f<T: Sh>(r: &T) -> Int32 {{ r.a() }}\n\
+                  fn g(r: &S) -> Int32 {{ f(r) }}\n\
+                  fn main() {{ let s = S {{ n: 4 }}; assert_eq(g(&s), 4); }}"
+        ),
+    );
+}

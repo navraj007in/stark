@@ -4294,19 +4294,10 @@ impl<'a> FnLowerer<'a> {
                     let instance = self.top_fn_instance(item, callee, span)?;
                     // C6.1f-b2: a parameter is an expected-type boundary, so `&mut T` weakens to
                     // `&T` here. The checker's grounded signature supplies the expected types.
-                    // The checker's grounded signature supplies the expected types. For a GENERIC
-                    // callee these may still be `Ty::Param` — the caller's substitution cannot
-                    // ground the callee's own parameters — so resolution is best-effort: an
-                    // unresolvable parameter type simply means no weakening is applied to that
-                    // argument, never a lowering failure. (Resolving them would need the callee's
-                    // substitution, which is a separate concern from this coercion.)
-                    let param_tys: Vec<Option<MirTy>> = match self.tables.fn_types.get(&item) {
-                        Some((tys, _)) => {
-                            let tys = tys.clone();
-                            tys.iter().map(|t| self.mir_ty(t, span).ok()).collect()
-                        }
-                        None => Vec::new(),
-                    };
+                    // The checker's grounded signature supplies the expected types, resolved under
+                    // the CALLEE's own substitution (C6.1f-b2 generic-callee completion).
+                    let param_tys =
+                        self.callee_param_types(item, &instance.type_args.clone(), span)?;
                     let mut ops = Vec::with_capacity(args.len());
                     for (i, &a) in args.iter().enumerate() {
                         let op = self.lower_expr_to_operand(a)?;
@@ -4571,6 +4562,54 @@ impl<'a> FnLowerer<'a> {
     /// instantiation for the referencing expression; this body's own substitution is applied
     /// so the resulting type arguments are always fully concrete, even for generic-to-generic
     /// calls whose recorded arguments mention the caller's parameters.
+    /// WP-C6.1f-b2: the callee's declared parameter types, ground under the **callee's own**
+    /// generic substitution.
+    ///
+    /// These are the expected types at an argument boundary, which is where `&mut T` -> `&T`
+    /// weakening applies. For a generic callee the checker's `fn_types` entry still mentions the
+    /// callee's OWN parameters (`Ty::Param("T")`), and the caller's substitution cannot ground them
+    /// — resolving against it either fails or, worse, silently picks up a same-named parameter of
+    /// the enclosing generic body. The call's concrete arguments are already computed for the
+    /// instance, and they are in the callee's generic declaration order, so they are exactly the
+    /// substitution needed.
+    ///
+    /// Resolution stays best-effort per parameter: an entry that still cannot be ground yields
+    /// `None`, meaning no weakening for that argument — never a lowering failure. A coercion is an
+    /// optimisation of expressiveness, not a correctness requirement, and MIR verification remains
+    /// the backstop.
+    fn callee_param_types(
+        &mut self,
+        item: ItemId,
+        type_args: &[MirTy],
+        span: Span,
+    ) -> Result<Vec<Option<MirTy>>, LowerError> {
+        let Some((param_tys, _)) = self.tables.fn_types.get(&item).cloned() else {
+            return Ok(Vec::new());
+        };
+        // The generic parameter NAMES belong to the callee's own file, so they are read with
+        // `item_text` rather than the current body's file (DEV-101).
+        let names: Vec<String> = match &self.hir.item(item).kind {
+            ItemKind::Fn(def) => def
+                .sig
+                .generics
+                .iter()
+                .map(|g| self.meta.item_text(item, g.name).to_string())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let subst: HashMap<String, MirTy> =
+            names.into_iter().zip(type_args.iter().cloned()).collect();
+        // `mir_ty` resolves `Ty::Param` through `self.param_subst`, so the callee's map is swapped
+        // in for the resolution and restored immediately after.
+        let saved = std::mem::replace(&mut self.param_subst, subst);
+        let resolved = param_tys
+            .iter()
+            .map(|t| self.mir_ty(t, span).ok())
+            .collect();
+        self.param_subst = saved;
+        Ok(resolved)
+    }
+
     fn top_fn_instance(
         &mut self,
         item: ItemId,
