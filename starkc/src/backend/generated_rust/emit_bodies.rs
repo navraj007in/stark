@@ -424,7 +424,8 @@ fn emit_terminator(
             dest,
             target,
         } => {
-            let call_expr = emit_call(callee, args, env)?;
+            let dest_ty = &body.locals[dest.local.0 as usize].ty;
+            let call_expr = emit_call(callee, args, dest_ty, env)?;
             out.push_str(&format!(
                 "                {}\n",
                 emit_assignment(dest, &call_expr, env)?
@@ -494,7 +495,12 @@ fn emit_terminator(
 /// Direct calls (`Callee::Instance`) and WP-C5.4c indirect calls through a function value
 /// (`Callee::FnValue`). Runtime calls (`Callee::Runtime`) land alongside whichever `RuntimeFn`
 /// group first gets lowered.
-fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, BackendDiagnostic> {
+fn emit_call(
+    callee: &Callee,
+    args: &[Operand],
+    dest_ty: &MirTy,
+    env: &TyEnv,
+) -> Result<String, BackendDiagnostic> {
     // Argument emission is IDENTICAL for direct and indirect calls (§9.2): the same left-to-right
     // move/copy operand handling MIR already sequenced. Only the callee expression differs.
     let mut arg_exprs = Vec::with_capacity(args.len());
@@ -514,8 +520,9 @@ fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, B
             let f = emit_operand(operand, env)?;
             Ok(format!("({f})({})", arg_exprs.join(", ")))
         }
-        // WP-C6.3a: a runtime call is rendered from the same already-emitted argument expressions.
-        Callee::Runtime(rt) => super::emit_runtime::emit_runtime_call(*rt, &arg_exprs),
+        // WP-C6.3a: a runtime call is rendered from the same already-emitted argument expressions;
+        // the dest type lets an `Option`-returning runtime fn wrap into the generated Option enum.
+        Callee::Runtime(rt) => super::emit_runtime::emit_runtime_call(*rt, &arg_exprs, dest_ty),
     }
 }
 

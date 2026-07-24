@@ -6,13 +6,19 @@
 //! (Vec, Box, slices, iterators, HashMap, formatting of non-string values) land with their
 //! sub-packages and stay `Unsupported` until then.
 
-use super::BackendDiagnostic;
-use crate::mir::RuntimeFn;
+use super::{emit_types, BackendDiagnostic};
+use crate::mir::{MirTy, RuntimeFn};
 
 /// Render `rt(args...)` as a Rust expression. `args` are the argument operands already emitted by
 /// `emit_operand`; a String/str receiver arrives as `&String`/`&str` (deref-coercing to the `&str`
 /// the `stark_runtime::string` helpers take) and a `&mut self` receiver as `&mut String`.
-pub fn emit_runtime_call(rt: RuntimeFn, args: &[String]) -> Result<String, BackendDiagnostic> {
+/// `dest_ty` is the type of the place being assigned — an `Option`-returning runtime fn wraps its
+/// Rust `Option` into the program's generated Option enum, whose name `dest_ty` supplies.
+pub fn emit_runtime_call(
+    rt: RuntimeFn,
+    args: &[String],
+    dest_ty: &MirTy,
+) -> Result<String, BackendDiagnostic> {
     use RuntimeFn::*;
     // A small helper: the argument at `i`, wrapped so method/`.as_bytes()` suffixes bind correctly.
     let arg = |i: usize| format!("({})", args[i]);
@@ -38,6 +44,16 @@ pub fn emit_runtime_call(rt: RuntimeFn, args: &[String]) -> Result<String, Backe
         // --- String mutation ---
         StringPushStr => format!("stark_runtime::string::push_str({}, {})", arg(0), arg(1)),
         StringClear => format!("stark_runtime::string::clear({})", arg(0)),
+        StringPushChar => format!("stark_runtime::string::push_char({}, {})", arg(0), arg(1)),
+        // Returns `Option<Char>` — wrapped into the generated Option enum.
+        StringPopChar => wrap_option(
+            &format!("stark_runtime::string::pop_char({})", arg(0)),
+            dest_ty,
+        )?,
+
+        // --- Char output (the Char is a Copy `char` value) ---
+        PrintlnChar => format!("stark_runtime::string::println_char({})", arg(0)),
+        PrintChar => format!("stark_runtime::string::print_char({})", arg(0)),
 
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
@@ -46,4 +62,20 @@ pub fn emit_runtime_call(rt: RuntimeFn, args: &[String]) -> Result<String, Backe
             )))
         }
     })
+}
+
+/// Wrap a Rust `Option<T>`-producing expression into the program's generated Option enum named by
+/// `dest_ty`. The generated enum uses the shared variant layout `V0 = None`, `V1(T) = Some(T)`
+/// (`variant_payloads`), so both engines agree on discriminants.
+fn wrap_option(inner: &str, dest_ty: &MirTy) -> Result<String, BackendDiagnostic> {
+    let name = emit_types::nominal_type_name(dest_ty).ok_or_else(|| {
+        BackendDiagnostic::Unsupported(format!(
+            "Option-returning runtime fn assigned to non-Option dest {dest_ty:?}"
+        ))
+    })?;
+    // The generated enum's variants are tuple variants (`V0()`, `V1(T)`), so the fieldless None
+    // arm is constructed with empty parentheses.
+    Ok(format!(
+        "match {inner} {{ Some(__v) => {name}::V1(__v), None => {name}::V0() }}"
+    ))
 }

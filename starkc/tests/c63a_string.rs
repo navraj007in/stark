@@ -228,6 +228,45 @@ fn str_literal_ordering() {
     );
 }
 
+// ---- Char operations (Char is a Copy scalar) ----
+
+#[test]
+fn println_char_value() {
+    agree_out("println_char", "fn main() { println('A'); }", "A\n");
+}
+
+#[test]
+fn print_char_unicode() {
+    // A multi-byte scalar exercises UTF-8 encoding on the output path.
+    agree_out("unicode_char", "fn main() { print('\u{3bb}'); }", "\u{3bb}");
+}
+
+#[test]
+fn push_char_grows() {
+    agree(
+        "push_char",
+        "fn main() { let mut s = String::from(\"ab\"); s.push('c'); assert_eq(s.len(), 3); }",
+    );
+}
+
+/// `String::pop` returns `Option<Char>` — the runtime `Option` is wrapped into the program's
+/// generated Option enum (the bridge every collection accessor reuses).
+#[test]
+fn pop_char_some() {
+    agree(
+        "pop_some",
+        "fn main() { let mut s = String::from(\"aX\"); let c = s.pop(); assert_eq(c.unwrap_or('?'), 'X'); }",
+    );
+}
+
+#[test]
+fn pop_char_none_on_empty() {
+    agree(
+        "pop_none",
+        "fn main() { let mut s = String::new(); let c = s.pop(); assert_eq(c.is_some(), false); }",
+    );
+}
+
 // ---- Deferred to WP-C6.1g-c (native); HIR+MIR pass. ----
 
 /// `String` `==` lowers through `String::as_str`, producing a stored `&str` that borrows the owned

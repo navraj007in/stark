@@ -65,6 +65,28 @@ pub fn clear(s: &mut String) {
     s.clear();
 }
 
+/// `String::push(&mut self, c: Char)` — append one Unicode scalar.
+pub fn push_char(s: &mut String, c: char) {
+    s.push(c);
+}
+
+/// `String::pop(&mut self) -> Option<Char>` — remove and return the last scalar, if any. The
+/// backend wraps the Rust `Option<char>` into the program's generated `Option<Char>` enum.
+pub fn pop_char(s: &mut String) -> Option<char> {
+    s.pop()
+}
+
+/// `Char`-output: submit a char's UTF-8 bytes to stdout, without / with a trailing newline.
+pub fn print_char(c: char) {
+    let mut buf = [0u8; 4];
+    crate::output::stdout_bytes(c.encode_utf8(&mut buf).as_bytes());
+}
+
+pub fn println_char(c: char) {
+    let mut buf = [0u8; 4];
+    crate::output::stdout_line(c.encode_utf8(&mut buf).as_bytes());
+}
+
 /// `==` on `String`/`str` (V-STR-2 routes through here, never a structural comparison).
 pub fn eq(a: &str, b: &str) -> bool {
     a == b

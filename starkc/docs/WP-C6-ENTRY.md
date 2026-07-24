@@ -640,9 +640,11 @@ Inventory and implement:
 - construction; ✅ native (`String::from`, `String::new`)
 - move/clone where normative; ✅ native (owned move; `clone`)
 - length and emptiness; ✅ native (`len` = bytes, `is_empty`)
-- UTF-8 validity; ⏳ (well-formed literals only so far; invalid-boundary failures with char ops)
-- character iteration; ⏳ (`chars()` / `CharsIter` — remaining)
-- byte/character distinctions; ⏳ (byte `len` done; char ops remaining)
+- UTF-8 validity; ✅ native for output (multi-byte scalars encode correctly, e.g. `λ`); invalid-slice
+  boundary failures remain with slicing
+- character iteration; ⏳ (`chars()` / `CharsIter` — shares the iterator representation, lands with
+  C6.3c)
+- byte/character distinctions; ✅ native (byte `len`; `push`/`pop`/`print` of a `Char` scalar)
 - concatenation and mutation; ✅ native (`push_str`, `clear`)
 - valid slicing/view behaviour; ⏳ (string slicing views — remaining)
 - borrowed str; ✅ native for str VALUES (literals, `&str` params, `contains` pattern). A STORED

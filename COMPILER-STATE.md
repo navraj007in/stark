@@ -15,12 +15,14 @@ and `Default::default()` inference deferred (DEV-103/104).**
 **WP-C6.2e (deterministic identity) CLOSED (CD-108) → WP-C6.2 as a WHOLE CLOSED: canonical symbols
 render nominals by content path (`struct#liba::A`), not the order-dependent `ItemId` index — stable
 across clean rebuild, relocation, and dependency-declaration reorder (§21/§22 met).**
-**WP-C6.3 OPENED — native Core runtime (Track C). WP-C6.3a PARTIAL (CD-109): the runtime-call bridge
-(`Callee::Runtime`) + String/str value + str-output surface land three-engine (owned String
-construction/query/mutation/clone/return + `println`/`print` with native stdout-byte checks;
-`stark-runtime/src/string.rs`). Deferred: owned-`String` `==`/`<` and stored interior `&str`
-(→ C6.1g-c dispatch-loop borrow). C6.3a remaining: char ops, `chars()` iteration, slicing views,
-cross-package.**
+**WP-C6.3 OPENED — native Core runtime (Track C). WP-C6.3a PARTIAL (CD-109/110): the runtime-call
+bridge (`Callee::Runtime`) + String/str value + str-output + Char surface land three-engine (owned
+String construction/query/mutation/clone/return; `println`/`print` of str & char incl. Unicode;
+`push`/`pop` char) with native stdout-byte checks; `stark-runtime/src/string.rs`. **The Option-return
+bridge (CD-110) — wrapping a runtime Rust `Option` into the generated Option enum — is the mechanism
+every future collection accessor reuses.** Deferred: owned-`String` `==`/`<` and stored interior
+`&str` (→ C6.1g-c dispatch-loop borrow). C6.3a remaining: `chars()` iteration (→ C6.3c), slicing
+views (→ C6.3b), cross-package String.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
@@ -3097,6 +3099,25 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-110 [2026-07-24, **WP-C6.3a cont. — native char ops + the Option-return bridge**] Extends
+  CD-109 with the String Char surface and the foundational mechanism every collection accessor will
+  reuse.
+  - **Char ops (Char is a Copy scalar):** `PrintlnChar`/`PrintChar` (UTF-8 encode → runtime output
+    sink; multi-byte scalars like `λ` verified), `StringPushChar`. Added
+    `stark_runtime::string::{push_char, println_char, print_char}`.
+  - **The Option-return bridge (foundational).** A `RuntimeFn` that yields a Rust `Option<T>`
+    (`StringPopChar` now; `VecPop`/`VecGetRef`/`HashMapGet`/`CharsIterNext` later) is wrapped into
+    the program's generated Option enum: `emit_call` threads the destination type to
+    `emit_runtime_call`, which emits `match <rust option> { Some(__v) => Opt::V1(__v), None =>
+    Opt::V0() }` (generated variants are TUPLE variants — the fieldless `None` needs `V0()`, the
+    defect the first attempt hit). `stark_runtime::string::pop_char` added.
+  - **Proven native (three-engine):** `println`/`print` of a char incl. Unicode, `push`, `pop`
+    (Some/None/`unwrap_or`). `tests/c63a_string.rs` now 20.
+  - **C6.3a remaining:** `chars()` iteration (`CharsIter{New,Next}` — shares the iterator
+    representation, lands with C6.3c), string slicing views (C6.3b slices), cross-package String.
+  - Regression: `mir_lowering` 4, `gate5_codegen` 14, `exec_snapshots` 4, `native_c6_1_ownership`
+    24 — green. `fmt`/`clippy` clean.
 
 - CD-109 [2026-07-24, **WP-C6.3a PARTIAL — native String/str value + output surface; WP-C6.3
   OPENED**] First slice of the Core native runtime (§23/§24). Until now `Callee::Runtime` was
