@@ -79,6 +79,10 @@ struct ProgramMeta {
     /// `TypeContext::is_copy` consult, mirroring the front end's `copy_eligible_types` so the
     /// engines cannot disagree about Copy-ness.
     copy_eligible: std::collections::HashSet<u32>,
+    /// WP-C6.2c: associated-type bindings, keyed by `(implementing nominal item, assoc name)` to
+    /// the impl's bound HIR type. Lets the monomorphiser resolve a projection `T::Item` once `T`'s
+    /// concrete nominal is known, mirroring the front end's `assoc_projections`.
+    assoc_projections: HashMap<(u32, String), hir::TypeId>,
 }
 
 impl ProgramMeta {
@@ -137,11 +141,39 @@ impl ProgramMeta {
             .into_iter()
             .map(|id| id.0)
             .collect();
+        // WP-C6.2c: index every impl's associated-type bindings by implementing nominal + name.
+        let mut assoc_projections: HashMap<(u32, String), hir::TypeId> = HashMap::new();
+        for &item_id in &all_items {
+            let ItemKind::Impl {
+                items: impl_items, ..
+            } = &hir.item(item_id).kind
+            else {
+                continue;
+            };
+            let Some(nominal) = impl_self_item(hir, item_id) else {
+                continue;
+            };
+            let file_id = match hir.item_files.get(&item_id) {
+                Some(f) => *by_name.get(&f.name).unwrap_or(&FileId(0)),
+                None => FileId(0),
+            };
+            let src = &files[file_id.0 as usize].src;
+            for impl_item in impl_items {
+                if let hir::ImplItem::AssocType { name, ty } = impl_item {
+                    let assoc_name = src
+                        .get(name.lo as usize..name.hi as usize)
+                        .unwrap_or("?")
+                        .to_string();
+                    assoc_projections.insert((nominal.0, assoc_name), *ty);
+                }
+            }
+        }
         Ok(ProgramMeta {
             files,
             items,
             all_items,
             copy_eligible,
+            assoc_projections,
         })
     }
 
@@ -958,11 +990,48 @@ impl<'a> FnLowerer<'a> {
                     Some(self_ty) => self_ty.clone(),
                     None => return unsupported("Self outside a method body", span),
                 },
+                // WP-C6.2c: a projection `T::Item` monomorphises by resolving the base parameter to
+                // its concrete nominal, then the associated type through that nominal's impl binding.
+                None if name.contains("::") => match self.resolve_projection_mir_ty(name, span) {
+                    Some(ty) => ty,
+                    None => {
+                        return unsupported(
+                            format!("unbound generic parameter {name} (C4.5)"),
+                            span,
+                        )
+                    }
+                },
                 None => {
                     return unsupported(format!("unbound generic parameter {name} (C4.5)"), span)
                 }
             },
             _ => return unsupported(format!("type {ty:?} (C4.5)"), span),
+        })
+    }
+
+    /// WP-C6.2c: resolve a projection parameter name (`"T::Item"` or `"Self::Item"`) to a concrete
+    /// MirTy. The base resolves through the active substitution to a nominal, and the associated
+    /// type through that nominal's impl binding (`ProgramMeta::assoc_projections`). Returns `None`
+    /// when the base is not a known nominal or the binding is absent.
+    fn resolve_projection_mir_ty(&self, name: &str, span: Span) -> Option<MirTy> {
+        let (base, assoc) = name.split_once("::")?;
+        let base_ty = if base == "Self" {
+            self.self_subst.clone()?
+        } else {
+            self.param_subst.get(base).cloned()?
+        };
+        let nominal = match base_ty {
+            MirTy::Struct(item, _) => item.0,
+            MirTy::Enum(EnumRef::User(item), _) => item.0,
+            _ => return None,
+        };
+        let binding = *self
+            .meta
+            .assoc_projections
+            .get(&(nominal, assoc.to_string()))?;
+        self.hir_field_ty(binding).ok().or_else(|| {
+            let _ = span;
+            None
         })
     }
 

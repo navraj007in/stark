@@ -182,6 +182,16 @@ pub struct TypeChecker<'a> {
     // Scopes context
     current_self_ty: Option<Ty>,
     current_assoc_types: HashMap<String, Ty>,
+    /// WP-C6.2c: resolved associated-type bindings across the whole program, keyed by
+    /// `(implementing nominal, associated-type name)`. Lets a concrete projection
+    /// `<H as Holder>::Item` (carried through generic instantiation as `Ty::Param("H::Item")`)
+    /// be normalised to the impl's bound type. Built once in Pass 1 (`build_assoc_projections`).
+    assoc_projections: HashMap<(ItemId, String), Ty>,
+    /// WP-C6.2c: deferred associated-type projections whose base is still an inference variable at
+    /// the call site — `fn first<T: Holder>(t: T) -> T::Item` called on a value whose type is only
+    /// determined by unifying the argument. Each entry is `(projection var, base var, assoc name,
+    /// span)`; resolved after all bodies are checked, once the base var has grounded to a nominal.
+    projection_obligations: Vec<(TypeVarId, TypeVarId, String, Span)>,
     current_fn_ret: Option<Ty>,
     loop_nesting: u32,
     loop_contexts: Vec<LoopContext>,
@@ -610,6 +620,8 @@ pub fn analyze_with_options(
         layout_queries: HashMap::new(),
         current_self_ty: None,
         current_assoc_types: HashMap::new(),
+        assoc_projections: HashMap::new(),
+        projection_obligations: Vec::new(),
         current_fn_ret: None,
         loop_nesting: 0,
         loop_contexts: Vec::new(),
@@ -2923,6 +2935,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // WP-C6.2c: precompute concrete associated-type bindings before checking bodies, so a
+        // projection carried through generic instantiation (`Ty::Param("H::Item")`) can be
+        // normalised to the impl's bound type at any call site.
+        self.build_assoc_projections(&root_file);
+
         // Pass 2: Typecheck bodies & run semantic checks
         for item in &self.hir.items {
             let item_id = hir::ItemId(
@@ -3024,6 +3041,11 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.file = root_file;
+
+        // WP-C6.2c: resolve deferred associated-type projections (`T::Item` where the base was an
+        // inference variable) now that every argument has unified — before int-literal defaulting,
+        // so a projection that grounds to `Int32` can still constrain a literal argument.
+        self.discharge_ready_projections();
 
         // WP-C4.7-6.3: 03's solving step 5 — default any still-unconstrained integer literal —
         // runs HERE: after every body has been checked (so every expected type has had its
@@ -4612,6 +4634,9 @@ impl<'a> TypeChecker<'a> {
                                 {
                                     let _ = self.unify(param, arg, self.hir.expr(*arg_expr).span);
                                 }
+                                // WP-C6.2c: arguments have fixed the base type parameters, so a
+                                // deferred projection in the return can be resolved before use.
+                                self.discharge_ready_projections();
                                 *ret
                             }
                             Ty::Error => Ty::Error,
@@ -4653,6 +4678,9 @@ impl<'a> TypeChecker<'a> {
                             {
                                 let _ = self.unify(param, arg, self.hir.expr(*arg_expr).span);
                             }
+                            // WP-C6.2c: resolve any deferred return projection now the arguments
+                            // have fixed the base type parameters.
+                            self.discharge_ready_projections();
                             *ret
                         }
                         Ty::Error => Ty::Error,
@@ -5566,10 +5594,18 @@ impl<'a> TypeChecker<'a> {
         match ty {
             Ty::Param(name) => {
                 if let Some(target) = map.get(name) {
-                    target.clone()
-                } else {
-                    ty.clone()
+                    return target.clone();
                 }
+                // WP-C6.2c: a projection `T::Item` instantiates by substituting the base type
+                // parameter and resolving the associated type through the concrete impl.
+                if let Some((base, assoc)) = name.split_once("::") {
+                    if let Some(Ty::Struct(id, _) | Ty::Enum(id, _)) = map.get(base) {
+                        if let Some(bound) = self.assoc_projections.get(&(*id, assoc.to_string())) {
+                            return bound.clone();
+                        }
+                    }
+                }
+                ty.clone()
             }
             Ty::Ref { mutable, inner } => Ty::Ref {
                 mutable: *mutable,
@@ -5838,11 +5874,118 @@ impl<'a> TypeChecker<'a> {
         let params: Vec<Ty> = sig
             .params
             .iter()
-            .map(|p| self.instantiate_ty(p, &map))
+            .map(|p| self.instantiate_ty_deferring_projections(p, &map, span))
             .collect();
-        let ret = self.instantiate_ty(&sig.ret, &map);
+        let ret = self.instantiate_ty_deferring_projections(&sig.ret, &map, span);
 
         self.freshen_call_sig(FnSigTy { params, ret }, span)
+    }
+
+    /// WP-C6.2c: like [`Self::instantiate_ty`], but a projection `T::Item` whose base substitutes
+    /// to an inference variable (the concrete type is fixed only by unifying a call argument) is
+    /// replaced with a fresh variable and a deferred obligation, resolved once the base grounds.
+    fn instantiate_ty_deferring_projections(
+        &mut self,
+        ty: &Ty,
+        map: &HashMap<String, Ty>,
+        span: Span,
+    ) -> Ty {
+        match ty {
+            Ty::Param(name) => {
+                if let Some(target) = map.get(name) {
+                    return target.clone();
+                }
+                if let Some((base, assoc)) = name.split_once("::") {
+                    match map.get(base) {
+                        Some(Ty::Struct(id, _) | Ty::Enum(id, _)) => {
+                            if let Some(bound) =
+                                self.assoc_projections.get(&(*id, assoc.to_string()))
+                            {
+                                return bound.clone();
+                            }
+                        }
+                        Some(Ty::Infer(base_var)) => {
+                            let base_var = *base_var;
+                            let assoc = assoc.to_string();
+                            let proj = self.new_type_var();
+                            if let Ty::Infer(pid) = proj {
+                                self.projection_obligations
+                                    .push((pid, base_var, assoc, span));
+                            }
+                            return proj;
+                        }
+                        _ => {}
+                    }
+                }
+                ty.clone()
+            }
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.instantiate_ty_deferring_projections(inner, map, span)),
+            },
+            Ty::Struct(item, args) => Ty::Struct(
+                *item,
+                args.iter()
+                    .map(|a| self.instantiate_ty_deferring_projections(a, map, span))
+                    .collect(),
+            ),
+            Ty::Enum(item, args) => Ty::Enum(
+                *item,
+                args.iter()
+                    .map(|a| self.instantiate_ty_deferring_projections(a, map, span))
+                    .collect(),
+            ),
+            Ty::Core(core, args) => Ty::Core(
+                *core,
+                args.iter()
+                    .map(|a| self.instantiate_ty_deferring_projections(a, map, span))
+                    .collect(),
+            ),
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.instantiate_ty_deferring_projections(e, map, span))
+                    .collect(),
+            ),
+            Ty::Array(elem, len) => Ty::Array(
+                Box::new(self.instantiate_ty_deferring_projections(elem, map, span)),
+                *len,
+            ),
+            Ty::Slice(elem) => Ty::Slice(Box::new(
+                self.instantiate_ty_deferring_projections(elem, map, span),
+            )),
+            Ty::Range(elem) => Ty::Range(Box::new(
+                self.instantiate_ty_deferring_projections(elem, map, span),
+            )),
+            // Fn types and everything else fall back to the non-deferring instantiation.
+            _ => self.instantiate_ty(ty, map),
+        }
+    }
+
+    /// WP-C6.2c: discharge every deferred projection obligation whose base variable has grounded to
+    /// a nominal, binding its placeholder to the impl's associated-type binding. Obligations whose
+    /// base is still open are retained. Called eagerly after each call's arguments unify (so an
+    /// immediate use like `build(H {}).v` sees a concrete type) and once more at the end of
+    /// checking to catch bases that only ground later.
+    fn discharge_ready_projections(&mut self) {
+        if self.projection_obligations.is_empty() {
+            return;
+        }
+        let obligations = std::mem::take(&mut self.projection_obligations);
+        let mut retained = Vec::new();
+        for (proj_var, base_var, assoc, span) in obligations {
+            let nominal = match self.resolve(&Ty::Infer(base_var)) {
+                Ty::Struct(id, _) | Ty::Enum(id, _) => Some(id),
+                _ => None,
+            };
+            match nominal.and_then(|n| self.assoc_projections.get(&(n, assoc.clone())).cloned()) {
+                Some(bound) => {
+                    let _ = self.unify(Ty::Infer(proj_var), bound, span);
+                }
+                None => retained.push((proj_var, base_var, assoc, span)),
+            }
+        }
+        self.projection_obligations = retained;
     }
 
     fn freshen_call_sig(&mut self, sig: FnSigTy, span: Span) -> FnSigTy {
@@ -6354,14 +6497,196 @@ impl<'a> TypeChecker<'a> {
         })
     }
 
+    /// WP-C6.2c: populate `assoc_projections` from every impl's associated-type bindings, keyed by
+    /// the implementing nominal's `ItemId` and the associated-type name.
+    fn build_assoc_projections(&mut self, root_file: &Arc<SourceFile>) {
+        let count = self.hir.items.len();
+        for index in 0..count {
+            let item_id = ItemId(index as u32);
+            let hir::ItemKind::Impl { self_ty, items, .. } = &self.hir.item(item_id).kind else {
+                continue;
+            };
+            let self_ty = *self_ty;
+            // Convert the associated-type bindings against the impl's own file (types name items
+            // relative to their declaring file).
+            let bindings: Vec<(String, hir::TypeId)> = items
+                .iter()
+                .filter_map(|impl_item| match impl_item {
+                    hir::ImplItem::AssocType { name, ty } => Some((*name, *ty)),
+                    _ => None,
+                })
+                .map(|(name, ty)| (self.text(name).to_string(), ty))
+                .collect();
+            if bindings.is_empty() {
+                continue;
+            }
+            self.file = self
+                .hir
+                .item_files
+                .get(&item_id)
+                .cloned()
+                .unwrap_or_else(|| root_file.clone());
+            let nominal = match self.convert_hir_type(self_ty) {
+                Ty::Struct(id, _) | Ty::Enum(id, _) => Some(id),
+                _ => None,
+            };
+            if let Some(nominal) = nominal {
+                for (name, ty) in bindings {
+                    let ty = self.convert_hir_type(ty);
+                    self.assoc_projections.insert((nominal, name), ty);
+                }
+            }
+        }
+        self.file = root_file.clone();
+    }
+
+    /// WP-C6.2c: associated-type projections pinned by explicit binding constraints in scope
+    /// (`T: Holder<Item = Int32>` yields `"T::Item" -> Int32`), gathered from the current function's
+    /// and enclosing impl's generic parameters.
+    fn assoc_binding_map(&mut self) -> HashMap<String, Ty> {
+        let mut generics = self.current_fn_generics.clone().unwrap_or_default();
+        if let Some(impl_generics) = &self.current_impl_generics {
+            generics.extend(impl_generics.iter().cloned());
+        }
+        let mut map = HashMap::new();
+        for param in &generics {
+            let pname = self.text(param.name).to_string();
+            for bound in &param.bounds {
+                let Some(bound_args) = &bound.args else {
+                    continue;
+                };
+                for arg in &bound_args.args {
+                    if let hir::GenericArg::Binding { name, ty } = arg {
+                        let key = format!("{}::{}", pname, self.text(*name));
+                        let bty = self.convert_hir_type(*ty);
+                        map.insert(key, bty);
+                    }
+                }
+            }
+        }
+        map
+    }
+
+    /// WP-C6.2c: rewrite `Self` in a trait method's converted type to the concrete receiver.
+    /// `Self` alone becomes `recv`; `Self::Item` becomes `recv::Item` (a projection string that a
+    /// later normalisation step resolves). Applied to a method-call result before it is returned.
+    fn subst_self(ty: &Ty, recv: &str) -> Ty {
+        match ty {
+            Ty::Param(name) if name == "Self" => Ty::Param(recv.to_string()),
+            Ty::Param(name) => match name.strip_prefix("Self::") {
+                Some(assoc) => Ty::Param(format!("{recv}::{assoc}")),
+                None => ty.clone(),
+            },
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable: *mutable,
+                inner: Box::new(Self::subst_self(inner, recv)),
+            },
+            Ty::Struct(item, args) => Ty::Struct(
+                *item,
+                args.iter().map(|a| Self::subst_self(a, recv)).collect(),
+            ),
+            Ty::Enum(item, args) => Ty::Enum(
+                *item,
+                args.iter().map(|a| Self::subst_self(a, recv)).collect(),
+            ),
+            Ty::Core(core, args) => Ty::Core(
+                *core,
+                args.iter().map(|a| Self::subst_self(a, recv)).collect(),
+            ),
+            Ty::Tuple(elems) => {
+                Ty::Tuple(elems.iter().map(|e| Self::subst_self(e, recv)).collect())
+            }
+            Ty::Array(elem, len) => Ty::Array(Box::new(Self::subst_self(elem, recv)), *len),
+            Ty::Slice(elem) => Ty::Slice(Box::new(Self::subst_self(elem, recv))),
+            Ty::Range(elem) => Ty::Range(Box::new(Self::subst_self(elem, recv))),
+            other => other.clone(),
+        }
+    }
+
+    /// WP-C6.2c: resolve any associated-type projection reachable in `ty`. A `Ty::Param("X::Item")`
+    /// whose base `X` names a bound param with an explicit binding is replaced from `binding_map`;
+    /// one whose base resolves to a concrete nominal is replaced from the program-wide
+    /// `assoc_projections` table. Recurses so projections nested inside aggregates are resolved.
+    fn normalize_projections(&self, ty: &Ty, binding_map: &HashMap<String, Ty>) -> Ty {
+        match ty {
+            Ty::Param(name) if name.contains("::") => {
+                if let Some(bound) = binding_map.get(name) {
+                    return bound.clone();
+                }
+                if let Some((base, assoc)) = name.split_once("::") {
+                    // The base may itself be a bound param carrying a concrete binding: normalise it
+                    // first (e.g. `Self` already rewritten to a nominal-bearing param upstream).
+                    for ((nominal, aname), bound) in &self.assoc_projections {
+                        if aname == assoc && self.nominal_name(*nominal) == base {
+                            return bound.clone();
+                        }
+                    }
+                }
+                ty.clone()
+            }
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable: *mutable,
+                inner: Box::new(self.normalize_projections(inner, binding_map)),
+            },
+            Ty::Struct(item, args) => Ty::Struct(
+                *item,
+                args.iter()
+                    .map(|a| self.normalize_projections(a, binding_map))
+                    .collect(),
+            ),
+            Ty::Enum(item, args) => Ty::Enum(
+                *item,
+                args.iter()
+                    .map(|a| self.normalize_projections(a, binding_map))
+                    .collect(),
+            ),
+            Ty::Core(core, args) => Ty::Core(
+                *core,
+                args.iter()
+                    .map(|a| self.normalize_projections(a, binding_map))
+                    .collect(),
+            ),
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.normalize_projections(e, binding_map))
+                    .collect(),
+            ),
+            Ty::Array(elem, len) => Ty::Array(
+                Box::new(self.normalize_projections(elem, binding_map)),
+                *len,
+            ),
+            Ty::Slice(elem) => Ty::Slice(Box::new(self.normalize_projections(elem, binding_map))),
+            Ty::Range(elem) => Ty::Range(Box::new(self.normalize_projections(elem, binding_map))),
+            other => other.clone(),
+        }
+    }
+
+    /// The declared name of a nominal (struct/enum) item, read against its declaring file.
+    fn nominal_name(&self, item: ItemId) -> String {
+        match &self.hir.item(item).kind {
+            hir::ItemKind::Struct { name, .. } | hir::ItemKind::Enum { name, .. } => {
+                self.item_text(item, *name).to_string()
+            }
+            _ => String::new(),
+        }
+    }
+
     /// Checks a call's arguments against an already-resolved trait method signature (see
-    /// `find_trait_method_sig`) and returns its return type.
+    /// `find_trait_method_sig`) and returns its return type. `trait_id` is the declaring trait,
+    /// whose file the signature's types (including `Self::Item` associated-type spans) are read
+    /// against — DEV-101 provenance, needed for a cross-package trait.
     fn check_trait_member_call(
         &mut self,
+        trait_id: ItemId,
         sig: &hir::FnSig,
         args: &[ExprId],
         call_span: Span,
     ) -> Ty {
+        // The signature's types are declared in the TRAIT's file; convert them there, then restore
+        // the caller's file for the argument expressions below.
+        let trait_file = self.item_file(trait_id);
+        let caller_file = std::mem::replace(&mut self.file, trait_file);
         let params_ty: Vec<Ty> = sig
             .params
             .iter()
@@ -6372,6 +6697,7 @@ impl<'a> TypeChecker<'a> {
             hir::RetTy::Ty(t) => self.convert_hir_type(t),
             hir::RetTy::Never(_) => Ty::Never,
         };
+        self.file = caller_file;
         if args.len() != params_ty.len() {
             self.diags.push(
                 Diagnostic::error(
@@ -6455,7 +6781,18 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(sig) =
                                     self.find_trait_method_sig(bound_trait_id, &name_str)
                                 {
-                                    return self.check_trait_member_call(&sig, args, call_span);
+                                    // WP-C6.2c: a trait method returning `Self::Item` yields the
+                                    // receiver's projection (`T::Item`), which is then pinned by any
+                                    // explicit `T: Trait<Item = ..>` binding in scope.
+                                    let ret = self.check_trait_member_call(
+                                        bound_trait_id,
+                                        &sig,
+                                        args,
+                                        call_span,
+                                    );
+                                    let ret = Self::subst_self(&ret, p_name);
+                                    let binding_map = self.assoc_binding_map();
+                                    return self.normalize_projections(&ret, &binding_map);
                                 }
                             }
                         }
@@ -6479,7 +6816,7 @@ impl<'a> TypeChecker<'a> {
             if p_name == "Self" {
                 if let Some(trait_id) = self.current_trait_id {
                     if let Some(sig) = self.find_trait_method_sig(trait_id, &name_str) {
-                        return self.check_trait_member_call(&sig, args, call_span);
+                        return self.check_trait_member_call(trait_id, &sig, args, call_span);
                     }
                 }
             }

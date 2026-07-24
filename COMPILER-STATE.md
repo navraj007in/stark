@@ -5,15 +5,17 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 **C6.2b matrix CLEARED: F1/F5/F2/F6 CLOSED (CD-102/103/104/105)**; F3 → WP-C6.1f (closed); F4 split (parser half open, selection is Track B).**
+**WP-C6.2c (associated types) CLOSED (CD-106): §19 matrix proven three-engine — `Self::Item`, `T::Item`
+via explicit binding and inferred-from-argument (deferred projection obligations + program-wide
+`assoc_projections`), cross-package projection (DEV-101 span provenance), Drop-bearing assoc types.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
 linearisation — the uniform-borrow-carrier-returns package)**, and C6.3 (`Box`/`Vec`/slice, Track
-C). Also open: F1
-privacy (Track B blocker), C6.2b's other findings,
-C6.2c…e, WP-C6.3 (runtime values and
+C). Also open:
+**C6.2d–e**, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
-exit.**
+exit. (F4 parser half `&&T`/`**x` still open.)**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -3082,6 +3084,39 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-106 [2026-07-24, **WP-C6.2c CLOSED — associated types**] The §19 matrix is proven across all
+  three engines. Baseline already worked: an associated-type declaration + impl binding, `Self::Item`
+  in return and parameter position, and an associated type that is a nominal or a tuple. Four gaps
+  fixed:
+  1. **`T::Item` through an explicit binding** (`fn f<T: Holder<Item = Int32>>`): the projection now
+     normalises to the bound type. `check_trait_member_call` rewrites `Self::Item` in the method's
+     return to the receiver's projection (`T::Item`), then `assoc_binding_map` + `normalize_projections`
+     pin it from the in-scope `Trait<Item = ..>` binding.
+  2. **`T::Item` inferred from the call argument** (`fn first<T: Holder>(t: T) -> T::Item`): a
+     program-wide `assoc_projections` table `(nominal, assoc) -> bound` (front end AND MIR lowerer)
+     resolves `<H as Holder>::Item`; where the base is still an inference variable at the call, a
+     **deferred projection obligation** is recorded and discharged the moment the call's arguments
+     unify (so `build(H {}).v` sees a concrete type). Verified MIR never carries a residual
+     `Ty::Param("T::Item")` — native emit's C4.5 residual-param refusal enforces this and the reachable
+     bodies compile+run.
+  3. **Cross-package projection** (DEV-101 provenance): `check_trait_member_call` converts the
+     signature's types (including `Self::Item` associated-name spans) against the TRAIT's file, not the
+     caller's — previously produced a mangled `T:::Ite` and E0001. Fixed; the dependency-declared
+     trait's projection resolves in an app-declared generic.
+  4. **Drop-bearing associated types** flow through projections unchanged.
+  - **Scope boundary:** returning a runtime collection (`Vec<..>`) BY VALUE across a function boundary
+    is a separate native-linkage limitation (C6.3) — a plain `fn f() -> Vec<_>` hits the identical
+    refusal — so it is not part of this closure. Associated-type resolution for such a signature is
+    correct (HIR + MIR pass); only the native linkage of the value return is deferred to C6.3.
+  - Evidence: `tests/c62c_associated_types.rs` (9: self-item return/param, assoc-nominal, assoc-tuple,
+    inferred projection, explicit binding, by-value projected use with field access, nested
+    projection-then-method, cross-package — three-engine where applicable). Regression: lib 441,
+    `native_c6_2_generics_traits` 20, `cross_package_generics` 11, `conformance`/`gate4`/`gate5`/`gate7`
+    semantics, `exec_snapshots` 4, `native_c5_4_linkage` 12, `native_c5_4_workspace` 6 — all green.
+    `fmt --check` and strict `clippy` clean.
+  - **C6.2 remaining:** C6.2d (operator/CoreTrait dispatch parity) and C6.2e (deterministic identity);
+    the F4 parser half (`&&T`/`**x`) is still open.
 
 - CD-105 [2026-07-24, **WP-C6.2b-F6 CLOSED — impl signatures may spell the concrete type for
   `Self`; C6.2b matrix cleared**] `impl Mk for G { fn make() -> G {..} }` for `trait Mk { fn make()

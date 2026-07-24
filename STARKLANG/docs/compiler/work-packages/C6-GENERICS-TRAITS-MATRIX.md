@@ -1,8 +1,8 @@
 # C6-GENERICS-TRAITS-MATRIX — Track B / WP-C6.2
 
-**Status:** C6.2a CLOSED (CD-086). C6.2b IN PROGRESS — §18 matrix probed end-to-end (§5), DEV-102
-closed (§6); F1–F6 dispositioned by owner ruling (§7). **F1 is a C6.2b blocker assigned to Track B**
-and must be fixed before F2, F5, DEV-083 or C6.2c. C6.2c…e remain open.
+**Status:** C6.2a CLOSED (CD-086). C6.2b matrix CLEARED (F1/F5/F2/F6 CLOSED, CD-102/103/104/105; F3 →
+WP-C6.1f; F4 parser half open). **C6.2c (associated types) CLOSED (CD-106)** — §19 matrix proven
+three-engine, see the "C6.2c — the §19 associated-type matrix" section below. **C6.2d–e remain open.**
 **Base:** `main`, post-WP-C6.1 closure (CD-085)
 **Authorship:** the file is **Track B**-owned (`C6-FILE-OWNERSHIP.md §1`). The C6.2a section was
 written by Track A under the owner's C6.2a ruling, because the defect was in *lowering identity*,
@@ -86,7 +86,7 @@ The §18 matrix itself is now probed — see §5. What stays open beyond it:
 | Item | Owner |
 |---|---|
 | **DEV-083** — candidate-local inference snapshots / declaration-order-independent candidate evaluation (deferred by CD-040(b)) | C6.2b |
-| §19 associated types beyond the single-binding case (multiple bindings, bounds on associated types, projection in signatures) | C6.2c |
+| ~~§19 associated types beyond the single-binding case~~ | **C6.2c — CLOSED (CD-106)**, see the "C6.2c — the §19 associated-type matrix" section |
 | §20 the remainder of operator/`CoreTrait` semantics (arithmetic and comparison desugaring, `Ordering` totality, operator trap behaviour) | C6.2d |
 | §21 deterministic instance identity under rebuild/relocation/dependency reorder for methods and trait instances | C6.2e |
 | generic collections and iterators | C6.3 (Track C) interface |
@@ -119,6 +119,33 @@ Every row driven `parse → resolve → typecheck → HIR-run → lower → veri
 
 Recheck of the WP-C6-ENTRY §2 carry-forward: the **generic impl-head receiver-inference limitation
 is still open** — **F5**.
+
+---
+
+## C6.2c — the §19 associated-type matrix, probed (CLOSED, CD-106)
+
+Every row driven `parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`
+(`tests/c62c_associated_types.rs`).
+
+| §19 shape | Status | Note |
+|---|---|---|
+| declaration + impl binding | ✅ native | trait `type Item;` + `impl { type Item = Int32; }` |
+| `Self::Item` (return) | ✅ native | `fn get(&self) -> Self::Item` |
+| `Self::Item` (parameter) | ✅ native | `fn put(&self, x: Self::Item)` |
+| associated type is a nominal | ✅ native | `type Item = P;` then `h.get().v` |
+| associated type is a tuple | ✅ native | `type Item = (Int32, Int32)` |
+| `T::Item` via explicit binding | ✅ native | `fn f<T: Holder<Item = Int32>>(t: T) -> Int32` — `assoc_binding_map` + `normalize_projections` |
+| `T::Item` inferred from argument | ✅ native | `fn first<T: Holder>(t: T) -> T::Item` — **deferred projection obligation** discharged at the call; program-wide `assoc_projections` (front end + MIR) resolve `<H as Holder>::Item` |
+| projected value used by value (field access) | ✅ native | `build(H {}).v` — obligation discharged eagerly at the call, not just end-of-check |
+| nested projection then method | ✅ native | `t.make().val()` under `T: Holder<Item = Inner>` |
+| cross-package projection | ✅ native | dependency-declared trait + assoc; app-declared generic projects `T::Item`. Fix: `check_trait_member_call` reads `Self::Item` spans against the TRAIT's file (DEV-101) — previously mangled to `T:::Ite` |
+| Drop-bearing associated type | ✅ native | `type Item = D` with `impl Drop for D` |
+| Verified MIR carries concrete types | ✅ | native emit's C4.5 residual-param refusal enforces it; reachable bodies compile+run |
+
+**Scope boundary (deferred to C6.3, not a C6.2c gap):** returning a runtime collection (`Vec<..>`) BY
+VALUE across a function boundary hits a native-linkage refusal — a plain `fn f() -> Vec<_>` fails
+identically, with no associated types involved. The associated-type resolution for such a signature is
+correct (HIR + MIR pass); only the native linkage of the value return waits on C6.3 runtime values.
 
 ---
 

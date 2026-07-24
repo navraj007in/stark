@@ -508,20 +508,24 @@ cross-package impl
 
 The backend consumes the front-end-selected callee. It does not redo lookup.
 
-## 19. C6.2c — Associated types
+## 19. C6.2c — Associated types — **CLOSED (CD-106)**
 
 Prove:
 
-- declarations and impl bindings;
-- `Self::Item`;
-- `T::Item`;
-- explicit binding constraints;
-- nested associated results;
-- associated types in signatures;
-- cross-package use;
-- associated types inside runtime collections and Drop-bearing nominals.
+- declarations and impl bindings; ✅
+- `Self::Item`; ✅
+- `T::Item`; ✅ (explicit binding AND inferred from the call argument via deferred projection obligations)
+- explicit binding constraints; ✅
+- nested associated results; ✅
+- associated types in signatures; ✅
+- cross-package use; ✅ (DEV-101 span provenance in `check_trait_member_call`)
+- associated types inside runtime collections and Drop-bearing nominals. ✅ Drop-bearing; runtime
+  collections resolve in HIR+MIR — returning a `Vec<..>` BY VALUE across the native linkage boundary
+  is a separate C6.3 limitation (a plain `fn f() -> Vec<_>` fails identically), not a C6.2c gap.
 
-Verified MIR must contain concrete types.
+Verified MIR must contain concrete types — enforced by native emit's C4.5 residual-param refusal;
+reachable bodies compile and run. Evidence: `tests/c62c_associated_types.rs`. See
+`C6-GENERICS-TRAITS-MATRIX.md` "C6.2c — the §19 associated-type matrix" for the per-row status.
 
 ## 20. C6.2d — Operator/CoreTrait semantics
 
