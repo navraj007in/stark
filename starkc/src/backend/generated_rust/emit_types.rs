@@ -894,10 +894,14 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_constants_are_reported_not_guessed() {
-        assert!(matches!(
-            emit_constant(&Constant::Str("x".to_string())),
-            Err(BackendDiagnostic::Unsupported(_))
-        ));
+    fn str_constant_emits_an_escaped_rust_literal() {
+        // WP-C6.3a: a `str` literal is a Rust `&'static str` literal, escaped via `{:?}`.
+        let out = emit_constant(&Constant::Str("hi".to_string())).unwrap();
+        assert_eq!(out, "\"hi\"");
+        assert!(compiles_as_a_rust_expression(&out), "{out}");
+        // Quotes, backslashes and control characters must be escaped, not emitted raw.
+        let tricky = emit_constant(&Constant::Str("a\"b\\c\n".to_string())).unwrap();
+        assert_eq!(tricky, "\"a\\\"b\\\\c\\n\"");
+        assert!(compiles_as_a_rust_expression(&tricky), "{tricky}");
     }
 }
