@@ -15,6 +15,12 @@ and `Default::default()` inference deferred (DEV-103/104).**
 **WP-C6.2e (deterministic identity) CLOSED (CD-108) → WP-C6.2 as a WHOLE CLOSED: canonical symbols
 render nominals by content path (`struct#liba::A`), not the order-dependent `ItemId` index — stable
 across clean rebuild, relocation, and dependency-declaration reorder (§21/§22 met).**
+**WP-C6.3 OPENED — native Core runtime (Track C). WP-C6.3a PARTIAL (CD-109): the runtime-call bridge
+(`Callee::Runtime`) + String/str value + str-output surface land three-engine (owned String
+construction/query/mutation/clone/return + `println`/`print` with native stdout-byte checks;
+`stark-runtime/src/string.rs`). Deferred: owned-`String` `==`/`<` and stored interior `&str`
+(→ C6.1g-c dispatch-loop borrow). C6.3a remaining: char ops, `chars()` iteration, slicing views,
+cross-package.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
@@ -3091,6 +3097,34 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-109 [2026-07-24, **WP-C6.3a PARTIAL — native String/str value + output surface; WP-C6.3
+  OPENED**] First slice of the Core native runtime (§23/§24). Until now `Callee::Runtime` was
+  entirely unimplemented in the backend — native supported NO output or collection calls; every
+  `Core(String/Vec/..)` type was refused by `emit_ty`. This slice builds the runtime-call bridge and
+  the String/str surface end-to-end, three-engine (HIR/MIR/native).
+  - **Landed:** `stark-runtime/src/string.rs` (STARK String/str semantics — byte `len`, UTF-8,
+    lexicographic ordering, pinned in one reviewed place so they cannot drift with host `std`);
+    `emit_ty` renders `MirTy::String → String`, `MirTy::Str → str`; `Constant::Str` → a Rust
+    `&'static str` literal; `emit_runtime::emit_runtime_call` bridges `Callee::Runtime`; wired the
+    String/str + str-output `RuntimeFn`s: `StringNew/FromStr/Clone/AsStr/Len/IsEmpty/Contains/
+    PushStr/Clear`, `Str{Len,IsEmpty,ToString,Eq,Cmp}`, `Println/PrintStr`. `String` is Rust
+    `String` (owning, non-`Copy`, slot-backed → MIR controls destruction).
+  - **Proven native (three-engine):** construction (`from`/`new`), `len`/`is_empty`, `push_str`,
+    `clear`, `contains`, `clone`, `str::to_string`, `str` len, return-`String`-across-fn, str-literal
+    `==`/`<`, and `println`/`print` of a str with the native STDOUT BYTES checked against the
+    oracle. `tests/c63a_string.rs` (15).
+  - **Deferred to WP-C6.1g-c (native only; HIR+MIR pass):** a STORED interior `&str` borrowing an
+    OWNED `String` held across a block — owned-`String` `==`/`<` (lowers through `String::as_str`)
+    and an explicit `let v = s.as_str()` used after a branch. The stored borrow overlaps the
+    `String`'s slot-drop across the block-dispatch `loop { match __bb }` back-edges (E0502) — the
+    same dispatch-loop borrow-linearisation problem as C6.1g-c, NOT String-specific (`str`-value
+    comparison works natively).
+  - **C6.3a REMAINING (not in this slice):** char ops (`PrintlnChar`/`StringPushChar`/
+    `StringPopChar`), `chars()` iteration (`CharsIter{New,Next}`), string slicing views, and
+    cross-package String passing. Display/formatting of non-str values is C6.3e. Regression:
+    `mir_lowering` 4, `native_c5_4_linkage`, `gate5_codegen` 14, `exec_snapshots` 4,
+    `native_c6_1_ownership` 24 — all green. `fmt`/`clippy` clean (lib + `stark-runtime`).
 
 - CD-108 [2026-07-24, **WP-C6.2e CLOSED — deterministic instance identity; WP-C6.2 as a whole
   CLOSED**] §21: a clean rebuild, relocation, and dependency-declaration reorder must leave every

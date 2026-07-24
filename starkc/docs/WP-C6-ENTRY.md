@@ -633,26 +633,31 @@ provider_abi.rs
 
 Do not create empty modules merely to match this list.
 
-## 24. C6.3a — String and str
+## 24. C6.3a — String and str — **PARTIAL (CD-109)**
 
 Inventory and implement:
 
-- construction;
-- move/clone where normative;
-- length and emptiness;
-- UTF-8 validity;
-- character iteration;
-- byte/character distinctions;
-- concatenation and mutation;
-- valid slicing/view behaviour;
-- borrowed str;
-- comparison;
-- canonical display;
-- nested formatting;
-- Drop/reinitialisation;
-- cross-package passing/return.
+- construction; ✅ native (`String::from`, `String::new`)
+- move/clone where normative; ✅ native (owned move; `clone`)
+- length and emptiness; ✅ native (`len` = bytes, `is_empty`)
+- UTF-8 validity; ⏳ (well-formed literals only so far; invalid-boundary failures with char ops)
+- character iteration; ⏳ (`chars()` / `CharsIter` — remaining)
+- byte/character distinctions; ⏳ (byte `len` done; char ops remaining)
+- concatenation and mutation; ✅ native (`push_str`, `clear`)
+- valid slicing/view behaviour; ⏳ (string slicing views — remaining)
+- borrowed str; ✅ native for str VALUES (literals, `&str` params, `contains` pattern). A STORED
+  interior `&str` borrowing an OWNED `String` across a block is deferred to WP-C6.1g-c (native
+  dispatch-loop borrow; HIR+MIR pass).
+- comparison; ✅ native for `str` values; owned-`String` `==`/`<` deferred to C6.1g-c (lowers
+  through `String::as_str` → the stored-interior-borrow case above)
+- canonical display; ⏳ (C6.3e formatting)
+- nested formatting; ⏳ (C6.3e)
+- Drop/reinitialisation; ✅ (slot-backed `String`; MIR-controlled drop)
+- cross-package passing/return; ⏳ (return-across-fn done same-package; cross-package remaining)
 
-Invalid boundaries must produce the specified failure and source location.
+Invalid boundaries must produce the specified failure and source location. Landed:
+`stark-runtime/src/string.rs`, `emit_runtime`, `emit_ty`/`Constant::Str`. Evidence:
+`tests/c63a_string.rs` (15, three-engine with native stdout-byte checks).
 
 ## 25. C6.3b — Vec, slices, Box
 

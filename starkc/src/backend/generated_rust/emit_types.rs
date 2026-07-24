@@ -189,10 +189,15 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
             }
             format!("fn({}) -> {}", ps.join(", "), emit_ty_at(ret, at)?)
         }
+        // WP-C6.3a: STARK `String` is Rust `String` (an owning, non-`Copy`, slot-backed value);
+        // `str` is Rust `str`, only ever observed behind a reference (`&str`). Their operations are
+        // emitted as calls into `stark_runtime::string`, which pins the STARK semantics.
+        MirTy::String => "String".to_string(),
+        MirTy::Str => "str".to_string(),
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \
-                 WP-C5.3b, Option/Result in WP-C5.3c, references/slices/String/Vec are outside \
+                 WP-C5.3b, Option/Result in WP-C5.3c, Vec/slices/collections are outside \
                  the C5 subset; see WP-C5.1.md's MirTy matrix"
             )))
         }
@@ -708,10 +713,12 @@ pub fn emit_constant(c: &Constant) -> Result<String, BackendDiagnostic> {
         // so this mapping is safe without re-searching -- identical to how `Callee::Instance`
         // names its target.
         Constant::FnPtr(instance) => mangle::function_name_for_symbol(&instance.symbol),
+        // WP-C6.3a: a `str` literal is a Rust `&'static str` literal. `{:?}` on the &str produces a
+        // correctly escaped Rust string literal (quotes, backslashes, control chars, unicode).
+        Constant::Str(s) => format!("{s:?}"),
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "Constant {other:?} has no C5.2a generated-Rust representation yet -- `Str` lands \
-                 alongside String/output support"
+                "Constant {other:?} has no generated-Rust representation yet"
             )))
         }
     })

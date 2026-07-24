@@ -16,6 +16,7 @@
 pub mod output;
 pub mod provider_abi;
 pub mod slot;
+pub mod string;
 pub mod trap;
 pub mod value;
 pub mod version;

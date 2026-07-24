@@ -514,10 +514,8 @@ fn emit_call(callee: &Callee, args: &[Operand], env: &TyEnv) -> Result<String, B
             let f = emit_operand(operand, env)?;
             Ok(format!("({f})({})", arg_exprs.join(", ")))
         }
-        Callee::Runtime(_) => Err(BackendDiagnostic::Unsupported(format!(
-            "Callee {callee:?} has no representation yet -- runtime calls land alongside their \
-             RuntimeFn support"
-        ))),
+        // WP-C6.3a: a runtime call is rendered from the same already-emitted argument expressions.
+        Callee::Runtime(rt) => super::emit_runtime::emit_runtime_call(*rt, &arg_exprs),
     }
 }
 
