@@ -2,9 +2,7 @@
 
 use crate::ast::UnOp;
 use crate::diag::Diagnostic;
-use crate::hir::{
-    self, BlockId, Builtin, CoreTrait, CoreType, ExprId, Hir, ItemId, LocalId, Res, StmtId,
-};
+use crate::hir::{self, BlockId, Builtin, CoreType, ExprId, Hir, ItemId, LocalId, Res, StmtId};
 use crate::source::{SourceFile, Span};
 use crate::typecheck::Ty;
 use std::collections::{HashMap, HashSet};
@@ -327,7 +325,14 @@ impl<'a> BorrowChecker<'a> {
                 crate::ast::Primitive::String | crate::ast::Primitive::Str
             ),
             Ty::Error | Ty::Ref { mutable: false, .. } => true,
-            Ty::Struct(item, _) | Ty::Enum(item, _) => self.copy_types.contains(item),
+            // WP-C6.1g-a: `Copy` per-instance — the nominal must be eligible AND every type
+            // argument `Copy` (so `H<&P>` is Copy, `H<&mut P>` / `H<String>` are Move). Recursing
+            // the arguments here is what keeps the move checker aligned with the type checker's
+            // `is_copy_with_impls`; omitting it was the DEV-072-class divergence structural Copy
+            // would otherwise open.
+            Ty::Struct(item, args) | Ty::Enum(item, args) => {
+                self.copy_types.contains(item) && args.iter().all(|arg| self.is_copy_type(arg))
+            }
             Ty::Core(CoreType::Option | CoreType::Result, args) => {
                 args.iter().all(|arg| self.is_copy_type(arg))
             }
@@ -1252,27 +1257,7 @@ impl<'a> BorrowChecker<'a> {
 }
 
 fn collect_copy_types(hir: &Hir) -> HashSet<ItemId> {
-    hir.items
-        .iter()
-        .filter_map(|item| match &item.kind {
-            hir::ItemKind::Impl {
-                trait_:
-                    Some(hir::TraitRef {
-                        res: Res::CoreTrait(CoreTrait::Copy),
-                        ..
-                    }),
-                self_ty,
-                ..
-            } => match &hir.ty(*self_ty).kind {
-                hir::TypeKind::Path {
-                    res: Res::Item(item),
-                    ..
-                } => Some(*item),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect()
+    crate::typecheck::copy_eligible_types(hir)
 }
 
 fn is_prefix(prefix: &[Projection], value: &[Projection]) -> bool {

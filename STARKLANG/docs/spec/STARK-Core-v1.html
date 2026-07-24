@@ -1770,19 +1770,34 @@ or ownership transfer merely to select a type, method, or trait
 implementation.</p>
 <h3 id="copy-and-drop-soundness-rules">Copy and Drop (Soundness
 Rules)</h3>
-<p><strong>OWN-COPY-001.</strong> The built-in scalar primitives except
-<code>String</code>, shared reference values, function values,
-<code>Unit</code>, and <code>!</code> are <code>Copy</code>. Exclusive
-references are not <code>Copy</code>. Arrays and tuples are
-<code>Copy</code> exactly when every component is <code>Copy</code>. A
-user-defined struct or enum may implement <code>Copy</code> only when
-every possible field/payload is <code>Copy</code>; generic
-implementations must express and satisfy the corresponding bounds.
-<code>Box</code>, <code>Vec</code>, <code>String</code>, maps, sets, and
-all types implementing <code>Drop</code> are not <code>Copy</code>.
-<code>Copy</code> is a marker selected by the normal coherence rules and
-cannot be inferred structurally for a user type without an
-implementation.</p>
+<p><strong>OWN-COPY-001 — Copy eligibility.</strong></p>
+<p>A type is <code>Copy</code> if it is one of the language-defined
+<code>Copy</code> primitives (the built-in scalar primitives except
+<code>String</code>, <code>Unit</code>, <code>!</code>, and function
+values), a shared reference, or a compound/nominal type whose stored
+fields are recursively <code>Copy</code> and whose type has no
+<code>Drop</code> behavior.</p>
+<p>Copy eligibility may be derived structurally for nominal user types
+(struct and enum) only when: - every stored field/payload is recursively
+<code>Copy</code>; - no field is an owned non-<code>Copy</code> resource
+(<code>Box</code>, <code>Vec</code>, <code>String</code>, maps, sets); -
+no field requires <code>Drop</code> glue; - the nominal itself has no
+<code>Drop</code> implementation or destructor behavior; - no field is a
+mutable reference (exclusive references are never <code>Copy</code>;
+they would participate only if the core type system explicitly admitted
+them, which it does not).</p>
+<p>Generic nominals are <code>Copy</code> per-instance under the
+corresponding <code>T: Copy</code> obligations:
+<code>struct H&lt;T&gt;</code> is <code>Copy</code> when instantiated at
+a <code>Copy</code> <code>T</code> and not otherwise. Arrays and tuples
+are <code>Copy</code> exactly when every component is.</p>
+<p><code>Copy</code> is inferred structurally for eligible non-dropping
+user nominals; no explicit implementation is required. An explicit
+<code>Copy</code> implementation, where supported, MUST NOT admit any
+type that fails this same recursive eligibility predicate. A type that
+IS <code>Copy</code> remains usable after assignment, argument passing,
+return, or pattern binding; a type that is NOT <code>Copy</code> is
+moved by those operations unless borrowed.</p>
 <ul>
 <li><code>Copy</code> may be implemented for a type only if
 <strong>all</strong> of its fields are <code>Copy</code>. Violations are

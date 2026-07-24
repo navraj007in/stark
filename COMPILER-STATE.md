@@ -5,10 +5,11 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1 CLOSED (CD-099)** — closure packet `WP-C6.1f-CLOSURE.md`. Gate-C6
-dependencies carried out of it (all owner-dispositioned, CD-097): `WP-C6.1g-a` (nominal lifetime
-emission), `WP-C6.1g-b` (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-Also open: F1
+Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
+(OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
+(return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
+linearisation — the uniform-borrow-carrier-returns package)**, and C6.3 (`Box`/`Vec`/slice, Track
+C). Also open: F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3049,6 +3050,38 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-100 [2026-07-24, **WP-C6.1g-a LANDED — structural Copy; borrow-carrying nominals in locals**]
+  OWN-COPY-001 amended (owner-worded): a recursively-`Copy`, non-`Drop`, non-owning nominal is
+  `Copy` **structurally**, no `impl Copy` required — shared references participate, mutable
+  references never do, and any owned/`Drop`-bearing field disqualifies. Implemented as ONE predicate
+  (`typecheck::copy_eligible_types`, a fixpoint over field types) consumed by the type checker, move
+  checker, MIR (`FnLowerer`/`TypeContext` `is_copy`), HIR interpreter, and native backend derive —
+  a divergence there is the DEV-072 class.
+  - **This resolves the C6.1g-a core:** a `Copy` borrow-carrying nominal (`Option<&T>`, a user
+    generic at a reference) is non-slot-backed, so it flows through the CD-095 aggregate path and
+    works **in a local and across blocks** — the two shapes CD-096 had to refuse.
+  - **Landing boundary** (`emit_types::refuse_borrow_carrying_nominals`, owner ruling): Copy
+    borrow-carrying nominal locals admitted; **Move** borrow-carrying nominal locals refused
+    pre-rustc; **any function returning a borrow-carrying nominal** refused pre-rustc regardless of
+    Copy; plain reference returns supported.
+  - **Corrected diagnosis (my earlier "regression" was wrong):** `wrap(&p).unwrap()` fails
+    **identically for a Move referent** (E0502), so it is a general borrow-through-return limitation
+    — `unwrap`'s panic-branch match extends the borrow across dispatch-loop blocks, colliding with
+    the referent's block-0 assignment. Referent-storage stabilization does NOT fix it (only changes
+    E0506→E0502). Uniform borrow-carrier returns are **`WP-C6.1g-c`** (dispatch-loop linearisation),
+    an independent backend package; the original "uniform returns green" acceptance bar is revised.
+  - **A DEV-072-class divergence was found by the new fixtures and fixed:** `borrowck::is_copy_type`
+    ignored a nominal's type arguments (`H<&mut P>` read Copy there, Move in the checker); it now
+    recurses arguments, matching `is_copy_with_impls`.
+  - **Test churn from the semantic change:** 3 lib + 6 native tests that used all-Copy-field structs
+    as Move stand-ins switched to `Drop`-bearing (Move-but-native) types; the C5.3 lane test rotated
+    its negative to a Move borrow-carrier.
+  - **Spec regenerated** (`STARK-Core-v1.md`/`.html`/`.pdf`); 112-block fixture corpus in sync.
+  - **Evidence:** `c61f_structural_copy.rs` (positive: primitive/nested/generic/borrow-carrying/enum;
+    negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
+    (Copy-local works, Move-local + any borrow-carrier return refused). Full workspace suite,
+    `fmt --check`, strict `clippy` — [pending; recorded on commit].
 
 - CD-099 [2026-07-24, **WP-C6.1 CLOSED**] All ten `WP-C6.1f.md` §2 scope items are implemented with
   native evidence or carry an owner-approved disposition, and all five exit criteria are met:

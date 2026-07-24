@@ -133,50 +133,58 @@ sound in the meantime.
 
 ---
 
-## 6. Follow-on: referent-storage stabilization (owner direction, 2026-07-24)
+## 6. Landing boundary and corrected diagnosis (owner ruling, 2026-07-24)
 
-Structural Copy is implemented and correct across spec + type checker + move checker + MIR +
-HIR interpreter + backend derive (the four engines share one predicate, `copy_eligible_types`).
-It is **held, not landed**, because it regresses one already-working shape:
+Structural Copy (OWN-COPY-001, amended) is implemented and **landed** with one predicate shared by
+the type checker, move checker, MIR, HIR interpreter, and native backend. The earlier
+"referent-storage stabilization" section is **withdrawn as factually obsolete** — the following is
+the corrected finding.
 
-```stark
-fn wrap(r: &P) -> Option<&P> { Some(r) }
-fn main() { let p = P { v: 3 }; let o = wrap(&p); assert_eq(o.unwrap().get(), 3); }
-```
+### 6.1 The `Option<&P>` return is NOT a structural-Copy regression
 
-fails native build with `E0506` once `struct P { v: Int32 }` becomes structurally `Copy`.
+`fn wrap(r: &P) -> Option<&P> { Some(r) }` then `wrap(&p).unwrap().get()` fails native build. But it
+fails **identically when `P` is Move** (a `Drop` field → E0502), so it is a **general
+borrow-through-return limitation**, not a Copy issue. `unwrap`'s panic-branch match extends the
+returned borrow across enough dispatch-loop blocks to collide with the referent's block-0
+assignment. Verified boundary:
 
-**Diagnosis.** A `Copy` referent lowers to a plain, loop-reassigned local (`_1 = _2` in block 0).
-The returned borrow is held across the dispatch loop, and `Option::unwrap`'s panic-branch
-discriminant match adds enough blocks that rustc's back-edge reasoning flags `_1`'s own block-0
-assignment as conflicting. `H<&P>` returned passes only by having fewer blocks — luck, not a
-semantic difference. **This worked before structural Copy, when `P` was slot-backed.**
+| Shape | Result |
+|---|---|
+| inline `let o: Option<&P> = Some(&p); o.unwrap()` | works |
+| `wrap(&p) -> H<&P>` then field access | works (accidental backend-shape success) |
+| `wrap(&p) -> Option<&P>` then `unwrap` | fails — for Copy **and** Move |
 
-**The fix is NOT to back out structural Copy** (it is the right semantic move) and **NOT a targeted
-refusal** (too shape-sensitive — it depends on caller lowering, `unwrap` expansion, and rustc
-back-edge behaviour; it would be a brittle "known bad pattern" rule, not a language rule). The bug
-is in **native storage for borrowed Copy referents.** Copy semantics do not require plain-reassigned
-backend storage: a value can be surface `Copy` while the backend gives it stable storage when it is
-borrowed. b3 already proved a `ValueSlot`-backed referent survives a cross-loop borrow.
+Referent-storage stabilization (slot-backing the Copy referent) was tried and **does not fix it** —
+it only changes E0506→E0502, because the conflict is the borrow living across many blocks vs. any
+referent mutation, independent of slot-vs-plain storage.
 
-**Fix:** an address-taken Copy local whose borrow can escape across generated dispatch-loop blocks
-(through a call return, enum wrapper, `unwrap`/`match`, or a later block) is lowered into **stable
-(slot) storage** instead of being reassigned inside the loop. The intricate part is the read path:
-a Copy value read out of a slot must **deref-copy** (`*slot.get()`), never `take()` — a `take`
-would empty the slot and break Copy's defining multi-read.
+### 6.2 The landing boundary (`emit_types::refuse_borrow_carrying_nominals`)
 
-**Acceptance bar before the structural-Copy commit lands (all in one change):**
+- **Copy** borrow-carrying nominals in **locals and across blocks** — admitted (structural Copy makes
+  them non-slot-backed; they flow through the CD-095 aggregate path).
+- **Move** borrow-carrying nominal locals — refused pre-rustc (still slot-backed; the slot pins the
+  borrow across the loop).
+- **Any function whose return type is a borrow-carrying nominal** — refused pre-rustc, regardless of
+  Copy. `wrap -> H<&P>` is treated as accidental success, not supported semantics, and refused
+  uniformly. This is a clean **type-based** refusal, not the shape-sensitive one that was rejected.
+- **Plain reference returns** (`fn f(r: &P) -> &P`) — supported (`MirTy::Ref`, not a nominal).
 
-Native green:
-- `wrap(&p).unwrap().get()` where `P` is structurally Copy
-- direct `Option<&P>` return
-- `H<&P>` return; local `H<&P>` across blocks
-- plain `&P` return
-- `Int32` / `Point` Copy reuse
+### 6.3 The original "uniform returns green" acceptance bar is REVISED
 
-Negative (still Move):
-- `String` field; `Box`/`Vec` field; `&mut` field; a `Drop`-bearing nominal; a mixed
-  Copy/non-Copy nominal.
+Uniform borrow-carrier returns are **not** achievable in this package: they require solving the
+general borrow-through-return-across-many-blocks problem, which fails for Move too and is rooted in
+the block-dispatch `loop { match __bb }` defeating rustc's single-assignment view. That is
+**`WP-C6.1g-c` (General borrow-through-return / dispatch-loop linearisation)** — an independent
+backend/control-flow package. Until it lands, "return a borrow-carrying nominal" is a recorded
+deviation and uniform borrow-carrier returns must not be claimed.
 
-Plus: OWN-COPY-001 regenerated into `STARK-Core-v1.md`; positive + negative spec fixtures; broad
-three-engine regression green.
+### 6.4 Evidence at landing
+
+- `cargo test --lib`: 441/441.
+- `native_c5_3_aggregates_enums`: 21/21 (Move stand-ins switched to Drop-bearing types).
+- `native_c61f_nominals`: Copy borrow-carrier local/xblock works; Move local and any borrow-carrier
+  return refused pre-rustc.
+- `c61f_structural_copy`: positive (primitive-field, nested, generic-at-Copy, borrow-carrying,
+  all-Copy enum) + negative (`String`, `Vec`, `Box`, `&mut`, `Drop`, mixed) fixtures.
+- A DEV-072-class divergence was found and fixed by the fixtures: `borrowck::is_copy_type` ignored
+  type arguments (`H<&mut P>` read Copy there, Move in the checker); it now recurses arguments.

@@ -161,25 +161,53 @@ fn c61f_a_nominal_without_a_borrow_is_unaffected() {
     );
 }
 
+// WP-C6.1g-a: a COPY borrow-carrying nominal in a local now WORKS (structural Copy makes it
+// non-slot-backed; it flows through the CD-095 aggregate path). What stays refused is a MOVE
+// borrow-carrying nominal local — one dragged Move by an owned/Drop-bearing field alongside the
+// generic argument that supplies the borrow.
 #[test]
-fn c61f_a_slot_backed_borrow_carrying_nominal_is_refused_before_rustc() {
-    refused_before_rustc(
-        "generic_struct",
+fn c61f_a_copy_borrow_carrying_nominal_local_now_works() {
+    agree(
+        "generic_struct_local",
         &format!(
             "{P}struct H<T> {{ r: T }}\n\
                   fn main() {{ let p = P {{ v: 3 }}; let h: H<&P> = H {{ r: &p }}; \
                   assert_eq(h.r.get(), 3); }}"
         ),
-        "slot-backed borrow-carrying nominal",
     );
-    refused_before_rustc(
-        "user_enum",
+    // Across basic blocks.
+    agree(
+        "generic_struct_xblock",
+        &format!(
+            "{P}struct H<T> {{ r: T }}\n\
+                  fn main() {{ let p = P {{ v: 3 }}; let h: H<&P> = H {{ r: &p }}; \
+                  let n = if h.r.get() > 1 {{ h.r.get() }} else {{ 0 }}; assert_eq(n, 3); }}"
+        ),
+    );
+    // A user enum carrying a borrow, matched.
+    agree(
+        "user_enum_local",
         &format!(
             "{P}enum E<T> {{ A, B(T) }}\n\
                   fn main() {{ let p = P {{ v: 3 }}; let e: E<&P> = E::B(&p); \
                   match e {{ E::A => assert(false), E::B(r) => assert_eq(r.get(), 3) }} }}"
         ),
-        "slot-backed borrow-carrying nominal",
+    );
+}
+
+#[test]
+fn c61f_a_move_borrow_carrying_nominal_local_is_refused_before_rustc() {
+    // The generic argument supplies the borrow; the `Drop`-bearing field makes the whole nominal
+    // Move, so it is slot-backed and the slot pins the borrow across the dispatch loop.
+    refused_before_rustc(
+        "move_generic_struct",
+        &format!(
+            "{P}struct D {{ w: Int32 }}\nimpl Drop for D {{ fn drop(&mut self) {{}} }}\n\
+                  struct H<T> {{ r: T, d: D }}\n\
+                  fn main() {{ let p = P {{ v: 3 }}; let h: H<&P> = H {{ r: &p, d: D {{ w: 0 }} }}; \
+                  assert_eq(h.r.get(), 3); }}"
+        ),
+        "Move borrow-carrying nominal",
     );
 }
 

@@ -244,23 +244,43 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
 /// package's central design question (§5). It did not appear for plain references or tuples —
 /// neither is slot-backed — and it is isolated to these two shapes.
 fn refuse_borrow_carrying_nominals(program: &MirProgram) -> Result<(), BackendDiagnostic> {
+    // WP-C6.1g-a landing boundary (owner ruling, 2026-07-24). Structural Copy (OWN-COPY-001,
+    // amended) makes a `Copy` borrow-carrying nominal non-slot-backed, so it flows through the
+    // CD-095 aggregate path and works **in a local and across blocks**. Two shapes stay refused
+    // pre-rustc:
+    //
+    //   1. A **Move** borrow-carrying nominal LOCAL (owned non-`Copy` field, `&mut` field, or a
+    //      `Drop` impl): still slot-backed, and the slot pins the borrow across the dispatch loop
+    //      (E0502).
+    //   2. ANY function whose **return type** is a borrow-carrying nominal, regardless of Copy.
+    //      Returning a borrow through the dispatch loop and then consuming it (e.g. `Option::unwrap`,
+    //      whose panic-branch match extends the borrow's region) conflicts with the referent's
+    //      block-0 assignment — and this fails for `Move` referents identically, so it is a general
+    //      borrow-through-return limitation, NOT specific to Copy. `wrap -> H<&P>` happens to build,
+    //      but that is an accidental backend-shape success, not supported semantics, so it is
+    //      refused uniformly. Uniform borrow-carrier returns are the separate option-2 package
+    //      (general borrow-through-return / dispatch-loop linearisation).
+    //
+    // A plain reference return (`fn f(r: &P) -> &P`) is `MirTy::Ref`, not a nominal, so
+    // `nominal_needs_lifetime` is false and it stays supported.
     for body in &program.bodies {
         if nominal_needs_lifetime(&body.ret) {
             return Err(BackendDiagnostic::Unsupported(format!(
-                "returning the borrow-carrying nominal `{}` is not representable yet: the \
-                 generated function's elided output lifetime keeps the borrow live across the \
-                 referent's own slot destruction, which rustc rejects (E0502). Borrow-carrying \
-                 nominals in LOCALS are supported",
+                "returning the borrow-carrying nominal `{}` is not representable yet: a borrow \
+                 returned through the dispatch loop and then consumed conflicts with the \
+                 referent's assignment (E0502/E0506) — this fails for Move referents too, so it is \
+                 a general borrow-through-return limitation, not a Copy issue. Borrow-carrying \
+                 nominals in LOCALS are supported; a plain reference return is supported",
                 crate::mir::dump_ty(&body.ret)
             )));
         }
         for local in &body.locals {
             if nominal_needs_lifetime(&local.ty) && is_slot_backed(&local.ty, &program.types) {
                 return Err(BackendDiagnostic::Unsupported(format!(
-                    "the slot-backed borrow-carrying nominal `{}` is not representable yet: a \
-                     non-Copy instance lives in a `ValueSlot`, whose destruction needs `&mut` on \
-                     the slot while the reference it stores still borrows its referent (E0502). \
-                     `Copy` borrow-carrying nominals such as `Option<&T>` ARE supported",
+                    "the Move borrow-carrying nominal `{}` is not representable yet: a non-`Copy` \
+                     instance lives in a `ValueSlot`, whose destruction needs `&mut` on the slot \
+                     while the reference it stores still borrows its referent (E0502). A `Copy` \
+                     borrow-carrying nominal (all fields recursively Copy, no Drop) is supported",
                     crate::mir::dump_ty(&local.ty)
                 )));
             }

@@ -776,16 +776,33 @@ introduce an evaluation or ownership transfer merely to select a type,
 method, or trait implementation.
 
 ### Copy and Drop (Soundness Rules)
-**OWN-COPY-001.** The built-in scalar primitives except `String`, shared
-reference values, function values, `Unit`, and `!` are `Copy`. Exclusive
-references are not `Copy`.
-Arrays and tuples are `Copy` exactly when every component is `Copy`. A
-user-defined struct or enum may implement `Copy` only when every possible
-field/payload is `Copy`; generic implementations must express and satisfy the
-corresponding bounds. `Box`, `Vec`, `String`, maps, sets, and all types
-implementing `Drop` are not `Copy`. `Copy` is a marker selected by the normal
-coherence rules and cannot be inferred structurally for a user type without
-an implementation.
+**OWN-COPY-001 — Copy eligibility.**
+
+A type is `Copy` if it is one of the language-defined `Copy` primitives (the
+built-in scalar primitives except `String`, `Unit`, `!`, and function values), a
+shared reference, or a compound/nominal type whose stored fields are recursively
+`Copy` and whose type has no `Drop` behavior.
+
+Copy eligibility may be derived structurally for nominal user types (struct and
+enum) only when:
+- every stored field/payload is recursively `Copy`;
+- no field is an owned non-`Copy` resource (`Box`, `Vec`, `String`, maps, sets);
+- no field requires `Drop` glue;
+- the nominal itself has no `Drop` implementation or destructor behavior;
+- no field is a mutable reference (exclusive references are never `Copy`; they
+  would participate only if the core type system explicitly admitted them, which
+  it does not).
+
+Generic nominals are `Copy` per-instance under the corresponding `T: Copy`
+obligations: `struct H<T>` is `Copy` when instantiated at a `Copy` `T` and not
+otherwise. Arrays and tuples are `Copy` exactly when every component is.
+
+`Copy` is inferred structurally for eligible non-dropping user nominals; no
+explicit implementation is required. An explicit `Copy` implementation, where
+supported, MUST NOT admit any type that fails this same recursive eligibility
+predicate. A type that IS `Copy` remains usable after assignment, argument
+passing, return, or pattern binding; a type that is NOT `Copy` is moved by those
+operations unless borrowed.
 
 - `Copy` may be implemented for a type only if **all** of its fields are
   `Copy`. Violations are compile-time errors.

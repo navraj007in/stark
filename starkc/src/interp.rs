@@ -1038,28 +1038,9 @@ impl<'a> Interpreter<'a> {
     }
 
     fn new(hir: &'a Hir, file: Arc<SourceFile>, tables: &'a TypeTables) -> Self {
-        let copy_items = hir
-            .items
-            .iter()
-            .filter_map(|item| match &item.kind {
-                hir::ItemKind::Impl {
-                    trait_:
-                        Some(hir::TraitRef {
-                            res: Res::CoreTrait(hir::CoreTrait::Copy),
-                            ..
-                        }),
-                    self_ty,
-                    ..
-                } => match &hir.ty(*self_ty).kind {
-                    hir::TypeKind::Path {
-                        res: Res::Item(item),
-                        ..
-                    } => Some(*item),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect();
+        // WP-C6.1g-a: the interpreter's Copy set is the same structural+impl eligibility the
+        // checker and MIR use (OWN-COPY-001, amended), so all three engines agree.
+        let copy_items = crate::typecheck::copy_eligible_types(hir);
         Self {
             hir,
             file,
@@ -5515,7 +5496,31 @@ impl<'a> Interpreter<'a> {
                 .iter()
                 .flatten()
                 .all(|value| self.value_is_copy(value)),
-            Value::Struct { item, .. } | Value::Enum { item, .. } => self.copy_items.contains(item),
+            // Eligible AND every field/payload value is itself Copy — the value-level analog of the
+            // type-level per-instance rule (an eligible `H` at `H<String>` is Move).
+            Value::Struct { item, fields } => {
+                self.copy_items.contains(item)
+                    && fields
+                        .values()
+                        .flatten()
+                        .all(|value| self.value_is_copy(value))
+            }
+            Value::Enum {
+                item,
+                fields,
+                named,
+                ..
+            } => {
+                self.copy_items.contains(item)
+                    && fields
+                        .iter()
+                        .flatten()
+                        .all(|value| self.value_is_copy(value))
+                    && named
+                        .values()
+                        .flatten()
+                        .all(|value| self.value_is_copy(value))
+            }
             Value::Option(value) => value
                 .as_deref()
                 .is_none_or(|value| self.value_is_copy(value)),

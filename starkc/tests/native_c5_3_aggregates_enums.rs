@@ -123,31 +123,37 @@ fn main() {
         2,
         "expected exactly one definition per nominal instance:\n{generated}"
     );
-    // Neither struct has an `impl Copy` in STARK, so neither generated type derives anything.
-    assert!(
-        !generated.contains("#[derive("),
-        "no STARK type here is Copy, so nothing should be derived:\n{generated}"
+    // WP-C6.1g-a (OWN-COPY-001, amended): an all-`Copy`-field, non-`Drop` struct is now
+    // structurally `Copy`, so BOTH `Point` and `Wrapper` derive `Clone, Copy` — one derive per
+    // definition. (Before structural Copy this asserted neither derived.)
+    assert_eq!(
+        generated.matches("#[derive(Clone, Copy)]").count(),
+        2,
+        "both all-Copy-field structs are structurally Copy and must derive:\n{generated}"
     );
 }
 
-/// The flagged §6.3-vs-§7.4 reading (CD-056): a STARK `impl Copy` — and ONLY that — makes the
-/// generated type derive `Clone, Copy`. If the owner overrules the reading, this test is what
-/// changes.
+/// WP-C6.1g-a (OWN-COPY-001, amended, supersedes the CD-056 reading): a generated type derives
+/// `Clone, Copy` exactly when it is `Copy` — now inferred STRUCTURALLY for a recursively-Copy,
+/// non-`Drop` nominal, not only for an explicit `impl Copy`. A `Drop`-bearing type stays `Move`
+/// and derives nothing.
 #[test]
 fn a_stark_impl_copy_is_what_makes_a_generated_type_copy() {
     if !rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
-    let source = r#"struct Marked { v: Int32 }
+    let source = r#"struct Copyable { v: Int32 }
 
-impl Copy for Marked {}
+struct Dropper { v: Int32 }
 
-struct Unmarked { v: Int32 }
+impl Drop for Dropper {
+    fn drop(&mut self) {}
+}
 
 fn main() {
-    let a: Marked = Marked { v: 1 };
-    let b: Unmarked = Unmarked { v: 2 };
+    let a: Copyable = Copyable { v: 1 };
+    let b: Dropper = Dropper { v: 2 };
     assert_eq(a.v + b.v, 3);
 }
 "#;
@@ -156,7 +162,7 @@ fn main() {
     assert_eq!(
         generated.matches("#[derive(Clone, Copy)]").count(),
         1,
-        "exactly the marked type should derive Copy:\n{generated}"
+        "the structurally-Copy type derives; the Drop-bearing Move type does not:\n{generated}"
     );
 }
 
@@ -170,14 +176,21 @@ fn a_cross_block_non_copy_move_now_compiles_and_runs() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
-    let source = r#"struct Point { x: Int32, y: Int32 }
+    // WP-C6.1g-a: an all-Copy-field struct is now `Copy` (not slot-backed), so a genuinely-`Move`
+    // type is needed to exercise the cross-block MOVE path — a `Drop`-bearing struct is Move and
+    // natively representable (unlike `String`).
+    let source = r#"struct Held { x: Int32, y: Int32 }
 
-fn sum(p: Point) -> Int32 {
+impl Drop for Held {
+    fn drop(&mut self) {}
+}
+
+fn sum(p: Held) -> Int32 {
     p.x + p.y
 }
 
 fn main() {
-    let p: Point = Point { x: 3, y: 4 };
+    let p: Held = Held { x: 3, y: 4 };
     assert_eq(p.x, 3);
     assert_eq(sum(p), 7);
 }
@@ -374,7 +387,13 @@ fn a_field_move_does_not_kill_its_siblings() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
+    // WP-C6.1g-a: `Inner` must be `Move` for a field MOVE (not copy) to occur — a `Drop`-bearing
+    // struct is Move and natively representable.
     let source = r#"struct Inner { v: Int32 }
+
+impl Drop for Inner {
+    fn drop(&mut self) {}
+}
 
 struct Outer { a: Inner, b: Int32 }
 
@@ -420,7 +439,13 @@ fn unsafe_appears_only_in_the_generated_projection_module() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
+    // WP-C6.1g-a: `Inner` must be `Move` (Drop-bearing) so the move goes through the unsafe
+    // projection wrapper rather than a copy.
     let source = r#"struct Inner { v: Int32 }
+
+impl Drop for Inner {
+    fn drop(&mut self) {}
+}
 
 struct Outer { a: Inner, b: Int32 }
 
@@ -568,16 +593,23 @@ fn main() {
 #[test]
 fn references_outside_the_lane_are_refused_before_rustc() {
     for (tag, source) in [
-        // A SLOT-BACKED borrow-carrying nominal: a user generic at a reference is non-Copy, so it
-        // lives in a `ValueSlot` whose destruction needs `&mut` while the stored reference still
-        // borrows its referent.
+        // A SLOT-BACKED borrow-carrying nominal: WP-C6.1g-a made an all-Copy-field generic
+        // (`H<&Int32>`) structurally `Copy`, so it now works. To keep a MOVE borrow-carrier — the
+        // shape still refused — the struct carries an extra `Drop`-bearing field, which makes it
+        // Move (and slot-backed) while a generic argument still supplies the borrow.
         (
-            "ref_in_generic_struct",
-            r#"struct H<T> { r: T }
+            "ref_in_move_generic_struct",
+            r#"struct D { v: Int32 }
+
+impl Drop for D {
+    fn drop(&mut self) {}
+}
+
+struct H<T> { r: T, d: D }
 
 fn main() {
     let x: Int32 = 1;
-    let h: H<&Int32> = H { r: &x };
+    let h: H<&Int32> = H { r: &x, d: D { v: 0 } };
     let r: &Int32 = h.r;
 }
 "#,

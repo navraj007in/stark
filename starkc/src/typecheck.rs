@@ -8144,6 +8144,120 @@ fn is_copy_primitive(primitive: Primitive) -> bool {
     !matches!(primitive, Primitive::String | Primitive::Str)
 }
 
+/// WP-C6.1g-a (OWN-COPY-001, amended): the set of nominal items that are `Copy` — the union of
+/// items with an explicit `impl Copy` and items **structurally** eligible: every stored
+/// field/payload recursively `Copy`, no `Drop` implementation, no owned non-`Copy` resource, no
+/// `&mut` field. Computed once and shared by the type checker (`is_copy_with_impls`) and the move
+/// checker (`borrowck`) so the two cannot disagree — a divergence there is the DEV-072 class.
+///
+/// Per-instance genericity is handled at the query, not here: this set answers "is `struct H` ever
+/// `Copy`", and `is_copy_with_impls`/`is_copy_type` additionally require every type argument to be
+/// `Copy` (`args.all(is_copy)`), so `H<&P>` is `Copy` while `H<String>` is not, from one set.
+pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
+    let mut drop_items: HashSet<ItemId> = HashSet::new();
+    let mut eligible: HashSet<ItemId> = HashSet::new();
+    for (idx, item) in hir.items.iter().enumerate() {
+        if let hir::ItemKind::Impl {
+            trait_: Some(trait_ref),
+            self_ty,
+            ..
+        } = &item.kind
+        {
+            if let hir::TypeKind::Path {
+                res: Res::Item(target),
+                ..
+            } = &hir.ty(*self_ty).kind
+            {
+                match trait_ref.res {
+                    // An explicit `impl Copy` seeds the set; its field validity is checked
+                    // separately (a `Copy`+non-`Copy`-field type is a reported error).
+                    Res::CoreTrait(hir::CoreTrait::Copy) => {
+                        eligible.insert(*target);
+                    }
+                    Res::CoreTrait(hir::CoreTrait::Drop) => {
+                        drop_items.insert(*target);
+                    }
+                    _ => {}
+                }
+            }
+            let _ = idx;
+        }
+    }
+    // Fixpoint: a nominal joins the set once all its fields are eligible under the current set.
+    // Terminates because the set only grows and is bounded by the item count.
+    loop {
+        let mut changed = false;
+        for (idx, item) in hir.items.iter().enumerate() {
+            let id = ItemId(idx as u32);
+            if eligible.contains(&id) || drop_items.contains(&id) {
+                continue;
+            }
+            let field_tys: Vec<TypeId> = match &item.kind {
+                hir::ItemKind::Struct { fields, .. } => fields.iter().map(|f| f.ty).collect(),
+                hir::ItemKind::Enum { variants, .. } => variants
+                    .iter()
+                    .flat_map(|v| match &v.kind {
+                        hir::VariantKind::Unit => Vec::new(),
+                        hir::VariantKind::Tuple(tys) => tys.clone(),
+                        hir::VariantKind::Struct(fields) => fields.iter().map(|f| f.ty).collect(),
+                    })
+                    .collect(),
+                _ => continue,
+            };
+            if field_tys
+                .iter()
+                .all(|t| field_ty_copy_eligible(hir, *t, &eligible))
+            {
+                eligible.insert(id);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    eligible
+}
+
+/// Whether a written field type is `Copy`-eligible, treating a bare type parameter as `Copy`
+/// (per-instance genericity is enforced at the query by requiring the actual argument `Copy`).
+/// Conservative: any form not provably `Copy` returns `false`, so a value stays `Move`.
+fn field_ty_copy_eligible(hir: &Hir, ty: TypeId, eligible: &HashSet<ItemId>) -> bool {
+    match &hir.ty(ty).kind {
+        hir::TypeKind::Primitive(p) => is_copy_primitive(*p),
+        hir::TypeKind::Ref { mutable, .. } => !*mutable,
+        hir::TypeKind::Array { elem, .. } => field_ty_copy_eligible(hir, *elem, eligible),
+        hir::TypeKind::Slice(_) => false,
+        hir::TypeKind::Tuple(elems) => elems
+            .iter()
+            .all(|e| field_ty_copy_eligible(hir, *e, eligible)),
+        hir::TypeKind::Fn { .. } | hir::TypeKind::Never => true,
+        hir::TypeKind::Error => false,
+        hir::TypeKind::Path { res, args, .. } => {
+            let args_copy = |eligible: &HashSet<ItemId>| {
+                args.as_ref().map(|a| &a.args).is_none_or(|list| {
+                    list.iter().all(|arg| match arg {
+                        hir::GenericArg::Type(t) => field_ty_copy_eligible(hir, *t, eligible),
+                        // Non-type args (const, shape) carry no ownership.
+                        _ => true,
+                    })
+                })
+            };
+            match res {
+                // A bare type parameter is assumed `Copy`; the actual argument's copy-ness is
+                // checked at instantiation (`is_copy_with_impls`'s `args.all(is_copy)`).
+                Res::TypeParam => true,
+                Res::Primitive(p) => is_copy_primitive(*p),
+                Res::Item(id) => eligible.contains(id) && args_copy(eligible),
+                // Option/Result are `Copy` when their arguments are; every other core nominal
+                // (`Box`, `Vec`, `String`, maps, sets, iterators, ranges) is an owned resource.
+                Res::CoreType(CoreType::Option | CoreType::Result) => args_copy(eligible),
+                _ => false,
+            }
+        }
+    }
+}
+
 /// The single-segment name of a path, if it has exactly one segment.
 fn single_segment_name<'t>(path: &crate::ast::Path, checker: &'t TypeChecker) -> Option<&'t str> {
     match path.segments.as_slice() {
@@ -11270,9 +11384,11 @@ mod tests {
     }
 
     #[test]
+    // WP-C6.1g-a: S must be a genuinely-Move type -- an all-Copy-field struct is now Copy
+    // (OWN-COPY-001, amended), so a `String` field keeps this test's Move vehicle intact.
     fn ownership_checker_visits_loop_bodies() {
         let diags = check_src(
-            "struct S { x: Int32 } fn take(v: S) {} fn f(c: Bool) { let s = S { x: 1 }; while c { take(s); take(s); } }",
+            "struct S { x: String } fn take(v: S) {} fn f(c: Bool) { let s = S { x: String::new() }; while c { take(s); take(s); } }",
         );
         assert!(diags.iter().any(|d| d.code.as_deref() == Some("E0100")));
     }
@@ -11280,12 +11396,12 @@ mod tests {
     #[test]
     fn partial_move_allows_sibling_but_not_whole_value() {
         let valid = check_src(
-            "struct S { x: Int32 } struct Pair { a: S, b: S } fn take(v: S) {} fn f() { let p = Pair { a: S { x: 1 }, b: S { x: 2 } }; take(p.a); take(p.b); }",
+            "struct S { x: String } struct Pair { a: S, b: S } fn take(v: S) {} fn f() { let p = Pair { a: S { x: String::new() }, b: S { x: String::new() } }; take(p.a); take(p.b); }",
         );
         assert!(valid.is_empty(), "unexpected diagnostics: {valid:?}");
 
         let invalid = check_src(
-            "struct S { x: Int32 } struct Pair { a: S, b: S } fn take(v: S) {} fn take_pair(v: Pair) {} fn f() { let p = Pair { a: S { x: 1 }, b: S { x: 2 } }; take(p.a); take_pair(p); }",
+            "struct S { x: String } struct Pair { a: S, b: S } fn take(v: S) {} fn take_pair(v: Pair) {} fn f() { let p = Pair { a: S { x: String::new() }, b: S { x: String::new() } }; take(p.a); take_pair(p); }",
         );
         assert!(invalid.iter().any(|d| d.code.as_deref() == Some("E0100")));
     }
@@ -11293,7 +11409,7 @@ mod tests {
     #[test]
     fn shorthand_struct_field_consumes_its_source() {
         let diags = check_src(
-            "struct S { x: Int32 } struct W { s: S } fn take(v: S) {} fn f() { let s = S { x: 1 }; let w = W { s }; take(s); }",
+            "struct S { x: String } struct W { s: S } fn take(v: S) {} fn f() { let s = S { x: String::new() }; let w = W { s }; take(s); }",
         );
         assert!(diags.iter().any(|d| d.code.as_deref() == Some("E0100")));
     }

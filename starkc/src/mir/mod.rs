@@ -526,6 +526,12 @@ pub struct TypeContext {
     /// populated during lowering like `drop_impls`. (The runtime-glue drop of String/Vec is
     /// recognized structurally, not via a table entry.)
     pub copy_types: std::collections::BTreeSet<(u32, Vec<MirTy>)>,
+    /// WP-C6.1g-a (OWN-COPY-001, amended): nominal items that are `Copy` when their type
+    /// arguments are — impl-`Copy` plus structurally eligible. `is_copy` consults this and
+    /// recurses on the arguments, mirroring the front end's `copy_eligible_types` so the verifier
+    /// and backend agree with the checker. Supersedes the per-instance `copy_types` set for the
+    /// copy decision; `copy_types` is retained for the build manifest.
+    pub copy_eligible_items: std::collections::BTreeSet<u32>,
 }
 
 impl TypeContext {
@@ -547,7 +553,7 @@ impl TypeContext {
     pub fn is_copy(&self, ty: &MirTy) -> bool {
         match ty {
             MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
-                self.copy_types.contains(&(item.0, args.clone()))
+                self.copy_eligible_items.contains(&item.0) && args.iter().all(|a| self.is_copy(a))
             }
             MirTy::Enum(_, args) => args.iter().all(|a| self.is_copy(a)),
             MirTy::Tuple(elems) => elems.iter().all(|e| self.is_copy(e)),

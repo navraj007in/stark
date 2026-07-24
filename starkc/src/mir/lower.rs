@@ -74,6 +74,11 @@ struct ProgramMeta {
     items: HashMap<u32, (FileId, Vec<String>)>,
     /// Every item reachable from the root, modules included (deterministic walk order).
     all_items: Vec<ItemId>,
+    /// WP-C6.1g-a (OWN-COPY-001, amended): items that are `Copy` when their type arguments are —
+    /// impl-`Copy` plus structurally eligible. The single source both `FnLowerer::is_copy` and
+    /// `TypeContext::is_copy` consult, mirroring the front end's `copy_eligible_types` so the
+    /// engines cannot disagree about Copy-ness.
+    copy_eligible: std::collections::HashSet<u32>,
 }
 
 impl ProgramMeta {
@@ -128,10 +133,15 @@ impl ProgramMeta {
                 }
             }
         }
+        let copy_eligible = crate::typecheck::copy_eligible_types(hir)
+            .into_iter()
+            .map(|id| id.0)
+            .collect();
         Ok(ProgramMeta {
             files,
             items,
             all_items,
+            copy_eligible,
         })
     }
 
@@ -200,6 +210,9 @@ pub fn lower_program(
     // non-generic nominal — module-nested ones included (f-3c) — so the verifier/backends can
     // resolve projections. Each nominal gets a probe keyed to itself so field-type spans read
     // in the nominal's own file.
+    // WP-C6.1g-a: the structural+impl Copy eligibility set, shared with the front end via
+    // `ProgramMeta::copy_eligible` (computed once from `copy_eligible_types`).
+    program.types.copy_eligible_items = meta.copy_eligible.iter().copied().collect();
     for &item_id in &meta.all_items {
         let probe = FnLowerer::new(hir, tables, &meta, FnKey::Top(item_id, Vec::new()));
         // A1 (CD-031): record which non-generic nominals carry an `impl Copy` (V-COPY-1).
@@ -1097,8 +1110,10 @@ impl<'a> FnLowerer<'a> {
             // has already validated the all-Copy-fields / no-Drop rules for the impl to
             // exist, so lowering consults the impl's presence only. Without one they stay
             // Move (an unmarked all-Copy-field struct is still Move in STARK).
-            MirTy::Struct(item, _) | MirTy::Enum(EnumRef::User(item), _) => {
-                self.type_has_copy_impl(*item)
+            // WP-C6.1g-a: `Copy` when the nominal is eligible (impl or structural) AND every
+            // type argument is `Copy`. Mirrors the front end exactly.
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                self.meta.copy_eligible.contains(&item.0) && args.iter().all(|a| self.is_copy(a))
             }
             MirTy::Enum(_, args) => args.iter().all(|a| self.is_copy(a)),
             MirTy::Tuple(elems) => elems.iter().all(|e| self.is_copy(e)),
