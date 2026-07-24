@@ -4,7 +4,7 @@ WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop pari
 (CD-080…CD-084) and **WP-C6.1f CLOSED (CD-099)** (general reference storage — the C5 deferral the C6
 entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
-**F1 (privacy) CLOSED (CD-102); F5 (impl-head bounds) CLOSED (CD-103)**; F2/F6 open; F3 → WP-C6.1f (closed); F4 split.**
+**F1/F5/F2 CLOSED (CD-102/103/104)**; F6 open; F3 → WP-C6.1f (closed); F4 split.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
@@ -3082,6 +3082,18 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-104 [2026-07-24, **WP-C6.2b-F2 CLOSED — specific-instance impl matches an inferred receiver**]
+  `impl Get for W<Int32>` did not match `let w = W { v: 7 }; w.get()` (E0302, receiver `W<_infer>`).
+  Not a "specific-instance impls unsupported" bug — an ANNOTATED `w: W<Int32>` already worked; the
+  receiver's int-literal argument (`7`) was simply not defaulted to `Int32` before method
+  resolution. `default_int_literals_deep` now defaults literals INSIDE the receiver type (03 solving
+  step 5), so `W<_infer>` becomes `W<Int32>` and the concrete-instance impl matches. Only literal
+  variables are touched (`int_literal_vars`); a genuine unbound inference var is left alone, so a
+  different instance (`W<Bool>`) stays rejected — no over-accept. Evidence:
+  `tests/c62b_f2_specific_instance.rs` (5, incl. native, a nested-literal case, and the negative
+  guard). Regression green (lib 441, native_c6_2 11, three_engine 83, conformance 56,
+  exec_snapshots, gate2_valid); `fmt --check` and strict `clippy` clean. C6.2b remaining: F6.
 
 - CD-103 [2026-07-24, **WP-C6.2b-F5 CLOSED — impl-head bounds visible in method bodies**] The
   WP-C6-ENTRY §2 carry-forward. A method call on a bounded generic *function* parameter already

@@ -1485,6 +1485,51 @@ impl<'a> TypeChecker<'a> {
         concrete
     }
 
+    /// WP-C6.2b-F2: default UNCONSTRAINED integer literals anywhere inside a type, not only at the
+    /// top level. Method resolution must branch on a concrete receiver, and `let w = W { v: 7 };
+    /// w.get()` gives `W<_infer>` where `_infer` is the literal `7`'s variable — so a trait/inherent
+    /// impl written for the specific instance `W<Int32>` never matched `W<_infer>`. Defaulting the
+    /// literal (03 solving step 5, "int literals default to Int32") makes the receiver `W<Int32>`
+    /// so the concrete-instance impl matches. Only literal variables are touched (`int_literal_vars`);
+    /// a genuine unbound inference variable is left alone.
+    fn default_int_literals_deep(&mut self, ty: &Ty) -> Ty {
+        let ty = self.default_int_literal_now(ty);
+        match ty {
+            Ty::Struct(id, args) => Ty::Struct(
+                id,
+                args.iter()
+                    .map(|a| self.default_int_literals_deep(a))
+                    .collect(),
+            ),
+            Ty::Enum(id, args) => Ty::Enum(
+                id,
+                args.iter()
+                    .map(|a| self.default_int_literals_deep(a))
+                    .collect(),
+            ),
+            Ty::Core(core, args) => Ty::Core(
+                core,
+                args.iter()
+                    .map(|a| self.default_int_literals_deep(a))
+                    .collect(),
+            ),
+            Ty::Tuple(elems) => Ty::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.default_int_literals_deep(e))
+                    .collect(),
+            ),
+            Ty::Array(elem, n) => Ty::Array(Box::new(self.default_int_literals_deep(&elem)), n),
+            Ty::Slice(elem) => Ty::Slice(Box::new(self.default_int_literals_deep(&elem))),
+            Ty::Ref { mutable, inner } => Ty::Ref {
+                mutable,
+                inner: Box::new(self.default_int_literals_deep(&inner)),
+            },
+            Ty::Range(inner) => Ty::Range(Box::new(self.default_int_literals_deep(&inner))),
+            other => other,
+        }
+    }
+
     /// WP-C4.7-6.3: 03-Type-System solving step 5 — "default an **unconstrained** integer literal
     /// to `Int32` when representable, otherwise `Int64`". Runs after all bodies are checked, so
     /// every expected type has had its chance to constrain the literal first. A literal that a
@@ -6330,7 +6375,9 @@ impl<'a> TypeChecker<'a> {
         // WP-C4.7-6.3: method resolution must branch on a CONCRETE receiver type, and a literal
         // receiver (`3.cmp(&5)`) has no other constraint to wait for — settle it here rather than
         // failing with "method call on non-struct/enum type '_infer_N'".
-        let resolved_base = self.default_int_literal_now(&base_ty);
+        // WP-C6.2b-F2: default int literals inside the receiver too, so a concrete-instance
+        // impl (`impl Get for W<Int32>`) matches `let w = W { v: 7 }; w.get()`.
+        let resolved_base = self.default_int_literals_deep(&base_ty);
         let name_str = self.text(name_span).to_string();
 
         if self.options.tensor() && name_str == "refine" {
