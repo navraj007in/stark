@@ -12,14 +12,17 @@ via explicit binding and inferred-from-argument (deferred projection obligations
 natively (adversarial Eq/Ord/Clone/Default/From), no Rust-derive substitution, missing impls rejected
 (E0500/E0302); Display/Hash dispatch in HIR+MIR (native output/collections → C6.3); `.into()` blanket
 and `Default::default()` inference deferred (DEV-103/104).**
+**WP-C6.2e (deterministic identity) CLOSED (CD-108) → WP-C6.2 as a WHOLE CLOSED: canonical symbols
+render nominals by content path (`struct#liba::A`), not the order-dependent `ItemId` index — stable
+across clean rebuild, relocation, and dependency-declaration reorder (§21/§22 met).**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
 linearisation — the uniform-borrow-carrier-returns package)**, and C6.3 (`Box`/`Vec`/slice, Track
 C). Also open:
-**C6.2e**, WP-C6.3 (runtime values and
+**WP-C6.3** (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
-exit. (F4 parser half `&&T`/`**x` still open.)**
+exit. (F4 parser half `&&T`/`**x` and DEV-083 still open — neither is C6.2.)**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -3088,6 +3091,31 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-108 [2026-07-24, **WP-C6.2e CLOSED — deterministic instance identity; WP-C6.2 as a whole
+  CLOSED**] §21: a clean rebuild, relocation, and dependency-declaration reorder must leave every
+  canonical symbol byte-identical, with no path/order artifact in semantic identity.
+  - **Defect found and fixed.** Generic type arguments rendered a nominal as `struct#N`/`enum#N` —
+    the raw `ItemId` INDEX, assigned by item walk order. Declaring two dependencies in the other
+    order swapped the indices and changed the symbol (`callA@[struct#5]` ⇄ `callA@[struct#10]`), a
+    §21 violation surfaced by a two-dependency reorder probe. `mir::lower::symbol_ty` now renders the
+    nominal's CONTENT PATH (`struct#liba::A`): order-stable, relocation- and rebuild-stable, and
+    still distinct from an identically-named core type (a user MAY declare `struct Vec` — the
+    `struct#`/`enum#` head keeps it apart from core `Vec<..>`). `dump_ty` (debug body dump) is
+    unchanged; the fix is scoped to the canonical symbol's five type-argument renderings in
+    `key_symbol`. Named-path method/trait/Drop/assoc-fn symbols were already content-based.
+  - Evidence: `tests/c62e_deterministic_identity.rs` (2: relocation+rebuild across two absolute paths
+    of different length with a no-path/pid-leak assertion; dependency-declaration reorder). Regression:
+    `native_c6_2_generics_traits` 20, `native_c5_4_linkage` 14, `native_c5_4_workspace` 12,
+    `mir_lowering` 6, `cross_package_generics` 20, `c62c` 9, `c62d` 11 — all green; the linkage
+    preflight accepts the content-based symbols. `fmt --check` and strict `clippy` clean.
+  - **WP-C6.2 CLOSED.** §22 checklist met: all executable generic forms (a/b/c), all accepted
+    trait/method forms (b), associated types concrete in MIR (c), operator dispatch follows STARK
+    impls with no derive shortcut (d), one canonical instance emitted once (a), Drop/trait-only
+    reachability (a), deterministic relocation-stable identity (e). Open remainders are NOT C6.2:
+    the F4 parser half (`&&T`/`**x`), and DEV-083 (candidate-local inference snapshots) — neither a
+    normative method-resolution rule. Next in Gate C6: **WP-C6.3** (runtime values/collections incl.
+    output, Track C), then C6.4/5/6.
 
 - CD-107 [2026-07-24, **WP-C6.2d CLOSED — operator/CoreTrait semantics**] The §20 matrix is proven:
   native execution invokes the user's STARK impl, and a Rust equivalent never substitutes. **No source

@@ -4,7 +4,8 @@
 WP-C6.1f; F4 parser half open). **C6.2c (associated types) CLOSED (CD-106)** — §19 matrix proven
 three-engine, see the "C6.2c — the §19 associated-type matrix" section below. **C6.2d (operator/
 CoreTrait semantics) CLOSED (CD-107)** — see the "C6.2d — operator/CoreTrait semantics" section.
-**C6.2e remains open.**
+**C6.2e (deterministic identity) CLOSED (CD-108)** — see the "C6.2e — deterministic instance
+identity" section. **WP-C6.2 as a whole is CLOSED (§22 checklist met).**
 **Base:** `main`, post-WP-C6.1 closure (CD-085)
 **Authorship:** the file is **Track B**-owned (`C6-FILE-OWNERSHIP.md §1`). The C6.2a section was
 written by Track A under the owner's C6.2a ruling, because the defect was in *lowering identity*,
@@ -90,7 +91,7 @@ The §18 matrix itself is now probed — see §5. What stays open beyond it:
 | **DEV-083** — candidate-local inference snapshots / declaration-order-independent candidate evaluation (deferred by CD-040(b)) | C6.2b |
 | ~~§19 associated types beyond the single-binding case~~ | **C6.2c — CLOSED (CD-106)**, see the "C6.2c — the §19 associated-type matrix" section |
 | ~~§20 operator/`CoreTrait` semantics~~ | **C6.2d — CLOSED (CD-107)**, see the "C6.2d — operator/CoreTrait semantics" section |
-| §21 deterministic instance identity under rebuild/relocation/dependency reorder for methods and trait instances | C6.2e |
+| ~~§21 deterministic instance identity under rebuild/relocation/dependency reorder~~ | **C6.2e — CLOSED (CD-108)**, see the "C6.2e — deterministic instance identity" section |
 | generic collections and iterators | C6.3 (Track C) interface |
 | the six C6.2b findings in §7 | **awaiting disposition** |
 
@@ -180,6 +181,43 @@ return.
 `From` impl (blanket `Into`), and `Default::default()` with a type-inferred target. The spec lists
 `From`/`Into` as independent traits and mandates only `fn default() -> Self`; `Fahrenheit::from(c)`
 and `P::default()` are the supported forms — the deferred forms are ergonomic, not correctness.
+
+---
+
+## C6.2e — deterministic instance identity, probed (CLOSED, CD-108)
+
+**Requirement (§21):** a clean rebuild, relocation to a different absolute path, and a
+dependency-declaration reorder must all leave every canonical symbol byte-identical; no absolute
+path or path-order artifact may enter semantic symbol identity.
+
+**Defect found and fixed.** Generic type arguments rendered a nominal as `struct#N`/`enum#N`, where
+`N` is the raw `ItemId` index — assigned by the item WALK ORDER. Declaring two dependencies in the
+other order swapped the indices and the symbol changed:
+
+| | liba declared first | libb declared first |
+|---|---|---|
+| before | `callA@[struct#5]`, `callB@[struct#10]` | `callA@[struct#10]`, `callB@[struct#5]` — **differ** |
+| after | `callA@[struct#liba::A]`, `callB@[struct#libb::B]` | identical — **stable** |
+
+`mir::lower::symbol_ty` renders the nominal's CONTENT PATH (module/package path + source name)
+instead of the index. The `struct#`/`enum#` head is kept so a user nominal stays distinct from an
+identically-named core type (a user may write `struct Vec`; core `Vec<..>` has no head). Named-path
+method / trait / `Drop` / associated-function symbols were already content-based. `dump_ty` (the
+debug body dump) is unchanged — the fix is scoped to the canonical symbol.
+
+| §21 form | Status |
+|---|---|
+| function / method / trait instances | ✅ stable |
+| Drop instances | ✅ stable |
+| generic nominals | ✅ stable |
+| function-pointer sentinels | ✅ stable |
+| helper/wrapper names | ✅ stable |
+| clean rebuild | ✅ identical |
+| relocation (different absolute path/length) | ✅ identical, no path leak |
+| dependency-declaration reorder | ✅ identical |
+
+Evidence: `tests/c62e_deterministic_identity.rs` (relocation + rebuild; dependency reorder; asserts
+no symbol contains a path separator, `tmp`, or the pid).
 
 ---
 

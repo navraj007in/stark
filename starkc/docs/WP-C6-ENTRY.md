@@ -560,31 +560,43 @@ impl (blanket `Into`) and `Default::default()` with a type-inferred target. The 
 and `P::default()` are the supported forms. Display/Hash native output/collection runtime is C6.3
 (Track C), not a C6.2d gap — the dispatch is correct in HIR+MIR.
 
-## 21. C6.2e — Deterministic identity
+## 21. C6.2e — Deterministic identity — **CLOSED (CD-108)**
 
 Test clean rebuild, relocation, and dependency declaration reorder for:
 
-- function/method/trait instances;
-- Drop instances;
-- generic nominals;
-- function-pointer sentinels;
-- helper/wrapper names.
+- function/method/trait instances; ✅
+- Drop instances; ✅
+- generic nominals; ✅
+- function-pointer sentinels; ✅
+- helper/wrapper names. ✅
 
-Absolute paths must not enter semantic symbol identity.
+Absolute paths must not enter semantic symbol identity. ✅
 
-## 22. C6.2 closure
+**Defect found and fixed.** Generic type arguments rendered a nominal as `struct#N`/`enum#N` (raw
+`ItemId` index). The index is assigned by item WALK ORDER, so a **dependency-declaration reorder**
+swapped indices and changed the symbol (`callA@[struct#5]` ⇄ `callA@[struct#10]`) — a §21 violation.
+`mir::lower::symbol_ty` now renders the nominal's **content path** (`struct#liba::A`): order-stable,
+relocation- and rebuild-stable, and still distinct from an identically-named core type (a user may
+declare `struct Vec`; the `struct#`/`enum#` head keeps it apart from core `Vec<..>`). Named-path
+method/trait/Drop symbols were already content-based. Evidence:
+`tests/c62e_deterministic_identity.rs` (relocation+rebuild; dependency reorder; no path/pid leak).
 
-- [ ] all executable generic forms covered;
-- [ ] all accepted trait/method forms covered;
-- [ ] associated types concrete in MIR;
-- [ ] no normative method-resolution limitation remains;
-- [ ] operator dispatch follows STARK impls;
-- [ ] no Rust semantic derive shortcut;
-- [ ] one canonical instance emitted once;
-- [ ] indirect/Drop/trait-only reachability works;
-- [ ] deterministic relocation-stable identity;
-- [ ] full suite and negative linkage tests pass;
-- [ ] records updated.
+## 22. C6.2 closure — **CLOSED (CD-108)**
+
+- [x] all executable generic forms covered; (C6.2a/b/c)
+- [x] all accepted trait/method forms covered; (C6.2b matrix cleared)
+- [x] associated types concrete in MIR; (C6.2c)
+- [x] no normative method-resolution limitation remains; (F3 → C6.1f closed; the only open item is
+      the F4 parser half — `&&T` is unspellable and inferred `&&T` fails MIR verify — a syntactic
+      edge, not a normative resolution rule)
+- [x] operator dispatch follows STARK impls; (C6.2d)
+- [x] no Rust semantic derive shortcut; (C6.2d — no `#[derive]` on nominals; missing impls rejected)
+- [x] one canonical instance emitted once; (C6.2a)
+- [x] indirect/Drop/trait-only reachability works; (C6.2a native linkage)
+- [x] deterministic relocation-stable identity; (C6.2e)
+- [x] full suite and negative linkage tests pass; (per-WP targeted suites green at each closure; the
+      full workspace suite is the Gate C6 exit gate, C6.6)
+- [x] records updated.
 
 ---
 

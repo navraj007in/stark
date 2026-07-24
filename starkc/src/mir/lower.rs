@@ -575,7 +575,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             })?;
             let args_text = type_args
                 .iter()
-                .map(super::dump_ty)
+                .map(|t| symbol_ty(hir, meta, t))
                 .collect::<Vec<_>>()
                 .join(", ");
             Ok(format!("{}{name}@[{args_text}]", meta.symbol_prefix(*item)))
@@ -603,7 +603,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             // form stays `@[]`, keeping pre-A1 symbols stable.
             let args_text = type_args
                 .iter()
-                .map(super::dump_ty)
+                .map(|t| symbol_ty(hir, meta, t))
                 .collect::<Vec<_>>()
                 .join(", ");
             // WP-C4.7-8.4: a method's OWN arguments render in a second bracket so impl-level and
@@ -616,7 +616,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                     "::<{}>",
                     method_args
                         .iter()
-                        .map(super::dump_ty)
+                        .map(|t| symbol_ty(hir, meta, t))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -655,7 +655,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                     "::<{}>",
                     method_args
                         .iter()
-                        .map(super::dump_ty)
+                        .map(|t| symbol_ty(hir, meta, t))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -675,7 +675,7 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
             } else {
                 let args_text = self_args
                     .iter()
-                    .map(super::dump_ty)
+                    .map(|t| symbol_ty(hir, meta, t))
                     .collect::<Vec<_>>()
                     .join(", ");
                 Ok(format!(
@@ -683,6 +683,71 @@ fn key_symbol(hir: &Hir, meta: &ProgramMeta, key: &FnKey) -> Result<String, Lowe
                 ))
             }
         }
+    }
+}
+
+/// WP-C6.2e: render a `MirTy` for a canonical symbol's type arguments using CONTENT-BASED nominal
+/// identity — the nominal's module/package path plus its source name — instead of its raw `ItemId`
+/// index. `dump_ty`'s `struct#N`/`enum#N` embed the item index, which is assigned by the item walk
+/// order and therefore shifts when dependencies are declared in a different order (§21 forbids
+/// that: a clean rebuild, relocation, or dependency reorder must not change semantic symbol
+/// identity, and no path/index artifact may enter it). Non-nominal shapes already render from
+/// content, so they delegate to `dump_ty`'s structure here.
+fn symbol_ty(hir: &Hir, meta: &ProgramMeta, ty: &MirTy) -> String {
+    let generic = |head: String, args: &[MirTy]| -> String {
+        if args.is_empty() {
+            head
+        } else {
+            let inner = args
+                .iter()
+                .map(|a| symbol_ty(hir, meta, a))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{head}<{inner}>")
+        }
+    };
+    match ty {
+        // The `struct#`/`enum#` heads are kept (they keep a user nominal distinct from an
+        // identically-named core type — a user MAY declare `struct Vec`), but the numeric `ItemId`
+        // that followed them is replaced with the nominal's content path so the head is
+        // order-stable.
+        MirTy::Struct(item, args) => {
+            let name = item_name_text(hir, meta, *item).unwrap_or("?");
+            generic(format!("struct#{}{name}", meta.symbol_prefix(*item)), args)
+        }
+        MirTy::Enum(EnumRef::User(item), args) => {
+            let name = item_name_text(hir, meta, *item).unwrap_or("?");
+            generic(format!("enum#{}{name}", meta.symbol_prefix(*item)), args)
+        }
+        MirTy::Enum(EnumRef::CoreOption, args) => generic("Option".to_string(), args),
+        MirTy::Enum(EnumRef::CoreResult, args) => generic("Result".to_string(), args),
+        MirTy::Enum(EnumRef::CoreOrdering, args) => generic("Ordering".to_string(), args),
+        MirTy::Core(core, args) => generic(format!("{core:?}"), args),
+        MirTy::Tuple(elems) => {
+            let inner = elems
+                .iter()
+                .map(|e| symbol_ty(hir, meta, e))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({inner})")
+        }
+        MirTy::Array(elem, len) => format!("[{}; {len}]", symbol_ty(hir, meta, elem)),
+        MirTy::Slice(elem) => format!("[{}]", symbol_ty(hir, meta, elem)),
+        MirTy::Ref { mutable, inner } => format!(
+            "&{}{}",
+            if *mutable { "mut " } else { "" },
+            symbol_ty(hir, meta, inner)
+        ),
+        MirTy::FnPtr { params, ret } => format!(
+            "fn({}) -> {}",
+            params
+                .iter()
+                .map(|p| symbol_ty(hir, meta, p))
+                .collect::<Vec<_>>()
+                .join(", "),
+            symbol_ty(hir, meta, ret)
+        ),
+        simple => format!("{simple:?}"),
     }
 }
 
