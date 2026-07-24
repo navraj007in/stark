@@ -55,6 +55,21 @@ pub fn emit_runtime_call(
         PrintlnChar => format!("stark_runtime::string::println_char({})", arg(0)),
         PrintChar => format!("stark_runtime::string::print_char({})", arg(0)),
 
+        // --- Vec value surface (WP-C6.3b). Owning, slot-backed; receivers arrive as
+        // `&Vec`/`&mut Vec`. Trapping index/replace/remove and interior-ref get/iter/slice are
+        // later slices. ---
+        VecNew => "stark_runtime::vec::new()".to_string(),
+        VecWithCapacity => format!("stark_runtime::vec::with_capacity({})", arg(0)),
+        VecPush => format!("stark_runtime::vec::push({}, {})", arg(0), arg(1)),
+        VecPop => wrap_option(&format!("stark_runtime::vec::pop({})", arg(0)), dest_ty)?,
+        VecLen => format!("stark_runtime::vec::len({})", arg(0)),
+        VecIsEmpty => format!("stark_runtime::vec::is_empty({})", arg(0)),
+        VecClear => format!("stark_runtime::vec::clear({})", arg(0)),
+
+        // --- Box (WP-C6.3b): construction and consuming extraction. No `Deref` in Core v1. ---
+        BoxNew => format!("stark_runtime::boxed::new({})", arg(0)),
+        BoxIntoInner => format!("stark_runtime::boxed::into_inner({})", arg(0)),
+
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "RuntimeFn {other:?} has no generated-Rust representation yet -- it lands with its \

@@ -22,7 +22,12 @@ String construction/query/mutation/clone/return; `println`/`print` of str & char
 bridge (CD-110) — wrapping a runtime Rust `Option` into the generated Option enum — is the mechanism
 every future collection accessor reuses.** Deferred: owned-`String` `==`/`<` and stored interior
 `&str` (→ C6.1g-c dispatch-loop borrow). C6.3a remaining: `chars()` iteration (→ C6.3c), slicing
-views (→ C6.3b), cross-package String.**
+views (→ C6.3b), cross-package String.
+**WP-C6.3b PARTIAL (CD-111): native Vec/Box VALUE surface (new/push/pop/len/is_empty/clear/return,
+Box new/into_inner) three-engine, plus the SLOT BUFFER-RECLAIM FIX — `drop_with` now runs
+`ManuallyDrop::drop` after the glue, freeing every owning value's allocation (a latent leak).
+Deferred: Vec/Box of user-destructor elements (refused), `Vec<String>`-style pushes (→ C6.1g-c),
+trapping index/get/iter/slices. C6.1g-c is now the critical shared unblocker.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
@@ -3099,6 +3104,34 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-111 [2026-07-25, **WP-C6.3b PARTIAL — native Vec/Box value surface + the slot buffer-reclaim
+  fix**] Extends the native runtime with the owning containers, and fixes a latent leak in the drop
+  path that affected every owning value.
+  - **The slot buffer-reclaim fix (load-bearing).** `ValueSlot<T>` holds `ManuallyDrop<T>`, and the
+    MIR drop path emitted `slot.drop_with(|__v| <glue>)` where the glue runs USER destructors only.
+    For an owning value with no user destructor (`String`, `Vec`, `Box`, and owning FIELDS of Drop
+    structs) the glue was empty, so the allocation was never freed — a real leak (unobservable in
+    the differential, which checks status/output not memory). Fix: `drop_with` now runs
+    `ManuallyDrop::drop(held)` AFTER the glue. Rust's structural drop reclaims the buffer and drops
+    elements (recursive-safe, at runtime); it never re-runs a user STARK destructor because
+    generated nominal types implement no Rust `Drop`, and the glue frees no buffer — the two are
+    disjoint, so exactly-once holds. The 24 `native_c6_1_ownership` destructor-order tests are
+    unchanged (only unobservable buffer frees added).
+  - **Vec/Box value surface:** `emit_ty` renders `Core(Vec,[T])→Vec<T>`, `Core(Box,[T])→Box<T>`;
+    `stark-runtime/src/{vec,boxed}.rs`; wired `VecNew/WithCapacity/Push/Pop/Len/IsEmpty/Clear`
+    (`Pop` reuses the Option bridge) and `BoxNew/IntoInner`. `VecElements`/`BoxInner` drop glue is
+    now emitted (empty when the element has no user destructor — the slot's structural drop does the
+    rest).
+  - **Proven native (three-engine):** `Vec<Int32>` new/push/pop(Some/None)/len/is_empty/clear/
+    return-across-fn; `Box::new`/`into_inner`; `Box<String>`. `tests/c63b_vec_box.rs` (9).
+  - **Deferred:** (a) a `Vec`/`Box` whose element carries a USER destructor — refused pre-rustc
+    (destructor-in-runtime-collection design); (b) `v.push(f(...))` where the pushed value is itself
+    a runtime call, e.g. `Vec<String>::push` — the `&mut Vec` receiver borrow is held across the
+    argument-evaluation block → **WP-C6.1g-c** (HIR+MIR pass). (c) trapping index/replace/remove,
+    interior-ref `get`, iteration, slices — later slices.
+  - **C6.1g-c is now the critical shared unblocker** — it gates owned-`String` comparison, stored
+    interior `&str`, and `Vec<String>`-style pushes.
 
 - CD-110 [2026-07-24, **WP-C6.3a cont. — native char ops + the Option-return bridge**] Extends
   CD-109 with the String Char surface and the foundational mechanism every collection accessor will

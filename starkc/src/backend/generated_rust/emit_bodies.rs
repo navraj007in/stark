@@ -581,7 +581,7 @@ fn emit_drop(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDi
 fn emit_drop_glue(ty: &MirTy, value: &str, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     let plan = drop_plan::plan_for(ty, env.types)
         .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
-    emit_drop_plan(&plan, value)
+    emit_drop_plan(&plan, value, env.types)
 }
 
 /// Apply one [`DropPlan`] to the Rust `&mut` expression `value`.
@@ -589,7 +589,11 @@ fn emit_drop_glue(ty: &MirTy, value: &str, env: &TyEnv) -> Result<String, Backen
 /// Every ordering question — destructor before components, components back to front, one arm per
 /// variant, `Copy` components absent — is already answered by the plan's SHAPE. This function
 /// walks it in the order given.
-pub(super) fn emit_drop_plan(plan: &DropPlan, value: &str) -> Result<String, BackendDiagnostic> {
+pub(super) fn emit_drop_plan(
+    plan: &DropPlan,
+    value: &str,
+    types: &TypeContext,
+) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
     match plan {
         DropPlan::Noop => {}
@@ -598,12 +602,12 @@ pub(super) fn emit_drop_plan(plan: &DropPlan, value: &str) -> Result<String, Bac
         DropPlan::Destructor { symbol, then } => {
             let name = mangle::function_name_for_symbol(symbol);
             out.push_str(&format!("{name}({value}); "));
-            out.push_str(&emit_drop_plan(then, value)?);
+            out.push_str(&emit_drop_plan(then, value, types)?);
         }
         DropPlan::Fields { base, fields } => {
             for field in fields {
                 let access = component_access(base, field.index, value)?;
-                out.push_str(&emit_drop_plan(&field.plan, &access)?);
+                out.push_str(&emit_drop_plan(&field.plan, &access, types)?);
             }
         }
         DropPlan::Variants { base, variants } => {
@@ -621,7 +625,7 @@ pub(super) fn emit_drop_plan(plan: &DropPlan, value: &str) -> Result<String, Bac
                 for field in &variant.fields {
                     let binder = format!("__p{}", field.index);
                     binders[field.index as usize] = binder.clone();
-                    body.push_str(&emit_drop_plan(&field.plan, &binder)?);
+                    body.push_str(&emit_drop_plan(&field.plan, &binder, types)?);
                 }
                 arms.push(format!(
                     "{name}::{}({}) => {{ {body} }}",
@@ -633,17 +637,39 @@ pub(super) fn emit_drop_plan(plan: &DropPlan, value: &str) -> Result<String, Bac
         }
         DropPlan::Array { len, elem } => {
             for i in drop_plan::array_order(*len) {
-                out.push_str(&emit_drop_plan(elem, &format!("(&mut {value}[{i}])"))?);
+                out.push_str(&emit_drop_plan(
+                    elem,
+                    &format!("(&mut {value}[{i}])"),
+                    types,
+                )?);
             }
         }
-        // `Vec`/`Box` own an allocation the generated crate has no representation for yet; the
-        // plan names the step, and refusing it is the honest outcome rather than emitting glue
-        // that destroys the elements and leaks the buffer.
-        DropPlan::VecElements { .. } | DropPlan::BoxInner { .. } => {
-            return Err(BackendDiagnostic::Unsupported(format!(
-                "drop glue for {plan:?} needs the owning-runtime-type representation, which is \
-                 outside the C5.3 subset"
-            )))
+        // WP-C6.3b: a `Vec`/`Box` in a slot has its allocation AND its elements reclaimed by Rust's
+        // structural drop (`ValueSlot::drop_with` runs `ManuallyDrop::drop` after this glue). So the
+        // glue here need only run any USER destructors the elements carry. When the element type has
+        // none (a `Noop` plan — primitives, `String`, nested `Vec`/`Box`, non-`Drop` aggregates),
+        // that is nothing. When it DOES carry a user destructor, running it correctly would mean
+        // driving the destructor at every (possibly recursive) element — deferred; refused here so a
+        // destructor is never silently skipped.
+        DropPlan::VecElements { elem } => {
+            let elem_plan = drop_plan::plan_for(elem, types)
+                .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
+            if !elem_plan.is_noop() {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "native drop of a `Vec` whose element {elem:?} carries a user destructor is \
+                     deferred (destructor-in-runtime-collection)"
+                )));
+            }
+        }
+        DropPlan::BoxInner { inner } => {
+            let inner_plan = drop_plan::plan_for(inner, types)
+                .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
+            if !inner_plan.is_noop() {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "native drop of a `Box` whose inner value {inner:?} carries a user destructor \
+                     is deferred (destructor-in-runtime-collection)"
+                )));
+            }
         }
     }
     Ok(out)
@@ -1460,7 +1486,7 @@ mod tests {
             panic!("expected a variant plan");
         };
         variants.pop();
-        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        let glue = emit_drop_plan(&plan, "__v", &crate::mir::TypeContext::default()).unwrap();
         assert!(
             !glue.contains("::V1("),
             "the omitted variant must not survive into the output: {glue}"
@@ -1476,7 +1502,7 @@ mod tests {
             panic!("expected a variant plan");
         };
         variants[1].fields.pop();
-        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        let glue = emit_drop_plan(&plan, "__v", &crate::mir::TypeContext::default()).unwrap();
         assert_eq!(
             glue.matches(&mangle::function_name_for_symbol("Inner::drop@[]"))
                 .count(),
@@ -1495,7 +1521,7 @@ mod tests {
             panic!("expected a variant plan");
         };
         variants[1].fields.reverse();
-        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        let glue = emit_drop_plan(&plan, "__v", &crate::mir::TypeContext::default()).unwrap();
         let arm = glue
             .split_once("__p1) => {")
             .expect("the payload arm must bind both fields")
@@ -1533,7 +1559,7 @@ mod tests {
         let plan = drop_plan::plan_for(&ty, &types).unwrap();
         let outer = mangle::function_name_for_symbol("Outer::drop@[]");
         let inner = mangle::function_name_for_symbol("Inner::drop@[]");
-        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        let glue = emit_drop_plan(&plan, "__v", &crate::mir::TypeContext::default()).unwrap();
         assert!(
             glue.find(&outer).unwrap() < glue.find(&inner).unwrap(),
             "the canonical plan runs the type's own destructor first: {glue}"
@@ -1553,7 +1579,8 @@ mod tests {
             }
             other => panic!("expected fields under the destructor, got {other:?}"),
         };
-        let glue = emit_drop_plan(&pushed_down, "__v").unwrap();
+        let glue =
+            emit_drop_plan(&pushed_down, "__v", &crate::mir::TypeContext::default()).unwrap();
         assert!(
             glue.contains(&format!("{outer}((&mut __v.f0))")),
             "the displaced destructor must land on the FIELD, not the value -- which is a type \
@@ -1593,7 +1620,7 @@ mod tests {
                 then: Box::new(DropPlan::Noop),
             },
         });
-        let glue = emit_drop_plan(&plan, "__v").unwrap();
+        let glue = emit_drop_plan(&plan, "__v", &crate::mir::TypeContext::default()).unwrap();
         assert!(
             glue.contains("__v.f0"),
             "a plan that names the Copy field makes the emitter drop it: {glue}"

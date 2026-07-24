@@ -661,21 +661,29 @@ Invalid boundaries must produce the specified failure and source location. Lande
 `stark-runtime/src/string.rs`, `emit_runtime`, `emit_ty`/`Constant::Str`. Evidence:
 `tests/c63a_string.rs` (15, three-engine with native stdout-byte checks).
 
-## 25. C6.3b — Vec, slices, Box
+## 25. C6.3b — Vec, slices, Box — **PARTIAL (CD-111)**
 
 ### Vec
 
-- new/empty;
-- push/pop;
-- len/capacity where normative;
-- indexing/mutable indexing;
-- insert/remove/clear where normative;
-- by-value/shared/mutable iteration;
-- `as_slice`;
-- growth/reallocation;
-- partial consumption;
-- nested Vec;
-- Drop-bearing and generic elements.
+- new/empty; ✅ native
+- push/pop; ✅ native (`pop` via the Option bridge; `push` of a value computed by a runtime call —
+  e.g. `Vec<String>` — is deferred to C6.1g-c: the `&mut Vec` receiver borrow spans the argument's
+  own call block)
+- len/capacity where normative; ✅ native (`len`/`is_empty`; capacity unobservable)
+- indexing/mutable indexing; ⏳ (`VecIndexGet`/`v[i]=` trap on OOB — need a source-located trap
+  threaded to the runtime call)
+- insert/remove/clear where normative; ✅ `clear`; ⏳ trapping `remove`/`replace`
+- by-value/shared/mutable iteration; ⏳ (interior-ref iteration — C6.3c)
+- `as_slice`; ⏳ (slice views — interior refs)
+- growth/reallocation; ✅ (Rust `Vec` growth; unobservable)
+- partial consumption; ⏳
+- nested Vec; ✅ native for value ops (`Vec<Vec<Int32>>` builds/drops; buffer reclaim recursive)
+- Drop-bearing and generic elements. ⏳ a Vec whose element carries a USER destructor is refused
+  pre-rustc (destructor-in-runtime-collection design)
+
+**Slot buffer-reclaim fix (CD-111):** `ValueSlot::drop_with` now runs `ManuallyDrop::drop` after the
+MIR glue, so an owning value's buffer is reclaimed (was leaking). Applies to `String`/`Vec`/`Box`
+and owning fields of Drop structs.
 
 ### Slices
 

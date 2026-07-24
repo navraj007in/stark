@@ -114,6 +114,17 @@ pub fn nominal_needs_lifetime(ty: &MirTy) -> bool {
     }
 }
 
+/// The sole type argument of a single-parameter core container (`Vec<T>`/`Box<T>`).
+fn single_arg<'a>(args: &'a [MirTy], what: &str) -> Result<&'a MirTy, BackendDiagnostic> {
+    match args {
+        [only] => Ok(only),
+        _ => Err(BackendDiagnostic::Unsupported(format!(
+            "{what} expects exactly one type argument, found {}",
+            args.len()
+        ))),
+    }
+}
+
 pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDiagnostic> {
     let lt = if nominal_needs_lifetime(ty) {
         at.nominal_args()
@@ -194,6 +205,13 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
         // emitted as calls into `stark_runtime::string`, which pins the STARK semantics.
         MirTy::String => "String".to_string(),
         MirTy::Str => "str".to_string(),
+        // WP-C6.3b: `Vec<T>` and `Box<T>` are the Rust owning containers (non-`Copy`, slot-backed).
+        MirTy::Core(crate::hir::CoreType::Vec, args) => {
+            format!("Vec<{}>", emit_ty_at(single_arg(args, "Vec")?, at)?)
+        }
+        MirTy::Core(crate::hir::CoreType::Box, args) => {
+            format!("Box<{}>", emit_ty_at(single_arg(args, "Box")?, at)?)
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \

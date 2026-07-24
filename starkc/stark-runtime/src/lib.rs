@@ -13,10 +13,12 @@
 //! `provider_abi` (empty modules marking the C6.3/C5.1c module boundary from §9, populated when
 //! move/Drop lowering and the Native Provider ABI validator land).
 
+pub mod boxed;
 pub mod output;
 pub mod provider_abi;
 pub mod slot;
 pub mod string;
 pub mod trap;
 pub mod value;
+pub mod vec;
 pub mod version;

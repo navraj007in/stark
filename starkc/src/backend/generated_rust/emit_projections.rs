@@ -485,7 +485,7 @@ pub fn emit(
             (HelperOp::Drop, ProjectionForm::Raw) => {
                 let plan = crate::mir::drop_plan::plan_for(&helper.field_ty, types)
                     .map_err(|e| BackendDiagnostic::Unsupported(e.to_string()))?;
-                let glue = super::emit_bodies::emit_drop_plan(&plan, "__v")?;
+                let glue = super::emit_bodies::emit_drop_plan(&plan, "__v", types)?;
                 out.push_str(&format!(
                     "\n    /// Destroys ONE drop unit in place, leaving its siblings alone. Raw \
                      projection, so\n    /// it is valid over storage a sibling has already been \

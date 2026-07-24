@@ -1,0 +1,47 @@
+//! WP-C6.3b — STARK Core `Vec<T>` operations.
+//!
+//! The generated backend calls these instead of Rust's inherent `Vec` methods, pinning the STARK
+//! semantics (06-Standard-Library) in one reviewed place. A STARK `Vec<T>` is a Rust `Vec<T>`; it
+//! is owning and not `Copy`, so a local lives in a [`crate::slot::ValueSlot`] and MIR controls when
+//! it (and its remaining elements) are destroyed.
+//!
+//! Only the value operations that neither trap nor hand out an interior reference live here.
+//! Index/replace/remove trap on out-of-bounds and need a source-located trap emitted at the MIR
+//! call site; `get`/`get_mut`, by-reference iteration, and slice views hand out interior borrows —
+//! both land in later slices.
+
+/// `Vec::new()` — an empty vector.
+pub fn new<T>() -> Vec<T> {
+    Vec::new()
+}
+
+/// `Vec::with_capacity(n)` — an empty vector (capacity is unobservable in STARK; `len` is 0).
+pub fn with_capacity<T>(n: u64) -> Vec<T> {
+    Vec::with_capacity(n as usize)
+}
+
+/// `Vec::push(&mut self, item: T)` — append, taking ownership of `item`.
+pub fn push<T>(v: &mut Vec<T>, item: T) {
+    v.push(item);
+}
+
+/// `Vec::pop(&mut self) -> Option<T>` — remove and return the last element. The backend wraps the
+/// Rust `Option<T>` into the program's generated Option enum.
+pub fn pop<T>(v: &mut Vec<T>) -> Option<T> {
+    v.pop()
+}
+
+/// `Vec::len(&self) -> UInt64`.
+pub fn len<T>(v: &[T]) -> u64 {
+    v.len() as u64
+}
+
+/// `Vec::is_empty(&self) -> Bool`.
+pub fn is_empty<T>(v: &[T]) -> bool {
+    v.is_empty()
+}
+
+/// `Vec::clear(&mut self)` — drop every element, length becomes 0.
+pub fn clear<T>(v: &mut Vec<T>) {
+    v.clear();
+}

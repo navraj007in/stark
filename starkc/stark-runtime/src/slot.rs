@@ -217,6 +217,13 @@ impl<T> ValueSlot<T> {
     /// Dead **before** the glue runs (§7.5): if the glue itself traps, the abort path sees a dead
     /// slot and cannot re-enter the value, which is what makes exactly-once hold even when a
     /// destructor fails.
+    ///
+    /// WP-C6.3b: after the MIR-directed `glue` (which runs USER `Drop` destructors only, and frees
+    /// no allocation), Rust's own structural drop reclaims any owned storage — the `String`/`Vec`/
+    /// `Box` buffers a generated type owns but has no STARK destructor for. The two never overlap:
+    /// generated nominal types implement no Rust `Drop`, so `ManuallyDrop::drop` runs no user
+    /// destructor, and the glue frees no buffer. Without this step every owning value in a slot
+    /// leaked its allocation (unobservable in the differential, but a real leak).
     pub fn drop_with(&mut self, glue: impl FnOnce(&mut T)) {
         self.require_whole("drop of a dead slot (a value was dropped twice)");
         self.state = SlotState::Dead;
@@ -224,6 +231,9 @@ impl<T> ValueSlot<T> {
         // bytes afterwards.
         let held: &mut ManuallyDrop<T> = unsafe { &mut *self.storage.as_mut_ptr() };
         glue(&mut *held);
+        // SAFETY: still the same once-only region; the glue ran the user destructors, and this
+        // reclaims the value's own storage exactly once. Nothing reads the bytes afterwards.
+        unsafe { ManuallyDrop::drop(held) };
     }
 
     // ------------------------------------------------------------- partial access --
