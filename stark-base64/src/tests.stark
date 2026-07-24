@@ -1,0 +1,382 @@
+use super::*;
+
+fn test_encode_rfc_vectors() {
+    let empty: &[UInt8] = &[];
+    if encode(empty).as_str() != "" {
+        panic("empty encode failed");
+    }
+
+    let f: &[UInt8] = &[102u8];
+    if encode(f).as_str() != "Zg==" {
+        panic("f encode failed");
+    }
+
+    let fo: &[UInt8] = &[102u8, 111u8];
+    if encode(fo).as_str() != "Zm8=" {
+        panic("fo encode failed");
+    }
+
+    let foo: &[UInt8] = &[102u8, 111u8, 111u8];
+    if encode(foo).as_str() != "Zm9v" {
+        panic("foo encode failed");
+    }
+
+    let foob: &[UInt8] = &[102u8, 111u8, 111u8, 98u8];
+    if encode(foob).as_str() != "Zm9vYg==" {
+        panic("foob encode failed");
+    }
+
+    let fooba: &[UInt8] = &[102u8, 111u8, 111u8, 98u8, 97u8];
+    if encode(fooba).as_str() != "Zm9vYmE=" {
+        panic("fooba encode failed");
+    }
+
+    let foobar: &[UInt8] = &[102u8, 111u8, 111u8, 98u8, 97u8, 114u8];
+    if encode(foobar).as_str() != "Zm9vYmFy" {
+        panic("foobar encode failed");
+    }
+}
+
+fn test_encode_zeros_and_ones() {
+    let z1: &[UInt8] = &[0u8];
+    if encode(z1).as_str() != "AA==" {
+        panic("z1 encode failed");
+    }
+
+    let z2: &[UInt8] = &[0u8, 0u8];
+    if encode(z2).as_str() != "AAA=" {
+        panic("z2 encode failed");
+    }
+
+    let z3: &[UInt8] = &[0u8, 0u8, 0u8];
+    if encode(z3).as_str() != "AAAA" {
+        panic("z3 encode failed");
+    }
+
+    let f1: &[UInt8] = &[255u8];
+    if encode(f1).as_str() != "/w==" {
+        panic("f1 encode failed");
+    }
+
+    let f2: &[UInt8] = &[255u8, 255u8];
+    if encode(f2).as_str() != "//8=" {
+        panic("f2 encode failed");
+    }
+
+    let f3: &[UInt8] = &[255u8, 255u8, 255u8];
+    if encode(f3).as_str() != "////" {
+        panic("f3 encode failed");
+    }
+}
+
+fn test_decode_rfc_vectors() {
+    match decode("") {
+        Ok(res) => {
+            if res.len() != 0u64 {
+                panic("empty decode len mismatch");
+            }
+        }
+        Err(_) => {
+            panic("empty decode error");
+        }
+    }
+
+    match decode("Zg==") {
+        Ok(res) => {
+            if res.len() != 1u64 || res[0u64] != 102u8 {
+                panic("Zg== decode failed");
+            }
+        }
+        Err(_) => {
+            panic("Zg== error");
+        }
+    }
+
+    match decode("Zm8=") {
+        Ok(res) => {
+            if res.len() != 2u64 || res[0u64] != 102u8 || res[1u64] != 111u8 {
+                panic("Zm8= decode failed");
+            }
+        }
+        Err(_) => {
+            panic("Zm8= error");
+        }
+    }
+
+    match decode("Zm9v") {
+        Ok(res) => {
+            if res.len() != 3u64 || res[0u64] != 102u8 || res[1u64] != 111u8 || res[2u64] != 111u8 {
+                panic("Zm9v decode failed");
+            }
+        }
+        Err(_) => {
+            panic("Zm9v error");
+        }
+    }
+
+    match decode("Zm9vYmFy") {
+        Ok(res) => {
+            if res.len() != 6u64 {
+                panic("Zm9vYmFy decode len failed");
+            }
+        }
+        Err(_) => {
+            panic("Zm9vYmFy error");
+        }
+    }
+}
+
+fn test_decode_alphabet_roundtrip() {
+    let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    match decode(alpha) {
+        Ok(res) => {
+            let enc = encode(res.as_slice());
+            if enc.as_str() != alpha {
+                panic("alphabet roundtrip failed");
+            }
+        }
+        Err(_) => {
+            panic("alphabet decode failed");
+        }
+    }
+}
+
+fn test_invalid_characters() {
+    match decode("@AAA") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 0u64 || val != 64u8 {
+                panic("@AAA index/val error");
+            }
+        }
+        _ => {
+            panic("@AAA expected InvalidCharacter(0, 64)");
+        }
+    }
+
+    match decode("AA_A") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 95u8 {
+                panic("AA_A index/val error");
+            }
+        }
+        _ => {
+            panic("AA_A expected InvalidCharacter(2, 95)");
+        }
+    }
+
+    match decode("AAA-") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 3u64 || val != 45u8 {
+                panic("AAA- index/val error");
+            }
+        }
+        _ => {
+            panic("AAA- expected InvalidCharacter(3, 45)");
+        }
+    }
+
+    match decode("Zm 9v") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 32u8 {
+                panic("Zm 9v index/val error");
+            }
+        }
+        _ => {
+            panic("Zm 9v expected InvalidCharacter(2, 32)");
+        }
+    }
+}
+
+fn test_invalid_length() {
+    match decode("A") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("A expected InvalidLength");
+        }
+    }
+
+    match decode("AA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AA expected InvalidLength");
+        }
+    }
+
+    match decode("AAA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AAA expected InvalidLength");
+        }
+    }
+
+    match decode("AAAAA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AAAAA expected InvalidLength");
+        }
+    }
+}
+
+fn test_invalid_padding() {
+    match decode("=AAA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 0u64 {
+                panic("=AAA expected InvalidPadding(0)");
+            }
+        }
+        _ => {
+            panic("=AAA error expected");
+        }
+    }
+
+    match decode("A=AA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 1u64 {
+                panic("A=AA expected InvalidPadding(1)");
+            }
+        }
+        _ => {
+            panic("A=AA error expected");
+        }
+    }
+
+    match decode("AA=A") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 3u64 {
+                panic("AA=A expected InvalidPadding(3)");
+            }
+        }
+        _ => {
+            panic("AA=A error expected");
+        }
+    }
+
+    match decode("A===") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 1u64 {
+                panic("A=== expected InvalidPadding(1)");
+            }
+        }
+        _ => {
+            panic("A=== error expected");
+        }
+    }
+
+    match decode("====") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 0u64 {
+                panic("==== expected InvalidPadding(0)");
+            }
+        }
+        _ => {
+            panic("==== error expected");
+        }
+    }
+
+    match decode("AAAA====") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 4u64 {
+                panic("AAAA==== expected InvalidPadding(4)");
+            }
+        }
+        _ => {
+            panic("AAAA==== error expected");
+        }
+    }
+
+    match decode("AA==AAAA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 4u64 {
+                panic("AA==AAAA expected InvalidPadding(4)");
+            }
+        }
+        _ => {
+            panic("AA==AAAA error expected");
+        }
+    }
+
+    match decode("AAAA=AAA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 4u64 {
+                panic("AAAA=AAA expected InvalidPadding(4)");
+            }
+        }
+        _ => {
+            panic("AAAA=AAA error expected");
+        }
+    }
+}
+
+fn test_noncanonical_bits() {
+    match decode("Zh==") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 1u64 {
+                panic("Zh== expected NonCanonicalTrailingBits(1)");
+            }
+        }
+        _ => {
+            panic("Zh== error expected");
+        }
+    }
+
+    match decode("Zm9=") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 2u64 {
+                panic("Zm9= expected NonCanonicalTrailingBits(2)");
+            }
+        }
+        _ => {
+            panic("Zm9= error expected");
+        }
+    }
+
+    match decode("AB==") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 1u64 {
+                panic("AB== expected NonCanonicalTrailingBits(1)");
+            }
+        }
+        _ => {
+            panic("AB== error expected");
+        }
+    }
+
+    match decode("AAB=") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 2u64 {
+                panic("AAB= expected NonCanonicalTrailingBits(2)");
+            }
+        }
+        _ => {
+            panic("AAB= error expected");
+        }
+    }
+}
+
+fn test_full_byte_domain() {
+    let mut all_bytes = Vec::new();
+    let mut val: UInt32 = 0u32;
+    while val < 256u32 {
+        all_bytes.push(val as UInt8);
+        val = val + 1u32;
+    }
+
+    let encoded = encode(all_bytes.as_slice());
+    match decode(encoded.as_str()) {
+        Ok(decoded) => {
+            if decoded.len() != 256u64 {
+                panic("full domain len mismatch");
+            }
+            let mut i: UInt64 = 0u64;
+            while i < 256u64 {
+                if decoded[i] != all_bytes[i] {
+                    panic("full domain byte mismatch");
+                }
+                i = i + 1u64;
+            }
+        }
+        Err(_) => {
+            panic("full domain decode error");
+        }
+    }
+}

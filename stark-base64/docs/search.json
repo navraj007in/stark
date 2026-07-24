@@ -1,0 +1,9 @@
+[
+  {"name":"Base64Error","kind":"enum","module":"stark-base64","signature":"pub enum Base64Error","url":"Base64Error/index.html"},
+  {"name":"Base64Error::InvalidLength","kind":"variant","module":"stark-base64","signature":"InvalidLength","url":"Base64Error/index.html#InvalidLength"},
+  {"name":"Base64Error::InvalidCharacter","kind":"variant","module":"stark-base64","signature":"InvalidCharacter(UInt64, UInt8)","url":"Base64Error/index.html#InvalidCharacter"},
+  {"name":"Base64Error::InvalidPadding","kind":"variant","module":"stark-base64","signature":"InvalidPadding(UInt64)","url":"Base64Error/index.html#InvalidPadding"},
+  {"name":"Base64Error::NonCanonicalTrailingBits","kind":"variant","module":"stark-base64","signature":"NonCanonicalTrailingBits(UInt64)","url":"Base64Error/index.html#NonCanonicalTrailingBits"},
+  {"name":"encode","kind":"fn","module":"stark-base64","signature":"pub fn encode(input: &[UInt8]) -> String","url":"encode/index.html"},
+  {"name":"decode","kind":"fn","module":"stark-base64","signature":"pub fn decode(input: &str) -> Result<Vec<UInt8>, Base64Error>","url":"decode/index.html"}
+]

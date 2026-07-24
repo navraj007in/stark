@@ -1,0 +1,725 @@
+pub enum Base64Error {
+    InvalidLength,
+    InvalidCharacter(UInt64, UInt8),
+    InvalidPadding(UInt64),
+    NonCanonicalTrailingBits(UInt64),
+}
+
+fn encode_char(val: UInt8) -> Char {
+    if val == 0u8 {
+        'A'
+    } else if val == 1u8 {
+        'B'
+    } else if val == 2u8 {
+        'C'
+    } else if val == 3u8 {
+        'D'
+    } else if val == 4u8 {
+        'E'
+    } else if val == 5u8 {
+        'F'
+    } else if val == 6u8 {
+        'G'
+    } else if val == 7u8 {
+        'H'
+    } else if val == 8u8 {
+        'I'
+    } else if val == 9u8 {
+        'J'
+    } else if val == 10u8 {
+        'K'
+    } else if val == 11u8 {
+        'L'
+    } else if val == 12u8 {
+        'M'
+    } else if val == 13u8 {
+        'N'
+    } else if val == 14u8 {
+        'O'
+    } else if val == 15u8 {
+        'P'
+    } else if val == 16u8 {
+        'Q'
+    } else if val == 17u8 {
+        'R'
+    } else if val == 18u8 {
+        'S'
+    } else if val == 19u8 {
+        'T'
+    } else if val == 20u8 {
+        'U'
+    } else if val == 21u8 {
+        'V'
+    } else if val == 22u8 {
+        'W'
+    } else if val == 23u8 {
+        'X'
+    } else if val == 24u8 {
+        'Y'
+    } else if val == 25u8 {
+        'Z'
+    } else if val == 26u8 {
+        'a'
+    } else if val == 27u8 {
+        'b'
+    } else if val == 28u8 {
+        'c'
+    } else if val == 29u8 {
+        'd'
+    } else if val == 30u8 {
+        'e'
+    } else if val == 31u8 {
+        'f'
+    } else if val == 32u8 {
+        'g'
+    } else if val == 33u8 {
+        'h'
+    } else if val == 34u8 {
+        'i'
+    } else if val == 35u8 {
+        'j'
+    } else if val == 36u8 {
+        'k'
+    } else if val == 37u8 {
+        'l'
+    } else if val == 38u8 {
+        'm'
+    } else if val == 39u8 {
+        'n'
+    } else if val == 40u8 {
+        'o'
+    } else if val == 41u8 {
+        'p'
+    } else if val == 42u8 {
+        'q'
+    } else if val == 43u8 {
+        'r'
+    } else if val == 44u8 {
+        's'
+    } else if val == 45u8 {
+        't'
+    } else if val == 46u8 {
+        'u'
+    } else if val == 47u8 {
+        'v'
+    } else if val == 48u8 {
+        'w'
+    } else if val == 49u8 {
+        'x'
+    } else if val == 50u8 {
+        'y'
+    } else if val == 51u8 {
+        'z'
+    } else if val == 52u8 {
+        '0'
+    } else if val == 53u8 {
+        '1'
+    } else if val == 54u8 {
+        '2'
+    } else if val == 55u8 {
+        '3'
+    } else if val == 56u8 {
+        '4'
+    } else if val == 57u8 {
+        '5'
+    } else if val == 58u8 {
+        '6'
+    } else if val == 59u8 {
+        '7'
+    } else if val == 60u8 {
+        '8'
+    } else if val == 61u8 {
+        '9'
+    } else if val == 62u8 {
+        '+'
+    } else {
+        '/'
+    }
+}
+
+fn decode_sextet(byte: UInt8) -> Option<UInt8> {
+    if byte >= 65u8 && byte <= 90u8 {
+        Some(byte - 65u8)
+    } else if byte >= 97u8 && byte <= 122u8 {
+        Some(byte - 97u8 + 26u8)
+    } else if byte >= 48u8 && byte <= 57u8 {
+        Some(byte - 48u8 + 52u8)
+    } else if byte == 43u8 {
+        Some(62u8)
+    } else if byte == 47u8 {
+        Some(63u8)
+    } else {
+        None
+    }
+}
+
+pub fn encode(input: &[UInt8]) -> String {
+    let mut result = String::new();
+    let len = input.len();
+    let mut i: UInt64 = 0u64;
+
+    while i + 3u64 <= len {
+        let b0 = input[i] as UInt32;
+        let b1 = input[i + 1u64] as UInt32;
+        let b2 = input[i + 2u64] as UInt32;
+
+        let s0 = b0 >> 2u32 & 0x3Fu32;
+        let s1 = ((b0 & 0x03u32) << 4u32 | b1 >> 4u32) & 0x3Fu32;
+        let s2 = ((b1 & 0x0Fu32) << 2u32 | b2 >> 6u32) & 0x3Fu32;
+        let s3 = b2 & 0x3Fu32;
+
+        result.push(encode_char(s0 as UInt8));
+        result.push(encode_char(s1 as UInt8));
+        result.push(encode_char(s2 as UInt8));
+        result.push(encode_char(s3 as UInt8));
+
+        i = i + 3u64;
+    }
+
+    let rem = len - i;
+    if rem == 1u64 {
+        let b0 = input[i] as UInt32;
+        let s0 = b0 >> 2u32 & 0x3Fu32;
+        let s1 = (b0 & 0x03u32) << 4u32 & 0x3Fu32;
+
+        result.push(encode_char(s0 as UInt8));
+        result.push(encode_char(s1 as UInt8));
+        result.push('=');
+        result.push('=');
+    } else if rem == 2u64 {
+        let b0 = input[i] as UInt32;
+        let b1 = input[i + 1u64] as UInt32;
+        let s0 = b0 >> 2u32 & 0x3Fu32;
+        let s1 = ((b0 & 0x03u32) << 4u32 | b1 >> 4u32) & 0x3Fu32;
+        let s2 = (b1 & 0x0Fu32) << 2u32 & 0x3Fu32;
+
+        result.push(encode_char(s0 as UInt8));
+        result.push(encode_char(s1 as UInt8));
+        result.push(encode_char(s2 as UInt8));
+        result.push('=');
+    }
+
+    result
+}
+
+pub fn decode(input: &str) -> Result<Vec<UInt8>, Base64Error> {
+    let bytes = input.bytes();
+    let len = bytes.len();
+
+    // Pass 1: Character scan
+    let mut scan_idx: UInt64 = 0u64;
+    while scan_idx < len {
+        let b = bytes[scan_idx];
+        let is_alpha = b >= 65u8 && b <= 90u8 || b >= 97u8 && b <= 122u8 || b >= 48u8 && b <= 57u8 || b == 43u8 || b == 47u8 || b == 61u8;
+        if !is_alpha {
+            return Err(Base64Error::InvalidCharacter(scan_idx, b));
+        }
+        scan_idx = scan_idx + 1u64;
+    }
+
+    // Pass 2: Length check
+    if len % 4u64 != 0u64 {
+        return Err(Base64Error::InvalidLength);
+    }
+    if len == 0u64 {
+        return Ok(Vec::new());
+    }
+
+    // Pass 3: Padding structure check
+    let mut has_eq = false;
+    let mut eq_idx: UInt64 = 0u64;
+    let mut search_idx: UInt64 = 0u64;
+    while search_idx < len {
+        if bytes[search_idx] == 61u8 {
+            if !has_eq {
+                has_eq = true;
+                eq_idx = search_idx;
+            }
+        }
+        search_idx = search_idx + 1u64;
+    }
+
+    if has_eq {
+        if eq_idx % 4u64 == 0u64 || eq_idx % 4u64 == 1u64 {
+            return Err(Base64Error::InvalidPadding(eq_idx));
+        }
+        let mut p = eq_idx + 1u64;
+        while p < len {
+            if bytes[p] != 61u8 {
+                return Err(Base64Error::InvalidPadding(p));
+            }
+            p = p + 1u64;
+        }
+        if eq_idx < len - 2u64 {
+            return Err(Base64Error::InvalidPadding(eq_idx));
+        }
+    }
+
+    // Pass 4: Canonical trailing-bit check
+    let final_q = len - 4u64;
+    if bytes[final_q + 2u64] == 61u8 {
+        let opt_s1 = decode_sextet(bytes[final_q + 1u64]);
+        if opt_s1.is_some() {
+            let s1 = opt_s1.unwrap();
+            if s1 & 0x0Fu8 != 0u8 {
+                return Err(Base64Error::NonCanonicalTrailingBits(final_q + 1u64));
+            }
+        }
+    } else if bytes[final_q + 3u64] == 61u8 {
+        let opt_s2 = decode_sextet(bytes[final_q + 2u64]);
+        if opt_s2.is_some() {
+            let s2 = opt_s2.unwrap();
+            if s2 & 0x03u8 != 0u8 {
+                return Err(Base64Error::NonCanonicalTrailingBits(final_q + 2u64));
+            }
+        }
+    }
+
+    // Pass 5: Decode quartets
+    let mut out = Vec::new();
+    let mut q: UInt64 = 0u64;
+    while q < len {
+        let b0 = bytes[q];
+        let b1 = bytes[q + 1u64];
+        let b2 = bytes[q + 2u64];
+        let b3 = bytes[q + 3u64];
+
+        if b2 == 61u8 {
+            let s0 = match decode_sextet(b0) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let s1 = match decode_sextet(b1) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let out0 = (s0 << 2u32 | s1 >> 4u32) as UInt8;
+            out.push(out0);
+        } else if b3 == 61u8 {
+            let s0 = match decode_sextet(b0) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let s1 = match decode_sextet(b1) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let s2 = match decode_sextet(b2) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let out0 = (s0 << 2u32 | s1 >> 4u32) as UInt8;
+            let out1 = ((s1 & 0x0Fu32) << 4u32 | s2 >> 2u32) as UInt8;
+            out.push(out0);
+            out.push(out1);
+        } else {
+            let s0 = match decode_sextet(b0) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let s1 = match decode_sextet(b1) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let s2 = match decode_sextet(b2) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let s3 = match decode_sextet(b3) {
+                Some(v) => v as UInt32,
+                None => 0u32,
+            };
+            let out0 = (s0 << 2u32 | s1 >> 4u32) as UInt8;
+            let out1 = ((s1 & 0x0Fu32) << 4u32 | s2 >> 2u32) as UInt8;
+            let out2 = ((s2 & 0x03u32) << 6u32 | s3) as UInt8;
+            out.push(out0);
+            out.push(out1);
+            out.push(out2);
+        }
+
+        q = q + 4u64;
+    }
+
+    Ok(out)
+}
+
+fn test_encode_rfc_vectors() {
+    let empty: &[UInt8] = &[];
+    if encode(empty).as_str() != "" {
+        panic("empty encode failed");
+    }
+
+    let f: &[UInt8] = &[102u8];
+    if encode(f).as_str() != "Zg==" {
+        panic("f encode failed");
+    }
+
+    let fo: &[UInt8] = &[102u8, 111u8];
+    if encode(fo).as_str() != "Zm8=" {
+        panic("fo encode failed");
+    }
+
+    let foo: &[UInt8] = &[102u8, 111u8, 111u8];
+    if encode(foo).as_str() != "Zm9v" {
+        panic("foo encode failed");
+    }
+
+    let foob: &[UInt8] = &[102u8, 111u8, 111u8, 98u8];
+    if encode(foob).as_str() != "Zm9vYg==" {
+        panic("foob encode failed");
+    }
+
+    let fooba: &[UInt8] = &[102u8, 111u8, 111u8, 98u8, 97u8];
+    if encode(fooba).as_str() != "Zm9vYmE=" {
+        panic("fooba encode failed");
+    }
+
+    let foobar: &[UInt8] = &[102u8, 111u8, 111u8, 98u8, 97u8, 114u8];
+    if encode(foobar).as_str() != "Zm9vYmFy" {
+        panic("foobar encode failed");
+    }
+}
+
+fn test_encode_zeros_and_ones() {
+    let z1: &[UInt8] = &[0u8];
+    if encode(z1).as_str() != "AA==" {
+        panic("z1 encode failed");
+    }
+
+    let z2: &[UInt8] = &[0u8, 0u8];
+    if encode(z2).as_str() != "AAA=" {
+        panic("z2 encode failed");
+    }
+
+    let z3: &[UInt8] = &[0u8, 0u8, 0u8];
+    if encode(z3).as_str() != "AAAA" {
+        panic("z3 encode failed");
+    }
+
+    let f1: &[UInt8] = &[255u8];
+    if encode(f1).as_str() != "/w==" {
+        panic("f1 encode failed");
+    }
+
+    let f2: &[UInt8] = &[255u8, 255u8];
+    if encode(f2).as_str() != "//8=" {
+        panic("f2 encode failed");
+    }
+
+    let f3: &[UInt8] = &[255u8, 255u8, 255u8];
+    if encode(f3).as_str() != "////" {
+        panic("f3 encode failed");
+    }
+}
+
+fn test_decode_rfc_vectors() {
+    match decode("") {
+        Ok(res) => {
+            if res.len() != 0u64 {
+                panic("empty decode len mismatch");
+            }
+        }
+        Err(_) => {
+            panic("empty decode error");
+        }
+    }
+
+    match decode("Zg==") {
+        Ok(res) => {
+            if res.len() != 1u64 || res[0u64] != 102u8 {
+                panic("Zg== decode failed");
+            }
+        }
+        Err(_) => {
+            panic("Zg== error");
+        }
+    }
+
+    match decode("Zm8=") {
+        Ok(res) => {
+            if res.len() != 2u64 || res[0u64] != 102u8 || res[1u64] != 111u8 {
+                panic("Zm8= decode failed");
+            }
+        }
+        Err(_) => {
+            panic("Zm8= error");
+        }
+    }
+
+    match decode("Zm9v") {
+        Ok(res) => {
+            if res.len() != 3u64 || res[0u64] != 102u8 || res[1u64] != 111u8 || res[2u64] != 111u8 {
+                panic("Zm9v decode failed");
+            }
+        }
+        Err(_) => {
+            panic("Zm9v error");
+        }
+    }
+
+    match decode("Zm9vYmFy") {
+        Ok(res) => {
+            if res.len() != 6u64 {
+                panic("Zm9vYmFy decode len failed");
+            }
+        }
+        Err(_) => {
+            panic("Zm9vYmFy error");
+        }
+    }
+}
+
+fn test_decode_alphabet_roundtrip() {
+    let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    match decode(alpha) {
+        Ok(res) => {
+            let enc = encode(res.as_slice());
+            if enc.as_str() != alpha {
+                panic("alphabet roundtrip failed");
+            }
+        }
+        Err(_) => {
+            panic("alphabet decode failed");
+        }
+    }
+}
+
+fn test_invalid_characters() {
+    match decode("@AAA") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 0u64 || val != 64u8 {
+                panic("@AAA index/val error");
+            }
+        }
+        _ => {
+            panic("@AAA expected InvalidCharacter(0, 64)");
+        }
+    }
+
+    match decode("AA_A") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 95u8 {
+                panic("AA_A index/val error");
+            }
+        }
+        _ => {
+            panic("AA_A expected InvalidCharacter(2, 95)");
+        }
+    }
+
+    match decode("AAA-") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 3u64 || val != 45u8 {
+                panic("AAA- index/val error");
+            }
+        }
+        _ => {
+            panic("AAA- expected InvalidCharacter(3, 45)");
+        }
+    }
+
+    match decode("Zm 9v") {
+        Err(Base64Error::InvalidCharacter(idx, val)) => {
+            if idx != 2u64 || val != 32u8 {
+                panic("Zm 9v index/val error");
+            }
+        }
+        _ => {
+            panic("Zm 9v expected InvalidCharacter(2, 32)");
+        }
+    }
+}
+
+fn test_invalid_length() {
+    match decode("A") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("A expected InvalidLength");
+        }
+    }
+
+    match decode("AA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AA expected InvalidLength");
+        }
+    }
+
+    match decode("AAA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AAA expected InvalidLength");
+        }
+    }
+
+    match decode("AAAAA") {
+        Err(Base64Error::InvalidLength) => {}
+        _ => {
+            panic("AAAAA expected InvalidLength");
+        }
+    }
+}
+
+fn test_invalid_padding() {
+    match decode("=AAA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 0u64 {
+                panic("=AAA expected InvalidPadding(0)");
+            }
+        }
+        _ => {
+            panic("=AAA error expected");
+        }
+    }
+
+    match decode("A=AA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 1u64 {
+                panic("A=AA expected InvalidPadding(1)");
+            }
+        }
+        _ => {
+            panic("A=AA error expected");
+        }
+    }
+
+    match decode("AA=A") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 3u64 {
+                panic("AA=A expected InvalidPadding(3)");
+            }
+        }
+        _ => {
+            panic("AA=A error expected");
+        }
+    }
+
+    match decode("A===") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 1u64 {
+                panic("A=== expected InvalidPadding(1)");
+            }
+        }
+        _ => {
+            panic("A=== error expected");
+        }
+    }
+
+    match decode("====") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 0u64 {
+                panic("==== expected InvalidPadding(0)");
+            }
+        }
+        _ => {
+            panic("==== error expected");
+        }
+    }
+
+    match decode("AAAA====") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 4u64 {
+                panic("AAAA==== expected InvalidPadding(4)");
+            }
+        }
+        _ => {
+            panic("AAAA==== error expected");
+        }
+    }
+
+    match decode("AA==AAAA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 4u64 {
+                panic("AA==AAAA expected InvalidPadding(4)");
+            }
+        }
+        _ => {
+            panic("AA==AAAA error expected");
+        }
+    }
+
+    match decode("AAAA=AAA") {
+        Err(Base64Error::InvalidPadding(idx)) => {
+            if idx != 4u64 {
+                panic("AAAA=AAA expected InvalidPadding(4)");
+            }
+        }
+        _ => {
+            panic("AAAA=AAA error expected");
+        }
+    }
+}
+
+fn test_noncanonical_bits() {
+    match decode("Zh==") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 1u64 {
+                panic("Zh== expected NonCanonicalTrailingBits(1)");
+            }
+        }
+        _ => {
+            panic("Zh== error expected");
+        }
+    }
+
+    match decode("Zm9=") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 2u64 {
+                panic("Zm9= expected NonCanonicalTrailingBits(2)");
+            }
+        }
+        _ => {
+            panic("Zm9= error expected");
+        }
+    }
+
+    match decode("AB==") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 1u64 {
+                panic("AB== expected NonCanonicalTrailingBits(1)");
+            }
+        }
+        _ => {
+            panic("AB== error expected");
+        }
+    }
+
+    match decode("AAB=") {
+        Err(Base64Error::NonCanonicalTrailingBits(idx)) => {
+            if idx != 2u64 {
+                panic("AAB= expected NonCanonicalTrailingBits(2)");
+            }
+        }
+        _ => {
+            panic("AAB= error expected");
+        }
+    }
+}
+
+fn test_full_byte_domain() {
+    let mut all_bytes = Vec::new();
+    let mut val: UInt32 = 0u32;
+    while val < 256u32 {
+        all_bytes.push(val as UInt8);
+        val = val + 1u32;
+    }
+
+    let encoded = encode(all_bytes.as_slice());
+    match decode(encoded.as_str()) {
+        Ok(decoded) => {
+            if decoded.len() != 256u64 {
+                panic("full domain len mismatch");
+            }
+            let mut i: UInt64 = 0u64;
+            while i < 256u64 {
+                if decoded[i] != all_bytes[i] {
+                    panic("full domain byte mismatch");
+                }
+                i = i + 1u64;
+            }
+        }
+        Err(_) => {
+            panic("full domain decode error");
+        }
+    }
+}
