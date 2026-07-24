@@ -1,13 +1,15 @@
 # STARK Compiler STATE
-Updated: 2026-07-23 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
+Updated: 2026-07-24 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
 WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop parity, Track A) CLOSED
 (CD-080…CD-084) with WP-C6.1f OPEN** (general reference storage — the C5 deferral the C6 entry plan
 never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f-a/b1 CLOSED; b2 5-of-6 (CD-092); b3 stored references CLOSED (CD-093);
-returning a reference CLOSED (CD-094); aggregates: tuples/arrays CLOSED, nominals refused
-(CD-095); b4/b5 open**, F1
+Remaining C6: **WP-C6.1f implementation COMPLETE for every unblocked item** — a/b1 (CD-089/090),
+b2 incl. generic callees (CD-092/CD-098), b3 stored refs (CD-093), reference returns (CD-094),
+aggregates (CD-095), borrow-carrying nominals (CD-096), b4/b5 nested-ref syntax and escape-check
+scoping (CD-097a). **Owner dispositions recorded (CD-097)**; `WP-C6.1g-a`/`-b` opened and block
+Gate C6, not C6.1f. Remaining: the C6.1f closure packet. Also open: F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3049,6 +3051,66 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
 
+- CD-098 [2026-07-24, **WP-C6.1f-b2 completion — generic-callee argument weakening**] The last
+  unblocked implementation item in C6.1f. A generic callee's `fn_types` entry still names the
+  callee's OWN parameters (`Ty::Param("T")`), which the CALLER's substitution cannot ground, so the
+  expected type at the argument boundary was unresolvable and no `&mut T` -> `&T` weakening was
+  applied — leaving the call to fail MIR verification. The call's concrete type arguments are
+  already computed for the instance and are in the callee's generic declaration order, so they are
+  exactly the substitution needed (`mir::lower::callee_param_types`, generic names read via
+  `item_text` per DEV-101).
+  - **Why the previous best-effort fallback was right as an interim and wrong as an end state:**
+    resolving against the *caller's* map would be **worse than declining** — inside a generic body
+    with a same-named parameter it would silently pick up the WRONG type instead of failing. The
+    helper therefore substitutes explicitly rather than reusing ambient state, and stays
+    best-effort per parameter (an unresolvable entry means no weakening, never a mislowering).
+  - Closes the b2 boundary set: function arguments, fully qualified trait-call arguments, annotated
+    local init, assignment, return expressions — and now generic callees. Aggregate fields remain
+    open only because borrow-carrying nominals are (`WP-C6.1g-a`).
+  - Evidence: 4 new tests in `native_c61f_b2_weakening.rs`.
+
+- CD-097 [2026-07-24, **OWNER DISPOSITIONS — the four C6.1f recorded limitations**] None of the four
+  prevents **WP-C6.1f package closure**; items 1–3 remain explicit **Gate C6** dependencies and item
+  4 leaves the deviation list entirely. Full text in `C6-INTEGRATION-LEDGER.md` §7.
+  - **1. Borrow-carrying nominal values and returns — temporary deviation, ASSIGNED** to
+    **`WP-C6.1g-a` Borrow-Carrying Nominal Lifetime Emission** (Track A). Initial approach is
+    generated lifetime-parameter threading; **no `ValueSlot` or CE4 runtime-layout change without a
+    probe demonstrating necessity**. Blocks Gate C6.
+  - **2. Conservative returned-reference lifetimes — temporary sound over-rejection, ASSIGNED** to
+    **`WP-C6.1g-b` Return-Source Lifetime Precision** (Track A): a result derived only from `a` must
+    not be tied to an unrelated `b`; may-derive-from-either stays tied to both. Blocks Gate C6
+    native-conformance closure.
+  - **3. `Box`/`Vec`/slice native representability — SCOPE-OUT TO C6.3 APPROVED.** Permits C6.1f
+    closure; blocks Gate C6 while those normative forms are unsupported.
+  - **4. `Box` dereference — CORRECT REJECTION, NOT A DEVIATION.** Core v1 defines `Box::new` and
+    `Box::into_inner` and defines no `Box` dereference, `Deref` trait, or method auto-dereference
+    through `Box`. **Removed from the deviation list.** Status documents calling it an
+    implementation gap were corrected — CD-089's bullet here and two rows in
+    `C6-REFERENCE-MATRIX.md`. **The correction was already on record earlier in this file and my
+    CD-089 bullet contradicted it; the error was mine.**
+
+- CD-096 [2026-07-24, **WP-C6.1f — borrow-carrying nominals; lifetime parameters on generated
+  types**] A generated nominal is a *declared* Rust type, so unlike a tuple it cannot borrow
+  implicitly: a reference in a field needs a lifetime parameter or rustc reports `E0106`. Generated
+  nominals now carry one.
+  - **Two spellings, not one.** `Name<'a>` in the type's own declaration; `Name<'_>` at every use
+    site. They are not interchangeable — `'_` is illegal in a field type (no enclosing binder to
+    infer from), while a named `'a` at a use site would demand every use site bind one.
+    `emit_types::LifetimePosition` makes the distinction explicit and `emit_ty_at` threads it
+    through nested types. Only instances that actually carry a borrow gain the parameter, so every
+    existing generated type is byte-identical.
+  - **Working natively:** `Some(&x)`/`None` at `Option<&T>`; matching on `Option<&P>` and using the
+    bound reference; `Option<Option<&T>>`; `Option<&T>` inside a tuple; plain `Option<Int32>`
+    unaffected.
+  - **The C6.1f-a design question, finally located.** §5 predicted `ValueSlot`-versus-borrow-checker
+    would be the crux. b3 showed it was not the blocker for plain references (that was definite
+    assignment) and aggregates showed it was not for tuples (not slot-backed). **It is real here and
+    only here**: a slot-backed borrow-carrying nominal, and a function returning one, both fail
+    `E0502`. **Removing the slot is not an escape — it was tried**: the slot also carries MOVE
+    liveness, so without it the mover fails instead. Both shapes are refused before rustc.
+  - **Validation: full workspace suite exit 0 — 68 suites, zero failures**; `fmt --check` and strict
+    `clippy` clean. Evidence: `starkc/tests/native_c61f_nominals.rs` (6).
+
 - CD-095 [2026-07-24, **WP-C6.1f — borrow-carrying aggregates; tuples/arrays land, nominals
   refused before rustc**] OWN-CARRY-001 makes borrow provenance **structural** — through tuples,
   generic arguments and enum payloads — so a tuple or array of references is ordinary Core v1.
@@ -3254,8 +3316,12 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     argument position) and array → slice unsizing account for all nine MIR-verifier refusals. `&mut`
     params are also **moved rather than reborrowed**, which surfaces as two different failures in
     two different phases (E0100 at typecheck; "move from possibly-moved place" at MIR verify).
-  - **`Box` deref is a front-end gap** (E0001/E0304), separate from `Box`/`Vec`/`str`
-    representability, which is Track C's C6.3.
+  - **`Box` deref is a CORRECT REJECTION, not a gap** (owner disposition CD-097 item 4, and
+    already recorded earlier in this file): Core v1 defines `Box::new`/`Box::into_inner` and has no
+    `Deref` trait; TYPE-METHOD-002 peels only `&`/`&mut`. `*b`, `(*b).field` and method lookup
+    through `Box` are therefore *supposed* to be rejected. **This bullet originally called it a
+    front-end gap, contradicting the correction already on record — the error was mine.**
+    (`Box`/`Vec`/`str` REPRESENTABILITY remains Track C's C6.3.)
   - **Six conformant refusals locked by permanent tests before implementation**
     (`starkc/tests/c61f_reference_boundary.rs`), including the no-NLL case Rust's NLL accepts and
     Core v1 does not. This is the §2 item 10 constraint made mechanical rather than aspirational.

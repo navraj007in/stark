@@ -78,6 +78,10 @@ begin from `db73afe`.
 | C6.1f-b3 | A | Claude | (post-b2) | `emit_places.rs`, `emit_bodies.rs` (owned); `native_c61f_b3_stored_refs.rs` (new) | SHARED-CONTRACTS v1 | none (generated-code shape only — no runtime type, ABI, MIR or verifier change; not CE3/CE4) | `native_c61f_b3_stored_refs.rs` (6) | none | §7J:3 | **CLOSED (CD-093)** — returning a reference and aggregates still open |
 | C6.1f-ret | A | Claude | (post-b3) | `emit_places.rs`, `emit_bodies.rs`, `mir/lower.rs` | SHARED-CONTRACTS v1 | none (generated-code shape + one lowering fallback; no MIR/verifier/ABI change) | `native_c61f_ret_refs.rs` (8) | none | §7J:3 | **CLOSED (CD-094)** — lane check 5 removed; aggregates still refused |
 | C6.1f-agg | A | Claude | (post-ret) | `emit_types.rs`, `emit_places.rs`, `emit_bodies.rs` | SHARED-CONTRACTS v1 | none (generated-code shape only) | `native_c61f_aggregates.rs` (6) | none | §7J:3 | **CLOSED (CD-095)** — tuples/arrays land; borrow-carrying nominals refused pre-rustc |
+| C6.1f-nom | A | Claude | (post-agg) | `emit_types.rs` | SHARED-CONTRACTS v1 | none (generated-code shape only) | `native_c61f_nominals.rs` (6) | none | §7J:3 | **CLOSED (CD-096)** — lifetime params; 2 shapes refused → `WP-C6.1g-a` |
+| C6.1f-b2b | A | Claude | (post-nom) | `mir/lower.rs` | SHARED-CONTRACTS v1 | none | `native_c61f_b2_weakening.rs` (+4) | none | §7J:3 | **CLOSED (CD-098)** — generic-callee weakening |
+| C6.1g-a | A | Claude | (post-C6.1f) | per `WP-C6.1g-a.md` | SHARED-CONTRACTS v1 | none authorised without a probe | — | — | §7J:3 | **OPEN** (CD-097 item 1) — blocks Gate C6 |
+| C6.1g-b | A | Claude | (post-C6.1f) | per `WP-C6.1g-b.md` | SHARED-CONTRACTS v1 | none | — | — | §7J:3 | **OPEN** (CD-097 item 2) — blocks Gate C6 |
 | C6.1f-b4/b5 | A | Claude | (post-agg) | per the matrix §7 split | SHARED-CONTRACTS v1 | none yet | native regressions | — | §7J:3 | **OPEN** |
 | C6.2b | A | Claude | (post-C6.2a) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` | SHARED-CONTRACTS v1 | none (new callee arm using existing MIR ops) | `native_c6_2_generics_traits.rs` (+8 `c62b_*`, 20 total) | **DEV-102 CLOSED**; F1–F6 opened | §7J:3 | **PARTIAL** — DEV-102 closed, §18 matrix probed; F1–F6 await disposition |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
@@ -291,6 +295,33 @@ Drop-log comparison and IO/provider-failure cleanup wait on C6.3 output/resource
   `C6-REFERENCE-MATRIX.md` §7 and **awaits owner approval**; the open question is whether the two
   reborrow/unsizing sub-packages land first as independent conformance fixes (no lane change, no
   CE3) or whether everything waits on the lane design.
+
+- **Owner dispositions [2026-07-24, CD-097] — the four C6.1f recorded limitations.** With these
+  recorded, none of the four prevents **WP-C6.1f package closure**; items 1–3 remain explicit
+  **Gate C6** dependencies and item 4 is removed from the deviation list entirely.
+  1. **Borrow-carrying nominal values and returns — TEMPORARY DEVIATION, ASSIGNED.** `Option<&T>`,
+     user generic nominals at borrow-carrying arguments, and their storage, passage and return are
+     **normative Core v1**; the pre-rustc refusal is approved only as a temporary C6.1f deviation.
+     → **`WP-C6.1g-a` Borrow-Carrying Nominal Lifetime Emission**, Track A. Initial approach is
+     generated lifetime-parameter threading; **no `ValueSlot` or CE4 runtime-layout change is
+     authorised without a probe demonstrating necessity.** Blocks Gate C6, not C6.1f.
+  2. **Conservative returned-reference lifetimes — TEMPORARY SOUND OVER-REJECTION, ASSIGNED.**
+     Tying a result to parameters it cannot derive from rejects valid Core programs.
+     → **`WP-C6.1g-b` Return-Source Lifetime Precision**, Track A. Return provenance must determine
+     the relevant input lifetime set: derived only from `a` must not be tied to `b`; may-derive-from-
+     either stays tied to both. Present behaviour is sound and may remain until it lands. Blocks
+     Gate C6 native-conformance closure, not C6.1f.
+  3. **`Box`/`Vec`/slice native representability — SCOPE-OUT TO C6.3 APPROVED.** Owning
+     representation and Drop, slice representation and parameters, array-to-slice coercions,
+     interior container references and implementation-provided borrowed iterators are Track C's.
+     Outside C6.1f implementation scope. Permits C6.1f closure; blocks Gate C6 while unsupported.
+  4. **`Box` dereference — CORRECT REJECTION, NOT A DEVIATION.** Core v1 defines `Box::new` and
+     `Box::into_inner`; it defines **no** `Box` dereference, no `Deref` trait, and no method
+     auto-dereference through `Box`. `*b`, `(*b).field` and implicit method lookup through `Box`
+     stay rejected. **Removed from the deviation list.** `Box::into_inner` remains required under
+     C6.3. Status documents calling it an implementation gap were corrected — CD-089's bullet in
+     `COMPILER-STATE.md` and two rows in `C6-REFERENCE-MATRIX.md`; the correction had in fact
+     already been recorded earlier in `COMPILER-STATE.md`, and the CD-089 bullet contradicted it.
 
 _(CE3/CE4/CE8/CE9 recorded here before implementation continues — none yet.)_
 

@@ -1,7 +1,7 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 (CD-092)**; **b3 stored references COMPLETE (CD-093)** — §10; **returning a reference COMPLETE (CD-094)** — §11; **aggregates: tuples/arrays COMPLETE, nominals refused (CD-095)** — §12.
+**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE incl. generic callees (CD-092/CD-098)**; **b3 stored references COMPLETE (CD-093)** — §10; **returning a reference COMPLETE (CD-094)** — §11; **aggregates: tuples/arrays (CD-095) — §12; borrow-carrying nominals mostly land (CD-096) — §13.**
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the
@@ -148,7 +148,7 @@ inline as **→ (b1)** and explained in §8; §1 records the C6.1f-a state and i
 | `s[0]` on a `&[Int32]` param | **VERIFY** | slice-parameter representability — **C6.3b** |
 | borrow a `Drop`-bearing owner (param) | **RUN** ✅ |
 | borrow a `Drop`-bearing owner (local) | **BACKEND** | lane |
-| `*b`, `(*b).v`, `b.get()` on `Box<T>` | **FRONT-END** | E0001 / E0304 — **`Box` deref is unimplemented in the front end** |
+| `*b`, `(*b).v`, `b.get()` on `Box<T>` | **CORRECT-REJECT** | E0001 / E0304 — Core v1 has **no `Deref` trait** and TYPE-METHOD-002 peels only `&`/`&mut`; `Box` is defined by `new`/`into_inner` alone. Rejecting these is conformant (owner disposition CD-097 item 4) |
 | `Box::into_inner`, `v[0]` read, `&str` param | **EMIT (representability)** | `Box`/`Vec`/`str` are not C5-representable — **C6.3, Track C** |
 | `Vec::as_slice` | **LOWER** | "a later C4.5e sub-slice" — **C6.3, Track C** |
 
@@ -226,7 +226,7 @@ between user borrows themselves.
 ## 6. Explicitly not C6.1f
 
 Track C (C6.3) owns representability: `Box`, `Vec`, `String`/`str` are not C5-representable, and
-`Vec::as_slice` is unlowered. `Box` **deref** is additionally a front-end gap (E0001/E0304). C6.1f
+`Vec::as_slice` is unlowered. `Box` **deref** is NOT a gap — Core v1 defines no `Deref` trait, so rejecting `*b` is conformant (CD-097 item 4). C6.1f
 should assume these arrive from C6.3 and must not implement them; the reference machinery it builds
 is what C6.3b then consumes for slice provenance and `Box` borrow/deref.
 
@@ -449,7 +449,7 @@ Still open in C6.1f:
 
 | Item | Where |
 |---|---|
-| aggregate-field weakening; generic-callee argument weakening | b2 continuation |
+| aggregate-field weakening — open only because borrow-carrying nominals are (`WP-C6.1g-a`) | C6.1g-a |
 | `&&T` / `**x` unspellable (parser) | b4 |
 | the E0103 `if`-branch message | b5 |
 
@@ -559,3 +559,54 @@ Lifetime parameters threaded through generated type declarations (`enum core_x<'
 **every** use site — field types, local declarations, function signatures, drop glue, variant
 construction, and match patterns. It interacts with the shared-`'a` signature machinery §11.2 added
 for reference returns. That is a self-contained next step, not a small edit.
+
+
+---
+
+## 13. Borrow-carrying nominals (CD-096)
+
+A generated nominal is a **declared** Rust type, so unlike a tuple it cannot borrow implicitly: a
+reference in a field needs a lifetime parameter or rustc reports `E0106`. Generated nominals now
+carry one.
+
+### 13.1 Two spellings, not one
+
+`Name<'a>` in the type's own declaration; `Name<'_>` at every use site. They are **not**
+interchangeable — `'_` is illegal in a field type, which has no enclosing binder to infer from,
+while a named `'a` at a use site would demand every use site bind one. `emit_types::LifetimePosition`
+makes the distinction explicit, and `emit_ty_at` threads it through nested types, so a nominal
+inside a nominal's declaration resolves to `'a` while the same type in a local resolves to `'_`.
+
+Only instances that actually carry a borrow gain the parameter, so every existing generated type is
+byte-identical.
+
+**Working natively:** `Some(&x)` and `None` at `Option<&T>`; matching on `Option<&P>` and using the
+bound reference; `Option<Option<&T>>`; `Option<&T>` inside a tuple; and — checked deliberately — a
+plain `Option<Int32>`, to confirm non-borrowing nominals are untouched.
+
+### 13.2 The C6.1f-a design question, finally located
+
+§5 predicted the crux would be `ValueSlot` versus Rust's borrow checker. b3 showed it was *not* the
+blocker for plain references (that was definite assignment), and aggregates showed it was not the
+blocker for tuples (they are not slot-backed). **It is real here, and only here.**
+
+Two shapes remain refused, both `E0502` in the generated crate:
+
+| Shape | Why |
+|---|---|
+| **slot-backed** (non-`Copy`) borrow-carrying nominal — a user struct/enum at a reference | Its `ValueSlot`'s destruction and moves need `&mut` on the slot, while the reference it stores still borrows its referent's slot immutably. Rust treats those as overlapping across the local's whole lexical region, even though MIR drops the borrower first. |
+| a function **returning** a borrow-carrying nominal | The elided output lifetime keeps the borrow live across the referent's own slot destruction. |
+
+**Removing the slot is not an escape.** It was tried: a `ValueSlot` also carries **move** liveness,
+so without it the mover fails instead (`move out of the non-slot place`). The slot is load-bearing
+for two independent reasons and only one of them is destruction.
+
+Both shapes are refused **before rustc**, with messages naming the shape and what does work — the
+same boundary discipline as everywhere else in this package.
+
+### 13.3 What resolving it would need
+
+Reconciling MIR's slot-based liveness with Rust's borrow regions: either a slot representation whose
+destruction does not require `&mut` over the borrow's region, or emitting borrow-carrying nominals
+without slots while recovering move liveness some other way. That is a representation change, so it
+is **CE4-shaped** and should not be attempted inside this package without a ruling.
