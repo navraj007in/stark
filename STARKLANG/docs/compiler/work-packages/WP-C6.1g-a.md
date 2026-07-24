@@ -54,3 +54,79 @@ The slot also carries **move** liveness, so without it the mover fails instead
   refused deterministically with a named limitation, never left to rustc.
 - The C6.1f negative corpus (`c61f_reference_boundary.rs`) passes unaltered — no NLL expansion.
 - Full workspace suite, `fmt --check`, strict `clippy` clean.
+
+---
+
+## 5. Probe (2026-07-24) — lifetime threading done; the residual needs a `ValueSlot` decision
+
+Per §2, no `ValueSlot`/CE4 change is attempted without a probe demonstrating necessity. Here it is.
+
+### 5.1 Lifetime threading is complete and sufficient for most shapes
+
+Generated nominals carry lifetime parameters (`Name<'a>` in the declaration, `Name<'_>` at use
+sites — CD-096). The generated types are correct: e.g. `struct H_…<'a> { f0: &'a P }` and
+`let _3: ValueSlot<H_…<'_>> = ValueSlot::dead();`. This is what already makes `Option<&T>`,
+`Option<Option<&T>>`, `Option<&T>`-in-a-tuple, and every tuple/array of references build and run.
+
+### 5.2 The residual two shapes fail for a reason lifetimes cannot fix
+
+Bounding probe (four programs, native rustc):
+
+| Shape | Borrow-carrier | Slot-backed? | Result |
+|---|---|---|---|
+| `Option<&Int32>` local | `Option<&_>` | **no** (Copy) | ✅ runs |
+| `Option<&P>` local (P non-Copy) | `Option<&_>` | **no** (Copy) | ✅ runs |
+| `H<&Int32>` (Copy referent) | `struct H<T>` | **yes** (Move) | ❌ `E0506` |
+| `H<&P>` (non-Copy referent) | `struct H<T>` | **yes** (Move) | ❌ `E0502` |
+
+The failure tracks **exactly one variable: is the borrow-carrier slot-backed.** `Option<&T>` is
+`Copy`, so it is never slot-backed and always works. A user `struct H<T>` is `Move` even when its
+only field is a reference (CD-031: only an `impl Copy` makes a struct `Copy`), so `H<&P>` is
+slot-backed and always fails. The referent's own copy-ness is irrelevant — `H<&Int32>` fails too.
+
+### 5.3 Exact mechanism
+
+Every body is one `loop { match __bb { … } }`. For `let h: H<&P> = H { r: &p }`:
+
+```rust
+0 => {
+    _1.reinit(_2.take());   // &mut _1   (the referent slot)
+    _4 = _1.get();          // &_1       (immutable borrow of the referent)
+    _5.reinit(H { f0: _4 }); // _4 flows into a ValueSlot that persists across the loop
+    _3.reinit(_5.take());    // … and into _3
+    ...
+```
+
+rustc reports `E0502` on `_1.reinit` with *"immutable borrow later used here"*. In straight-line
+order there is no conflict (`reinit` precedes the borrow). The conflict is the **loop back-edge**:
+rustc cannot see block 0 runs once, so it assumes `_1.reinit` (a `&mut`) could re-execute while the
+borrow held in `_3` — a `ValueSlot` **live for the entire loop** — is still outstanding. This is the
+borrow-analog of the `E0381` definite-assignment wall b3 hit; there the dispatch loop defeated
+rustc's initialization analysis, here it defeats its borrow analysis.
+
+### 5.4 Why lifetime threading cannot resolve it, and why the slot cannot simply be removed
+
+- The lifetimes are already correct; the problem is a **value that outlives the loop while holding a
+  borrow**, not a mis-spelled lifetime. No arrangement of `'a`/`'_` changes that a `ValueSlot`
+  local is live across every block.
+- Removing the slot is **not** available: it also carries **move** liveness. `_5.take()` moves the
+  nominal slot-to-slot, and a prior attempt to skip the slot for no-drop borrow-carriers produced
+  `move out of the non-slot place`. The slot is load-bearing for moves independently of drops.
+
+### 5.5 Escalation
+
+This is the `ValueSlot`-versus-Rust-borrow-region tension the C6.1f-a matrix named as the central
+design question, now isolated to non-Copy borrow-carrying nominals and demonstrated to be
+lifetime-irreducible. Resolving it needs one of:
+
+1. a **slot representation** that carries move/drop liveness without pinning a stored borrow across
+   the dispatch loop (runtime-shape change — **CE4-shaped**); or
+2. classifying an `impl Copy`-less, all-reference-field nominal as **Copy** so it is never
+   slot-backed (a front-end/`TypeContext` semantics change — touches CD-031's Move-by-default rule,
+   **CE3-shaped**, and cross-cuts Track B); or
+3. a **generated control-flow** structure rustc can linearize per block (a whole-backend change far
+   beyond this package).
+
+Per §2 this stops here for an owner decision on the approach rather than proceeding into a
+representation change. The current deterministic pre-rustc refusal (CD-096) remains in force and
+sound in the meantime.
