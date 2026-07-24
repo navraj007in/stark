@@ -1233,6 +1233,28 @@ impl Parser<'_> {
                 self.ast
                     .alloc_type(TypeKind::Ref { mutable, inner }, self.span_from(lo))
             }
+            // WP-C6.1f-b4: `&&T`. The lexer emits ONE `&&` token because that is the logical-AND
+            // operator, but in TYPE position it can only be two borrows, so it is split here rather
+            // than in the lexer -- which has no way to know which position it is in. `&&mut T` is a
+            // shared reference to a mutable one, so the `mut` binds to the INNER reference.
+            //
+            // Nested reference types are normative: TYPE-METHOD-002's auto-dereference "repeatedly
+            // removes one leading `&`/`&mut`", which presupposes they can be written.
+            TokenKind::AndAnd => {
+                self.bump();
+                let mutable = self.eat_kw(Kw::Mut);
+                let inner = self.ty();
+                let inner_ref = self
+                    .ast
+                    .alloc_type(TypeKind::Ref { mutable, inner }, self.span_from(lo));
+                self.ast.alloc_type(
+                    TypeKind::Ref {
+                        mutable: false,
+                        inner: inner_ref,
+                    },
+                    self.span_from(lo),
+                )
+            }
             TokenKind::Keyword(Kw::Fn) => {
                 self.bump();
                 self.expect(TokenKind::LParen, "`(`");
@@ -1531,6 +1553,38 @@ impl Parser<'_> {
                     ExprKind::Unary {
                         op: UnOp::Ref { mutable },
                         operand,
+                    },
+                    self.span_from(lo),
+                );
+            }
+            // WP-C6.1f-b4: `**x` and `&&x`. Both are single tokens (`**` is exponentiation, `&&`
+            // logical AND) that in PREFIX position can only be two unary operators. Split here for
+            // the same reason as the `&&T` type: the lexer cannot know the position. `&&mut x`
+            // takes a shared reference to a mutable borrow, so `mut` binds to the inner one.
+            TokenKind::StarStar | TokenKind::AndAnd => {
+                let outer_amp = matches!(token.kind, TokenKind::AndAnd);
+                self.bump();
+                let mutable = outer_amp && self.eat_kw(Kw::Mut);
+                let operand = self.unary_expr(r);
+                let inner = self.ast.alloc_expr(
+                    ExprKind::Unary {
+                        op: if outer_amp {
+                            UnOp::Ref { mutable }
+                        } else {
+                            UnOp::Deref
+                        },
+                        operand,
+                    },
+                    self.span_from(lo),
+                );
+                return self.ast.alloc_expr(
+                    ExprKind::Unary {
+                        op: if outer_amp {
+                            UnOp::Ref { mutable: false }
+                        } else {
+                            UnOp::Deref
+                        },
+                        operand: inner,
                     },
                     self.span_from(lo),
                 );

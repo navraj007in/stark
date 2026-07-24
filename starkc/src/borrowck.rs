@@ -392,6 +392,13 @@ impl<'a> BorrowChecker<'a> {
 
         // Parameters are initially owned/borrowed (not moved)
         self.check_block(def.body);
+        // WP-C6.1f-b5: the return-escape check belongs to the FUNCTION BODY's tail, not to every
+        // nested block's. `borrowed_local` recurses through `Block`, `If` and `Match`, so applying
+        // it once here still finds a reference to a local that reaches the return through any of
+        // them -- while a nested block's tail on its own is not a return at all.
+        if let Some(tail_expr) = self.hir.block(def.body).tail {
+            self.check_return_escape(tail_expr);
+        }
     }
 
     fn check_block(&mut self, block_id: BlockId) {
@@ -406,7 +413,14 @@ impl<'a> BorrowChecker<'a> {
 
         if let Some(tail_expr) = block.tail {
             self.check_owned_value(tail_expr);
-            self.check_return_escape(tail_expr);
+            // WP-C6.1f-b5: the escape check is NOT applied here -- it is applied once to the
+            // FUNCTION BODY's tail in `check_fn_def`, and to every `return` statement. A nested
+            // block's tail is not a return: `let r = if c { &p } else { &q };` has `&p` as an
+            // `if`-branch tail, and reporting E0103 "cannot return reference to local stack
+            // variable" for it was both a wrong diagnosis (nothing is returned) and an
+            // over-rejection -- OWN-CARRY-001 explicitly contemplates a control-flow merge, which
+            // "carries the union of possible source referents" with a region no larger than the
+            // intersection of theirs. It even fired when both branches borrowed the SAME owner.
         }
 
         // Pop block-scoped borrows
