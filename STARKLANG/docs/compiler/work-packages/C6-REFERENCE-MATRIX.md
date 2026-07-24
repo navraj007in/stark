@@ -1,7 +1,7 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE incl. generic callees (CD-092/CD-098)**; **b3 stored references COMPLETE (CD-093)** — §10; **returning a reference COMPLETE (CD-094)** — §11; **aggregates: tuples/arrays (CD-095) — §12; borrow-carrying nominals mostly land (CD-096) — §13.**
+**Status:** WP-C6.1f CLOSED (CD-099) — see `WP-C6.1f-CLOSURE.md`. C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE incl. generic callees (CD-092/CD-098)**; **b3 stored references COMPLETE (CD-093)** — §10; **returning a reference COMPLETE (CD-094)** — §11; **aggregates: tuples/arrays (CD-095) — §12; borrow-carrying nominals mostly land (CD-096) — §13.**
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the

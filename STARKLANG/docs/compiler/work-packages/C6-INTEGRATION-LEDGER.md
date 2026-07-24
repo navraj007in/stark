@@ -113,7 +113,7 @@ state/doc update.
 
 ## 5b. WP-C6.1a–e closure (Track A)
 
-**WP-C6.1a–e — ownership and Drop parity — CLOSED 2026-07-23** (CD-080…CD-084). **C6.1a–e closed; C6.1f OPEN** because the C5 general-reference deferral was not assigned during
+**WP-C6.1 — CLOSED 2026-07-24.** C6.1a–e (ownership and Drop parity, CD-080…CD-084, 2026-07-23) and **C6.1f (general reference storage) CLOSED (CD-099)** — see `WP-C6.1f-CLOSURE.md`. C6.1f was opened because the C5 general-reference deferral was not assigned during
 C6 planning (owner ruling, C6.2b F3, 2026-07-23). This is a **scope correction, not evidence that
 the completed Drop and ownership work was invalid** — see `WP-C6.1f.md`.
 

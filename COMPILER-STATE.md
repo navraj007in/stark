@@ -1,15 +1,14 @@
 # STARK Compiler STATE
 Updated: 2026-07-24 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
 WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop parity, Track A) CLOSED
-(CD-080…CD-084) with WP-C6.1f OPEN** (general reference storage — the C5 deferral the C6 entry plan
-never assigned; scope correction, not a defect in the closed work), and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
+(CD-080…CD-084) and **WP-C6.1f CLOSED (CD-099)** (general reference storage — the C5 deferral the C6
+entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
-Remaining C6: **WP-C6.1f implementation COMPLETE for every unblocked item** — a/b1 (CD-089/090),
-b2 incl. generic callees (CD-092/CD-098), b3 stored refs (CD-093), reference returns (CD-094),
-aggregates (CD-095), borrow-carrying nominals (CD-096), b4/b5 nested-ref syntax and escape-check
-scoping (CD-097a). **Owner dispositions recorded (CD-097)**; `WP-C6.1g-a`/`-b` opened and block
-Gate C6, not C6.1f. Remaining: the C6.1f closure packet. Also open: F1
+Remaining C6: **WP-C6.1 CLOSED (CD-099)** — closure packet `WP-C6.1f-CLOSURE.md`. Gate-C6
+dependencies carried out of it (all owner-dispositioned, CD-097): `WP-C6.1g-a` (nominal lifetime
+emission), `WP-C6.1g-b` (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
+Also open: F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3050,6 +3049,20 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-099 [2026-07-24, **WP-C6.1 CLOSED**] All ten `WP-C6.1f.md` §2 scope items are implemented with
+  native evidence or carry an owner-approved disposition, and all five exit criteria are met:
+  reference storage, cross-block flow, reference parameters, nested references (representation +
+  syntax), reborrowing (receiver + argument, incl. generic callees), reference returns, and
+  borrow-carrying aggregates and most nominals all build and run natively with three-engine
+  agreement; move-while-borrowed and the no-NLL case are correctly rejected and pinned. The full
+  workspace suite is green (exit 0, 68 suites); `fmt --check` and strict `clippy` clean. Four
+  limitations carried out of the package, all owner-dispositioned under CD-097 and **none blocking
+  this closure**: borrow-carrying nominal slot/return shapes (`WP-C6.1g-a`), conservative return
+  lifetimes (`WP-C6.1g-b`), `Box`/`Vec`/slice representability (C6.3), and `Box` deref (correct
+  rejection, not a deviation). **C6.1f closure does NOT move Gate C6** — the first three remain
+  explicit Gate-C6 dependencies. Packet: `WP-C6.1f-CLOSURE.md`. With C6.1a–e (CD-080…084),
+  **WP-C6.1 as a whole is closed.**
 
 - CD-098 [2026-07-24, **WP-C6.1f-b2 completion — generic-callee argument weakening**] The last
   unblocked implementation item in C6.1f. A generic callee's `fn_types` entry still names the
