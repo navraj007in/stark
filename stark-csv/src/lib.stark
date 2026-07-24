@@ -1,0 +1,565 @@
+// stark-csv v0.1 -- strict deterministic CSV derived from RFC 4180 with explicitly frozen v0.1
+// edge semantics. See README.md for the exact dialect and BLOCKERS.md for known limitations.
+//
+// Public entry points are free functions, not associated functions: the repository currently has
+// a cross-file associated-function resolution gap (a `Type::function()` path only resolves within
+// the file that declares the `impl` block), so `CsvParser::new`-style entry points would not
+// resolve from this package's own tests.stark, let alone from another package.
+
+/// Typed CSV parse/write errors. Every offset and index is zero-based.
+///
+/// - `InputTooLarge(actual_bytes, limit)` -- the input is larger than `CsvLimits::max_input_bytes`.
+/// - `TooManyRecords(attempted_records, limit)` -- more records than `CsvLimits::max_records`.
+/// - `TooManyFields(record, attempted_fields, limit)` -- more fields in one record than
+///   `CsvLimits::max_fields_per_record`.
+/// - `TooManyTotalFields(attempted_total_fields, limit)` -- more fields across the whole document
+///   than `CsvLimits::max_total_fields`.
+/// - `FieldTooLarge(record, field, attempted_bytes, limit)` -- a decoded field exceeds
+///   `CsvLimits::max_field_bytes`.
+/// - `QuoteInUnquotedField(offset, record, field)` -- a quote byte appeared after unquoted field
+///   content; a quote only opens a quoted field as the field's first byte.
+/// - `UnexpectedAfterClosingQuote(offset, record, field, byte)` -- a byte other than
+///   comma/LF/CRLF/EOF followed a closing quote.
+/// - `BareCarriageReturn(offset, record, field)` -- a bare CR (not followed by LF) appeared
+///   outside a quoted field.
+/// - `UnterminatedQuotedField(opening_quote_offset, record, field)` -- input ended while a quoted
+///   field was still open.
+/// - `OutputTooLarge(attempted_bytes, limit)` -- serialized output exceeds
+///   `CsvLimits::max_output_bytes`.
+pub enum CsvError {
+    InputTooLarge(UInt64, UInt64),
+    TooManyRecords(UInt64, UInt64),
+    TooManyFields(UInt64, UInt64, UInt64),
+    TooManyTotalFields(UInt64, UInt64),
+    FieldTooLarge(UInt64, UInt64, UInt64, UInt64),
+    QuoteInUnquotedField(UInt64, UInt64, UInt64),
+    UnexpectedAfterClosingQuote(UInt64, UInt64, UInt64, UInt8),
+    BareCarriageReturn(UInt64, UInt64, UInt64),
+    UnterminatedQuotedField(UInt64, UInt64, UInt64),
+    OutputTooLarge(UInt64, UInt64),
+}
+
+/// Explicit resource limits for parsing and writing. Fields are package-private; construct with
+/// [`default_limits`] or [`limits`].
+pub struct CsvLimits {
+    max_input_bytes: UInt64,
+    max_records: UInt64,
+    max_fields_per_record: UInt64,
+    max_total_fields: UInt64,
+    max_field_bytes: UInt64,
+    max_output_bytes: UInt64,
+}
+
+/// The default limits: 16 MiB input, 100,000 records, 10,000 fields per record, 1,000,000 total
+/// fields, 1 MiB per field, 16 MiB output.
+pub fn default_limits() -> CsvLimits {
+    CsvLimits {
+        max_input_bytes: 16777216u64,
+        max_records: 100000u64,
+        max_fields_per_record: 10000u64,
+        max_total_fields: 1000000u64,
+        max_field_bytes: 1048576u64,
+        max_output_bytes: 16777216u64,
+    }
+}
+
+/// Construct explicit limits. A `0` value means zero permitted, not unlimited.
+pub fn limits(
+    max_input_bytes: UInt64,
+    max_records: UInt64,
+    max_fields_per_record: UInt64,
+    max_total_fields: UInt64,
+    max_field_bytes: UInt64,
+    max_output_bytes: UInt64,
+) -> CsvLimits {
+    CsvLimits {
+        max_input_bytes: max_input_bytes,
+        max_records: max_records,
+        max_fields_per_record: max_fields_per_record,
+        max_total_fields: max_total_fields,
+        max_field_bytes: max_field_bytes,
+        max_output_bytes: max_output_bytes,
+    }
+}
+
+/// Parse UTF-8 CSV text under [`default_limits`]. See [`parse_with_limits`].
+pub fn parse(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    parse_with_limits(input, &default_limits())
+}
+
+/// Parse UTF-8 CSV text: comma-delimited, double-quote-quoted, doubled-quote-escaped, LF or CRLF
+/// input record separators. Returns decoded records in source order; quote syntax is removed and
+/// doubled quotes become one quote. Malformed input returns a typed [`CsvError`], never a trap.
+pub fn parse_with_limits(input: &str, limits: &CsvLimits) -> Result<Vec<Vec<String>>, CsvError> {
+    parse_internal(input, limits)
+}
+
+/// Serialize records to canonical CSV text under [`default_limits`]. See [`write_with_limits`].
+pub fn write(records: &Vec<Vec<String>>) -> Result<String, CsvError> {
+    write_with_limits(records, &default_limits())
+}
+
+/// Serialize records to canonical CSV text: CRLF between records (none trailing), minimal
+/// deterministic quoting (only when a field contains a comma, quote, CR or LF), doubled quotes,
+/// exact UTF-8 preservation. A record with zero fields writes as an empty record (indistinguishable
+/// from a one-empty-field record; re-parsing yields `[""]` for it -- CSV cannot represent the
+/// difference).
+pub fn write_with_limits(records: &Vec<Vec<String>>, limits: &CsvLimits) -> Result<String, CsvError> {
+    write_internal(records, limits)
+}
+
+// ============================================================================= constants ==
+
+const COMMA: UInt8 = 44u8;
+const QUOTE: UInt8 = 34u8;
+const CR: UInt8 = 13u8;
+const LF: UInt8 = 10u8;
+const U64_MAX: UInt64 = 18446744073709551615u64;
+
+// =========================================================================== parser state ==
+
+enum ParseState {
+    StartField,
+    InUnquoted,
+    InQuoted,
+    AfterClosingQuote,
+}
+
+/// §16: attempted decoded field bytes if `addition` more bytes were appended to `current`, with an
+/// overflow guard -- overflow counts as exceeding the limit, never traps.
+fn attempted_bytes(current: UInt64, addition: UInt64) -> UInt64 {
+    if current > U64_MAX - addition {
+        U64_MAX
+    } else {
+        current + addition
+    }
+}
+
+/// §14/§16: append `text` to `output` (a field under construction), enforcing `limit` first.
+fn append_checked(
+    output: &mut String,
+    text: &str,
+    record_index: UInt64,
+    field_index: UInt64,
+    limit: UInt64,
+) -> Result<(), CsvError> {
+    let attempted = attempted_bytes(output.len(), text.len());
+    if attempted > limit {
+        return Err(CsvError::FieldTooLarge(record_index, field_index, attempted, limit));
+    }
+    output.push_str(text);
+    Ok(())
+}
+
+/// §16: append one escaped-quote-decoded character -- "exactly one decoded byte" -- to `output`.
+fn append_char_checked(
+    output: &mut String,
+    ch: Char,
+    record_index: UInt64,
+    field_index: UInt64,
+    limit: UInt64,
+) -> Result<(), CsvError> {
+    let attempted = attempted_bytes(output.len(), 1u64);
+    if attempted > limit {
+        return Err(CsvError::FieldTooLarge(record_index, field_index, attempted, limit));
+    }
+    output.push(ch);
+    Ok(())
+}
+
+/// §14: field-count limits, checked at field finalization, before the record-count limit.
+fn check_field_limits(
+    record_index: UInt64,
+    field_index: UInt64,
+    total_field_count: UInt64,
+    limits: &CsvLimits,
+) -> Result<(), CsvError> {
+    let attempted_fields = if field_index == U64_MAX {
+        U64_MAX
+    } else {
+        field_index + 1u64
+    };
+    if attempted_fields > limits.max_fields_per_record {
+        return Err(
+            CsvError::TooManyFields(record_index, attempted_fields, limits.max_fields_per_record),
+        );
+    }
+    let attempted_total = if total_field_count == U64_MAX {
+        U64_MAX
+    } else {
+        total_field_count + 1u64
+    };
+    if attempted_total > limits.max_total_fields {
+        return Err(CsvError::TooManyTotalFields(attempted_total, limits.max_total_fields));
+    }
+    Ok(())
+}
+
+/// §14: the record-count limit, checked at record finalization.
+fn check_record_limits(record_index: UInt64, limits: &CsvLimits) -> Result<(), CsvError> {
+    let attempted = if record_index == U64_MAX {
+        U64_MAX
+    } else {
+        record_index + 1u64
+    };
+    if attempted > limits.max_records {
+        return Err(CsvError::TooManyRecords(attempted, limits.max_records));
+    }
+    Ok(())
+}
+
+/// §15: the four-state parser. Scans `input` byte-by-byte; every structural byte (comma, quote,
+/// CR, LF) is ASCII, so byte-level scanning never lands mid-UTF-8-sequence, and every substring
+/// span taken from `input` starts/ends at an input boundary or immediately beside one of those
+/// bytes -- always a valid UTF-8 boundary (§11).
+fn parse_internal(input: &str, limits: &CsvLimits) -> Result<Vec<Vec<String>>, CsvError> {
+    let input_len = input.len();
+    if input_len > limits.max_input_bytes {
+        return Err(CsvError::InputTooLarge(input_len, limits.max_input_bytes));
+    }
+
+    let bytes = input.bytes();
+
+    let mut records: Vec<Vec<String>> = Vec::new();
+    let mut current_record: Vec<String> = Vec::new();
+    let mut current_field: String = String::new();
+    let mut state = ParseState::StartField;
+    let mut byte_index: UInt64 = 0u64;
+    let mut segment_start: UInt64 = 0u64;
+    let mut opening_quote_offset: UInt64 = 0u64;
+    let mut record_index: UInt64 = 0u64;
+    let mut field_index: UInt64 = 0u64;
+    let mut total_field_count: UInt64 = 0u64;
+    let mut record_open: Bool = false;
+
+    while byte_index < input_len {
+        let b = bytes[byte_index];
+        match state {
+            ParseState::StartField => {
+                if b == QUOTE {
+                    state = ParseState::InQuoted;
+                    opening_quote_offset = byte_index;
+                    byte_index = byte_index + 1u64;
+                    segment_start = byte_index;
+                    record_open = true;
+                } else if b == COMMA {
+                    check_field_limits(record_index, field_index, total_field_count, limits)?;
+                    current_record.push(current_field);
+                    current_field = String::new();
+                    field_index = field_index + 1u64;
+                    total_field_count = total_field_count + 1u64;
+                    record_open = true;
+                    byte_index = byte_index + 1u64;
+                    segment_start = byte_index;
+                } else if b == LF {
+                    check_field_limits(record_index, field_index, total_field_count, limits)?;
+                    current_record.push(current_field);
+                    current_field = String::new();
+                    field_index = field_index + 1u64;
+                    total_field_count = total_field_count + 1u64;
+                    check_record_limits(record_index, limits)?;
+                    records.push(current_record);
+                    current_record = Vec::new();
+                    record_index = record_index + 1u64;
+                    field_index = 0u64;
+                    record_open = false;
+                    byte_index = byte_index + 1u64;
+                    segment_start = byte_index;
+                } else if b == CR {
+                    if byte_index + 1u64 < input_len && bytes[byte_index + 1u64] == LF {
+                        check_field_limits(record_index, field_index, total_field_count, limits)?;
+                        current_record.push(current_field);
+                        current_field = String::new();
+                        field_index = field_index + 1u64;
+                        total_field_count = total_field_count + 1u64;
+                        check_record_limits(record_index, limits)?;
+                        records.push(current_record);
+                        current_record = Vec::new();
+                        record_index = record_index + 1u64;
+                        field_index = 0u64;
+                        record_open = false;
+                        byte_index = byte_index + 2u64;
+                        segment_start = byte_index;
+                    } else {
+                        return Err(
+                            CsvError::BareCarriageReturn(byte_index, record_index, field_index),
+                        );
+                    }
+                } else {
+                    state = ParseState::InUnquoted;
+                    segment_start = byte_index;
+                    record_open = true;
+                    byte_index = byte_index + 1u64;
+                }
+            }
+            ParseState::InUnquoted => {
+                if b == COMMA {
+                    append_checked(
+                        &mut current_field,
+                        input.substring(segment_start, byte_index),
+                        record_index,
+                        field_index,
+                        limits.max_field_bytes,
+                    )?;
+                    check_field_limits(record_index, field_index, total_field_count, limits)?;
+                    current_record.push(current_field);
+                    current_field = String::new();
+                    field_index = field_index + 1u64;
+                    total_field_count = total_field_count + 1u64;
+                    state = ParseState::StartField;
+                    byte_index = byte_index + 1u64;
+                    segment_start = byte_index;
+                } else if b == LF {
+                    append_checked(
+                        &mut current_field,
+                        input.substring(segment_start, byte_index),
+                        record_index,
+                        field_index,
+                        limits.max_field_bytes,
+                    )?;
+                    check_field_limits(record_index, field_index, total_field_count, limits)?;
+                    current_record.push(current_field);
+                    current_field = String::new();
+                    field_index = field_index + 1u64;
+                    total_field_count = total_field_count + 1u64;
+                    check_record_limits(record_index, limits)?;
+                    records.push(current_record);
+                    current_record = Vec::new();
+                    record_index = record_index + 1u64;
+                    field_index = 0u64;
+                    state = ParseState::StartField;
+                    record_open = false;
+                    byte_index = byte_index + 1u64;
+                    segment_start = byte_index;
+                } else if b == CR {
+                    if byte_index + 1u64 < input_len && bytes[byte_index + 1u64] == LF {
+                        append_checked(
+                            &mut current_field,
+                            input.substring(segment_start, byte_index),
+                            record_index,
+                            field_index,
+                            limits.max_field_bytes,
+                        )?;
+                        check_field_limits(record_index, field_index, total_field_count, limits)?;
+                        current_record.push(current_field);
+                        current_field = String::new();
+                        field_index = field_index + 1u64;
+                        total_field_count = total_field_count + 1u64;
+                        check_record_limits(record_index, limits)?;
+                        records.push(current_record);
+                        current_record = Vec::new();
+                        record_index = record_index + 1u64;
+                        field_index = 0u64;
+                        state = ParseState::StartField;
+                        record_open = false;
+                        byte_index = byte_index + 2u64;
+                        segment_start = byte_index;
+                    } else {
+                        return Err(
+                            CsvError::BareCarriageReturn(byte_index, record_index, field_index),
+                        );
+                    }
+                } else if b == QUOTE {
+                    return Err(
+                        CsvError::QuoteInUnquotedField(byte_index, record_index, field_index),
+                    );
+                } else {
+                    byte_index = byte_index + 1u64;
+                }
+            }
+            ParseState::InQuoted => {
+                if b == QUOTE {
+                    append_checked(
+                        &mut current_field,
+                        input.substring(segment_start, byte_index),
+                        record_index,
+                        field_index,
+                        limits.max_field_bytes,
+                    )?;
+                    if byte_index + 1u64 < input_len && bytes[byte_index + 1u64] == QUOTE {
+                        append_char_checked(
+                            &mut current_field,
+                            '"',
+                            record_index,
+                            field_index,
+                            limits.max_field_bytes,
+                        )?;
+                        byte_index = byte_index + 2u64;
+                        segment_start = byte_index;
+                    } else {
+                        byte_index = byte_index + 1u64;
+                        state = ParseState::AfterClosingQuote;
+                    }
+                } else {
+                    byte_index = byte_index + 1u64;
+                }
+            }
+            ParseState::AfterClosingQuote => {
+                if b == COMMA {
+                    check_field_limits(record_index, field_index, total_field_count, limits)?;
+                    current_record.push(current_field);
+                    current_field = String::new();
+                    field_index = field_index + 1u64;
+                    total_field_count = total_field_count + 1u64;
+                    state = ParseState::StartField;
+                    byte_index = byte_index + 1u64;
+                    segment_start = byte_index;
+                } else if b == LF {
+                    check_field_limits(record_index, field_index, total_field_count, limits)?;
+                    current_record.push(current_field);
+                    current_field = String::new();
+                    field_index = field_index + 1u64;
+                    total_field_count = total_field_count + 1u64;
+                    check_record_limits(record_index, limits)?;
+                    records.push(current_record);
+                    current_record = Vec::new();
+                    record_index = record_index + 1u64;
+                    field_index = 0u64;
+                    state = ParseState::StartField;
+                    record_open = false;
+                    byte_index = byte_index + 1u64;
+                    segment_start = byte_index;
+                } else if b == CR {
+                    if byte_index + 1u64 < input_len && bytes[byte_index + 1u64] == LF {
+                        check_field_limits(record_index, field_index, total_field_count, limits)?;
+                        current_record.push(current_field);
+                        current_field = String::new();
+                        field_index = field_index + 1u64;
+                        total_field_count = total_field_count + 1u64;
+                        check_record_limits(record_index, limits)?;
+                        records.push(current_record);
+                        current_record = Vec::new();
+                        record_index = record_index + 1u64;
+                        field_index = 0u64;
+                        state = ParseState::StartField;
+                        record_open = false;
+                        byte_index = byte_index + 2u64;
+                        segment_start = byte_index;
+                    } else {
+                        return Err(
+                            CsvError::BareCarriageReturn(byte_index, record_index, field_index),
+                        );
+                    }
+                } else {
+                    return Err(
+                        CsvError::UnexpectedAfterClosingQuote(
+                            byte_index,
+                            record_index,
+                            field_index,
+                            b,
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    match state {
+        ParseState::InQuoted => {
+            return Err(
+                CsvError::UnterminatedQuotedField(opening_quote_offset, record_index, field_index),
+            );
+        }
+        ParseState::InUnquoted => {
+            append_checked(
+                &mut current_field,
+                input.substring(segment_start, byte_index),
+                record_index,
+                field_index,
+                limits.max_field_bytes,
+            )?;
+        }
+        ParseState::StartField => {}
+        ParseState::AfterClosingQuote => {}
+    }
+
+    if record_open {
+        check_field_limits(record_index, field_index, total_field_count, limits)?;
+        current_record.push(current_field);
+        check_record_limits(record_index, limits)?;
+        records.push(current_record);
+    }
+
+    Ok(records)
+}
+
+// =========================================================================== writer ==
+
+/// §17.4: append `text` to `output`, enforcing `limit` first.
+fn append_output_checked(output: &mut String, text: &str, limit: UInt64) -> Result<(), CsvError> {
+    let attempted = attempted_bytes(output.len(), text.len());
+    if attempted > limit {
+        return Err(CsvError::OutputTooLarge(attempted, limit));
+    }
+    output.push_str(text);
+    Ok(())
+}
+
+/// §17.2: quote a field if and only if it contains a comma, quote, CR or LF.
+fn field_requires_quotes(field: &str) -> Bool {
+    let bytes = field.bytes();
+    let len = bytes.len();
+    let mut i: UInt64 = 0u64;
+    while i < len {
+        let b = bytes[i];
+        if b == COMMA || b == QUOTE || b == CR || b == LF {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+/// §17.3: write a quoted field's content -- every quote doubled, everything else preserved
+/// exactly.
+fn write_quoted_content_checked(output: &mut String, field: &str, limit: UInt64) -> Result<(), CsvError> {
+    let bytes = field.bytes();
+    let len = bytes.len();
+    let mut segment_start: UInt64 = 0u64;
+    let mut i: UInt64 = 0u64;
+    while i < len {
+        if bytes[i] == QUOTE {
+            append_output_checked(output, field.substring(segment_start, i), limit)?;
+            append_output_checked(output, "\"\"", limit)?;
+            i = i + 1u64;
+            segment_start = i;
+        } else {
+            i = i + 1u64;
+        }
+    }
+    append_output_checked(output, field.substring(segment_start, len), limit)?;
+    Ok(())
+}
+
+/// §17: CRLF between records (none trailing), minimal deterministic quoting.
+fn write_internal(records: &Vec<Vec<String>>, limits: &CsvLimits) -> Result<String, CsvError> {
+    let mut output = String::new();
+    let record_count = records.len();
+    let mut r: UInt64 = 0u64;
+    while r < record_count {
+        if r > 0u64 {
+            append_output_checked(&mut output, "\r\n", limits.max_output_bytes)?;
+        }
+        let record = &records[r];
+        let field_count = record.len();
+        let mut f: UInt64 = 0u64;
+        while f < field_count {
+            if f > 0u64 {
+                append_output_checked(&mut output, ",", limits.max_output_bytes)?;
+            }
+            let field = &record[f];
+            if field_requires_quotes(field.as_str()) {
+                append_output_checked(&mut output, "\"", limits.max_output_bytes)?;
+                write_quoted_content_checked(&mut output, field.as_str(), limits.max_output_bytes)?;
+                append_output_checked(&mut output, "\"", limits.max_output_bytes)?;
+            } else {
+                append_output_checked(&mut output, field.as_str(), limits.max_output_bytes)?;
+            }
+            f = f + 1u64;
+        }
+        r = r + 1u64;
+    }
+    Ok(output)
+}
+
+mod tests;

@@ -1,0 +1,11 @@
+{
+  "packages": [
+    {
+      "name": "stark_csv",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    }
+  ]
+}

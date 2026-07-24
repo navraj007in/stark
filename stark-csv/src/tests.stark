@@ -1,0 +1,1296 @@
+use super::default_limits;
+use super::limits;
+use super::parse;
+use super::parse_with_limits;
+use super::write;
+use super::write_with_limits;
+use super::CsvError;
+
+// ============================================================ helpers ==
+
+fn assert_rows_eq(actual: &Vec<Vec<String>>, expected: &Vec<Vec<String>>, msg: &str) {
+    if actual.len() != expected.len() {
+        panic(msg);
+    }
+    let mut i: UInt64 = 0u64;
+    while i < actual.len() {
+        let a = &actual[i];
+        let e = &expected[i];
+        if a.len() != e.len() {
+            panic(msg);
+        }
+        let mut j: UInt64 = 0u64;
+        while j < a.len() {
+            if a[j].as_str() != e[j].as_str() {
+                panic(msg);
+            }
+            j = j + 1u64;
+        }
+        i = i + 1u64;
+    }
+}
+
+fn one_row1(a: &str) -> Vec<Vec<String>> {
+    let mut row = Vec::new();
+    row.push(String::from(a));
+    let mut rows = Vec::new();
+    rows.push(row);
+    rows
+}
+
+fn one_row2(a: &str, b: &str) -> Vec<Vec<String>> {
+    let mut row = Vec::new();
+    row.push(String::from(a));
+    row.push(String::from(b));
+    let mut rows = Vec::new();
+    rows.push(row);
+    rows
+}
+
+fn one_row3(a: &str, b: &str, c: &str) -> Vec<Vec<String>> {
+    let mut row = Vec::new();
+    row.push(String::from(a));
+    row.push(String::from(b));
+    row.push(String::from(c));
+    let mut rows = Vec::new();
+    rows.push(row);
+    rows
+}
+
+fn expect_parse_ok(input: &str, expected: &Vec<Vec<String>>, msg: &str) {
+    match parse(input) {
+        Ok(rows) => assert_rows_eq(&rows, expected, msg),
+        Err(_) => panic(msg),
+    }
+}
+
+// ================================================================ §19.1: basic and separators ==
+
+fn test_parse_empty_input() {
+    match parse("") {
+        Ok(rows) => {
+            if rows.len() != 0u64 {
+                panic("empty input must parse to zero records");
+            }
+        }
+        Err(_) => panic("empty input must parse"),
+    }
+}
+
+fn test_parse_one_field() {
+    let mut expected = Vec::new();
+    let mut row = Vec::new();
+    row.push(String::from("a"));
+    expected.push(row);
+    expect_parse_ok("a", &expected, "one field");
+}
+
+fn test_parse_two_fields() {
+    let mut expected = Vec::new();
+    let mut row = Vec::new();
+    row.push(String::from("a"));
+    row.push(String::from("b"));
+    expected.push(row);
+    expect_parse_ok("a,b", &expected, "two fields");
+}
+
+fn test_parse_three_fields() {
+    let mut expected = Vec::new();
+    let mut row = Vec::new();
+    row.push(String::from("a"));
+    row.push(String::from("b"));
+    row.push(String::from("c"));
+    expected.push(row);
+    expect_parse_ok("a,b,c", &expected, "three fields");
+}
+
+fn test_parse_two_records() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("b"));
+    expected.push(r1);
+    expect_parse_ok("a\nb", &expected, "two records (LF)");
+}
+
+fn test_parse_lf_separator() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    r0.push(String::from("b"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("c"));
+    r1.push(String::from("d"));
+    expected.push(r1);
+    expect_parse_ok("a,b\nc,d", &expected, "LF separator");
+}
+
+fn test_parse_crlf_separator() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    r0.push(String::from("b"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("c"));
+    r1.push(String::from("d"));
+    expected.push(r1);
+    expect_parse_ok("a,b\r\nc,d", &expected, "CRLF separator");
+}
+
+fn test_parse_mixed_lf_crlf() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("b"));
+    expected.push(r1);
+    let mut r2 = Vec::new();
+    r2.push(String::from("c"));
+    expected.push(r2);
+    expect_parse_ok("a\r\nb\nc", &expected, "mixed LF/CRLF");
+}
+
+fn test_parse_trailing_lf() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    expected.push(r0);
+    expect_parse_ok("a\n", &expected, "trailing LF: no extra record");
+}
+
+fn test_parse_trailing_crlf() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    expected.push(r0);
+    expect_parse_ok("a\r\n", &expected, "trailing CRLF: no extra record");
+}
+
+// ================================================================== §19.2: empty cases ==
+
+fn test_parse_empty_string_is_zero_records() {
+    expect_parse_ok("", &Vec::new(), "\"\" -> []");
+}
+
+fn test_parse_bare_lf_is_one_blank_record() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from(""));
+    expected.push(r0);
+    expect_parse_ok("\n", &expected, "\"\\n\" -> [[\"\"]]");
+}
+
+fn test_parse_bare_crlf_is_one_blank_record() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from(""));
+    expected.push(r0);
+    expect_parse_ok("\r\n", &expected, "\"\\r\\n\" -> [[\"\"]]");
+}
+
+fn test_parse_two_lf_is_two_blank_records() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from(""));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from(""));
+    expected.push(r1);
+    expect_parse_ok("\n\n", &expected, "\"\\n\\n\" -> [[\"\"], [\"\"]]");
+}
+
+fn test_parse_two_crlf_is_two_blank_records() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from(""));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from(""));
+    expected.push(r1);
+    expect_parse_ok("\r\n\r\n", &expected, "\"\\r\\n\\r\\n\" -> [[\"\"], [\"\"]]");
+}
+
+fn test_parse_bare_comma_is_two_empty_fields() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from(""));
+    r0.push(String::from(""));
+    expected.push(r0);
+    expect_parse_ok(",", &expected, "\",\" -> [[\"\", \"\"]]");
+}
+
+fn test_parse_two_commas_is_three_empty_fields() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from(""));
+    r0.push(String::from(""));
+    r0.push(String::from(""));
+    expected.push(r0);
+    expect_parse_ok(",,", &expected, "\",,\" -> [[\"\", \"\", \"\"]]");
+}
+
+fn test_parse_a_comma_is_a_then_empty() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    r0.push(String::from(""));
+    expected.push(r0);
+    expect_parse_ok("a,", &expected, "\"a,\" -> [[\"a\", \"\"]]");
+}
+
+fn test_parse_comma_a_is_empty_then_a() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from(""));
+    r0.push(String::from("a"));
+    expected.push(r0);
+    expect_parse_ok(",a", &expected, "\",a\" -> [[\"\", \"a\"]]");
+}
+
+fn test_parse_a_comma_comma_b() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    r0.push(String::from(""));
+    r0.push(String::from("b"));
+    expected.push(r0);
+    expect_parse_ok("a,,b", &expected, "\"a,,b\" -> [[\"a\", \"\", \"b\"]]");
+}
+
+fn test_parse_a_lf_lf() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from(""));
+    expected.push(r1);
+    expect_parse_ok("a\n\n", &expected, "\"a\\n\\n\" -> [[\"a\"], [\"\"]]");
+}
+
+// ================================================================= §19.3: quoted fields ==
+
+fn test_parse_quoted_ordinary_field() {
+    expect_parse_ok("\"abc\"", &one_row1("abc"), "quoted ordinary field");
+}
+
+fn test_parse_quoted_empty_field() {
+    expect_parse_ok("\"\"", &one_row1(""), "quoted empty field");
+}
+
+fn test_parse_quoted_comma() {
+    expect_parse_ok("\"a,b\"", &one_row1("a,b"), "quoted comma");
+}
+
+fn test_parse_quoted_lf() {
+    expect_parse_ok("\"a\nb\"", &one_row1("a\nb"), "quoted LF");
+}
+
+fn test_parse_quoted_cr() {
+    expect_parse_ok("\"a\rb\"", &one_row1("a\rb"), "quoted CR");
+}
+
+fn test_parse_quoted_crlf() {
+    expect_parse_ok("\"a\r\nb\"", &one_row1("a\r\nb"), "quoted CRLF");
+}
+
+fn test_parse_quoted_leading_trailing_spaces() {
+    expect_parse_ok("\"  a  \"", &one_row1("  a  "), "quoted leading/trailing spaces");
+}
+
+fn test_parse_quoted_tab() {
+    expect_parse_ok("\"a\tb\"", &one_row1("a\tb"), "quoted tab");
+}
+
+fn test_parse_quoted_nul() {
+    expect_parse_ok("\"a\u{0}b\"", &one_row1("a\u{0}b"), "quoted NUL");
+}
+
+fn test_parse_one_escaped_quote() {
+    expect_parse_ok("\"a\"\"b\"", &one_row1("a\"b"), "one escaped quote");
+}
+
+fn test_parse_several_escaped_quotes() {
+    expect_parse_ok("\"\"\"a\"\"\"", &one_row1("\"a\""), "several escaped quotes");
+}
+
+fn test_parse_escaped_quote_beside_comma() {
+    expect_parse_ok("\"a\"\",b\"", &one_row1("a\",b"), "escaped quote beside comma");
+}
+
+fn test_parse_escaped_quote_beside_newline() {
+    expect_parse_ok("\"a\"\"\nb\"", &one_row1("a\"\nb"), "escaped quote beside newline");
+}
+
+// ============================================================= §19.4: Unicode preservation ==
+
+fn test_parse_unicode_punjabi() {
+    expect_parse_ok("ਪੰਜਾਬੀ", &one_row1("ਪੰਜਾਬੀ"), "Punjabi Gurmukhi");
+}
+
+fn test_parse_unicode_hindi() {
+    expect_parse_ok("हिन्दी", &one_row1("हिन्दी"), "Hindi Devanagari");
+}
+
+fn test_parse_unicode_cjk() {
+    expect_parse_ok("中文字", &one_row1("中文字"), "CJK");
+}
+
+fn test_parse_unicode_emoji() {
+    expect_parse_ok("😀🎉", &one_row1("😀🎉"), "emoji");
+}
+
+fn test_parse_unicode_combining_mark() {
+    expect_parse_ok("e\u{0301}", &one_row1("e\u{0301}"), "combining mark");
+}
+
+fn test_parse_unicode_supplementary_plane() {
+    expect_parse_ok("\u{1F600}", &one_row1("\u{1F600}"), "supplementary-plane scalar");
+}
+
+fn test_parse_unicode_mixed_ascii() {
+    expect_parse_ok("abc中文abc", &one_row1("abc中文abc"), "mixed ASCII/Unicode");
+}
+
+fn test_parse_unicode_beside_comma_in_quotes() {
+    expect_parse_ok("\"中,文\"", &one_row1("中,文"), "Unicode beside comma in quotes");
+}
+
+fn test_parse_unicode_beside_escaped_quote() {
+    expect_parse_ok("\"中\"\"文\"", &one_row1("中\"文"), "Unicode beside escaped quote");
+}
+
+// =================================================================== §19.5: unequal widths ==
+
+fn test_parse_one_field_then_three() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("b"));
+    r1.push(String::from("c"));
+    r1.push(String::from("d"));
+    expected.push(r1);
+    expect_parse_ok("a\nb,c,d", &expected, "one field then three");
+}
+
+fn test_parse_three_fields_then_one() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    r0.push(String::from("b"));
+    r0.push(String::from("c"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("d"));
+    expected.push(r1);
+    expect_parse_ok("a,b,c\nd", &expected, "three then one");
+}
+
+fn test_parse_blank_record_between_nonblank() {
+    let mut expected = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    expected.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from(""));
+    expected.push(r1);
+    let mut r2 = Vec::new();
+    r2.push(String::from("b"));
+    expected.push(r2);
+    expect_parse_ok("a\n\nb", &expected, "blank record between nonblank");
+}
+
+// ===================================================================== §19.6: quote errors ==
+
+fn test_parse_quote_in_unquoted_field() {
+    match parse("a\"b") {
+        Err(CsvError::QuoteInUnquotedField(offset, record, field)) => {
+            if offset != 1u64 || record != 0u64 || field != 0u64 {
+                panic("a\"b: wrong QuoteInUnquotedField payload");
+            }
+        }
+        _ => panic("a\"b: expected QuoteInUnquotedField"),
+    }
+}
+
+fn test_parse_quote_in_unquoted_field_leading_space() {
+    match parse(" \"a\"") {
+        Err(CsvError::QuoteInUnquotedField(offset, record, field)) => {
+            if offset != 1u64 || record != 0u64 || field != 0u64 {
+                panic(" \"a\": wrong QuoteInUnquotedField payload");
+            }
+        }
+        _ => panic(" \"a\": expected QuoteInUnquotedField"),
+    }
+}
+
+fn test_parse_quote_in_unquoted_field_second_field() {
+    match parse("a,b\"c") {
+        Err(CsvError::QuoteInUnquotedField(offset, record, field)) => {
+            if offset != 3u64 || record != 0u64 || field != 1u64 {
+                panic("a,b\"c: wrong QuoteInUnquotedField payload");
+            }
+        }
+        _ => panic("a,b\"c: expected QuoteInUnquotedField"),
+    }
+}
+
+// ================================================================== §19.7: post-quote errors ==
+
+fn test_parse_unexpected_after_closing_quote_letter() {
+    match parse("\"a\"b") {
+        Err(CsvError::UnexpectedAfterClosingQuote(offset, record, field, byte)) => {
+            if offset != 3u64 || record != 0u64 || field != 0u64 || byte != 98u8 {
+                panic("\"a\"b: wrong UnexpectedAfterClosingQuote payload");
+            }
+        }
+        _ => panic("\"a\"b: expected UnexpectedAfterClosingQuote"),
+    }
+}
+
+fn test_parse_unexpected_after_closing_quote_space() {
+    match parse("\"a\" ") {
+        Err(CsvError::UnexpectedAfterClosingQuote(offset, record, field, byte)) => {
+            if offset != 3u64 || record != 0u64 || field != 0u64 || byte != 32u8 {
+                panic("\"a\" : wrong UnexpectedAfterClosingQuote payload");
+            }
+        }
+        _ => panic("\"a\" : expected UnexpectedAfterClosingQuote"),
+    }
+}
+
+fn test_parse_unexpected_after_closing_quote_tab() {
+    match parse("\"a\"\t") {
+        Err(CsvError::UnexpectedAfterClosingQuote(offset, record, field, byte)) => {
+            if offset != 3u64 || record != 0u64 || field != 0u64 || byte != 9u8 {
+                panic("\"a\"\\t: wrong UnexpectedAfterClosingQuote payload");
+            }
+        }
+        _ => panic("\"a\"\\t: expected UnexpectedAfterClosingQuote"),
+    }
+}
+
+fn test_parse_unexpected_after_closing_quote_after_escaped_quote() {
+    match parse("\"a\"\"b\"x") {
+        Err(CsvError::UnexpectedAfterClosingQuote(offset, record, field, byte)) => {
+            if offset != 6u64 || record != 0u64 || field != 0u64 || byte != 120u8 {
+                panic("\"a\"\"b\"x: wrong UnexpectedAfterClosingQuote payload");
+            }
+        }
+        _ => panic("\"a\"\"b\"x: expected UnexpectedAfterClosingQuote"),
+    }
+}
+
+// ======================================================================== §19.8: CR errors ==
+
+fn test_parse_bare_cr_mid_field() {
+    match parse("a\rb") {
+        Err(CsvError::BareCarriageReturn(offset, record, field)) => {
+            if offset != 1u64 || record != 0u64 || field != 0u64 {
+                panic("a\\rb: wrong BareCarriageReturn payload");
+            }
+        }
+        _ => panic("a\\rb: expected BareCarriageReturn"),
+    }
+}
+
+fn test_parse_bare_cr_at_eof() {
+    match parse("a\r") {
+        Err(CsvError::BareCarriageReturn(offset, record, field)) => {
+            if offset != 1u64 || record != 0u64 || field != 0u64 {
+                panic("a\\r: wrong BareCarriageReturn payload");
+            }
+        }
+        _ => panic("a\\r: expected BareCarriageReturn"),
+    }
+}
+
+fn test_parse_bare_cr_between_commas() {
+    match parse(",\r,") {
+        Err(CsvError::BareCarriageReturn(offset, record, field)) => {
+            if offset != 1u64 || record != 0u64 || field != 1u64 {
+                panic(",\\r,: wrong BareCarriageReturn payload");
+            }
+        }
+        _ => panic(",\\r,: expected BareCarriageReturn"),
+    }
+}
+
+fn test_parse_cr_inside_quotes_succeeds() {
+    expect_parse_ok("\"a\rb\"", &one_row1("a\rb"), "CR inside quotes must succeed");
+}
+
+// ================================================================ §19.9: unterminated fields ==
+
+fn test_parse_unterminated_just_quote() {
+    match parse("\"") {
+        Err(CsvError::UnterminatedQuotedField(offset, record, field)) => {
+            if offset != 0u64 || record != 0u64 || field != 0u64 {
+                panic("\": wrong UnterminatedQuotedField payload");
+            }
+        }
+        _ => panic("\": expected UnterminatedQuotedField"),
+    }
+}
+
+fn test_parse_unterminated_quote_a() {
+    match parse("\"a") {
+        Err(CsvError::UnterminatedQuotedField(offset, record, field)) => {
+            if offset != 0u64 || record != 0u64 || field != 0u64 {
+                panic("\"a: wrong UnterminatedQuotedField payload");
+            }
+        }
+        _ => panic("\"a: expected UnterminatedQuotedField"),
+    }
+}
+
+fn test_parse_unterminated_second_field() {
+    match parse("a,\"b") {
+        Err(CsvError::UnterminatedQuotedField(offset, record, field)) => {
+            if offset != 2u64 || record != 0u64 || field != 1u64 {
+                panic("a,\"b: wrong UnterminatedQuotedField payload");
+            }
+        }
+        _ => panic("a,\"b: expected UnterminatedQuotedField"),
+    }
+}
+
+fn test_parse_unterminated_after_escaped_quote() {
+    match parse("\"a\"\"") {
+        Err(CsvError::UnterminatedQuotedField(offset, record, field)) => {
+            if offset != 0u64 || record != 0u64 || field != 0u64 {
+                panic("\"a\"\": wrong UnterminatedQuotedField payload");
+            }
+        }
+        _ => panic("\"a\"\": expected UnterminatedQuotedField"),
+    }
+}
+
+// =================================================================== §19.10: limits ==
+
+fn test_limit_input_bytes_boundary_and_excess() {
+    let l = limits(3u64, 100u64, 100u64, 1000u64, 1000u64, 1000u64);
+    match parse_with_limits("abc", &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact input-byte boundary must succeed"),
+    }
+    match parse_with_limits("abcd", &l) {
+        Err(CsvError::InputTooLarge(actual, limit)) => {
+            if actual != 4u64 || limit != 3u64 {
+                panic("wrong InputTooLarge payload");
+            }
+        }
+        _ => panic("first excess byte must return InputTooLarge"),
+    }
+}
+
+fn test_limit_records_boundary_and_excess() {
+    let l = limits(1000u64, 2u64, 100u64, 1000u64, 1000u64, 1000u64);
+    match parse_with_limits("a\nb", &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact record-count boundary must succeed"),
+    }
+    match parse_with_limits("a\nb\nc", &l) {
+        Err(CsvError::TooManyRecords(attempted, limit)) => {
+            if attempted != 3u64 || limit != 2u64 {
+                panic("wrong TooManyRecords payload");
+            }
+        }
+        _ => panic("first excess record must return TooManyRecords"),
+    }
+}
+
+fn test_limit_fields_per_record_boundary_and_excess() {
+    let l = limits(1000u64, 100u64, 2u64, 1000u64, 1000u64, 1000u64);
+    match parse_with_limits("a,b", &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact fields-per-record boundary must succeed"),
+    }
+    match parse_with_limits("a,b,c", &l) {
+        Err(CsvError::TooManyFields(record, attempted, limit)) => {
+            if record != 0u64 || attempted != 3u64 || limit != 2u64 {
+                panic("wrong TooManyFields payload");
+            }
+        }
+        _ => panic("first excess field must return TooManyFields"),
+    }
+}
+
+fn test_limit_total_fields_boundary_and_excess() {
+    let l = limits(1000u64, 100u64, 100u64, 3u64, 1000u64, 1000u64);
+    match parse_with_limits("a,b\nc", &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact total-fields boundary must succeed"),
+    }
+    match parse_with_limits("a,b\nc,d", &l) {
+        Err(CsvError::TooManyTotalFields(attempted, limit)) => {
+            if attempted != 4u64 || limit != 3u64 {
+                panic("wrong TooManyTotalFields payload");
+            }
+        }
+        _ => panic("first excess total field must return TooManyTotalFields"),
+    }
+}
+
+fn test_limit_field_bytes_ascii_boundary_and_excess() {
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 3u64, 1000u64);
+    match parse_with_limits("abc", &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact ASCII field-byte boundary must succeed"),
+    }
+    match parse_with_limits("abcd", &l) {
+        Err(CsvError::FieldTooLarge(record, field, attempted, limit)) => {
+            if record != 0u64 || field != 0u64 || attempted != 4u64 || limit != 3u64 {
+                panic("wrong FieldTooLarge payload (ASCII)");
+            }
+        }
+        _ => panic("first excess ASCII field byte must return FieldTooLarge"),
+    }
+}
+
+fn test_limit_field_bytes_multibyte_boundary_and_excess() {
+    // "中" is 3 UTF-8 bytes.
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 3u64, 1000u64);
+    match parse_with_limits("中", &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact multibyte field-byte boundary must succeed"),
+    }
+    match parse_with_limits("中a", &l) {
+        Err(CsvError::FieldTooLarge(record, field, attempted, limit)) => {
+            if record != 0u64 || field != 0u64 || attempted != 4u64 || limit != 3u64 {
+                panic("wrong FieldTooLarge payload (multibyte)");
+            }
+        }
+        _ => panic("first excess multibyte field byte must return FieldTooLarge"),
+    }
+}
+
+fn test_limit_output_bytes_boundary_and_excess() {
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 3u64);
+    match write_with_limits(&one_row1("abc"), &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact output-byte boundary must succeed"),
+    }
+    match write_with_limits(&one_row1("abcd"), &l) {
+        Err(CsvError::OutputTooLarge(attempted, limit)) => {
+            if attempted != 4u64 || limit != 3u64 {
+                panic("wrong OutputTooLarge payload");
+            }
+        }
+        _ => panic("first excess output byte must return OutputTooLarge"),
+    }
+}
+
+// ================================================================ §19.11: state reset ==
+
+fn test_parse_failed_then_successful() {
+    match parse("a\"b") {
+        Ok(_) => panic("a\"b must fail"),
+        Err(_) => {}
+    }
+    expect_parse_ok("a,b", &one_row2("a", "b"), "successful parse after a failed one");
+}
+
+fn test_parse_repeated_successful() {
+    expect_parse_ok("a", &one_row1("a"), "repeat 1");
+    expect_parse_ok("b", &one_row1("b"), "repeat 2");
+    expect_parse_ok("c", &one_row1("c"), "repeat 3");
+}
+
+// =================================================================== §20: writer -- basic ==
+
+fn test_write_zero_records() {
+    match write(&Vec::new()) {
+        Ok(s) => {
+            if s.as_str() != "" {
+                panic("zero records must write to empty string");
+            }
+        }
+        Err(_) => panic("zero records must not error"),
+    }
+}
+
+fn test_write_one_field() {
+    match write(&one_row1("a")) {
+        Ok(s) => {
+            if s.as_str() != "a" {
+                panic("one field mismatch");
+            }
+        }
+        Err(_) => panic("one field must not error"),
+    }
+}
+
+fn test_write_multiple_fields() {
+    match write(&one_row3("a", "b", "c")) {
+        Ok(s) => {
+            if s.as_str() != "a,b,c" {
+                panic("multiple fields mismatch");
+            }
+        }
+        Err(_) => panic("multiple fields must not error"),
+    }
+}
+
+fn test_write_multiple_records() {
+    let mut rows = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    rows.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("b"));
+    rows.push(r1);
+    match write(&rows) {
+        Ok(s) => {
+            if s.as_str() != "a\r\nb" {
+                panic("multiple records mismatch");
+            }
+        }
+        Err(_) => panic("multiple records must not error"),
+    }
+}
+
+fn test_write_unequal_widths() {
+    let mut rows = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    rows.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("b"));
+    r1.push(String::from("c"));
+    rows.push(r1);
+    match write(&rows) {
+        Ok(s) => {
+            if s.as_str() != "a\r\nb,c" {
+                panic("unequal widths mismatch");
+            }
+        }
+        Err(_) => panic("unequal widths must not error"),
+    }
+}
+
+fn test_write_empty_fields() {
+    match write(&one_row2("", "")) {
+        Ok(s) => {
+            if s.as_str() != "," {
+                panic("empty fields mismatch");
+            }
+        }
+        Err(_) => panic("empty fields must not error"),
+    }
+}
+
+fn test_write_zero_field_record_normalization() {
+    let mut rows = Vec::new();
+    rows.push(Vec::new());
+    match write(&rows) {
+        Ok(s) => {
+            if s.as_str() != "" {
+                panic("[[]] must write to \"\"");
+            }
+        }
+        Err(_) => panic("[[]] must not error"),
+    }
+}
+
+// =============================================================== §20: writer -- minimal quoting ==
+
+fn test_write_unquoted_ordinary_ascii() {
+    match write(&one_row1("abc")) {
+        Ok(s) => {
+            if s.as_str() != "abc" {
+                panic("ordinary ASCII must not be quoted");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_unquoted_empty() {
+    match write(&one_row1("")) {
+        Ok(s) => {
+            if s.as_str() != "" {
+                panic("empty field must not be quoted");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_unquoted_spaces() {
+    match write(&one_row1("  a  ")) {
+        Ok(s) => {
+            if s.as_str() != "  a  " {
+                panic("spaces must not be quoted");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_unquoted_tab() {
+    match write(&one_row1("a\tb")) {
+        Ok(s) => {
+            if s.as_str() != "a\tb" {
+                panic("tab must not be quoted");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_unquoted_unicode() {
+    match write(&one_row1("中文")) {
+        Ok(s) => {
+            if s.as_str() != "中文" {
+                panic("Unicode must not be quoted");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_unquoted_nul() {
+    match write(&one_row1("a\u{0}b")) {
+        Ok(s) => {
+            if s.as_str() != "a\u{0}b" {
+                panic("NUL must not be quoted");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quoted_comma() {
+    match write(&one_row1("a,b")) {
+        Ok(s) => {
+            if s.as_str() != "\"a,b\"" {
+                panic("comma must trigger quoting");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quoted_quote() {
+    match write(&one_row1("a\"b")) {
+        Ok(s) => {
+            if s.as_str() != "\"a\"\"b\"" {
+                panic("quote must trigger quoting and doubling");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quoted_cr() {
+    match write(&one_row1("a\rb")) {
+        Ok(s) => {
+            if s.as_str() != "\"a\rb\"" {
+                panic("CR must trigger quoting");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quoted_lf() {
+    match write(&one_row1("a\nb")) {
+        Ok(s) => {
+            if s.as_str() != "\"a\nb\"" {
+                panic("LF must trigger quoting");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quoted_crlf() {
+    match write(&one_row1("a\r\nb")) {
+        Ok(s) => {
+            if s.as_str() != "\"a\r\nb\"" {
+                panic("CRLF must trigger quoting");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+// ==================================================================== §20: quote doubling ==
+
+fn test_write_quote_doubling_a_quote_b() {
+    match write(&one_row1("a\"b")) {
+        Ok(s) => {
+            if s.as_str() != "\"a\"\"b\"" {
+                panic("a\"b doubling mismatch");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quote_doubling_single_quote() {
+    match write(&one_row1("\"")) {
+        Ok(s) => {
+            if s.as_str() != "\"\"\"\"" {
+                panic("single-quote doubling mismatch");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quote_doubling_two_quotes() {
+    match write(&one_row1("\"\"")) {
+        Ok(s) => {
+            if s.as_str() != "\"\"\"\"\"\"" {
+                panic("two-quote doubling mismatch");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+fn test_write_quote_doubling_two_quoted_fields() {
+    match write(&one_row2("\"a\"", "\"b\"")) {
+        Ok(s) => {
+            if s.as_str() != "\"\"\"a\"\"\",\"\"\"b\"\"\"" {
+                panic("two-quoted-fields doubling mismatch");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+// ================================================================================ §20: CRLF ==
+
+fn test_write_always_crlf_no_trailing() {
+    let mut rows = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    rows.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("b"));
+    rows.push(r1);
+    let mut r2 = Vec::new();
+    r2.push(String::from("c"));
+    rows.push(r2);
+    match write(&rows) {
+        Ok(s) => {
+            if s.as_str() != "a\r\nb\r\nc" {
+                panic("writer must use CRLF with no trailing separator");
+            }
+        }
+        Err(_) => panic("must not error"),
+    }
+}
+
+// ============================================================================ §20: limits ==
+
+fn test_write_limit_field_content_excess() {
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 2u64);
+    match write_with_limits(&one_row1("ab"), &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact field-content boundary must succeed"),
+    }
+    match write_with_limits(&one_row1("abc"), &l) {
+        Err(CsvError::OutputTooLarge(attempted, limit)) => {
+            if attempted != 3u64 || limit != 2u64 {
+                panic("wrong OutputTooLarge payload (field content)");
+            }
+        }
+        _ => panic("field-content excess must return OutputTooLarge"),
+    }
+}
+
+fn test_write_limit_comma_excess() {
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 2u64);
+    match write_with_limits(&one_row2("a", "b"), &l) {
+        Err(CsvError::OutputTooLarge(attempted, limit)) => {
+            if attempted != 3u64 || limit != 2u64 {
+                panic("wrong OutputTooLarge payload (comma)");
+            }
+        }
+        _ => panic("comma-caused excess must return OutputTooLarge"),
+    }
+}
+
+fn test_write_limit_crlf_excess() {
+    let mut rows = Vec::new();
+    let mut r0 = Vec::new();
+    r0.push(String::from("a"));
+    rows.push(r0);
+    let mut r1 = Vec::new();
+    r1.push(String::from("b"));
+    rows.push(r1);
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 2u64);
+    match write_with_limits(&rows, &l) {
+        Err(CsvError::OutputTooLarge(attempted, limit)) => {
+            if attempted != 3u64 || limit != 2u64 {
+                panic("wrong OutputTooLarge payload (CRLF)");
+            }
+        }
+        _ => panic("CRLF-caused excess must return OutputTooLarge"),
+    }
+}
+
+fn test_write_limit_quote_excess() {
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 2u64);
+    match write_with_limits(&one_row1("a,"), &l) {
+        Err(CsvError::OutputTooLarge(attempted, limit)) => {
+            if attempted != 3u64 || limit != 2u64 {
+                panic("wrong OutputTooLarge payload (opening quote)");
+            }
+        }
+        _ => panic("opening-quote excess must return OutputTooLarge"),
+    }
+}
+
+fn test_write_limit_quote_doubling_excess() {
+    // field = `"` requires quoting: opening quote (1) + doubled quote (2) + closing quote (1) = 4
+    // bytes total.
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 4u64);
+    match write_with_limits(&one_row1("\""), &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact boundary for a doubled-quote field must succeed"),
+    }
+    let tight = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 3u64);
+    match write_with_limits(&one_row1("\""), &tight) {
+        Err(CsvError::OutputTooLarge(attempted, limit)) => {
+            if attempted != 4u64 || limit != 3u64 {
+                panic("wrong OutputTooLarge payload (quote doubling)");
+            }
+        }
+        _ => panic("quote-doubling excess must return OutputTooLarge"),
+    }
+}
+
+fn test_write_limit_multibyte_utf8_excess() {
+    // "中" is 3 bytes.
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 3u64);
+    match write_with_limits(&one_row1("中"), &l) {
+        Ok(_) => {}
+        Err(_) => panic("exact multibyte boundary must succeed"),
+    }
+    let tight = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 2u64);
+    match write_with_limits(&one_row1("中"), &tight) {
+        Err(CsvError::OutputTooLarge(attempted, limit)) => {
+            if attempted != 3u64 || limit != 2u64 {
+                panic("wrong OutputTooLarge payload (multibyte)");
+            }
+        }
+        _ => panic("multibyte excess must return OutputTooLarge"),
+    }
+}
+
+// ======================================================================= §20: input immutability ==
+
+fn test_write_input_unchanged_after_success() {
+    let rows = one_row2("a", "b");
+    let _ = write(&rows);
+    if rows.len() != 1u64 || rows[0u64].len() != 2u64 || rows[0u64][0u64].as_str() != "a" {
+        panic("records must be unchanged after a successful write");
+    }
+}
+
+fn test_write_input_unchanged_after_failure() {
+    let rows = one_row1("abc");
+    let l = limits(1000u64, 100u64, 100u64, 1000u64, 1000u64, 1u64);
+    let _ = write_with_limits(&rows, &l);
+    if rows.len() != 1u64 || rows[0u64][0u64].as_str() != "abc" {
+        panic("records must be unchanged after a failed write");
+    }
+}
+
+// ==================================================================== §18: canonicalization ==
+
+fn test_canonicalization_write_then_parse_round_trips() {
+    let rows = one_row1("a");
+    match write(&rows) {
+        Ok(s) => {
+            match parse(s.as_str()) {
+                Ok(back) => assert_rows_eq(&back, &rows, "parse(write(records)) != records"),
+                Err(_) => panic("re-parsing written output must succeed"),
+            }
+        }
+        Err(_) => panic("write must succeed"),
+    }
+}
+
+fn test_canonicalization_examples() {
+    match parse("a\nb\n") {
+        Ok(rows) => match write(&rows) {
+            Ok(s) => {
+                if s.as_str() != "a\r\nb" {
+                    panic("\"a\\nb\\n\" -> \"a\\r\\nb\" example failed");
+                }
+            }
+            Err(_) => panic("write must succeed"),
+        }
+        Err(_) => panic("parse must succeed"),
+    }
+
+    match parse("\"a\"") {
+        Ok(rows) => match write(&rows) {
+            Ok(s) => {
+                if s.as_str() != "a" {
+                    panic("\"\\\"a\\\"\" -> \"a\" example failed");
+                }
+            }
+            Err(_) => panic("write must succeed"),
+        }
+        Err(_) => panic("parse must succeed"),
+    }
+
+    match parse("\"a,b\"") {
+        Ok(rows) => match write(&rows) {
+            Ok(s) => {
+                if s.as_str() != "\"a,b\"" {
+                    panic("\"\\\"a,b\\\"\" -> \"\\\"a,b\\\"\" example failed");
+                }
+            }
+            Err(_) => panic("write must succeed"),
+        }
+        Err(_) => panic("parse must succeed"),
+    }
+
+    match parse("\"a\"\"b\"") {
+        Ok(rows) => match write(&rows) {
+            Ok(s) => {
+                if s.as_str() != "\"a\"\"b\"" {
+                    panic("\"\\\"a\\\"\\\"b\\\"\" -> \"\\\"a\\\"\\\"b\\\"\" example failed");
+                }
+            }
+            Err(_) => panic("write must succeed"),
+        }
+        Err(_) => panic("parse must succeed"),
+    }
+}
+
+// ========================================================================= §21: round trip ==
+
+fn round_trip_one(field_char: Char, field_len: UInt64) {
+    // A record consisting of exactly one empty field (field_len == 0) writes to "", which is
+    // indistinguishable on the wire from a zero-field record and from a wholly empty document
+    // (§12: "" -> [], §17.5's own documented normalization exception). A second, fixed,
+    // non-empty sentinel field keeps the record's on-wire representation non-empty for every
+    // boundary length -- including 0 -- so this test exercises the field-byte-length boundary
+    // this section actually cares about, not that unrelated, structurally-unavoidable ambiguity.
+    let mut field = String::new();
+    let mut i: UInt64 = 0u64;
+    while i < field_len {
+        field.push(field_char);
+        i = i + 1u64;
+    }
+    let mut row = Vec::new();
+    row.push(field);
+    row.push(String::from("sentinel"));
+    let mut rows = Vec::new();
+    rows.push(row);
+
+    match write(&rows) {
+        Ok(s) => match parse(s.as_str()) {
+            Ok(back) => assert_rows_eq(&back, &rows, "round trip mismatch at a boundary length"),
+            Err(_) => panic("round-trip parse must succeed"),
+        }
+        Err(_) => panic("round-trip write must succeed"),
+    }
+}
+
+fn test_round_trip_boundary_field_lengths() {
+    round_trip_one('x', 0u64);
+    round_trip_one('x', 1u64);
+    round_trip_one('x', 2u64);
+    round_trip_one('x', 15u64);
+    round_trip_one('x', 16u64);
+    round_trip_one('x', 17u64);
+    round_trip_one('x', 255u64);
+    round_trip_one('x', 256u64);
+    round_trip_one('x', 257u64);
+    round_trip_one('x', 1023u64);
+    round_trip_one('x', 1024u64);
+    round_trip_one('x', 1025u64);
+}
+
+fn test_round_trip_record_counts() {
+    let mut counts: Vec<UInt64> = Vec::new();
+    counts.push(0u64);
+    counts.push(1u64);
+    counts.push(2u64);
+    counts.push(3u64);
+    counts.push(10u64);
+    counts.push(100u64);
+    let mut c: UInt64 = 0u64;
+    while c < counts.len() {
+        let n = counts[c];
+        let mut rows = Vec::new();
+        let mut r: UInt64 = 0u64;
+        while r < n {
+            let mut row = Vec::new();
+            row.push(String::from("x"));
+            rows.push(row);
+            r = r + 1u64;
+        }
+        match write(&rows) {
+            Ok(s) => match parse(s.as_str()) {
+                Ok(back) => assert_rows_eq(&back, &rows, "round trip mismatch at a record count"),
+                Err(_) => panic("round-trip parse must succeed"),
+            }
+            Err(_) => panic("round-trip write must succeed"),
+        }
+        c = c + 1u64;
+    }
+}
+
+fn test_round_trip_field_counts() {
+    let mut counts: Vec<UInt64> = Vec::new();
+    counts.push(1u64);
+    counts.push(2u64);
+    counts.push(3u64);
+    counts.push(10u64);
+    let mut c: UInt64 = 0u64;
+    while c < counts.len() {
+        let n = counts[c];
+        let mut row = Vec::new();
+        let mut f: UInt64 = 0u64;
+        while f < n {
+            row.push(String::from("x"));
+            f = f + 1u64;
+        }
+        let mut rows = Vec::new();
+        rows.push(row);
+        match write(&rows) {
+            Ok(s) => match parse(s.as_str()) {
+                Ok(back) => assert_rows_eq(&back, &rows, "round trip mismatch at a field count"),
+                Err(_) => panic("round-trip parse must succeed"),
+            }
+            Err(_) => panic("round-trip write must succeed"),
+        }
+        c = c + 1u64;
+    }
+}
+
+fn test_round_trip_structural_and_unicode_and_nul() {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    row.push(String::from("a,b"));
+    row.push(String::from("c\"d"));
+    row.push(String::from("e\r\nf"));
+    row.push(String::from("中文😀"));
+    row.push(String::from("a\u{0}b"));
+    rows.push(row);
+    match write(&rows) {
+        Ok(s) => match parse(s.as_str()) {
+            Ok(back) => assert_rows_eq(&back, &rows, "structural/Unicode/NUL round trip mismatch"),
+            Err(_) => panic("round-trip parse must succeed"),
+        }
+        Err(_) => panic("round-trip write must succeed"),
+    }
+}

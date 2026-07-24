@@ -1,0 +1,20 @@
+[
+  {"name":"CsvError","kind":"enum","module":"stark-csv","signature":"pub enum CsvError","url":"CsvError/index.html"},
+  {"name":"CsvError::InputTooLarge","kind":"variant","module":"stark-csv","signature":"InputTooLarge(UInt64, UInt64)","url":"CsvError/index.html#InputTooLarge"},
+  {"name":"CsvError::TooManyRecords","kind":"variant","module":"stark-csv","signature":"TooManyRecords(UInt64, UInt64)","url":"CsvError/index.html#TooManyRecords"},
+  {"name":"CsvError::TooManyFields","kind":"variant","module":"stark-csv","signature":"TooManyFields(UInt64, UInt64, UInt64)","url":"CsvError/index.html#TooManyFields"},
+  {"name":"CsvError::TooManyTotalFields","kind":"variant","module":"stark-csv","signature":"TooManyTotalFields(UInt64, UInt64)","url":"CsvError/index.html#TooManyTotalFields"},
+  {"name":"CsvError::FieldTooLarge","kind":"variant","module":"stark-csv","signature":"FieldTooLarge(UInt64, UInt64, UInt64, UInt64)","url":"CsvError/index.html#FieldTooLarge"},
+  {"name":"CsvError::QuoteInUnquotedField","kind":"variant","module":"stark-csv","signature":"QuoteInUnquotedField(UInt64, UInt64, UInt64)","url":"CsvError/index.html#QuoteInUnquotedField"},
+  {"name":"CsvError::UnexpectedAfterClosingQuote","kind":"variant","module":"stark-csv","signature":"UnexpectedAfterClosingQuote(UInt64, UInt64, UInt64, UInt8)","url":"CsvError/index.html#UnexpectedAfterClosingQuote"},
+  {"name":"CsvError::BareCarriageReturn","kind":"variant","module":"stark-csv","signature":"BareCarriageReturn(UInt64, UInt64, UInt64)","url":"CsvError/index.html#BareCarriageReturn"},
+  {"name":"CsvError::UnterminatedQuotedField","kind":"variant","module":"stark-csv","signature":"UnterminatedQuotedField(UInt64, UInt64, UInt64)","url":"CsvError/index.html#UnterminatedQuotedField"},
+  {"name":"CsvError::OutputTooLarge","kind":"variant","module":"stark-csv","signature":"OutputTooLarge(UInt64, UInt64)","url":"CsvError/index.html#OutputTooLarge"},
+  {"name":"CsvLimits","kind":"struct","module":"stark-csv","signature":"pub struct CsvLimits","url":"CsvLimits/index.html"},
+  {"name":"default_limits","kind":"fn","module":"stark-csv","signature":"pub fn default_limits() -> CsvLimits","url":"default_limits/index.html"},
+  {"name":"limits","kind":"fn","module":"stark-csv","signature":"pub fn limits( max_input_bytes: UInt64, max_records: UInt64, max_fields_per_record: UInt64, max_total_fields: UInt64, max_field_bytes: UInt64, max_output_bytes: UInt64, ) -> CsvLimits","url":"limits/index.html"},
+  {"name":"parse","kind":"fn","module":"stark-csv","signature":"pub fn parse(input: &str) -> Result<Vec<Vec<String>>, CsvError>","url":"parse/index.html"},
+  {"name":"parse_with_limits","kind":"fn","module":"stark-csv","signature":"pub fn parse_with_limits(input: &str, limits: &CsvLimits) -> Result<Vec<Vec<String>>, CsvError>","url":"parse_with_limits/index.html"},
+  {"name":"write","kind":"fn","module":"stark-csv","signature":"pub fn write(records: &Vec<Vec<String>>) -> Result<String, CsvError>","url":"write/index.html"},
+  {"name":"write_with_limits","kind":"fn","module":"stark-csv","signature":"pub fn write_with_limits(records: &Vec<Vec<String>>, limits: &CsvLimits) -> Result<String, CsvError>","url":"write_with_limits/index.html"}
+]
