@@ -865,7 +865,7 @@ struct Ran {
 }
 
 fn link_and_run(obj_bytes: &[u8], tag: &str) -> Ran {
-    let dir = std::env::temp_dir().join(format!("stark_clif_spike_{tag}"));
+    let dir = std::env::temp_dir().join(format!("stark_clif_spike_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let obj = dir.join("prog.o");

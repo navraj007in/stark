@@ -811,7 +811,8 @@ struct RanBinary {
 }
 
 fn compile_and_run(rust_src: &str, tag: &str) -> RanBinary {
-    let dir = std::env::temp_dir().join(format!("stark_genrust_spike_{tag}"));
+    let dir =
+        std::env::temp_dir().join(format!("stark_genrust_spike_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("main.rs");
