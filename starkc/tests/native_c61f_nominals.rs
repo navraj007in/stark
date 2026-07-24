@@ -212,14 +212,29 @@ fn c61f_a_move_borrow_carrying_nominal_local_is_refused_before_rustc() {
 }
 
 #[test]
-fn c61f_returning_a_borrow_carrying_nominal_is_refused_before_rustc() {
-    refused_before_rustc(
+fn c61f_returning_a_borrow_carrying_nominal_builds_and_runs() {
+    // WP-C6.1g-c: the return-refusal is LIFTED. An acyclic body is emitted as nested labelled
+    // blocks (not one `loop { match __bb }`), so the borrow `wrap` returns and `main` consumes
+    // across the `Option::unwrap` blocks is seen by rustc with its real once-through lifetime and
+    // no longer collides with the referent's assignment (the former E0502/E0506).
+    agree(
         "return_option_ref",
         &format!(
             "{P}fn wrap(r: &P) -> Option<&P> {{ Some(r) }}\n\
                   fn main() {{ let p = P {{ v: 3 }}; let o = wrap(&p); \
                   assert_eq(o.unwrap().get(), 3); }}"
         ),
-        "returning the borrow-carrying nominal",
+    );
+}
+
+/// The same borrow returned and consumed inline in one expression (`wrap(&p).unwrap().get()`).
+#[test]
+fn c61f_returning_a_borrow_carrying_nominal_consumed_inline() {
+    agree(
+        "return_option_ref_inline",
+        &format!(
+            "{P}fn wrap(r: &P) -> Option<&P> {{ Some(r) }}\n\
+                  fn main() {{ let p = P {{ v: 3 }}; assert_eq(wrap(&p).unwrap().get(), 3); }}"
+        ),
     );
 }

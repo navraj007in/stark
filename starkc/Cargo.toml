@@ -14,6 +14,15 @@ rust-version = "1.85"
 [workspace]
 members = [".", "stark-runtime"]
 
+# `starkide` is an experimental terminal IDE — a side project, not part of the compiler. It still
+# builds as a binary, but its tests are excluded from `cargo test`/`--all-targets` so a `cargo test
+# --workspace` run cannot be held up by its interactive/terminal-oriented tests. (Auto-discovery
+# still covers the other bins; only this one is declared explicitly, to set `test = false`.)
+[[bin]]
+name = "starkide"
+path = "src/bin/starkide.rs"
+test = false
+
 [dependencies]
 sha2 = { version = "0.11.0", default-features = false }
 stark-runtime = { path = "stark-runtime" }

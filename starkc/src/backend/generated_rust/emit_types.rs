@@ -286,17 +286,13 @@ fn refuse_borrow_carrying_nominals(program: &MirProgram) -> Result<(), BackendDi
     //
     // A plain reference return (`fn f(r: &P) -> &P`) is `MirTy::Ref`, not a nominal, so
     // `nominal_needs_lifetime` is false and it stays supported.
+    // WP-C6.1g-c: the borrow-carrying-nominal RETURN refusal is LIFTED. An acyclic body is now
+    // emitted as nested labelled blocks (not one `loop { match __bb }`), so a borrow returned
+    // through a function and consumed across blocks — `Option::unwrap`'s panic-branch match
+    // included — is seen by rustc with its real, once-through lifetime. The slot-backed Move
+    // borrow-carrying LOCAL (part 2) stays refused: its `ValueSlot` drop still needs `&mut` while
+    // the stored borrow is live.
     for body in &program.bodies {
-        if nominal_needs_lifetime(&body.ret) {
-            return Err(BackendDiagnostic::Unsupported(format!(
-                "returning the borrow-carrying nominal `{}` is not representable yet: a borrow \
-                 returned through the dispatch loop and then consumed conflicts with the \
-                 referent's assignment (E0502/E0506) — this fails for Move referents too, so it is \
-                 a general borrow-through-return limitation, not a Copy issue. Borrow-carrying \
-                 nominals in LOCALS are supported; a plain reference return is supported",
-                crate::mir::dump_ty(&body.ret)
-            )));
-        }
         for local in &body.locals {
             if nominal_needs_lifetime(&local.ty) && is_slot_backed(&local.ty, &program.types) {
                 return Err(BackendDiagnostic::Unsupported(format!(

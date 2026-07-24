@@ -250,33 +250,126 @@ pub fn emit_block_body(
         }
     }
 
-    out.push_str(&format!("    let mut __bb: u32 = {};\n", body.entry.0));
-    out.push_str("    let __stark_ret = loop {\n");
-    out.push_str("        match __bb {\n");
-    for (bi, block) in body.blocks.iter().enumerate() {
-        out.push_str(&format!("            {bi} => {{\n"));
-        for (stmt, _) in &block.statements {
-            match stmt {
-                Statement::Nop => {}
-                Statement::Assign(place, rvalue) => {
-                    let dest_ty = env.place_ty(place)?;
-                    let value = emit_rvalue(rvalue, &dest_ty, env)?;
-                    out.push_str(&format!(
-                        "                {}\n",
-                        emit_assignment(place, &value, env)?
-                    ));
-                }
+    // WP-C6.1g-c: an ACYCLIC body is emitted as nested labelled blocks (later-RPO labels enclose
+    // earlier ones, so every forward `goto`/branch is a `break 'bbTarget`). rustc then sees each
+    // block run exactly once and can flow-analyse a borrow that spans blocks — which the single
+    // `loop { match __bb }` dispatch defeats. A body with a real back-edge keeps the dispatch loop.
+    match linear_order(body) {
+        Some(rpo) => {
+            out.push_str("    #[allow(unreachable_code)]\n");
+            out.push_str("    let __stark_ret = 'stark_ret: {\n");
+            // Open a label for every non-entry block, later-RPO outermost.
+            for &b in rpo.iter().skip(1).rev() {
+                out.push_str(&format!("    'bb{b}: {{\n"));
             }
+            // The entry block, innermost.
+            emit_one_block(body, files, &mut out, env, rpo[0], EmitMode::Linear)?;
+            // Close each label, then emit its block's code right after — the landing site of
+            // `break 'bbN`.
+            for &b in rpo.iter().skip(1) {
+                out.push_str("    }\n");
+                emit_one_block(body, files, &mut out, env, b, EmitMode::Linear)?;
+            }
+            // Every reachable path leaves through a `break 'stark_ret`/abort; the last block has no
+            // successor. This tail only gives the block its value type.
+            out.push_str("    unreachable!(\"WP-C6.1g-c: all blocks diverge\")\n");
+            out.push_str("    };\n");
         }
-        emit_terminator(body, files, &mut out, &block.terminator.0, env)?;
-        out.push_str("            }\n");
+        None => {
+            out.push_str(&format!("    let mut __bb: u32 = {};\n", body.entry.0));
+            out.push_str("    let __stark_ret = loop {\n");
+            out.push_str("        match __bb {\n");
+            for bi in 0..body.blocks.len() as u32 {
+                out.push_str(&format!("            {bi} => {{\n"));
+                emit_one_block(body, files, &mut out, env, bi, EmitMode::Dispatch)?;
+                out.push_str("            }\n");
+            }
+            out.push_str("            _ => unreachable!(\"invalid block index\"),\n");
+            out.push_str("        }\n");
+            out.push_str("    };\n");
+        }
     }
-    out.push_str("            _ => unreachable!(\"invalid block index\"),\n");
-    out.push_str("        }\n");
-    out.push_str("    };\n");
     out.push_str("    __stark_ret\n");
     out.push_str("}\n");
     Ok(out)
+}
+
+/// Emit one basic block's statements followed by its terminator.
+fn emit_one_block(
+    body: &MirBody,
+    files: &[Arc<SourceFile>],
+    out: &mut String,
+    env: &TyEnv,
+    block: u32,
+    mode: EmitMode,
+) -> Result<(), BackendDiagnostic> {
+    let block = &body.blocks[block as usize];
+    for (stmt, _) in &block.statements {
+        match stmt {
+            Statement::Nop => {}
+            Statement::Assign(place, rvalue) => {
+                let dest_ty = env.place_ty(place)?;
+                let value = emit_rvalue(rvalue, &dest_ty, env)?;
+                out.push_str(&format!(
+                    "                {}\n",
+                    emit_assignment(place, &value, env)?
+                ));
+            }
+        }
+    }
+    emit_terminator(body, files, out, &block.terminator.0, env, mode)
+}
+
+/// A terminator's successor block indices, in stable order.
+fn terminator_successors(t: &Terminator) -> Vec<u32> {
+    match t {
+        Terminator::Goto { target }
+        | Terminator::Call { target, .. }
+        | Terminator::Drop { target, .. }
+        | Terminator::Checked { target, .. } => vec![target.0],
+        Terminator::SwitchInt {
+            arms, otherwise, ..
+        } => {
+            let mut v: Vec<u32> = arms.iter().map(|(_, b)| b.0).collect();
+            v.push(otherwise.0);
+            v
+        }
+        Terminator::Return | Terminator::Unreachable | Terminator::Trap { .. } => Vec::new(),
+    }
+}
+
+/// WP-C6.1g-c: the reachable blocks in reverse postorder when the CFG is ACYCLIC; `None` when it
+/// has a back-edge (a grey node reached again during DFS), in which case the dispatch loop is used.
+/// In an acyclic CFG every edge points forward in this order, so the fully-nested labelled-block
+/// encoding renders every jump as a `break` to an enclosing label.
+fn linear_order(body: &MirBody) -> Option<Vec<u32>> {
+    let n = body.blocks.len();
+    let mut colour = vec![0u8; n]; // 0 white, 1 grey (on the DFS stack), 2 black
+    let mut postorder: Vec<u32> = Vec::with_capacity(n);
+    let entry = body.entry.0 as usize;
+    let mut stack: Vec<(usize, usize)> = vec![(entry, 0)];
+    colour[entry] = 1;
+    while let Some(&(node, child_index)) = stack.last() {
+        let succ = terminator_successors(&body.blocks[node].terminator.0);
+        if child_index < succ.len() {
+            stack.last_mut().unwrap().1 += 1;
+            let child = succ[child_index] as usize;
+            match colour[child] {
+                0 => {
+                    colour[child] = 1;
+                    stack.push((child, 0));
+                }
+                1 => return None, // grey → back-edge → cyclic
+                _ => {}           // black → already finished (cross/forward edge, fine)
+            }
+        } else {
+            colour[node] = 2;
+            postorder.push(node as u32);
+            stack.pop();
+        }
+    }
+    postorder.reverse();
+    Some(postorder)
 }
 
 /// WP-C5.3d-1a (CD-062): the **ephemeral borrowed-call reference lane** validator.
@@ -373,16 +466,43 @@ fn validate_ephemeral_references(body: &MirBody) -> Result<(), BackendDiagnostic
     Ok(())
 }
 
+/// WP-C6.1g-c: how a terminator's control transfer is rendered. `Dispatch` is the block-index loop
+/// (`__bb = t; continue;`); `Linear` is the labelled-block form (`break 'bbT;`) used for an acyclic
+/// body so rustc sees each block run once and can flow-analyse borrows that span blocks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EmitMode {
+    Dispatch,
+    Linear,
+}
+
+impl EmitMode {
+    /// The statement transferring control to block `t`.
+    fn jump(self, t: u32) -> String {
+        match self {
+            EmitMode::Dispatch => format!("__bb = {t}; continue;"),
+            EmitMode::Linear => format!("break 'bb{t};"),
+        }
+    }
+    /// The statement yielding the function's return value `v`.
+    fn ret(self, v: &str) -> String {
+        match self {
+            EmitMode::Dispatch => format!("break {v};"),
+            EmitMode::Linear => format!("break 'stark_ret {v};"),
+        }
+    }
+}
+
 fn emit_terminator(
     body: &MirBody,
     files: &[Arc<SourceFile>],
     out: &mut String,
     terminator: &Terminator,
     env: &TyEnv,
+    mode: EmitMode,
 ) -> Result<(), BackendDiagnostic> {
     match terminator {
         Terminator::Goto { target } => {
-            out.push_str(&format!("                __bb = {}; continue;\n", target.0));
+            out.push_str(&format!("                {}\n", mode.jump(target.0)));
         }
         Terminator::SwitchInt {
             scrut,
@@ -393,13 +513,13 @@ fn emit_terminator(
             out.push_str(&format!("                match {key} {{\n"));
             for (value, target) in arms {
                 out.push_str(&format!(
-                    "                    {value}u128 => {{ __bb = {}; continue; }}\n",
-                    target.0
+                    "                    {value}u128 => {{ {} }}\n",
+                    mode.jump(target.0)
                 ));
             }
             out.push_str(&format!(
-                "                    _ => {{ __bb = {}; continue; }}\n",
-                otherwise.0
+                "                    _ => {{ {} }}\n",
+                mode.jump(otherwise.0)
             ));
             out.push_str("                }\n");
         }
@@ -416,7 +536,7 @@ fn emit_terminator(
                 "                {}\n",
                 emit_assignment(&crate::mir::Place::local(*dest), &expr, env)?
             ));
-            out.push_str(&format!("                __bb = {}; continue;\n", target.0));
+            out.push_str(&format!("                {}\n", mode.jump(target.0)));
         }
         Terminator::Call {
             callee,
@@ -430,7 +550,7 @@ fn emit_terminator(
                 "                {}\n",
                 emit_assignment(dest, &call_expr, env)?
             ));
-            out.push_str(&format!("                __bb = {}; continue;\n", target.0));
+            out.push_str(&format!("                {}\n", mode.jump(target.0)));
         }
         Terminator::Return => {
             // A non-Copy return value is MOVED out of its slot: the callee's local is dead
@@ -445,7 +565,7 @@ fn emit_terminator(
             } else {
                 emit_places::local_name(0)
             };
-            out.push_str(&format!("                break {ret};\n"));
+            out.push_str(&format!("                {}\n", mode.ret(&ret)));
         }
         Terminator::Unreachable => {
             // WP-C4's verifier proves this block is dead (e.g. the synthetic trailer WP-C4.5's
@@ -484,7 +604,7 @@ fn emit_terminator(
         // destructor that itself traps cannot leave a live value the abort path might re-enter.
         Terminator::Drop { place, target } => {
             out.push_str(&format!("                {}\n", emit_drop(place, env)?));
-            out.push_str(&format!("                __bb = {}; continue;\n", target.0));
+            out.push_str(&format!("                {}\n", mode.jump(target.0)));
         } // No catch-all: as of WP-C5.3d-0 every `Terminator` variant is handled, and keeping the
           // match exhaustive means a NEW variant stops this compiling rather than silently becoming
           // an `Unsupported` diagnostic nobody notices.

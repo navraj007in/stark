@@ -29,9 +29,12 @@ Box new/into_inner) three-engine, plus the SLOT BUFFER-RECLAIM FIX — `drop_wit
 Deferred: Vec/Box of user-destructor elements (refused), `Vec<String>`-style pushes (→ C6.1g-c),
 trapping index/get/iter/slices. C6.1g-c is now the critical shared unblocker.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
-(OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
-(return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
-linearisation — the uniform-borrow-carrier-returns package)**, and C6.3 (`Box`/`Vec`/slice, Track
+(OWN-COPY-001 amended) + borrow-carrying nominals in locals.** **WP-C6.1g-c CLOSED (CD-112): dispatch-loop
+linearisation — acyclic bodies emit as nested labelled blocks so a cross-block borrow is seen
+once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns build). This also
+unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
+Gate-C6 dependencies: `WP-C6.1g-b`
+(return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track
 C). Also open:
 **WP-C6.3** (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3104,6 +3107,36 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-112 [2026-07-25, **WP-C6.1g-c CLOSED — dispatch-loop linearisation; the borrow-through-return
+  refusal LIFTED**] The root cause of a broad class of native-build failures: every generated body
+  was ONE `loop { match __bb { … } }`, so rustc could not see that a block runs once and treated a
+  borrow held across blocks as live on the back-edge — colliding with the referent's single
+  assignment (E0502/E0506). This blocked owned-`String` `==`/`<`, stored interior `&str`,
+  `Vec<String>`-style pushes, and the `Option<&P>`-return shape.
+  - **Fix.** An ACYCLIC body is now emitted as nested labelled blocks (`emit_bodies::linear_order`
+    computes reverse-postorder + detects back-edges): later-RPO labels enclose earlier ones, so every
+    forward `goto`/branch becomes `break 'bbTarget` and `Return` becomes `break 'stark_ret v`. rustc
+    then flow-analyses each block as running once. A body WITH a real back-edge (while/for/loop) keeps
+    the `loop { match __bb }` dispatch. Pure rendering change — same MIR, same control flow, same
+    move/borrow/definite-assignment semantics; three-engine agreement preserved.
+  - **The return-refusal is lifted.** `refuse_borrow_carrying_nominals` no longer refuses a function
+    returning a borrow-carrying nominal (`Option<&P>`, etc.); it now builds and runs, consumed across
+    the `Option::unwrap` blocks. The slot-backed Move borrow-carrying LOCAL refusal (part 2) stays —
+    its `ValueSlot` drop still needs `&mut` while the stored borrow is live.
+  - **Proven native (three-engine):** `wrap(&p) -> Option<&P>` then `o.unwrap().get()` and the inline
+    `wrap(&p).unwrap().get()`; String `==`/`<`; stored `s.as_str()`; `Vec<String>::push`; plus
+    `while`/`if` (dispatch + linear paths). Validation: `--lib` 441; the six `native_c61f_*` suites;
+    the earlier 16-suite native/differential regression. `native_c61f_nominals`' return test flipped
+    from refused→builds-and-runs.
+  - **CI fixes folded in (CD-109 fallout).** Making `String` representable had silently invalidated
+    two tests asserting the OLD "unsupported" boundary: `emit_types` `unsupported_constants…` (already
+    fixed in `6be3428`) and `native_c5_4_function_values`' fnptr-over-`String` (now uses a bare
+    `Slice`, still unsupported). Lesson recorded: run `cargo test --lib` after broadening an emitter's
+    supported-set.
+  - **`starkide` bin excluded from `cargo test`** (`Cargo.toml` `test = false`): the experimental
+    terminal IDE (a side project, not the compiler) whose tests hung a local `--all-targets` run. It
+    still builds; only its tests are skipped.
 
 - CD-111 [2026-07-25, **WP-C6.3b PARTIAL — native Vec/Box value surface + the slot buffer-reclaim
   fix**] Extends the native runtime with the owning containers, and fixes a latent leak in the drop
