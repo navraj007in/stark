@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Search</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="site-header"><a href="index.html">Docs</a> <a href="search.html">Search</a></header>
+<main>
+<h1>Search stark-time</h1>
+<input id="q" type="search" placeholder="Search by name…" autofocus>
+<ul id="results" class="item-list"></ul>
+<script>
+(function () {
+  var q = document.getElementById('q');
+  var results = document.getElementById('results');
+  var items = [];
+  fetch('search.json').then(function (r) { return r.json(); }).then(function (data) {
+    items = data;
+    render(q.value);
+  });
+  function score(name, query) {
+    name = name.toLowerCase();
+    query = query.toLowerCase();
+    var idx = name.indexOf(query);
+    if (idx === -1) return -1;
+    return idx === 0 ? 0 : 1;
+  }
+  function render(query) {
+    results.innerHTML = '';
+    if (!query) return;
+    var matches = items
+      .map(function (it) { return { it: it, s: score(it.name, query) }; })
+      .filter(function (m) { return m.s !== -1; })
+      .sort(function (a, b) { return a.s - b.s || a.it.name.length - b.it.name.length; })
+      .slice(0, 200);
+    matches.forEach(function (m) {
+      var li = document.createElement('li');
+      var badge = document.createElement('span');
+      badge.className = 'badge badge-' + m.it.kind;
+      badge.textContent = m.it.kind;
+      var a = document.createElement('a');
+      a.href = m.it.url;
+      a.textContent = m.it.name;
+      var mod = document.createElement('span');
+      mod.style.color = 'var(--muted)';
+      mod.textContent = ' — ' + m.it.module;
+      li.appendChild(badge);
+      li.appendChild(document.createTextNode(' '));
+      li.appendChild(a);
+      li.appendChild(mod);
+      results.appendChild(li);
+    });
+  }
+  q.addEventListener('input', function () { render(q.value); });
+})();
+</script>
+
+</main>
+</body>
+</html>

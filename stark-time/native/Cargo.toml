@@ -1,0 +1,19 @@
+[package]
+name = "stark-time-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native clock provider for the stark-time package (WP-TIME-A, ABI v0.1)"
+license = "MIT"
+publish = false
+
+# WP-TIME-A §16: "no third-party dependency". This crate is standalone -- not a member of the
+# starkc workspace -- so adding it never touches starkc/Cargo.toml or its CI configuration.
+[dependencies]
+
+[dev-dependencies]
+# Path dependencies used only to VALIDATE this provider's metadata/status shape against the
+# repository's real ABI v0.1 types and validator, so the check is against the source of truth
+# rather than a hand-copied parallel definition. Neither dependency is linked into the provider
+# functions themselves (see src/lib.rs's own ProviderStatus).
+starkc = { path = "../../starkc" }
+stark-runtime = { path = "../../starkc/stark-runtime" }

@@ -1,0 +1,689 @@
+// std-time v0.1 -- WP-TIME-A (pure package logic + provider crate).
+//
+// `Instant::now`, `UnixTimestamp::now`, and `Instant::elapsed` are NOT implemented in this pass:
+// the repository's Native Provider ABI v0.1 has compile-time metadata validation but no real
+// provider linkage/invocation yet (see BLOCKERS.md). Everything else in the frozen public API
+// that does not depend on a live clock reading is implemented and tested here.
+
+pub enum TimeError {
+    ClockUnavailable,
+    ClockWentBackwards,
+    OutOfRange,
+    ProviderFailure(UInt32),
+}
+
+const NANOS_PER_SECOND: UInt64 = 1000000000u64;
+const NANOS_PER_MILLI: UInt64 = 1000000u64;
+const NANOS_PER_MICRO: UInt64 = 1000u64;
+const MILLIS_PER_SECOND: UInt64 = 1000u64;
+const MICROS_PER_SECOND: UInt64 = 1000000u64;
+
+const U64_MAX: UInt64 = 18446744073709551615u64;
+const I64_MAX: Int64 = 9223372036854775807i64;
+const I64_MIN: Int64 = -9223372036854775807i64 - 1i64;
+
+pub struct Duration { seconds: UInt64, nanoseconds: UInt32 }
+
+impl Duration {
+    pub fn zero() -> Duration {
+        Duration { seconds: 0u64, nanoseconds: 0u32 }
+    }
+    pub fn from_seconds(seconds: UInt64) -> Duration {
+        Duration { seconds: seconds, nanoseconds: 0u32 }
+    }
+    pub fn from_millis(milliseconds: UInt64) -> Duration {
+        let whole_seconds = milliseconds / MILLIS_PER_SECOND;
+        let remainder = milliseconds % MILLIS_PER_SECOND;
+        Duration { seconds: whole_seconds, nanoseconds: (remainder * NANOS_PER_MILLI) as UInt32 }
+    }
+    pub fn from_micros(microseconds: UInt64) -> Duration {
+        let whole_seconds = microseconds / MICROS_PER_SECOND;
+        let remainder = microseconds % MICROS_PER_SECOND;
+        Duration { seconds: whole_seconds, nanoseconds: (remainder * NANOS_PER_MICRO) as UInt32 }
+    }
+    pub fn from_nanos(nanoseconds: UInt64) -> Duration {
+        let whole_seconds = nanoseconds / NANOS_PER_SECOND;
+        let remainder = nanoseconds % NANOS_PER_SECOND;
+        Duration { seconds: whole_seconds, nanoseconds: remainder as UInt32 }
+    }
+    pub fn seconds(&self) -> UInt64 {
+        self.seconds
+    }
+    pub fn subsec_nanos(&self) -> UInt32 {
+        self.nanoseconds
+    }
+    pub fn is_zero(&self) -> Bool {
+        self.seconds == 0u64 && self.nanoseconds == 0u32
+    }
+    pub fn checked_add(&self, other: &Duration) -> Option<Duration> {
+        let mut nanos = self.nanoseconds + other.nanoseconds;
+        let mut carry: UInt64 = 0u64;
+        if nanos >= NANOS_PER_SECOND as UInt32 {
+            nanos = nanos - NANOS_PER_SECOND as UInt32;
+            carry = 1u64;
+        }
+
+        if self.seconds > U64_MAX - other.seconds {
+            return None;
+        }
+        let sec_sum = self.seconds + other.seconds;
+
+        if sec_sum > U64_MAX - carry {
+            return None;
+        }
+        let seconds = sec_sum + carry;
+
+        Some(Duration { seconds: seconds, nanoseconds: nanos })
+    }
+    pub fn checked_sub(&self, other: &Duration) -> Option<Duration> {
+        let self_is_smaller = self.seconds < other.seconds || self.seconds == other.seconds && self.nanoseconds < other.nanoseconds;
+        if self_is_smaller {
+            return None;
+        }
+
+        let mut seconds = self.seconds - other.seconds;
+        let mut nanos: UInt32;
+        if self.nanoseconds < other.nanoseconds {
+            seconds = seconds - 1u64;
+            nanos = NANOS_PER_SECOND as UInt32 + self.nanoseconds - other.nanoseconds;
+        } else {
+            nanos = self.nanoseconds - other.nanoseconds;
+        }
+
+        Some(Duration { seconds: seconds, nanoseconds: nanos })
+    }
+    pub fn as_millis(&self) -> Option<UInt64> {
+        if self.seconds > U64_MAX / MILLIS_PER_SECOND {
+            return None;
+        }
+        let sec_part = self.seconds * MILLIS_PER_SECOND;
+        let nanos_part = self.nanoseconds as UInt64 / NANOS_PER_MILLI;
+        if sec_part > U64_MAX - nanos_part {
+            return None;
+        }
+        Some(sec_part + nanos_part)
+    }
+    pub fn as_micros(&self) -> Option<UInt64> {
+        if self.seconds > U64_MAX / MICROS_PER_SECOND {
+            return None;
+        }
+        let sec_part = self.seconds * MICROS_PER_SECOND;
+        let nanos_part = self.nanoseconds as UInt64 / NANOS_PER_MICRO;
+        if sec_part > U64_MAX - nanos_part {
+            return None;
+        }
+        Some(sec_part + nanos_part)
+    }
+    pub fn as_nanos(&self) -> Option<UInt64> {
+        if self.seconds > U64_MAX / NANOS_PER_SECOND {
+            return None;
+        }
+        let sec_part = self.seconds * NANOS_PER_SECOND;
+        let nanos_part = self.nanoseconds as UInt64;
+        if sec_part > U64_MAX - nanos_part {
+            return None;
+        }
+        Some(sec_part + nanos_part)
+    }
+}
+
+pub struct Instant { ticks_nanos: UInt64 }
+
+impl Instant {
+    pub fn checked_duration_since(&self, earlier: &Instant) -> Option<Duration> {
+        // `now()` is intentionally absent -- see BLOCKERS.md. Calling the monotonic provider has no
+        // approved execution seam yet, and this package must not invent one.
+
+        if self.ticks_nanos < earlier.ticks_nanos {
+            return None;
+        }
+        let delta = self.ticks_nanos - earlier.ticks_nanos;
+        Some(Duration::from_nanos(delta))
+    }
+}
+// `elapsed()` is intentionally absent: §12.4 defines it in terms of `Instant::now()`.
+
+pub struct UnixTimestamp { seconds: Int64, nanoseconds: UInt32 }
+
+impl UnixTimestamp {
+    pub fn from_unix_seconds(seconds: Int64) -> UnixTimestamp {
+        // `now()` is intentionally absent -- see BLOCKERS.md.
+
+        UnixTimestamp { seconds: seconds, nanoseconds: 0u32 }
+    }
+    pub fn from_unix_millis(milliseconds: Int64) -> UnixTimestamp {
+        let q = milliseconds / 1000i64;
+        let r = milliseconds % 1000i64;
+        if r >= 0i64 {
+            UnixTimestamp { seconds: q, nanoseconds: (r * 1000000i64) as UInt32 }
+        } else {
+            UnixTimestamp { seconds: q - 1i64, nanoseconds: ((r + 1000i64) * 1000000i64) as UInt32 }
+        }
+    }
+    pub fn seconds(&self) -> Int64 {
+        self.seconds
+    }
+    pub fn subsec_nanos(&self) -> UInt32 {
+        self.nanoseconds
+    }
+    pub fn to_unix_millis(&self) -> Option<Int64> {
+        if self.seconds > I64_MAX / 1000i64 {
+            return None;
+        }
+        if self.seconds < I64_MIN / 1000i64 {
+            return None;
+        }
+        let sec_part = self.seconds * 1000i64;
+        let nanos_part = (self.nanoseconds / 1000000u32) as Int64;
+        if sec_part > I64_MAX - nanos_part {
+            return None;
+        }
+        Some(sec_part + nanos_part)
+    }
+}
+
+// -------------------------------------------------------------------------- tests --
+// Tests live in this file, not a separate tests.stark, because associated-function calls
+// (Type::function()) only resolve within the file that declares the impl block -- a discovered
+// engine limitation, not a WP-TIME-A design choice. Instance methods (value.method()) resolve
+// fine across files; see BLOCKERS.md.
+
+const I64_MIN_FOR_TESTS: Int64 = -9223372036854775807i64 - 1i64;
+const I64_MAX_FOR_TESTS: Int64 = 9223372036854775807i64;
+
+fn expect_some_duration(
+    result: Option<Duration>,
+    expect_seconds: UInt64,
+    expect_nanos: UInt32,
+    msg: &str,
+) {
+    match result {
+        Some(d) => {
+            if d.seconds() != expect_seconds || d.subsec_nanos() != expect_nanos {
+                panic(msg);
+            }
+        }
+        None => {
+            panic(msg);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Duration: constructors --
+
+fn test_duration_zero() {
+    let d = Duration::zero();
+    if d.seconds() != 0u64 || d.subsec_nanos() != 0u32 {
+        panic("zero() must be (0, 0)");
+    }
+    if !d.is_zero() {
+        panic("zero() must report is_zero() true");
+    }
+}
+
+fn test_duration_from_seconds() {
+    let d = Duration::from_seconds(5u64);
+    if d.seconds() != 5u64 || d.subsec_nanos() != 0u32 {
+        panic("from_seconds(5) must be (5, 0)");
+    }
+}
+
+fn test_duration_from_millis() {
+    expect_some_duration(Some(Duration::from_millis(1u64)), 0u64, 1000000u32, "from_millis(1)");
+    expect_some_duration(
+        Some(Duration::from_millis(999u64)),
+        0u64,
+        999000000u32,
+        "from_millis(999)",
+    );
+    expect_some_duration(Some(Duration::from_millis(1000u64)), 1u64, 0u32, "from_millis(1000)");
+    expect_some_duration(
+        Some(Duration::from_millis(1001u64)),
+        1u64,
+        1000000u32,
+        "from_millis(1001)",
+    );
+}
+
+fn test_duration_from_micros() {
+    expect_some_duration(Some(Duration::from_micros(1u64)), 0u64, 1000u32, "from_micros(1)");
+    expect_some_duration(
+        Some(Duration::from_micros(999999u64)),
+        0u64,
+        999999000u32,
+        "from_micros(999_999)",
+    );
+    expect_some_duration(
+        Some(Duration::from_micros(1000000u64)),
+        1u64,
+        0u32,
+        "from_micros(1_000_000)",
+    );
+}
+
+fn test_duration_from_nanos() {
+    expect_some_duration(Some(Duration::from_nanos(1u64)), 0u64, 1u32, "from_nanos(1)");
+    expect_some_duration(
+        Some(Duration::from_nanos(999999999u64)),
+        0u64,
+        999999999u32,
+        "from_nanos(999_999_999)",
+    );
+    expect_some_duration(
+        Some(Duration::from_nanos(1000000000u64)),
+        1u64,
+        0u32,
+        "from_nanos(1_000_000_000)",
+    );
+    expect_some_duration(
+        Some(Duration::from_nanos(1000000001u64)),
+        1u64,
+        1u32,
+        "from_nanos(1_000_000_001)",
+    );
+}
+
+// ---------------------------------------------------------------------- Duration: is_zero --
+
+fn test_duration_is_zero_variants() {
+    if !Duration::zero().is_zero() {
+        panic("zero must be zero");
+    }
+    if Duration::from_seconds(1u64).is_zero() {
+        panic("nonzero seconds must not be zero");
+    }
+    if Duration::from_nanos(1u64).is_zero() {
+        panic("nonzero nanoseconds must not be zero");
+    }
+}
+
+// ----------------------------------------------------------------- Duration: checked_add --
+
+fn test_duration_checked_add_zero_plus_zero() {
+    let r = Duration::zero().checked_add(&Duration::zero());
+    expect_some_duration(r, 0u64, 0u32, "zero + zero");
+}
+
+fn test_duration_checked_add_zero_plus_value() {
+    let v = Duration::from_millis(1500u64);
+    let r = Duration::zero().checked_add(&v);
+    expect_some_duration(r, 1u64, 500000000u32, "zero + value");
+}
+
+fn test_duration_checked_add_no_carry() {
+    let a = Duration::from_millis(1100u64);
+    let b = Duration::from_millis(200u64);
+    let r = a.checked_add(&b);
+    expect_some_duration(r, 1u64, 300000000u32, "no carry");
+}
+
+fn test_duration_checked_add_exact_carry() {
+    let a = Duration::from_nanos(500000000u64);
+    let b = Duration::from_nanos(500000000u64);
+    let r = a.checked_add(&b);
+    expect_some_duration(r, 1u64, 0u32, "exact carry");
+}
+
+fn test_duration_checked_add_carry_and_remainder() {
+    let a = Duration::from_nanos(700000000u64);
+    let b = Duration::from_nanos(800000000u64);
+    let r = a.checked_add(&b);
+    expect_some_duration(r, 1u64, 500000000u32, "carry and remainder");
+}
+
+fn test_duration_checked_add_seconds_overflow() {
+    let a = Duration::from_seconds(18446744073709551615u64);
+    let b = Duration::from_seconds(1u64);
+    match a.checked_add(&b) {
+        Some(_) => panic("seconds overflow must return None"),
+        None => {}
+    }
+}
+
+fn test_duration_checked_add_carry_overflow() {
+    let a = Duration { seconds: 18446744073709551615u64, nanoseconds: 999999999u32 };
+    let b = Duration::from_nanos(1u64);
+    match a.checked_add(&b) {
+        Some(_) => panic("carry-caused overflow must return None"),
+        None => {}
+    }
+}
+
+fn test_duration_checked_add_operands_unchanged() {
+    let a = Duration::from_millis(100u64);
+    let b = Duration::from_millis(200u64);
+    let sum = a.checked_add(&b);
+    match sum {
+        Some(_) => {}
+        None => panic("100ms + 200ms must not overflow"),
+    }
+    if a.seconds() != 0u64 || a.subsec_nanos() != 100000000u32 {
+        panic("operand a must be unchanged");
+    }
+    if b.seconds() != 0u64 || b.subsec_nanos() != 200000000u32 {
+        panic("operand b must be unchanged");
+    }
+}
+
+// ----------------------------------------------------------------- Duration: checked_sub --
+
+fn test_duration_checked_sub_equal_is_zero() {
+    let a = Duration::from_millis(1500u64);
+    let b = Duration::from_millis(1500u64);
+    let r = a.checked_sub(&b);
+    expect_some_duration(r, 0u64, 0u32, "equal - equal = 0");
+}
+
+fn test_duration_checked_sub_no_borrow() {
+    let a = Duration::from_millis(1500u64);
+    let b = Duration::from_millis(200u64);
+    let r = a.checked_sub(&b);
+    expect_some_duration(r, 1u64, 300000000u32, "no borrow");
+}
+
+fn test_duration_checked_sub_with_borrow() {
+    let a = Duration::from_nanos(1000000000u64);
+    let b = Duration::from_nanos(500000000u64);
+    let r = a.checked_sub(&b);
+    expect_some_duration(r, 0u64, 500000000u32, "with borrow");
+}
+
+fn test_duration_checked_sub_to_zero() {
+    let a = Duration::from_seconds(5u64);
+    let r = a.checked_sub(&a);
+    expect_some_duration(r, 0u64, 0u32, "to zero");
+}
+
+fn test_duration_checked_sub_underflow() {
+    let a = Duration::from_seconds(1u64);
+    let b = Duration::from_seconds(2u64);
+    match a.checked_sub(&b) {
+        Some(_) => panic("underflow must return None"),
+        None => {}
+    }
+}
+
+fn test_duration_checked_sub_operands_unchanged() {
+    let a = Duration::from_millis(1500u64);
+    let b = Duration::from_millis(200u64);
+    let diff = a.checked_sub(&b);
+    match diff {
+        Some(_) => {}
+        None => panic("1500ms - 200ms must not underflow"),
+    }
+    if a.seconds() != 1u64 || a.subsec_nanos() != 500000000u32 {
+        panic("operand a must be unchanged");
+    }
+    if b.seconds() != 0u64 || b.subsec_nanos() != 200000000u32 {
+        panic("operand b must be unchanged");
+    }
+}
+
+// --------------------------------------------------------------- Duration: unit conversion --
+
+fn test_duration_as_millis() {
+    match Duration::from_seconds(1u64).as_millis() {
+        Some(v) => {
+            if v != 1000u64 {
+                panic("1s as_millis must be 1000");
+            }
+        }
+        None => panic("1s as_millis must not overflow"),
+    }
+    match Duration::from_nanos(1500000u64).as_millis() {
+        Some(v) => {
+            if v != 1u64 {
+                panic("truncation below millis must floor");
+            }
+        }
+        None => panic("must not overflow"),
+    }
+}
+
+fn test_duration_as_micros() {
+    match Duration::from_millis(1u64).as_micros() {
+        Some(v) => {
+            if v != 1000u64 {
+                panic("1ms as_micros must be 1000");
+            }
+        }
+        None => panic("must not overflow"),
+    }
+}
+
+fn test_duration_as_nanos() {
+    match Duration::from_micros(1u64).as_nanos() {
+        Some(v) => {
+            if v != 1000u64 {
+                panic("1us as_nanos must be 1000");
+            }
+        }
+        None => panic("must not overflow"),
+    }
+}
+
+fn test_duration_as_millis_max_and_overflow() {
+    // Largest seconds value for which seconds * 1000 still fits UInt64.
+    let max_fitting: UInt64 = 18446744073709551u64;
+    let ok = Duration::from_seconds(max_fitting);
+    match ok.as_millis() {
+        Some(_) => {}
+        None => panic("largest fitting value must not overflow"),
+    }
+    let first_overflow = Duration::from_seconds(max_fitting + 1u64);
+    match first_overflow.as_millis() {
+        Some(_) => panic("first overflowing value must return None"),
+        None => {}
+    }
+}
+
+fn test_duration_as_micros_overflow() {
+    let too_big = Duration::from_seconds(18446744073709551615u64);
+    match too_big.as_micros() {
+        Some(_) => panic("as_micros must overflow for max seconds"),
+        None => {}
+    }
+}
+
+fn test_duration_as_nanos_overflow() {
+    let too_big = Duration::from_seconds(18446744073709551615u64);
+    match too_big.as_nanos() {
+        Some(_) => panic("as_nanos must overflow for max seconds"),
+        None => {}
+    }
+}
+
+// ------------------------------------------------------------------------- Instant: pure --
+
+fn test_instant_checked_duration_since_increasing() {
+    let earlier = Instant { ticks_nanos: 10000000000u64 };
+    let later = Instant { ticks_nanos: 10000000123u64 };
+    match later.checked_duration_since(&earlier) {
+        Some(d) => {
+            if d.seconds() != 0u64 || d.subsec_nanos() != 123u32 {
+                panic("increasing delta mismatch");
+            }
+        }
+        None => panic("increasing reading must produce Some"),
+    }
+}
+
+fn test_instant_checked_duration_since_equal() {
+    let a = Instant { ticks_nanos: 10000000000u64 };
+    let b = Instant { ticks_nanos: 10000000000u64 };
+    match a.checked_duration_since(&b) {
+        Some(d) => {
+            if !d.is_zero() {
+                panic("equal readings must yield a zero duration");
+            }
+        }
+        None => panic("equal readings must be accepted"),
+    }
+}
+
+fn test_instant_checked_duration_since_regression_is_none() {
+    let earlier = Instant { ticks_nanos: 10000000123u64 };
+    let later = Instant { ticks_nanos: 10000000000u64 };
+    match later.checked_duration_since(&earlier) {
+        Some(_) => panic("a regression must return None"),
+        None => {}
+    }
+}
+
+// -------------------------------------------------------------- UnixTimestamp: constructors --
+
+fn test_unix_timestamp_from_unix_seconds() {
+    let a = UnixTimestamp::from_unix_seconds(0i64);
+    if a.seconds() != 0i64 || a.subsec_nanos() != 0u32 {
+        panic("from_unix_seconds(0) mismatch");
+    }
+    let b = UnixTimestamp::from_unix_seconds(1i64);
+    if b.seconds() != 1i64 || b.subsec_nanos() != 0u32 {
+        panic("from_unix_seconds(1) mismatch");
+    }
+    let c = UnixTimestamp::from_unix_seconds(-1i64);
+    if c.seconds() != -1i64 || c.subsec_nanos() != 0u32 {
+        panic("from_unix_seconds(-1) mismatch");
+    }
+    let d = UnixTimestamp::from_unix_seconds(I64_MIN_FOR_TESTS);
+    if d.seconds() != I64_MIN_FOR_TESTS || d.subsec_nanos() != 0u32 {
+        panic("from_unix_seconds(Int64::MIN) mismatch");
+    }
+    let e = UnixTimestamp::from_unix_seconds(I64_MAX_FOR_TESTS);
+    if e.seconds() != I64_MAX_FOR_TESTS || e.subsec_nanos() != 0u32 {
+        panic("from_unix_seconds(Int64::MAX) mismatch");
+    }
+}
+
+fn expect_millis(input: Int64, expect_seconds: Int64, expect_nanos: UInt32, msg: &str) {
+    let t = UnixTimestamp::from_unix_millis(input);
+    if t.seconds() != expect_seconds || t.subsec_nanos() != expect_nanos {
+        panic(msg);
+    }
+}
+
+fn test_unix_timestamp_from_unix_millis_table() {
+    expect_millis(0i64, 0i64, 0u32, "0ms");
+    expect_millis(1i64, 0i64, 1000000u32, "1ms");
+    expect_millis(999i64, 0i64, 999000000u32, "999ms");
+    expect_millis(1000i64, 1i64, 0u32, "1000ms");
+    expect_millis(1001i64, 1i64, 1000000u32, "1001ms");
+    expect_millis(-1i64, -1i64, 999000000u32, "-1ms");
+    expect_millis(-999i64, -1i64, 1000000u32, "-999ms");
+    expect_millis(-1000i64, -1i64, 0u32, "-1000ms");
+    expect_millis(-1001i64, -2i64, 999000000u32, "-1001ms");
+}
+
+fn test_unix_timestamp_from_unix_millis_boundaries() {
+    let min_t = UnixTimestamp::from_unix_millis(I64_MIN_FOR_TESTS);
+    if min_t.subsec_nanos() >= 1000000000u32 {
+        panic("Int64::MIN millis must produce canonical nanoseconds");
+    }
+    let max_t = UnixTimestamp::from_unix_millis(I64_MAX_FOR_TESTS);
+    if max_t.subsec_nanos() >= 1000000000u32 {
+        panic("Int64::MAX millis must produce canonical nanoseconds");
+    }
+}
+
+// ------------------------------------------------------------ UnixTimestamp: to_unix_millis --
+
+fn test_unix_timestamp_to_unix_millis_zero() {
+    let t = UnixTimestamp::from_unix_seconds(0i64);
+    match t.to_unix_millis() {
+        Some(v) => {
+            if v != 0i64 {
+                panic("zero to_unix_millis mismatch");
+            }
+        }
+        None => panic("zero must not overflow"),
+    }
+}
+
+fn test_unix_timestamp_to_unix_millis_positive_exact() {
+    let t = UnixTimestamp::from_unix_seconds(5i64);
+    match t.to_unix_millis() {
+        Some(v) => {
+            if v != 5000i64 {
+                panic("positive exact mismatch");
+            }
+        }
+        None => panic("must not overflow"),
+    }
+}
+
+fn test_unix_timestamp_to_unix_millis_positive_truncation() {
+    let t = UnixTimestamp { seconds: 1i64, nanoseconds: 500000001u32 };
+    match t.to_unix_millis() {
+        Some(v) => {
+            if v != 1500i64 {
+                panic("sub-millisecond truncation mismatch");
+            }
+        }
+        None => panic("must not overflow"),
+    }
+}
+
+fn test_unix_timestamp_to_unix_millis_negative_exact() {
+    let t = UnixTimestamp::from_unix_millis(-5000i64);
+    match t.to_unix_millis() {
+        Some(v) => {
+            if v != -5000i64 {
+                panic("negative exact mismatch");
+            }
+        }
+        None => panic("must not overflow"),
+    }
+}
+
+fn test_unix_timestamp_to_unix_millis_negative_fraction() {
+    // (-1 seconds, 500_000_000 nanos) -> -500 milliseconds, per the spec's worked example.
+    let t = UnixTimestamp { seconds: -1i64, nanoseconds: 500000000u32 };
+    match t.to_unix_millis() {
+        Some(v) => {
+            if v != -500i64 {
+                panic("negative fraction mismatch");
+            }
+        }
+        None => panic("must not overflow"),
+    }
+}
+
+fn test_unix_timestamp_to_unix_millis_positive_overflow() {
+    let t = UnixTimestamp { seconds: I64_MAX_FOR_TESTS, nanoseconds: 0u32 };
+    match t.to_unix_millis() {
+        Some(_) => panic("positive overflow must return None"),
+        None => {}
+    }
+}
+
+fn test_unix_timestamp_to_unix_millis_negative_overflow() {
+    let t = UnixTimestamp { seconds: I64_MIN_FOR_TESTS, nanoseconds: 0u32 };
+    match t.to_unix_millis() {
+        Some(_) => panic("negative overflow must return None"),
+        None => {}
+    }
+}
+
+fn expect_round_trip(x: Int64) {
+    let t = UnixTimestamp::from_unix_millis(x);
+    match t.to_unix_millis() {
+        Some(back) => {
+            if back != x {
+                panic("round trip mismatch");
+            }
+        }
+        None => panic("round trip must not overflow"),
+    }
+}
+
+fn test_unix_timestamp_round_trip() {
+    expect_round_trip(0i64);
+    expect_round_trip(1i64);
+    expect_round_trip(-1i64);
+    expect_round_trip(999i64);
+    expect_round_trip(-999i64);
+    expect_round_trip(1000i64);
+    expect_round_trip(-1000i64);
+    expect_round_trip(123456789i64);
+    expect_round_trip(-123456789i64);
+}

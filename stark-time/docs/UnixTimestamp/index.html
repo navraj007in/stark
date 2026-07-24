@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UnixTimestamp — stark-time</title>
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header class="site-header"><a href="../index.html">Docs</a> <a href="../search.html">Search</a></header>
+<main>
+<div class="item-header"><span class="badge badge-struct">struct</span> <h1>UnixTimestamp</h1></div>
+<pre class="signature"><code><span class="tok-kw">pub</span> <span class="tok-kw">struct</span> <span class="tok-ident">UnixTimestamp</span></code></pre>
+<h2>Fields</h2>
+<section class="member" id="from_unix_seconds">
+<h3><span class="badge badge-method">method</span> from_unix_seconds</h3>
+<pre class="signature"><code><span class="tok-kw">pub</span> <span class="tok-kw">fn</span> <span class="tok-ident">from_unix_seconds</span><span class="tok-op">(</span><span class="tok-ident">seconds</span><span class="tok-op">:</span> <span class="tok-type">Int64</span><span class="tok-op">)</span> <span class="tok-op">-&gt;</span> <span class="tok-ident">UnixTimestamp</span></code></pre>
+</section>
+<section class="member" id="from_unix_millis">
+<h3><span class="badge badge-method">method</span> from_unix_millis</h3>
+<pre class="signature"><code><span class="tok-kw">pub</span> <span class="tok-kw">fn</span> <span class="tok-ident">from_unix_millis</span><span class="tok-op">(</span><span class="tok-ident">milliseconds</span><span class="tok-op">:</span> <span class="tok-type">Int64</span><span class="tok-op">)</span> <span class="tok-op">-&gt;</span> <span class="tok-ident">UnixTimestamp</span></code></pre>
+</section>
+<section class="member" id="seconds">
+<h3><span class="badge badge-method">method</span> seconds</h3>
+<pre class="signature"><code><span class="tok-kw">pub</span> <span class="tok-kw">fn</span> <span class="tok-ident">seconds</span><span class="tok-op">(</span><span class="tok-op">&amp;</span><span class="tok-kw">self</span><span class="tok-op">)</span> <span class="tok-op">-&gt;</span> <span class="tok-type">Int64</span></code></pre>
+</section>
+<section class="member" id="subsec_nanos">
+<h3><span class="badge badge-method">method</span> subsec_nanos</h3>
+<pre class="signature"><code><span class="tok-kw">pub</span> <span class="tok-kw">fn</span> <span class="tok-ident">subsec_nanos</span><span class="tok-op">(</span><span class="tok-op">&amp;</span><span class="tok-kw">self</span><span class="tok-op">)</span> <span class="tok-op">-&gt;</span> <span class="tok-type">UInt32</span></code></pre>
+</section>
+<section class="member" id="to_unix_millis">
+<h3><span class="badge badge-method">method</span> to_unix_millis</h3>
+<pre class="signature"><code><span class="tok-kw">pub</span> <span class="tok-kw">fn</span> <span class="tok-ident">to_unix_millis</span><span class="tok-op">(</span><span class="tok-op">&amp;</span><span class="tok-kw">self</span><span class="tok-op">)</span> <span class="tok-op">-&gt;</span> <span class="tok-ident">Option</span><span class="tok-op">&lt;</span><span class="tok-type">Int64</span><span class="tok-op">&gt;</span></code></pre>
+</section>
+
+</main>
+</body>
+</html>

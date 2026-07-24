@@ -1,0 +1,6 @@
+{
+  "name": "stark-time",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "dependencies": {}
+}
