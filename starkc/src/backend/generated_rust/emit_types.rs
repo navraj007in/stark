@@ -151,6 +151,68 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
 /// Slot-backed means non-`Copy` AND not a reference. References are ephemeral under the C5.3d-1a
 /// lane and have no liveness to track; wrapping one would also make a destructor's `&mut Self`
 /// receiver project through a slot instead of through the reference.
+/// Whether a type carries a borrow anywhere inside it (OWN-CARRY-001's structural provenance):
+/// a reference, or a tuple/array/instantiation containing one. Declared reference *fields* are
+/// forbidden by 03 rule 1 and rejected by the front end, so a nominal only carries a borrow through
+/// its type arguments.
+/// WP-C6.1f "aggregates": refuse a **borrow-carrying nominal instance** — `Option<&T>`, or a user
+/// generic instantiated at a reference — deterministically, before rustc.
+///
+/// A generated nominal is a plain Rust `struct`/`enum` with no lifetime parameters, so a reference
+/// in one of its fields produces `error[E0106]: missing lifetime specifier` *in the generated
+/// crate*. That would break this backend's defining property: an unsupported program must be
+/// refused on OUR side of the boundary, as a named STARK limitation, never as a compiler error in
+/// code the user never wrote (`native_c5_3_aggregates_enums.rs` pins exactly this).
+///
+/// Tuples and arrays of references need no such refusal — they are structural Rust types whose
+/// lifetimes rustc infers, which is why they are supported while these are not. Lifting this needs
+/// lifetime parameters threaded through generated type declarations and every use site.
+fn refuse_borrow_carrying_nominals(program: &MirProgram) -> Result<(), BackendDiagnostic> {
+    let refuse = |ty: &MirTy| -> Result<(), BackendDiagnostic> {
+        let carries = match ty {
+            MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
+                args.iter().any(ty_carries_reference)
+            }
+            _ => false,
+        };
+        if carries {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "the borrow-carrying nominal instance `{}` is not representable yet: a generated \
+                 Rust struct/enum has no lifetime parameters, so a reference in a field cannot be \
+                 spelled. Tuples and arrays of references ARE supported. Lifting this needs \
+                 lifetime parameters on generated type declarations and their uses",
+                crate::mir::dump_ty(ty)
+            )));
+        }
+        Ok(())
+    };
+    for body in &program.bodies {
+        for local in &body.locals {
+            refuse(&local.ty)?;
+        }
+        for param in &body.params {
+            refuse(param)?;
+        }
+        refuse(&body.ret)?;
+    }
+    Ok(())
+}
+
+pub fn ty_carries_reference(ty: &MirTy) -> bool {
+    match ty {
+        MirTy::Ref { .. } => true,
+        MirTy::Tuple(elements) => elements.iter().any(ty_carries_reference),
+        MirTy::Array(element, _) | MirTy::Slice(element) => ty_carries_reference(element),
+        MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
+            args.iter().any(ty_carries_reference)
+        }
+        MirTy::FnPtr { params, ret } => {
+            params.iter().any(ty_carries_reference) || ty_carries_reference(ret)
+        }
+        _ => false,
+    }
+}
+
 pub fn is_slot_backed(ty: &MirTy, types: &TypeContext) -> bool {
     !mir_ty_is_copy(ty, types) && !matches!(ty, MirTy::Ref { .. })
 }
@@ -171,6 +233,7 @@ pub fn is_slot_backed(ty: &MirTy, types: &TypeContext) -> bool {
 /// copy helper per nominal, and the change is confined to [`derives_for`].
 pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
+    refuse_borrow_carrying_nominals(program)?;
 
     // WP-C5.3c: core enums have no `TypeContext` entry -- their variants are DERIVED from their
     // type arguments -- so the reachable instances are collected from the program's own types.

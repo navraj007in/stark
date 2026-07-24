@@ -206,26 +206,32 @@ pub fn emit_block_body(
         // own definite-assignment analysis can see the assignment precedes the use. That makes
         // rustc a second check on the lane: a reference that escaped its block would fail to
         // compile as "possibly uninitialized" rather than silently reading a fabricated value.
-        if matches!(decl.ty, MirTy::Ref { .. }) {
-            // WP-C6.1f-b3 / "returning a reference": a reference local that is a USER binding, or a
-            // temporary that is a `Call` destination, is declared `Option<&T> = None` — definitely
-            // initialised at declaration, so it can be assigned in one dispatch-loop arm and read
-            // in another. Any OTHER reference temporary keeps the bare, uninitialised form: it is
-            // same-block by construction, so rustc's definite-assignment analysis still serves as a
-            // second check on it exactly as before.
-            if emit_places::is_stored_ref_local(i as u32, env)? {
-                out.push_str(&format!(
-                    "    let mut {}: Option<{}> = None;\n",
-                    emit_places::local_name(i as u32),
-                    emit_types::emit_ty(&decl.ty)?
-                ));
-            } else {
-                out.push_str(&format!(
-                    "    let mut {}: {};\n",
-                    emit_places::local_name(i as u32),
-                    emit_types::emit_ty(&decl.ty)?
-                ));
-            }
+        // WP-C6.1f-b3 / "returning a reference" / "aggregates": a local that CARRIES a borrow and
+        // has no slot to defer its liveness — a user binding, a cross-block reference temporary, or
+        // a `Copy` aggregate of references — is declared `Option<T> = None`. That is definitely
+        // initialised at its declaration, so it can be assigned in one dispatch-loop arm and read
+        // in another (rustc's definite-assignment analysis cannot follow the dispatch loop, and
+        // rejects the bare form with E0381). There is also no value to default-initialise such a
+        // local with: `default_value_expr` cannot fabricate a reference.
+        if emit_places::is_stored_ref_local(i as u32, env)? {
+            out.push_str(&format!(
+                "    let mut {}: Option<{}> = None;\n",
+                emit_places::local_name(i as u32),
+                emit_types::emit_ty(&decl.ty)?
+            ));
+            continue;
+        }
+        if !slotted && emit_types::ty_carries_reference(&decl.ty) {
+            // Any OTHER borrow-carrying local keeps the bare, uninitialised form: it is same-block
+            // by construction, so rustc's definite-assignment analysis still serves as a second
+            // check on it exactly as the C5.3d-1a lane intended. It must not be default-initialised
+            // either way — there is no default reference to fabricate, which is equally true one
+            // level down, for a tuple or array whose ELEMENTS are references.
+            out.push_str(&format!(
+                "    let mut {}: {};\n",
+                emit_places::local_name(i as u32),
+                emit_types::emit_ty(&decl.ty)?
+            ));
             continue;
         }
         if !slotted {
@@ -297,7 +303,7 @@ pub fn emit_block_body(
 /// same-block consumption by read as well as by call, and the difference is recorded in CD-063
 /// rather than quietly widened.
 fn validate_ephemeral_references(body: &MirBody) -> Result<(), BackendDiagnostic> {
-    for (bi, block) in body.blocks.iter().enumerate() {
+    for block in &body.blocks {
         let mut created_here: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for (statement, _) in &block.statements {
             let Statement::Assign(place, rvalue) = statement else {
@@ -335,14 +341,17 @@ fn validate_ephemeral_references(body: &MirBody) -> Result<(), BackendDiagnostic
                 if !created_here.contains(&src.local.0) {
                     continue;
                 }
-                // WP-C6.1f-b3: a reference value may flow into a temporary or a user binding;
-                // aggregates still refuse it (a reference field has no `Option` treatment).
+                // WP-C6.1f: a reference value may flow into a temporary, a user binding, or the
+                // return slot — including INSIDE an aggregate. OWN-CARRY-001 makes borrow
+                // provenance structural through tuples, generic arguments and enum payloads, so a
+                // borrow-carrying aggregate is ordinary Core v1, not an escape. (Declared reference
+                // FIELDS remain forbidden by 03 rule 1, rejected by the front end as E0001.)
                 let dest_ok = place.projection.is_empty()
                     && matches!(
                         body.locals[place.local.0 as usize].kind,
                         LocalKind::Temp | LocalKind::User(_) | LocalKind::Return
                     );
-                if matches!(rvalue, Rvalue::Aggregate(..)) || !dest_ok {
+                if !dest_ok {
                     return Err(BackendDiagnostic::Unsupported(format!(
                         "a reference flowing into {place:?} is outside the reference lane: it \
                          may not be stored in an aggregate or returned"
@@ -351,40 +360,16 @@ fn validate_ephemeral_references(body: &MirBody) -> Result<(), BackendDiagnostic
                 created_here.insert(place.local.0);
             }
         }
-        // Nothing created in this block may be read in any other one.
-        for (other_i, other) in body.blocks.iter().enumerate() {
-            if other_i == bi {
-                continue;
-            }
-            for (statement, _) in &other.statements {
-                if let Statement::Assign(_, rvalue) = statement {
-                    for operand in super::emit_projections::rvalue_operands(rvalue) {
-                        if let Operand::Copy(p) | Operand::Move(p) = operand {
-                            // WP-C6.1f-b3: a stored (user) reference is `Option`-backed and may
-                            // legitimately cross blocks; only TEMPORARIES remain same-block.
-                            if matches!(body.locals[p.local.0 as usize].kind, LocalKind::User(_)) {
-                                continue;
-                            }
-                            if created_here.contains(&p.local.0) {
-                                return Err(BackendDiagnostic::Unsupported(format!(
-                                    "reference temporary _{} is created in block {bi} and used in \
-                                     block {other_i}: the C5 ephemeral reference lane requires \
-                                     creation and consumption in the SAME basic block",
-                                    p.local.0
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // WP-C6.1f: the former "a reference temporary may not cross basic blocks" check is GONE,
+        // subsumed rather than dropped. A reference that spans blocks is now `Option<&T>`-backed
+        // (see `emit_places::is_stored_ref_local`), which is what makes it representable; refusing
+        // it here as well would reject the very shapes that support now exists for.
     }
-    // WP-C6.1f "returning a reference": a reference return is now emitted (a single shared `'a`
-    // lifetime encodes OWN-RETURN-001's shortest-input rule; see `emit_function`). Provenance —
-    // that the returned reference derives only from a reference PARAMETER, never a local — is
-    // enforced by the front end (E0103, OWN-RETURN-001 rules 2/3), so the backend does not
-    // re-check it. What the lane still forbids (a reference into an aggregate; a `RefOf` through a
-    // projection) is unchanged above.
+    // WP-C6.1f: a reference RETURN is emitted too (a single shared `'a` encodes OWN-RETURN-001's
+    // shortest-input rule; see `emit_function`), and provenance — that the returned reference
+    // derives only from a reference PARAMETER — is the front end's (E0103), so it is not
+    // re-checked here. What this validator still enforces: a `RefOf` may not be written through a
+    // projection, and a reference may only land in a temporary, a user binding, or the return slot.
     Ok(())
 }
 

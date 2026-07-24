@@ -1,7 +1,7 @@
 # C6-REFERENCE-MATRIX — WP-C6.1f-a
 
 **Track:** A (Claude)
-**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 (CD-092)**; **b3 stored references COMPLETE (CD-093)** — §10; **returning a reference COMPLETE (CD-094)** — §11.
+**Status:** C6.1f-a COMPLETE. **C6.1f-b1 COMPLETE (CD-090)**; **b2 COMPLETE for 5 of 6 (CD-092)**; **b3 stored references COMPLETE (CD-093)** — §10; **returning a reference COMPLETE (CD-094)** — §11; **aggregates: tuples/arrays COMPLETE, nominals refused (CD-095)** — §12.
 **Base:** `main` @ CD-088
 **Method:** every case driven end-to-end
 (`parse → resolve → typecheck → HIR-run → lower → verify → emit → native-run`), 51 cases across the
@@ -449,7 +449,6 @@ Still open in C6.1f:
 
 | Item | Where |
 |---|---|
-| references stored in **aggregates** (lane check 3) | b3 continuation |
 | aggregate-field weakening; generic-callee argument weakening | b2 continuation |
 | `&&T` / `**x` unspellable (parser) | b4 |
 | the E0103 `if`-branch message | b5 |
@@ -511,3 +510,52 @@ test" instruction (→ `native_c61f_ret_refs.rs`); its remaining case is now the
 | 3 | reference into an aggregate or disallowed place | **aggregates still refused**; return slot admitted |
 | 4 | reference temporary used in another block | temporaries that span blocks are now `Option`-backed rather than refused |
 | 5 | body returning a reference | **removed** — provenance is the front end's (E0103) |
+
+
+---
+
+## 12. Aggregates carrying borrows (CD-095)
+
+OWN-CARRY-001 makes borrow provenance **structural** — it flows through tuples, generic arguments
+and enum payloads — so a tuple or array of references is ordinary Core v1, not an escape hatch.
+Declared reference *fields* stay forbidden (03 rule 1, front-end E0001), and that is pinned.
+
+### 12.1 The property is "carries a borrow", not "is a reference"
+
+Relaxing the lane to admit aggregates only moved the failure: a **`Copy` aggregate of references**
+(`(&T, &T)`, `[&T; N]`) is not slot-backed, so it was declared through `default_value_expr` — which
+cannot fabricate a reference, one level down for exactly the reason it cannot fabricate one
+directly. Generalising b3's rule from *is a reference* to *carries a reference*
+(`emit_types::ty_carries_reference`) fixed the whole class at once: such locals defer initialisation
+like a bare reference — `Option<T> = None` when they cross basic blocks, bare-uninitialised when
+same-block. A **non-`Copy`** borrow-carrying aggregate is already slot-backed (`ValueSlot::dead()`
+needs no default) and is untouched.
+
+Supported and running natively: tuple of two references; tuple of struct references; mixed tuple
+(only one element borrowing); array of references; nested borrow-carrying tuple; a borrow-carrying
+tuple crossing basic blocks; a tuple of references to **`Drop`-bearing** values.
+
+### 12.2 Borrow-carrying nominals are refused — deliberately, and before rustc
+
+`Option<&T>`, and a user generic instantiated at a reference (`H<&P>`), are **not** supported. A
+generated Rust struct/enum has no lifetime parameters, so a reference in a field cannot be spelled
+and rustc reports `E0106: missing lifetime specifier` *in the generated crate*.
+
+Letting that happen would break this backend's defining property — an unsupported program must be
+refused on **our** side of the boundary, as a named STARK limitation, never as a compiler error in
+code the user never wrote. So `emit_types::refuse_borrow_carrying_nominals` refuses it
+deterministically pre-rustc, naming the missing capability. This is the case
+`native_c5_3_aggregates_enums.rs` now pins (its third rotation: `store` → b3, `ret` → the return
+step, `ref_in_tuple` → here, each following that test's own "if it is now legitimately supported,
+move it to a positive test" instruction).
+
+**Why tuples work and nominals do not** is the whole distinction: a tuple is a *structural* Rust
+type whose lifetimes rustc infers; a generated nominal is a *declared* type that would need explicit
+lifetime parameters.
+
+### 12.3 What lifting the nominal restriction needs
+
+Lifetime parameters threaded through generated type declarations (`enum core_x<'a> { … }`) and
+**every** use site — field types, local declarations, function signatures, drop glue, variant
+construction, and match patterns. It interacts with the shared-`'a` signature machinery §11.2 added
+for reference returns. That is a self-contained next step, not a small edit.

@@ -6,7 +6,8 @@ never assigned; scope correction, not a defect in the closed work), and WP-C6.2a
 CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, **six findings
 F1–F6 await owner disposition — F1 (privacy) accepts invalid programs; F3 is unassigned C6 scope.**
 Remaining C6: **WP-C6.1f-a/b1 CLOSED; b2 5-of-6 (CD-092); b3 stored references CLOSED (CD-093);
-returning a reference CLOSED (CD-094) — aggregates still open; b4/b5 open**, F1
+returning a reference CLOSED (CD-094); aggregates: tuples/arrays CLOSED, nominals refused
+(CD-095); b4/b5 open**, F1
 privacy (Track B blocker), C6.2b's other findings,
 C6.2c…e, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
@@ -3047,6 +3048,38 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     regression tests; formatting and strict workspace clippy all green. Full-workspace closure:
     **1,096 passed / 0 failed / 2 ignored across 55 test-bearing binaries.** Exact commands,
     toolchain versions, and adversarial dispositions are recorded in WP-C5.5 §29.
+
+- CD-095 [2026-07-24, **WP-C6.1f — borrow-carrying aggregates; tuples/arrays land, nominals
+  refused before rustc**] OWN-CARRY-001 makes borrow provenance **structural** — through tuples,
+  generic arguments and enum payloads — so a tuple or array of references is ordinary Core v1.
+  Declared reference *fields* stay forbidden (03 rule 1, front-end E0001) and are pinned.
+  - **The property is "carries a borrow", not "is a reference".** Relaxing the lane to admit
+    aggregates only moved the failure: a **`Copy` aggregate of references** is not slot-backed, so it
+    was default-initialised — and `default_value_expr` cannot fabricate a reference, one level down
+    for exactly the reason it cannot fabricate one directly. Generalising b3's rule from *is* to
+    *carries* (`ty_carries_reference`) fixed the class at once; non-`Copy` borrow-carrying
+    aggregates are already slot-backed and untouched.
+  - **Supported natively:** tuple of two references; tuple of struct references; mixed tuple; array
+    of references; nested borrow-carrying tuple; a borrow-carrying tuple crossing basic blocks; a
+    tuple of references to **`Drop`-bearing** values.
+  - **Borrow-carrying NOMINALS are refused — deliberately, and before rustc.** `Option<&T>` and a
+    user generic at a reference need lifetime parameters a generated Rust struct/enum does not have,
+    so rustc would report `E0106` **in the generated crate**. That would break this backend's
+    defining property: an unsupported program must be refused on *our* side of the boundary as a
+    named STARK limitation, never as a compiler error in code the user never wrote. A new
+    `refuse_borrow_carrying_nominals` raises it deterministically, naming the missing capability.
+    Tuples work and nominals do not for one reason: a tuple is a **structural** Rust type whose
+    lifetimes rustc infers; a generated nominal is a **declared** type needing explicit ones.
+  - `native_c5_3_aggregates_enums.rs`'s lane test rotated its negative case a third time
+    (`store` → b3, `ret` → the return step, `ref_in_tuple` → here), each time following its own
+    "if it is now legitimately supported, move it to a positive test" instruction.
+  - **Lifting the nominal restriction** needs lifetime parameters threaded through generated type
+    declarations and every use site — field types, locals, signatures, drop glue, variant
+    construction, match patterns — interacting with §11.2's shared-`'a` signature machinery. A
+    self-contained next step, not a small edit.
+  - **Evidence:** `starkc/tests/native_c61f_aggregates.rs` (6). **Validation: full workspace suite
+    exit 0 — 67 suites, zero failures** (including `spike_cranelift`, confirming the temp-path fix);
+    `fmt --check` and strict `clippy` clean.
 
 - CD-094 [2026-07-24, **WP-C6.1f — returning a reference; lane check 5 removed**] The last of the
   five lane checks with real semantics behind it. **Provenance is the front end's**: OWN-RETURN-001

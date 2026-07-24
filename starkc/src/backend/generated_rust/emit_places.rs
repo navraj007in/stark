@@ -160,7 +160,19 @@ pub fn is_slot_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic>
 /// already see their assignment, and leaving them untouched keeps every previously working
 /// reference path byte-identical.
 pub fn is_stored_ref_local(local: u32, env: &TyEnv) -> Result<bool, BackendDiagnostic> {
-    if !matches!(env.local_ty(local)?, MirTy::Ref { .. }) {
+    // WP-C6.1f "aggregates": the property is **carries a borrow**, not **is a reference**.
+    // OWN-CARRY-001 makes borrow provenance structural through tuples, generic arguments and enum
+    // payloads, so a tuple or array of references is ordinary Core v1 — and it has the same problem
+    // a bare reference does, one step removed: there is no value to initialise it with. A `Copy`
+    // aggregate holding references (`(&T, &T)`, `[&T; N]`) is not slot-backed, so it would be
+    // declared with `default_value_expr`, which cannot fabricate a reference. Deferring its
+    // initialisation the same way is the same fix, applied to the same underlying reason.
+    //
+    // A NON-`Copy` borrow-carrying aggregate (`Option<&T>`, a generic struct at a reference) is
+    // already slot-backed: `ValueSlot::dead()` needs no default, so it is excluded here and keeps
+    // its existing treatment.
+    let ty = env.local_ty(local)?;
+    if !emit_types::ty_carries_reference(&ty) || emit_types::is_slot_backed(&ty, env.types) {
         return Ok(false);
     }
     match env.body.locals[local as usize].kind {
