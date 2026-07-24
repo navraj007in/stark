@@ -3080,8 +3080,17 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
   - **Spec regenerated** (`STARK-Core-v1.md`/`.html`/`.pdf`); 112-block fixture corpus in sync.
   - **Evidence:** `c61f_structural_copy.rs` (positive: primitive/nested/generic/borrow-carrying/enum;
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
-    (Copy-local works, Move-local + any borrow-carrier return refused). Full workspace suite,
-    `fmt --check`, strict `clippy` — [pending; recorded on commit].
+    (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
+    `clippy` clean.
+
+- CD-101 [2026-07-24, **WP-C6.1g-a follow-up — 5 full-suite test-churn failures fixed**] The CD-100
+  full run surfaced 5 failures, all test-churn from the semantic change, no code regressions: four
+  used all-Copy structs as Move stand-ins (`c61f_reference_boundary` move-while-borrowed;
+  `native_c6_1_ownership` c61c/c61d/multi-level partial-move) → switched to the existing
+  `Drop`-bearing variants; one was the conformance baseline greping `**OWN-COPY-001.**` (heading
+  reformatted) → restored to `**OWN-COPY-001.** — Copy eligibility.` and spec regenerated.
+  **Confirmation full workspace run: exit 0, 70 suites, 0 failures** — CD-100 + CD-101 fully
+  validated. `fmt --check` and strict `clippy` clean.
 
 - CD-099 [2026-07-24, **WP-C6.1 CLOSED**] All ten `WP-C6.1f.md` §2 scope items are implemented with
   native evidence or carry an owner-approved disposition, and all five exit criteria are met:
