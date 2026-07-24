@@ -716,11 +716,6 @@ pub fn emit_constant(c: &Constant) -> Result<String, BackendDiagnostic> {
         // WP-C6.3a: a `str` literal is a Rust `&'static str` literal. `{:?}` on the &str produces a
         // correctly escaped Rust string literal (quotes, backslashes, control chars, unicode).
         Constant::Str(s) => format!("{s:?}"),
-        other => {
-            return Err(BackendDiagnostic::Unsupported(format!(
-                "Constant {other:?} has no generated-Rust representation yet"
-            )))
-        }
     })
 }
 
