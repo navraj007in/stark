@@ -82,7 +82,7 @@ begin from `db73afe`.
 | C6.1f-b2b | A | Claude | (post-nom) | `mir/lower.rs` | SHARED-CONTRACTS v1 | none | `native_c61f_b2_weakening.rs` (+4) | none | §7J:3 | **CLOSED (CD-098)** — generic-callee weakening |
 | C6.1g-a | A | Claude | (post-C6.1f) | per `WP-C6.1g-a.md` | SHARED-CONTRACTS v1 | none authorised without a probe | — | — | §7J:3 | **OPEN** (CD-097 item 1) — blocks Gate C6 |
 | C6.1g-b | A | Claude | (post-C6.1f) | per `WP-C6.1g-b.md` | SHARED-CONTRACTS v1 | none | — | — | §7J:3 | **OPEN** (CD-097 item 2) — blocks Gate C6 |
-| C6.1f-b4/b5 | A | Claude | (post-agg) | per the matrix §7 split | SHARED-CONTRACTS v1 | none yet | native regressions | — | §7J:3 | **OPEN** |
+| C6.1f-b4/b5 | A | Claude | (post-agg) | `parser.rs`, `borrowck.rs`; `c61f_nested_refs.rs` (new) | SHARED-CONTRACTS v1 | none (conformance — grammar already admits `&&T`/`**x`) | `c61f_nested_refs.rs` (6) | none | §7J:3 | **CLOSED (CD-097a)** — nested-ref syntax; escape check scoped to fn-body tail |
 | C6.2b | A | Claude | (post-C6.2a) | `mir/lower.rs` (lease); `C6-GENERICS-TRAITS-MATRIX.md` | SHARED-CONTRACTS v1 | none (new callee arm using existing MIR ops) | `native_c6_2_generics_traits.rs` (+8 `c62b_*`, 20 total) | **DEV-102 CLOSED**; F1–F6 opened | §7J:3 | **PARTIAL** — DEV-102 closed, §18 matrix probed; F1–F6 await disposition |
 | — | B | (Gemini) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:2 | not started |
 | — | C | (Codex) | `db73afe` | (see ownership doc) | SHARED-CONTRACTS v1 | none | — | — | §7J:4 | not started |
