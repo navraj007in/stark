@@ -527,28 +527,38 @@ Verified MIR must contain concrete types — enforced by native emit's C4.5 resi
 reachable bodies compile and run. Evidence: `tests/c62c_associated_types.rs`. See
 `C6-GENERICS-TRAITS-MATRIX.md` "C6.2c — the §19 associated-type matrix" for the per-row status.
 
-## 20. C6.2d — Operator/CoreTrait semantics
+## 20. C6.2d — Operator/CoreTrait semantics — **CLOSED (CD-107)**
 
 Native execution must invoke STARK semantics for:
 
-- Eq;
-- Ord;
-- Hash;
-- Display;
-- Clone;
-- Default;
-- conversion/index/iterator traits where normative.
+- Eq; ✅ native (`==`, `!=`)
+- Ord; ✅ native (`cmp` + all four comparison operators)
+- Hash; ✅ dispatch (HIR+MIR); native HashMap runtime is C6.3
+- Display; ✅ dispatch (HIR+MIR); native `println`/String-return is C6.3
+- Clone; ✅ native
+- Default; ✅ native (via `P::default()`)
+- conversion/index/iterator traits where normative. `From` ✅ native.
 
-Adversarial types:
+Adversarial types (all proven — `tests/c62d_operator_coretrait.rs`):
 
-- Eq always true;
-- reverse Ord;
-- intentional Hash collision;
-- Display unlike structural debug;
-- observable Clone;
-- nonzero Default.
+- Eq always true → distinct values compare equal; ✅
+- reverse Ord → `a < b` false for `a.v < b.v`; ✅
+- intentional Hash collision → constant `hash` keeps both distinct keys; ✅ (HIR+MIR)
+- Display unlike structural debug → `fmt` returns a fixed string; ✅ (HIR+MIR)
+- observable Clone → clone changes the value; ✅
+- nonzero Default → `default()` returns 42; ✅
 
-Rust equivalents must not substitute.
+**Rust equivalents must not substitute — proven both ways.** The backend emits NO
+`#[derive(PartialEq/Ord/Clone/Hash/..)]` on STARK nominals; every operator/CoreTrait call routes
+through the written impl (the adversarial always-true `Eq` would be impossible otherwise). A MISSING
+impl is rejected — `==`/`<` without `Eq`/`Ord` → E0500, `.clone()` without `Clone` → E0302 — never
+filled by a Rust derive.
+
+**Deferred (owner decision, DEV-103/DEV-104 in the CD-107 entry):** `.into()` deriving from a `From`
+impl (blanket `Into`) and `Default::default()` with a type-inferred target. The spec lists
+`From`/`Into` as independent traits and mandates only `fn default() -> Self`; `Fahrenheit::from(c)`
+and `P::default()` are the supported forms. Display/Hash native output/collection runtime is C6.3
+(Track C), not a C6.2d gap — the dispatch is correct in HIR+MIR.
 
 ## 21. C6.2e — Deterministic identity
 

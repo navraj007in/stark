@@ -8,12 +8,16 @@ CLOSED (CD-086). WP-C6.2b PARTIAL (CD-087): DEV-102 closed, §18 matrix probed, 
 **WP-C6.2c (associated types) CLOSED (CD-106): §19 matrix proven three-engine — `Self::Item`, `T::Item`
 via explicit binding and inferred-from-argument (deferred projection obligations + program-wide
 `assoc_projections`), cross-package projection (DEV-101 span provenance), Drop-bearing assoc types.**
+**WP-C6.2d (operator/CoreTrait semantics) CLOSED (CD-107): §20 matrix proven — user impls invoked
+natively (adversarial Eq/Ord/Clone/Default/From), no Rust-derive substitution, missing impls rejected
+(E0500/E0302); Display/Hash dispatch in HIR+MIR (native output/collections → C6.3); `.into()` blanket
+and `Default::default()` inference deferred (DEV-103/104).**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), **`WP-C6.1g-c` (general borrow-through-return / dispatch-loop
 linearisation — the uniform-borrow-carrier-returns package)**, and C6.3 (`Box`/`Vec`/slice, Track
 C). Also open:
-**C6.2d–e**, WP-C6.3 (runtime values and
+**C6.2e**, WP-C6.3 (runtime values and
 collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
 exit. (F4 parser half `&&T`/`**x` still open.)**
 
@@ -3084,6 +3088,34 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-107 [2026-07-24, **WP-C6.2d CLOSED — operator/CoreTrait semantics**] The §20 matrix is proven:
+  native execution invokes the user's STARK impl, and a Rust equivalent never substitutes. **No source
+  change was required** — the dispatch was already correct; this WP proves it with an adversarial
+  suite and documents the boundaries.
+  - **Fully native (HIR+MIR+native), adversarial:** `Eq` always-true (distinct values compare equal —
+    impossible under a Rust `PartialEq` derive), `!=` through the same `eq`, reversed `Ord` across all
+    four comparison operators, observable `Clone` (+100), nonzero `Default` (via `P::default()`),
+    `From` conversion.
+  - **Anti-substitution, both directions.** The backend emits NO `#[derive(PartialEq/Ord/Clone/Hash)]`
+    on STARK nominals; a MISSING impl is rejected — `==`/`<` without `Eq`/`Ord` → **E0500**, `.clone()`
+    without `Clone` → **E0302** — never filled by a Rust derive.
+  - **Dispatch proven in HIR+MIR; native runtime is C6.3 (Track C):** `Display` (`fmt` returns a fixed
+    string, len 6 — a by-value `String` return) and `Hash` (constant `hash`, a nominal HashMap key
+    that keeps both distinct keys). Same native-linkage boundary as C6.2c's `Vec` return; not a C6.2d
+    gap.
+  - **DEV-103 [deferred, owner decision]** — `.into()` deriving from a `From` impl (blanket `Into`) is
+    not provided; `a.into()` with only `impl From<A> for B` in scope is E0302. The spec (06-Standard-
+    Library) lists `From`/`Into` as INDEPENDENT traits with no mandated blanket impl. `Fahrenheit::from(c)`
+    is the supported form. Ergonomic, not correctness.
+  - **DEV-104 [deferred, owner decision]** — `Default::default()` with a type-inferred target (no
+    receiver) is E0005 "qualified trait method requires a receiver". The spec mandates only
+    `fn default() -> Self`; `P::default()` is the supported form. Ergonomic, not correctness.
+  - Evidence: `tests/c62d_operator_coretrait.rs` (11: 6 native adversarial, 2 HIR+MIR dispatch, 3
+    rejection). `fmt --check` and strict `clippy` clean. (No lib change → no broad relink; the suite
+    and its dependencies build green.)
+  - **C6.2 remaining:** C6.2e (deterministic instance identity — §21). The F4 parser half
+    (`&&T`/`**x`) is still open.
 
 - CD-106 [2026-07-24, **WP-C6.2c CLOSED — associated types**] The §19 matrix is proven across all
   three engines. Baseline already worked: an associated-type declaration + impl binding, `Self::Item`

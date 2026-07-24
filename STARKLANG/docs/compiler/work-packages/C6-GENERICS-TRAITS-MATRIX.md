@@ -2,7 +2,9 @@
 
 **Status:** C6.2a CLOSED (CD-086). C6.2b matrix CLEARED (F1/F5/F2/F6 CLOSED, CD-102/103/104/105; F3 →
 WP-C6.1f; F4 parser half open). **C6.2c (associated types) CLOSED (CD-106)** — §19 matrix proven
-three-engine, see the "C6.2c — the §19 associated-type matrix" section below. **C6.2d–e remain open.**
+three-engine, see the "C6.2c — the §19 associated-type matrix" section below. **C6.2d (operator/
+CoreTrait semantics) CLOSED (CD-107)** — see the "C6.2d — operator/CoreTrait semantics" section.
+**C6.2e remains open.**
 **Base:** `main`, post-WP-C6.1 closure (CD-085)
 **Authorship:** the file is **Track B**-owned (`C6-FILE-OWNERSHIP.md §1`). The C6.2a section was
 written by Track A under the owner's C6.2a ruling, because the defect was in *lowering identity*,
@@ -87,7 +89,7 @@ The §18 matrix itself is now probed — see §5. What stays open beyond it:
 |---|---|
 | **DEV-083** — candidate-local inference snapshots / declaration-order-independent candidate evaluation (deferred by CD-040(b)) | C6.2b |
 | ~~§19 associated types beyond the single-binding case~~ | **C6.2c — CLOSED (CD-106)**, see the "C6.2c — the §19 associated-type matrix" section |
-| §20 the remainder of operator/`CoreTrait` semantics (arithmetic and comparison desugaring, `Ordering` totality, operator trap behaviour) | C6.2d |
+| ~~§20 operator/`CoreTrait` semantics~~ | **C6.2d — CLOSED (CD-107)**, see the "C6.2d — operator/CoreTrait semantics" section |
 | §21 deterministic instance identity under rebuild/relocation/dependency reorder for methods and trait instances | C6.2e |
 | generic collections and iterators | C6.3 (Track C) interface |
 | the six C6.2b findings in §7 | **awaiting disposition** |
@@ -146,6 +148,38 @@ Every row driven `parse → resolve → typecheck → HIR-run → lower → veri
 VALUE across a function boundary hits a native-linkage refusal — a plain `fn f() -> Vec<_>` fails
 identically, with no associated types involved. The associated-type resolution for such a signature is
 correct (HIR + MIR pass); only the native linkage of the value return waits on C6.3 runtime values.
+
+---
+
+## C6.2d — operator/CoreTrait semantics, probed (CLOSED, CD-107)
+
+**Property:** native execution invokes the user's STARK impl; a Rust equivalent never substitutes.
+The backend emits **no** `#[derive]` on STARK nominals, so every operator and `CoreTrait` call
+routes through the written impl. Adversarial types make substitution observable
+(`tests/c62d_operator_coretrait.rs`).
+
+| §20 trait | Adversarial probe | Status |
+|---|---|---|
+| `Eq` (`==`, `!=`) | `eq` always true → distinct values equal | ✅ native |
+| `Ord` (`<`, `>`, `<=`, `>=`, `cmp`) | reversed `cmp` → `a < b` false for `a.v < b.v` | ✅ native |
+| `Clone` | clone changes the value (+100) | ✅ native |
+| `Default` | nonzero (`default()` → 42), via `P::default()` | ✅ native |
+| `From` | `Fahrenheit::from(c)` runs the impl | ✅ native |
+| `Display` | `fmt` returns a fixed string (len 6) | ✅ dispatch (HIR+MIR) |
+| `Hash` | constant `hash` keeps both distinct keys | ✅ dispatch (HIR+MIR) |
+
+**Anti-substitution, both directions.** A missing impl is REJECTED, never derived: `==`/`<` without
+`Eq`/`Ord` → **E0500**; `.clone()` without `Clone` → **E0302**.
+
+**Deferred to C6.3 (Track C), not a C6.2d gap:** native `Display` output (`fmt` returns `String`, a
+by-value collection return) and native `Hash` (a nominal HashMap key) — the DISPATCH is proven in
+HIR+MIR; the runtime for the returned/collected value is C6.3, the same boundary as C6.2c's `Vec`
+return.
+
+**Deferred by owner decision (DEV-103/DEV-104, CD-107 ledger entry):** `.into()` deriving from a
+`From` impl (blanket `Into`), and `Default::default()` with a type-inferred target. The spec lists
+`From`/`Into` as independent traits and mandates only `fn default() -> Self`; `Fahrenheit::from(c)`
+and `P::default()` are the supported forms — the deferred forms are ergonomic, not correctness.
 
 ---
 
