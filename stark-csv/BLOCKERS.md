@@ -10,7 +10,7 @@ PARTIAL — IMPLEMENTATION COMPLETE, WAITING_C6.3_NATIVE_EVIDENCE
 
 ## Implementation commit
 
-UNCOMMITTED
+d0d6f48
 
 ## Minimal reproducer
 
