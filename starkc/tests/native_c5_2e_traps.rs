@@ -152,3 +152,44 @@ fn main() {
         "stderr missing category message: {stderr}"
     );
 }
+
+// WP-C6.3e: `panic("...")` carries a `&str` message. It aborts with exit 101, the `explicit panic`
+// category header (parseable), the source location, AND the user message on its own line.
+#[test]
+fn panic_with_message_reports_category_location_and_message() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = "fn main() {\n    panic(\"the sky is falling\");\n}\n";
+    let (run, file_name) = compile_and_run(source, "panicmsg");
+    assert_eq!(run.status.code(), Some(101), "trap exit code must be 101");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("explicit panic"),
+        "stderr missing category: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("{file_name}:2:")),
+        "stderr missing location {file_name}:2: {stderr}"
+    );
+    assert!(
+        stderr.contains("the sky is falling"),
+        "stderr missing the user message: {stderr}"
+    );
+}
+
+/// A panic reached only on a taken branch still carries its message natively.
+#[test]
+fn conditional_panic_with_message() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = "fn main() {\n    let x: Int32 = 5;\n    if x > 3 { panic(\"too big\"); }\n}\n";
+    let (run, _) = compile_and_run(source, "condpanic");
+    assert_eq!(run.status.code(), Some(101), "trap exit code must be 101");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(stderr.contains("explicit panic"), "category: {stderr}");
+    assert!(stderr.contains("too big"), "user message: {stderr}");
+}

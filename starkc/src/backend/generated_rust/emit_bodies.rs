@@ -582,18 +582,16 @@ fn emit_terminator(
             // to `Terminator::Checked`'s conditional one. It shares the same abort call and the
             // same compile-time-resolved location, so a native `assert_eq` failure and a native
             // overflow report through one path and one stderr format.
-            if message.is_some() {
-                // `panic("...")`/`assert*` with a user message needs a `&str` VALUE crossing into
-                // the runtime, which needs string representation -- WP-C5.3. Message-less traps
-                // (every compiler-generated trap, and `assert`/`assert_eq`/`assert_ne`, which
-                // `mir::lower` emits with `message: None`) are fully supported now.
-                return Err(BackendDiagnostic::Unsupported(
-                    "Terminator::Trap with a user message needs `&str` values (WP-C5.3); \
-                     message-less traps are supported"
-                        .to_string(),
-                ));
-            }
-            let abort = emit_abort_call(files, info.category, &info.source);
+            // WP-C6.3e: a `panic("...")` carries a `&str` MESSAGE operand — now that str values are
+            // native, it is resolved and passed to `abort_with_message`, which reports it on its own
+            // line while keeping the category header and `-->` location the stderr parser reads.
+            let abort = match message {
+                Some(msg) => {
+                    let msg_expr = emit_operand(msg, env)?;
+                    emit_abort_with_message_call(files, info.category, &info.source, &msg_expr)
+                }
+                None => emit_abort_call(files, info.category, &info.source),
+            };
             out.push_str(&format!("                {abort};\n"));
         }
         // WP-C5.3d-0. Mirrors `mir::interp`'s `drop_in_place` exactly, which is the semantic
@@ -1207,6 +1205,23 @@ fn emit_abort_call(
     format!(
         "stark_runtime::trap::abort({}, {}, {line}, {col})",
         trap_category_token(category),
+        rust_str_lit(&file),
+    )
+}
+
+/// WP-C6.3e: the abort call for a `panic(msg)` trap. `message` is the already-emitted `&str`
+/// expression (a Rust `&'static str` literal for `panic("...")`).
+fn emit_abort_with_message_call(
+    files: &[Arc<SourceFile>],
+    category: TrapCategory,
+    source: &SourceInfo,
+    message: &str,
+) -> String {
+    let (file, line, col) = resolve_source_location(files, source);
+    format!(
+        "stark_runtime::trap::abort_with_message({}, {}, {}, {line}, {col})",
+        trap_category_token(category),
+        message,
         rust_str_lit(&file),
     )
 }

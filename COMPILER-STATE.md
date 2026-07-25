@@ -3108,6 +3108,18 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-115 [2026-07-25, **WP-C6.3e slice 3 — native `panic(msg)` text**] A `Terminator::Trap` carrying
+  a `&str` message (an explicit `panic("...")`) was `Unsupported` natively; now that str values are
+  native it is wired. Added `stark_runtime::trap::abort_with_message(category, message, file, line,
+  col)` which reports the category header and `-->` location in the SAME shape as `abort` (so the
+  three-engine stderr parser still reads category + provenance) and the user message on its own line;
+  `emit_bodies` emits it with the resolved `&str` operand. Message-less traps (every
+  compiler-generated trap and `assert*`, which lower with `message: None`) are unchanged.
+  - **Proven:** `tests/native_c5_2e_traps.rs` now 6 — `panic("the sky is falling")` and a
+    conditional `panic("too big")` each abort with exit 101, the `explicit panic` category, the exact
+    `file:line`, and the user message in stderr. Regression: `--lib` 441, `three_engine_differential`
+    83 (message-less traps unaffected); fmt + clippy clean.
+
 - CD-114 [2026-07-25, **WP-C6.3e slice 2 — native user `Display` dispatch; C6.2d Display deferral
   CLEARED**] `println(x)` on a user struct/enum with a `Display` impl now runs the user's `fmt` and
   prints its `String` result natively — never Rust's `Debug`. This was already wired (`lower_print_

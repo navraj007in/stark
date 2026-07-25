@@ -67,3 +67,19 @@ pub fn abort(category: TrapCategory, file: &str, line: u32, column: u32) -> ! {
     eprintln!("  --> {file}:{line}:{column}");
     std::process::exit(101);
 }
+
+/// WP-C6.3e: a trap carrying a user MESSAGE — `panic(msg)` and a failed `assert*`. The category
+/// header and `-->` location stay in the same shape as [`abort`] (so the same stderr parser reads
+/// the category and provenance); the resolved `&str` message is reported on its own line.
+pub fn abort_with_message(
+    category: TrapCategory,
+    message: &str,
+    file: &str,
+    line: u32,
+    column: u32,
+) -> ! {
+    eprintln!("error: runtime trap: {}", category.message());
+    eprintln!("  --> {file}:{line}:{column}");
+    eprintln!("  {message}");
+    std::process::exit(101);
+}
