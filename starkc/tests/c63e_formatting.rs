@@ -349,6 +349,45 @@ fn composite_vec_of_tuples() {
     );
 }
 
+// ---- Nested user `Display` as a composite ELEMENT (CD-123): a user nominal at any depth runs its
+// own `fmt` (NOT the aggregate `{field: value}` debug form); the interp oracle recurses the same way.
+// ----
+
+#[test]
+fn nested_user_display_in_tuple() {
+    agree_out(
+        "nest_tuple",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
+         fn main() { let p = P { v: 7 }; println((p, 1)); }",
+    );
+}
+
+/// The nested `fmt` genuinely branches on the field, so a wrong (aggregate) rendering would diverge.
+#[test]
+fn nested_user_display_in_array() {
+    agree_out(
+        "nest_array",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { if self.v == 3 { String::from(\"v=3\") } else { String::from(\"other\") } } }\n\
+         fn main() { let a: [P; 2] = [P { v: 3 }, P { v: 9 }]; println(a); }",
+    );
+}
+
+/// A Drop-bearing (non-Copy) nested nominal: the tuple renders `(DROPPY, 1)` via the element's `fmt`
+/// WITHOUT a double destructor, then the owning tuple drops it once (Contract C) — `DROP`. Native
+/// stdout == HIR oracle proves the nested `fmt` clone is not separately dropped.
+#[test]
+fn nested_user_display_drop_bearing_in_tuple() {
+    agree_out(
+        "nest_drop",
+        "struct D { v: Int32 }\n\
+         impl Drop for D { fn drop(&mut self) { println(\"DROP\"); } }\n\
+         impl Display for D { fn fmt(&self) -> String { String::from(\"DROPPY\") } }\n\
+         fn main() { let d = D { v: 1 }; println((d, 1)); }",
+    );
+}
+
 // ---- String/str as composite ELEMENTS (CD-122): rendered raw (no quotes), borrowed in place; the
 // owning composite is dropped after the render (Contract C). ----
 
@@ -402,15 +441,9 @@ fn refused_by_lowering(tag: &str, src: &str) {
     );
 }
 
-/// DEV-105: `Float32` in the Display path is refused (recursively), not admitted-but-divergent.
-#[test]
-fn float32_println_refused() {
-    refused_by_lowering(
-        "f32_top",
-        "fn main() { let x: Float32 = 0.1f32; println(x); }",
-    );
-}
-
+// DEV-105: a SCALAR top-level `println(Float32)` is ADMITTED (the interpreters agree; only the
+// native binary sees the f32-rounded value — an interpreter-only frozen-corpus snapshot relies on
+// this). `Float32` is refused only where it would leak silently through native: the COMPOSITE path.
 #[test]
 fn float32_in_tuple_refused() {
     refused_by_lowering(
@@ -460,5 +493,28 @@ fn droppable_tuple_carrying_borrow_refused() {
     refused_by_lowering(
         "tuple_mixed_str",
         "fn main() { println((String::from(\"owned\"), \"borrowed\", 42)); }",
+    );
+}
+
+// CD-123 deferrals: nested user `Display` inside a `Vec` (loop-carried borrow, E0502) or an
+// `Option`/`Result` (VariantField-payload borrow, E0716) — refused at lowering. Straight-line
+// tuple/array/struct-field nesting works (see the positive tests above).
+#[test]
+fn nested_user_display_in_vec_refused() {
+    refused_by_lowering(
+        "nest_vec",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
+         fn main() { let mut v: Vec<P> = Vec::new(); v.push(P { v: 1 }); v.push(P { v: 2 }); println(v); }",
+    );
+}
+
+#[test]
+fn nested_user_display_in_option_refused() {
+    refused_by_lowering(
+        "nest_option",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
+         fn main() { let o: Option<P> = Some(P { v: 7 }); println(o); }",
     );
 }

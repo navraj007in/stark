@@ -7177,6 +7177,18 @@ impl<'a> FnLowerer<'a> {
             | MirTy::Float32
             | MirTy::Float64
             | MirTy::Char => {
+                // DEV-105: a `Float32` composite ELEMENT would reach the native binary with the
+                // f32->f64 widening divergence SILENTLY (inside a tuple/array/Vec/Option). Refuse it
+                // here, in the composite path only — a scalar top-level `println(Float32)` stays
+                // admitted (the interpreters agree; `widen_for_print` widens it), which the
+                // interpreter-only frozen corpus depends on.
+                if matches!(peeled, MirTy::Float32) {
+                    return unsupported(
+                        "Display of a `Float32` inside a composite is deferred (DEV-105: the \
+                         f32->f64 widening diverges on the native binary); use `Float64`",
+                        span,
+                    );
+                }
                 let op = self.read_place(place, &peeled, span)?;
                 let (kind, widened) = self.widen_for_print(op, &peeled, span)?;
                 let rt = match kind {
@@ -7317,6 +7329,16 @@ impl<'a> FnLowerer<'a> {
                         span,
                     );
                 }
+                // A user-nominal payload renders through `Display::fmt` on a BORROW of the
+                // `VariantField` projection, which the backend materialises as a temporary freed too
+                // early (E0716). Nested user `Display` inside `Option` awaits enum-payload borrows.
+                if ty_mentions_user_nominal(&inner) {
+                    return unsupported(
+                        "Display of an `Option` whose payload uses a user `Display` impl needs \
+                         enum-payload borrows — a later C6.3e slice",
+                        span,
+                    );
+                }
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
@@ -7354,6 +7376,14 @@ impl<'a> FnLowerer<'a> {
                     return unsupported(
                         "Display of a `Result` with a non-Copy payload (e.g. `Result<String, _>`) \
                          needs WP-C5.3d enum-payload storage — a later C6.3e slice",
+                        span,
+                    );
+                }
+                // As for `Option`: a user-nominal payload needs a `VariantField` borrow (E0716).
+                if ty_mentions_user_nominal(&ok_ty) || ty_mentions_user_nominal(&err_ty) {
+                    return unsupported(
+                        "Display of a `Result` whose payload uses a user `Display` impl needs \
+                         enum-payload borrows — a later C6.3e slice",
                         span,
                     );
                 }
@@ -7401,6 +7431,16 @@ impl<'a> FnLowerer<'a> {
                     return unsupported(
                         "Display of a `Vec` with non-Copy elements (owning String/Box/Vec) is a \
                          later C6.3e slice",
+                        span,
+                    );
+                }
+                // A user nominal element renders through its `Display::fmt`, whose returned `String`
+                // is borrowed then dropped PER ITERATION — a loop-carried borrow the backend rejects
+                // (E0502). Nested user `Display` inside a `Vec` awaits the loop-borrow fix.
+                if ty_mentions_user_nominal(&elem) {
+                    return unsupported(
+                        "Display of a `Vec` whose element uses a user `Display` impl needs the \
+                         loop-borrow fix — a later C6.3e slice",
                         span,
                     );
                 }
@@ -7540,6 +7580,101 @@ impl<'a> FnLowerer<'a> {
                 );
                 self.terminate(Terminator::Goto { target: header }, self.info(span), exit);
                 self.print_str_lit("]", span);
+                Ok(())
+            }
+            // A nested user nominal with its own `Display` impl: call its `fmt(&self) -> String` on
+            // the element BORROWED IN PLACE (the owning composite keeps it and drops it later —
+            // Contract C), print the returned String (no newline — an element), then drop that
+            // String. Same machinery as the top-level `lower_print_display`, without the arg-drop.
+            MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args) => {
+                let nominal = *item;
+                let nominal_args = args.clone();
+                let Some((key, receiver)) = self.find_impl_fn(nominal, "fmt", false, &nominal_args)
+                else {
+                    return unsupported(
+                        "Display::fmt not found for a composite element (only standard-library and \
+                         user `Display` types render inside a composite)",
+                        span,
+                    );
+                };
+                if !matches!(receiver, Some(hir::Receiver::Ref)) {
+                    return unsupported("Display::fmt with a non-&self receiver", span);
+                }
+                // `&element`: a reference element passes through; an owned element is borrowed.
+                let recv_op = if layers > 0 {
+                    self.read_place(place, ty, span)?
+                } else {
+                    let ref_ty = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(peeled.clone()),
+                    };
+                    let ref_tmp = self.new_temp(ref_ty.clone());
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(ref_tmp),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place,
+                            },
+                        ),
+                        self.info(span),
+                    );
+                    self.read_place(Place::local(ref_tmp), &ref_ty, span)?
+                };
+                let instance = self.instance_from_key(&key)?;
+                self.discovered_callees.push(key);
+                let str_result = self.new_temp(MirTy::String);
+                let after_fmt = self.new_block();
+                self.terminate(
+                    Terminator::Call {
+                        callee: Callee::Instance(instance),
+                        args: vec![recv_op],
+                        dest: Place::local(str_result),
+                        target: after_fmt,
+                    },
+                    self.info(span),
+                    after_fmt,
+                );
+                // `String::as_str` then `PrintStr` (no newline — a composite element).
+                let str_ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::String),
+                };
+                let str_ref = self.new_temp(str_ref_ty);
+                self.emit(
+                    Statement::Assign(
+                        Place::local(str_ref),
+                        Rvalue::RefOf {
+                            mutable: false,
+                            place: Place::local(str_result),
+                        },
+                    ),
+                    self.info(span),
+                );
+                let as_str_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Str),
+                };
+                let as_str = self.new_temp(as_str_ty.clone());
+                self.emit_runtime_call(
+                    RuntimeFn::StringAsStr,
+                    vec![Operand::Copy(Place::local(str_ref))],
+                    Place::local(as_str),
+                    span,
+                );
+                let str_op = self.read_place(Place::local(as_str), &as_str_ty, span)?;
+                let dest = Place::local(self.new_temp(MirTy::Unit));
+                self.emit_runtime_call(RuntimeFn::PrintStr, vec![str_op], dest, span);
+                // Drop the formatting String (the element itself is dropped by the owning composite).
+                let after_str_drop = self.new_block();
+                self.terminate(
+                    Terminator::Drop {
+                        place: Place::local(str_result),
+                        target: after_str_drop,
+                    },
+                    self.info(span),
+                    after_str_drop,
+                );
                 Ok(())
             }
             other => unsupported(
@@ -7783,16 +7918,17 @@ impl<'a> FnLowerer<'a> {
                 let widened = self.cast_to_temp(value, MirTy::UInt64, span)?;
                 Ok((PrintKind::UInt, widened))
             }
-            // DEV-105: `println` of a `Float32` widens `f32 -> f64`, and the native binary sees the
-            // f32-rounded value (`0.1f32 as f64 == 0.10000000149011612`) while the HIR interpreter
-            // keeps the wider `0.1` — a cross-engine value-semantics divergence. Refused (recursively,
-            // since composite rendering routes primitives through here) until the rounding authority
-            // is decided and the three engines are aligned. `Float64` is unaffected.
-            MirTy::Float32 => unsupported(
-                "`println`/`print` of `Float32` is deferred (DEV-105: the \
-                 f32->f64 widening diverges across engines); use `Float64`",
-                span,
-            ),
+            // DEV-105: `println` of a `Float32` widens `f32 -> f64`. The HIR and MIR interpreters
+            // agree (both keep the value as f64), so a SCALAR top-level `println(Float32)` is
+            // admitted here — the interpreter-only frozen corpus (`entire_frozen_corpus_agrees`)
+            // relies on it. The native binary alone sees the f32-rounded value
+            // (`0.1f32 as f64 == 0.10000000149011612`); that divergence is refused where it would
+            // otherwise leak SILENTLY through native — the COMPOSITE Display path (see
+            // `emit_display_value`), not the scalar path. `Float64` is unaffected.
+            MirTy::Float32 => {
+                let widened = self.cast_to_temp(value, MirTy::Float64, span)?;
+                Ok((PrintKind::Float, widened))
+            }
             _ => unsupported("print/println of this type (C4.5)", span),
         }
     }

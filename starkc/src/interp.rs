@@ -5394,7 +5394,91 @@ impl<'a> Interpreter<'a> {
                 return Ok((text, Some(place)));
             }
         }
+        // CD-123: a COMPOSITE argument renders through language-level `Display` at EVERY depth — a
+        // nested user nominal runs its own `Display::fmt`, NOT the aggregate `{field: value}` debug
+        // form — matching the native lowering (`emit_display_value`). The whole composite is promoted
+        // to a place so it is dropped exactly once after its bytes are submitted (Contract C).
+        if let Value::Tuple(_)
+        | Value::Array(_)
+        | Value::Vec(_)
+        | Value::Option(_)
+        | Value::Result(_) = &value
+        {
+            let place = self.promote_to_owned_temp_place(value, span)?;
+            let snapshot = self.clone_place_value(&place, span)?;
+            let text = self.display_deep(&snapshot, span)?;
+            return Ok((text, Some(place)));
+        }
         Ok((self.format_runtime_value(&value, span)?, None))
+    }
+
+    /// CD-123: render a value through language-level `Display` recursively. A user nominal at ANY
+    /// depth runs its own `Display::fmt`; a composite renders element-by-element with the same
+    /// delimiters the native lowering emits (`(a, b)` / `[a, b]` / `Some(v)` / `Ok(v)`), so the HIR
+    /// oracle and the native binary agree at every nesting level. Everything else (primitives,
+    /// `String`/`str`) uses its `Display for Value`.
+    ///
+    /// A nested nominal is CLONED to give `fmt` a `&self` place; a Rust clone runs no STARK
+    /// destructor, and the clone is discarded WITHOUT `drop_value`, so the real element is still
+    /// dropped exactly once by its owning composite (Contract C) — never a double destructor.
+    fn display_deep(&mut self, value: &Value, span: Span) -> Result<String, RuntimeError> {
+        match value {
+            Value::Struct { item, .. } | Value::Enum { item, .. } => {
+                let item = *item;
+                let Some(callable) =
+                    self.find_method(Some(item), "fmt", Some(Res::CoreTrait(CoreTrait::Display)))
+                else {
+                    // No `Display` impl — under E0500 this cannot reach a displayable composite;
+                    // fall back to the aggregate rendering defensively.
+                    return Ok(value.to_string());
+                };
+                let place = self.promote_to_owned_temp_place(value.clone(), span)?;
+                let receiver_value = self.clone_place_value(&place, span)?;
+                let text = match self.call_user_method(
+                    callable,
+                    place.clone(),
+                    receiver_value,
+                    Vec::new(),
+                    span,
+                )? {
+                    Value::String(text) => text,
+                    _ => {
+                        return Err(RuntimeError::new(
+                            "Display::fmt did not return a String",
+                            span,
+                        ))
+                    }
+                };
+                // Discard the rendering temp WITHOUT its STARK destructor (see the doc-comment).
+                let _ = self.take_place(&place, span);
+                Ok(text)
+            }
+            Value::Tuple(elems) => Ok(format!("({})", self.display_deep_slots(elems, span)?)),
+            Value::Array(elems) | Value::Vec(elems) => {
+                Ok(format!("[{}]", self.display_deep_slots(elems, span)?))
+            }
+            Value::Option(Some(inner)) => Ok(format!("Some({})", self.display_deep(inner, span)?)),
+            Value::Option(None) => Ok("None".to_string()),
+            Value::Result(Ok(inner)) => Ok(format!("Ok({})", self.display_deep(inner, span)?)),
+            Value::Result(Err(inner)) => Ok(format!("Err({})", self.display_deep(inner, span)?)),
+            other => Ok(other.to_string()),
+        }
+    }
+
+    /// The `", "`-joined rendering of a tuple/array/Vec's slots, each through [`display_deep`].
+    fn display_deep_slots(
+        &mut self,
+        slots: &[Option<Value>],
+        span: Span,
+    ) -> Result<String, RuntimeError> {
+        let mut parts = Vec::with_capacity(slots.len());
+        for slot in slots {
+            match slot {
+                Some(value) => parts.push(self.display_deep(value, span)?),
+                None => parts.push("<moved>".to_string()),
+            }
+        }
+        Ok(parts.join(", "))
     }
 
     /// DEV-089: destroy a `print`/`println` by-value argument AFTER its formatted bytes have been

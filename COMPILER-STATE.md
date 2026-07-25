@@ -35,20 +35,25 @@ once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns 
 unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-**WP-C6.3e PARTIAL (CD-113…122): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
+**WP-C6.3e PARTIAL (CD-113…123): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
 C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result`,
-`Vec` via a runtime loop, and owned `String`/`str` elements — recursively — now native AND in MIR, was
-HIR-only; via a print-sequence lowering, no runtime-surface change). Its observable contracts (A
-sequencing / B partial-output-on-trap / C destructor-timing) are recorded (CD-120) and Contract C is
+`Vec` via a runtime loop, owned `String`/`str` elements, and nested user `Display` in tuple/array —
+recursively — now native AND in MIR, was HIR-only; via a print-sequence lowering, no runtime-surface
+change). Owner decision (CD-123): language `Display` RECURSES — a user nominal at any depth runs its
+own `fmt`, not the aggregate debug form; the interp oracle was fixed to match. Its observable contracts
+(A sequencing / B partial-output-on-trap / C destructor-timing) are recorded (CD-120) and Contract C is
 load-bearing (the owned Vec/composite is dropped after its render); the native trap ABI flushes stdout
 before abort so a mid-render trap's prefix matches the interpreters. `three_engine_differential`
 compares real stdout (`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused AT LOWERING (deterministic):
-`Float32` in the Display path (DEV-105), arrays > 64 (unroll cap), `Option`/`Result` of a non-Copy
-payload (WP-C5.3d), and a droppable composite carrying a borrow (generated lifetimes). C6.3e
-remaining: composite `Box` elements, nested user-`Display`, `Vec<String>` (by-ref); `Float32`
-(DEV-105); trap-message three-engine parity (DEV-106, narrowed — partial output already comparable);
-native `v[i]` OOB provenance (DEV-107).**
+`Float32` in the COMPOSITE Display path only (DEV-105; a SCALAR `println(Float32)` is admitted — the
+interpreters agree, only the native binary diverges), arrays > 64 (unroll cap), `Option`/`Result` of a
+non-Copy or user-nominal payload (WP-C5.3d / E0716 enum-payload borrow), a droppable composite
+carrying a borrow (generated lifetimes), and nested user `Display` inside a `Vec` (E0502 loop-carried
+borrow). C6.3e
+remaining: composite `Box` elements; nested user `Display` inside `Vec`/`Option`/`Result`;
+`Vec<String>` (by-ref); `Float32` (DEV-105); trap-message three-engine parity (DEV-106, narrowed —
+partial output already comparable); native `v[i]` OOB provenance (DEV-107).**
 Also open:
 **WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
 offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
@@ -3122,6 +3127,56 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-124 [2026-07-25, **CI hotfix — CD-119's `Float32` refusal was too broad (broke the frozen
+  corpus)**] CD-119 moved the `Float32` Display refusal into `widen_for_print`, the SHARED chokepoint
+  for BOTH scalar `println(Float32)` and composite elements. That refused a scalar top-level
+  `println(Float32)` at lowering — which the interpreter-only frozen corpus
+  (`mir_differential::entire_frozen_corpus_agrees`, snapshot
+  `primitive__03_float_arithmetic_and_casts.stark`) depends on and the HIR/MIR engines AGREE on (the
+  f32→f64 divergence is native-only). CI went red at CD-119 and stayed red through CD-122; local
+  scoped runs never included `mir_differential`, so it went unseen until flagged.
+  - **Fix:** `widen_for_print` widens `Float32`→`Float64` again (scalar admitted, DEV-105); the
+    refusal moved to `emit_display_value`'s primitive arm — the COMPOSITE path only, where a `Float32`
+    element would otherwise reach the native binary silently (review #2's actual concern). Scalar
+    native `println(Float32)` remains an admitted DEV-105 divergence (untested, as before CD-119).
+  - **Test correction:** `c63e_formatting.rs` `float32_println_refused` (scalar) removed; the
+    composite negatives (`float32_in_tuple_refused`, `float32_in_option_refused`) stay. CD-119's entry
+    below overstates the refusal scope ("every Display path"); this entry is the correction.
+  - **Process:** `mir_differential` (and the full `cargo test`) must run before a WP/gate closes —
+    scoped runs miss the frozen corpus. Recorded in memory [[stark-test-run-frequency]].
+  - **Evidence:** `mir_differential` 132 (was 131 + 1 failed), `c63e_formatting` 43; combined with the
+    CD-123 change below and verified green together.
+
+- CD-123 [2026-07-25, **WP-C6.3e — nested user `Display` in a composite (+ reference-oracle fix)**]
+  **Owner decision (asked & answered):** language-level `Display` recurses — a user nominal at ANY
+  depth runs its OWN `Display::fmt`, NOT the aggregate `{field: value}` debug form. This resolves a
+  reference-implementation INCONSISTENCY: top-level `println(p)` already called `fmt` (→ `CUSTOM`),
+  but `println((p, 1))` fell through to the generic `Display for Value` and rendered `({v: 7}, 1)`.
+  - **Native lowering:** `emit_display_value` gains a user-nominal arm — it calls the element's
+    `fmt(&self)` on the element BORROWED IN PLACE (the owning composite keeps and later drops it —
+    Contract C), prints the returned `String` (no newline — an element), then drops that `String`.
+    Same machinery as top-level `lower_print_display`, minus the arg-drop.
+  - **Interp (oracle) fix:** `display_text` now routes a composite argument through a new recursive
+    `display_deep`, which calls user `fmt` for nested nominals and renders composites with the SAME
+    delimiters the lowering emits. A nested nominal is CLONED to give `fmt` a `&self` place (a Rust
+    clone runs no STARK destructor) and the clone is discarded WITHOUT `drop_value` — so the real
+    element is dropped exactly once by its owning composite (no double destructor). The composite is
+    promoted to a place and dropped once by `finish_display` — also fixing a latent gap (droppable
+    composite `println` args were not being dropped). Nominal-free composites render byte-identically
+    to before (same delimiters), so no existing output changed (`--lib` 441 green).
+  - **Works three-engine:** nested user `Display` in a tuple/array, INCLUDING a Drop-bearing nested
+    nominal — `println((d, 1))` renders `(DROPPY, 1)` via the element's `fmt` with NO double
+    destructor, then the tuple drops it once (`DROP`), proving the clone-discard discipline.
+  - **Deferred — refused AT LOWERING (via `ty_mentions_user_nominal`):** nested user `Display` inside
+    a `Vec` (the per-iteration `fmt` `String` borrow is loop-carried, rustc E0502) and inside
+    `Option`/`Result` (the `VariantField`-payload borrow is a temporary freed too early, E0716).
+  - **Evidence.** `c63e_formatting.rs` now 44: +3 positive (`nest_tuple`, `nest_array`, `nest_drop`
+    — the Drop-bearing Contract C proof) and +2 `refused_by_lowering` (`nest_vec`, `nest_option`).
+    `--lib` 441, `three_engine_differential` 83, `c63b_vec_box` 9 green.
+  - **C6.3e remaining:** composite `Box` elements; nested user `Display` inside `Vec` (loop-borrow) /
+    `Option`/`Result` (enum-payload borrow); `Vec<String>`/`Option<String>` (same backend gaps);
+    `Float32` (DEV-105); trap-message parity (DEV-106); native `v[i]` OOB provenance (DEV-107).
 
 - CD-122 [2026-07-25, **WP-C6.3e — String/str as composite elements (+ two bounded deferrals)**]
   `emit_display_value` now renders a `String`/`str` ELEMENT of a composite: its raw bytes (NO quotes —
