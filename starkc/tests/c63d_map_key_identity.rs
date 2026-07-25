@@ -11,6 +11,7 @@
 //! never consulted for map operations, so a `Hash` that violates its law cannot desynchronise the
 //! engines from one another.
 
+use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::diag::Severity;
 use starkc::interp;
 use starkc::mir::interp::run_program;
@@ -22,8 +23,15 @@ use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
 
-/// HIR and MIR agree, and both print `expect`. (Native lands with the C6.3d backend slice; these
-/// cases are the semantic contract both interpreters must already satisfy.)
+fn rustc_available() -> bool {
+    std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// All three engines agree and print `expect`.
 fn agree(tag: &str, src: &str, expect: &str) {
     let file = Arc::new(SourceFile::new(
         format!("c63d_{tag}.stark"),
@@ -54,6 +62,30 @@ fn agree(tag: &str, src: &str, expect: &str) {
         expect,
         "{tag}: MIR output must equal the HIR oracle"
     );
+
+    if rustc_available() {
+        let verified = verify_program(&program).unwrap();
+        let dir = std::env::temp_dir().join(format!("stark_c63d_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let artifact = emit_native_debug(
+            &verified,
+            &NativeBuildOptions {
+                target_dir: dir.clone(),
+                target_contract: "stark-64-v1".to_string(),
+            },
+        )
+        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
+        let run = std::process::Command::new(&artifact.binary_path)
+            .output()
+            .expect("run");
+        assert!(run.status.success(), "{tag}: native must exit 0");
+        assert_eq!(
+            String::from_utf8_lossy(&run.stdout).trim(),
+            expect,
+            "{tag}: native output must equal the oracle"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// A key whose `Eq` deliberately ignores field `b`, so `K{1,1}` and `K{1,2}` are the SAME key. The
@@ -168,4 +200,85 @@ fn primitive_keys_are_unaffected() {
          print(m.len()); let q: Int32 = 2; print(m.contains_key(&q)); println(\"\"); }",
         "2true",
     );
+}
+
+// ---- The rest of the §27 matrix: what is native, and what is NOT a native gap ----
+
+/// A `String` key: no user impl, so identity is the structural comparator — and it must work
+/// natively alongside the dispatched-`Eq` path.
+#[test]
+fn string_keys_work() {
+    agree(
+        "stringkey",
+        "fn main() { let mut m: HashMap<String, Int32> = HashMap::new(); \
+         m.insert(String::from(\"a\"), 1); m.insert(String::from(\"b\"), 2); \
+         m.insert(String::from(\"a\"), 3); println(m.len()); }",
+        "2",
+    );
+}
+
+/// The program type-checks and the HIR interpreter runs it, but LOWERING refuses it — an HIR-only
+/// shape, i.e. a lowering gap rather than a native one.
+fn hir_only(tag: &str, src: &str) {
+    let file = Arc::new(SourceFile::new(
+        format!("c63d_{tag}.stark"),
+        src.to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    let errs: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "{tag}: expected it to type-check, got {errs:?}"
+    );
+    interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
+        .unwrap_or_else(|(e, _)| panic!("{tag}: HIR should run it: {}", e.message));
+    assert!(
+        lower_program(&hir, &checked.tables, file).is_err(),
+        "{tag}: lowering is expected to refuse this; if it now lowers, promote it to a three-engine case"
+    );
+}
+
+/// `HashSet` has NO MIR representation at all (`Core(HashSet, …)` is refused at lowering), so it is
+/// HIR-only. Implementing it — even as "HashMap to Unit" — is a LOWERING feature, not a backend one:
+/// neither MIR nor native can represent it, so there is no native divergence for this gate to close.
+/// Same category, and the same precedent, as C6.3c's adapter iterators.
+#[test]
+fn hashset_is_hir_only() {
+    hir_only(
+        "hashset",
+        "fn main() { let mut s: HashSet<Int32> = HashSet::new(); s.insert(1); s.insert(1); \
+         println(s.len()); }",
+    );
+}
+
+/// CE4 (CD-132): user-`Drop` keys and values stay REFUSED before MIR, which is what keeps entry
+/// Drop order unobservable and therefore legitimately unspecified. Both positions are refused.
+#[test]
+fn drop_bearing_keys_and_values_are_refused() {
+    for (tag, src) in [
+        (
+            "dropvalue",
+            "struct D { v: Int32 }\nimpl Drop for D { fn drop(&mut self) {} }\n\
+             fn main() { let mut m: HashMap<Int32, D> = HashMap::new(); \
+             m.insert(1, D { v: 1 }); println(m.len()); }",
+        ),
+        (
+            "dropkey",
+            "struct K { v: Int32 }\nimpl Drop for K { fn drop(&mut self) {} }\n\
+             impl Eq for K { fn eq(&self, other: &K) -> Bool { self.v == other.v } }\n\
+             impl Hash for K { fn hash(&self) -> UInt64 { 1u64 } }\n\
+             fn main() { let mut m: HashMap<K, Int32> = HashMap::new(); \
+             m.insert(K { v: 1 }, 1); println(m.len()); }",
+        ),
+    ] {
+        hir_only(tag, src);
+    }
 }

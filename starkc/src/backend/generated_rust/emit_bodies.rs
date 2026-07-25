@@ -895,9 +895,40 @@ fn emit_call(
         }
         // WP-C6.3a: a runtime call is rendered from the same already-emitted argument expressions;
         // the dest type lets an `Option`-returning runtime fn wrap into the generated Option enum.
-        Callee::Runtime(rt) => {
-            super::emit_runtime::emit_runtime_call(*rt, &arg_exprs, dest_ty, site)
-        }
+        Callee::Runtime(rt) => super::emit_runtime::emit_runtime_call(
+            *rt,
+            &arg_exprs,
+            dest_ty,
+            site,
+            map_key_eq_fn(args, env).as_deref(),
+        ),
+    }
+}
+
+/// WP-C6.3d: the function a map operation decides KEY IDENTITY with — the user's selected `Eq::eq`
+/// for a nominal key (from `TypeContext::eq_impls`, the same table the MIR interpreter reads), or
+/// the structural comparator for a primitive/`String` key, whose Rust `==` IS its lawful STARK `Eq`.
+///
+/// A nominal key ALWAYS has an entry: it needs an `impl Eq` to satisfy the key bound at all. So a
+/// missing entry means a non-nominal key, not a lookup failure.
+fn map_key_eq_fn(args: &[Operand], env: &TyEnv) -> Option<String> {
+    let (Operand::Copy(place) | Operand::Move(place)) = args.first()? else {
+        return None;
+    };
+    let mut ty = env.place_ty(place).ok()?;
+    while let MirTy::Ref { inner, .. } = ty {
+        ty = *inner;
+    }
+    let MirTy::Core(crate::hir::CoreType::HashMap, type_args) = ty else {
+        return None;
+    };
+    match type_args.first()? {
+        MirTy::Struct(item, args) | MirTy::Enum(crate::mir::EnumRef::User(item), args) => env
+            .types
+            .eq_impls
+            .get(&(item.0, args.clone()))
+            .map(|symbol| mangle::function_name_for_symbol(symbol)),
+        _ => Some("stark_runtime::map::structural_eq".to_string()),
     }
 }
 

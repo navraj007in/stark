@@ -15,6 +15,7 @@
 
 pub mod boxed;
 pub mod format;
+pub mod map;
 pub mod output;
 pub mod provider_abi;
 pub mod slot;

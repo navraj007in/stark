@@ -79,8 +79,14 @@ trap-message three-engine parity (DEV-106, narrowed — partial output already c
 DEV-107 (native `v[i]` OOB provenance) is CLOSED by CD-131. DEFERRED to a future decision (CD-125): composite `Box`
 elements — `Box<T>` is not a Display type today (typechecker E0500) and making it one is a semantics
 choice, not a lowering slice.**
+**WP-C6.3d CLOSED by amendment (CD-132/133/134): native `HashMap` on the CE4 insertion-ordered
+representation, with identity by the key type's lawful `Eq` reaching MIR and the backend through one
+shared `TypeContext::eq_impls` table. CD-133 fixed a LIVE HIR↔MIR divergence found on the way (MIR
+compared keys structurally, ignoring user `Eq`). EXCLUDED and pinned by boundary tests: `HashSet`
+(HIR-only — no MIR representation, so a lowering gap like C6.3c's adapters) and Drop-bearing keys/
+values (refused before MIR, which keeps entry Drop order unobservable and legitimately unspecified).**
 Also open:
-**WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
+**WP-C6.3** (files C6.3f; the C6.3e formatting tail; runtime version/install/
 offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
 platform matrix, C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
 DEV-105 (Float32 widening cross-engine) still open — none is C6.2.)**
@@ -3152,6 +3158,37 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-134 [2026-07-26, **WP-C6.3d CLOSED by amendment — native `HashMap`; exclusions named**]
+  The CE4 representation (CD-132) is implemented natively and the §27 matrix is proven three-engine
+  for the admitted domain. Per the owner's closure ruling, C6.3d is closed **only** for that domain,
+  with the exclusions stated rather than ticked.
+  - **Native representation — the CE4 decision, unchanged.** `stark_runtime::map::StarkMap` is an
+    insertion-ordered map with identity by a linear `Eq` scan; `Hash` is never consulted. Held as
+    PARALLEL `keys`/`values` vectors rather than a `Vec<(K, V)>` for one concrete reason: STARK types
+    the keys cursor as `KeysIter<K>` with no `V` to name, so a cursor over `&[K]` is expressible and
+    one over `&[(K, V)]` is not. Ordering, identity and replacement semantics are unaffected.
+  - **Identity reaches the backend the same way it reaches MIR.** `emit_bodies::map_key_eq_fn` reads
+    the SAME `TypeContext::eq_impls` table the MIR interpreter reads (CD-133) and passes the user's
+    selected `Eq::eq` to the runtime as a comparator; a primitive/`String` key gets
+    `map::structural_eq`, whose Rust `==` IS its lawful `Eq`. The map never decides identity itself,
+    and the backend cannot substitute a Rust trait — generated nominals deliberately derive no `Eq`.
+  - **Proven three-engine (HIR == MIR == native), 9 cases in `tests/c63d_map_key_identity.rs`:**
+    custom `Eq` decides identity; replacement retains the FIRST stored key; TOTAL hash collision
+    keeps unequal keys distinct; custom `Eq` decides `contains_key`; CD-009 insertion order survives
+    a custom `Eq`; primitive keys; `String` keys; plus the two boundary tests below.
+  - **EXCLUDED — `HashSet` is HIR-only, and that is a LOWERING gap, not a native one.**
+    `Core(HashSet, …)` has no MIR representation at all, so implementing it — even as the obvious
+    "HashMap to Unit" — would add new MIR semantics, expanding a native-parity WP exactly as the
+    C6.3c adapter iterators would have. Same precedent, same ruling. Pinned by
+    `hashset_is_hir_only`, which asserts the HIR interpreter RUNS it and lowering REFUSES it.
+  - **EXCLUDED — Drop-bearing keys/values remain refused before MIR** ("HashMap over user-Drop key/
+    value types (reserved — std-full)"), in BOTH positions, pinned by
+    `drop_bearing_keys_and_values_are_refused`. This is what keeps entry Drop order UNOBSERVABLE and
+    therefore legitimately unspecified: no user destructor can run inside a map. Admitting them needs
+    a Drop-order rule decided AND specified first — not invented here.
+  - **§27's remaining matrix rows** (`values`/`entries` iteration, `remove`, HashSet adversarial
+    cases) depend on those two exclusions and are out of scope with them.
 
 - CD-133 [2026-07-26, **WP-C6.3d — MIR key identity FIXED: a live HIR↔MIR divergence closed**]
   A correctness fix to shipped code, not a new feature. MIR's `HashMapInsert`/`Get`/`ContainsKey`

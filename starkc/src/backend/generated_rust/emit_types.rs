@@ -109,7 +109,12 @@ pub fn nominal_needs_lifetime(ty: &MirTy) -> bool {
     match ty {
         // WP-C6.3c: an iterator cursor BORROWS its source, so it carries a lifetime whatever its
         // element type is — `VecIter<Int32>`'s arguments hold no reference, but the cursor does.
-        MirTy::Core(crate::hir::CoreType::VecIter | crate::hir::CoreType::CharsIter, _) => true,
+        MirTy::Core(
+            crate::hir::CoreType::VecIter
+            | crate::hir::CoreType::CharsIter
+            | crate::hir::CoreType::KeysIter,
+            _,
+        ) => true,
         MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
             args.iter().any(ty_carries_reference)
         }
@@ -240,6 +245,27 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
             format!(
                 "stark_runtime::vec::VecIter{lt2}",
                 lt2 = iter_lifetime_args(at, Some(emit_ty_at(single_arg(args, "VecIter")?, at)?))
+            )
+        }
+        // WP-C6.3d: the CE4 insertion-ordered map, and its keys cursor (which like every cursor
+        // borrows its source, so it carries a lifetime in every position).
+        MirTy::Core(crate::hir::CoreType::HashMap, args) => {
+            let [k, v] = args.as_slice() else {
+                return Err(BackendDiagnostic::Unsupported(format!(
+                    "HashMap expects exactly two type arguments, found {}",
+                    args.len()
+                )));
+            };
+            format!(
+                "stark_runtime::map::StarkMap<{}, {}>",
+                emit_ty_at(k, at)?,
+                emit_ty_at(v, at)?
+            )
+        }
+        MirTy::Core(crate::hir::CoreType::KeysIter, args) => {
+            format!(
+                "stark_runtime::map::KeysIter{}",
+                iter_lifetime_args(at, Some(emit_ty_at(single_arg(args, "KeysIter")?, at)?))
             )
         }
         MirTy::Core(crate::hir::CoreType::CharsIter, _) => {

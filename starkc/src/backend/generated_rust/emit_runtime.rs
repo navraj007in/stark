@@ -39,8 +39,18 @@ pub fn emit_runtime_call(
     args: &[String],
     dest_ty: &MirTy,
     site: &CallSite,
+    // WP-C6.3d: how a map op decides key identity (`None` for every non-map op).
+    key_eq: Option<&str>,
 ) -> Result<String, BackendDiagnostic> {
     use RuntimeFn::*;
+    let eq = || {
+        key_eq.ok_or_else(|| {
+            BackendDiagnostic::Unsupported(
+                "a HashMap operation reached the backend without a resolved key `Eq` (CD-133)"
+                    .to_string(),
+            )
+        })
+    };
     // A small helper: the argument at `i`, wrapped so method/`.as_bytes()` suffixes bind correctly.
     let arg = |i: usize| format!("({})", args[i]);
     Ok(match rt {
@@ -161,6 +171,38 @@ pub fn emit_runtime_call(
         CharsIterNew => format!("stark_runtime::string::chars_new({})", arg(0)),
         CharsIterNext => wrap_option(
             &format!("stark_runtime::string::chars_next({})", arg(0)),
+            dest_ty,
+        )?,
+
+        // --- HashMap (WP-C6.3d). CE4: an insertion-ordered vector; identity by the key type's
+        // lawful `Eq`, passed in as a comparator so the map never decides it and `Hash` is never
+        // consulted (CD-132). `keys()` is a borrowed cursor over the keys in insertion order. ---
+        HashMapNew => "stark_runtime::map::new()".to_string(),
+        HashMapInsert => wrap_option(
+            &format!(
+                "stark_runtime::map::insert({}, {}, {}, {})",
+                arg(0),
+                arg(1),
+                arg(2),
+                eq()?
+            ),
+            dest_ty,
+        )?,
+        HashMapGet => wrap_option(
+            &format!("stark_runtime::map::get({}, {}, {})", arg(0), arg(1), eq()?),
+            dest_ty,
+        )?,
+        HashMapContainsKey => format!(
+            "stark_runtime::map::contains_key({}, {}, {})",
+            arg(0),
+            arg(1),
+            eq()?
+        ),
+        HashMapLen => format!("stark_runtime::map::len({})", arg(0)),
+        HashMapIsEmpty => format!("stark_runtime::map::is_empty({})", arg(0)),
+        HashMapKeysIterNew => format!("stark_runtime::map::keys_iter_new({})", arg(0)),
+        HashMapKeysIterNext => wrap_option(
+            &format!("stark_runtime::map::keys_iter_next({})", arg(0)),
             dest_ty,
         )?,
 
