@@ -3114,6 +3114,17 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-118 [2026-07-25, **WP-C6.3e slice 5 — native composite Display: Option/Result**] Extends the
+  composite renderer to `Option`/`Result` (Copy payloads): `emit_display_value` reads the
+  discriminant (`Rvalue::Discriminant`) and `SwitchInt`s to a `None`/`Some(v)` or `Ok(v)`/`Err(e)`
+  branch, recursing into the payload via a `VariantField` projection. Still no runtime-surface change
+  and still three-engine (the recursion also renders a nested composite inside the payload).
+  - **Proven three-engine:** `Some(5)`, `None`, `Ok(7)`, `Err(true)`, and nested `Some((1, 2))`
+    (composite inside the Some payload). `c63e_formatting.rs` now 20. Regression: `--lib` 441,
+    `three_engine_differential` 83; fmt + clippy clean.
+  - **C6.3e remaining:** composite `str`/`String` elements, `Box`, `Vec` (a runtime loop), nested
+    user-`Display`; `Float32` (DEV-105); assert message text.
+
 - CD-117 [2026-07-25, **WP-C6.3e slice 4 — native composite Display (tuple/array)**] `println`/`print`
   of a displayable COMPOSITE was HIR-only — the lowering (`widen_for_print`) rejected it before MIR,
   so neither MIR nor native rendered it. Now a tuple/array of primitive elements lowers to a SEQUENCE

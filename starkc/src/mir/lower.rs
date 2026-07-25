@@ -4165,7 +4165,13 @@ impl<'a> FnLowerer<'a> {
                     // WP-C6.3e: a displayable COMPOSITE (tuple/array of primitive elements in this
                     // slice) is rendered as a SEQUENCE of primitive print ops matching the
                     // interpreter's `Display for Value` — no runtime-surface change.
-                    if matches!(peeled, MirTy::Tuple(_) | MirTy::Array(..)) {
+                    if matches!(
+                        peeled,
+                        MirTy::Tuple(_)
+                            | MirTy::Array(..)
+                            | MirTy::Enum(EnumRef::CoreOption, _)
+                            | MirTy::Enum(EnumRef::CoreResult, _)
+                    ) {
                         return self
                             .lower_print_composite(args[0], &arg_ty, is_println, dest, span);
                     }
@@ -7192,6 +7198,72 @@ impl<'a> FnLowerer<'a> {
                     self.emit_display_value(element, elem, span)?;
                 }
                 self.print_str_lit("]", span);
+                Ok(())
+            }
+            // `None` / `Some(v)` (discriminant None=0, Some=1). A discriminant switch prints the
+            // variant, recursing into the `Some` payload.
+            MirTy::Enum(EnumRef::CoreOption, args) => {
+                let inner = args.first().cloned().unwrap_or(MirTy::Unit);
+                let disc = self.new_temp(MirTy::Int64);
+                self.emit(
+                    Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
+                    self.info(span),
+                );
+                let none_blk = self.new_block();
+                let some_blk = self.new_block();
+                let join = self.new_block();
+                self.terminate(
+                    Terminator::SwitchInt {
+                        scrut: Operand::Copy(Place::local(disc)),
+                        arms: vec![(0, none_blk), (1, some_blk)],
+                        otherwise: join,
+                    },
+                    self.info(span),
+                    none_blk,
+                );
+                self.print_str_lit("None", span);
+                self.terminate(Terminator::Goto { target: join }, self.info(span), some_blk);
+                self.print_str_lit("Some(", span);
+                let mut payload = place.clone();
+                payload.projection.push(Projection::VariantField(1, 0));
+                self.emit_display_value(payload, &inner, span)?;
+                self.print_str_lit(")", span);
+                self.terminate(Terminator::Goto { target: join }, self.info(span), join);
+                Ok(())
+            }
+            // `Ok(v)` / `Err(e)` (discriminant Ok=0, Err=1).
+            MirTy::Enum(EnumRef::CoreResult, args) => {
+                let ok_ty = args.first().cloned().unwrap_or(MirTy::Unit);
+                let err_ty = args.get(1).cloned().unwrap_or(MirTy::Unit);
+                let disc = self.new_temp(MirTy::Int64);
+                self.emit(
+                    Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
+                    self.info(span),
+                );
+                let ok_blk = self.new_block();
+                let err_blk = self.new_block();
+                let join = self.new_block();
+                self.terminate(
+                    Terminator::SwitchInt {
+                        scrut: Operand::Copy(Place::local(disc)),
+                        arms: vec![(0, ok_blk), (1, err_blk)],
+                        otherwise: join,
+                    },
+                    self.info(span),
+                    ok_blk,
+                );
+                self.print_str_lit("Ok(", span);
+                let mut ok_payload = place.clone();
+                ok_payload.projection.push(Projection::VariantField(0, 0));
+                self.emit_display_value(ok_payload, &ok_ty, span)?;
+                self.print_str_lit(")", span);
+                self.terminate(Terminator::Goto { target: join }, self.info(span), err_blk);
+                self.print_str_lit("Err(", span);
+                let mut err_payload = place.clone();
+                err_payload.projection.push(Projection::VariantField(1, 0));
+                self.emit_display_value(err_payload, &err_ty, span)?;
+                self.print_str_lit(")", span);
+                self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 Ok(())
             }
             other => unsupported(

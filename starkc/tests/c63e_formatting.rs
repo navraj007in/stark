@@ -240,3 +240,28 @@ fn composite_print_then_println() {
         "fn main() { print((1, 2)); println((3, 4)); }",
     );
 }
+
+#[test]
+fn composite_option_some_none() {
+    agree_out(
+        "opt",
+        "fn main() { let s: Option<Int32> = Some(5); println(s); let n: Option<Int32> = None; println(n); }",
+    );
+}
+
+#[test]
+fn composite_result_ok_err() {
+    agree_out(
+        "result",
+        "fn main() { let a: Result<Int32, Bool> = Ok(7); println(a); let b: Result<Int32, Bool> = Err(true); println(b); }",
+    );
+}
+
+/// A composite NESTED inside an Option payload — the recursion renders `Some((1, 2))`.
+#[test]
+fn composite_option_of_tuple() {
+    agree_out(
+        "opt_tuple",
+        "fn main() { let o: Option<(Int32, Int32)> = Some((1, 2)); println(o); }",
+    );
+}
