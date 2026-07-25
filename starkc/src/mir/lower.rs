@@ -348,6 +348,8 @@ pub fn lower_program(
             .types
             .drop_impls
             .append(&mut lowerer.drop_impl_symbols);
+        // WP-C6.3d: `Eq` instances the map ops dispatch key identity through.
+        program.types.eq_impls.append(&mut lowerer.eq_impl_symbols);
         for callee in lowerer.discovered_callees {
             let symbol = key_symbol(hir, &meta, &callee)?;
             if queued.insert(symbol, ()).is_none() {
@@ -850,6 +852,8 @@ struct FnLowerer<'a> {
     /// C4.5d: `(item, args) → dtor instance symbol` for every `Drop` impl this body's glue
     /// can reach; merged into `TypeContext::drop_impls` by `lower_program`.
     drop_impl_symbols: BTreeMap<(u32, Vec<MirTy>), String>,
+    /// WP-C6.3d: selected `Eq::eq` symbols for nominal map KEYS; merged into `TypeContext::eq_impls`.
+    eq_impl_symbols: BTreeMap<(u32, Vec<MirTy>), String>,
 }
 
 impl<'a> FnLowerer<'a> {
@@ -881,6 +885,7 @@ impl<'a> FnLowerer<'a> {
             drop_info: HashMap::new(),
             scopes: Vec::new(),
             drop_impl_symbols: BTreeMap::new(),
+            eq_impl_symbols: BTreeMap::new(),
         }
     }
 
@@ -1474,6 +1479,69 @@ impl<'a> FnLowerer<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// WP-C6.3d (STD-HASH-001): the selected `Eq::eq` instance for a nominal used as a map KEY.
+    /// Structurally identical to [`Self::drop_impl_key`] — same impl scan, same `FnKey`/symbol
+    /// construction — differing only in the trait and member name it looks for.
+    fn eq_impl_key(
+        &self,
+        item: ItemId,
+        type_args: &[MirTy],
+    ) -> Result<Option<(FnKey, String)>, LowerError> {
+        for (idx, candidate) in self.hir.items.iter().enumerate() {
+            let ItemKind::Impl {
+                trait_: Some(trait_ref),
+                items,
+                ..
+            } = &candidate.kind
+            else {
+                continue;
+            };
+            if !matches!(trait_ref.res, Res::CoreTrait(crate::hir::CoreTrait::Eq)) {
+                continue;
+            }
+            let impl_item = ItemId(idx as u32);
+            if impl_self_item(self.hir, impl_item) != Some(item) {
+                continue;
+            }
+            for (member, impl_member) in items.iter().enumerate() {
+                let hir::ImplItem::Fn { def, .. } = impl_member else {
+                    continue;
+                };
+                if self.meta.item_text(impl_item, def.sig.name) != "eq" {
+                    continue;
+                }
+                let key = FnKey::ImplFn {
+                    impl_item,
+                    member: member as u32,
+                    type_args: type_args.to_vec(),
+                    // An `Eq::eq` never declares its own generics.
+                    method_args: Vec::new(),
+                };
+                let symbol = key_symbol(self.hir, self.meta, &key)?;
+                return Ok(Some((key, symbol)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// WP-C6.3d: record the `Eq` instance a map KEY type dispatches identity through, and queue its
+    /// body for lowering. A primitive/`String` key needs no entry: it has no user impl, and its
+    /// structural comparison IS its lawful `Eq`.
+    fn discover_eq_impl(&mut self, key_ty: &MirTy) -> Result<(), LowerError> {
+        let (MirTy::Struct(item, args) | MirTy::Enum(EnumRef::User(item), args)) = key_ty else {
+            return Ok(());
+        };
+        let (item, args) = (*item, args.clone());
+        if self.eq_impl_symbols.contains_key(&(item.0, args.clone())) {
+            return Ok(());
+        }
+        if let Some((key, symbol)) = self.eq_impl_key(item, &args)? {
+            self.eq_impl_symbols.insert((item.0, args.clone()), symbol);
+            self.discovered_callees.push(key);
+        }
+        Ok(())
     }
 
     /// Discover every dtor instance `ty`'s drop glue can invoke: record its symbol for the
@@ -6931,6 +6999,11 @@ impl<'a> FnLowerer<'a> {
             "keys" => (RuntimeFn::HashMapKeysIterNew, false),
             _ => return unsupported(format!("HashMap::{name} (reserved — std-full)"), span),
         };
+        // WP-C6.3d (STD-HASH-001): key identity is the KEY TYPE'S lawful `Eq`, not structural
+        // comparison. Record the selected instance so both the MIR interpreter and the backend
+        // dispatch through it; a primitive/`String` key records nothing and keeps its structural
+        // comparison, which for those types IS its lawful `Eq`.
+        self.discover_eq_impl(&k)?;
         let recv = self.borrow_map_receiver(base, recv_mut, &k, &v, span)?;
         let mut ops = vec![recv];
         for &arg in args {

@@ -306,7 +306,13 @@ impl<'a> Interp<'a> {
                         }
                         // A1: trap-capable runtime ops abort with the CALL SITE's SourceInfo
                         // as provenance (runtime ops carry no TrapInfo of their own, §5).
-                        Callee::Runtime(rt) => self.run_runtime(*rt, values, bb.terminator.1)?,
+                        Callee::Runtime(rt) => {
+                            // WP-C6.3d: a map op decides key identity with the KEY TYPE'S lawful
+                            // `Eq` (STD-HASH-001). The instance is resolved HERE, where the call's
+                            // operands and the enclosing body's local types are still in scope.
+                            let key_eq = self.map_key_eq(body, args);
+                            self.run_runtime(*rt, values, bb.terminator.1, key_eq)?
+                        }
                     };
                     self.write_place(here, dest, result)?;
                     block = *target;
@@ -383,6 +389,119 @@ impl<'a> Interp<'a> {
 
     /// Syntactic type of a place: local type refined through the projections, resolved via
     /// the program's type context (the same derivation the verifier types places with).
+    /// WP-C6.3d: the body index of the selected `Eq::eq` for a map operation's KEY type, or `None`
+    /// when the key needs no dispatch (a primitive/`String` key has no user impl, and its structural
+    /// comparison IS its lawful `Eq`).
+    fn map_key_eq(&self, body: &MirBody, args: &[Operand]) -> Option<usize> {
+        let (Operand::Copy(place) | Operand::Move(place)) = args.first()? else {
+            return None;
+        };
+        let mut ty = self.place_ty(body, place).ok()?;
+        while let MirTy::Ref { inner, .. } = ty {
+            ty = *inner;
+        }
+        let MirTy::Core(crate::hir::CoreType::HashMap | crate::hir::CoreType::HashSet, type_args) =
+            ty
+        else {
+            return None;
+        };
+        let (item, key_args) = match type_args.first()? {
+            MirTy::Struct(item, a) | MirTy::Enum(EnumRef::User(item), a) => (*item, a.clone()),
+            _ => return None,
+        };
+        let symbol = self.program.types.eq_impls.get(&(item.0, key_args))?;
+        self.by_symbol.get(symbol.as_str()).copied()
+    }
+
+    /// WP-C6.3d: the index of the entry whose key equals `query` under the key type's lawful `Eq`,
+    /// scanning in first-insertion order so the FIRST match wins (STD-HASH-001: an equal key retains
+    /// the originally stored key and its position).
+    fn find_entry(
+        &mut self,
+        key_eq: Option<usize>,
+        recv: &Option<MirValue>,
+        query: &MirValue,
+    ) -> Result<Option<usize>, MirRunError> {
+        let Some(MirValue::Ref {
+            frame,
+            generation,
+            local,
+            path,
+        }) = recv.clone()
+        else {
+            return self.internal("HashMap op expects a map reference");
+        };
+        self.check_ref_live(frame, generation)?;
+        let entries = match self.read_resolved(frame, local, &path)? {
+            MirValue::Vec(entries) => entries,
+            other => return self.internal(format!("HashMap referent is {other:?}")),
+        };
+        for (index, entry) in entries.iter().enumerate() {
+            let MirValue::Aggregate(kv) = entry else {
+                continue;
+            };
+            if self.entry_key_matches(
+                key_eq, frame, generation, local, &path, index, &kv[0], query,
+            )? {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
+    /// WP-C6.3d: does the entry at `index` hold `query` as its key?
+    ///
+    /// With no selected `Eq` this is the structural comparison map ops have always used, which is
+    /// correct for primitive and `String` keys. With one, it CALLS the user's `Eq::eq` — so a user
+    /// impl decides identity, its panics are observable, and HIR/MIR/native agree (before this, MIR
+    /// compared structurally and silently disagreed with HIR on any custom `Eq`).
+    #[allow(clippy::too_many_arguments)]
+    fn entry_key_matches(
+        &mut self,
+        key_eq: Option<usize>,
+        frame: usize,
+        generation: u64,
+        local: u32,
+        path: &[ConcreteProj],
+        index: usize,
+        stored_key: &MirValue,
+        query: &MirValue,
+    ) -> Result<bool, MirRunError> {
+        let Some(body_index) = key_eq else {
+            return Ok(stored_key == query);
+        };
+        let mut key_path = path.to_vec();
+        key_path.push(ConcreteProj::Index(index));
+        key_path.push(ConcreteProj::Field(0));
+        let stored_ref = MirValue::Ref {
+            frame,
+            generation,
+            local,
+            path: key_path,
+        };
+        // `Eq::eq(&self, other: &K)` needs a PLACE for the query too; it is a value here, so it is
+        // parked in a scratch frame for exactly the duration of the call.
+        let scratch_generation = self.next_generation;
+        self.next_generation += 1;
+        self.frames.push(Frame {
+            locals: vec![Some(query.clone())],
+            generation: scratch_generation,
+        });
+        let scratch = self.frames.len() - 1;
+        let query_ref = MirValue::Ref {
+            frame: scratch,
+            generation: scratch_generation,
+            local: 0,
+            path: Vec::new(),
+        };
+        let result = self.call(body_index, vec![stored_ref, query_ref]);
+        self.frames.truncate(scratch);
+        match result? {
+            MirValue::Bool(equal) => Ok(equal),
+            other => self.internal(format!("Eq::eq returned {other:?}, expected Bool")),
+        }
+    }
+
     fn place_ty(&self, body: &MirBody, place: &Place) -> Result<MirTy, MirRunError> {
         let mut ty = body
             .locals
@@ -1174,13 +1293,14 @@ impl<'a> Interp<'a> {
         rt: RuntimeFn,
         args: Vec<MirValue>,
         call_info: SourceInfo,
+        key_eq: Option<usize>,
     ) -> Result<MirValue, MirRunError> {
         use RuntimeFn::*;
         if is_vec_runtime(rt) {
             return self.run_vec_runtime(rt, args, call_info);
         }
         if is_map_runtime(rt) {
-            return self.run_map_runtime(rt, args);
+            return self.run_map_runtime(rt, args, key_eq);
         }
         if is_slice_runtime(rt) {
             return self.run_slice_runtime(rt, args, call_info);
@@ -1585,6 +1705,8 @@ impl<'a> Interp<'a> {
         &mut self,
         rt: RuntimeFn,
         args: Vec<MirValue>,
+        // WP-C6.3d: the selected `Eq::eq` for the key type, resolved at the call site.
+        key_eq: Option<usize>,
     ) -> Result<MirValue, MirRunError> {
         use RuntimeFn::*;
         let mut args = args.into_iter();
@@ -1598,23 +1720,29 @@ impl<'a> Interp<'a> {
                 let value = args
                     .next()
                     .ok_or_else(|| MirRunError::Internal("HashMapInsert missing value".into()))?;
-                self.mutate_vec_ref(&recv, |entries| {
-                    for entry in entries.iter_mut() {
-                        if let MirValue::Aggregate(kv) = entry {
-                            if kv[0] == key {
-                                // CD-009: existing key keeps its position; old value returned.
-                                let old = std::mem::replace(&mut kv[1], value);
-                                return MirValue::Enum {
-                                    variant: 1,
-                                    fields: vec![old],
-                                };
-                            }
+                // WP-C6.3d: the matching entry is found FIRST, through the key type's lawful
+                // `Eq` (which may run user code and so cannot happen inside a `&mut` closure over
+                // the entries); only then is the map mutated by index.
+                let existing = self.find_entry(key_eq, &recv, &key)?;
+                self.mutate_vec_ref(&recv, |entries| match existing {
+                    // CD-009: an existing key keeps its position AND its originally stored key
+                    // (STD-HASH-001); only the value is replaced, and the old one is returned.
+                    Some(index) => {
+                        let MirValue::Aggregate(kv) = &mut entries[index] else {
+                            unreachable!("HashMap entry is not a key/value pair")
+                        };
+                        let old = std::mem::replace(&mut kv[1], value);
+                        MirValue::Enum {
+                            variant: 1,
+                            fields: vec![old],
                         }
                     }
-                    entries.push(MirValue::Aggregate(vec![key, value]));
-                    MirValue::Enum {
-                        variant: 0,
-                        fields: Vec::new(),
+                    None => {
+                        entries.push(MirValue::Aggregate(vec![key, value]));
+                        MirValue::Enum {
+                            variant: 0,
+                            fields: Vec::new(),
+                        }
                     }
                 })
             }
@@ -1635,21 +1763,24 @@ impl<'a> Interp<'a> {
                     other => return self.internal(format!("HashMap referent is {other:?}")),
                 };
                 for (i, entry) in entries.iter().enumerate() {
-                    if let MirValue::Aggregate(kv) = entry {
-                        if kv[0] == key {
-                            let mut elem_path = path;
-                            elem_path.push(ConcreteProj::Index(i));
-                            elem_path.push(ConcreteProj::Field(1));
-                            return Ok(MirValue::Enum {
-                                variant: 1,
-                                fields: vec![MirValue::Ref {
-                                    frame,
-                                    generation,
-                                    local,
-                                    path: elem_path,
-                                }],
-                            });
-                        }
+                    let MirValue::Aggregate(kv) = entry else {
+                        continue;
+                    };
+                    if self.entry_key_matches(
+                        key_eq, frame, generation, local, &path, i, &kv[0], &key,
+                    )? {
+                        let mut elem_path = path;
+                        elem_path.push(ConcreteProj::Index(i));
+                        elem_path.push(ConcreteProj::Field(1));
+                        return Ok(MirValue::Enum {
+                            variant: 1,
+                            fields: vec![MirValue::Ref {
+                                frame,
+                                generation,
+                                local,
+                                path: elem_path,
+                            }],
+                        });
                     }
                 }
                 Ok(MirValue::Enum {
@@ -1668,11 +1799,9 @@ impl<'a> Interp<'a> {
             HashMapContainsKey => {
                 let recv = args.next();
                 let key = self.deref_key_arg(args.next())?;
-                let entries = self.read_vec_ref(&recv)?;
-                let found = entries
-                    .iter()
-                    .any(|e| matches!(e, MirValue::Aggregate(kv) if kv[0] == key));
-                Ok(MirValue::Bool(found))
+                Ok(MirValue::Bool(
+                    self.find_entry(key_eq, &recv, &key)?.is_some(),
+                ))
             }
             HashMapKeysIterNew => {
                 // A TRUE borrowed cursor: [map-ref, cursor] — Next indexes the live map.

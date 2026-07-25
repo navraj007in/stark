@@ -3153,6 +3153,100 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-133 [2026-07-26, **WP-C6.3d — MIR key identity FIXED: a live HIR↔MIR divergence closed**]
+  A correctness fix to shipped code, not a new feature. MIR's `HashMapInsert`/`Get`/`ContainsKey`
+  compared keys with `kv[0] == key` — structural `MirValue` equality — so a user `Eq` impl was
+  IGNORED. HIR dispatches the user's `Eq` (`language_position` → `language_equal`) and is correct per
+  STD-HASH-001, so the two engines disagreed: a key whose `Eq` ignores one field made HIR print `1`
+  and MIR print `2` for the same program. It type-checked and ran in both engines; the differential
+  never saw it because `HashMap` is absent from the corpus.
+  - **Found by an external review, but not as reported.** The review placed the defect in HIR's
+    `InsertionMap::position`. That helper exists but is not the path map methods take — HIR was
+    right and MIR was wrong, which makes the finding a live divergence rather than merely "unproven
+    for adversarial implementations". A probe settled it before any code moved.
+  - **Fix — `TypeContext::eq_impls`, no CE3.** The selected `Eq::eq` instance per nominal key type,
+    populated during lowering exactly as `drop_impls` has been since C4.5d (`eq_impl_key` mirrors
+    `drop_impl_key`; the instance is queued for lowering through `discovered_callees`). The MIR
+    interpreter resolves it at the CALL SITE — where the call's operands and the enclosing body's
+    local types are still in scope — and calls it. `Eq::eq(&self, other: &K)` needs a place for both
+    arguments, so the query key is parked in a scratch frame for the duration of the call. **No
+    `RuntimeFn` gains or changes an argument, so the runtime-surface revision does not move.** The
+    alternative (new `HashMapFindHash`/`KeyAt`/… ops making every comparison explicit in MIR) is a
+    CE3 runtime-surface change and remains available to escalate if MIR-visible comparisons are
+    wanted; it is NOT required for correctness.
+  - **`HashMapInsert` restructured find-then-mutate**, matching HIR: dispatched `Eq` can run user
+    code, so the scan cannot happen inside a `&mut` closure over the entries.
+  - **Evidence.** New `tests/c63d_map_key_identity.rs` — 6 cases, HIR == MIR, and the §27 adversarial
+    set: custom `Eq` decides identity; replacement retains the FIRST stored key (`b` stays 1 though
+    the second insert supplied 2); TOTAL hash collision keeps unequal keys distinct; custom `Eq`
+    decides `contains_key`; CD-009 insertion order survives a custom `Eq`; primitive keys unaffected
+    (no user impl, structural comparison IS their lawful `Eq`). Regression: `--lib` 441,
+    `mir_differential` 132, `three_engine_differential` 86, `exec_snapshots`, `conformance` green.
+  - **C6.3d remaining:** the native `StarkMap` slice (the CE4 ordered vector), `HashSet` as
+    map-to-Unit, and closure by amendment with the Drop-bearing exclusion named (CD-132).
+
+- CD-132 [2026-07-26, **WP-C6.3d OPENED — the CE4 HashMap/HashSet representation decision (owner)**]
+  §27 asks for a CE4 representation decision across nine items. Investigation found **seven of them
+  are already normatively fixed**, so the decision put to the owner was much narrower than the
+  checklist implies — recorded here so the closed items are not re-litigated:
+  - **Already fixed, NOT open.** First-insertion iteration order, replacement preserving position, and
+    remove/reinsert appending come from **CD-009** (owner decision, 2026-07-18) and
+    `06-Standard-Library`'s "Iteration Order (Core v1)". **STD-HASH-001** additionally fixes: key
+    identity by lawful `Eq` with `Hash` used ONLY to select candidate buckets; collisions resolved by
+    `Eq` (unequal keys with equal hashes stay distinct); replacement retaining the FIRST stored key
+    and its position; observable order independent of hash values, collision strategy, capacity,
+    target and process; and a fully specified hash — 64-bit **FNV-1a** (basis `14695981039346656037`,
+    prime `1099511628211`) over a canonical byte encoding given in the spec.
+  - **Why a host `HashMap` is unacceptable** (§27's warning, made concrete): Rust's `RandomState`
+    seeds per process, so iteration order varies between RUNS; it would key on Rust's `Hash`/`Eq`
+    rather than STARK's lawful `Eq` (which dispatches to a user impl for user types); and rehashing
+    on growth reorders iteration, which STARK requires be capacity-independent.
+  - **OWNER DECISION (CE4): mirror the interpreter.** Native `HashMap`/`HashSet` use an
+    INSERTION-ORDERED `Vec` of entries with linear scan by STARK `Eq` — structurally what
+    `interp.rs`'s `InsertionMap(Vec<(Value, Option<Value>)>)` already is. Rationale: it satisfies
+    every fixed contract BY CONSTRUCTION rather than by careful maintenance of a second index, which
+    makes divergence from the reference near-impossible; and C6's charge is native semantic PARITY,
+    not performance (charter §1.6 rule 7 — correctness precedes optimisation; performance work is
+    C7). Lookup is O(n). Because the spec makes observable order independent of storage, switching
+    later to an IndexMap-style order-plus-hash-index is an internal change with NO observable
+    difference — so this decision does not foreclose the faster representation.
+  - **Deliberately NOT decided: entry Drop order.** The spec states no rule, and it is currently
+    UNOBSERVABLE — lowering excludes user-`Drop` keys/values, so no user destructor ever runs inside
+    a map. Inventing a rule now would be unfounded; it must be decided (and specified) if and when
+    droppable keys/values are admitted.
+  - **Baseline — CORRECTED (this entry's first draft was wrong).** I recorded "HashMap already runs
+    in both interpreters, so this is a native-only gap". It runs in both, but the KEY-IDENTITY
+    semantics differ, which an external review flagged and a probe then settled. A key whose `Eq`
+    deliberately ignores a field (so `K{1,1}` and `K{1,2}` are the SAME key under STD-HASH-001):
+    **HIR prints `1`, MIR prints `2`.** HIR is correct — `HashMap` methods resolve the key through
+    `language_position` → `language_equal`, which dispatches the user's `Eq`. MIR is WRONG — its
+    `HashMapInsert`/`Get`/`ContainsKey` compare `kv[0] == key`, structural `MirValue` equality, so a
+    user `Eq` impl is ignored entirely. (The review attributed the defect to HIR's
+    `InsertionMap::position`; that helper exists but is not the path map methods take.) So C6.3d is
+    **not** a native-only gap: it is a live HIR↔MIR divergence on a program that type-checks and runs
+    in both engines, undetected because `HashMap` is absent from the differential corpus. Two further
+    owner decisions were taken on the back of it:
+  - **OWNER DECISION (identity): `Eq`-only scan, no cached hash.** Lookups compare with dispatched
+    STARK `Eq` and never consult `Hash`. Rationale: hash-narrowing and `Eq`-only scanning are
+    OBSERVABLY different when a user's `Hash` is inconsistent with their `Eq` — a TRAIT-LAW-001
+    violation where either strategy is conformant alone, but the three engines must agree with each
+    other. HIR scans by `Eq` today and is the semantic reference (charter §1.6 rule 6), so all three
+    do. A hash index remains addable later, but only ACROSS ALL ENGINES TOGETHER and with the
+    law-violating case ruled on. The spec's FNV-1a stays where it already correctly lives —
+    `interp::standard_hash`, for direct `Hash::hash` calls — not in map storage.
+  - **OWNER DECISION (closure): narrow by amendment.** §27 lists Drop-bearing keys/values among its
+    REQUIRED adversarial cases, so C6.3d cannot be ticked complete while they are refused. It will be
+    closed only for the admitted non-user-Drop domain, by explicit amendment, with user-`Drop` keys/
+    values remaining refused before MIR and entry Drop order recorded as intentionally unspecified
+    (it is unobservable while no user destructor can run inside a map). Same precedent as C6.3c.
+  - **Implementation route (no CE3).** The selected `Eq` reaches both engines through a new
+    `TypeContext::eq_impls` table — per-instance impl symbol, populated during lowering exactly as
+    `drop_impls` already is (C4.5d). `RuntimeFn` signatures and arities are UNCHANGED, so the
+    runtime-surface revision does not move. The alternative the review proposed — new
+    `HashMapFindHash`/`KeyAt`/`ReplaceAt`/`Push`/`RemoveAt` ops making every `Eq` call explicit in
+    MIR — is architecturally purer but IS a runtime-surface change (CE3) and a large lowering rewrite;
+    it is recorded here as the option to escalate if the owner wants MIR-visible key comparisons.
+
 - CD-131 [2026-07-26, **WP-C6.3b COMPLETED — trapping `Vec` ops, checked interior access, slice
   views; DEV-107 CLOSED**] C6.3b had landed the `Vec`/`Box` VALUE surface and deferred everything that
   either TRAPS on a bad index or hands out an INTERIOR reference. All of it is now native.
