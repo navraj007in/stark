@@ -8,19 +8,22 @@
 //! enclosing binder to infer from, so declaration and use positions are rendered separately
 //! (`emit_types::LifetimePosition`).
 //!
-//! **Two shapes remain refused, before rustc** — both are the `ValueSlot`-versus-Rust-borrow-region
-//! tension the C6.1f-a matrix flagged as this package's central design question:
+//! **Nothing here is refused any more.** Two shapes once were — both the
+//! `ValueSlot`-versus-Rust-borrow-region tension the C6.1f-a matrix flagged as this package's
+//! central design question — and both fell to control-flow precision in the generated crate rather
+//! than to any change in the borrow rules:
 //!
-//! 1. A **slot-backed** (non-`Copy`) borrow-carrying nominal — a user struct or enum at a
-//!    reference. Its slot's destruction needs `&mut` while the reference it stores still borrows
-//!    its referent's slot immutably; Rust treats those as overlapping for the local's whole lexical
-//!    region (`E0502`) even though MIR drops the borrower first. Dropping the slot is not an
-//!    escape: the slot also carries MOVE liveness, and without it the move fails instead.
-//! 2. A **function returning** a borrow-carrying nominal: the elided output lifetime keeps the
-//!    borrow live across the referent's own slot destruction.
+//! 1. A **function returning** a borrow-carrying nominal, whose elided output lifetime kept the
+//!    borrow live across the referent's own slot destruction — lifted by CD-112 (acyclic bodies
+//!    emitted as nested labelled blocks instead of one `loop { match __bb }`).
+//! 2. A **slot-backed** (non-`Copy`) borrow-carrying nominal, whose slot destruction needs `&mut`
+//!    while the reference it stores still borrows its referent — lifted by CD-128, once CD-127
+//!    extended structured emission to cyclic bodies. rustc had been treating the two as overlapping
+//!    for the local's whole lexical region (`E0502`) only because the dispatch loop hid the real
+//!    control flow; with it visible, MIR's own ordering (borrower dropped first) type-checks as
+//!    written.
 //!
-//! Both are refused as named STARK limitations rather than allowed to surface as errors in
-//! generated code, which is the pre-rustc boundary this backend is built around.
+//! So this file is entirely positive, and `refuse_borrow_carrying_nominals` no longer exists.
 
 use starkc::backend::generated_rust::{emit_native_debug, BackendDiagnostic, NativeBuildOptions};
 use starkc::diag::Severity;
@@ -94,24 +97,8 @@ fn agree(tag: &str, src: &str) {
     );
 }
 
-/// The refusal must be OURS (`Unsupported`), never a rustc error in the generated crate.
-fn refused_before_rustc(tag: &str, src: &str, expected: &str) {
-    if !rustc_available() {
-        return;
-    }
-    match build(tag, src) {
-        Err(BackendDiagnostic::Unsupported(message)) => assert!(
-            message.contains(expected),
-            "{tag}: expected a refusal mentioning {expected:?}, got: {message}"
-        ),
-        Err(BackendDiagnostic::BuildFailed(f)) => panic!(
-            "{tag}: reached rustc and failed THERE; the backend must refuse it first:\n{}",
-            f.stderr
-        ),
-        Err(other) => panic!("{tag}: expected Unsupported, got {other:?}"),
-        Ok(_) => panic!("{tag}: this shape is not supported yet and must be refused"),
-    }
-}
+// CD-128: the `refused_before_rustc` helper is GONE with the last refusal it checked. Every
+// borrow-carrying shape this file covers now builds and runs, so the file is entirely positive.
 
 const P: &str = "struct P { v: Int32 }\nimpl P { fn get(&self) -> Int32 { self.v } }\n";
 
@@ -161,10 +148,10 @@ fn c61f_a_nominal_without_a_borrow_is_unaffected() {
     );
 }
 
-// WP-C6.1g-a: a COPY borrow-carrying nominal in a local now WORKS (structural Copy makes it
-// non-slot-backed; it flows through the CD-095 aggregate path). What stays refused is a MOVE
-// borrow-carrying nominal local — one dragged Move by an owned/Drop-bearing field alongside the
-// generic argument that supplies the borrow.
+// WP-C6.1g-a: a COPY borrow-carrying nominal in a local WORKS (structural Copy makes it
+// non-slot-backed; it flows through the CD-095 aggregate path). CD-128: the MOVE case — dragged Move
+// by an owned/Drop-bearing field alongside the generic argument that supplies the borrow — works too
+// now that structured emission (CD-127) gives rustc real control flow.
 #[test]
 fn c61f_a_copy_borrow_carrying_nominal_local_now_works() {
     agree(
@@ -195,11 +182,15 @@ fn c61f_a_copy_borrow_carrying_nominal_local_now_works() {
     );
 }
 
+/// CD-128: a MOVE borrow-carrying nominal local now BUILDS AND RUNS. The generic argument supplies
+/// the borrow and the `Drop`-bearing field makes the whole nominal Move, so it is slot-backed — the
+/// shape whose `ValueSlot` destruction (`&mut` on the slot) used to collide with the borrow it
+/// stores (E0502) and was refused pre-rustc. CD-127's structured control-flow emission removed the
+/// imprecision that caused the collision: rustc now sees the real region and MIR's own ordering
+/// (borrower dropped before referent) type-checks as written.
 #[test]
-fn c61f_a_move_borrow_carrying_nominal_local_is_refused_before_rustc() {
-    // The generic argument supplies the borrow; the `Drop`-bearing field makes the whole nominal
-    // Move, so it is slot-backed and the slot pins the borrow across the dispatch loop.
-    refused_before_rustc(
+fn c61f_a_move_borrow_carrying_nominal_local_now_works() {
+    agree(
         "move_generic_struct",
         &format!(
             "{P}struct D {{ w: Int32 }}\nimpl Drop for D {{ fn drop(&mut self) {{}} }}\n\
@@ -207,7 +198,6 @@ fn c61f_a_move_borrow_carrying_nominal_local_is_refused_before_rustc() {
                   fn main() {{ let p = P {{ v: 3 }}; let h: H<&P> = H {{ r: &p, d: D {{ w: 0 }} }}; \
                   assert_eq(h.r.get(), 3); }}"
         ),
-        "Move borrow-carrying nominal",
     );
 }
 

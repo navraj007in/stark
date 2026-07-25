@@ -84,6 +84,21 @@ pub fn emit_runtime_call(
         BoxNew => format!("stark_runtime::boxed::new({})", arg(0)),
         BoxIntoInner => format!("stark_runtime::boxed::into_inner({})", arg(0)),
 
+        // --- Iterator cursors (WP-C6.3c). `New` borrows the source; `Next` takes `&mut cursor` and
+        // returns an `Option` wrapped into the program's generated Option enum. `VecIterNext` lends
+        // `&T` out of the SOURCE (so the loop variable outlives the call); `CharsIterNext` yields a
+        // `Char` by value. ---
+        VecIterNew => format!("stark_runtime::vec::iter_new({})", arg(0)),
+        VecIterNext => wrap_option(
+            &format!("stark_runtime::vec::iter_next({})", arg(0)),
+            dest_ty,
+        )?,
+        CharsIterNew => format!("stark_runtime::string::chars_new({})", arg(0)),
+        CharsIterNext => wrap_option(
+            &format!("stark_runtime::string::chars_next({})", arg(0)),
+            dest_ty,
+        )?,
+
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "RuntimeFn {other:?} has no generated-Rust representation yet -- it lands with its \

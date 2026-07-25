@@ -41,6 +41,30 @@ pub fn is_empty<T>(v: &[T]) -> bool {
     v.is_empty()
 }
 
+/// WP-C6.3c (0.1-A2): by-reference `Vec` iteration. The cursor BORROWS its source for as long as it
+/// lives — STARK's borrow checker forbids mutating the `Vec` meanwhile, which is what makes holding
+/// the slice sound — and carries the position.
+pub struct VecIter<'a, T> {
+    slice: &'a [T],
+    index: usize,
+}
+
+/// `v.iter()` (`RuntimeFn::VecIterNew`). Takes `&[T]`, which a `&Vec<T>` receiver coerces to.
+pub fn iter_new<T>(v: &[T]) -> VecIter<'_, T> {
+    VecIter { slice: v, index: 0 }
+}
+
+/// `RuntimeFn::VecIterNext` — `Option<&T>`, or `None` once exhausted.
+///
+/// The yielded reference borrows the SOURCE (`'a`), not the `&mut` borrow of the cursor: that is
+/// what lets the loop variable outlive the `next` call, which the `for` desugaring requires (it
+/// binds the element and then runs the body, by which time the cursor borrow is over).
+pub fn iter_next<'a, T>(it: &mut VecIter<'a, T>) -> Option<&'a T> {
+    let item = it.slice.get(it.index)?;
+    it.index += 1;
+    Some(item)
+}
+
 /// `v[i]` — the by-COPY checked indexed read (`RuntimeFn::VecIndexGet`, V-COPY-1). STARK's `v[i]`
 /// TRAPS `IndexOutOfBounds` on an out-of-range index (it is a checked operation), so this reports
 /// the trap through the trap ABI (exit 101, correct category) rather than Rust's own index panic.

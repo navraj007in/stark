@@ -36,9 +36,16 @@ unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-s
 **GENERALISED by CD-127: emission is now STRUCTURED for cyclic bodies too (`break 'bbT` for forward
 edges, `continue 'loopH` for back edges), so borrows flow-analyse INSIDE loops — previously loops had
 no borrow precision at all, since the `match __bb` dispatch let rustc assume any block follows any
-block. The dispatch loop survives only as the fallback for an irreducible CFG.**
+block. The dispatch loop survives only as the fallback for an irreducible CFG. CD-127 also retired
+the LAST C6.1f refusal (CD-128): a slot-backed MOVE borrow-carrying nominal builds and runs, so
+`refuse_borrow_carrying_nominals` is deleted and no reference shape is refused pre-rustc any more.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
+**WP-C6.3c OPENED (CD-128): native ITERATORS. Counting-loop forms (`for` over a range or array, and a
+user `Iterator` impl) were already native; the runtime CURSOR forms `v.iter()` and `s.chars()` are now
+native three-engine via `stark_runtime::vec::VecIter` / `string::CharsIter`. Remaining: `HashMap`/
+`HashSet` iteration (with C6.3d), slice iteration, `map`/`filter`/`collect`, mutable/by-value Vec
+iteration.**
 **WP-C6.3e PARTIAL (CD-113…123): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
 C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result`,
@@ -3136,6 +3143,41 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-128 [2026-07-25, **WP-C6.3c OPENED — native iterators; the Move borrow-carrier refusal RETIRED**]
+  §26's matrix splits into two lowering families, and only one needed backend work — established
+  empirically by building the matrix as a probe suite BEFORE writing any code:
+  - **Counting loops — already native.** `for i in a..b` and `for x in <array>` lower to an index
+    loop under the ordinary `CheckIndex` proof discipline (no iterator object exists at runtime), and
+    a user `Iterator` impl is ordinary static calls to the user's `next`. All three passed on the
+    first probe run.
+  - **Runtime iterator CURSORS — added here.** `v.iter()` and `s.chars()` lower to
+    `*IterNew`/`*IterNext` over a live cursor that BORROWS its source. `stark_runtime` gains
+    `vec::VecIter<'a, T>` (slice + index) and `string::CharsIter<'a>` (over `std::str::Chars`), with
+    `iter_next` lending `&'a T` out of the SOURCE rather than out of the `&mut` cursor borrow — which
+    is what lets the loop variable outlive the `next` call, as the `for` desugaring requires.
+    `emit_types` spells the cursors (they carry a lifetime in EVERY position — unlike `Vec<Int32>`,
+    a cursor borrows even when its type arguments do not, so `nominal_needs_lifetime` reports true
+    for them directly), and `emit_runtime` wires the four ops, `Next` through the existing
+    `wrap_option` bridge.
+  - **A CD-127 DIVIDEND: `refuse_borrow_carrying_nominals` is DELETED.** Native iteration first hit
+    that C6.1f-era refusal — a slot-backed (Move) borrow-carrying nominal, refused because the
+    `ValueSlot`'s destruction needs `&mut` while the reference it stores is still live (E0502). That
+    is exactly the imprecision CD-127 removed. Verified rather than assumed: with the check bypassed,
+    the iterator cases built AND the refusal's own hardest negative case — a `Drop`-bearing
+    `H<&P>` — built and ran (exit 0). The check is gone, and with it the LAST lane negative: every
+    shape `native_c5_3_aggregates_enums`'s lane test once pinned as "must be refused before rustc" is
+    now supported, so that test is removed (following its own instruction to move supported shapes to
+    positive tests) and `native_c61f_nominals`'s refusal case became
+    `c61f_a_move_borrow_carrying_nominal_local_now_works`.
+  - **Evidence.** New `tests/c63c_iterators.rs` — 8 three-engine cases: range, array order, user
+    `Iterator` impl, `v.iter()` sum+order, early `break` mid-iteration, empty source, `chars()` over
+    a literal and over an owned `String`. Order and early termination are asserted INSIDE the STARK
+    programs and by printed output, so agreeing on the wrong order still fails.
+    `native_c61f_nominals` 8, `native_c5_3_aggregates_enums` 20, `c61f_structural_copy` 11 green.
+  - **C6.3c remaining:** `HashMap` keys/values/entries and `HashSet` (land with C6.3d), slice
+    iteration, `map`/`filter`/`collect`, and by-value/mutable `Vec` iteration (no `iter_mut` surface
+    exists in the language yet — confirm against the spec before adding one).
 
 - CD-127 [2026-07-25, **backend — STRUCTURED control-flow emission; borrow precision inside loops
   (generalises CD-112)**] Every generated body with a loop was emitted as `loop { match __bb { … } }`,

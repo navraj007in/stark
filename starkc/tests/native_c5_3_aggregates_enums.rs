@@ -572,101 +572,15 @@ fn main() {
 
 // ------------------------------ WP-C5.3d-1a: the ephemeral reference lane --
 
-/// The lane's negative cases: a reference outside the admitted shape must be refused **before
-/// rustc**, as a named STARK limitation, not as a borrow-check error in generated code.
-///
-/// Each source here is rejected by the front end or the backend; what the test pins is that the
-/// rejection happens on OUR side of the boundary. A reference that reached rustc and failed there
-/// would be a diagnostic defect even though the program is correctly not compiled.
-///
-/// **WP-C6.1f:** four cases that were once here are now legitimately supported and MOVED OUT to
-/// positive tests, each following this test's own instruction ("if it is now legitimately
-/// supported, move it to a positive test"): storing a reference in a user binding (→
-/// `native_c61f_b3_stored_refs.rs`), **returning** a param-derived reference (→
-/// `native_c61f_ret_refs.rs`), a **tuple/array of references** (→ `native_c61f_aggregates.rs`),
-/// and `Option<&T>` (→ `native_c61f_nominals.rs`, once generated nominals gained lifetime
-/// parameters).
-///
-/// What remains refused is the narrower `ValueSlot`-versus-borrow-region case: a **slot-backed**
-/// (non-`Copy`) borrow-carrying nominal. The refusal is deliberately raised HERE rather than left
-/// to rustc's `E0502`, which is precisely what this test exists to prevent.
-#[test]
-fn references_outside_the_lane_are_refused_before_rustc() {
-    for (tag, source) in [
-        // A SLOT-BACKED borrow-carrying nominal: WP-C6.1g-a made an all-Copy-field generic
-        // (`H<&Int32>`) structurally `Copy`, so it now works. To keep a MOVE borrow-carrier — the
-        // shape still refused — the struct carries an extra `Drop`-bearing field, which makes it
-        // Move (and slot-backed) while a generic argument still supplies the borrow.
-        (
-            "ref_in_move_generic_struct",
-            r#"struct D { v: Int32 }
-
-impl Drop for D {
-    fn drop(&mut self) {}
-}
-
-struct H<T> { r: T, d: D }
-
-fn main() {
-    let x: Int32 = 1;
-    let h: H<&Int32> = H { r: &x, d: D { v: 0 } };
-    let r: &Int32 = h.r;
-}
-"#,
-        ),
-    ] {
-        let file = Arc::new(SourceFile::new(
-            format!("c5_3_ref_{tag}.stark"),
-            source.to_string(),
-        ));
-        let (ast, parse_diags) = parse(&file, ParseMode::Program);
-        if !parse_diags.is_empty() {
-            continue; // rejected at parse: still before rustc
-        }
-        let (hir, resolve_diags) = resolve(&ast, file.clone());
-        if !resolve_diags.is_empty() {
-            continue;
-        }
-        let checked = typecheck::analyze(&hir, file.clone());
-        if checked
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == starkc::diag::Severity::Error)
-        {
-            continue; // rejected by the front end: before rustc
-        }
-        let Ok(program) = lower_program(&hir, &checked.tables, file) else {
-            continue; // rejected by lowering: before rustc
-        };
-        let Ok(verified) = verify_program(&program) else {
-            continue; // rejected by the verifier: before rustc
-        };
-        let target_dir =
-            std::env::temp_dir().join(format!("stark_c5_3_ref_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&target_dir);
-        let result = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: target_dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        );
-        let _ = std::fs::remove_dir_all(&target_dir);
-        match result {
-            Err(BackendDiagnostic::Unsupported(_)) => {}
-            Err(BackendDiagnostic::BuildFailed(failure)) => panic!(
-                "{tag}: a reference outside the lane reached rustc and failed THERE; the backend \
-                 must refuse it first:\n{}",
-                failure.stderr
-            ),
-            Err(other) => panic!("{tag}: expected an Unsupported refusal, got {other:?}"),
-            Ok(_) => panic!(
-                "{tag}: this reference shape is outside the C5 lane and must be refused; if it \
-                 is now legitimately supported, move it to a positive test"
-            ),
-        }
-    }
-}
+// **WP-C6.1f/CD-128:** this file's lane-NEGATIVE test is gone. Every shape it once pinned as
+// "must be refused before rustc" is now legitimately supported, each having followed the test's own
+// instruction ("if it is now legitimately supported, move it to a positive test"): storing a
+// reference in a user binding (→ `native_c61f_b3_stored_refs.rs`), returning a param-derived
+// reference (→ `native_c61f_ret_refs.rs`), a tuple/array of references (→
+// `native_c61f_aggregates.rs`), `Option<&T>` and finally the slot-backed MOVE borrow-carrying
+// nominal (→ `native_c61f_nominals.rs`, once CD-127's structured control-flow emission removed the
+// `ValueSlot`-versus-borrow-region collision). Nothing is left to refuse, so an empty negative test
+// would assert nothing; the boundary is now carried entirely by those positive tests.
 
 /// `Ordering` and a user destructor both compile now, and both go through the lane. The
 /// generated destructor takes a real Rust reference receiver rather than a slot.

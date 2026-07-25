@@ -101,3 +101,21 @@ pub fn cmp(a: &str, b: &str) -> i64 {
         std::cmp::Ordering::Greater => 1,
     }
 }
+
+/// WP-C6.3c (0.1-A5): `str::chars`/`String::chars` iteration. The cursor borrows the source string
+/// for as long as it lives (STARK's borrow checker forbids mutating it meanwhile). `Char` is `Copy`,
+/// so elements are yielded BY VALUE and nothing is lent out of the cursor.
+pub struct CharsIter<'a> {
+    inner: std::str::Chars<'a>,
+}
+
+/// `s.chars()` (`RuntimeFn::CharsIterNew`).
+pub fn chars_new(s: &str) -> CharsIter<'_> {
+    CharsIter { inner: s.chars() }
+}
+
+/// `RuntimeFn::CharsIterNext` — the next Unicode scalar value, or `None` once exhausted. Iteration
+/// is over CHARACTERS, not bytes, matching the interpreter's `Display`/`chars` semantics.
+pub fn chars_next(it: &mut CharsIter<'_>) -> Option<char> {
+    it.inner.next()
+}

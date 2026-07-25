@@ -107,10 +107,26 @@ fn decl_position(ty: &MirTy) -> LifetimePosition {
 
 pub fn nominal_needs_lifetime(ty: &MirTy) -> bool {
     match ty {
+        // WP-C6.3c: an iterator cursor BORROWS its source, so it carries a lifetime whatever its
+        // element type is — `VecIter<Int32>`'s arguments hold no reference, but the cursor does.
+        MirTy::Core(crate::hir::CoreType::VecIter | crate::hir::CoreType::CharsIter, _) => true,
         MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
             args.iter().any(ty_carries_reference)
         }
         _ => false,
+    }
+}
+
+/// The `<'a, T>` / `<'_, T>` argument list for an iterator cursor: it always carries a lifetime, and
+/// `VecIter` a element type as well.
+fn iter_lifetime_args(at: LifetimePosition, elem: Option<String>) -> String {
+    let lifetime = match at {
+        LifetimePosition::Declaration => "'a",
+        LifetimePosition::Use => "'_",
+    };
+    match elem {
+        Some(elem) => format!("<{lifetime}, {elem}>"),
+        None => format!("<{lifetime}>"),
     }
 }
 
@@ -212,6 +228,22 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
         MirTy::Core(crate::hir::CoreType::Box, args) => {
             format!("Box<{}>", emit_ty_at(single_arg(args, "Box")?, at)?)
         }
+        // WP-C6.3c: iterator CURSORS. Unlike `Vec`/`Box` these are intrinsically BORROWING — the
+        // cursor holds its source for as long as it lives — so each one carries a lifetime in every
+        // position (`nominal_needs_lifetime` reports that without inspecting the arguments, which
+        // for `VecIter<Int32>` carry no reference of their own).
+        MirTy::Core(crate::hir::CoreType::VecIter, args) => {
+            format!(
+                "stark_runtime::vec::VecIter{lt2}",
+                lt2 = iter_lifetime_args(at, Some(emit_ty_at(single_arg(args, "VecIter")?, at)?))
+            )
+        }
+        MirTy::Core(crate::hir::CoreType::CharsIter, _) => {
+            format!(
+                "stark_runtime::string::CharsIter{lt2}",
+                lt2 = iter_lifetime_args(at, None)
+            )
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no C5.3a generated-Rust representation yet -- enums land in \
@@ -244,70 +276,6 @@ pub fn mir_ty_is_copy(ty: &MirTy, types: &TypeContext) -> bool {
 /// a reference, or a tuple/array/instantiation containing one. Declared reference *fields* are
 /// forbidden by 03 rule 1 and rejected by the front end, so a nominal only carries a borrow through
 /// its type arguments.
-/// WP-C6.1f "borrow-carrying nominals": the two shapes that still fail, refused **before rustc**.
-///
-/// Generated nominals now carry lifetime parameters (`Name<'a>` in their declaration, `Name<'_>` at
-/// use sites), which makes most borrow-carrying instances work — `Option<&T>`, nested ones, and
-/// ones inside tuples all build and run. Two do not, and both fail as `E0502` in the GENERATED
-/// crate, so they must be refused here rather than surfacing as errors in code the user never
-/// wrote:
-///
-/// 1. **A slot-backed borrow-carrying nominal.** A non-`Copy` instance (a user struct or enum at a
-///    reference) lives in a `ValueSlot`, whose `drop_value`/`take` need `&mut` on the slot — while
-///    the reference it stores still borrows its referent's slot immutably. Rust treats those as
-///    overlapping across the local's whole lexical region and rejects the program, even though MIR
-///    drops the borrower first. Removing the slot is not an escape: it also carries MOVE liveness,
-///    and without it the mover fails instead.
-///
-/// 2. **A function returning a borrow-carrying nominal.** The elided output lifetime ties the
-///    result to the input reference for the caller's whole region, which then conflicts with the
-///    referent's own slot drop at scope end.
-///
-/// Both are the `ValueSlot`-versus-Rust-borrow-region tension the C6.1f-a matrix flagged as this
-/// package's central design question (§5). It did not appear for plain references or tuples —
-/// neither is slot-backed — and it is isolated to these two shapes.
-fn refuse_borrow_carrying_nominals(program: &MirProgram) -> Result<(), BackendDiagnostic> {
-    // WP-C6.1g-a landing boundary (owner ruling, 2026-07-24). Structural Copy (OWN-COPY-001,
-    // amended) makes a `Copy` borrow-carrying nominal non-slot-backed, so it flows through the
-    // CD-095 aggregate path and works **in a local and across blocks**. Two shapes stay refused
-    // pre-rustc:
-    //
-    //   1. A **Move** borrow-carrying nominal LOCAL (owned non-`Copy` field, `&mut` field, or a
-    //      `Drop` impl): still slot-backed, and the slot pins the borrow across the dispatch loop
-    //      (E0502).
-    //   2. ANY function whose **return type** is a borrow-carrying nominal, regardless of Copy.
-    //      Returning a borrow through the dispatch loop and then consuming it (e.g. `Option::unwrap`,
-    //      whose panic-branch match extends the borrow's region) conflicts with the referent's
-    //      block-0 assignment — and this fails for `Move` referents identically, so it is a general
-    //      borrow-through-return limitation, NOT specific to Copy. `wrap -> H<&P>` happens to build,
-    //      but that is an accidental backend-shape success, not supported semantics, so it is
-    //      refused uniformly. Uniform borrow-carrier returns are the separate option-2 package
-    //      (general borrow-through-return / dispatch-loop linearisation).
-    //
-    // A plain reference return (`fn f(r: &P) -> &P`) is `MirTy::Ref`, not a nominal, so
-    // `nominal_needs_lifetime` is false and it stays supported.
-    // WP-C6.1g-c: the borrow-carrying-nominal RETURN refusal is LIFTED. An acyclic body is now
-    // emitted as nested labelled blocks (not one `loop { match __bb }`), so a borrow returned
-    // through a function and consumed across blocks — `Option::unwrap`'s panic-branch match
-    // included — is seen by rustc with its real, once-through lifetime. The slot-backed Move
-    // borrow-carrying LOCAL (part 2) stays refused: its `ValueSlot` drop still needs `&mut` while
-    // the stored borrow is live.
-    for body in &program.bodies {
-        for local in &body.locals {
-            if nominal_needs_lifetime(&local.ty) && is_slot_backed(&local.ty, &program.types) {
-                return Err(BackendDiagnostic::Unsupported(format!(
-                    "the Move borrow-carrying nominal `{}` is not representable yet: a non-`Copy` \
-                     instance lives in a `ValueSlot`, whose destruction needs `&mut` on the slot \
-                     while the reference it stores still borrows its referent (E0502). A `Copy` \
-                     borrow-carrying nominal (all fields recursively Copy, no Drop) is supported",
-                    crate::mir::dump_ty(&local.ty)
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 pub fn ty_carries_reference(ty: &MirTy) -> bool {
     match ty {
         MirTy::Ref { .. } => true,
@@ -343,7 +311,6 @@ pub fn is_slot_backed(ty: &MirTy, types: &TypeContext) -> bool {
 /// copy helper per nominal, and the change is confined to [`derives_for`].
 pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
-    refuse_borrow_carrying_nominals(program)?;
 
     // WP-C5.3c: core enums have no `TypeContext` entry -- their variants are DERIVED from their
     // type arguments -- so the reachable instances are collected from the program's own types.
