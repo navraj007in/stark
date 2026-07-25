@@ -35,17 +35,18 @@ once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns 
 unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-**WP-C6.3e PARTIAL (CD-113…120): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
+**WP-C6.3e PARTIAL (CD-113…121): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
-C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result` of
-primitive elements, recursively — now native AND in MIR, was HIR-only; via a print-sequence lowering,
-no runtime-surface change). Its observable contracts (A sequencing / B partial-output-on-trap /
-C destructor-timing) are recorded (CD-120), and the native trap ABI now flushes stdout before abort
-so a mid-render trap's prefix matches the interpreters. `three_engine_differential` compares real
-stdout (`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused pre-rustc: `Float32` in the Display path
-(DEV-105) and arrays > 64 elements (unroll cap). C6.3e remaining: composite `str`/`String`/`Box`/`Vec`
-(loop, built against A/B/C) elements, nested user-`Display`; `Float32` (DEV-105); trap-message
-three-engine parity (DEV-106, narrowed — partial output already comparable).**
+C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result`,
+and `Vec` via a runtime loop — recursively — now native AND in MIR, was HIR-only; via a print-sequence
+lowering, no runtime-surface change). Its observable contracts (A sequencing / B partial-output-on-
+trap / C destructor-timing) are recorded (CD-120) and Contract C is now load-bearing (the owned Vec is
+dropped after its render); the native trap ABI flushes stdout before abort so a mid-render trap's
+prefix matches the interpreters. `three_engine_differential` compares real stdout
+(`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused pre-rustc: `Float32` in the Display path (DEV-105)
+and arrays > 64 elements (unroll cap). C6.3e remaining: composite `str`/`String`/`Box` elements,
+nested user-`Display`; `Float32` (DEV-105); trap-message three-engine parity (DEV-106, narrowed —
+partial output already comparable); native `v[i]` OOB provenance (DEV-107).**
 Also open:
 **WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
 offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
@@ -3119,6 +3120,36 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-121 [2026-07-25, **WP-C6.3e — Vec Display (runtime loop; first non-Copy composite)**] `println`/
+  `print` of a `Vec<T>` (T a Copy primitive or Copy composite) now renders `[e0, e1, …]` — the FIRST
+  composite that needs a runtime LOOP rather than unrolling, and the FIRST non-Copy composite, so it
+  activates CD-120 Contract C for real. Built directly against A/B/C. Native AND MIR.
+  - **The loop (Contract A).** `emit_display_value`'s Vec arm reads `VecLen`, then loops
+    `idx` in `0..len`, emitting `", "` before every element but the first and `VecIndexGet(&v, idx)`
+    (by Copy, V-COPY-1) into a temp it renders recursively — the same per-element print-op sequence,
+    in index order, as the interpreter's `Display for Value` (`[`/`, `/`]`). Empty → `[]`.
+  - **Contract C (destructor timing) — now load-bearing.** The owned Vec is MOVED into the print
+    temp and DROPPED after the whole render (including the trailing newline). This matches the
+    interpreter, which also consumes+drops the by-value print argument; so a single `println(v)`
+    agrees across engines, and `println(v); println(v)` is correctly rejected in BOTH (E0100
+    use-after-move — `print`/`println` are `fn(T)`, and a non-Copy `T` moves). `println(&v)` never
+    arises (E0500).
+  - **Fresh-borrow discipline (the E0502 fix).** A single reused `&Vec` held across the loop is still
+    live at the post-render mutable `drop_with`, which rustc rejects. Each runtime read (the length,
+    and every element) now takes a FRESH short shared borrow that dies at its call, so the Vec's own
+    drop is unobstructed.
+  - **Native `VecIndexGet` wired** (`stark_runtime::vec::index_get`, by Copy). **DEV-107 [recorded]:**
+    its out-of-bounds trap reports a runtime-internal location (`<vec index>`), not the user's `v[i]`
+    span — the `RuntimeFn` call ABI carries no per-call `SourceInfo` (only `Terminator::Checked`/
+    `Trap` do), so precise provenance awaits the native Vec-trapping-ops WP. Category and exit code
+    (101) are correct. The Display loop guarantees `idx < len`, so this path is DEAD for Display; the
+    deviation concerns only general native `v[i]` OOB, not yet differential-tested.
+  - **Evidence.** `c63e_formatting.rs` now 33 (+6: `Vec<Int32>` multi/empty/singleton, `Vec<Bool>`,
+    two-Vec print-then-println, `Vec<(Int32, Bool)>` recursing into tuple elements), each three-engine
+    HIR == MIR == native stdout.
+  - **C6.3e remaining:** composite `str`/`String`/`Box` elements, nested user-`Display`; `Float32`
+    (DEV-105); trap-message parity (DEV-106); native `v[i]` OOB provenance (DEV-107).
 
 - CD-120 [2026-07-25, **WP-C6.3e — composite Display observable-behaviour contracts + a trap-flush
   fix they surfaced**] Before `Vec` Display (the first composite needing a runtime LOOP rather than

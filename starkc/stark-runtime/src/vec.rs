@@ -41,6 +41,27 @@ pub fn is_empty<T>(v: &[T]) -> bool {
     v.is_empty()
 }
 
+/// `v[i]` — the by-COPY checked indexed read (`RuntimeFn::VecIndexGet`, V-COPY-1). STARK's `v[i]`
+/// TRAPS `IndexOutOfBounds` on an out-of-range index (it is a checked operation), so this reports
+/// the trap through the trap ABI (exit 101, correct category) rather than Rust's own index panic.
+///
+/// DEV-107: the reported source location is this runtime call, NOT the user's `v[i]` span. Unlike
+/// `Terminator::Checked` (arrays/slices), the `RuntimeFn` call ABI carries no per-call `SourceInfo`
+/// to bake in, so precise provenance awaits the native Vec-trapping-ops WP (which threads a location
+/// into the call, or lowers `v[i]` through a `Checked` proof). The Vec Display loop guarantees
+/// `i < len`, so this trap path is dead there.
+pub fn index_get<T: Copy>(v: &[T], i: u64) -> T {
+    if i as usize >= v.len() {
+        crate::trap::abort(
+            crate::trap::TrapCategory::IndexOutOfBounds,
+            "<vec index>",
+            0,
+            0,
+        );
+    }
+    v[i as usize]
+}
+
 /// `Vec::clear(&mut self)` — drop every element, length becomes 0.
 pub fn clear<T>(v: &mut Vec<T>) {
     v.clear();

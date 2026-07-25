@@ -294,6 +294,61 @@ fn composite_array_of_options() {
     );
 }
 
+// ---- Vec Display (CD-121): a runtime LOOP renders `[e0, e1, …]`; the owning Vec is dropped after
+// the render (Contract C). Built against the CD-120 contracts. ----
+
+#[test]
+fn composite_vec_of_ints() {
+    agree_out(
+        "vec_int",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(10); v.push(20); v.push(30); println(v); }",
+    );
+}
+
+#[test]
+fn composite_vec_empty() {
+    agree_out(
+        "vec_empty",
+        "fn main() { let v: Vec<Int32> = Vec::new(); println(v); }",
+    );
+}
+
+#[test]
+fn composite_vec_singleton() {
+    agree_out(
+        "vec_one",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(7); println(v); }",
+    );
+}
+
+#[test]
+fn composite_vec_of_bools() {
+    agree_out(
+        "vec_bool",
+        "fn main() { let mut v: Vec<Bool> = Vec::new(); v.push(true); v.push(false); println(v); }",
+    );
+}
+
+// `print`/`println` MOVE an owned Vec (non-Copy), so the same Vec cannot be printed twice; two
+// separate Vecs exercise `print` (no newline) then `println`.
+#[test]
+fn composite_vec_print_then_println() {
+    agree_out(
+        "vec_print",
+        "fn main() { let mut a: Vec<Int32> = Vec::new(); a.push(1); a.push(2); print(a); \
+         let mut b: Vec<Int32> = Vec::new(); b.push(3); println(b); }",
+    );
+}
+
+/// A Vec whose elements are themselves composites (tuples) — the loop recurses into each element.
+#[test]
+fn composite_vec_of_tuples() {
+    agree_out(
+        "vec_tuple",
+        "fn main() { let mut v: Vec<(Int32, Bool)> = Vec::new(); v.push((1, true)); v.push((2, false)); println(v); }",
+    );
+}
+
 // ---- Refused pre-rustc (a bounded, TESTED boundary — not an admitted divergence). Lowering must
 // reject these; typecheck accepts them (they are well-typed). ----
 

@@ -4171,6 +4171,7 @@ impl<'a> FnLowerer<'a> {
                             | MirTy::Array(..)
                             | MirTy::Enum(EnumRef::CoreOption, _)
                             | MirTy::Enum(EnumRef::CoreResult, _)
+                            | MirTy::Core(crate::hir::CoreType::Vec, _)
                     ) {
                         return self
                             .lower_print_composite(args[0], &arg_ty, is_println, dest, span);
@@ -7280,6 +7281,160 @@ impl<'a> FnLowerer<'a> {
                 self.terminate(Terminator::Goto { target: join }, self.info(span), join);
                 Ok(())
             }
+            // A `Vec<T>` renders `[e0, e1, …]` with a runtime LOOP (its length is dynamic, unlike a
+            // fixed array), built against CD-120's contracts: the per-element print-op sequence is
+            // emitted in index order (Contract A), and a trap in an element leaves exactly the
+            // prefix printed so far (Contract B — the loop emits, never buffers). `VecIndexGet`
+            // yields the element by COPY (V-COPY-1), so this slice requires a Copy element; a
+            // non-Copy element (String/Box/Vec) is a later slice. The owning Vec's own destructor
+            // runs after the whole render, in `lower_print_composite` (Contract C).
+            MirTy::Core(crate::hir::CoreType::Vec, elem_args) => {
+                let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
+                if !self.is_copy(&elem) {
+                    return unsupported(
+                        "Display of a `Vec` with non-Copy elements (owning String/Box/Vec) is a \
+                         later C6.3e slice",
+                        span,
+                    );
+                }
+                let vec_ty = MirTy::Core(crate::hir::CoreType::Vec, vec![elem.clone()]);
+                let ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(vec_ty),
+                };
+                // A FRESH shared borrow per runtime read (length, then each element): the owning Vec
+                // is dropped after the render (Contract C), so a single reused `&Vec` held across the
+                // loop would still be live at that drop (E0502). Each short borrow dies at its call.
+                let len = self.new_temp(MirTy::UInt64);
+                {
+                    let vref = self.new_temp(ref_ty.clone());
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(vref),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place: place.clone(),
+                            },
+                        ),
+                        self.info(span),
+                    );
+                    self.emit_runtime_call(
+                        RuntimeFn::VecLen,
+                        vec![Operand::Copy(Place::local(vref))],
+                        Place::local(len),
+                        span,
+                    );
+                }
+                let idx = self.new_temp(MirTy::UInt64);
+                self.emit(
+                    Statement::Assign(
+                        Place::local(idx),
+                        Rvalue::Use(Operand::Const(Constant::Int(0, MirTy::UInt64))),
+                    ),
+                    self.info(span),
+                );
+                self.print_str_lit("[", span);
+                let header = self.new_block();
+                let body = self.new_block();
+                let exit = self.new_block();
+                self.terminate(Terminator::Goto { target: header }, self.info(span), header);
+                // header: `idx < len` ?
+                let cond = self.new_temp(MirTy::Bool);
+                self.emit(
+                    Statement::Assign(
+                        Place::local(cond),
+                        Rvalue::BinOp(
+                            MirBinOp::Lt,
+                            Operand::Copy(Place::local(idx)),
+                            Operand::Copy(Place::local(len)),
+                        ),
+                    ),
+                    self.info(span),
+                );
+                self.terminate(
+                    Terminator::SwitchInt {
+                        scrut: Operand::Copy(Place::local(cond)),
+                        arms: vec![(1, body)],
+                        otherwise: exit,
+                    },
+                    self.info(span),
+                    body,
+                );
+                // body: a separator `", "` before every element but the first.
+                let sep = self.new_block();
+                let render = self.new_block();
+                let is_first = self.new_temp(MirTy::Bool);
+                self.emit(
+                    Statement::Assign(
+                        Place::local(is_first),
+                        Rvalue::BinOp(
+                            MirBinOp::Eq,
+                            Operand::Copy(Place::local(idx)),
+                            Operand::Const(Constant::Int(0, MirTy::UInt64)),
+                        ),
+                    ),
+                    self.info(span),
+                );
+                self.terminate(
+                    Terminator::SwitchInt {
+                        scrut: Operand::Copy(Place::local(is_first)),
+                        arms: vec![(1, render)],
+                        otherwise: sep,
+                    },
+                    self.info(span),
+                    sep,
+                );
+                self.print_str_lit(", ", span);
+                self.terminate(Terminator::Goto { target: render }, self.info(span), render);
+                // render: `elem = vec[idx]` (Copy), display it, then `idx += 1`, loop. A fresh
+                // shared borrow (see above) that dies at the `VecIndexGet` call.
+                let elem_tmp = self.new_temp(elem.clone());
+                {
+                    let vref = self.new_temp(ref_ty.clone());
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(vref),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place: place.clone(),
+                            },
+                        ),
+                        self.info(span),
+                    );
+                    self.emit_runtime_call(
+                        RuntimeFn::VecIndexGet,
+                        vec![
+                            Operand::Copy(Place::local(vref)),
+                            Operand::Copy(Place::local(idx)),
+                        ],
+                        Place::local(elem_tmp),
+                        span,
+                    );
+                }
+                self.emit_display_value(Place::local(elem_tmp), &elem, span)?;
+                // idx += 1 — a checked add, like every other integer arithmetic in MIR.
+                let after_incr = self.new_block();
+                self.terminate(
+                    Terminator::Checked {
+                        op: CheckedOp::Add,
+                        args: vec![
+                            Operand::Copy(Place::local(idx)),
+                            Operand::Const(Constant::Int(1, MirTy::UInt64)),
+                        ],
+                        dest: idx,
+                        target: after_incr,
+                        trap: TrapInfo {
+                            category: TrapCategory::IntegerOverflow,
+                            source: self.info(span),
+                        },
+                    },
+                    self.info(span),
+                    after_incr,
+                );
+                self.terminate(Terminator::Goto { target: header }, self.info(span), exit);
+                self.print_str_lit("]", span);
+                Ok(())
+            }
             other => unsupported(
                 format!("Display of {other:?} inside a composite is a later C6.3e slice"),
                 span,
@@ -7300,7 +7455,13 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<(), LowerError> {
         let (peeled, _) = Self::peel_refs(arg_ty.clone());
-        if !self.is_copy(&peeled) {
+        // A non-Copy (droppable) composite is only supported when it is a `Vec`: it renders via a
+        // runtime loop and its owned buffer is dropped AFTER the render (CD-120 Contract C). Other
+        // owning composites (String/Box elements, structs of owners) are later slices. A `&Vec`
+        // never reaches here — the typechecker rejects `println(&v)` (E0500), so an owned Vec is
+        // moved into the temp below and this lowering owns the sole copy to drop.
+        let droppable = !self.is_copy(&peeled);
+        if droppable && !matches!(peeled, MirTy::Core(crate::hir::CoreType::Vec, _)) {
             return unsupported(
                 "Display of a non-Copy composite (owning elements) is a later C6.3e slice",
                 span,
@@ -7320,6 +7481,19 @@ impl<'a> FnLowerer<'a> {
                 vec![Operand::Const(Constant::Str(String::new()))],
                 d,
                 span,
+            );
+        }
+        // CD-120 Contract C: a droppable composite's destructor runs AFTER the whole render
+        // (including the trailing newline), never interleaved with the printed bytes.
+        if droppable {
+            let after_drop = self.new_block();
+            self.terminate(
+                Terminator::Drop {
+                    place: Place::local(tmp),
+                    target: after_drop,
+                },
+                self.info(span),
+                after_drop,
             );
         }
         self.emit(

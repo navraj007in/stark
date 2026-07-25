@@ -76,6 +76,8 @@ pub fn emit_runtime_call(
         VecPop => wrap_option(&format!("stark_runtime::vec::pop({})", arg(0)), dest_ty)?,
         VecLen => format!("stark_runtime::vec::len({})", arg(0)),
         VecIsEmpty => format!("stark_runtime::vec::is_empty({})", arg(0)),
+        // `v[i]` by Copy (V-COPY-1); traps IndexOutOfBounds (DEV-107: runtime-internal location).
+        VecIndexGet => format!("stark_runtime::vec::index_get({}, {})", arg(0), arg(1)),
         VecClear => format!("stark_runtime::vec::clear({})", arg(0)),
 
         // --- Box (WP-C6.3b): construction and consuming extraction. No `Deref` in Core v1. ---
