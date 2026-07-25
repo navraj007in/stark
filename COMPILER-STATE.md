@@ -41,11 +41,14 @@ the LAST C6.1f refusal (CD-128): a slot-backed MOVE borrow-carrying nominal buil
 `refuse_borrow_carrying_nominals` is deleted and no reference shape is refused pre-rustc any more.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-**WP-C6.3c OPENED (CD-128): native ITERATORS. Counting-loop forms (`for` over a range or array, and a
-user `Iterator` impl) were already native; the runtime CURSOR forms `v.iter()` and `s.chars()` are now
-native three-engine via `stark_runtime::vec::VecIter` / `string::CharsIter`. Remaining: `HashMap`/
-`HashSet` iteration (with C6.3d), slice iteration, `map`/`filter`/`collect`, mutable/by-value Vec
-iteration.**
+**WP-C6.3c CLOSED for native parity (CD-128/CD-129): native ITERATORS. Counting-loop forms (`for` over
+a range or array, and a user `Iterator` impl) were already native; the runtime CURSOR forms `v.iter()`
+and `s.chars()` are now native three-engine via `stark_runtime::vec::VecIter` / `string::CharsIter`.
+Every §26 row MIR can lower is native. What remains is NOT a native gap and is pinned by negative
+tests: slice iteration and `iter_mut` do not exist in the language, and `map`/`filter`/`collect`/
+`count` plus by-value `Vec` iteration are HIR-only (a C4.5-era LOWERING gap — the MIR interpreter
+cannot run them either, so there is no divergence for C6 to close). `HashMap`/`HashSet` iteration
+lands with C6.3d.**
 **WP-C6.3e PARTIAL (CD-113…123): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
 C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result`,
@@ -3143,6 +3146,28 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-129 [2026-07-26, **WP-C6.3c CLOSED for native parity — the §26 boundary is now executable**]
+  Every §26 row that MIR can lower is native and proven three-engine (CD-128). This entry establishes
+  what remains and why none of it is a NATIVE gap, replacing prose with negative tests.
+  - **Rows the language does not have.** `for x in <slice>` is rejected by the front end ("for-loop
+    requires an iterable value, found `&[Int32]`"), and there is no `iter_mut` surface ANYWHERE in
+    the compiler or spec — "Vec mutable iteration" is not deferred work, it is an absent feature.
+  - **Rows that are HIR-ONLY (a C4.5-era LOWERING gap).** `map`/`filter` have no MIR type for
+    `Core(MapIter/FilterIter, …)`; `count`/`collect` are method calls on a non-nominal (core)
+    receiver, which lowering does not do; by-value `for x in v` is refused ("for over a non-range,
+    non-Vec iterator"). Each RUNS in the HIR interpreter and stops at lowering — which is precisely
+    what makes them lowering gaps, not backend ones: **the MIR interpreter cannot run them either, so
+    there is no native/interpreter divergence for C6 to close, and the differential suite cannot even
+    reach them.** Closing them is a front-end/MIR package; under the charter it needs its own scope,
+    not an extension of a native-parity WP.
+  - **Evidence.** `c63c_iterators.rs` is now 12: the 8 three-engine cases plus 4 boundary tests —
+    `slice_iteration_is_not_a_language_form` (front-end rejection),
+    `vec_by_value_iteration_is_hir_only`, `map_adapter_is_hir_only`, `count_and_collect_are_hir_only`
+    (each asserting the HIR interpreter RUNS it and lowering REFUSES it). The boundary can no longer
+    drift unnoticed, and a future lowering package inherits its starting point.
+  - **Open (not C6.3c):** `HashMap`/`HashSet` iteration → C6.3d; the lowering gaps above → a
+    front-end/MIR package.
 
 - CD-128 [2026-07-25, **WP-C6.3c OPENED — native iterators; the Move borrow-carrier refusal RETIRED**]
   §26's matrix splits into two lowering families, and only one needed backend work — established

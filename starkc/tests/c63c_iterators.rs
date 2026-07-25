@@ -7,13 +7,21 @@
 //!   ordinary `CheckIndex` proof discipline — no iterator object exists at runtime, so these were
 //!   already native. A **user `Iterator` impl** is likewise ordinary static calls to the user's
 //!   `next`.
-//! - **Runtime iterator objects.** `v.iter()`, `s.chars()` and `m.keys()` lower to
-//!   `*IterNew`/`*IterNext` runtime calls over a live iterator VALUE that borrows its source. These
-//!   are what WP-C6.3c adds natively.
+//! - **Runtime iterator objects.** `v.iter()` and `s.chars()` lower to `*IterNew`/`*IterNext`
+//!   runtime calls over a live cursor VALUE that borrows its source. These are what WP-C6.3c adds
+//!   natively. (`m.keys()` takes the same shape but lands with C6.3d, alongside HashMap itself.)
 //!
 //! Order, early termination and `for`-vs-explicit-`next` equivalence are asserted inside the STARK
 //! programs themselves (via `assert_eq`) and by comparing printed output, so a case that agreed on
 //! the WRONG order would still fail.
+//!
+//! **The closure boundary.** Every §26 row that MIR can lower is native and proven here. The rows
+//! that remain stop BEFORE MIR — the front end rejects them (slice iteration; there is no `iter_mut`
+//! surface at all) or lowering refuses them (`map`/`filter`/`collect`/`count`, by-value `Vec`
+//! iteration). Those are LOWERING gaps, not native ones: the MIR interpreter cannot run them either,
+//! so no native/interpreter divergence exists for the backend to close. They are pinned by the
+//! negative tests at the bottom of this file rather than left as prose, and closing them is a
+//! front-end/MIR work package. `HashMap`/`HashSet` iteration lands with C6.3d.
 
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::diag::Severity;
@@ -173,5 +181,110 @@ fn chars_iter_over_string() {
     agree_out(
         "charsstring",
         "fn main() { let s: String = String::from(\"hey\"); let mut n: Int32 = 0; for c in s.chars() { n = n + 1; print(c); } assert_eq(n, 3); println(\"\"); }",
+    );
+}
+
+// ---- The §26 rows that are NOT native gaps ----
+//
+// Everything below stops BEFORE MIR: the front end rejects it, or lowering refuses it. None of it is
+// a native/interpreter divergence — the MIR interpreter cannot run these either, so there is nothing
+// for the differential to compare and nothing the backend could fix. They are recorded here as
+// executable evidence of exactly where each row stops, so the boundary cannot drift unnoticed and so
+// a future lowering package has its starting point. `HashMap`/`HashSet` iteration is C6.3d.
+
+/// The program type-checks but LOWERING refuses it — an HIR-only shape.
+fn hir_only(tag: &str, src: &str) {
+    let file = Arc::new(SourceFile::new(
+        format!("c63c_{tag}.stark"),
+        src.to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    let errs: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "{tag}: expected it to type-check, got {errs:?}"
+    );
+    // The HIR interpreter DOES run it — which is what makes this a lowering gap rather than an
+    // unimplemented language feature.
+    interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
+        .unwrap_or_else(|(e, _)| panic!("{tag}: HIR should run it: {}", e.message));
+    assert!(
+        lower_program(&hir, &checked.tables, file).is_err(),
+        "{tag}: lowering is expected to refuse this; if it now lowers, make it a three-engine case"
+    );
+}
+
+/// The front end rejects it outright — the language has no such form.
+fn rejected_by_front_end(tag: &str, src: &str) {
+    let file = Arc::new(SourceFile::new(
+        format!("c63c_{tag}.stark"),
+        src.to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    assert!(
+        checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "{tag}: expected a front-end rejection"
+    );
+}
+
+/// `for x in <slice>` is not an iterable form: the for-loop rejects `&[T]`. Slice iteration is a
+/// FRONT-END feature, not a backend one.
+#[test]
+fn slice_iteration_is_not_a_language_form() {
+    rejected_by_front_end(
+        "sliceiter",
+        "fn main() { let a: [Int32; 3] = [1,2,3]; let s: &[Int32] = &a[0..2]; \
+         let mut n: Int32 = 0; for x in s { n = n + *x; } assert_eq(n, 3); }",
+    );
+}
+
+/// By-VALUE `Vec` iteration runs in the HIR interpreter but is not lowered.
+#[test]
+fn vec_by_value_iteration_is_hir_only() {
+    hir_only(
+        "vecbyvalue",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); v.push(2); \
+         let mut n: Int32 = 0; for x in v { n = n + x; } assert_eq(n, 3); }",
+    );
+}
+
+/// `map` needs a MIR representation for `MapIter` (it has none — a C4.5-era gap).
+#[test]
+fn map_adapter_is_hir_only() {
+    hir_only(
+        "mapadapter",
+        "fn double(x: &Int32) -> Int32 { *x * 2 }\n\
+         fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); let mut it = v.iter(); \
+         let mut n: Int32 = 0; for x in it.map(double) { n = n + x; } assert_eq(n, 2); }",
+    );
+}
+
+/// `count`/`collect` are method calls on a non-nominal (core) receiver, which lowering does not do.
+#[test]
+fn count_and_collect_are_hir_only() {
+    hir_only(
+        "countadapter",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); let mut it = v.iter(); \
+         let c = it.count(); assert_eq(c, 1u64); }",
+    );
+    hir_only(
+        "collectadapter",
+        "fn main() { let mut v: Vec<Int32> = Vec::new(); v.push(1); let mut it = v.iter(); \
+         let w: Vec<Int32> = it.collect(); assert_eq(w.len(), 1u64); }",
     );
 }
