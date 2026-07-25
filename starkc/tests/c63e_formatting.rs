@@ -1,15 +1,18 @@
-//! WP-C6.3e — native formatting and output (§28), slice 1: primitives.
+//! WP-C6.3e — native formatting and output (§28).
 //!
-//! `println`/`print` of `Int*`/`UInt*` (widened to `i64`/`u64`), `Bool`, and `Float64` now emit
-//! natively, rendered per STARK's canonical form — NOT Rust's `Debug`. The canonical float formatter
-//! lives in `stark_runtime::format` and `starkc::interp` delegates to it, so the HIR oracle and the
-//! native binary format identically by construction. (`Float32` println is DEFERRED — DEV-105: the
-//! `f32 -> f64` widening cast is evaluated differently across engines, a value-semantics
-//! discrepancy, not a formatting one.)
+//! `println`/`print`, rendered per STARK's canonical form — NOT Rust's `Debug` — now native for:
+//! primitives (`Int*`/`UInt*` widened to `i64`/`u64`, `Bool`, `Float64`); user `Display` (calls the
+//! user's `fmt`); and displayable COMPOSITES (tuple/array of primitives, rendered as a print
+//! sequence `(a, b)` / `[a, b]` matching the interpreter's `Display for Value`). The canonical float
+//! formatter lives in `stark_runtime::format` and `starkc::interp` delegates to it, so the HIR
+//! oracle and the native binary format identically by construction.
 //!
-//! Each case checks that HIR, MIR, and native all exit 0 AND that the native stdout equals the HIR
-//! oracle's output byte-for-byte. (Composite types — tuple/struct/enum/Option/Result/Vec — and user
-//! `Display` land in later C6.3e slices.)
+//! Each case checks that HIR, MIR, and native all exit 0 AND that native/MIR stdout equal the HIR
+//! oracle's output byte-for-byte.
+//!
+//! Deferred: `Float32` println (DEV-105 — a cross-engine `f32 -> f64` widening value-semantics
+//! discrepancy, not formatting); composite `str`/`String` elements, Option/Result/Box, `Vec` (a
+//! runtime loop), and nested user-`Display` — later C6.3e slices.
 
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::diag::Severity;
@@ -194,5 +197,46 @@ fn user_display_enum() {
         "enum E { A, B }\n\
          impl Display for E { fn fmt(&self) -> String { String::from(\"variant\") } }\n\
          fn main() { let e = E::A; println(e); }",
+    );
+}
+
+// ---- Composite Display (C6.3e): tuple/array of primitives, rendered as a print sequence matching
+// the interpreter's `Display for Value` — `(a, b)`, `[a, b]`. Native + MIR gain support (HIR-only
+// before). `str`/`String` elements, Option/Result/Box, Vec, and nested user-Display are later
+// slices. ----
+
+#[test]
+fn composite_tuple_of_primitives() {
+    agree_out("tuple2", "fn main() { println((1, 2)); }");
+}
+
+#[test]
+fn composite_tuple_mixed_primitives() {
+    agree_out("tuple_mixed", "fn main() { println((1, true, 2.5)); }");
+}
+
+#[test]
+fn composite_array() {
+    agree_out("array", "fn main() { let a = [10, 20, 30]; println(a); }");
+}
+
+#[test]
+fn composite_nested_tuple() {
+    agree_out("nested", "fn main() { println(((1, 2), 3)); }");
+}
+
+#[test]
+fn composite_array_of_tuples() {
+    agree_out(
+        "arr_tup",
+        "fn main() { let a = [(1, 2), (3, 4)]; println(a); }",
+    );
+}
+
+#[test]
+fn composite_print_then_println() {
+    agree_out(
+        "comp_print",
+        "fn main() { print((1, 2)); println((3, 4)); }",
     );
 }

@@ -4162,6 +4162,13 @@ impl<'a> FnLowerer<'a> {
                     if matches!(peeled, MirTy::Struct(..) | MirTy::Enum(EnumRef::User(_), _)) {
                         return self.lower_print_display(args[0], &arg_ty, is_println, dest, span);
                     }
+                    // WP-C6.3e: a displayable COMPOSITE (tuple/array of primitive elements in this
+                    // slice) is rendered as a SEQUENCE of primitive print ops matching the
+                    // interpreter's `Display for Value` — no runtime-surface change.
+                    if matches!(peeled, MirTy::Tuple(_) | MirTy::Array(..)) {
+                        return self
+                            .lower_print_composite(args[0], &arg_ty, is_println, dest, span);
+                    }
                     let value = self.lower_expr_to_operand(args[0])?;
                     let (runtime, widened) = self.widen_for_print(value, &arg_ty, span)?;
                     let runtime = match (runtime, is_println) {
@@ -7108,6 +7115,131 @@ impl<'a> FnLowerer<'a> {
                 next,
             );
         }
+        Ok(())
+    }
+
+    /// WP-C6.3e: emit `PrintStr` of a fixed string literal (the structural punctuation of a
+    /// composite's canonical rendering).
+    fn print_str_lit(&mut self, text: &str, span: Span) {
+        let dest = Place::local(self.new_temp(MirTy::Unit));
+        self.emit_runtime_call(
+            RuntimeFn::PrintStr,
+            vec![Operand::Const(Constant::Str(text.to_string()))],
+            dest,
+            span,
+        );
+    }
+
+    /// WP-C6.3e: emit the canonical Display rendering of the value at `place` as a SEQUENCE of print
+    /// ops (no trailing newline), matching the interpreter's `Display for Value`. Reuses the
+    /// primitive `Print*` ops, so no runtime-surface change. This slice handles primitive elements
+    /// and fixed-structure `Tuple`/`Array` of them; `Vec` (a runtime loop), `Option`/`Result`/`Box`,
+    /// `str`/`String` elements, and nested user-`Display` land in follow-on slices.
+    fn emit_display_value(
+        &mut self,
+        place: Place,
+        ty: &MirTy,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let (peeled, _) = Self::peel_refs(ty.clone());
+        match &peeled {
+            MirTy::Int8
+            | MirTy::Int16
+            | MirTy::Int32
+            | MirTy::Int64
+            | MirTy::UInt8
+            | MirTy::UInt16
+            | MirTy::UInt32
+            | MirTy::UInt64
+            | MirTy::Bool
+            | MirTy::Float32
+            | MirTy::Float64
+            | MirTy::Char => {
+                let op = self.read_place(place, &peeled, span)?;
+                let (kind, widened) = self.widen_for_print(op, &peeled, span)?;
+                let rt = match kind {
+                    PrintKind::Int => RuntimeFn::PrintInt64,
+                    PrintKind::UInt => RuntimeFn::PrintUInt64,
+                    PrintKind::Bool => RuntimeFn::PrintBool,
+                    PrintKind::Float => RuntimeFn::PrintFloat64,
+                    PrintKind::Char => RuntimeFn::PrintChar,
+                };
+                let dest = Place::local(self.new_temp(MirTy::Unit));
+                self.emit_runtime_call(rt, vec![widened], dest, span);
+                Ok(())
+            }
+            MirTy::Tuple(elems) => {
+                self.print_str_lit("(", span);
+                for (i, elem_ty) in elems.iter().enumerate() {
+                    if i > 0 {
+                        self.print_str_lit(", ", span);
+                    }
+                    let mut field = place.clone();
+                    field.projection.push(Projection::Field(i as u32));
+                    self.emit_display_value(field, elem_ty, span)?;
+                }
+                self.print_str_lit(")", span);
+                Ok(())
+            }
+            MirTy::Array(elem, n) => {
+                self.print_str_lit("[", span);
+                for i in 0..*n {
+                    if i > 0 {
+                        self.print_str_lit(", ", span);
+                    }
+                    let mut element = place.clone();
+                    element.projection.push(Projection::ConstIndex(i));
+                    self.emit_display_value(element, elem, span)?;
+                }
+                self.print_str_lit("]", span);
+                Ok(())
+            }
+            other => unsupported(
+                format!("Display of {other:?} inside a composite is a later C6.3e slice"),
+                span,
+            ),
+        }
+    }
+
+    /// WP-C6.3e: lower `print`/`println` of a displayable composite (tuple/array). The value is
+    /// materialised into a temporary so its fields/elements can be projected, rendered as a print
+    /// sequence, then a trailing newline for `println`. This slice restricts to `Copy` composites
+    /// (tuple/array of primitives), which own nothing to drop.
+    fn lower_print_composite(
+        &mut self,
+        arg: ExprId,
+        arg_ty: &MirTy,
+        is_println: bool,
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let (peeled, _) = Self::peel_refs(arg_ty.clone());
+        if !self.is_copy(&peeled) {
+            return unsupported(
+                "Display of a non-Copy composite (owning elements) is a later C6.3e slice",
+                span,
+            );
+        }
+        let value = self.lower_expr_to_operand(arg)?;
+        let tmp = self.new_temp(peeled.clone());
+        self.emit(
+            Statement::Assign(Place::local(tmp), Rvalue::Use(value)),
+            self.info(span),
+        );
+        self.emit_display_value(Place::local(tmp), &peeled, span)?;
+        if is_println {
+            let d = Place::local(self.new_temp(MirTy::Unit));
+            self.emit_runtime_call(
+                RuntimeFn::PrintlnStr,
+                vec![Operand::Const(Constant::Str(String::new()))],
+                d,
+                span,
+            );
+        }
+        self.emit(
+            Statement::Assign(dest, Rvalue::Use(Operand::Const(Constant::Unit))),
+            self.info(span),
+        );
         Ok(())
     }
 

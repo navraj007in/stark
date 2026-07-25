@@ -3114,6 +3114,22 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-117 [2026-07-25, **WP-C6.3e slice 4 — native composite Display (tuple/array)**] `println`/`print`
+  of a displayable COMPOSITE was HIR-only — the lowering (`widen_for_print`) rejected it before MIR,
+  so neither MIR nor native rendered it. Now a tuple/array of primitive elements lowers to a SEQUENCE
+  of primitive print ops matching the interpreter's `Display for Value` — `print("(")`,
+  `print(elem0)`, `print(", ")`, …, `print(")")`, trailing newline for `println`. **No runtime-surface
+  change** (0.1-A8 untouched): it reuses the `Print*` ops from slice 1, so no value→String `RuntimeFn`
+  and no CE3 contract bump. This ALSO adds MIR support, not just native.
+  - `lower_print_composite` + a recursive `emit_display_value` (primitives + `Tuple` + `Array`);
+    restricted to `Copy` composites (nothing to drop) in this slice.
+  - **Proven three-engine (HIR == MIR == native stdout):** `(1, 2)`, mixed `(1, true, 2.5)`,
+    `[10, 20, 30]`, nested `((1, 2), 3)`, `[(1, 2), (3, 4)]`, print-then-println. `c63e_formatting.rs`
+    now 17. Regression: `--lib` 441, `three_engine_differential` 83, `mir_lowering`; fmt + clippy
+    clean.
+  - **C6.3e remaining:** composite `str`/`String` elements, `Option`/`Result`/`Box`, `Vec` (a runtime
+    loop), nested user-`Display`; `Float32` (DEV-105); assert message text.
+
 - CD-116 [2026-07-25, **evidence precision + state sync (external review)**] A bounded correction
   pass on CD-113/114 before composite formatting — no implementation change, tightening tests and
   resynchronising governance docs.
