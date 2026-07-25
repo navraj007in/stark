@@ -35,18 +35,20 @@ once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns 
 unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-**WP-C6.3e PARTIAL (CD-113…121): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
+**WP-C6.3e PARTIAL (CD-113…122): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
 C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result`,
-and `Vec` via a runtime loop — recursively — now native AND in MIR, was HIR-only; via a print-sequence
-lowering, no runtime-surface change). Its observable contracts (A sequencing / B partial-output-on-
-trap / C destructor-timing) are recorded (CD-120) and Contract C is now load-bearing (the owned Vec is
-dropped after its render); the native trap ABI flushes stdout before abort so a mid-render trap's
-prefix matches the interpreters. `three_engine_differential` compares real stdout
-(`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused pre-rustc: `Float32` in the Display path (DEV-105)
-and arrays > 64 elements (unroll cap). C6.3e remaining: composite `str`/`String`/`Box` elements,
-nested user-`Display`; `Float32` (DEV-105); trap-message three-engine parity (DEV-106, narrowed —
-partial output already comparable); native `v[i]` OOB provenance (DEV-107).**
+`Vec` via a runtime loop, and owned `String`/`str` elements — recursively — now native AND in MIR, was
+HIR-only; via a print-sequence lowering, no runtime-surface change). Its observable contracts (A
+sequencing / B partial-output-on-trap / C destructor-timing) are recorded (CD-120) and Contract C is
+load-bearing (the owned Vec/composite is dropped after its render); the native trap ABI flushes stdout
+before abort so a mid-render trap's prefix matches the interpreters. `three_engine_differential`
+compares real stdout (`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused AT LOWERING (deterministic):
+`Float32` in the Display path (DEV-105), arrays > 64 (unroll cap), `Option`/`Result` of a non-Copy
+payload (WP-C5.3d), and a droppable composite carrying a borrow (generated lifetimes). C6.3e
+remaining: composite `Box` elements, nested user-`Display`, `Vec<String>` (by-ref); `Float32`
+(DEV-105); trap-message three-engine parity (DEV-106, narrowed — partial output already comparable);
+native `v[i]` OOB provenance (DEV-107).**
 Also open:
 **WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
 offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
@@ -3120,6 +3122,31 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-122 [2026-07-25, **WP-C6.3e — String/str as composite elements (+ two bounded deferrals)**]
+  `emit_display_value` now renders a `String`/`str` ELEMENT of a composite: its raw bytes (NO quotes —
+  `Display for Value`, interp.rs line 501), via `&String -> as_str -> PrintStr`. The element is
+  BORROWED in place, never moved out of the composite temp, so the whole composite is still dropped
+  after the render (CD-120 Contract C). `lower_print_composite`'s gate is broadened — ANY droppable
+  composite is admitted and `emit_display_value` is the real filter (it cleanly refuses what it
+  cannot render).
+  - **Works, three-engine:** owned `String` in a tuple/array (`(String::from("hi"), 1)`,
+    `[String; 2]`) and `&str` in a Copy composite (`("hi", 1)`).
+  - **Two deferrals — refused AT LOWERING (deterministic), not admitted-but-broken:**
+    (1) a non-Copy payload inside `Option`/`Result` (`Option<String>`) — borrowing a non-Copy enum
+    `VariantField` payload needs WP-C5.3d controlled storage (native `match &e` yields a reference
+    and moving out hits C5.3a's cross-block-move limit); refused in the `Option`/`Result` arms.
+    (2) a droppable composite that ALSO carries a borrow (`(String, &str, i32)`) — its slot-backed
+    field read returns a borrow whose lifetime the backend does not emit (rustc E0106); refused via a
+    new `ty_carries_ref` gate. A COPY borrow-carrier (`(&str, i32)`) is fine (no slot, no wrapper).
+    `Vec<String>` also stays refused (the Vec arm needs a Copy element; by-reference Vec access is a
+    separate slice).
+  - **Evidence.** `c63e_formatting.rs` now 39: +3 positive (`tuple_str`, `tuple_string`, `arr_string`,
+    three-engine) and +3 `refused_by_lowering` negatives (`option_of_string`, `result_of_string`,
+    `droppable_tuple_carrying_borrow`). `--lib`, `three_engine_differential` 83 green.
+  - **C6.3e remaining:** composite `Box` elements, nested user-`Display`; `Option`/`Result`-of-owner
+    (WP-C5.3d), borrow-in-droppable-composite (generated lifetimes), `Vec<String>` (by-ref access);
+    `Float32` (DEV-105); trap-message parity (DEV-106); native `v[i]` OOB provenance (DEV-107).
 
 - CD-121 [2026-07-25, **WP-C6.3e — Vec Display (runtime loop; first non-Copy composite)**] `println`/
   `print` of a `Vec<T>` (T a Copy primitive or Copy composite) now renders `[e0, e1, …]` — the FIRST

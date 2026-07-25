@@ -349,6 +349,30 @@ fn composite_vec_of_tuples() {
     );
 }
 
+// ---- String/str as composite ELEMENTS (CD-122): rendered raw (no quotes), borrowed in place; the
+// owning composite is dropped after the render (Contract C). ----
+
+#[test]
+fn composite_tuple_with_str() {
+    agree_out("tuple_str", "fn main() { println((\"hi\", 1)); }");
+}
+
+#[test]
+fn composite_tuple_with_string() {
+    agree_out(
+        "tuple_string",
+        "fn main() { println((String::from(\"hi\"), 1)); }",
+    );
+}
+
+#[test]
+fn composite_array_of_strings() {
+    agree_out(
+        "arr_string",
+        "fn main() { let a: [String; 2] = [String::from(\"a\"), String::from(\"b\")]; println(a); }",
+    );
+}
+
 // ---- Refused pre-rustc (a bounded, TESTED boundary — not an admitted divergence). Lowering must
 // reject these; typecheck accepts them (they are well-typed). ----
 
@@ -409,5 +433,32 @@ fn large_array_display_refused() {
     refused_by_lowering(
         "big_arr",
         "fn main() { let a: [Int32; 100] = [0; 100]; println(a); }",
+    );
+}
+
+// CD-122 deferrals: a non-Copy payload inside `Option`/`Result` needs WP-C5.3d enum-payload storage
+// to borrow through a `VariantField`; a droppable composite carrying a borrow (`&str` beside an
+// owned field) needs generated lifetimes. Both are refused at lowering, not admitted-but-broken.
+#[test]
+fn option_of_string_refused() {
+    refused_by_lowering(
+        "opt_string",
+        "fn main() { let o: Option<String> = Some(String::from(\"x\")); println(o); }",
+    );
+}
+
+#[test]
+fn result_of_string_refused() {
+    refused_by_lowering(
+        "res_string",
+        "fn main() { let r: Result<String, Int32> = Ok(String::from(\"ok\")); println(r); }",
+    );
+}
+
+#[test]
+fn droppable_tuple_carrying_borrow_refused() {
+    refused_by_lowering(
+        "tuple_mixed_str",
+        "fn main() { println((String::from(\"owned\"), \"borrowed\", 42)); }",
     );
 }

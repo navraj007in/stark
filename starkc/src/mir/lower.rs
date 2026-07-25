@@ -57,6 +57,21 @@ fn ty_mentions_user_nominal(ty: &MirTy) -> bool {
     }
 }
 
+/// Does `ty` carry a reference (borrow) anywhere below the top level? A slot-backed (droppable)
+/// composite whose field read returns a borrow needs a generated lifetime the backend does not emit
+/// yet (E0106) — so Display of such a composite (`(String, &str, i32)`) is refused for now.
+fn ty_carries_ref(ty: &MirTy) -> bool {
+    match ty {
+        MirTy::Ref { .. } => true,
+        MirTy::Enum(_, args) | MirTy::Core(_, args) | MirTy::Struct(_, args) => {
+            args.iter().any(ty_carries_ref)
+        }
+        MirTy::Tuple(elems) => elems.iter().any(ty_carries_ref),
+        MirTy::Array(elem, _) | MirTy::Slice(elem) => ty_carries_ref(elem),
+        _ => false,
+    }
+}
+
 fn unsupported<T>(what: impl Into<String>, span: Span) -> Result<T, LowerError> {
     Err(LowerError {
         what: what.into(),
@@ -7148,7 +7163,7 @@ impl<'a> FnLowerer<'a> {
         ty: &MirTy,
         span: Span,
     ) -> Result<(), LowerError> {
-        let (peeled, _) = Self::peel_refs(ty.clone());
+        let (peeled, layers) = Self::peel_refs(ty.clone());
         match &peeled {
             MirTy::Int8
             | MirTy::Int16
@@ -7173,6 +7188,78 @@ impl<'a> FnLowerer<'a> {
                 };
                 let dest = Place::local(self.new_temp(MirTy::Unit));
                 self.emit_runtime_call(rt, vec![widened], dest, span);
+                Ok(())
+            }
+            // A `String` element renders its raw bytes (NO quotes — `Display for Value` line 501),
+            // via `&String -> as_str -> &str -> PrintStr`. The element is BORROWED, never moved: the
+            // owning composite keeps it and drops it after the whole render (CD-120 Contract C).
+            MirTy::String => {
+                let str_ref_ty = MirTy::Ref {
+                    mutable: false,
+                    inner: Box::new(MirTy::Str),
+                };
+                // `&String`: pass a reference element through; borrow an owned `String` place.
+                let string_ref = if layers > 0 {
+                    self.read_place(place, ty, span)?
+                } else {
+                    let owned_ref_ty = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(MirTy::String),
+                    };
+                    let t = self.new_temp(owned_ref_ty);
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(t),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place,
+                            },
+                        ),
+                        self.info(span),
+                    );
+                    Operand::Copy(Place::local(t))
+                };
+                let str_tmp = self.new_temp(str_ref_ty);
+                self.emit_runtime_call(
+                    RuntimeFn::StringAsStr,
+                    vec![string_ref],
+                    Place::local(str_tmp),
+                    span,
+                );
+                let dest = Place::local(self.new_temp(MirTy::Unit));
+                self.emit_runtime_call(
+                    RuntimeFn::PrintStr,
+                    vec![Operand::Copy(Place::local(str_tmp))],
+                    dest,
+                    span,
+                );
+                Ok(())
+            }
+            // A `str` element is `&str` (str is unsized — it appears behind a reference). Print its
+            // bytes directly. A reference is Copy, so this reads without disturbing the composite.
+            MirTy::Str => {
+                let str_op = if layers > 0 {
+                    self.read_place(place, ty, span)?
+                } else {
+                    let str_ref_ty = MirTy::Ref {
+                        mutable: false,
+                        inner: Box::new(MirTy::Str),
+                    };
+                    let t = self.new_temp(str_ref_ty);
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(t),
+                            Rvalue::RefOf {
+                                mutable: false,
+                                place,
+                            },
+                        ),
+                        self.info(span),
+                    );
+                    Operand::Copy(Place::local(t))
+                };
+                let dest = Place::local(self.new_temp(MirTy::Unit));
+                self.emit_runtime_call(RuntimeFn::PrintStr, vec![str_op], dest, span);
                 Ok(())
             }
             MirTy::Tuple(elems) => {
@@ -7219,6 +7306,17 @@ impl<'a> FnLowerer<'a> {
             // variant, recursing into the `Some` payload.
             MirTy::Enum(EnumRef::CoreOption, args) => {
                 let inner = args.first().cloned().unwrap_or(MirTy::Unit);
+                // Rendering a non-Copy payload (e.g. `Option<String>`) would BORROW the `Some`
+                // payload through a `VariantField` projection, which the native backend cannot read
+                // yet: a non-Copy enum payload needs WP-C5.3d's controlled storage (`match &e` gives
+                // a reference and moving out hits C5.3a's cross-block-move limit). A later slice.
+                if !self.is_copy(&inner) {
+                    return unsupported(
+                        "Display of an `Option` with a non-Copy payload (e.g. `Option<String>`) \
+                         needs WP-C5.3d enum-payload storage — a later C6.3e slice",
+                        span,
+                    );
+                }
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
@@ -7250,6 +7348,15 @@ impl<'a> FnLowerer<'a> {
             MirTy::Enum(EnumRef::CoreResult, args) => {
                 let ok_ty = args.first().cloned().unwrap_or(MirTy::Unit);
                 let err_ty = args.get(1).cloned().unwrap_or(MirTy::Unit);
+                // As for `Option`: a non-Copy payload (`Result<String, _>`, `Result<_, String>`)
+                // needs WP-C5.3d enum-payload storage to borrow through a `VariantField`. Later slice.
+                if !self.is_copy(&ok_ty) || !self.is_copy(&err_ty) {
+                    return unsupported(
+                        "Display of a `Result` with a non-Copy payload (e.g. `Result<String, _>`) \
+                         needs WP-C5.3d enum-payload storage — a later C6.3e slice",
+                        span,
+                    );
+                }
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
@@ -7455,15 +7562,23 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<(), LowerError> {
         let (peeled, _) = Self::peel_refs(arg_ty.clone());
-        // A non-Copy (droppable) composite is only supported when it is a `Vec`: it renders via a
-        // runtime loop and its owned buffer is dropped AFTER the render (CD-120 Contract C). Other
-        // owning composites (String/Box elements, structs of owners) are later slices. A `&Vec`
-        // never reaches here — the typechecker rejects `println(&v)` (E0500), so an owned Vec is
-        // moved into the temp below and this lowering owns the sole copy to drop.
+        // A droppable (non-Copy) composite — a tuple/array/`Option`/`Result`/`Vec` that OWNS
+        // `String`/`Box`/`Vec` elements — is supported: `emit_display_value` renders each element
+        // in place (borrowing owners, never moving out of `tmp`), and the whole composite is dropped
+        // after the render (CD-120 Contract C). `emit_display_value` is the real filter — an element
+        // it cannot render (e.g. a user `Drop` struct, or a `Vec` of non-Copy elements) is a clean
+        // `Unsupported` there. A `&Vec`/`&String` composite never reaches here (the typechecker
+        // rejects `println(&x)`, E0500), so an owned composite is moved into `tmp` and this lowering
+        // owns the sole copy to drop.
         let droppable = !self.is_copy(&peeled);
-        if droppable && !matches!(peeled, MirTy::Core(crate::hir::CoreType::Vec, _)) {
+        // A DROPPABLE (slot-backed) composite that also carries a borrow — `(String, &str, i32)` —
+        // reads its fields through a generated projection wrapper whose return borrows the slot; the
+        // backend does not emit the lifetime that ties them (E0106). Refuse until generated lifetimes
+        // land. A COPY borrow-carrying composite (`(&str, i32)`) is fine: no slot, no wrapper.
+        if droppable && ty_carries_ref(&peeled) {
             return unsupported(
-                "Display of a non-Copy composite (owning elements) is a later C6.3e slice",
+                "Display of a droppable composite that also carries a borrowed element (e.g. \
+                 `&str` beside an owned field) needs generated lifetimes — a later C6.3e slice",
                 span,
             );
         }
