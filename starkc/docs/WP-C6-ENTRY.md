@@ -647,13 +647,13 @@ Inventory and implement:
 - byte/character distinctions; ✅ native (byte `len`; `push`/`pop`/`print` of a `Char` scalar)
 - concatenation and mutation; ✅ native (`push_str`, `clear`)
 - valid slicing/view behaviour; ⏳ (string slicing views — remaining)
-- borrowed str; ✅ native for str VALUES (literals, `&str` params, `contains` pattern). A STORED
-  interior `&str` borrowing an OWNED `String` across a block is deferred to WP-C6.1g-c (native
-  dispatch-loop borrow; HIR+MIR pass).
-- comparison; ✅ native for `str` values; owned-`String` `==`/`<` deferred to C6.1g-c (lowers
-  through `String::as_str` → the stored-interior-borrow case above)
-- canonical display; ⏳ (C6.3e formatting)
-- nested formatting; ⏳ (C6.3e)
+- borrowed str; ✅ native — str VALUES (literals, `&str` params, `contains` pattern) AND a STORED
+  interior `&str` borrowing an OWNED `String` across a block (unblocked by C6.1g-c, promoted CD-116).
+- comparison; ✅ native — `str` values AND owned-`String` `==`/`<` (lowers through `String::as_str`;
+  the stored-interior-borrow case, now native since C6.1g-c).
+- canonical display; ✅ native via user `Display` (C6.3e CD-114); built-in `Display` is for
+  primitives/str only (composites need a user impl).
+- nested formatting; ⏳ (composite `Display` — a C6.3e lowering feature, HIR-only today)
 - Drop/reinitialisation; ✅ (slot-backed `String`; MIR-controlled drop)
 - cross-package passing/return; ⏳ (return-across-fn done same-package; cross-package remaining)
 
@@ -667,8 +667,7 @@ Invalid boundaries must produce the specified failure and source location. Lande
 
 - new/empty; ✅ native
 - push/pop; ✅ native (`pop` via the Option bridge; `push` of a value computed by a runtime call —
-  e.g. `Vec<String>` — is deferred to C6.1g-c: the `&mut Vec` receiver borrow spans the argument's
-  own call block)
+  e.g. `Vec<String>::push(String::from(..))` — is native since C6.1g-c linearisation, promoted CD-116)
 - len/capacity where normative; ✅ native (`len`/`is_empty`; capacity unobservable)
 - indexing/mutable indexing; ⏳ (`VecIndexGet`/`v[i]=` trap on OOB — need a source-located trap
   threaded to the runtime call)

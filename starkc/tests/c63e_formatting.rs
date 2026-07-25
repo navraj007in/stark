@@ -1,9 +1,11 @@
 //! WP-C6.3e — native formatting and output (§28), slice 1: primitives.
 //!
-//! `println`/`print` of `Int*`/`UInt*` (widened to `i64`/`u64`), `Bool`, and `Float32`/`Float64`
-//! now emit natively, rendered per STARK's canonical form — NOT Rust's `Debug`. The canonical float
-//! formatter lives in `stark_runtime::format` and `starkc::interp` delegates to it, so the HIR
-//! oracle and the native binary format identically by construction.
+//! `println`/`print` of `Int*`/`UInt*` (widened to `i64`/`u64`), `Bool`, and `Float64` now emit
+//! natively, rendered per STARK's canonical form — NOT Rust's `Debug`. The canonical float formatter
+//! lives in `stark_runtime::format` and `starkc::interp` delegates to it, so the HIR oracle and the
+//! native binary format identically by construction. (`Float32` println is DEFERRED — DEV-105: the
+//! `f32 -> f64` widening cast is evaluated differently across engines, a value-semantics
+//! discrepancy, not a formatting one.)
 //!
 //! Each case checks that HIR, MIR, and native all exit 0 AND that the native stdout equals the HIR
 //! oracle's output byte-for-byte. (Composite types — tuple/struct/enum/Option/Result/Vec — and user
@@ -57,6 +59,12 @@ fn agree_out(tag: &str, src: &str) {
     let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
     let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
     assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
+    // These are self-contained three-engine cases, so the MIR oracle's OUTPUT is compared too, not
+    // just its exit status.
+    assert_eq!(
+        mir_exec.output, expect,
+        "{tag}: MIR stdout must equal the HIR oracle"
+    );
 
     if rustc_available() {
         let verified = verify_program(&program).unwrap();
@@ -118,11 +126,11 @@ fn println_float64_canonical() {
     );
 }
 
-// NOTE (deferred): `println` of a `Float32` widens `f32 -> f64` (`widen_for_print`), and the native
-// binary sees the f32-rounded value (`0.1f32 as f64 == 0.10000000149011612`) while the HIR
-// interpreter keeps the wider `0.1`. That is a cross-engine Float32-precision discrepancy in how the
-// widening cast is evaluated, NOT a formatting-wiring issue — the canonical renderer is shared and
-// correct. Tracked separately; a Float32 formatting case lands once the cast agrees across engines.
+// DEV-105 (deferred): `println` of a `Float32` widens `f32 -> f64` (`widen_for_print`), and the
+// native binary sees the f32-rounded value (`0.1f32 as f64 == 0.10000000149011612`) while the HIR
+// interpreter keeps the wider `0.1`. That is a cross-engine Float32 value-semantics discrepancy in
+// how the widening cast is evaluated, NOT a formatting-wiring issue — the canonical renderer is
+// shared and correct. A Float32 formatting case lands once the cast agrees across all three engines.
 
 #[test]
 fn print_without_newline_then_println() {
@@ -151,25 +159,28 @@ fn user_display_copy_struct() {
     );
 }
 
-/// A `Display` whose `fmt` reads the receiver's field, so the printed text depends on the value.
+/// A `Display` whose `fmt` genuinely BRANCHES on the receiver's field, so the printed text depends
+/// on the value (the oracle-vs-native comparison would diverge if `self` were ignored).
 #[test]
 fn user_display_reads_field() {
     agree_out(
         "display_field",
         "struct P { v: Int32 }\n\
-         impl Display for P { fn fmt(&self) -> String { let mut s = String::from(\"v=\"); s.push_str(\"!\"); s } }\n\
-         fn main() { let p = P { v: 3 }; print(p); println(1); }",
+         impl Display for P { fn fmt(&self) -> String { if self.v == 3 { String::from(\"v=3\") } else { String::from(\"other\") } } }\n\
+         fn main() { let p = P { v: 3 }; println(p); let q = P { v: 9 }; println(q); }",
     );
 }
 
-/// A Drop-bearing (non-Copy) `Display` type: the by-value argument's destructor DOES run after the
-/// bytes are submitted — exercising the arg-drop path the Copy case skips.
+/// A Drop-bearing (non-Copy) `Display` type whose destructor is OBSERVABLE: the printed output is
+/// `DROPPY` (the `fmt` result) THEN `DROP` (the arg's destructor, run after the bytes are
+/// submitted). Native stdout == HIR oracle proves the destructor runs exactly once, in order —
+/// exercising the arg-drop path the Copy case skips.
 #[test]
-fn user_display_drop_bearing() {
+fn user_display_drop_bearing_runs_destructor_after_output() {
     agree_out(
         "display_drop",
         "struct D { v: Int32 }\n\
-         impl Drop for D { fn drop(&mut self) { } }\n\
+         impl Drop for D { fn drop(&mut self) { println(\"DROP\"); } }\n\
          impl Display for D { fn fmt(&self) -> String { String::from(\"DROPPY\") } }\n\
          fn main() { let d = D { v: 1 }; println(d); }",
     );

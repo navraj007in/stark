@@ -1,5 +1,5 @@
 # STARK Compiler STATE
-Updated: 2026-07-24 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
+Updated: 2026-07-25 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
 WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop parity, Track A) CLOSED
 (CD-080…CD-084) and **WP-C6.1f CLOSED (CD-099)** (general reference storage — the C5 deferral the C6
 entry plan never assigned), so **WP-C6.1 as a whole is CLOSED**; and WP-C6.2a (canonical callable identity — native method/trait/operator dispatch)
@@ -20,25 +20,31 @@ bridge (`Callee::Runtime`) + String/str value + str-output + Char surface land t
 String construction/query/mutation/clone/return; `println`/`print` of str & char incl. Unicode;
 `push`/`pop` char) with native stdout-byte checks; `stark-runtime/src/string.rs`. **The Option-return
 bridge (CD-110) — wrapping a runtime Rust `Option` into the generated Option enum — is the mechanism
-every future collection accessor reuses.** Deferred: owned-`String` `==`/`<` and stored interior
-`&str` (→ C6.1g-c dispatch-loop borrow). C6.3a remaining: `chars()` iteration (→ C6.3c), slicing
-views (→ C6.3b), cross-package String.
+every future collection accessor reuses.** Owned-`String` `==`/`<` and stored interior `&str` are
+now NATIVE (unblocked by C6.1g-c, promoted CD-116). C6.3a remaining: `chars()` iteration (→ C6.3c),
+slicing views (→ C6.3b), cross-package String.
 **WP-C6.3b PARTIAL (CD-111): native Vec/Box VALUE surface (new/push/pop/len/is_empty/clear/return,
 Box new/into_inner) three-engine, plus the SLOT BUFFER-RECLAIM FIX — `drop_with` now runs
 `ManuallyDrop::drop` after the glue, freeing every owning value's allocation (a latent leak).
-Deferred: Vec/Box of user-destructor elements (refused), `Vec<String>`-style pushes (→ C6.1g-c),
-trapping index/get/iter/slices. C6.1g-c is now the critical shared unblocker.**
+`Vec<String>`-style pushes are now NATIVE (unblocked by C6.1g-c, promoted CD-116). Deferred:
+Vec/Box of user-destructor elements (refused), trapping index/get/iter/slices.**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** **WP-C6.1g-c CLOSED (CD-112): dispatch-loop
 linearisation — acyclic bodies emit as nested labelled blocks so a cross-block borrow is seen
 once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns build). This also
 unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
 Gate-C6 dependencies: `WP-C6.1g-b`
-(return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track
-C). Also open:
-**WP-C6.3** (runtime values and
-collections incl. output, Track C), C6.4 platform matrix, C6.5 differential corpus, C6.6 gate
-exit. (F4 parser half `&&T`/`**x` and DEV-083 still open — neither is C6.2.)**
+(return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
+**WP-C6.3e PARTIAL (CD-113/114/115): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
+shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
+C6.2d Display deferral), and `panic(msg)` text; `three_engine_differential` now compares real stdout
+(`NATIVE_STDOUT_SUPPORTED = true`). C6.3e remaining: composite `Display` (tuple/struct/enum/Option/
+Result/Vec — a lowering feature, HIR-only today), `Float32` println (DEV-105), assert message text.**
+Also open:
+**WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
+offline-build evidence is a C6.3 CLOSURE requirement not yet recorded), C4/C5/C6 platform matrix,
+C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083, DEV-105 (Float32
+widening cross-engine) still open — none is C6.2.)**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -3108,6 +3114,28 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-116 [2026-07-25, **evidence precision + state sync (external review)**] A bounded correction
+  pass on CD-113/114 before composite formatting — no implementation change, tightening tests and
+  resynchronising governance docs.
+  - **c63e evidence strengthened.** (a) `agree_out` now also asserts `mir_exec.output == expect` — the
+    MIR oracle's STDOUT, not just its exit status, so each case is self-contained three-engine
+    evidence. (b) `user_display_reads_field` now BRANCHES on `self.v` (`if self.v == 3 …`) so the
+    output actually depends on the field (the prior body ignored `self`). (c) the Drop-bearing case
+    now has an OBSERVABLE destructor (`fn drop { println("DROP"); }`) and the expected output
+    `DROPPY\nDROP` proves the destructor runs exactly once, after the formatted bytes — the earlier
+    empty destructor proved neither timing nor count. c63e 11 still green.
+  - **DEV-105 recorded** for the `Float32`-println cross-engine cast-precision discrepancy (was noted
+    without an id); the c63e header corrected from "Float32/Float64" to Float64-only.
+  - **State docs resynchronised.** `COMPILER-STATE.md` header date → 2026-07-25; the C6.3a/b summaries
+    no longer say owned-`String` `==`/`<`, stored interior `&str`, and `Vec<String>`-style pushes are
+    "deferred to C6.1g-c" (they were promoted to native, CD-116) — they contradicted the CD-112
+    closure line. `WP-C6-ENTRY` §24/§25 String/Vec rows updated to match. A C6.3e header summary added.
+  - **Recorded as a C6.3 CLOSURE requirement (not yet done):** runtime version review + installed-
+    layout + offline-build proofs for the CD-113 `stark_runtime::format` addition (generated-code
+    tests exist; the install/offline evidence does not). Must land before C6.3 closes.
+  - (`starkide` non-interactive tests were removed with the module per owner instruction; extracting
+    the pure editor logic into a testable lib module is a possible future cleanup, out of scope here.)
+
 - CD-115 [2026-07-25, **WP-C6.3e slice 3 — native `panic(msg)` text**] A `Terminator::Trap` carrying
   a `&str` message (an explicit `panic("...")`) was `Unsupported` natively; now that str values are
   native it is wired. Added `stark_runtime::trap::abort_with_message(category, message, file, line,
@@ -3153,11 +3181,13 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     Float64 canonical incl. `0.1`→`"0.1"` and `-0.0`, print-no-newline, mixed), each asserting native
     stdout == HIR oracle. `canonical_float` 6, `--lib` 441 (interp delegation), `three_engine` 83; fmt
     + clippy clean.
-  - **Deferred:** `println(Float32)` — the `f32→f64` widening makes native see the f32-rounded value
-    (`0.1f32 as f64 == 0.10000000149011612`) while the interp keeps `0.1`; a cross-engine Float32
-    cast-precision discrepancy, NOT a formatting issue (renderer is shared/correct). C6.3e remaining:
-    composite types (tuple/struct/enum/Option/Result/Vec/Box), user `Display` dispatch native (clears
-    the C6.2d deferral), panic/assert text bytes.
+  - **DEV-105 [deferred]:** `println(Float32)` — the `f32→f64` widening (`widen_for_print`) makes the
+    NATIVE binary see the f32-rounded value (`0.1f32 as f64 == 0.10000000149011612`) while the HIR
+    interpreter keeps the wider `0.1`. A cross-engine **value-semantics** discrepancy in how the
+    widening cast is evaluated, NOT a formatting issue (the canonical renderer is shared and correct).
+    Fixing it needs a decision on where `Float32` rounding canonically occurs, then alignment across
+    HIR/MIR/native. C6.3e remaining: composite `Display` (tuple/struct/enum/Option/Result/Vec/Box — a
+    lowering feature, HIR-only today), `Float32` println (DEV-105), assert message text.
 
 - CD-112 [2026-07-25, **WP-C6.1g-c CLOSED — dispatch-loop linearisation; the borrow-through-return
   refusal LIFTED**] The root cause of a broad class of native-build failures: every generated body
