@@ -51,9 +51,11 @@ interpreters agree, only the native binary diverges), arrays > 64 (unroll cap), 
 non-Copy or user-nominal payload (WP-C5.3d / E0716 enum-payload borrow), a droppable composite
 carrying a borrow (generated lifetimes), and nested user `Display` inside a `Vec` (E0502 loop-carried
 borrow). C6.3e
-remaining: composite `Box` elements; nested user `Display` inside `Vec`/`Option`/`Result`;
-`Vec<String>` (by-ref); `Float32` (DEV-105); trap-message three-engine parity (DEV-106, narrowed —
-partial output already comparable); native `v[i]` OOB provenance (DEV-107).**
+remaining: nested user `Display` inside `Vec`/`Option`/`Result`; `Vec<String>` (by-ref); `Float32`
+(DEV-105); trap-message three-engine parity (DEV-106, narrowed — partial output already comparable);
+native `v[i]` OOB provenance (DEV-107). DEFERRED to a future decision (CD-125): composite `Box`
+elements — `Box<T>` is not a Display type today (typechecker E0500) and making it one is a semantics
+choice, not a lowering slice.**
 Also open:
 **WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
 offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
@@ -3127,6 +3129,22 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-125 [2026-07-25, **WP-C6.3e — composite `Box` elements DEFERRED (owner decision)**] Investigating
+  the last item on the C6.3e "remaining" list found it is not a lowering slice: `Box<T>` is not a
+  Display type at all. `typecheck::type_is_displayable` admits only `Option`/`Result`/`Vec` among Core
+  types, so `Box` falls to `_ => false` and `println(box)` / `println((box, 1))` are rejected E0500;
+  the spec (`06-Standard-Library`) says nothing about `Box` + `Display`. (The interpreter's
+  `Display for Value` incidentally renders `Box(inner)`, but that path is unreachable — the
+  typechecker blocks it — so it is dead code, not a de-facto contract.)
+  - Making `Box` displayable is a SEMANTICS decision (charter §1.6 rule 4), not a mechanical
+    continuation: it needs the displayable-set extended AND a render-form choice — transparent
+    (`inner`, the Rust idiom, which would change the interp's `Box(...)` rendering) vs wrapped
+    (`Box(inner)`, matching the interp's dead code).
+  - **Owner decision: DEFER** — revisit as a future language-Display-semantics decision, not now.
+    `Box` remains an opaque owning box in Core v1 (no `Deref`, `into_inner` only); today you
+    `into_inner()` and print the value. No code change; the C6.3e "remaining" list drops `Box`
+    elements as active scope and records it as deferred here.
 
 - CD-124 [2026-07-25, **CI hotfix — CD-119's `Float32` refusal was too broad (broke the frozen
   corpus)**] CD-119 moved the `Float32` Display refusal into `widen_for_print`, the SHARED chokepoint
