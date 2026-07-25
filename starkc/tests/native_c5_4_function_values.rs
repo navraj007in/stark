@@ -95,11 +95,23 @@ fn fnptr_type_emits_as_a_rust_function_pointer() {
 
 #[test]
 fn an_unsupported_signature_is_refused_before_rustc() {
-    // §5.2/§7.2: a signature containing a type with no C5 representation must produce
-    // `Unsupported` — the deterministic pre-rustc boundary, not a rustc error. (`String`/`Vec`/`Box`
-    // gained representations in WP-C6.3; a bare `Slice` still has none — it only appears behind a
-    // reference.)
-    let bad = fnptr(vec![MirTy::Slice(Box::new(MirTy::Int32))], MirTy::Int32);
+    // §5.2/§7.2: a signature containing a type with no generated-Rust representation must produce
+    // `Unsupported` — the deterministic pre-rustc boundary, not a rustc error.
+    //
+    // The stand-in type has to be re-pointed whenever coverage grows, and has been twice already:
+    // `String` gained one in WP-C6.3a, then `Slice` in WP-C6.3b. `MapIter` is chosen now because it
+    // is durably unrepresented BY DECISION rather than by not-yet: adapter iterators have no MIR
+    // type at all, and implementing them is an explicitly UNSCHEDULED proposal
+    // (`docs/WP-ITER-LOWERING-PROPOSAL.md`, CD-129/130). If that proposal is ever scheduled, this
+    // test fails loudly and must be re-pointed at whatever is unrepresented then — that failure is
+    // the intended signal, not a nuisance.
+    let bad = fnptr(
+        vec![MirTy::Core(
+            starkc::hir::CoreType::MapIter,
+            vec![MirTy::Int32, MirTy::Int32],
+        )],
+        MirTy::Int32,
+    );
     assert!(
         emit_types::emit_ty(&bad).is_err(),
         "a FnPtr over an unsupported type must be Unsupported"
