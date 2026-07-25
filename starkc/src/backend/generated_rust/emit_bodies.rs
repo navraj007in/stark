@@ -936,7 +936,14 @@ fn emit_rvalue(rvalue: &Rvalue, dest_ty: &MirTy, env: &TyEnv) -> Result<String, 
                 // COPY helper for a `Copy` field, and `&<copy>` would reference a temporary instead
                 // of the field.
                 let base = emit_places::emit_place_to_borrow(place, env)?;
-                if whole_slot {
+                // WP-C6.3e: a trailing variant-field in borrow mode already emits the payload
+                // reference (`match &e { V(p) => p }`), so wrapping it in another `&` would build
+                // `&&Payload` over a temporary. Yield it directly, like a whole-slot accessor.
+                let yields_reference = matches!(
+                    place.projection.last(),
+                    Some(crate::mir::Projection::VariantField(..))
+                );
+                if whole_slot || yields_reference {
                     base
                 } else {
                     format!("(&{base})")

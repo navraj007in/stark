@@ -469,25 +469,47 @@ fn large_array_display_refused() {
     );
 }
 
-// CD-122 deferrals: a non-Copy payload inside `Option`/`Result` needs WP-C5.3d enum-payload storage
-// to borrow through a `VariantField`; a droppable composite carrying a borrow (`&str` beside an
-// owned field) needs generated lifetimes. Both are refused at lowering, not admitted-but-broken.
+// CD-126: the enum-payload borrow (E0716) is fixed in the backend, so a LEAF-owner payload inside
+// `Option`/`Result` — `String` or a user `Display` nominal — now renders three-engine via the
+// trailing variant-field borrow (`match &e { V(p) => p }`).
 #[test]
-fn option_of_string_refused() {
-    refused_by_lowering(
+fn composite_option_of_string() {
+    agree_out(
         "opt_string",
         "fn main() { let o: Option<String> = Some(String::from(\"x\")); println(o); }",
     );
 }
 
 #[test]
-fn result_of_string_refused() {
-    refused_by_lowering(
+fn composite_result_of_string() {
+    agree_out(
         "res_string",
         "fn main() { let r: Result<String, Int32> = Ok(String::from(\"ok\")); println(r); }",
     );
 }
 
+#[test]
+fn nested_user_display_in_option() {
+    agree_out(
+        "nest_option",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
+         fn main() { let o: Option<P> = Some(P { v: 7 }); println(o); }",
+    );
+}
+
+#[test]
+fn nested_user_display_in_result() {
+    agree_out(
+        "nest_result",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { String::from(\"R\") } }\n\
+         fn main() { let r: Result<P, Int32> = Ok(P { v: 7 }); println(r); }",
+    );
+}
+
+// Still refused: a droppable composite carrying a borrow (`&str` beside an owned field) needs
+// generated lifetimes; nested user `Display` inside a `Vec` is a loop-carried borrow (E0502).
 #[test]
 fn droppable_tuple_carrying_borrow_refused() {
     refused_by_lowering(
@@ -496,9 +518,6 @@ fn droppable_tuple_carrying_borrow_refused() {
     );
 }
 
-// CD-123 deferrals: nested user `Display` inside a `Vec` (loop-carried borrow, E0502) or an
-// `Option`/`Result` (VariantField-payload borrow, E0716) — refused at lowering. Straight-line
-// tuple/array/struct-field nesting works (see the positive tests above).
 #[test]
 fn nested_user_display_in_vec_refused() {
     refused_by_lowering(
@@ -506,15 +525,5 @@ fn nested_user_display_in_vec_refused() {
         "struct P { v: Int32 }\n\
          impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
          fn main() { let mut v: Vec<P> = Vec::new(); v.push(P { v: 1 }); v.push(P { v: 2 }); println(v); }",
-    );
-}
-
-#[test]
-fn nested_user_display_in_option_refused() {
-    refused_by_lowering(
-        "nest_option",
-        "struct P { v: Int32 }\n\
-         impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
-         fn main() { let o: Option<P> = Some(P { v: 7 }); println(o); }",
     );
 }

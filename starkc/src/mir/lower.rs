@@ -7318,27 +7318,11 @@ impl<'a> FnLowerer<'a> {
             // variant, recursing into the `Some` payload.
             MirTy::Enum(EnumRef::CoreOption, args) => {
                 let inner = args.first().cloned().unwrap_or(MirTy::Unit);
-                // Rendering a non-Copy payload (e.g. `Option<String>`) would BORROW the `Some`
-                // payload through a `VariantField` projection, which the native backend cannot read
-                // yet: a non-Copy enum payload needs WP-C5.3d's controlled storage (`match &e` gives
-                // a reference and moving out hits C5.3a's cross-block-move limit). A later slice.
-                if !self.is_copy(&inner) {
-                    return unsupported(
-                        "Display of an `Option` with a non-Copy payload (e.g. `Option<String>`) \
-                         needs WP-C5.3d enum-payload storage — a later C6.3e slice",
-                        span,
-                    );
-                }
-                // A user-nominal payload renders through `Display::fmt` on a BORROW of the
-                // `VariantField` projection, which the backend materialises as a temporary freed too
-                // early (E0716). Nested user `Display` inside `Option` awaits enum-payload borrows.
-                if ty_mentions_user_nominal(&inner) {
-                    return unsupported(
-                        "Display of an `Option` whose payload uses a user `Display` impl needs \
-                         enum-payload borrows — a later C6.3e slice",
-                        span,
-                    );
-                }
+                // The `Some` payload is rendered by BORROW where it is a leaf owner (`String`, a user
+                // `Display` nominal) — the backend's trailing variant-field borrow (WP-C6.3e) yields
+                // `&payload` for any type. A Copy payload is read by value. A deeper non-Copy payload
+                // (e.g. a tuple owning a `String`) needs a non-trailing variant-field VALUE read and
+                // is refused by the backend there (cleanly, pre-rustc) — no lowering gate needed.
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
@@ -7370,23 +7354,9 @@ impl<'a> FnLowerer<'a> {
             MirTy::Enum(EnumRef::CoreResult, args) => {
                 let ok_ty = args.first().cloned().unwrap_or(MirTy::Unit);
                 let err_ty = args.get(1).cloned().unwrap_or(MirTy::Unit);
-                // As for `Option`: a non-Copy payload (`Result<String, _>`, `Result<_, String>`)
-                // needs WP-C5.3d enum-payload storage to borrow through a `VariantField`. Later slice.
-                if !self.is_copy(&ok_ty) || !self.is_copy(&err_ty) {
-                    return unsupported(
-                        "Display of a `Result` with a non-Copy payload (e.g. `Result<String, _>`) \
-                         needs WP-C5.3d enum-payload storage — a later C6.3e slice",
-                        span,
-                    );
-                }
-                // As for `Option`: a user-nominal payload needs a `VariantField` borrow (E0716).
-                if ty_mentions_user_nominal(&ok_ty) || ty_mentions_user_nominal(&err_ty) {
-                    return unsupported(
-                        "Display of a `Result` whose payload uses a user `Display` impl needs \
-                         enum-payload borrows — a later C6.3e slice",
-                        span,
-                    );
-                }
+                // As for `Option`: a leaf owner payload (`String`, a user `Display` nominal) renders
+                // by the backend's trailing variant-field borrow; a Copy payload by value; a deeper
+                // non-Copy payload is refused by the backend (pre-rustc). No lowering gate needed.
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),

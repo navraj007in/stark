@@ -45,15 +45,17 @@ own `fmt`, not the aggregate debug form; the interp oracle was fixed to match. I
 (A sequencing / B partial-output-on-trap / C destructor-timing) are recorded (CD-120) and Contract C is
 load-bearing (the owned Vec/composite is dropped after its render); the native trap ABI flushes stdout
 before abort so a mid-render trap's prefix matches the interpreters. `three_engine_differential`
-compares real stdout (`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused AT LOWERING (deterministic):
-`Float32` in the COMPOSITE Display path only (DEV-105; a SCALAR `println(Float32)` is admitted — the
-interpreters agree, only the native binary diverges), arrays > 64 (unroll cap), `Option`/`Result` of a
-non-Copy or user-nominal payload (WP-C5.3d / E0716 enum-payload borrow), a droppable composite
-carrying a borrow (generated lifetimes), and nested user `Display` inside a `Vec` (E0502 loop-carried
+compares real stdout (`NATIVE_STDOUT_SUPPORTED = true`). `Option`/`Result` of a `String` or a user
+`Display` nominal now render three-engine — the backend's trailing variant-field BORROW (CD-126) fixed
+the enum-payload limit (E0716). Bounded/refused AT LOWERING (deterministic): `Float32` in the
+COMPOSITE Display path only (DEV-105; a SCALAR `println(Float32)` is admitted — the interpreters agree,
+only the native binary diverges), arrays > 64 (unroll cap), a droppable composite carrying a borrow
+(generated lifetimes), and nested user `Display` / owner elements inside a `Vec` (E0502 loop-carried
 borrow). C6.3e
-remaining: nested user `Display` inside `Vec`/`Option`/`Result`; `Vec<String>` (by-ref); `Float32`
-(DEV-105); trap-message three-engine parity (DEV-106, narrowed — partial output already comparable);
-native `v[i]` OOB provenance (DEV-107). DEFERRED to a future decision (CD-125): composite `Box`
+remaining: nested user `Display` / owner elements inside a `Vec` (E0502 loop-borrow); `Vec<String>`
+(same); a non-Copy COMPOSITE enum payload (deeper than a leaf); `Float32` (DEV-105); trap-message
+three-engine parity (DEV-106, narrowed — partial output already comparable); native `v[i]` OOB
+provenance (DEV-107). DEFERRED to a future decision (CD-125): composite `Box`
 elements — `Box<T>` is not a Display type today (typechecker E0500) and making it one is a semantics
 choice, not a lowering slice.**
 Also open:
@@ -3129,6 +3131,30 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-126 [2026-07-25, **WP-C6.3e / backend — enum-payload BORROW fixed (retires two deferrals)**]
+  The native backend could not borrow an enum variant payload: `emit_places` emitted every
+  `VariantField` projection as `match &e { V(p) => *p }` — a dereferenced VALUE. Reading by value
+  needs a Copy payload (so non-Copy payloads were refused), and `Rvalue::RefOf` wrapped it as
+  `&(match … *p)`, which borrows a temporary freed at statement end (rustc E0716). That blocked
+  `Option`/`Result` of a `String` or a user-`Display` nominal.
+  - **Fix (two edits, isolated to the shared `Callee::Runtime`/`RefOf` path):** in BORROW mode a
+    TRAILING variant-field now emits `match &e { V(p) => p }` — the `&Payload` directly, valid for as
+    long as `e` lives — and `RefOf` recognises that a trailing-variant-field place already yields a
+    reference, so it does not re-wrap it in `&`. Borrowing needs no move, so it works for ANY payload
+    type; the READ-by-value path is unchanged (`*p`, still Copy-required).
+  - **Retires two deferrals:** `Option<String>`/`Result<String>` (CD-122's non-Copy refusal) AND
+    nested user `Display` inside `Option`/`Result` (CD-123's E0716 refusal). Both lowering gates in
+    `emit_display_value` are removed; a DEEPER non-Copy payload (a tuple owning a `String` inside an
+    `Option`) still needs a non-trailing variant-field value read and gets a clean backend refusal —
+    no lowering gate needed.
+  - **Evidence.** `c63e_formatting.rs` 44 — `composite_option_of_string`, `composite_result_of_string`,
+    `nested_user_display_in_option`, `nested_user_display_in_result` now POSITIVE three-engine.
+    Regression (a cross-cutting codegen change): `--lib` 441, `three_engine_differential` 83,
+    `mir_differential` 132, `native_c5_3_aggregates_enums` 21, `native_c61f_b3_stored_refs` 6,
+    `native_c61f_reborrow` 5 — all green; fmt + clippy clean.
+  - **Still deferred:** nested user `Display` / owner elements inside a `Vec` — that is the SEPARATE
+    E0502 loop-carried-borrow limitation, not the enum-payload one.
 
 - CD-125 [2026-07-25, **WP-C6.3e — composite `Box` elements DEFERRED (owner decision)**] Investigating
   the last item on the C6.3e "remaining" list found it is not a lowering slice: `Box<T>` is not a

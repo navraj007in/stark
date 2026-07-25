@@ -361,7 +361,8 @@ fn emit_place_from(
     }
     let mut ty = env.local_ty(place.local.0)?;
 
-    for projection in &place.projection {
+    let last_index = place.projection.len().saturating_sub(1);
+    for (proj_index, projection) in place.projection.iter().enumerate() {
         match (projection, &ty) {
             // A Rust tuple element is `.0`; a generated named struct's field is `.f0`. One MIR
             // variant, two Rust syntaxes -- the reason `TyEnv` exists.
@@ -391,12 +392,21 @@ fn emit_place_from(
             // have to be moved out, which needs WP-C5.3d's controlled storage for the same
             // reason C5.3a's cross-block moves do.
             (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => {
+                // WP-C6.3e (enum-payload borrow): in BORROW mode a TRAILING variant-field yields the
+                // payload REFERENCE directly — `match &e { V(p) => p }` is a `&Payload` valid for as
+                // long as `e` lives. That both (a) avoids `&(*p)` reborrowing a freed temporary
+                // (rustc E0716) and (b) needs NO move, so it works for a NON-Copy payload —
+                // `Option<String>` / `Option<UserDisplay>` render through it. A READ (by value) still
+                // dereferences (`*p`) and therefore still requires a Copy payload; a non-trailing
+                // borrow keeps the value form too (the chain continues through the payload value).
+                let borrow_ref = mode == PlaceMode::Borrow && proj_index == last_index;
                 let field_ty = env.project_once(&ty, projection)?;
-                if !emit_types::mir_ty_is_copy(&field_ty, env.types) {
+                if !borrow_ref && !emit_types::mir_ty_is_copy(&field_ty, env.types) {
                     return Err(BackendDiagnostic::Unsupported(format!(
-                        "reading the non-Copy payload field v{v}.{i} of {ty:?} needs WP-C5.3d's \
-                         controlled storage: `match &e` yields a reference, and moving out of it \
-                         runs into the same block-dispatch limit as C5.3a's cross-block moves"
+                        "reading the non-Copy payload field v{v}.{i} of {ty:?} by value needs \
+                         WP-C5.3d's controlled storage: `match &e` yields a reference, and moving \
+                         out of it runs into the same block-dispatch limit as C5.3a's cross-block \
+                         moves (a BORROW of the payload is supported)"
                     )));
                 }
                 let enum_name = emit_types::nominal_type_name(&ty).ok_or_else(|| {
@@ -412,8 +422,13 @@ fn emit_place_from(
                     })?;
                 let mut binders: Vec<String> = (0..arity).map(|_| "_".to_string()).collect();
                 binders[*i as usize] = "__payload".to_string();
+                let payload_expr = if borrow_ref {
+                    "__payload"
+                } else {
+                    "*__payload"
+                };
                 rendered = format!(
-                    "(match &{rendered} {{ {enum_name}::{}({}) => *__payload, \
+                    "(match &{rendered} {{ {enum_name}::{}({}) => {payload_expr}, \
                      _ => unreachable!(\"V-DISC-1: variant-field projection without a \
                      discriminant test\") }})",
                     emit_types::variant_name(*v),
