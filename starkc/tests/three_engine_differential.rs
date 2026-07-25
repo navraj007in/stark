@@ -627,6 +627,81 @@ three_engine_test!(
 "#
 );
 
+// CD-127 (structured control-flow emission). An unconditional `loop` whose ONLY exit is a `break`
+// from the MIDDLE of its body is the shape that stresses scope nesting hardest: the exit block's
+// earliest predecessor is INSIDE the loop, so a naively placed label would sit inside the loop and
+// `break` would land at the end of the loop body — silently re-iterating instead of exiting. Nothing
+// in this suite covered `loop { … }` before.
+three_engine_test!(
+    infinite_loop_with_mid_body_break_agrees,
+    "loopbreak",
+    completes,
+    r#"fn main() {
+    let mut i: Int32 = 0;
+    let mut seen: Int32 = 0;
+    loop {
+        seen = seen + 1;
+        if i >= 3 {
+            break;
+        }
+        i = i + 1;
+    }
+    assert_eq(i, 3);
+    assert_eq(seen, 4);
+}
+"#
+);
+
+/// `continue` from the middle of a `loop`, plus a later `break`: both back edge and exit edge leave
+/// from inside the body.
+three_engine_test!(
+    loop_with_continue_and_break_agrees,
+    "loopcont",
+    completes,
+    r#"fn main() {
+    let mut i: Int32 = 0;
+    let mut evens: Int32 = 0;
+    loop {
+        i = i + 1;
+        if i > 10 {
+            break;
+        }
+        if i % 2 == 1 {
+            continue;
+        }
+        evens = evens + 1;
+    }
+    assert_eq(i, 11);
+    assert_eq(evens, 5);
+}
+"#
+);
+
+/// A nested `loop` inside a `while`, each with its own mid-body exit — nested loop scopes.
+three_engine_test!(
+    nested_loop_scopes_agree,
+    "loopnest",
+    completes,
+    r#"fn main() {
+    let mut outer: Int32 = 0;
+    let mut total: Int32 = 0;
+    while outer < 3 {
+        let mut inner: Int32 = 0;
+        loop {
+            if inner >= 2 {
+                break;
+            }
+            total = total + 1;
+            inner = inner + 1;
+        }
+        outer = outer + 1;
+    }
+    assert_eq(outer, 3);
+    assert_eq(total, 6);
+}
+"#
+);
+
 three_engine_test!(
     multi_iteration_loop_agrees,
     "loopn",

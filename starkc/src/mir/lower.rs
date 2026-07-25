@@ -7404,16 +7404,10 @@ impl<'a> FnLowerer<'a> {
                         span,
                     );
                 }
-                // A user nominal element renders through its `Display::fmt`, whose returned `String`
-                // is borrowed then dropped PER ITERATION — a loop-carried borrow the backend rejects
-                // (E0502). Nested user `Display` inside a `Vec` awaits the loop-borrow fix.
-                if ty_mentions_user_nominal(&elem) {
-                    return unsupported(
-                        "Display of a `Vec` whose element uses a user `Display` impl needs the \
-                         loop-borrow fix — a later C6.3e slice",
-                        span,
-                    );
-                }
+                // CD-127: a user-nominal element renders through its `Display::fmt`, whose returned
+                // `String` is borrowed then dropped PER ITERATION. That loop-carried borrow used to
+                // be rejected (E0502) because the dispatch loop gave rustc no borrow precision
+                // inside loops; structured control-flow emission fixed it, so no gate remains.
                 let vec_ty = MirTy::Core(crate::hir::CoreType::Vec, vec![elem.clone()]);
                 let ref_ty = MirTy::Ref {
                     mutable: false,

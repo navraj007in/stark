@@ -250,25 +250,35 @@ pub fn emit_block_body(
         }
     }
 
-    // WP-C6.1g-c: an ACYCLIC body is emitted as nested labelled blocks (later-RPO labels enclose
-    // earlier ones, so every forward `goto`/branch is a `break 'bbTarget`). rustc then sees each
-    // block run exactly once and can flow-analyse a borrow that spans blocks — which the single
-    // `loop { match __bb }` dispatch defeats. A body with a real back-edge keeps the dispatch loop.
-    match linear_order(body) {
-        Some(rpo) => {
+    // WP-C6.1g-c / CD-127: the body is emitted as REAL Rust control flow — nested labelled blocks
+    // for forward edges and `loop`s for back edges — so rustc sees the actual CFG and can
+    // flow-analyse a borrow that spans blocks. The `loop { match __bb }` dispatch defeats that
+    // completely: it switches on a runtime value, so rustc must assume any block can follow any
+    // block, and every borrow held across a block boundary conflicts with every mutable use of its
+    // referent. CD-112 restored precision for acyclic bodies; CD-127 extends it to loops. The
+    // dispatch loop remains only as the fallback for a CFG whose scopes do not nest.
+    match structured_plan(body) {
+        Some(plan) => {
             out.push_str("    #[allow(unreachable_code)]\n");
             out.push_str("    let __stark_ret = 'stark_ret: {\n");
-            // Open a label for every non-entry block, later-RPO outermost.
-            for &b in rpo.iter().skip(1).rev() {
-                out.push_str(&format!("    'bb{b}: {{\n"));
+            for i in 0..plan.rpo.len() {
+                for _ in 0..plan.closes[i] {
+                    out.push_str("    }\n");
+                }
+                for kind in &plan.opens[i] {
+                    match kind {
+                        ScopeKind::Block(t) => out.push_str(&format!("    'bb{t}: {{\n")),
+                        ScopeKind::Loop(h) => out.push_str(&format!("    'loop{h}: loop {{\n")),
+                    }
+                }
+                let mode = EmitMode::Structured {
+                    plan: &plan,
+                    from: i,
+                };
+                emit_one_block(body, files, &mut out, env, plan.rpo[i], mode)?;
             }
-            // The entry block, innermost.
-            emit_one_block(body, files, &mut out, env, rpo[0], EmitMode::Linear)?;
-            // Close each label, then emit its block's code right after — the landing site of
-            // `break 'bbN`.
-            for &b in rpo.iter().skip(1) {
+            for _ in 0..plan.closes[plan.rpo.len()] {
                 out.push_str("    }\n");
-                emit_one_block(body, files, &mut out, env, b, EmitMode::Linear)?;
             }
             // Every reachable path leaves through a `break 'stark_ret`/abort; the last block has no
             // successor. This tail only gives the block its value type.
@@ -301,7 +311,7 @@ fn emit_one_block(
     out: &mut String,
     env: &TyEnv,
     block: u32,
-    mode: EmitMode,
+    mode: EmitMode<'_>,
 ) -> Result<(), BackendDiagnostic> {
     let block = &body.blocks[block as usize];
     for (stmt, _) in &block.statements {
@@ -338,10 +348,256 @@ fn terminator_successors(t: &Terminator) -> Vec<u32> {
     }
 }
 
-/// WP-C6.1g-c: the reachable blocks in reverse postorder when the CFG is ACYCLIC; `None` when it
-/// has a back-edge (a grey node reached again during DFS), in which case the dispatch loop is used.
-/// In an acyclic CFG every edge points forward in this order, so the fully-nested labelled-block
-/// encoding renders every jump as a `break` to an enclosing label.
+/// WP-C6.3e (CD-127): one lexical scope in the structured encoding of a body's CFG.
+///
+/// `Block(t)` is a labelled block `'bbT: { … }` that CLOSES immediately before block `t` is
+/// emitted, so a forward jump to `t` is `break 'bbT`. `Loop(h)` is `'loopH: loop { … }` wrapping a
+/// loop header and its body, so a back edge to `h` is `continue 'loopH`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ScopeKind {
+    Block(u32),
+    Loop(u32),
+}
+
+/// A scope's half-open RPO span: opened before emitting index `start`, closed before emitting
+/// index `end`.
+#[derive(Clone, Copy)]
+struct Scope {
+    start: usize,
+    end: usize,
+    kind: ScopeKind,
+}
+
+/// WP-C6.3e (CD-127): the structured emission plan for a body — how to render its CFG as real Rust
+/// control flow (nested labelled blocks and `loop`s) instead of a `loop { match __bb }` dispatch.
+struct StructuredPlan {
+    /// Reachable blocks in reverse postorder — the emission order.
+    rpo: Vec<u32>,
+    /// RPO position of each block (`usize::MAX` when unreachable).
+    index_of: Vec<usize>,
+    /// Whether a block is a loop header (the target of a back edge).
+    is_header: Vec<bool>,
+    /// Scopes to OPEN before emitting each RPO index, outermost first.
+    opens: Vec<Vec<ScopeKind>>,
+    /// How many scopes to CLOSE before emitting each RPO index (index `rpo.len()` is the tail).
+    closes: Vec<usize>,
+}
+
+/// WP-C6.3e (CD-127): plan the structured encoding of `body`'s CFG, or `None` if its scopes do not
+/// nest lexically (an irreducible CFG), in which case the caller falls back to the dispatch loop.
+///
+/// **Why this matters beyond tidiness.** The dispatch loop switches on a RUNTIME value, so rustc
+/// must assume any block can follow any block: every local read anywhere in the loop is live
+/// everywhere in it, and a borrow held across a block boundary conflicts with every mutable use of
+/// its referent. CD-112 fixed that for ACYCLIC bodies only; a body with any loop had no borrow
+/// precision at all. Emitting real control flow restores it for loops too.
+///
+/// The encoding is the standard one for reducible CFGs:
+///
+/// - a **back edge** `u -> h` (target at or before `u` in RPO) makes `h` a loop header, and its
+///   `Loop` scope spans from `h` to the last latch that jumps back to it;
+/// - a **forward edge** to `t` needs a `Block` scope for `t` open from `t`'s EARLIEST forward
+///   predecessor, so every such jump is a `break` to a label lexically enclosing it.
+///
+/// Scopes are opened widest-first at each index and validated against a stack: if any pair
+/// partially overlaps rather than nesting, the plan is abandoned rather than emitted wrongly.
+fn structured_plan(body: &MirBody) -> Option<StructuredPlan> {
+    let n = body.blocks.len();
+    let rpo = reachable_rpo(body);
+    let mut index_of = vec![usize::MAX; n];
+    for (i, &b) in rpo.iter().enumerate() {
+        index_of[b as usize] = i;
+    }
+
+    // Back edges give loop headers; forward edges give each target's earliest predecessor, which is
+    // where its labelled block must open.
+    let mut is_header = vec![false; n];
+    let mut start_of = vec![usize::MAX; n];
+    let mut preds: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut back_edges: Vec<(u32, u32)> = Vec::new(); // (latch, header)
+    for (i, &b) in rpo.iter().enumerate() {
+        for t in terminator_successors(&body.blocks[b as usize].terminator.0) {
+            let ti = index_of[t as usize];
+            if ti == usize::MAX {
+                continue;
+            }
+            preds[t as usize].push(b);
+            if ti <= i {
+                is_header[t as usize] = true;
+                back_edges.push((b, t));
+            } else {
+                start_of[t as usize] = start_of[t as usize].min(i);
+            }
+        }
+    }
+
+    // A loop's span must cover its whole NATURAL LOOP, not merely its latches. Taking the last
+    // latch is wrong precisely where it matters most — nesting: RPO can place an INNER loop's latch
+    // AFTER the outer loop's, so an outer span measured by latches fails to contain the inner loop
+    // and the two spans CROSS. (That crossing, "repaired" by widening the inner loop's start, moved
+    // a `loop` off its header and pulled the enclosing blocks into the loop body — an infinite loop
+    // in nested-`while` code.) The natural loop of `h` via latch `u` is `h` plus every node that
+    // reaches `u` without passing through `h`.
+    let mut loop_end = vec![0usize; n];
+    for &(latch, header) in &back_edges {
+        let mut in_loop = vec![false; n];
+        in_loop[header as usize] = true;
+        let mut stack = vec![latch];
+        in_loop[latch as usize] = true;
+        while let Some(x) = stack.pop() {
+            for &p in &preds[x as usize] {
+                if !in_loop[p as usize] {
+                    in_loop[p as usize] = true;
+                    stack.push(p);
+                }
+            }
+        }
+        let end = (0..n)
+            .filter(|&x| in_loop[x] && index_of[x] != usize::MAX)
+            .map(|x| index_of[x])
+            .max()
+            .unwrap_or(index_of[header as usize]);
+        loop_end[header as usize] = loop_end[header as usize].max(end);
+    }
+
+    let mut opens: Vec<Vec<ScopeKind>> = vec![Vec::new(); rpo.len() + 1];
+    let mut scopes: Vec<Scope> = Vec::new();
+    for (i, &b) in rpo.iter().enumerate() {
+        if is_header[b as usize] {
+            scopes.push(Scope {
+                start: i,
+                end: loop_end[b as usize] + 1,
+                kind: ScopeKind::Loop(b),
+            });
+        }
+        if start_of[b as usize] != usize::MAX {
+            scopes.push(Scope {
+                start: start_of[b as usize],
+                end: i,
+                kind: ScopeKind::Block(b),
+            });
+        }
+    }
+    // Extend a LABEL outward when it would cross another scope's end. A jump target after a loop
+    // whose earliest predecessor lies INSIDE that loop would otherwise get its label nested inside
+    // the loop, and `break 'bbT` would land at the end of the loop BODY — re-iterating instead of
+    // exiting. Widening the label to start where the crossed scope starts makes it enclose that
+    // scope instead (the tie rule below then puts the `Block` outside the `Loop`). Starts only ever
+    // decrease, so this terminates.
+    //
+    // Only a `Block` is ever widened. A `Loop` scope MUST begin exactly at its header: moving it
+    // earlier would pull the preceding blocks into the loop body and re-execute them every
+    // iteration. A `Loop` that genuinely crosses another scope is irreducible control flow, and the
+    // nesting validation below rejects the whole plan rather than "repairing" it into a wrong loop.
+    loop {
+        let mut changed = false;
+        for a in 0..scopes.len() {
+            if matches!(scopes[a].kind, ScopeKind::Loop(_)) {
+                continue;
+            }
+            for b in 0..scopes.len() {
+                if a == b {
+                    continue;
+                }
+                let (outer_start, outer_end) = (scopes[b].start, scopes[b].end);
+                let inner = scopes[a];
+                if outer_start < inner.start && inner.start < outer_end && inner.end >= outer_end {
+                    scopes[a].start = outer_start;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    // Widest scope first at a given start; on a tie the `Block` is outer, because breaking to it
+    // must ESCAPE the loop that shares its span (a loop-exit edge).
+    scopes.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then(b.end.cmp(&a.end))
+            .then_with(|| match (a.kind, b.kind) {
+                (ScopeKind::Block(_), ScopeKind::Loop(_)) => std::cmp::Ordering::Less,
+                (ScopeKind::Loop(_), ScopeKind::Block(_)) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            })
+    });
+
+    // Validate lexical nesting by simulating the scope stack, recording how many closes each index
+    // owes. A scope whose end is passed without being on top, or one that outlives its enclosing
+    // scope, means the CFG is not reducible into this encoding.
+    let mut closes = vec![0usize; rpo.len() + 1];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next = 0usize;
+    for i in 0..=rpo.len() {
+        while let Some(&end) = stack.last() {
+            match end.cmp(&i) {
+                std::cmp::Ordering::Equal => {
+                    stack.pop();
+                    closes[i] += 1;
+                }
+                std::cmp::Ordering::Less => return None,
+                std::cmp::Ordering::Greater => break,
+            }
+        }
+        while next < scopes.len() && scopes[next].start == i {
+            let scope = scopes[next];
+            if scope.end > rpo.len() {
+                return None;
+            }
+            if let Some(&enclosing) = stack.last() {
+                if scope.end > enclosing {
+                    return None;
+                }
+            }
+            stack.push(scope.end);
+            opens[i].push(scope.kind);
+            next += 1;
+        }
+    }
+    if !stack.is_empty() || next != scopes.len() {
+        return None;
+    }
+
+    Some(StructuredPlan {
+        rpo,
+        index_of,
+        is_header,
+        opens,
+        closes,
+    })
+}
+
+/// The reachable blocks in reverse postorder (a plain DFS postorder, reversed).
+fn reachable_rpo(body: &MirBody) -> Vec<u32> {
+    let n = body.blocks.len();
+    let mut visited = vec![false; n];
+    let mut postorder: Vec<u32> = Vec::with_capacity(n);
+    let entry = body.entry.0 as usize;
+    let mut stack: Vec<(usize, usize)> = vec![(entry, 0)];
+    visited[entry] = true;
+    while let Some(&(node, child_index)) = stack.last() {
+        let succ = terminator_successors(&body.blocks[node].terminator.0);
+        if child_index < succ.len() {
+            stack.last_mut().unwrap().1 += 1;
+            let child = succ[child_index] as usize;
+            if !visited[child] {
+                visited[child] = true;
+                stack.push((child, 0));
+            }
+        } else {
+            postorder.push(node as u32);
+            stack.pop();
+        }
+    }
+    postorder.reverse();
+    postorder
+}
+
+/// Superseded by [`structured_plan`] (CD-127), which handles cyclic bodies too. Retained only for
+/// its unit tests' shape check that an acyclic CFG orders entry-first.
+#[cfg(test)]
 fn linear_order(body: &MirBody) -> Option<Vec<u32>> {
     let n = body.blocks.len();
     let mut colour = vec![0u8; n]; // 0 white, 1 grey (on the DFS stack), 2 black
@@ -466,28 +722,40 @@ fn validate_ephemeral_references(body: &MirBody) -> Result<(), BackendDiagnostic
     Ok(())
 }
 
-/// WP-C6.1g-c: how a terminator's control transfer is rendered. `Dispatch` is the block-index loop
-/// (`__bb = t; continue;`); `Linear` is the labelled-block form (`break 'bbT;`) used for an acyclic
-/// body so rustc sees each block run once and can flow-analyse borrows that span blocks.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EmitMode {
+/// WP-C6.1g-c / CD-127: how a terminator's control transfer is rendered. `Dispatch` is the
+/// block-index loop (`__bb = t; continue;`), kept only as the fallback for a CFG that does not nest;
+/// `Structured` is the real-control-flow form, where a forward edge is `break 'bbT` and a back edge
+/// is `continue 'loopH`, so rustc can flow-analyse borrows that span blocks — inside loops included.
+#[derive(Clone, Copy)]
+enum EmitMode<'a> {
     Dispatch,
-    Linear,
+    Structured {
+        plan: &'a StructuredPlan,
+        from: usize,
+    },
 }
 
-impl EmitMode {
+impl EmitMode<'_> {
     /// The statement transferring control to block `t`.
     fn jump(self, t: u32) -> String {
         match self {
             EmitMode::Dispatch => format!("__bb = {t}; continue;"),
-            EmitMode::Linear => format!("break 'bb{t};"),
+            EmitMode::Structured { plan, from } => {
+                // A back edge — the target is a loop header at or before this block in RPO —
+                // re-enters its `loop`; every other edge points forward, to an enclosing label.
+                if plan.is_header[t as usize] && plan.index_of[t as usize] <= from {
+                    format!("continue 'loop{t};")
+                } else {
+                    format!("break 'bb{t};")
+                }
+            }
         }
     }
     /// The statement yielding the function's return value `v`.
     fn ret(self, v: &str) -> String {
         match self {
             EmitMode::Dispatch => format!("break {v};"),
-            EmitMode::Linear => format!("break 'stark_ret {v};"),
+            EmitMode::Structured { .. } => format!("break 'stark_ret {v};"),
         }
     }
 }
@@ -498,7 +766,7 @@ fn emit_terminator(
     out: &mut String,
     terminator: &Terminator,
     env: &TyEnv,
-    mode: EmitMode,
+    mode: EmitMode<'_>,
 ) -> Result<(), BackendDiagnostic> {
     match terminator {
         Terminator::Goto { target } => {

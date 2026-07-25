@@ -33,6 +33,10 @@ Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structu
 linearisation — acyclic bodies emit as nested labelled blocks so a cross-block borrow is seen
 once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns build). This also
 unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
+**GENERALISED by CD-127: emission is now STRUCTURED for cyclic bodies too (`break 'bbT` for forward
+edges, `continue 'loopH` for back edges), so borrows flow-analyse INSIDE loops — previously loops had
+no borrow precision at all, since the `match __bb` dispatch let rustc assume any block follows any
+block. The dispatch loop survives only as the fallback for an irreducible CFG.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
 **WP-C6.3e PARTIAL (CD-113…123): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
@@ -47,14 +51,15 @@ load-bearing (the owned Vec/composite is dropped after its render); the native t
 before abort so a mid-render trap's prefix matches the interpreters. `three_engine_differential`
 compares real stdout (`NATIVE_STDOUT_SUPPORTED = true`). `Option`/`Result` of a `String` or a user
 `Display` nominal now render three-engine — the backend's trailing variant-field BORROW (CD-126) fixed
-the enum-payload limit (E0716). Bounded/refused AT LOWERING (deterministic): `Float32` in the
+the enum-payload limit (E0716). Nested user `Display` inside a `Vec` also renders
+three-engine — CD-127's structured emission gave loops borrow precision (E0502 gone). Bounded/refused
+AT LOWERING (deterministic): `Float32` in the
 COMPOSITE Display path only (DEV-105; a SCALAR `println(Float32)` is admitted — the interpreters agree,
-only the native binary diverges), arrays > 64 (unroll cap), a droppable composite carrying a borrow
-(generated lifetimes), and nested user `Display` / owner elements inside a `Vec` (E0502 loop-carried
-borrow). C6.3e
-remaining: nested user `Display` / owner elements inside a `Vec` (E0502 loop-borrow); `Vec<String>`
-(same); a non-Copy COMPOSITE enum payload (deeper than a leaf); `Float32` (DEV-105); trap-message
-three-engine parity (DEV-106, narrowed — partial output already comparable); native `v[i]` OOB
+only the native binary diverges), arrays > 64 (unroll cap), and a droppable composite carrying a borrow
+(generated lifetimes). C6.3e
+remaining: `Vec<String>` (the Vec arm reads elements by COPY — needs by-REFERENCE Vec access, not
+borrow precision); a non-Copy COMPOSITE enum payload (deeper than a leaf); `Float32` (DEV-105);
+trap-message three-engine parity (DEV-106, narrowed — partial output already comparable); native `v[i]` OOB
 provenance (DEV-107). DEFERRED to a future decision (CD-125): composite `Box`
 elements — `Box<T>` is not a Display type today (typechecker E0500) and making it one is a semantics
 choice, not a lowering slice.**
@@ -3131,6 +3136,53 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-127 [2026-07-25, **backend — STRUCTURED control-flow emission; borrow precision inside loops
+  (generalises CD-112)**] Every generated body with a loop was emitted as `loop { match __bb { … } }`,
+  which switches on a RUNTIME value — so rustc must assume ANY block can follow ANY block. Every local
+  read anywhere in the loop is therefore live everywhere in it, and a borrow held across a block
+  boundary conflicts with every mutable use of its referent. Loops had **zero** borrow precision.
+  CD-112 fixed this for ACYCLIC bodies (nested labelled blocks); cyclic bodies kept the dispatch loop.
+  - **Diagnosis (empirical, not inferred).** The generated crate for a `Vec<P>` Display render was
+    dumped and hand-patched: moving the borrow and its use into ONE block made the identical program
+    compile. That isolates the cause to the dispatch loop's lost edge information, and rules out the
+    borrow itself being ill-formed.
+  - **Fix — `structured_plan` + `EmitMode::Structured`.** A body is now emitted as REAL Rust control
+    flow: a **forward** edge to `t` is `break 'bbT`, where `'bbT` is a labelled block opened at `t`'s
+    EARLIEST forward predecessor and closed immediately before `t`; a **back** edge to header `h` is
+    `continue 'loopH`, where `'loopH: loop` spans `h` through its whole NATURAL LOOP. Scopes are
+    opened widest-first per index (on a tie the `Block` is outer, so a loop-EXIT edge escapes the
+    loop it shares a span with) and validated against a stack; a CFG whose scopes would partially
+    overlap (irreducible) is not emitted this way at all but falls back to the dispatch loop, which
+    remains for exactly that case. `linear_order` is superseded (kept only under `#[cfg(test)]`).
+  - **Two defects found DURING this work — by a test that hung, not by review.** Both were in the
+    first cut of the scope computation, and both are recorded because each is a trap the next
+    control-flow change could fall into:
+    1. **A loop's span must cover its whole natural loop, not just its latches.** RPO can place an
+       INNER loop's latch AFTER the outer loop's, so an outer span measured by latches did not
+       contain the inner loop and the two spans CROSSED. Now computed as the natural loop of each
+       back edge (`h` plus every node reaching the latch without passing through `h`).
+    2. **A `Loop` scope must never be widened.** The crossing above was "repaired" by an
+       outward-extension rule that moved the inner loop's start earlier — off its header — which
+       pulls the preceding blocks into the loop body and re-executes them every iteration. In
+       nested-`while` code that reset the inner counter forever: an INFINITE LOOP in a previously
+       passing test (`multi_iteration_loop_agrees` spun at 76% CPU for ten minutes). Extension is
+       now restricted to `Block` labels; a genuinely crossing `Loop` is irreducible and falls back.
+  - **Coverage gap this exposed:** the differential suite had NO `loop { … }` case at all — only
+    `while`. Three were added (`infinite_loop_with_mid_body_break_agrees`,
+    `loop_with_continue_and_break_agrees`, `nested_loop_scopes_agree`), covering a mid-body `break`
+    as a loop's only exit, `continue`+`break` from inside a body, and nested loop scopes — precisely
+    the shapes that stress scope nesting.
+  - **Retires the loop-borrow deferral:** nested user `Display` inside a `Vec` — whose per-iteration
+    `fmt` `String` is borrowed then dropped — now compiles and renders three-engine. More importantly
+    this was a GENERAL limitation: every cross-block borrow inside every loop was blocked, which the
+    iterator (C6.3c), `chars()` and HashMap (C6.3d) work would have hit constantly.
+  - **Evidence.** `c63e_formatting.rs` 44 with `nested_user_display_in_vec` now POSITIVE three-engine;
+    `three_engine_differential` **86** (83 + the three new `loop` cases) green; full suite + CI as the
+    exhaustive check on a change that touches EVERY generated body.
+  - **Still deferred (unrelated causes):** `Vec<String>` Display — the Vec arm reads elements by COPY
+    (`VecIndexGet`, V-COPY-1), so a non-Copy element needs by-REFERENCE Vec access, not borrow
+    precision; and a droppable composite carrying a borrow (generated lifetimes).
 
 - CD-126 [2026-07-25, **WP-C6.3e / backend — enum-payload BORROW fixed (retires two deferrals)**]
   The native backend could not borrow an enum variant payload: `emit_places` emitted every

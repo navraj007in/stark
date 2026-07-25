@@ -518,9 +518,11 @@ fn droppable_tuple_carrying_borrow_refused() {
     );
 }
 
+/// CD-127: structured control-flow emission gave rustc borrow precision inside loops, so a
+/// per-iteration `Display::fmt` borrow in a `Vec` render now compiles.
 #[test]
-fn nested_user_display_in_vec_refused() {
-    refused_by_lowering(
+fn nested_user_display_in_vec() {
+    agree_out(
         "nest_vec",
         "struct P { v: Int32 }\n\
          impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
