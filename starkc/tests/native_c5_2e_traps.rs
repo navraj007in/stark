@@ -179,6 +179,37 @@ fn panic_with_message_reports_category_location_and_message() {
     );
 }
 
+// CD-120 Contract B (partial output on trap): output emitted BEFORE a trap survives on stdout,
+// and NOTHING after the trap is emitted. `print("before")` has no trailing newline, so it sits in
+// stdout's LineWriter; the trap ABI must flush it before `exit(101)` or the prefix is lost --
+// which would diverge from the HIR/MIR interpreters that retain their captured prefix.
+#[test]
+fn output_before_trap_is_flushed_then_abort() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let source = r#"fn main() {
+    print("before");
+    let a: Int32 = 2147483647;
+    let b: Int32 = a + 1;
+    print("after");
+}
+"#;
+    let (run, _) = compile_and_run(source, "flush_before_trap");
+    assert_eq!(run.status.code(), Some(101), "trap exit code must be 101");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(
+        stdout, "before",
+        "the pre-trap prefix must be flushed, and nothing after the trap emitted: {stdout:?}"
+    );
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.contains("integer overflow"),
+        "stderr missing category: {stderr}"
+    );
+}
+
 /// A panic reached only on a taken branch still carries its message natively.
 #[test]
 fn conditional_panic_with_message() {

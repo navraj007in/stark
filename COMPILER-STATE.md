@@ -35,14 +35,17 @@ once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns 
 unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-**WP-C6.3e PARTIAL (CD-113…119): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
+**WP-C6.3e PARTIAL (CD-113…120): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
 C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result` of
 primitive elements, recursively — now native AND in MIR, was HIR-only; via a print-sequence lowering,
-no runtime-surface change). `three_engine_differential` compares real stdout
-(`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused pre-rustc: `Float32` in the Display path (DEV-105)
-and arrays > 64 elements (unroll cap). C6.3e remaining: composite `str`/`String`/`Box`/`Vec` (loop)
-elements, nested user-`Display`; `Float32` (DEV-105); assert-message three-engine parity.**
+no runtime-surface change). Its observable contracts (A sequencing / B partial-output-on-trap /
+C destructor-timing) are recorded (CD-120), and the native trap ABI now flushes stdout before abort
+so a mid-render trap's prefix matches the interpreters. `three_engine_differential` compares real
+stdout (`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused pre-rustc: `Float32` in the Display path
+(DEV-105) and arrays > 64 elements (unroll cap). C6.3e remaining: composite `str`/`String`/`Box`/`Vec`
+(loop, built against A/B/C) elements, nested user-`Display`; `Float32` (DEV-105); trap-message
+three-engine parity (DEV-106, narrowed — partial output already comparable).**
 Also open:
 **WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
 offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
@@ -3116,6 +3119,48 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-120 [2026-07-25, **WP-C6.3e — composite Display observable-behaviour contracts + a trap-flush
+  fix they surfaced**] Before `Vec` Display (the first composite needing a runtime LOOP rather than
+  unrolling), the three observable-behaviour contracts it must satisfy are written down explicitly,
+  and writing them surfaced+fixed a real native/interp divergence. No new MIR shape or `RuntimeFn`.
+  - **Contract A — output sequencing.** Composite Display is a *print-sequence lowering*: a fixed
+    left-to-right structural walk emitting `Print*`/`PrintStr` ops in structural order — opening
+    delimiter, each element rendered recursively separated by `", "`, closing delimiter, and a
+    trailing newline (`PrintlnStr("")`) for `println`. There is NO intermediate `String` assembly
+    and no reordering buffer, so the byte stream is defined purely by op emission order on the one
+    shared stdout. All three engines run the SAME ordered ops → byte-identical by construction
+    (proven: `c63e_formatting` HIR==MIR==native). A runtime-length container (Vec) emits the same
+    per-element op sequence per iteration in index order, separator before every element but the
+    first.
+  - **Contract B — partial output on trap.** If rendering an element traps (Vec index OOB,
+    arithmetic/cast/`panic` in a nested user `fmt`), STARK trap semantics are unchanged: ABORT (exit
+    101), NO unwind, NO destructors. The observable stdout is therefore exactly the prefix of ops
+    completed before the trapping op — every opening delimiter / separator / fully-rendered earlier
+    element, and NOTHING after (no closing delimiter, no newline). That prefix is byte-identical
+    across engines: the interpreters already retain it (`interp::run_with_partial_output`, used by
+    the MIR differential comparator), and native now does too (see the fix below).
+  - **Contract C — destructor timing.** A Drop-bearing (non-Copy) printed value's destructor runs
+    AFTER the complete rendering (including the trailing newline) is emitted — never interleaved with
+    the bytes — on the success path (the scalar rule of CD-114, proven by
+    `user_display_drop_bearing_runs_destructor_after_output`). A composite drops its owned elements
+    as part of that single post-render destruction, in the language's declared drop order. On the
+    trap path (Contract B) NO destructor runs. Composite Display is Copy-only today (nothing to
+    drop), so this is currently vacuous for composites; it governs the `String`/`Vec`/`Box` element
+    slices and is why they are sequenced after this CD.
+  - **The fix Contract B surfaced (real bug).** `std::io::stdout()` is a `LineWriter`; `print(x)`
+    with no trailing newline sits unflushed, and `std::process::exit(101)` in the trap ABI does NOT
+    flush it — so a trap mid-output DROPPED its pre-trap prefix natively while the interpreters kept
+    it, violating Contract B across engines. `stark_runtime::output::flush_stdout()` was added and is
+    now called at the top of both `trap::abort` and `trap::abort_with_message`.
+  - **Evidence.** `native_c5_2e_traps.rs` +1 (`output_before_trap_is_flushed_then_abort`:
+    `print("before")` then an overflow trap ⇒ stdout is exactly `"before"`, exit 101 — 7 pass).
+  - **DEV-106 [narrowed]:** partial *output* IS already cross-engine comparable (above); the residual
+    gap is only trap *message/category* TEXT equality across engines — `interp::Outcome`'s trap arm
+    carries no category/message field for the comparator to assert. That remains the deferred,
+    CE-adjacent `Outcome::Trapped { message }` widening.
+  - **C6.3e remaining:** composite `str`/`String`/`Box`/`Vec` (loop, built against A/B/C) elements,
+    nested user-`Display`; `Float32` (DEV-105); trap-message parity (DEV-106).
 
 - CD-119 [2026-07-25, **WP-C6.3e — composite formatting boundary hardening (external review)**] A
   bounded correctness pass on the composite Display foundation (CD-117/118) before extending it to

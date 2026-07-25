@@ -63,6 +63,9 @@ impl TrapCategory {
 /// `panic = "abort"` profile means nothing downstream of `std::process::exit` ever runs anyway,
 /// so this needs no unwind-suppression of its own.
 pub fn abort(category: TrapCategory, file: &str, line: u32, column: u32) -> ! {
+    // CD-120 Contract B: emit any buffered pre-trap output before aborting, so the observable
+    // stdout prefix matches the HIR/MIR interpreters (which retain their captured prefix).
+    crate::output::flush_stdout();
     eprintln!("error: runtime trap: {}", category.message());
     eprintln!("  --> {file}:{line}:{column}");
     std::process::exit(101);
@@ -78,6 +81,8 @@ pub fn abort_with_message(
     line: u32,
     column: u32,
 ) -> ! {
+    // CD-120 Contract B: flush buffered pre-trap output before aborting (see [`abort`]).
+    crate::output::flush_stdout();
     eprintln!("error: runtime trap: {}", category.message());
     eprintln!("  --> {file}:{line}:{column}");
     eprintln!("  {message}");
