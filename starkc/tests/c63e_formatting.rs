@@ -136,3 +136,52 @@ fn mixed_primitive_output() {
         "fn main() { print(true); print(1); println(2.5); println(false); }",
     );
 }
+
+// ---- User `Display` dispatch (clears the C6.2d native-Display deferral) ----
+
+/// `println(p)` on a Copy struct with a user `Display` calls the user's `fmt` and prints its result
+/// (never Rust's `Debug`). The by-value arg has no destructor (Copy), so no drop is emitted.
+#[test]
+fn user_display_copy_struct() {
+    agree_out(
+        "display_struct",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { String::from(\"CUSTOM\") } }\n\
+         fn main() { let p = P { v: 7 }; println(p); }",
+    );
+}
+
+/// A `Display` whose `fmt` reads the receiver's field, so the printed text depends on the value.
+#[test]
+fn user_display_reads_field() {
+    agree_out(
+        "display_field",
+        "struct P { v: Int32 }\n\
+         impl Display for P { fn fmt(&self) -> String { let mut s = String::from(\"v=\"); s.push_str(\"!\"); s } }\n\
+         fn main() { let p = P { v: 3 }; print(p); println(1); }",
+    );
+}
+
+/// A Drop-bearing (non-Copy) `Display` type: the by-value argument's destructor DOES run after the
+/// bytes are submitted — exercising the arg-drop path the Copy case skips.
+#[test]
+fn user_display_drop_bearing() {
+    agree_out(
+        "display_drop",
+        "struct D { v: Int32 }\n\
+         impl Drop for D { fn drop(&mut self) { } }\n\
+         impl Display for D { fn fmt(&self) -> String { String::from(\"DROPPY\") } }\n\
+         fn main() { let d = D { v: 1 }; println(d); }",
+    );
+}
+
+/// User `Display` on an enum.
+#[test]
+fn user_display_enum() {
+    agree_out(
+        "display_enum",
+        "enum E { A, B }\n\
+         impl Display for E { fn fmt(&self) -> String { String::from(\"variant\") } }\n\
+         fn main() { let e = E::A; println(e); }",
+    );
+}

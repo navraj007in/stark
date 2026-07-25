@@ -3108,6 +3108,24 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-114 [2026-07-25, **WP-C6.3e slice 2 — native user `Display` dispatch; C6.2d Display deferral
+  CLEARED**] `println(x)` on a user struct/enum with a `Display` impl now runs the user's `fmt` and
+  prints its `String` result natively — never Rust's `Debug`. This was already wired (`lower_print_
+  display` → call `Display::fmt(&self) -> String`, then `PrintlnStr`); the pieces became native once
+  C6.1g-c unblocked String-returning methods and C6.3a wired `PrintlnStr`.
+  - **The one fix:** `lower_print_display` unconditionally dropped the by-value argument, but a `Copy`
+    printed type (`struct P { v: Int32 }` with a `&self` `Display`) has no destructor — the emitted
+    `Drop` on a `Copy` type is a no-op the interpreter ignores but the native backend refuses (Copy
+    has no slot). Now the arg-drop is gated on `!is_copy`. A Drop-bearing (non-`Copy`) printed value
+    still has its destructor run after the bytes are submitted (observable, oracle-matched).
+  - **Proven native (stdout == HIR oracle):** `tests/c63e_formatting.rs` now 11 — the 7 primitive
+    cases plus user `Display` on a Copy struct, a field-reading `fmt`, a Drop-bearing type, and an
+    enum. Regression: `--lib` 441, `three_engine_differential` 83, `native_c6_2_generics_traits`,
+    `gate2_valid`, `mir_lowering` — all green; fmt + clippy clean.
+  - **C6.2d Display:** the deferral (native output → C6.3) is now satisfied for user `Display`.
+  - **C6.3e remaining:** composite `Display` (tuple/struct/enum/Option/Result/Vec/Box field-by-field
+    rendering), `Float32` println (the deferred cast-precision differential), panic/assert text bytes.
+
 - CD-113 [2026-07-25, **WP-C6.3e slice 1 — native primitive formatting + output**] `println`/`print`
   of `Int*`/`UInt*` (widened to `i64`/`u64`), `Bool`, and `Float64` now emit natively, rendered per
   STARK's canonical form (not Rust `Debug`). Until now native supported ONLY str/char output; numbers

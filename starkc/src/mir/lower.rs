@@ -7236,16 +7236,22 @@ impl<'a> FnLowerer<'a> {
             self.info(span),
             after_str_drop,
         );
+        // The by-value argument's destructor runs here (observable — the oracle drops it too), but
+        // ONLY when it is droppable. A `Copy` printed type (e.g. a plain `struct P { v: Int32 }`
+        // whose `Display` is by `&self`) has no destructor; emitting a `Drop` on it is a no-op the
+        // interpreter ignores but the native backend refuses (Copy has no slot), so skip it.
         if let Some(arg_tmp) = owned_arg {
-            let after_arg_drop = self.new_block();
-            self.terminate(
-                Terminator::Drop {
-                    place: Place::local(arg_tmp),
-                    target: after_arg_drop,
-                },
-                self.info(span),
-                after_arg_drop,
-            );
+            if !self.is_copy(&peeled) {
+                let after_arg_drop = self.new_block();
+                self.terminate(
+                    Terminator::Drop {
+                        place: Place::local(arg_tmp),
+                        target: after_arg_drop,
+                    },
+                    self.info(span),
+                    after_arg_drop,
+                );
+            }
         }
         Ok(())
     }
