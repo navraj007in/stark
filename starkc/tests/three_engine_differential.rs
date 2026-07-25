@@ -652,8 +652,8 @@ three_engine_test!(
 "#
 );
 
-/// `continue` from the middle of a `loop`, plus a later `break`: both back edge and exit edge leave
-/// from inside the body.
+// `continue` from the middle of a `loop`, plus a later `break`: both back edge and exit edge leave
+// from inside the body.
 three_engine_test!(
     loop_with_continue_and_break_agrees,
     "loopcont",
@@ -677,7 +677,7 @@ three_engine_test!(
 "#
 );
 
-/// A nested `loop` inside a `while`, each with its own mid-body exit — nested loop scopes.
+// A nested `loop` inside a `while`, each with its own mid-body exit — nested loop scopes.
 three_engine_test!(
     nested_loop_scopes_agree,
     "loopnest",

@@ -595,39 +595,6 @@ fn reachable_rpo(body: &MirBody) -> Vec<u32> {
     postorder
 }
 
-/// Superseded by [`structured_plan`] (CD-127), which handles cyclic bodies too. Retained only for
-/// its unit tests' shape check that an acyclic CFG orders entry-first.
-#[cfg(test)]
-fn linear_order(body: &MirBody) -> Option<Vec<u32>> {
-    let n = body.blocks.len();
-    let mut colour = vec![0u8; n]; // 0 white, 1 grey (on the DFS stack), 2 black
-    let mut postorder: Vec<u32> = Vec::with_capacity(n);
-    let entry = body.entry.0 as usize;
-    let mut stack: Vec<(usize, usize)> = vec![(entry, 0)];
-    colour[entry] = 1;
-    while let Some(&(node, child_index)) = stack.last() {
-        let succ = terminator_successors(&body.blocks[node].terminator.0);
-        if child_index < succ.len() {
-            stack.last_mut().unwrap().1 += 1;
-            let child = succ[child_index] as usize;
-            match colour[child] {
-                0 => {
-                    colour[child] = 1;
-                    stack.push((child, 0));
-                }
-                1 => return None, // grey → back-edge → cyclic
-                _ => {}           // black → already finished (cross/forward edge, fine)
-            }
-        } else {
-            colour[node] = 2;
-            postorder.push(node as u32);
-            stack.pop();
-        }
-    }
-    postorder.reverse();
-    Some(postorder)
-}
-
 /// WP-C5.3d-1a (CD-062): the **ephemeral borrowed-call reference lane** validator.
 ///
 /// References are admitted into C5 only in a shape narrow enough that they need no storage and no
