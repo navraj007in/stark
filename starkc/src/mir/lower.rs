@@ -7188,6 +7188,20 @@ impl<'a> FnLowerer<'a> {
                 Ok(())
             }
             MirTy::Array(elem, n) => {
+                // The renderer UNROLLS one print sequence per element, so a large array would emit
+                // proportional MIR / generated Rust. Bounded until a loop- or iterator-based renderer
+                // lands (the same loop `Vec` will need); above the cap it is refused, not silently
+                // quadratic. Small heterogeneous tuples stay unrolled (their arity is tiny).
+                const MAX_UNROLL: u64 = 64;
+                if *n > MAX_UNROLL {
+                    return unsupported(
+                        format!(
+                            "Display of an array longer than {MAX_UNROLL} ({n} elements) is deferred: \
+                             the renderer unrolls per element; a loop-based renderer is a later slice"
+                        ),
+                        span,
+                    );
+                }
                 self.print_str_lit("[", span);
                 for i in 0..*n {
                     if i > 0 {
@@ -7480,10 +7494,16 @@ impl<'a> FnLowerer<'a> {
                 let widened = self.cast_to_temp(value, MirTy::UInt64, span)?;
                 Ok((PrintKind::UInt, widened))
             }
-            MirTy::Float32 => {
-                let widened = self.cast_to_temp(value, MirTy::Float64, span)?;
-                Ok((PrintKind::Float, widened))
-            }
+            // DEV-105: `println` of a `Float32` widens `f32 -> f64`, and the native binary sees the
+            // f32-rounded value (`0.1f32 as f64 == 0.10000000149011612`) while the HIR interpreter
+            // keeps the wider `0.1` — a cross-engine value-semantics divergence. Refused (recursively,
+            // since composite rendering routes primitives through here) until the rounding authority
+            // is decided and the three engines are aligned. `Float64` is unaffected.
+            MirTy::Float32 => unsupported(
+                "`println`/`print` of `Float32` is deferred (DEV-105: the \
+                 f32->f64 widening diverges across engines); use `Float64`",
+                span,
+            ),
             _ => unsupported("print/println of this type (C4.5)", span),
         }
     }

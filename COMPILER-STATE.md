@@ -35,16 +35,19 @@ once-through; the borrow-through-return refusal is lifted (`Option<&P>` returns 
 unblocked owned-`String` comparison, stored interior `&str`, and `Vec<String>`-style pushes.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-**WP-C6.3e PARTIAL (CD-113/114/115): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
+**WP-C6.3e PARTIAL (CD-113…119): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
-C6.2d Display deferral), and `panic(msg)` text; `three_engine_differential` now compares real stdout
-(`NATIVE_STDOUT_SUPPORTED = true`). C6.3e remaining: composite `Display` (tuple/struct/enum/Option/
-Result/Vec — a lowering feature, HIR-only today), `Float32` println (DEV-105), assert message text.**
+C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result` of
+primitive elements, recursively — now native AND in MIR, was HIR-only; via a print-sequence lowering,
+no runtime-surface change). `three_engine_differential` compares real stdout
+(`NATIVE_STDOUT_SUPPORTED = true`). Bounded/refused pre-rustc: `Float32` in the Display path (DEV-105)
+and arrays > 64 elements (unroll cap). C6.3e remaining: composite `str`/`String`/`Box`/`Vec` (loop)
+elements, nested user-`Display`; `Float32` (DEV-105); assert-message three-engine parity.**
 Also open:
 **WP-C6.3** (Vec trapping ops, iterators, HashMap incl. CE4 ordering, files; runtime version/install/
-offline-build evidence is a C6.3 CLOSURE requirement not yet recorded), C4/C5/C6 platform matrix,
-C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083, DEV-105 (Float32
-widening cross-engine) still open — none is C6.2.)**
+offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
+platform matrix, C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
+DEV-105 (Float32 widening cross-engine) still open — none is C6.2.)**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -3113,6 +3116,36 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-119 [2026-07-25, **WP-C6.3e — composite formatting boundary hardening (external review)**] A
+  bounded correctness pass on the composite Display foundation (CD-117/118) before extending it to
+  `Vec`, closing two soundness/scalability gaps the reviewer flagged and one differential-coverage
+  gap (recorded, not closed).
+  - **DEV-105 no longer leaks into composites (the real fix).** `widen_for_print` was the single
+    Float32 chokepoint for scalar printing, but `emit_display_value` recursed into composite elements
+    THROUGH it — so `println((1, 0.1f32))` reached native with the very f32→f64 widening divergence
+    DEV-105 defers, silently, inside a tuple. `widen_for_print`'s `Float32` arm now returns
+    `unsupported(… DEV-105 …)`, refusing Float32 in EVERY Display path (scalar and every composite
+    depth) BEFORE MIR — a refusal, never a wrong answer. Confirmed no existing test prints Float32
+    (c63e/native_c5_2b/native_c5_2c/gate2 all green after the change).
+  - **Array unrolling is bounded.** `emit_display_value`'s `Array` arm fully unrolls elements (one
+    print-op sequence per index); it now caps at `MAX_UNROLL = 64` and `unsupported`s longer arrays
+    rather than emitting an unbounded body. (A runtime loop is the eventual lift, tracked with `Vec`.)
+  - **Evidence.** `c63e_formatting.rs` now 27: added boundary positives `Some(None)`, `Some(Ok(5))`,
+    `[Some(1), None]`; and a `refused_by_lowering` helper with negatives `float32_println_refused`,
+    `float32_in_tuple_refused`, `float32_in_option_refused`, `large_array_display_refused` (each
+    asserting the lowering refuses, not that native mis-renders). Header rewritten to state the
+    native/refused boundary. `--lib`, `three_engine_differential`, `gate2_valid` green; fmt + clippy
+    clean.
+  - **DEV-106 [recorded, deferred — CE-adjacent]:** the three-engine differential compares that all
+    engines TRAP, not the trap MESSAGE. Native already proves category+location+user-message on
+    stderr (`native_c5_2e_traps.rs`), and HIR/MIR carry their own messages, but `interp::Outcome::
+    Trapped` has no `message` field, so the comparator cannot assert byte-equal trap text across
+    engines. Closing it means widening `Outcome::Trapped { message: Option<String> }` and threading it
+    through both interpreters — an interp-surface change I am flagging rather than folding into a
+    formatting pass, so it can be scoped deliberately.
+  - **C6.3e remaining:** composite `str`/`String`/`Box`/`Vec` (loop) elements, nested user-`Display`;
+    `Float32` (DEV-105); assert-message + trap-message three-engine parity (DEV-106).
 
 - CD-118 [2026-07-25, **WP-C6.3e slice 5 — native composite Display: Option/Result**] Extends the
   composite renderer to `Option`/`Result` (Copy payloads): `emit_display_value` reads the

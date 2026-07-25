@@ -2,17 +2,19 @@
 //!
 //! `println`/`print`, rendered per STARK's canonical form — NOT Rust's `Debug` — now native for:
 //! primitives (`Int*`/`UInt*` widened to `i64`/`u64`, `Bool`, `Float64`); user `Display` (calls the
-//! user's `fmt`); and displayable COMPOSITES (tuple/array of primitives, rendered as a print
-//! sequence `(a, b)` / `[a, b]` matching the interpreter's `Display for Value`). The canonical float
-//! formatter lives in `stark_runtime::format` and `starkc::interp` delegates to it, so the HIR
-//! oracle and the native binary format identically by construction.
+//! user's `fmt`); and displayable COMPOSITES of primitive elements — tuple/array (`(a, b)` /
+//! `[a, b]`) and `Option`/`Result` (`Some(v)`/`None`, `Ok(v)`/`Err(e)`), rendered as a print sequence
+//! matching the interpreter's `Display for Value`, recursively. The canonical float formatter lives
+//! in `stark_runtime::format` and `starkc::interp` delegates to it, so the HIR oracle and the native
+//! binary format identically by construction.
 //!
 //! Each case checks that HIR, MIR, and native all exit 0 AND that native/MIR stdout equal the HIR
 //! oracle's output byte-for-byte.
 //!
-//! Deferred: `Float32` println (DEV-105 — a cross-engine `f32 -> f64` widening value-semantics
-//! discrepancy, not formatting); composite `str`/`String` elements, Option/Result/Box, `Vec` (a
-//! runtime loop), and nested user-`Display` — later C6.3e slices.
+//! Deferred and REFUSED pre-rustc (a bounded, tested boundary rather than an admitted divergence):
+//! `Float32` anywhere in the Display path (DEV-105 — the `f32 -> f64` widening diverges across
+//! engines) and an array longer than 64 (the renderer unrolls per element). Still deferred: composite
+//! `str`/`String` elements, `Box`, `Vec` (a runtime loop), and nested user-`Display`.
 
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::diag::Severity;
@@ -263,5 +265,94 @@ fn composite_option_of_tuple() {
     agree_out(
         "opt_tuple",
         "fn main() { let o: Option<(Int32, Int32)> = Some((1, 2)); println(o); }",
+    );
+}
+
+// ---- Boundary shapes: exercise the recursion's edges before owning composites arrive. ----
+
+#[test]
+fn composite_nested_option() {
+    agree_out(
+        "opt_opt",
+        "fn main() { let o: Option<Option<Int32>> = Some(None); println(o); }",
+    );
+}
+
+#[test]
+fn composite_option_of_result() {
+    agree_out(
+        "opt_res",
+        "fn main() { let o: Option<Result<Int32, Bool>> = Some(Ok(5)); println(o); }",
+    );
+}
+
+#[test]
+fn composite_array_of_options() {
+    agree_out(
+        "arr_opt",
+        "fn main() { let a: [Option<Int32>; 2] = [Some(1), None]; println(a); }",
+    );
+}
+
+// ---- Refused pre-rustc (a bounded, TESTED boundary — not an admitted divergence). Lowering must
+// reject these; typecheck accepts them (they are well-typed). ----
+
+/// The program is well-typed but LOWERING must refuse it (deterministic pre-rustc boundary).
+fn refused_by_lowering(tag: &str, src: &str) {
+    let file = Arc::new(SourceFile::new(
+        format!("c63e_{tag}.stark"),
+        src.to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    let errs: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errs.is_empty(),
+        "{tag}: expected it to type-check, got {errs:?}"
+    );
+    assert!(
+        lower_program(&hir, &checked.tables, file).is_err(),
+        "{tag}: lowering must refuse this shape"
+    );
+}
+
+/// DEV-105: `Float32` in the Display path is refused (recursively), not admitted-but-divergent.
+#[test]
+fn float32_println_refused() {
+    refused_by_lowering(
+        "f32_top",
+        "fn main() { let x: Float32 = 0.1f32; println(x); }",
+    );
+}
+
+#[test]
+fn float32_in_tuple_refused() {
+    refused_by_lowering(
+        "f32_tuple",
+        "fn main() { let x: Float32 = 0.1f32; println((x, 1)); }",
+    );
+}
+
+#[test]
+fn float32_in_option_refused() {
+    refused_by_lowering(
+        "f32_opt",
+        "fn main() { let x: Float32 = 0.1f32; let o: Option<Float32> = Some(x); println(o); }",
+    );
+}
+
+/// A large array exceeds the unroll cap and is refused (bounded, not silently quadratic).
+#[test]
+fn large_array_display_refused() {
+    refused_by_lowering(
+        "big_arr",
+        "fn main() { let a: [Int32; 100] = [0; 100]; println(a); }",
     );
 }
