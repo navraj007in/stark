@@ -56,7 +56,7 @@ use std::sync::Arc;
 /// comparison rather than one with a quietly excluded dimension. When native output lands, flip
 /// this constant: the precondition drops away and the same equality check starts comparing real
 /// stdout bytes on all three sides, with no other change to the harness.
-const NATIVE_STDOUT_SUPPORTED: bool = false;
+const NATIVE_STDOUT_SUPPORTED: bool = true;
 
 /// One engine's result, normalised to the observable outcome the other two can be compared
 /// against. Deliberately NOT engine-shaped: the HIR oracle reports a message and a byte span,

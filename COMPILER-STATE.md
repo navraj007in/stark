@@ -3108,6 +3108,27 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-113 [2026-07-25, **WP-C6.3e slice 1 — native primitive formatting + output**] `println`/`print`
+  of `Int*`/`UInt*` (widened to `i64`/`u64`), `Bool`, and `Float64` now emit natively, rendered per
+  STARK's canonical form (not Rust `Debug`). Until now native supported ONLY str/char output; numbers
+  and bools could not be printed.
+  - **One shared formatter, no drift.** The canonical float renderer moved from `starkc::interp` into
+    `stark_runtime::format` (dependency-free); `starkc::interp::canonical_float` now DELEGATES there,
+    so the HIR oracle and the native binary format floats byte-identically by construction. Added
+    `stark_runtime::format::{println_i64,print_i64,println_u64,…,println_f64}` and wired the primitive
+    `Print*`/`Println*` `RuntimeFn`s in `emit_runtime`.
+  - **`NATIVE_STDOUT_SUPPORTED` flipped to `true`** in `three_engine_differential`: the comparator now
+    checks real stdout bytes across all three engines (83 pass).
+  - **Proven:** `tests/c63e_formatting.rs` (7 — signed/unsigned ints incl. Int8/UInt8 widening, bool,
+    Float64 canonical incl. `0.1`→`"0.1"` and `-0.0`, print-no-newline, mixed), each asserting native
+    stdout == HIR oracle. `canonical_float` 6, `--lib` 441 (interp delegation), `three_engine` 83; fmt
+    + clippy clean.
+  - **Deferred:** `println(Float32)` — the `f32→f64` widening makes native see the f32-rounded value
+    (`0.1f32 as f64 == 0.10000000149011612`) while the interp keeps `0.1`; a cross-engine Float32
+    cast-precision discrepancy, NOT a formatting issue (renderer is shared/correct). C6.3e remaining:
+    composite types (tuple/struct/enum/Option/Result/Vec/Box), user `Display` dispatch native (clears
+    the C6.2d deferral), panic/assert text bytes.
+
 - CD-112 [2026-07-25, **WP-C6.1g-c CLOSED — dispatch-loop linearisation; the borrow-through-return
   refusal LIFTED**] The root cause of a broad class of native-build failures: every generated body
   was ONE `loop { match __bb { … } }`, so rustc could not see that a block runs once and treated a

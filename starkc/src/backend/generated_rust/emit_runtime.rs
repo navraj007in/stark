@@ -27,6 +27,18 @@ pub fn emit_runtime_call(
         PrintlnStr => format!("stark_runtime::output::stdout_line({}.as_bytes())", arg(0)),
         PrintStr => format!("stark_runtime::output::stdout_bytes({}.as_bytes())", arg(0)),
 
+        // --- Primitive output (WP-C6.3e). The value is already widened to i64/u64/f64 by lowering
+        // (`widen_for_print`); the `as` casts make that width-safe regardless and are no-ops when it
+        // already holds. Rendering matches the HIR oracle via `stark_runtime::format`. ---
+        PrintlnInt64 => format!("stark_runtime::format::println_i64({} as i64)", arg(0)),
+        PrintInt64 => format!("stark_runtime::format::print_i64({} as i64)", arg(0)),
+        PrintlnUInt64 => format!("stark_runtime::format::println_u64({} as u64)", arg(0)),
+        PrintUInt64 => format!("stark_runtime::format::print_u64({} as u64)", arg(0)),
+        PrintlnBool => format!("stark_runtime::format::println_bool({})", arg(0)),
+        PrintBool => format!("stark_runtime::format::print_bool({})", arg(0)),
+        PrintlnFloat64 => format!("stark_runtime::format::println_f64({} as f64)", arg(0)),
+        PrintFloat64 => format!("stark_runtime::format::print_f64({} as f64)", arg(0)),
+
         // --- String construction / conversion ---
         StringNew => "stark_runtime::string::new()".to_string(),
         StringFromStr => format!("stark_runtime::string::from_str({})", arg(0)),

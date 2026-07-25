@@ -5949,24 +5949,10 @@ fn is_float(primitive: Primitive) -> bool {
 /// exponent; NaN/inf/-0.0 spellings per the frozen numeric contract). `pub` so the MIR
 /// interpreter's runtime surface (mir::interp) formats floats IDENTICALLY to this oracle —
 /// one algorithm, no drift (WP-C4.4).
+// WP-C6.3e: the canonical float renderers now live in `stark_runtime::format`, shared with the
+// native backend so the two engines format floats identically by construction. These delegate.
 pub fn canonical_float(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_string();
-    }
-    if value == f64::INFINITY {
-        return "inf".to_string();
-    }
-    if value == f64::NEG_INFINITY {
-        return "-inf".to_string();
-    }
-    if value == 0.0 {
-        return if value.is_sign_negative() {
-            "-0.0".to_string()
-        } else {
-            "0.0".to_string()
-        };
-    }
-    canonical_float_digits(&value.to_string())
+    stark_runtime::format::canonical_float(value)
 }
 
 // Canonical display must use the shortest decimal representation that round-trips to the
@@ -5976,23 +5962,7 @@ pub fn canonical_float(value: f64) -> String {
 // value instead of `canonical_float`'s `f64` shortest-round-trip digits (which would otherwise
 // produce e.g. `0.10000000149011612` for `0.1f32` instead of the shorter, correct `0.1`).
 fn canonical_float32(value: f32) -> String {
-    if value.is_nan() {
-        return "NaN".to_string();
-    }
-    if value == f32::INFINITY {
-        return "inf".to_string();
-    }
-    if value == f32::NEG_INFINITY {
-        return "-inf".to_string();
-    }
-    if value == 0.0 {
-        return if value.is_sign_negative() {
-            "-0.0".to_string()
-        } else {
-            "0.0".to_string()
-        };
-    }
-    canonical_float_digits(&value.to_string())
+    stark_runtime::format::canonical_float32(value)
 }
 
 /// Correction-brief Issue 4: `NUM-FLOAT-OP-001` requires every primitive operation that produces
@@ -6034,65 +6004,6 @@ fn canonicalize_float_result(result: Result<Value, RuntimeError>) -> Result<Valu
         Value::Float(inner, width) => Value::Float(canonicalize_nan(inner, width), width),
         other => other,
     })
-}
-
-fn canonical_float_digits(shortest: &str) -> String {
-    let (sign, unsigned) = shortest
-        .strip_prefix('-')
-        .map_or(("", shortest), |rest| ("-", rest));
-    let (mantissa, explicit_exponent) = unsigned
-        .split_once(['e', 'E'])
-        .map_or((unsigned, 0_i32), |(mantissa, exponent)| {
-            (mantissa, exponent.parse::<i32>().unwrap())
-        });
-    let decimal_position = mantissa
-        .find('.')
-        .map_or(mantissa.len() as i32, |position| position as i32)
-        + explicit_exponent;
-    let raw_digits: String = mantissa
-        .chars()
-        .filter(|character| *character != '.')
-        .collect();
-    let leading_zeroes = raw_digits
-        .bytes()
-        .take_while(|digit| *digit == b'0')
-        .count() as i32;
-    let scientific_exponent = decimal_position - leading_zeroes - 1;
-    let significant = raw_digits.trim_start_matches('0').trim_end_matches('0');
-    let significant = if significant.is_empty() {
-        "0"
-    } else {
-        significant
-    };
-
-    if (-4..=15).contains(&scientific_exponent) {
-        let point = scientific_exponent + 1;
-        let mut rendered = String::from(sign);
-        if point <= 0 {
-            rendered.push_str("0.");
-            rendered.extend(std::iter::repeat_n('0', (-point) as usize));
-            rendered.push_str(significant);
-        } else if point as usize >= significant.len() {
-            rendered.push_str(significant);
-            rendered.extend(std::iter::repeat_n('0', point as usize - significant.len()));
-            rendered.push_str(".0");
-        } else {
-            rendered.push_str(&significant[..point as usize]);
-            rendered.push('.');
-            rendered.push_str(&significant[point as usize..]);
-        }
-        rendered
-    } else {
-        let mut rendered = String::from(sign);
-        rendered.push_str(&significant[..1]);
-        if significant.len() > 1 {
-            rendered.push('.');
-            rendered.push_str(&significant[1..]);
-        }
-        rendered.push('e');
-        rendered.push_str(&scientific_exponent.to_string());
-        rendered
-    }
 }
 
 fn standard_hash(value: &Value, ty: &Ty) -> Result<u64, RuntimeError> {
