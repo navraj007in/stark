@@ -111,19 +111,6 @@ fn agree(tag: &str, src: &str) {
     agree_out(tag, src, "");
 }
 
-/// HIR + MIR only — native deferred to WP-C6.1g-c (dispatch-loop borrow linearisation).
-fn agree_hir_mir(tag: &str, src: &str) {
-    let f = front(tag, src);
-    let hir_exec = interp::run_with_partial_output(&f.hir, f.file.clone(), &f.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-    let program = lower_program(&f.hir, &f.tables, f.file.clone())
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
-}
-
 #[test]
 fn from_and_len() {
     agree(
@@ -267,23 +254,34 @@ fn pop_char_none_on_empty() {
     );
 }
 
-// ---- Deferred to WP-C6.1g-c (native); HIR+MIR pass. ----
+// ---- Formerly deferred to WP-C6.1g-c; native since CD-112 (dispatch-loop linearisation). ----
 
 /// `String` `==` lowers through `String::as_str`, producing a stored `&str` that borrows the owned
-/// `String` across the branch — conflicts with the slot-drop under the block-dispatch loop.
+/// `String` across the branch. Under CD-112's linearised (labelled-block) emission rustc sees the
+/// borrow with its real once-through lifetime, so this now builds and runs natively.
 #[test]
-fn owned_string_equality_hir_mir() {
-    agree_hir_mir(
+fn owned_string_equality() {
+    agree(
         "string_eq",
         "fn main() { let a = String::from(\"x\"); let b = String::from(\"x\"); \
          let r = if a == b { 1 } else { 0 }; assert_eq(r, 1); }",
     );
 }
 
+/// `String` `<` — ordered comparison through `String::as_str` then `StrCmp`.
+#[test]
+fn owned_string_ordering() {
+    agree(
+        "string_lt",
+        "fn main() { let a = String::from(\"a\"); let b = String::from(\"b\"); \
+         let r = if a < b { 1 } else { 0 }; assert_eq(r, 1); }",
+    );
+}
+
 /// An explicit stored interior `&str` used after being bound.
 #[test]
-fn stored_as_str_hir_mir() {
-    agree_hir_mir(
+fn stored_as_str() {
+    agree(
         "as_str_store",
         "fn main() { let s = String::from(\"hello\"); let v = s.as_str(); assert_eq(v.len(), 5); }",
     );

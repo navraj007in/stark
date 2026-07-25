@@ -102,19 +102,6 @@ fn agree(tag: &str, src: &str) {
     }
 }
 
-/// HIR + MIR only — native deferred to WP-C6.1g-c.
-fn agree_hir_mir(tag: &str, src: &str) {
-    let f = front(tag, src);
-    let hir_exec = interp::run_with_partial_output(&f.hir, f.file.clone(), &f.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-    let program = lower_program(&f.hir, &f.tables, f.file.clone())
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
-}
-
 #[test]
 fn vec_new_push_len() {
     agree(
@@ -181,13 +168,14 @@ fn box_of_string() {
     );
 }
 
-// ---- Deferred to WP-C6.1g-c (native); HIR+MIR pass. ----
+// ---- Formerly deferred to WP-C6.1g-c; native since CD-112 (dispatch-loop linearisation). ----
 
 /// `v.push(String::from(..))` holds the `&mut Vec` receiver borrow across the argument's own
-/// runtime call — the dispatch-loop borrow conflict.
+/// runtime call. Under CD-112's linearised emission rustc sees that borrow end before the drop, so
+/// it now builds and runs natively.
 #[test]
-fn vec_of_string_push_hir_mir() {
-    agree_hir_mir(
+fn vec_of_string_push() {
+    agree(
         "vec_str",
         "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"hi\")); assert_eq(v.len(), 1); }",
     );
