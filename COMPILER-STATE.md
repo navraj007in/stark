@@ -41,14 +41,16 @@ the LAST C6.1f refusal (CD-128): a slot-backed MOVE borrow-carrying nominal buil
 `refuse_borrow_carrying_nominals` is deleted and no reference shape is refused pre-rustc any more.**
 Gate-C6 dependencies: `WP-C6.1g-b`
 (return-source lifetime precision), and C6.3 (`Box`/`Vec`/slice, Track C).
-**WP-C6.3c CLOSED for native parity (CD-128/CD-129): native ITERATORS. Counting-loop forms (`for` over
-a range or array, and a user `Iterator` impl) were already native; the runtime CURSOR forms `v.iter()`
-and `s.chars()` are now native three-engine via `stark_runtime::vec::VecIter` / `string::CharsIter`.
-Every §26 row MIR can lower is native. What remains is NOT a native gap and is pinned by negative
-tests: slice iteration and `iter_mut` do not exist in the language, and `map`/`filter`/`collect`/
-`count` plus by-value `Vec` iteration are HIR-only (a C4.5-era LOWERING gap — the MIR interpreter
-cannot run them either, so there is no divergence for C6 to close). `HashMap`/`HashSet` iteration
-lands with C6.3d.**
+**WP-C6.3c CLOSED (CD-128/129/130, owner ruling 2026-07-26): native ITERATORS, on a native-parity
+basis with exclusions named. CLOSED WITH EVIDENCE (three-engine): range, array (order), user
+`Iterator` impl, shared `Vec` iteration, early termination, empty iteration, and `String`/`str`
+character iteration — the cursor forms via `stark_runtime::vec::VecIter` / `string::CharsIter`.
+EXCLUDED as absent LANGUAGE features: slice iteration and `iter_mut`. EXCLUDED as pre-MIR CAPABILITY
+gaps: `map`/`filter`, `count`/`collect`, by-value `Vec` iteration — HIR-only, so neither MIR nor
+native can represent them and no native divergence exists for this gate. Those are recorded as a
+bounded follow-on (`starkc/docs/WP-ITER-LOWERING-PROPOSAL.md`, PROPOSED — needs owner approval and a
+roadmap slot) and pinned by four PERMANENT boundary tests. `HashMap`/`HashSet` iteration lands with
+C6.3d.**
 **WP-C6.3e PARTIAL (CD-113…123): native OUTPUT + formatting — primitives (ints/bool/Float64 via a
 shared `stark_runtime::format`, interp delegates, no drift), user `Display` dispatch (clears the
 C6.2d Display deferral), `panic(msg)` text, and COMPOSITE Display (tuple/array + `Option`/`Result`,
@@ -3146,6 +3148,33 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-130 [2026-07-26, **WP-C6.3c CLOSED (owner ruling) — native parity, with exclusions named**]
+  The owner accepted the native-parity closure basis and ruled that the excluded forms must NOT be
+  implemented inside C6.3c, because doing so would expand a backend/runtime parity WP into new
+  front-end and MIR semantics. WP-C6.3c is **CLOSED**.
+  - **Closed WITH three-engine evidence (HIR == MIR == native):** range iteration, array iteration
+    (order), a user `Iterator` impl, shared `Vec` iteration (`v.iter()`), early termination via
+    `break`, empty-source iteration, and `String`/`str` character iteration (`chars()` over a literal
+    and over an owned `String`). 8 cases in `c63c_iterators.rs`.
+  - **EXCLUDED — absent language features, not backend gaps:** slice iteration and mutable (`iter_mut`)
+    iteration. Neither has any surface in the compiler or the spec.
+  - **EXCLUDED — pre-MIR capability gaps:** `map`/`filter`, `count`/`collect`, and by-value `Vec`
+    iteration. Neither MIR nor native can represent them; they run only in the HIR interpreter, so
+    there is no native divergence for this gate to close.
+  - **Follow-on recorded, NOT scheduled:** `starkc/docs/WP-ITER-LOWERING-PROPOSAL.md` — MIR
+    representations for adapter iterators; method resolution/lowering for iterator values with
+    non-nominal types; by-value collection iteration; remaining-element `Drop` on normal completion,
+    `break`, trap and early return; slice iteration ONLY if the language surface is explicitly
+    approved; mutable iteration ONLY through a separate language/spec decision. It requires owner
+    approval and a roadmap slot before any implementation (charter §1.6 rule 4).
+  - **The four boundary tests are PERMANENT regression evidence** (owner instruction). Each HIR-only
+    test asserts both that the HIR interpreter RUNS the program and that lowering REFUSES it, which is
+    what distinguishes "supported by HIR but not lowerable" from a native divergence and stops the
+    boundary changing silently — if any starts lowering, its test fails and the case must be promoted
+    to three-engine.
+  - **Next:** the remaining EXISTING C6.3 packages (trapping Vec ops, HashMap/HashSet C6.3d, files
+    C6.3f, C6.3 closure evidence) — the iterator-expansion work is not imported into this gate.
 
 - CD-129 [2026-07-26, **WP-C6.3c CLOSED for native parity — the §26 boundary is now executable**]
   Every §26 row that MIR can lower is native and proven three-engine (CD-128). This entry establishes
