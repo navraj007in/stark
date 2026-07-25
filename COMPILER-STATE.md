@@ -23,11 +23,15 @@ bridge (CD-110) — wrapping a runtime Rust `Option` into the generated Option e
 every future collection accessor reuses.** Owned-`String` `==`/`<` and stored interior `&str` are
 now NATIVE (unblocked by C6.1g-c, promoted CD-116). C6.3a remaining: `chars()` iteration (→ C6.3c),
 slicing views (→ C6.3b), cross-package String.
-**WP-C6.3b PARTIAL (CD-111): native Vec/Box VALUE surface (new/push/pop/len/is_empty/clear/return,
-Box new/into_inner) three-engine, plus the SLOT BUFFER-RECLAIM FIX — `drop_with` now runs
+**WP-C6.3b COMPLETE (CD-111 + CD-131): native Vec/Box VALUE surface (new/push/pop/len/is_empty/clear/
+return, Box new/into_inner) three-engine, plus the SLOT BUFFER-RECLAIM FIX — `drop_with` now runs
 `ManuallyDrop::drop` after the glue, freeing every owning value's allocation (a latent leak).
-`Vec<String>`-style pushes are now NATIVE (unblocked by C6.1g-c, promoted CD-116). Deferred:
-Vec/Box of user-destructor elements (refused), trapping index/get/iter/slices.**
+`Vec<String>`-style pushes are NATIVE (unblocked by C6.1g-c, promoted CD-116). CD-131 added the
+deferred half: TRAPPING `v[i]`/`remove` with the USER's source location (**DEV-107 CLOSED** — the
+terminator already carried a `SourceInfo`; no MIR change was needed), CHECKED `get`/`get_mut`
+(`Option<&T>`, never traps), and SLICE VIEWS (`MirTy::Slice(T)` → `[T]`, `SliceNew`/`SliceNewMut`/
+`SliceLen`/`SliceIsEmpty`, bounds SIGNED so a negative bound traps rather than wrapping). Remaining:
+`VecReplace` (no method surface reaches it), Vec/Box of user-destructor elements (refused by design).**
 Remaining C6: **WP-C6.1 CLOSED (CD-099)**. **WP-C6.1g-a LANDED (CD-100): structural Copy
 (OWN-COPY-001 amended) + borrow-carrying nominals in locals.** **WP-C6.1g-c CLOSED (CD-112): dispatch-loop
 linearisation — acyclic bodies emit as nested labelled blocks so a cross-block borrow is seen
@@ -71,8 +75,8 @@ only the native binary diverges), arrays > 64 (unroll cap), and a droppable comp
 (generated lifetimes). C6.3e
 remaining: `Vec<String>` (the Vec arm reads elements by COPY — needs by-REFERENCE Vec access, not
 borrow precision); a non-Copy COMPOSITE enum payload (deeper than a leaf); `Float32` (DEV-105);
-trap-message three-engine parity (DEV-106, narrowed — partial output already comparable); native `v[i]` OOB
-provenance (DEV-107). DEFERRED to a future decision (CD-125): composite `Box`
+trap-message three-engine parity (DEV-106, narrowed — partial output already comparable).
+DEV-107 (native `v[i]` OOB provenance) is CLOSED by CD-131. DEFERRED to a future decision (CD-125): composite `Box`
 elements — `Box<T>` is not a Display type today (typechecker E0500) and making it one is a semantics
 choice, not a lowering slice.**
 Also open:
@@ -3148,6 +3152,34 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-131 [2026-07-26, **WP-C6.3b COMPLETED — trapping `Vec` ops, checked interior access, slice
+  views; DEV-107 CLOSED**] C6.3b had landed the `Vec`/`Box` VALUE surface and deferred everything that
+  either TRAPS on a bad index or hands out an INTERIOR reference. All of it is now native.
+  - **DEV-107 closed — and it needed no MIR change.** The deviation was recorded (CD-121) as needing a
+    MIR shape change because "the `RuntimeFn` call ABI carries no per-call `SourceInfo`". That was
+    WRONG: `MirBlock::terminator` is `(Terminator, SourceInfo)`, so EVERY terminator already carries
+    one, `Call` included — it was simply dropped on the way to `emit_call`. It is now threaded through
+    as a `CallSite`, and a trapping runtime op bakes in the user's `file:line:col` exactly as
+    `Terminator::Checked` does for array/arithmetic traps. The `"<vec index>":0:0` placeholder is gone.
+  - **Now native:** `v[i]` (trapping, correct provenance), `v.remove(i)` (trapping), `v.get(i)` /
+    `v.get_mut(i)` (CHECKED access that never traps — `Option<&T>`/`Option<&mut T>` through the
+    existing `wrap_option` bridge), and SLICE VIEWS: `MirTy::Slice(T)` is Rust's unsized `[T]` (only
+    ever named behind a reference), with `SliceNew`/`SliceNewMut`/`SliceLen`/`SliceIsEmpty` wired and
+    `Projection::Index` extended to slices in BOTH the type walk and the rendering (only patching the
+    latter left the type walk refusing, which the tests caught).
+  - **Slice bounds are SIGNED (`i64`), deliberately.** A STARK range is `Int`-typed, so `&a[-1..2]` is
+    expressible; taking `u64` would have wrapped a negative bound into a huge index. Bounds are
+    widened at the call site and the runtime traps on negative, inverted (`lo > hi`), and past-the-end
+    windows — a TRAP, never a clamp (06-Standard-Library).
+  - **Evidence.** New `tests/c63b_trapping_ops.rs` — 13 cases. Success paths three-engine
+    (HIR == MIR == native stdout); trap paths additionally assert the trap CATEGORY and the exact
+    SOURCE LINE on stderr, so a trap firing with the wrong provenance fails rather than passing. Trap
+    cases also assert the pre-trap stdout prefix (CD-120 Contract B). Covers: indexed read, OOB index
+    (provenance), `get` Some/None, `get_mut`, `remove` + OOB `remove`, array slice view, out-of-range
+    /inverted/negative bounds, an empty end window, an INCLUSIVE range, and a slice over a `Vec`.
+  - **C6.3b remaining:** `VecReplace` (no method surface reaches it yet), and Vec/Box of
+    user-destructor elements (still refused by design — destructor-in-runtime-collection).
 
 - CD-130 [2026-07-26, **WP-C6.3c CLOSED (owner ruling) — native parity, with exclusions named**]
   The owner accepted the native-parity closure basis and ruled that the excluded forms must NOT be

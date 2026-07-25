@@ -179,6 +179,10 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
             }
         }
         MirTy::Array(elem, n) => format!("[{}; {n}]", emit_ty_at(elem, at)?),
+        // WP-C6.3b (0.1-A6): a slice is Rust's UNSIZED `[T]`. It is only ever named behind a
+        // reference (`MirTy::Ref { inner: Slice }` → `&[T]`), which is also how STARK admits it —
+        // there is no owned slice local to size.
+        MirTy::Slice(elem) => format!("[{}]", emit_ty_at(elem, at)?),
         // WP-C5.3d-1a: the ephemeral borrowed-call reference lane (CD-062). Admitted ONLY in the
         // bounded shapes the lane allows -- a reference-typed function parameter, and a
         // same-block borrow consumed without being stored, returned, or carried across blocks.

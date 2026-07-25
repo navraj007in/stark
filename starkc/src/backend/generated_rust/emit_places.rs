@@ -108,9 +108,10 @@ pub(super) fn project_ty_once(
                 ))
             })
         }
-        (Projection::Index(_) | Projection::ConstIndex(_), MirTy::Array(elem, _)) => {
-            Ok((**elem).clone())
-        }
+        (
+            Projection::Index(_) | Projection::ConstIndex(_),
+            MirTy::Array(elem, _) | MirTy::Slice(elem),
+        ) => Ok((**elem).clone()),
         (Projection::Deref, MirTy::Ref { inner, .. }) => Ok((**inner).clone()),
         (Projection::VariantField(v, i), MirTy::Enum(enum_ref, args)) => {
             let variants =
@@ -378,7 +379,9 @@ fn emit_place_from(
             (Projection::Deref, MirTy::Ref { .. }) => rendered = format!("(*{rendered})"),
             // A proof-backed index: `CheckedOp::CheckIndex` already validated it and trapped
             // otherwise, so this is a plain index expression rather than a second check.
-            (Projection::Index(proof), MirTy::Array(..)) => {
+            // A slice indexes exactly like an array: `CheckedOp::CheckIndex` already validated the
+            // index against the VIEW's length and trapped otherwise.
+            (Projection::Index(proof), MirTy::Array(..) | MirTy::Slice(..)) => {
                 rendered.push_str(&format!("[{} as usize]", local_name(proof.0)))
             }
             // WP-C5.3b. Rust has NO way to project into an enum variant's field outside a

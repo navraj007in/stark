@@ -327,7 +327,15 @@ fn emit_one_block(
             }
         }
     }
-    emit_terminator(body, files, out, &block.terminator.0, env, mode)
+    emit_terminator(
+        body,
+        files,
+        out,
+        &block.terminator.0,
+        &block.terminator.1,
+        env,
+        mode,
+    )
 }
 
 /// A terminator's successor block indices, in stable order.
@@ -732,6 +740,10 @@ fn emit_terminator(
     files: &[Arc<SourceFile>],
     out: &mut String,
     terminator: &Terminator,
+    // WP-C6.3b (DEV-107): every terminator already carries its own `SourceInfo` — including `Call`.
+    // A TRAPPING runtime call (`v[i]`, `remove`, slicing) needs it to report the user's location
+    // rather than one internal to the runtime, so it is threaded through rather than dropped.
+    info: &SourceInfo,
     env: &TyEnv,
     mode: EmitMode<'_>,
 ) -> Result<(), BackendDiagnostic> {
@@ -780,7 +792,14 @@ fn emit_terminator(
             target,
         } => {
             let dest_ty = &body.locals[dest.local.0 as usize].ty;
-            let call_expr = emit_call(callee, args, dest_ty, env)?;
+            let (file, line, col) = resolve_source_location(files, info);
+            let call_expr = emit_call(
+                callee,
+                args,
+                dest_ty,
+                env,
+                &super::emit_runtime::CallSite { file, line, col },
+            )?;
             out.push_str(&format!(
                 "                {}\n",
                 emit_assignment(dest, &call_expr, env)?
@@ -853,6 +872,7 @@ fn emit_call(
     args: &[Operand],
     dest_ty: &MirTy,
     env: &TyEnv,
+    site: &super::emit_runtime::CallSite,
 ) -> Result<String, BackendDiagnostic> {
     // Argument emission is IDENTICAL for direct and indirect calls (§9.2): the same left-to-right
     // move/copy operand handling MIR already sequenced. Only the callee expression differs.
@@ -875,7 +895,9 @@ fn emit_call(
         }
         // WP-C6.3a: a runtime call is rendered from the same already-emitted argument expressions;
         // the dest type lets an `Option`-returning runtime fn wrap into the generated Option enum.
-        Callee::Runtime(rt) => super::emit_runtime::emit_runtime_call(*rt, &arg_exprs, dest_ty),
+        Callee::Runtime(rt) => {
+            super::emit_runtime::emit_runtime_call(*rt, &arg_exprs, dest_ty, site)
+        }
     }
 }
 

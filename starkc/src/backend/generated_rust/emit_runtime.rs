@@ -9,6 +9,26 @@
 use super::{emit_types, BackendDiagnostic};
 use crate::mir::{MirTy, RuntimeFn};
 
+/// WP-C6.3b (DEV-107): the user source location of the call being emitted, resolved at COMPILE time
+/// from the terminator's own `SourceInfo` (every terminator carries one, `Call` included).
+///
+/// A trapping runtime op — `v[i]`, `remove`, slicing — must report the location of the STARK
+/// expression that trapped. Before this, those ops aborted with a location internal to the runtime
+/// (`"<vec index>":0:0`), which was correct in category and exit code but useless for provenance and
+/// inconsistent with `Terminator::Checked`'s array/arithmetic traps. Non-trapping ops ignore it.
+pub struct CallSite {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+}
+
+impl CallSite {
+    /// The `file, line, column` argument triple appended to a trapping runtime call.
+    fn trap_args(&self) -> String {
+        format!("{:?}, {}, {}", self.file, self.line, self.col)
+    }
+}
+
 /// Render `rt(args...)` as a Rust expression. `args` are the argument operands already emitted by
 /// `emit_operand`; a String/str receiver arrives as `&String`/`&str` (deref-coercing to the `&str`
 /// the `stark_runtime::string` helpers take) and a `&mut self` receiver as `&mut String`.
@@ -18,6 +38,7 @@ pub fn emit_runtime_call(
     rt: RuntimeFn,
     args: &[String],
     dest_ty: &MirTy,
+    site: &CallSite,
 ) -> Result<String, BackendDiagnostic> {
     use RuntimeFn::*;
     // A small helper: the argument at `i`, wrapped so method/`.as_bytes()` suffixes bind correctly.
@@ -76,9 +97,53 @@ pub fn emit_runtime_call(
         VecPop => wrap_option(&format!("stark_runtime::vec::pop({})", arg(0)), dest_ty)?,
         VecLen => format!("stark_runtime::vec::len({})", arg(0)),
         VecIsEmpty => format!("stark_runtime::vec::is_empty({})", arg(0)),
-        // `v[i]` by Copy (V-COPY-1); traps IndexOutOfBounds (DEV-107: runtime-internal location).
-        VecIndexGet => format!("stark_runtime::vec::index_get({}, {})", arg(0), arg(1)),
+        // `v[i]` by Copy (V-COPY-1); traps IndexOutOfBounds at the USER's location (DEV-107 closed).
+        VecIndexGet => format!(
+            "stark_runtime::vec::index_get({}, {}, {})",
+            arg(0),
+            arg(1),
+            site.trap_args()
+        ),
         VecClear => format!("stark_runtime::vec::clear({})", arg(0)),
+        // Trapping removal, and the CHECKED interior accessors that never trap (0.1-A4): `get`
+        // yields `Option<&T>`, `get_mut` `Option<&mut T>`, both wrapped into the generated Option.
+        VecRemove => format!(
+            "stark_runtime::vec::remove({}, {}, {})",
+            arg(0),
+            arg(1),
+            site.trap_args()
+        ),
+        VecGetRef => wrap_option(
+            &format!("stark_runtime::vec::get_ref({}, {})", arg(0), arg(1)),
+            dest_ty,
+        )?,
+        VecGetMutRef => wrap_option(
+            &format!("stark_runtime::vec::get_mut_ref({}, {})", arg(0), arg(1)),
+            dest_ty,
+        )?,
+
+        // --- Slice views (WP-C6.3b, 0.1-A6/A8). `SliceNew(&base, lo, hi, inclusive)` traps
+        // IndexOutOfBounds on an inverted or out-of-range window (a trap, never a clamp); the `Mut`
+        // form yields `&mut [T]` so writes reach the base (REF-SLICE-001). `&[T; N]`/`&Vec<T>` both
+        // coerce to `&[T]`, so no per-base variants are needed. ---
+        SliceNew => format!(
+            "stark_runtime::vec::slice_new({}, {} as i64, {} as i64, {}, {})",
+            arg(0),
+            arg(1),
+            arg(2),
+            arg(3),
+            site.trap_args()
+        ),
+        SliceNewMut => format!(
+            "stark_runtime::vec::slice_new_mut({}, {} as i64, {} as i64, {}, {})",
+            arg(0),
+            arg(1),
+            arg(2),
+            arg(3),
+            site.trap_args()
+        ),
+        SliceLen => format!("stark_runtime::vec::slice_len({})", arg(0)),
+        SliceIsEmpty => format!("stark_runtime::vec::slice_is_empty({})", arg(0)),
 
         // --- Box (WP-C6.3b): construction and consuming extraction. No `Deref` in Core v1. ---
         BoxNew => format!("stark_runtime::boxed::new({})", arg(0)),
