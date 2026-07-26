@@ -46,8 +46,10 @@ mod support;
 
 use starkc::mir::TrapCategory;
 use support::differential::{
-    agree_completing, agree_trapping, agree_trapping_with_message, compare_outcomes,
-    rustc_available, three_engine, Outcome, NATIVE_STDOUT_SUPPORTED,
+    agree_completing, agree_returning, agree_trapping, agree_trapping_with_message,
+    compare_observations, front_end, parse_native_trap, run_mir, rustc_available, three_engine,
+    CanonicalReturnedValue, CompletionObservation, DropEvent, Observation, TrapMessageClass,
+    TrapObservation, TrapStderrObservation, TRAP_EXIT_STATUS,
 };
 
 // WP-C5.6 / CD-076: exact replay of the approved C5-native subset of the frozen WP-C2.12
@@ -2138,48 +2140,107 @@ fn main() {
 }
 "#
 );
-
-/// The harness's own guard: the COMPARATOR must reject disagreement, not merely the `Outcome`
-/// type's `PartialEq`. This exercises [`compare_outcomes`] — the function that carries every
+/// The harness's own guard: the COMPARATOR must reject disagreement, not merely the observation
+/// type's `PartialEq`. These exercise [`compare_observations`] — the function carrying every
 /// agreement rule — against deliberately disagreeing triples, so weakening a rule inside it (or
 /// deleting one of its checks outright) fails a test instead of silently passing every case.
 ///
-/// Cheap: no engine runs and no native build. That is the point — the rules are separable from
-/// the engines that feed them, and testing them directly is the only way to watch them fail.
-#[test]
-fn the_comparator_rejects_disagreeing_outcomes() {
-    fn completed(stdout: &str, exit: i32) -> Outcome {
-        Outcome::Completed {
-            stdout: stdout.to_string(),
-            exit,
-        }
+/// One test per §8.10 dimension, rather than one test with eighteen assertions, so a regression
+/// names the field it broke. Cheap: no engine runs and no native build for the first sixteen. That
+/// is the point — the rules are separable from the engines that feed them, and testing them
+/// directly is the only way to watch them fail.
+mod comparator_rules {
+    use super::*;
+
+    fn drop_log(identities: &[&str]) -> Vec<DropEvent> {
+        identities
+            .iter()
+            .enumerate()
+            .map(|(index, identity)| DropEvent {
+                sequence: index as u32 + 1,
+                identity: (*identity).to_string(),
+            })
+            .collect()
     }
-    fn trapped(category: TrapCategory, line: u32, column: u32) -> Outcome {
-        Outcome::Trapped {
+
+    fn completed(stdout: &str) -> Observation {
+        Observation::Completed(CompletionObservation {
+            stdout_bytes: stdout.as_bytes().to_vec(),
+            stderr_bytes: Vec::new(),
+            exit_status: 0,
+            returned_observation: None,
+            drop_log: Vec::new(),
+        })
+    }
+
+    /// A completion with every §39 field populated, so a test can perturb exactly one.
+    fn completed_full(
+        stdout: &str,
+        stderr: &str,
+        exit_status: i32,
+        returned: Option<&str>,
+        drops: &[&str],
+    ) -> Observation {
+        Observation::Completed(CompletionObservation {
+            stdout_bytes: stdout.as_bytes().to_vec(),
+            stderr_bytes: stderr.as_bytes().to_vec(),
+            exit_status,
+            returned_observation: returned.map(|rendered| CanonicalReturnedValue {
+                type_tag: "Int32".to_string(),
+                rendered: rendered.as_bytes().to_vec(),
+            }),
+            drop_log: drop_log(drops),
+        })
+    }
+
+    fn trapped(category: TrapCategory, line: u32, column: u32) -> Observation {
+        trapped_full(category, "x.stark", line, column, None, "", &[])
+    }
+
+    fn trapped_full(
+        category: TrapCategory,
+        file: &str,
+        line: u32,
+        column: u32,
+        user_message: Option<&str>,
+        stdout_before: &str,
+        drops: &[&str],
+    ) -> Observation {
+        let message = user_message.map(str::to_string);
+        Observation::Trapped(TrapObservation {
             category,
-            file: "x.stark".to_string(),
+            source_file: file.to_string(),
             line,
             column,
-            stdout_before: String::new(),
-            message: None,
-        }
+            message_class: match &message {
+                Some(text) => TrapMessageClass::UserMessageExact(text.clone()),
+                None => TrapMessageClass::CategoryOnly,
+            },
+            stdout_before_trap: stdout_before.as_bytes().to_vec(),
+            stderr_observation: TrapStderrObservation {
+                category_text: "runtime trap".to_string(),
+                user_message: message,
+                source_file: file.to_string(),
+                line,
+                column,
+            },
+            exit_status: TRAP_EXIT_STATUS,
+            drop_log_before_trap: drop_log(drops),
+        })
     }
-    /// DEV-106: the same trap, carrying a user message.
-    fn trapped_with(category: TrapCategory, line: u32, message: &str) -> Outcome {
-        Outcome::Trapped {
-            category,
-            file: "x.stark".to_string(),
-            line,
-            column: 1,
-            stdout_before: String::new(),
-            message: Some(message.to_string()),
-        }
-    }
-    /// Asserts the comparator rejects this triple, and that the reason names the disagreeing
-    /// PAIR — a comparator that failed for the wrong reason would still be broken.
-    fn rejects(case: &str, hir: &Outcome, mir: &Outcome, native: &Outcome, expect: &str) {
-        match compare_outcomes("t.stark", hir, mir, native) {
-            Ok(()) => panic!("comparator ACCEPTED disagreeing outcomes ({case})"),
+
+    /// Asserts the comparator rejects this triple, and that the reason names both the disagreeing
+    /// PAIR and the FIELD — a comparator that failed for the wrong reason would still be broken.
+    #[track_caller]
+    fn rejects(
+        case: &str,
+        hir: &Observation,
+        mir: &Observation,
+        native: &Observation,
+        expect: &str,
+    ) {
+        match compare_observations("t.stark", hir, mir, native) {
+            Ok(()) => panic!("comparator ACCEPTED disagreeing observations ({case})"),
             Err(reason) => assert!(
                 reason.contains(expect),
                 "{case}: comparator rejected for the wrong reason — wanted {expect:?}, got:\n{reason}"
@@ -2187,115 +2248,318 @@ fn the_comparator_rejects_disagreeing_outcomes() {
         }
     }
 
-    // Agreement is accepted — otherwise "rejects everything" would pass every case below.
-    let ok = completed("", 0);
-    assert!(compare_outcomes("t.stark", &ok, &ok, &ok).is_ok());
-    let ok_trap = trapped(TrapCategory::IntegerOverflow, 4, 20);
-    assert!(compare_outcomes("t.stark", &ok_trap, &ok_trap, &ok_trap).is_ok());
+    /// Agreement is accepted — otherwise "rejects everything" would pass every test below.
+    #[test]
+    fn equal_completions_pass() {
+        let ok = completed_full("out", "err", 0, Some("7"), &["a", "b"]);
+        let same = completed_full("out", "err", 0, Some("7"), &["a", "b"]);
+        assert!(compare_observations("t.stark", &ok, &same, &ok).is_ok());
+        let trap = trapped_full(
+            TrapCategory::Panic,
+            "x.stark",
+            4,
+            20,
+            Some("boom"),
+            "before",
+            &["a"],
+        );
+        let trap_again = trapped_full(
+            TrapCategory::Panic,
+            "x.stark",
+            4,
+            20,
+            Some("boom"),
+            "before",
+            &["a"],
+        );
+        assert!(compare_observations("t.stark", &trap, &trap_again, &trap).is_ok());
+    }
 
-    // Completion vs. trap, on each side independently.
-    let done = completed("", 0);
-    let trap = trapped(TrapCategory::IntegerOverflow, 4, 20);
-    rejects("HIR completed, MIR trapped", &done, &trap, &trap, "HIR/MIR");
-    rejects(
-        "MIR completed, native trapped",
-        &done,
-        &done,
-        &trap,
-        "MIR/NATIVE",
-    );
-
-    // A MISSED TRAP in the native engine specifically — the shape a backend bug takes when it
-    // computes a wrong value that happens not to trip an assertion.
-    rejects(
-        "native completed, others trapped",
-        &trap,
-        &trap,
-        &done,
-        "MIR/NATIVE",
-    );
-
-    // DEV-106: the trap MESSAGE alone. Proven to FAIL before it is trusted to pass — the same
-    // discipline CD-053 applied to the harness itself. Without this, `message` could be carried and
-    // silently never compared, which is precisely the gap DEV-106 named.
-    let boom = trapped_with(TrapCategory::Panic, 2, "boom");
-    let other = trapped_with(TrapCategory::Panic, 2, "different");
-    assert!(compare_outcomes("t.stark", &boom, &boom, &boom).is_ok());
-    rejects(
-        "trap message differs (MIR)",
-        &boom,
-        &other,
-        &boom,
-        "HIR/MIR",
-    );
-    rejects(
-        "trap message differs (native)",
-        &boom,
-        &boom,
-        &other,
-        "MIR/NATIVE",
-    );
-    // A message-carrying trap and a category-only one are different outcomes, even at the same
-    // category and line.
-    rejects(
-        "one engine lost the message",
-        &boom,
-        &boom,
-        &trapped(TrapCategory::Panic, 2, 1),
-        "MIR/NATIVE",
-    );
-
-    // Exit status alone.
-    rejects(
-        "exit status differs",
-        &done,
-        &done,
-        &completed("", 1),
-        "MIR/NATIVE",
-    );
-
-    // Trap CATEGORY alone, at one identical location — all three would exit 101, so only the
-    // category distinguishes them.
-    rejects(
-        "trap category differs",
-        &trap,
-        &trap,
-        &trapped(TrapCategory::CastFailure, 4, 20),
-        "MIR/NATIVE",
-    );
-
-    // Trap LOCATION alone: same category, ONE column apart, then one line apart. This is the
-    // dimension the `resolve_source_location` mutation check exercised end to end.
-    rejects(
-        "trap column differs by one",
-        &trap,
-        &trap,
-        &trapped(TrapCategory::IntegerOverflow, 4, 21),
-        "MIR/NATIVE",
-    );
-    rejects(
-        "trap line differs by one",
-        &trap,
-        &trapped(TrapCategory::IntegerOverflow, 5, 20),
-        &trap,
-        "HIR/MIR",
-    );
-
-    // The output-free precondition is a comparator rule too, and is enforced while
-    // NATIVE_STDOUT_SUPPORTED is false — a case that prints must fail rather than have its
-    // stdout quietly excluded from the comparison.
-    if !NATIVE_STDOUT_SUPPORTED {
-        let printing = completed("hello\n", 0);
+    #[test]
+    fn stdout_byte_change_fails() {
+        let base = completed("hello\n");
+        // One byte, in the middle, with the same length — not a length or emptiness check.
         rejects(
-            "case produces stdout",
-            &printing,
-            &printing,
-            &printing,
-            "NATIVE_STDOUT_SUPPORTED",
+            "stdout differs by one byte",
+            &base,
+            &base,
+            &completed("hallo\n"),
+            "MIR/NATIVE DISAGREEMENT on stdout_bytes",
+        );
+    }
+
+    #[test]
+    fn stderr_byte_change_fails() {
+        let base = completed_full("", "boom\n", 1, None, &[]);
+        rejects(
+            "stderr differs",
+            &base,
+            &completed_full("", "bang\n", 1, None, &[]),
+            &base,
+            "HIR/MIR DISAGREEMENT on stderr_bytes",
+        );
+    }
+
+    #[test]
+    fn exit_change_fails() {
+        let base = completed("");
+        rejects(
+            "exit status differs",
+            &base,
+            &base,
+            &completed_full("", "", 1, None, &[]),
+            "MIR/NATIVE DISAGREEMENT on exit_status",
+        );
+    }
+
+    #[test]
+    fn returned_observation_change_fails() {
+        let base = completed_full("", "", 0, Some("7"), &[]);
+        rejects(
+            "returned value differs",
+            &base,
+            &completed_full("", "", 0, Some("8"), &[]),
+            &base,
+            "HIR/MIR DISAGREEMENT on returned_observation",
+        );
+        // A missing frame and a present one are different observations, not "close enough".
+        rejects(
+            "one engine returned nothing",
+            &base,
+            &base,
+            &completed_full("", "", 0, None, &[]),
+            "MIR/NATIVE DISAGREEMENT on returned_observation",
+        );
+    }
+
+    #[test]
+    fn drop_omission_fails() {
+        let base = completed_full("", "", 0, None, &["a", "b"]);
+        rejects(
+            "native skipped a Drop",
+            &base,
+            &base,
+            &completed_full("", "", 0, None, &["a"]),
+            "MIR/NATIVE DISAGREEMENT on drop_log",
+        );
+    }
+
+    #[test]
+    fn drop_duplication_fails() {
+        let base = completed_full("", "", 0, None, &["a"]);
+        rejects(
+            "native dropped twice",
+            &base,
+            &base,
+            &completed_full("", "", 0, None, &["a", "a2"]),
+            "MIR/NATIVE DISAGREEMENT on drop_log",
+        );
+    }
+
+    #[test]
+    fn drop_reversal_fails() {
+        // Same identities, same count, same sequence numbers — only the ORDER differs. This is the
+        // dimension that ordinary stdout comparison would catch only by accident, and the reason
+        // `sequence` is assigned by position rather than parsed from the program.
+        let base = completed_full("", "", 0, None, &["a", "b"]);
+        rejects(
+            "Drop order reversed",
+            &base,
+            &completed_full("", "", 0, None, &["b", "a"]),
+            &base,
+            "HIR/MIR DISAGREEMENT on drop_log",
+        );
+    }
+
+    #[test]
+    fn completion_versus_trap_fails() {
+        let done = completed("");
+        let trap = trapped(TrapCategory::IntegerOverflow, 4, 20);
+        rejects(
+            "HIR completed, MIR trapped",
+            &done,
+            &trap,
+            &trap,
+            "HIR/MIR DISAGREEMENT on completion versus trap",
+        );
+        // A MISSED TRAP in the native engine specifically — the shape a backend bug takes when it
+        // computes a wrong value that happens not to trip an assertion.
+        rejects(
+            "native completed, others trapped",
+            &trap,
+            &trap,
+            &done,
+            "MIR/NATIVE DISAGREEMENT on completion versus trap",
+        );
+    }
+
+    #[test]
+    fn trap_category_change_fails() {
+        // One identical location, so all three would exit 101 — only the category distinguishes.
+        let base = trapped(TrapCategory::IntegerOverflow, 4, 20);
+        rejects(
+            "trap category differs",
+            &base,
+            &base,
+            &trapped(TrapCategory::CastFailure, 4, 20),
+            "MIR/NATIVE DISAGREEMENT on trap category",
+        );
+    }
+
+    #[test]
+    fn trap_line_change_fails() {
+        let base = trapped(TrapCategory::IntegerOverflow, 4, 20);
+        rejects(
+            "trap line differs by one",
+            &base,
+            &trapped(TrapCategory::IntegerOverflow, 5, 20),
+            &base,
+            "HIR/MIR DISAGREEMENT on trap line",
+        );
+    }
+
+    #[test]
+    fn trap_column_change_fails() {
+        let base = trapped(TrapCategory::IntegerOverflow, 4, 20);
+        rejects(
+            "trap column differs by one",
+            &base,
+            &base,
+            &trapped(TrapCategory::IntegerOverflow, 4, 21),
+            "MIR/NATIVE DISAGREEMENT on trap column",
+        );
+    }
+
+    #[test]
+    fn trap_file_change_fails() {
+        let base = trapped_full(TrapCategory::Panic, "a.stark", 2, 1, None, "", &[]);
+        rejects(
+            "trap file differs",
+            &base,
+            &base,
+            &trapped_full(TrapCategory::Panic, "b.stark", 2, 1, None, "", &[]),
+            "MIR/NATIVE DISAGREEMENT on trap source_file",
+        );
+    }
+
+    #[test]
+    fn panic_message_change_fails() {
+        let boom = trapped_full(TrapCategory::Panic, "x.stark", 2, 1, Some("boom"), "", &[]);
+        let other = trapped_full(
+            TrapCategory::Panic,
+            "x.stark",
+            2,
+            1,
+            Some("different"),
+            "",
+            &[],
+        );
+        rejects(
+            "trap message differs",
+            &boom,
+            &other,
+            &boom,
+            "HIR/MIR DISAGREEMENT on trap message_class",
+        );
+        // A message-carrying trap and a category-only one are different observations, even at the
+        // same category and line.
+        rejects(
+            "one engine lost the message",
+            &boom,
+            &boom,
+            &trapped(TrapCategory::Panic, 2, 1),
+            "MIR/NATIVE DISAGREEMENT on trap message_class",
+        );
+    }
+
+    #[test]
+    fn pre_trap_output_change_fails() {
+        let base = trapped_full(TrapCategory::Panic, "x.stark", 2, 1, None, "before", &[]);
+        rejects(
+            "pre-trap stdout differs",
+            &base,
+            &base,
+            &trapped_full(TrapCategory::Panic, "x.stark", 2, 1, None, "", &[]),
+            "MIR/NATIVE DISAGREEMENT on stdout_before_trap",
+        );
+    }
+
+    #[test]
+    fn pre_trap_drop_change_fails() {
+        // TRAP-ABORT-001: destructors do not run after a trap, so the events retained before one
+        // are themselves an observation. A backend that ran an extra Drop on the way out fails here.
+        let base = trapped_full(TrapCategory::Panic, "x.stark", 2, 1, None, "", &["a"]);
+        rejects(
+            "pre-trap Drop log differs",
+            &base,
+            &base,
+            &trapped_full(TrapCategory::Panic, "x.stark", 2, 1, None, "", &["a", "b"]),
+            "MIR/NATIVE DISAGREEMENT on drop_log_before_trap",
+        );
+    }
+
+    /// §8.5: "fail on unrecognized trap rendering". A native stderr the normalizer cannot read must
+    /// never be normalised into whatever the other two engines said.
+    #[test]
+    fn unknown_native_trap_rendering_fails() {
+        for (case, stderr) in [
+            ("no trap header", "error: something else entirely\n"),
+            (
+                "unknown category text",
+                "error: runtime trap: gravity failure\n  --> x.stark:1:1\n",
+            ),
+            (
+                "no location line",
+                "error: runtime trap: integer overflow\n",
+            ),
+            (
+                "unparseable location",
+                "error: runtime trap: integer overflow\n  --> x.stark:one:two\n",
+            ),
+            (
+                // §8.6: a runtime-compatibility mismatch is a build/runtime observation, never a
+                // program trap — it must not be classified as one.
+                "runtime version mismatch",
+                "stark-runtime version mismatch: generated for runtime 0.1, linked against 0.2\n",
+            ),
+        ] {
+            let parsed = std::panic::catch_unwind(|| parse_native_trap("t.stark", stderr));
+            assert!(
+                parsed.is_err(),
+                "{case}: an unrecognised native trap rendering was accepted"
+            );
+        }
+    }
+
+    /// §8.6: "internal compiler or MIR errors are harness failures, never language traps". Uses a
+    /// real MIR run rather than a hand-built value, because the claim is about the runner's
+    /// classification, not about a struct. `fn main() -> Int32 { 300 }` is DEV-111's escalated case:
+    /// PROC-EXIT-001 requires an `invalid-exit-status` trap that has no `TrapCategory` yet, so MIR
+    /// raises `Internal` — and the harness must fail loudly instead of reporting a completion.
+    #[test]
+    fn internal_mir_error_fails() {
+        let name = "internal.stark";
+        let front = front_end(name, "fn main() -> Int32 {\n    300\n}\n");
+        let program = match starkc::mir::lower::lower_program(
+            &front.hir,
+            &front.tables,
+            front.file.clone(),
+        ) {
+            Ok(program) => program,
+            Err(e) => panic!("lowering should accept it: {} @ {:?}", e.what, e.span),
+        };
+        let ran = std::panic::catch_unwind(|| run_mir(name, &program));
+        let payload = ran.expect_err("a MIR internal error must not be reported as an observation");
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or("<non-string panic>");
+        assert!(
+            message.contains("MIR internal error"),
+            "expected a harness failure naming the internal error, got: {message}"
         );
     }
 }
-
 // ---------------------------------------------------------- DEV-106: trap MESSAGE parity --
 //
 // Until CD-136 this harness REFUSED message-carrying traps ("needs string values — outside the
@@ -2341,43 +2605,124 @@ fn conditional_panic_message_agrees_across_engines() {
 // ("the loop index is a runtime counter, so no `ConstIndex` names the consumed element ... closing
 // that needs unrolling or runtime-indexed drop flags"), and the C6 coverage matrix inherited that
 // as its only `BLOCKED` row. WP-C6.1d then took the unrolling option (CD-084 G2) and closed
-// DEV-090. This case decides which of the two records is current, by execution rather than by
+// DEV-090. This case decided which of the two records was current, by execution rather than by
 // reading the ledger: each element is moved into the loop binding and destroyed at the end of its
-// own iteration, so the Drop marks are observable in all three engines.
-const O13_ARRAY_BY_VALUE_ITER: &str = r#"struct Loud { x: Int32 }
+// own iteration.
+//
+// Now also the first case to observe Drop through the §8.8 PROTOCOL rather than as ordinary stdout.
+// The identities come from the values themselves (`Loud#1`, `Loud#2`), the frames are stripped from
+// stdout before comparison, and the expected log is stated here — so a schedule that dropped both
+// elements at the end, or dropped them in the wrong order, fails even under unanimous agreement.
+three_engine_test!(
+    o13_non_copy_array_by_value_iteration_agrees,
+    "o13_array_by_value_iter",
+    drops(&["Loud#1", "Loud#2"]),
+    r#"struct Loud { x: Int32 }
 impl Drop for Loud {
-    fn drop(&mut self) { print("d"); }
+    fn drop(&mut self) {
+        print("@@stark-drop:Loud#");
+        print(self.x);
+        println("@@");
+    }
 }
 fn main() {
     let a: [Loud; 2] = [Loud { x: 1 }, Loud { x: 2 }];
     let mut s: Int32 = 0;
     for e in a {
         s = s + e.x;
-        print("i");
     }
     assert_eq(s, 3);
-    println("");
 }
-"#;
+"#
+);
+
+// ------------------------------------------- WP-C6.5 §8.7: returned observations --
+//
+// A framed probe: the case defines `fn probe() -> T`, the harness appends a wrapper that calls it
+// and emits a reserved return frame, and the frame is compared as a `CanonicalReturnedValue` rather
+// than as ordinary stdout. Without this, a function's result is only ever observable by printing it,
+// which makes "the value" and "the output" the same dimension.
 
 #[test]
-fn o13_non_copy_array_by_value_iteration_agrees() {
+fn a_returned_scalar_agrees_across_engines() {
     if !rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
-    let outcome = three_engine("o13_array_by_value_iter", O13_ARRAY_BY_VALUE_ITER);
-    // Stated independently of the engines: one Drop mark per iteration, AFTER that iteration's
-    // body and BEFORE the next element is moved out. Three engines agreeing on a wrong Drop
-    // schedule -- dropping both elements at the end, or not at all -- still fails here.
-    match outcome {
-        Outcome::Completed { ref stdout, exit } => {
+    agree_returning(
+        "ret_scalar",
+        "fn probe() -> Int32 {\n    let a: Int32 = 20;\n    a * 2 + 2\n}\n",
+        "Int32",
+        "42",
+    );
+}
+
+#[test]
+fn a_returned_string_agrees_across_engines() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    agree_returning(
+        "ret_string",
+        "fn probe() -> String {\n    let mut s: String = String::from(\"ab\");\n    s.push_str(\"cd\");\n    s\n}\n",
+        "String",
+        "abcd",
+    );
+}
+
+// ------------------------------------------- WP-C6.5 §8.8: Drop log before a trap --
+//
+// TRAP-ABORT-001 aborts without running destructors, so what a trap case must show is the events
+// that happened BEFORE it and no others. Compared as a parsed log, not as printed text.
+
+#[test]
+fn the_drop_log_before_a_trap_agrees_across_engines() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let observed = three_engine(
+        "drops_before_trap",
+        r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) {
+        print("@@stark-drop:Loud#");
+        print(self.x);
+        println("@@");
+    }
+}
+fn main() {
+    let scope: Int32 = 1;
+    {
+        let first: Loud = Loud { x: 1 };
+    }
+    panic("stop");
+}
+"#,
+    );
+    match observed {
+        Observation::Trapped(trap) => {
+            // The inner scope's value is destroyed before the panic; the panic itself destroys
+            // nothing. One event, not zero and not two.
             assert_eq!(
-                stdout, "idid\n",
-                "O13: per-iteration move and Drop schedule"
+                trap.drop_log_before_trap,
+                vec![DropEvent {
+                    sequence: 1,
+                    identity: "Loud#1".to_string(),
+                }],
+                "Drop log retained before the trap"
             );
-            assert_eq!(exit, 0);
+            assert_eq!(
+                trap.message_class,
+                TrapMessageClass::UserMessageExact("stop".to_string())
+            );
+            assert!(
+                trap.stdout_before_trap.is_empty(),
+                "the Drop frames must be stripped from normative stdout, got {:?}",
+                String::from_utf8_lossy(&trap.stdout_before_trap)
+            );
         }
-        other => panic!("O13: expected completion, got {other:#?}"),
+        other => panic!("expected a trap, got {other:#?}"),
     }
 }

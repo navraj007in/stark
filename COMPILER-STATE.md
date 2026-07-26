@@ -125,11 +125,12 @@ built; no new platform work is needed for it. Details in `WP-C6.4.md`; evidence 
 touches `starkc/tests` — expected, and exactly what §3.5 of the C6.5 plan requires (C6.4 evidence
 regenerated at the exact final corpus commit, older records not reused).
 
-**WP-C6.5 `PARTIAL` — phase 0 done (CD-147), phase C6.5-1 at the plan's commit-2 boundary
-(CD-148).** `starkc/tests/support/differential.rs` is now the single three-engine comparator
-authority, extracted mechanically from `three_engine_differential.rs` with **no observation-shape
-change** (88 passed / 0 ignored / 0 self-skipped at `c789e4b`, identical to V0; 89 once the O13 case
-lands). The other **22 forked suites are
+**WP-C6.5 `PARTIAL` — phase 0 done (CD-147), phase C6.5-1 COMPLETE (CD-148 commit 2, CD-151
+commit 3).** `starkc/tests/support/differential.rs` is the single three-engine comparator authority:
+extracted mechanically first (88 passed, identical to V0), then extended to the **full §39
+observation shape** — stderr bytes, exit status, returned observation and a parsed Drop log, with
+trap stderr normalised rather than byte-matched and 18 comparator tests proving each field is
+load-bearing (**109 passed / 0 ignored / 0 self-skipped**). The other **22 forked suites are
 not yet migrated** — owner chose incremental migration in coverage-matrix order — so until each is,
 its C6.2/C6.3 evidence still rests on its own local notion of agreement. Matrix roll-up: 127
 EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **4 BLOCKED — V19 `HashSet`**
@@ -3235,6 +3236,45 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-151 [2026-07-26, **WP-C6.5-1 commit 3 — the §39 observation model; the comparator now compares
+  what the claim is about**] The plan's §8.3–§8.10, additive to commit 2's mechanical extraction.
+  - **The shape.** `Outcome { stdout, exit }` → `Completed { stdout_bytes, stderr_bytes,
+    exit_status, returned_observation, drop_log }` / `Trapped { category, source_file, line, column,
+    message_class, stdout_before_trap, stderr_observation, exit_status, drop_log_before_trap }`.
+    Every field participates in equality, and `first_difference` NAMES the field that disagreed —
+    with nine fields on a trap, "these two structs differ" is not a usable failure.
+  - **Trap stderr is normalised, not byte-matched** (§8.5): parsed from the native engine,
+    CONSTRUCTED for the interpreters from `stark_runtime::trap`'s own category table — the same
+    source the native ABI prints from, so the two cannot drift. Exhaustive over `TrapCategory` by an
+    exhaustive `match`: a tenth category (the pending `invalid-exit-status` CE3) fails to compile
+    until it is mapped.
+  - **Drop events come from the PROGRAM** (§8.8): a `Drop` impl emits `@@stark-drop:<identity>@@`,
+    the harness extracts frames in order, assigns sequence by position, and strips them from
+    normative stdout. Inferring Drop order from generated Rust destructors or host traces would make
+    the native engine's schedule unfalsifiable. Duplicate identities and mid-line frames are hard
+    failures — a Drop event that vanished into stdout would under-report the log silently.
+  - **Returned values go through a framed probe** (§8.7): `fn probe() -> T` plus a generated wrapper
+    appended AFTER the case source (so user line numbers, and therefore trap provenance, are
+    unchanged).
+  - **Two deviations from the plan's sketch, recorded not silent.** (1) The sentinel is `@@`, not
+    `##`: a case source is a Rust raw string and `"##` terminates `r#"…"#`, so `##` would have made
+    every drop-observing case remember `r###"`. (2) Return frames are marker-delimited rather than
+    length-delimited — Core v1 source cannot compute the byte length of an arbitrary `Display`
+    rendering, so the probe is instead REQUIRED to emit no other stdout and `agree_returning`
+    asserts it, making the ambiguity fail loudly rather than be prevented by a prefix.
+  - **18 comparator unit tests** (§8.10's full list), one per dimension so a regression names the
+    field it broke. Each perturbs exactly ONE field of an otherwise-agreeing triple. Three cover
+    what stdout comparison cannot see: **Drop reversal** (same identities, same count, order only),
+    **pre-trap Drop change** (TRAP-ABORT-001 makes the retained log an observation), and **internal
+    MIR error**, which runs the real `fn main() -> Int32 { 300 }` — DEV-111's escalated case — and
+    requires the harness to fail loudly rather than report a completion.
+  - **Evidence:** `three_engine_differential` **109 passed / 0 failed / 0 ignored / 0 self-skipped**
+    (was 89: +18 comparator tests, +2 framed-probe cases, +1 Drop-log-before-trap case, O13 converted
+    to the protocol). `fmt` clean. Test-only change; CI's three platforms are the exhaustive net.
+  - **Still forked: 22 suites.** Until each is migrated, its C6.2/C6.3 evidence rests on its own
+    local notion of agreement — the unified comparator has not seen it. That is the gap C65-F1
+    named, and commit 3 does not close it.
 
 - CD-150 [2026-07-26, **owner decisions on DEV-111's two escalations; DEV-112 FIXED**]
   - **The `invalid-exit-status` trap category (CE3): BUNDLED with the native entry-signature work.**

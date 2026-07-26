@@ -1,8 +1,9 @@
 # WP-C6.5 — Full Differential and Generated Corpus
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
-**Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, coverage matrix) complete; C6.5-1 at the plan's
-commit-2 boundary (comparator extracted, no observation-shape change yet). Two findings raised and
+**Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, coverage matrix) complete; **C6.5-1 complete**
+(comparator extracted and extended to the full §39 observation shape, commits 2 and 3), except for
+migrating the 22 still-forked suites, which proceeds in matrix order. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -160,7 +161,7 @@ C6.5-7 witnesses. A row moved to `NOT-APPLICABLE-NON-CORE` after this point need
 justification recorded, not an edit.
 
 ---
-## 4. Phase C6.5-1 — comparator extraction (§8, commit 2)
+## 4. Phase C6.5-1 — the comparator authority (§8, commits 2 and 3)
 
 **Done, mechanically, at the plan's §19 commit 2 boundary: no observation-shape change.**
 
@@ -183,10 +184,53 @@ line rather than an import list.
 | `cargo clippy --tests` | clean |
 | Behaviour change | none — the diff moves code and adds `pub` |
 
-**Not yet done in this phase:** §8.3's full observation shape, §8.5's exhaustive trap-stderr
-normalizer, §8.7's returned-observation protocol, §8.8's Drop-log protocol and §8.10's seventeen
-comparator unit tests. Those are commit 3, deliberately separated so that a later disagreement is
-attributable to the extension and not to the move. The 22 unmigrated suites remain forked.
+### 4.1 Commit 3 — the §39 observation model
+
+**Done.** `Outcome { stdout, exit }` is replaced by the full shape, and every field participates in
+equality:
+
+```text
+Completed { stdout_bytes, stderr_bytes, exit_status, returned_observation, drop_log }
+Trapped   { category, source_file, line, column, message_class, stdout_before_trap,
+            stderr_observation, exit_status, drop_log_before_trap }
+```
+
+| §8 requirement | How it is met |
+| --- | --- |
+| §8.4 bytes, not host strings | native output stays `Vec<u8>`; interpreter `String` channels convert with no line-ending translation; only protocol frames are decoded as text |
+| §8.5 trap stderr normalised | *parsed* from native stderr, *constructed* for the interpreters from `stark_runtime::trap`'s own category table — the same source the native ABI prints from. Exhaustive over `TrapCategory` by an exhaustive `match`, so a tenth category fails to compile until mapped |
+| §8.6 message classes | `CategoryOnly` / `UserMessageExact` / `RuntimeCompatibility`; a runtime-version mismatch is raised as a harness failure, never classified as a program trap |
+| §8.7 returned observation | `fn probe() -> T` plus a generated wrapper emitting `@@stark-ret:<tag>:<rendered>@@`; frame stripped from normative stdout; a probe that also prints fails |
+| §8.8 Drop log | user `Drop` impls emit `@@stark-drop:<identity>@@`; frames extracted in order, sequence assigned by position, stripped from stdout; duplicate identities and mid-line frames are hard failures |
+| §8.9 invariants | `first_difference` names the field, so a failure says *which* normative dimension disagreed rather than dumping two structs |
+| §8.10 comparator tests | **18**, one per listed dimension |
+
+**Two deliberate deviations from the plan's sketch, both recorded rather than silent.**
+
+1. **The sentinel is `@@`, not `##`.** A case source is a Rust raw string in the test file, and `"##`
+   terminates `r#"…"#` — with `##` every drop-observing case would have to remember `r###"`. The
+   sentinel is arbitrary; the friction would not have been.
+2. **Return frames are marker-delimited, not length-delimited.** §8.7 asks for a length prefix.
+   Core v1 source cannot compute the byte length of an arbitrary `Display` rendering, so the frame is
+   delimited by reserved markers and the probe is *required* to emit no other stdout —
+   `agree_returning` asserts that, so the ambiguity the length prefix was there to prevent fails
+   loudly instead.
+
+**Evidence:** `three_engine_differential` **109 passed / 0 failed / 0 ignored / 0 self-skipped** (was
+89: +18 comparator tests, +2 framed-probe cases, +1 Drop-log-before-trap case, O13 converted to the
+protocol). `fmt` clean. The 18 comparator tests are what make the new fields load-bearing rather than
+merely present: each perturbs exactly one field of an otherwise-agreeing triple and requires the
+comparator to reject it, naming both the disagreeing pair and the field.
+
+Three of them are worth calling out because they cover the failure modes stdout comparison cannot
+see: **Drop reversal** (same identities, same count, only the order differs), **pre-trap Drop change**
+(TRAP-ABORT-001 says destructors do not run after a trap, so the retained log is itself an
+observation), and **internal MIR error** — which runs a real `fn main() -> Int32 { 300 }`, DEV-111's
+escalated case, and requires the harness to fail loudly rather than report a completion.
+
+**Not yet done in this phase:** migration of the 22 remaining forked suites, which proceeds in
+coverage-matrix order under CD-148's option (1). Until each is migrated its C6.2/C6.3 evidence still
+rests on its own local notion of agreement.
 
 ---
 
@@ -321,10 +365,10 @@ re-deriving all of them.
 
 ## 7. What comes next
 
-§19's commit 3 — the §8.3 observation model, the §8.5 trap-stderr normalizer, the §8.7 returned-value
-and §8.8 Drop-log protocols, and the §8.10 comparator unit tests that prove each new field is
-load-bearing. Migration of the 22 remaining forked suites then proceeds in matrix order under
-CD-148's option (1).
+§19's commit 4 — the corpus manifest, layout and lock (§9), which is the first phase that produces
+corpus artifacts rather than harness. Migration of the 22 forked suites proceeds alongside it in
+matrix order under CD-148's option (1); each migrated suite is a step toward the required claim
+resting on one comparator rather than twenty-three.
 
 Status remains `PARTIAL` until the comparator, matrix, manifest, generator, replay, metamorphic and
 mutation requirements are all complete (§23). C6.5 has **no** valid "candidate complete but corpus

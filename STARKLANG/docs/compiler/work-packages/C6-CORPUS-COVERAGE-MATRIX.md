@@ -200,6 +200,13 @@ output from user `Drop` impls*, compared as ordinary stdout. C6.5-1's §8.8 Drop
 that into a parsed, sequence-checked `drop_log` removed from stdout before comparison. So every row
 below is `EXISTING-EVIDENCE` **plus** a re-observation obligation under the protocol.
 
+**The protocol now exists** (commit 3) and **O13 is the first row observed through it** — identities
+from the values themselves, order checked by position, frames stripped from stdout, expected log
+stated independently of the engines. A companion case pins the Drop log retained *before* a trap,
+which is what makes TRAP-ABORT-001's "no destructor after a trap" falsifiable for row O22 rather than
+assumed. The remaining 23 rows still carry the obligation; they discharge it as C6.5-5's replay
+re-observes each category.
+
 | ID | Sub-category | Normative rule | Evidence | Disposition |
 | --- | --- | --- | --- | --- |
 | O01 | Copy assignment | OWN-COPY-001 | `c61f_structural_copy` | EXISTING-EVIDENCE →MU07 |

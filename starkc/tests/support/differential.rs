@@ -6,27 +6,40 @@
 //! whatever its own work package needed — so the union of those definitions was not a definition.
 //! Every rule now lives here and nowhere else.
 //!
-//! Extracted MECHANICALLY from `tests/three_engine_differential.rs` at WP-C6.5 commit 2, with no
-//! behaviour change: the runners, the normalisation, the comparator and its helpers are the code
-//! that file carried since WP-C5.2 (CD-053), made `pub` and moved. The observation model is
-//! extended to the §39 shape in the FOLLOWING commit, deliberately separated so that a later
-//! disagreement can be attributed to the extension rather than to the move.
+//! Commit 2 extracted the runners and the comparator mechanically. **Commit 3 (this) extends the
+//! observation to the §39 shape**, which is what the required claim actually needs: the engines
+//! produce the same *normative observations*, not merely the same stdout and exit code.
 //!
-//! What a case does, per WP-C5.2's exit condition: takes ONE source string, runs that exact source
-//! through all three engines, normalises each result into a common [`Outcome`], and requires all
-//! three to be equal. The normalisation is the point — an outcome is either normal completion
-//! (stdout + exit status) or a trap (category + exact source file/line/column + the stdout emitted
-//! before it + the user message where one is normative), so agreement covers completion-vs-trap,
-//! exit status, trap category, trap location and trap text, not just "all three exited nonzero".
+//! ```text
+//! Completed { stdout_bytes, stderr_bytes, exit_status, returned_observation, drop_log }
+//! Trapped   { category, source_file, line, column, message_class, stdout_before_trap,
+//!             stderr_observation, exit_status, drop_log_before_trap }
+//! ```
 //!
-//! Traps are compared in **normalised** form. Raw stderr byte equality is NOT compared, because
-//! the HIR oracle has no canonical stderr format to compare against — its trap text is a set of ad
-//! hoc per-call-site strings, which `stark_runtime::trap`'s own doc comment records it does not
-//! attempt to match byte for byte. What is compared is what those bytes mean.
+//! Four rules govern how those fields are produced, because each is a place where a comparator can
+//! quietly stop comparing:
 //!
-//! Every agreement rule lives in [`compare_outcomes`] and nowhere else, so the rules can be — and
-//! are — tested directly against disagreeing inputs, rather than only being exercised by cases
-//! expected to agree.
+//! 1. **Bytes, not host strings** (§8.4). Native output is kept as `Vec<u8>`; the interpreters'
+//!    `String` channels convert without platform line-ending translation. Nothing is lossily
+//!    decoded for equality — only the reserved protocol frames, which are ASCII by construction, are
+//!    read as text.
+//! 2. **Trap stderr is normalised, not byte-matched** (§8.5). The native engine has real stderr; the
+//!    interpreters have none. So the comparator *constructs* the normative
+//!    [`TrapStderrObservation`] for them from the category and location, taking the category text
+//!    from `stark_runtime::trap`'s own table — the same source the native ABI prints from — and
+//!    *parses* it out of the native engine's stderr. An unrecognised native rendering is a hard
+//!    failure, never a silent pass.
+//! 3. **Drop events come from the program, not from the host** (§8.8). A drop-observing case emits a
+//!    reserved frame from its own `Drop` impl; the harness extracts those frames from stdout, in
+//!    order, and removes them before comparing stdout. Inferring Drop order from generated Rust
+//!    destructors or host traces would make the native engine's Drop schedule unfalsifiable.
+//! 4. **Returned values go through a framed probe** (§8.7), so a case can observe a function's
+//!    result without that result being indistinguishable from ordinary output.
+//!
+//! Every agreement rule lives in [`compare_observations`] and nowhere else, so the rules can be —
+//! and are — tested directly against deliberately disagreeing inputs rather than only being
+//! exercised by cases expected to agree. A comparator whose only coverage is passing cases is a
+//! comparator nobody has watched fail.
 
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::diag::Severity;
@@ -42,45 +55,227 @@ use starkc::typecheck;
 use std::process::Command;
 use std::sync::Arc;
 
-/// Whether the native backend can emit observable stdout yet. `false` through WP-C5.2: the
-/// backend rejects `PrintStr`/`PrintlnStr` as `Unsupported` because string values are WP-C5.3.
-///
-/// While this is `false` the comparator asserts that each case's oracle run produced NO output,
-/// which is what makes full [`Outcome`] equality across three engines an honest total
-/// comparison rather than one with a quietly excluded dimension. When native output lands, flip
-/// this constant: the precondition drops away and the same equality check starts comparing real
-/// stdout bytes on all three sides, with no other change to the harness.
+/// TRAP-ABORT-001: a language trap terminates with status 101. The interpreters are not processes
+/// and have no status of their own, so this is the **normative constant** they report — not a
+/// default standing in for an unknown. It is compared against the native process's real exit code,
+/// so a backend that aborted with any other status fails here rather than being accommodated.
+pub const TRAP_EXIT_STATUS: i32 = 101;
+
+/// Whether the native backend can emit observable stdout. `true` since WP-C5.3; retained because
+/// [`compare_observations`] still enforces the output-free precondition while it is `false`, and
+/// that guard is the reason full observation equality was an honest comparison during C5.2 rather
+/// than one with a quietly excluded dimension.
 pub const NATIVE_STDOUT_SUPPORTED: bool = true;
 
-/// One engine's result, normalised to the observable outcome the other two can be compared
-/// against. Deliberately NOT engine-shaped: the HIR oracle reports a message and a byte span,
-/// MIR reports a category and a `SourceInfo`, and the native binary reports a line of stderr
-/// text and a process exit code. All three are projected onto this.
+// ------------------------------------------------------------------ §39 shape --
+
+/// One engine's result, normalised to the observable outcome the other two are compared against.
+/// Deliberately NOT engine-shaped: the HIR oracle reports a message and a byte span, MIR reports a
+/// category and a `SourceInfo`, and the native binary reports a line of stderr text and a process
+/// exit code. All three are projected onto this.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Outcome {
-    Completed {
-        stdout: String,
-        exit: i32,
-    },
-    Trapped {
-        category: TrapCategory,
-        file: String,
-        line: u32,
-        column: u32,
-        /// C4.5e-0: output emitted before the trap is observable, so two programs printing
-        /// different prefixes before the same trap are different outcomes.
-        stdout_before: String,
-        /// DEV-106 (CD-136): the USER-supplied text of a message-carrying trap — `panic(msg)`.
-        /// `None` for a category-only trap (overflow, index, cast, …), where each engine words its
-        /// own prose and there is no canonical string to compare.
-        ///
-        /// Category and location were always compared; the MESSAGE was not, because the harness
-        /// REFUSED message-carrying traps outright ("needs string values — outside the C5.2-admitted
-        /// surface"). Strings landed in C6.3a, so that refusal was stale and the text is now
-        /// comparable across all three engines.
-        message: Option<String>,
-    },
+pub enum Observation {
+    Completed(CompletionObservation),
+    Trapped(TrapObservation),
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct CompletionObservation {
+    /// Normative stdout, with every protocol frame removed (§8.7/§8.8).
+    pub stdout_bytes: Vec<u8>,
+    /// PROC-EXIT-001's `Err(message)` write is the only stderr a completing Core program produces
+    /// today; `eprint`/`eprintln` reach no engine's captured channel (DEV-111's recorded gap), so
+    /// this compares empty-to-empty for every case that does not return `Err` from `main`.
+    pub stderr_bytes: Vec<u8>,
+    pub exit_status: i32,
+    /// `None` for ordinary program-level cases; `Some` only for a framed probe (§8.7).
+    pub returned_observation: Option<CanonicalReturnedValue>,
+    pub drop_log: Vec<DropEvent>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct TrapObservation {
+    pub category: TrapCategory,
+    pub source_file: String,
+    pub line: u32,
+    pub column: u32,
+    pub message_class: TrapMessageClass,
+    /// C4.5e-0: output emitted before the trap is observable, so two programs printing different
+    /// prefixes before the same trap are different outcomes.
+    pub stdout_before_trap: Vec<u8>,
+    pub stderr_observation: TrapStderrObservation,
+    pub exit_status: i32,
+    /// §8.8: only the events that happened *before* the trap. TRAP-ABORT-001 aborts without
+    /// running destructors, so this field is what makes "no Drop after a trap" falsifiable rather
+    /// than assumed.
+    pub drop_log_before_trap: Vec<DropEvent>,
+}
+
+/// §8.6. Which part of a trap's text is normative, and therefore comparable.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum TrapMessageClass {
+    /// A compiler-generated trap: each engine words its own prose, so only the category and
+    /// provenance are compared.
+    CategoryOnly,
+    /// `panic(msg)`: the user's text is normative and compared byte for byte.
+    UserMessageExact(String),
+    /// A runtime-compatibility mismatch — a pre-user-code build/runtime observation, never a
+    /// program trap. Constructed only so the normalizer can recognise it and fail loudly instead of
+    /// classifying it as a language outcome.
+    RuntimeCompatibility,
+}
+
+/// The normative content of a trap's stderr: parsed from the native engine, constructed for the
+/// interpreters (§8.5). Raw engine diagnostics are kept out of equality entirely — they are
+/// reported in failure messages for debugging, not compared.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct TrapStderrObservation {
+    pub category_text: String,
+    pub user_message: Option<String>,
+    pub source_file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// One user-`Drop` execution, as the program itself reported it. `sequence` is assigned by the
+/// harness from the order the frames appear, so a reordered Drop schedule changes the log even when
+/// the same identities appear.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct DropEvent {
+    pub sequence: u32,
+    pub identity: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CanonicalReturnedValue {
+    pub type_tag: String,
+    pub rendered: Vec<u8>,
+}
+
+// --------------------------------------------------------------- protocols --
+
+/// §8.8. A `Drop` impl emits `println("@@stark-drop:<identity>@@")`; the harness turns each frame
+/// into a [`DropEvent`] and removes the line from normative stdout.
+pub const DROP_FRAME_PREFIX: &str = "@@stark-drop:";
+/// §8.7. The generated probe wrapper emits `@@stark-ret:<type_tag>:<rendered>@@`.
+///
+/// `@@` rather than the `##` the plan sketches: a case source is a Rust raw string in the test
+/// file, and `"##` terminates `r#"…"#`, so every drop-observing case would have had to remember to
+/// write `r###"`. The sentinel is arbitrary; the friction was not.
+pub const RET_FRAME_PREFIX: &str = "@@stark-ret:";
+const FRAME_SUFFIX: &str = "@@";
+
+/// What a scan of one engine's raw stdout yields.
+struct ProtocolScan {
+    stdout: Vec<u8>,
+    drop_log: Vec<DropEvent>,
+    returned: Option<CanonicalReturnedValue>,
+}
+
+/// Splits raw stdout into normative stdout plus protocol events (§8.7/§8.8).
+///
+/// Line-oriented, and strict about it: a frame must occupy a whole line. A case that emits a frame
+/// after an unterminated `print` produces a line that *contains* the reserved prefix without
+/// starting at it, and that is a hard failure rather than being passed through as ordinary output —
+/// otherwise a Drop event could silently vanish into stdout and the drop_log would under-report.
+/// The prefixes are reserved: a program printing one for any other reason fails here too.
+///
+/// Only frame lines are decoded as text. Everything else is copied through as bytes, so a case
+/// emitting non-UTF-8 output is compared byte for byte (§8.4).
+fn scan_protocol(raw: &[u8], engine: &str) -> Result<ProtocolScan, String> {
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut drop_log: Vec<DropEvent> = Vec::new();
+    let mut returned: Option<CanonicalReturnedValue> = None;
+    let mut seen_identities: Vec<String> = Vec::new();
+
+    // `split_inclusive` keeps each line's terminator, so a trailing unterminated chunk (an
+    // unflushed `print`) round-trips exactly rather than gaining a newline.
+    for line in raw.split_inclusive(|&b| b == b'\n') {
+        let text = std::str::from_utf8(line).ok();
+        let trimmed = text.map(|t| t.trim_end_matches(['\n', '\r'])).unwrap_or("");
+
+        let is_frame =
+            trimmed.starts_with(DROP_FRAME_PREFIX) || trimmed.starts_with(RET_FRAME_PREFIX);
+        if !is_frame {
+            // A reserved prefix anywhere else in the line means the frame was not emitted on a line
+            // of its own.
+            if let Some(t) = text {
+                for prefix in [DROP_FRAME_PREFIX, RET_FRAME_PREFIX] {
+                    if t.contains(prefix) {
+                        return Err(format!(
+                            "{engine}: malformed protocol frame — {prefix:?} appears mid-line in \
+                             {t:?}. A frame must occupy a whole line: emit it with `println`, and \
+                             make sure the preceding output ended with a newline"
+                        ));
+                    }
+                }
+            }
+            stdout.extend_from_slice(line);
+            continue;
+        }
+
+        let body = trimmed.strip_suffix(FRAME_SUFFIX).ok_or_else(|| {
+            format!("{engine}: protocol frame is not terminated by `{FRAME_SUFFIX}`: {trimmed:?}")
+        })?;
+
+        if let Some(identity) = body.strip_prefix(DROP_FRAME_PREFIX) {
+            if identity.is_empty() {
+                return Err(format!(
+                    "{engine}: Drop frame carries no identity: {trimmed:?}"
+                ));
+            }
+            if seen_identities.iter().any(|seen| seen == identity) {
+                // §8.8 "malformed or duplicate sequence framing fails". A repeated identity makes
+                // the log ambiguous exactly where it matters most — a double Drop and two
+                // same-named values would be indistinguishable — so a case must give each
+                // droppable value a distinct identity.
+                return Err(format!(
+                    "{engine}: Drop identity {identity:?} was emitted twice. Identities must be \
+                     unique within a case, or a double-Drop cannot be told from two values sharing \
+                     a name"
+                ));
+            }
+            seen_identities.push(identity.to_string());
+            drop_log.push(DropEvent {
+                sequence: drop_log.len() as u32 + 1,
+                identity: identity.to_string(),
+            });
+            continue;
+        }
+
+        let payload = body
+            .strip_prefix(RET_FRAME_PREFIX)
+            .expect("checked by is_frame");
+        let (type_tag, rendered) = payload.split_once(':').ok_or_else(|| {
+            format!("{engine}: return frame has no `<type_tag>:<rendered>` split: {trimmed:?}")
+        })?;
+        if returned.is_some() {
+            return Err(format!("{engine}: more than one return frame in one run"));
+        }
+        returned = Some(CanonicalReturnedValue {
+            type_tag: type_tag.to_string(),
+            rendered: rendered.as_bytes().to_vec(),
+        });
+    }
+
+    Ok(ProtocolScan {
+        stdout,
+        drop_log,
+        returned,
+    })
+}
+
+/// §8.7 steps 2–3: the wrapper that calls a case's zero-argument `probe` and frames its result.
+/// Appended AFTER the case source so every user line number is unchanged — a trap inside the case
+/// must not be attributed to generated code.
+fn probe_wrapper(type_tag: &str) -> String {
+    format!(
+        "fn main() {{\n    print(\"{RET_FRAME_PREFIX}{type_tag}:\");\n    print(probe());\n    \
+         println(\"{FRAME_SUFFIX}\");\n}}\n"
+    )
+}
+
+// ----------------------------------------------------------------- front end --
 
 pub struct Front {
     pub hir: starkc::hir::Hir,
@@ -114,10 +309,8 @@ pub fn front_end(name: &str, source: &str) -> Front {
 /// failure: a silent fallback would let a wrong-category trap normalise to whatever the other
 /// engines said.
 ///
-/// `UnwrapNone`, `UnwrapErr` and message-carrying `Panic` are not reachable from the currently
-/// admitted surface (`Option`/`Result` are WP-C5.3c, string values WP-C5.3), so they are listed
-/// here as explicit "not admitted yet" failures rather than guessed at. `IndexOutOfBounds`
-/// joined the admitted set with WP-C5.3a's arrays.
+/// `UnwrapNone`, `UnwrapErr` and message-carrying `Panic` traps state their category outright
+/// (DEV-106's `RuntimeError::trap_category`), so they never reach the prose path.
 pub fn oracle_category(message: &str) -> TrapCategory {
     if message.contains("integer overflow") {
         TrapCategory::IntegerOverflow
@@ -151,9 +344,10 @@ pub fn oracle_category(message: &str) -> TrapCategory {
 }
 
 /// `starkc::mir::TrapCategory` → the runtime's own copy, so the native stderr text this harness
-/// matches against is the runtime's single source of truth (`stark-runtime/src/trap.rs`) rather
-/// than a second table in a test file that could drift from it. The match is exhaustive on
-/// purpose: a new category fails to compile here until it is mapped.
+/// matches against — and the text it CONSTRUCTS for the interpreters (§8.5) — is the runtime's
+/// single source of truth (`stark-runtime/src/trap.rs`) rather than a second table in a test file
+/// that could drift from it. The match is exhaustive on purpose: a new category fails to compile
+/// here until it is mapped, which is what makes the normalizer total over `TrapCategory`.
 pub fn runtime_category(category: TrapCategory) -> stark_runtime::trap::TrapCategory {
     use stark_runtime::trap::TrapCategory as Rt;
     match category {
@@ -189,21 +383,45 @@ pub fn rustc_available() -> bool {
         .unwrap_or(false)
 }
 
+/// Builds the interpreters' [`TrapStderrObservation`]: they have no stderr stream, so the normative
+/// rendering is CONSTRUCTED from the same runtime table the native ABI prints from (§8.5).
+fn constructed_trap_stderr(
+    category: TrapCategory,
+    file: &str,
+    line: u32,
+    column: u32,
+    user_message: Option<String>,
+) -> TrapStderrObservation {
+    TrapStderrObservation {
+        category_text: runtime_category(category).message().to_string(),
+        user_message,
+        source_file: file.to_string(),
+        line,
+        column,
+    }
+}
+
+fn message_class(message: Option<&String>) -> TrapMessageClass {
+    match message {
+        Some(text) => TrapMessageClass::UserMessageExact(text.clone()),
+        None => TrapMessageClass::CategoryOnly,
+    }
+}
+
 // ------------------------------------------------------------------ engine 1 --
 
-pub fn run_hir(name: &str, front: &Front) -> Outcome {
+pub fn run_hir(name: &str, front: &Front) -> Observation {
     match interp::run_with_partial_output(&front.hir, front.file.clone(), &front.tables) {
         Ok(exec) => {
-            assert!(
-                exec.stderr.is_empty(),
-                "{name}: oracle wrote to stderr on normal completion ({:?}) — the C5.2 surface \
-                 has no such path, and the native engine has no channel to match it",
-                exec.stderr
-            );
-            Outcome::Completed {
-                stdout: exec.output,
-                exit: exec.status as i32,
-            }
+            let scan = scan_protocol(exec.output.as_bytes(), "HIR oracle")
+                .unwrap_or_else(|reason| panic!("{name}: {reason}"));
+            Observation::Completed(CompletionObservation {
+                stdout_bytes: scan.stdout,
+                stderr_bytes: exec.stderr.into_bytes(),
+                exit_status: i32::from(exec.status),
+                returned_observation: scan.returned,
+                drop_log: scan.drop_log,
+            })
         }
         Err((err, partial)) => {
             assert!(
@@ -215,39 +433,57 @@ pub fn run_hir(name: &str, front: &Front) -> Outcome {
             let (line, column) = front.file.line_col(err.span.lo);
             // CD-141: the STATED category wins when the oracle supplies one. `panic(msg)`
             // raises arbitrary USER text, so prose matching cannot classify it — that is the
-            // whole reason DEV-106 added `RuntimeError::trap_category`. This harness kept
-            // classifying by prose regardless, so the two `panic` cases hit
-            // `oracle_category`'s unrecognised-message failure. Prose matching remains the
+            // whole reason DEV-106 added `RuntimeError::trap_category`. Prose matching remains the
             // fallback for every trap the interpreter raises without a category.
             let category = err
                 .trap_category
                 .unwrap_or_else(|| oracle_category(&err.message));
-            Outcome::Trapped {
+            // `panic(msg)` raises the rendered message verbatim as its `RuntimeError`, so for that
+            // category the error text IS the user string.
+            let message = (category == TrapCategory::Panic).then(|| err.message.clone());
+            let scan = scan_protocol(partial.as_bytes(), "HIR oracle")
+                .unwrap_or_else(|reason| panic!("{name}: {reason}"));
+            let (line, column) = (line as u32, column as u32);
+            Observation::Trapped(TrapObservation {
                 category,
-                file: front.file.name.clone(),
-                line: line as u32,
-                column: column as u32,
-                stdout_before: partial,
-                // `panic(msg)` raises the rendered message verbatim as its `RuntimeError`, so for
-                // that category the error text IS the user string.
-                message: (category == TrapCategory::Panic).then(|| err.message.clone()),
-            }
+                source_file: front.file.name.clone(),
+                line,
+                column,
+                message_class: message_class(message.as_ref()),
+                stdout_before_trap: scan.stdout,
+                stderr_observation: constructed_trap_stderr(
+                    category,
+                    &front.file.name,
+                    line,
+                    column,
+                    message,
+                ),
+                exit_status: TRAP_EXIT_STATUS,
+                drop_log_before_trap: scan.drop_log,
+            })
         }
     }
 }
 
 // ------------------------------------------------------------------ engine 2 --
 
-pub fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Outcome {
+pub fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Observation {
     let verified = match verify_program(program) {
         Ok(v) => v,
         Err(errors) => panic!("{name}: verifier rejected lowered MIR:\n{errors:#?}"),
     };
     match run_program(verified) {
-        Ok(exec) => Outcome::Completed {
-            stdout: exec.output,
-            exit: exec.status as i32,
-        },
+        Ok(exec) => {
+            let scan = scan_protocol(exec.output.as_bytes(), "MIR")
+                .unwrap_or_else(|reason| panic!("{name}: {reason}"));
+            Observation::Completed(CompletionObservation {
+                stdout_bytes: scan.stdout,
+                stderr_bytes: exec.stderr.into_bytes(),
+                exit_status: i32::from(exec.status),
+                returned_observation: scan.returned,
+                drop_log: scan.drop_log,
+            })
+        }
         Err(MirFailure {
             error:
                 MirRunError::Trap {
@@ -269,14 +505,22 @@ pub fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Outcome {
             );
             let file = &program.files[source.file.0 as usize];
             let (line, column) = file.line_col(source.span.lo);
-            Outcome::Trapped {
+            let (line, column) = (line as u32, column as u32);
+            let scan =
+                scan_protocol(output.as_bytes(), "MIR").unwrap_or_else(|r| panic!("{name}: {r}"));
+            Observation::Trapped(TrapObservation {
                 category,
-                file: file.name.clone(),
-                line: line as u32,
-                column: column as u32,
-                stdout_before: output,
-                message,
-            }
+                source_file: file.name.clone(),
+                line,
+                column,
+                message_class: message_class(message.as_ref()),
+                stdout_before_trap: scan.stdout,
+                stderr_observation: constructed_trap_stderr(
+                    category, &file.name, line, column, message,
+                ),
+                exit_status: TRAP_EXIT_STATUS,
+                drop_log_before_trap: scan.drop_log,
+            })
         }
         Err(MirFailure {
             error: MirRunError::Internal(message),
@@ -287,7 +531,7 @@ pub fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Outcome {
 
 // ------------------------------------------------------------------ engine 3 --
 
-pub fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> Outcome {
+pub fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> Observation {
     let verified = match verify_program(program) {
         Ok(v) => v,
         Err(errors) => panic!("{name}: verifier rejected lowered MIR:\n{errors:#?}"),
@@ -309,29 +553,45 @@ pub fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> O
         .expect("running the generated binary failed");
     let _ = std::fs::remove_dir_all(&target_dir);
 
-    let stdout = String::from_utf8_lossy(&run.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    // §8.4: the native engine's bytes stay bytes. Only the trap rendering is read as text, and
+    // only after the process is known to have trapped.
+    let scan =
+        scan_protocol(&run.stdout, "native").unwrap_or_else(|reason| panic!("{name}: {reason}"));
     match run.status.code() {
-        Some(101) => {
-            let (category, file, line, column, message) = parse_native_trap(name, &stderr);
-            Outcome::Trapped {
-                category,
-                file,
-                line,
-                column,
-                stdout_before: stdout,
-                message,
-            }
+        Some(TRAP_EXIT_STATUS) => {
+            let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+            let observed = parse_native_trap(name, &stderr);
+            Observation::Trapped(TrapObservation {
+                category: observed.category,
+                source_file: observed.stderr_observation.source_file.clone(),
+                line: observed.stderr_observation.line,
+                column: observed.stderr_observation.column,
+                message_class: observed.message_class,
+                stdout_before_trap: scan.stdout,
+                stderr_observation: observed.stderr_observation,
+                exit_status: TRAP_EXIT_STATUS,
+                drop_log_before_trap: scan.drop_log,
+            })
         }
-        Some(code) => {
-            assert!(
-                stderr.is_empty(),
-                "{name}: native run exited {code} but wrote to stderr: {stderr}"
-            );
-            Outcome::Completed { stdout, exit: code }
-        }
-        None => panic!("{name}: native run terminated by a signal; stderr: {stderr}"),
+        Some(code) => Observation::Completed(CompletionObservation {
+            stdout_bytes: scan.stdout,
+            stderr_bytes: run.stderr,
+            exit_status: code,
+            returned_observation: scan.returned,
+            drop_log: scan.drop_log,
+        }),
+        None => panic!(
+            "{name}: native run terminated by a signal; stderr: {}",
+            String::from_utf8_lossy(&run.stderr)
+        ),
     }
+}
+
+/// What the native trap ABI's stderr says, normalised (§8.5).
+pub struct NativeTrap {
+    pub category: TrapCategory,
+    pub message_class: TrapMessageClass,
+    pub stderr_observation: TrapStderrObservation,
 }
 
 /// Reads the native trap ABI's stderr back into the normalised form. The format is fixed by
@@ -341,10 +601,18 @@ pub fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> O
 /// error: runtime trap: <category message>
 ///   --> <file>:<line>:<column>
 /// ```
-pub fn parse_native_trap(
-    name: &str,
-    stderr: &str,
-) -> (TrapCategory, String, u32, u32, Option<String>) {
+///
+/// Cargo text and host backtraces are ignored (§8.5); an unrecognised rendering fails.
+pub fn parse_native_trap(name: &str, stderr: &str) -> NativeTrap {
+    if stderr.contains("stark-runtime version mismatch") {
+        // §8.6: a pre-user-code runtime-compatibility failure is not a language trap. Surfaced as a
+        // harness failure rather than compared, so it can never be mistaken for one.
+        panic!(
+            "{name}: runtime-compatibility mismatch, which is a build/runtime observation and not \
+             a program trap ({:?}):\n{stderr}",
+            TrapMessageClass::RuntimeCompatibility
+        );
+    }
     let message = stderr
         .lines()
         .find_map(|l| l.strip_prefix("error: runtime trap: "))
@@ -377,67 +645,124 @@ pub fn parse_native_trap(
         .unwrap_or_else(|| panic!("{name}: unparseable file in {location:?}"))
         .to_string();
     // DEV-106: `trap::abort_with_message` prints the user's text on its own line AFTER the `-->`
-    // location, indented. A category-only trap prints no such line, which is exactly the `None`
-    // case — so the shape of the stderr distinguishes the two without a second parse mode.
+    // location, indented. A category-only trap prints no such line, which is exactly the
+    // `CategoryOnly` case — so the shape of the stderr distinguishes the two without a second
+    // parse mode.
     let user_message = stderr
         .lines()
         .skip_while(|l| !l.trim().starts_with("--> "))
         .nth(1)
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty());
-    (category, file, line, column, user_message)
+    NativeTrap {
+        category,
+        message_class: message_class(user_message.as_ref()),
+        stderr_observation: TrapStderrObservation {
+            category_text: message.to_string(),
+            user_message,
+            source_file: file,
+            line,
+            column,
+        },
+    }
 }
 
 // ----------------------------------------------------------------- the check --
 
-/// **The comparator.** Every agreement rule this harness enforces lives here and nowhere else,
-/// as a pure function of three already-normalised outcomes — deliberately returning `Err(reason)`
+/// The first field on which two observations differ, named. Field-by-field rather than a derived
+/// `!=` so a failure says WHICH normative dimension disagreed — with nine fields on a trap, "these
+/// two structs differ" is not a useful answer.
+fn first_difference(a: &Observation, b: &Observation) -> Option<&'static str> {
+    match (a, b) {
+        (Observation::Completed(x), Observation::Completed(y)) => {
+            if x.stdout_bytes != y.stdout_bytes {
+                Some("stdout_bytes")
+            } else if x.stderr_bytes != y.stderr_bytes {
+                Some("stderr_bytes")
+            } else if x.exit_status != y.exit_status {
+                Some("exit_status")
+            } else if x.returned_observation != y.returned_observation {
+                Some("returned_observation")
+            } else if x.drop_log != y.drop_log {
+                Some("drop_log")
+            } else {
+                None
+            }
+        }
+        (Observation::Trapped(x), Observation::Trapped(y)) => {
+            if x.category != y.category {
+                Some("trap category")
+            } else if x.source_file != y.source_file {
+                Some("trap source_file")
+            } else if x.line != y.line {
+                Some("trap line")
+            } else if x.column != y.column {
+                Some("trap column")
+            } else if x.message_class != y.message_class {
+                Some("trap message_class")
+            } else if x.stdout_before_trap != y.stdout_before_trap {
+                Some("stdout_before_trap")
+            } else if x.stderr_observation != y.stderr_observation {
+                Some("stderr_observation")
+            } else if x.exit_status != y.exit_status {
+                Some("trap exit_status")
+            } else if x.drop_log_before_trap != y.drop_log_before_trap {
+                Some("drop_log_before_trap")
+            } else {
+                None
+            }
+        }
+        _ => Some("completion versus trap"),
+    }
+}
+
+/// **The comparator.** Every agreement rule this harness enforces lives here and nowhere else, as a
+/// pure function of three already-normalised observations — deliberately returning `Err(reason)`
 /// rather than asserting, so the rules themselves are testable against deliberately disagreeing
-/// inputs (`the_comparator_rejects_disagreeing_outcomes`) instead of only being exercised by
-/// cases that are expected to agree. A comparator whose only coverage is passing cases is a
-/// comparator nobody has watched fail.
+/// inputs instead of only being exercised by cases that are expected to agree.
 ///
 /// `three_engine` turns an `Err` into the test failure; it adds no rule of its own.
-pub fn compare_outcomes(
+pub fn compare_observations(
     name: &str,
-    hir: &Outcome,
-    mir: &Outcome,
-    native: &Outcome,
+    hir: &Observation,
+    mir: &Observation,
+    native: &Observation,
 ) -> Result<(), String> {
     if !NATIVE_STDOUT_SUPPORTED {
         // Enforced, not assumed: if a case ever starts printing, this fires rather than letting
         // the native side's necessarily-empty stdout quietly disagree with the other two.
         let printed = match hir {
-            Outcome::Completed { stdout, .. } => stdout,
-            Outcome::Trapped { stdout_before, .. } => stdout_before,
+            Observation::Completed(c) => &c.stdout_bytes,
+            Observation::Trapped(t) => &t.stdout_before_trap,
         };
         if !printed.is_empty() {
             return Err(format!(
-                "{name}: case produces stdout ({printed:?}), but the native backend cannot emit \
-                 output until WP-C5.3 — every harness case must observe values through in-program \
-                 assertions while NATIVE_STDOUT_SUPPORTED is false"
+                "{name}: case produces stdout ({:?}), but the native backend cannot emit output \
+                 while NATIVE_STDOUT_SUPPORTED is false — every harness case must observe values \
+                 through in-program assertions until it flips",
+                String::from_utf8_lossy(printed)
             ));
         }
     }
 
-    if hir != mir {
+    if let Some(field) = first_difference(hir, mir) {
         return Err(format!(
-            "{name}: HIR/MIR DISAGREEMENT\n--- HIR oracle ---\n{hir:#?}\n--- MIR ---\n{mir:#?}"
+            "{name}: HIR/MIR DISAGREEMENT on {field}\n--- HIR oracle ---\n{hir:#?}\n--- MIR ---\n{mir:#?}"
         ));
     }
-    if mir != native {
+    if let Some(field) = first_difference(mir, native) {
         return Err(format!(
-            "{name}: MIR/NATIVE DISAGREEMENT\n--- MIR ---\n{mir:#?}\n--- native ---\n{native:#?}"
+            "{name}: MIR/NATIVE DISAGREEMENT on {field}\n--- MIR ---\n{mir:#?}\n--- native ---\n{native:#?}"
         ));
     }
     Ok(())
 }
 
-/// Run one source through all three engines and require identical normalised outcomes.
+/// Run one source through all three engines and require identical normalised observations.
 ///
 /// `tag` names the scratch build directory only; `name` becomes the STARK source file name, so
 /// it is what every engine reports as the trap location and is therefore itself compared.
-pub fn three_engine(tag: &str, source: &str) -> Outcome {
+pub fn three_engine(tag: &str, source: &str) -> Observation {
     let name = format!("three_engine_{tag}.stark");
     let front = front_end(&name, source);
     let program = match lower_program(&front.hir, &front.tables, front.file.clone()) {
@@ -449,39 +774,76 @@ pub fn three_engine(tag: &str, source: &str) -> Outcome {
     let mir = run_mir(&name, &program);
     let native = run_native(&name, tag, &program);
 
-    if let Err(disagreement) = compare_outcomes(&name, &hir, &mir, &native) {
+    if let Err(disagreement) = compare_observations(&name, &hir, &mir, &native) {
         panic!("{disagreement}");
     }
     hir
 }
 
 /// All three completed normally with exit 0 — i.e. every in-program assertion held in every
-/// engine. Meaningful only because `a_false_assertion_traps_in_all_three_engines` proves a
-/// FALSE assertion is observable; see `three_engine_differential.rs`.
-pub fn agree_completing(tag: &str, source: &str) {
-    let outcome = three_engine(tag, source);
+/// engine. Meaningful only because `a_false_assertion_traps_in_all_three_engines` proves a FALSE
+/// assertion is observable; see `three_engine_differential.rs`.
+pub fn agree_completing(tag: &str, source: &str) -> CompletionObservation {
+    match three_engine(tag, source) {
+        Observation::Completed(done) if done.exit_status == 0 => done,
+        other => panic!("{tag}: expected normal completion with status 0, got {other:#?}"),
+    }
+}
+
+/// §8.8. A drop-observing case: all three engines agreed, AND the Drop log is the one stated here —
+/// so three engines agreeing on a wrong Drop schedule still fails. `expected` is a list of
+/// identities in the order they must be destroyed; sequence numbers are checked implicitly by
+/// position.
+pub fn agree_completing_with_drops(tag: &str, source: &str, expected: &[&str]) {
+    let done = agree_completing(tag, source);
+    let observed: Vec<&str> = done.drop_log.iter().map(|e| e.identity.as_str()).collect();
+    assert_eq!(observed, expected, "{tag}: Drop log");
+    for (index, event) in done.drop_log.iter().enumerate() {
+        assert_eq!(
+            event.sequence,
+            index as u32 + 1,
+            "{tag}: Drop sequence numbering"
+        );
+    }
+}
+
+/// §8.7. Runs a case whose `probe()` returns a value, and requires all three engines to agree on
+/// the framed result — then pins it to `expected`, so unanimity on a wrong value still fails.
+pub fn agree_returning(tag: &str, source: &str, type_tag: &str, expected: &str) {
+    let full = format!("{source}{}", probe_wrapper(type_tag));
+    let done = agree_completing(tag, &full);
+    let returned = done
+        .returned_observation
+        .as_ref()
+        .unwrap_or_else(|| panic!("{tag}: no return frame was observed; got {done:#?}"));
+    assert_eq!(returned.type_tag, type_tag, "{tag}: returned type tag");
+    assert_eq!(
+        String::from_utf8_lossy(&returned.rendered),
+        expected,
+        "{tag}: returned value"
+    );
     assert!(
-        matches!(outcome, Outcome::Completed { exit: 0, .. }),
-        "{tag}: expected normal completion, got {outcome:#?}"
+        done.stdout_bytes.is_empty(),
+        "{tag}: a probe case must emit no ordinary stdout — the frame is the observation ({:?})",
+        String::from_utf8_lossy(&done.stdout_bytes)
     );
 }
 
 /// All three trapped, with the same category at the same source line — and that line is stated
 /// here independently, so a case whose three engines agreed on the WRONG location still fails.
 pub fn agree_trapping(tag: &str, source: &str, expected: TrapCategory, expected_line: u32) {
-    let outcome = three_engine(tag, source);
-    match outcome {
-        Outcome::Trapped { category, line, .. } => {
-            assert_eq!(category, expected, "{tag}: trap category");
-            assert_eq!(line, expected_line, "{tag}: trap line");
+    match three_engine(tag, source) {
+        Observation::Trapped(trap) => {
+            assert_eq!(trap.category, expected, "{tag}: trap category");
+            assert_eq!(trap.line, expected_line, "{tag}: trap line");
         }
         other => panic!("{tag}: expected a trap, got {other:#?}"),
     }
 }
 
 /// DEV-106 (CD-136): all three trapped with the same category, line AND the same user-supplied
-/// MESSAGE. `three_engine` already requires the three outcomes to be identical, so the message is
-/// compared engine-to-engine by construction; `expected_message` additionally pins it to the text
+/// MESSAGE. `three_engine` already requires the three observations to be identical, so the message
+/// is compared engine-to-engine by construction; `expected_message` additionally pins it to the text
 /// the source actually wrote, so three engines agreeing on the WRONG string still fails.
 pub fn agree_trapping_with_message(
     tag: &str,
@@ -490,20 +852,15 @@ pub fn agree_trapping_with_message(
     expected_line: u32,
     expected_message: &str,
 ) {
-    let outcome = three_engine(tag, source);
-    match outcome {
-        Outcome::Trapped {
-            category,
-            line,
-            ref message,
-            ..
-        } => {
-            assert_eq!(category, expected, "{tag}: trap category");
-            assert_eq!(line, expected_line, "{tag}: trap line");
-            let message = message.as_deref().unwrap_or_else(|| {
-                panic!("{tag}: expected a message-carrying trap, got {outcome:#?}")
-            });
-            assert_eq!(message, expected_message, "{tag}: trap message");
+    match three_engine(tag, source) {
+        Observation::Trapped(trap) => {
+            assert_eq!(trap.category, expected, "{tag}: trap category");
+            assert_eq!(trap.line, expected_line, "{tag}: trap line");
+            assert_eq!(
+                trap.message_class,
+                TrapMessageClass::UserMessageExact(expected_message.to_string()),
+                "{tag}: trap message class"
+            );
         }
         other => panic!("{tag}: expected a trap, got {other:#?}"),
     }
@@ -534,6 +891,16 @@ macro_rules! three_engine_test {
                 return;
             }
             $crate::support::differential::agree_trapping($tag, $source, $category, $line);
+        }
+    };
+    ($name:ident, $tag:literal, drops($expected:expr), $source:literal) => {
+        #[test]
+        fn $name() {
+            if !$crate::support::differential::rustc_available() {
+                eprintln!("SKIP: no rustc in this environment.");
+                return;
+            }
+            $crate::support::differential::agree_completing_with_drops($tag, $source, $expected);
         }
     };
 }
