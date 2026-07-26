@@ -375,15 +375,19 @@ fn the_oracle_attributes_a_dependency_trap_to_the_root_file_dev_113() {
          dependency-trap case to the corpus (§15.1's last shape)."
     );
     if let (Observation::Trapped(h), Observation::Trapped(m)) = (&hir, &mir) {
+        // Separators are normalised before comparing. On Windows these paths come back MIXED —
+        // `…\ws\app\src/main.stark` — because the OS builds the directory part with `\` while the
+        // entry suffix is composed with a literal `/` in the compiler. That inconsistency belongs to
+        // DEV-113's record; here it must not be mistaken for the attribution claim under test.
+        let oracle_file = h.source_file.replace('\\', "/");
+        let mir_file = m.source_file.replace('\\', "/");
         assert!(
-            h.source_file.ends_with("app/src/main.stark"),
-            "the oracle reported {:?}",
-            h.source_file
+            oracle_file.ends_with("app/src/main.stark"),
+            "the oracle reported {oracle_file:?}"
         );
         assert!(
-            m.source_file.ends_with("dep/src/main.stark"),
-            "MIR reported {:?}, which was expected to be the dependency",
-            m.source_file
+            mir_file.ends_with("dep/src/main.stark"),
+            "MIR reported {mir_file:?}, which was expected to be the dependency"
         );
     }
     let _ = std::fs::remove_dir_all(&home);
