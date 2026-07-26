@@ -6,7 +6,8 @@
 **Status:** rows 1–23 **MET** on records taken at `4844702` under the strengthened comparator
 (CI 30192449131, all 11 jobs green, TIER-1 AGREEMENT). The earlier records from `61008f6` were
 discarded, not carried forward — the comparator that now guards this matrix refuses them. Row 24 is
-BLOCKED-BY-C6.5; row 25 is REPORT-ONLY with G1 and G3 closed.
+**PASS as of `8a23772` (CD-161)** — the C6.5 corpus replayed on both
+Tier-1 targets with identical per-case observations; row 25 is REPORT-ONLY with G1 and G3 closed.
 
 ## How to read this file
 
@@ -60,18 +61,30 @@ All commands run from `starkc/`.
 | 21 | frozen workspace | the C5 multi-package workspace builds and runs | `cargo test --test native_c5_4_workspace`; CI `release-package-smoke` | same | none | green | PRE-EXISTING |
 | 22 | three-engine suite | HIR/MIR/native agreement against real native stdout | `cargo test --test three_engine_differential` | same | none | green | PRE-EXISTING |
 | 23 | determinism rerun | two runs in separate **processes** agree on build key and generated source | `run-c64-qualification.py` (runs `determinism_` twice) | same | none | `determinism_result: match` | IMPLEMENTED |
-| 24 | generated corpus | the deterministic generated corpus runs on both Tier-1 targets | — | — | — | — | **BLOCKED-BY-C6.5** |
+| 24 | generated corpus | the deterministic generated corpus runs on both Tier-1 targets | `cargo test --test c6_generated_corpus` (+ `c6_metamorphic`, `c6_mutation`, `c6_package`, `c6_corpus_manifest`, `c6_corpus_generator`) | same | none | 131 cases, 131 AGREEMENT, 0 failed, 0 skipped, identical per-case observation hashes on both targets | **PASS** |
 | 25 | Windows disposition | a classified gap report exists | CI `c64-windows-gap` probe | `cargo test --test c64_platform_matrix` | — | four classified gaps (G1, G3 CLOSED; G2, G4 open), none semantic | REPORT-ONLY |
 
-### Row 24 — the one blocked row
+### Row 24 — closed at `8a23772` (CD-161)
 
-There is no deterministic **generated** corpus in the repository. `tests/exec_snapshots/corpus.lock`
-is the **frozen execution corpus** (v1.2.0, 23 cases) — a different artifact, already covered by
-rows 21–22. The `WP-C6.5` chapter of `WP-C6-ENTRY.md` (§§38–45; §41 is the deterministic generator) owns it. Per execution
-plan §7.3 the row is marked blocked from the outset, C6.4 does not implement C6.5's generator, and
-after C6.5 lands its corpus is re-run through this same harness on both Tier-1 targets before the
-row closes. Every evidence record carries `generated_corpus_status: BLOCKED-BY-C6.5` so the state
-cannot be read off as merely absent.
+The deterministic generated corpus now exists — `starkc/tests/c6-corpus/`, `corpus_version` 0.5.0,
+131 cases (70 generated across 15 templates, 55 hand-written including 40 metamorphic members and 13
+adversarial sentinels, 6 retained) — and it was replayed through every engine each case declares on
+**both Tier-1 targets at one commit**, by CI, with the records downloaded rather than regenerated.
+
+It remains a **different artifact** from `tests/exec_snapshots/` (the frozen execution corpus, now
+v1.4.0), which was preserved rather than absorbed; rows 21–22 still cover that one.
+
+What closes this row is not that two jobs went green. It is that
+`compare-c65-evidence.py` compared the two records and found: the same commit, corpus version,
+generator version, seed, manifest and generator hashes; identical counts; both records `PASS` and in
+FULL evidence mode; clean worktrees; two different Tier-1 triples; and **identical per-case
+observation hashes for all 131 cases**. Two records can agree on every total while having observed
+different bytes — that last clause is the one that makes this a semantic claim rather than a
+scheduling one.
+
+Both C6.4 evidence records at this commit now carry `generated_corpus_status: PASS`,
+`generated_corpus_version: 0.5.0`, `generated_corpus_case_count: 131`, measured from the corpus lock
+by the qualification harness rather than supplied to it.
 
 ---
 
@@ -84,20 +97,27 @@ eight times and read as eight independent confirmations.
 
 | # | Area | macOS-arm64 actual | Linux-x64 actual | Artifact | Exact commit | Deviation | Closure |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1–8 | target preflight and metadata | `c64_platform_matrix` 15/15 | 15/15 | `evidence/c6.4/{macos-arm64,linux-x64}.json` | `4844702` | none | MET |
-| 9 | compiler/runtime compatibility | `c63_closure_evidence` 2/2 | 2/2 | same | `4844702` | none | MET |
-| 10–14 | output bytes, line termination, traps | `c64_platform_matrix` 15/15; `three_engine_differential` 88/88 | identical | same | `4844702` | none | MET |
-| 15–18 | paths, temp dirs, manifest escaping | within `c64_platform_matrix` 15/15 | identical | same | `4844702` | none | MET |
-| 19–20 | installed runtime, locked offline build | `c63_closure_evidence` 2/2, `c64_platform_matrix`, **and the release smoke's positive + negative pair** | identical | same, plus `release package smoke` | `4844702` | none | MET |
-| 21–22 | frozen workspace, three-engine | `workspace` 1461/1461 (2 classified ignores); `mir_differential` 132; `exec_snapshots` 4; `three_engine_differential` 88 | identical | same | `4844702` | none | MET |
-| 23 | determinism rerun | `match` | `match` | same | `4844702` | none | MET |
-| 24 | generated corpus | n/a | n/a | — | — | corpus does not exist | BLOCKED-BY-C6.5 |
-| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `4844702` (probe green again) | G1, G3 CLOSED; G2, G4 open, none semantic | REPORT-ONLY |
+| 1–8 | target preflight and metadata | `c64_platform_matrix` 15/15 | 15/15 | `evidence/c6.4/{macos-arm64,linux-x64}.json` | `8a23772` | none | MET |
+| 9 | compiler/runtime compatibility | `c63_closure_evidence` 2/2 | 2/2 | same | `8a23772` | none | MET |
+| 10–14 | output bytes, line termination, traps | `c64_platform_matrix` 15/15; `three_engine_differential` 88/88 | identical | same | `8a23772` | none | MET |
+| 15–18 | paths, temp dirs, manifest escaping | within `c64_platform_matrix` 15/15 | identical | same | `8a23772` | none | MET |
+| 19–20 | installed runtime, locked offline build | `c63_closure_evidence` 2/2, `c64_platform_matrix`, **and the release smoke's positive + negative pair** | identical | same, plus `release package smoke` | `8a23772` | none | MET |
+| 21–22 | frozen workspace, three-engine | `workspace` 1560/1560 (2 classified ignores); `mir_differential` 132; `exec_snapshots` 4; `three_engine_differential` 109 | identical | same | `8a23772` | none | MET |
+| 23 | determinism rerun | `match` | `match` | same | `8a23772` | none | MET |
+| 24 | generated corpus | 131 cases, 131 AGREEMENT | identical, same observation hashes | `evidence/c6.5/{macos-arm64,linux-x64}-{summary,per-case}.json`, `c65-tier1-agreement.md` | `8a23772` | none | MET |
+| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `8a23772` (probe green again) | G1, G3 CLOSED; G2, G4 open, none semantic | REPORT-ONLY |
 
-**Records at `4844702`, CI run 30192449131, all 11 jobs green.** Both Tier-1 targets: 1705 passed,
-0 failed, 2 ignored (both classified), 0 unclassified, 0 self-skipped, determinism `match`, no
-deviations. `qualification-summary.md` reports TIER-1 AGREEMENT on identical per-command counts, and
-the same verdict was reproduced locally against the downloaded records.
+**Records REFRESHED at `8a23772`, CI run 30221728539, all 15 jobs green** — the C6.5 corpus commands
+are part of the qualification command set now, so these records are not the `4844702` ones with a row
+appended: they are a fresh run of the whole matrix at the commit where the corpus landed. Both Tier-1
+targets: 0 failed, 2 ignored (both classified, both tensor-track), 0 unclassified, 0 self-skipped,
+determinism `match`, no deviations, `generated_corpus_status: PASS`. `qualification-summary.md`
+reports TIER-1 AGREEMENT on identical per-command counts; `c65-tier1-agreement.md` reports TIER-1
+CORPUS AGREEMENT on identical per-case observations. Both were re-verified locally against the
+downloaded records rather than read off a green job.
+
+The earlier `4844702` records are superseded: C6.4's own re-qualification rule invalidates a record
+once the qualified path changes, and C6.5 changed `starkc/tests` extensively.
 
 Tier-1 agreement is not a column here: it is a separate artifact,
 `evidence/c6.4/qualification-summary.md`, produced by `scripts/compare-c64-evidence.py`. It

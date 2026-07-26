@@ -9,9 +9,10 @@ outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lis
 **C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
 residuals); **C6.5-6 PARTIAL** (20 metamorphic groups over ten families; M08/M09 blocked on package
 graphs — §12.1); **C6.5-7 complete** (all 16 mutations detected); **C6.5-8 PARTIAL** (package cases, staged package
-replay, relocation and reorder measured; **DEV-113** and **DEV-114** found — §14.1); **C6.5-9
-MACHINERY ONLY** (Tier-1 jobs, §16.2 identity, the §16.4 comparator and §20.7's controls; row 24
-deliberately NOT flipped — §15.1). Corpus `0.5.0`: 131 cases, replay **131/131 AGREEMENT**. Two findings raised and
+replay, relocation and reorder measured; **DEV-113** and **DEV-114** found — §14.1); **C6.5-9 COMPLETE** — Tier-1
+evidence imported from CI at `8a23772`: **131/131 AGREEMENT on both targets with identical per-case
+observation hashes**, and **C6.4 row 24 flipped to PASS**. Corpus `0.5.0`, 131 cases. Recommended
+status **`PARTIAL`** (§16.2). Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -824,12 +825,90 @@ did not execute, which is a missing observation rather than a legacy state to to
 
 ---
 
-## 16. What comes next
+## 16. Phase C6.5-9 evidence and the §24 report (commit 12)
 
-§19's commit 12 — evidence and closure records (§16.6, §22): import the CI-produced Tier-1 records
-rather than regenerating them locally, verify the §16.6 checklist against them, flip C6.4 row 24, and
-work the §22 closure checklist. Outstanding from earlier phases: §8.1, §10.1, §11.1, §12.1, §14.2 and
-§15.1 above. Migration of the 22 forked suites proceeds
+**Tier-1 evidence is in, imported from CI rather than regenerated locally (§16.6).**
+
+```text
+STATUS                       PARTIAL (see §16.2 — the ceiling is not a scheduling matter)
+EXACT HEAD (evidence)        8a23772eeafa1a3605e6776b0b4bf50402b7d20d
+BASELINE                     b0d7a72 (re-pinned from the plan's 61008f6 at phase 0)
+CI RUN                       30221728539 — all 15 jobs green
+COMPARATOR SCHEMA            c6.5-evidence-1
+CORPUS VERSION               0.5.0
+GENERATOR VERSION            0.1.0
+SEED                         c6.5-default
+MANIFEST HASH                see evidence/c6.5/*-summary.json
+GENERATOR HASH               see evidence/c6.5/*-summary.json
+HANDWRITTEN CASE COUNT       55  (13 sentinels, 40 metamorphic members, 2 package)
+GENERATED CASE COUNT         70  (15 templates, budget 5)
+RETAINED CASE COUNT          6   (DEV-111/DEV-112 entry contract)
+CATEGORY COVERAGE            8 groups, 136 matrix rows; 21 hand-written witnesses, not per-row
+TRAP CATEGORY COVERAGE       7 of 9 admitted categories generated (T16); UnwrapNone/UnwrapErr absent
+DROP COVERAGE                §8.8 protocol; sentinel with 3 events, cross-package Drop, pre-trap log
+PACKAGE COVERAGE             root+module, 3-package workspace; relocation and reorder measured
+METAMORPHIC RESULTS          20 groups / 40 members over 10 families — ALL PRESERVED, floor unmet
+MUTATION RESULTS             16 of 16 detected, each naming the intended field
+HIR/MIR/NATIVE RESULTS       131 cases, 131 AGREEMENT, 0 failed, 0 skipped
+DETERMINISM RESULTS          same-shard replay twice identical; generator byte-identical
+MACOS-ARM64 RESULT           PASS (131/131)
+LINUX-X64 RESULT             PASS (131/131)
+TIER-1 AGREEMENT             YES — identical per-case observation hashes for all 131 cases
+C6.4 ROW-24 RESULT           PASS — both records carry generated_corpus_status PASS, 0.5.0, 131
+NEW DEVIATIONS               DEV-111, DEV-112 (both fixed), DEV-113, DEV-114 (both open)
+RETAINED DEFECT CASES        6 entry-contract cases; DEV-113/114 pinned by boundary tests
+WP-C2.12 STATUS              deliverable met; formal closure is the owner's to record (§16.3)
+RECOMMENDED WP-C6.5 STATUS   PARTIAL
+```
+
+### 16.1 What the Tier-1 claim rests on
+
+Not that two jobs went green. `compare-c65-evidence.py` compared the two records and required: same
+commit, corpus version, generator version, seed, manifest and generator hashes; identical counts;
+both `PASS` and in FULL evidence mode; clean worktrees; two *different* Tier-1 triples; and
+**identical per-case observation hashes for all 131 cases**. I re-verified each clause locally
+against the downloaded artifacts rather than reading it off a job status: no duplicate case IDs, no
+case present on one target only, no differing hash, every result `AGREEMENT`.
+
+Platform metadata that differs — OS, architecture, Python 3.14.6 vs 3.12.3 — is recorded in the
+agreement report and is not treated as disagreement.
+
+### 16.2 Why the recommended status is `PARTIAL`, not `CANDIDATE-COMPLETE`
+
+§23 reserves `CANDIDATE-COMPLETE` for "all implementation and local evidence complete… and final
+Tier-1 evidence pending". The Tier-1 evidence is the part that is *done*; the implementation is not:
+
+| Outstanding | Where |
+| --- | --- |
+| Metamorphic floor: 20 groups / 40 members against §13.2's 24 / 48; M08/M09 absent | §12.1 |
+| Per-row hand-written witnesses: 21 against 136 matrix rows (§10.2) | §8.1 |
+| Trap balance: `UnwrapNone`/`UnwrapErr` have no generated or hand-written corpus case (§10.4) | §8.1 |
+| §11.11 retained-case workflow never exercised with a synthetic failure | §10.1 |
+| Templates T13/T14 (borrow/reborrow, partial move) and T17–T19 (package) | §10.1 |
+| §15.1 dependency-trap provenance — **blocked by DEV-113** | §14.2 |
+| §17's eight review passes (A–H) — **not started** | — |
+| Open defects: DEV-113, DEV-114; the `invalid-exit-status` CE3 bundled at CD-150 | §6.3, §14.1 |
+
+§23 is also explicit that C6.5 has no "candidate complete but corpus blocked" endpoint — the corpus
+is the deliverable, and it exists. What keeps the status at `PARTIAL` is breadth and review, not the
+corpus's absence.
+
+### 16.3 WP-C2.12
+
+C6.5 inherited WP-C2.12's differential-corpus scope (§4.1). Its deliverable — a versioned,
+manifest-driven corpus replayed across HIR, MIR and native on both Tier-1 targets, with metamorphic
+and mutation controls — **is delivered and evidenced**. I am not recording C2.12 as closed: closure
+is a governance act, and doing it inside a package whose own status is `PARTIAL` would bury it. The
+recommendation is that the owner close WP-C2.12 on this evidence.
+
+---
+
+## 17. What comes next
+
+§17's eight review passes (A–H, ~90 questions) are the largest undone piece and the one most likely
+to move the status — the last three review-shaped passes each found something real (O13's stale
+disposition, the omitted entry contract, 69 fabricated citations). After that: the §16.2 breadth
+items, and the owner's dispositions on DEV-113, DEV-114 and the CE3. Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

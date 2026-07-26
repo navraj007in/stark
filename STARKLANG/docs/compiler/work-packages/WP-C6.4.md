@@ -4,8 +4,8 @@
 **Status:** COMPLETE for everything C6.4 can reach, including the owner's second review round
 (R1–R5, §2). **Both Tier-1 records exist and agree at `4844702`** (CI run 30192449131, all 11 jobs
 green), taken under the strengthened comparator. Matrix rows 1–23 MET, row 25 REPORT-ONLY with G1
-and G3 closed, row 24 BLOCKED-BY-C6.5 by construction.
-Closure status: **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`**, **accepted by the owner
+and G3 closed. **Row 24 is now PASS** (CD-161, `8a23772`).
+Closure status: was **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`**, **accepted by the owner
 2026-07-26 (CD-146)**. Not `CLOSED`, and no decision could have made it so — row 24 needs an
 artifact that does not exist yet (§1.2, §5).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37 (tracked, normative), §5 (fixed decisions and
@@ -58,7 +58,19 @@ opens on an admitted runtime rather than a provisional one, and the concern reco
 first opened (that Tier-1 evidence would describe a runtime whose loop emission was unconfirmed) no
 longer applies.
 
-### 1.2 Generated corpus (§7.3) — disposition: BLOCKED-BY-C6.5
+### 1.2 Generated corpus (§7.3) — **row 24 CLOSED at `8a23772` (CD-161)**
+
+**The blocker is discharged.** WP-C6.5 built the corpus (`starkc/tests/c6-corpus/`, `corpus_version`
+0.5.0, 131 cases) and CI replayed it on both Tier-1 targets at one commit; `compare-c65-evidence.py`
+found identical per-case observation hashes for all 131. Both C6.4 records at that commit carry
+`generated_corpus_status: PASS`, `generated_corpus_version: 0.5.0`,
+`generated_corpus_case_count: 131`, measured by the harness from the corpus lock rather than
+supplied to it. Evidence: `starkc/docs/compiler/evidence/c6.5/`.
+
+**Row 24 was the only thing standing between this package and `CLOSED`**, so C6.4's ceiling is no
+longer `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`; the closure decision is the owner's to record.
+
+The original disposition, kept because it is what the row was built against:
 
 There is no deterministic **generated** corpus in the repository.
 `starkc/tests/exec_snapshots/corpus.lock` is the **frozen execution corpus** (v1.2.0, 23 cases) — a
@@ -453,7 +465,7 @@ this.
 | 4 | Does a failed command stop qualification? | Every step runs (so one failure does not hide the rest), and any failure makes `overall_result: FAIL` and exits non-zero. After R2 a failed qualification job no longer skips the comparison: it runs under `if: always()` and reports the absent record as a disagreement. |
 | 5 | Are artifacts uploaded even on failure? | Yes — `if: always()` on all three uploads. Demonstrated: the failed run above still produced its evidence. |
 | 6 | Can a partial matrix be mistaken for a complete claim? | No — `--only` and `--quick` each record a deviation naming themselves as not a qualification claim, and the comparison rejects any record with `quick_mode` set. |
-| 7 | Is the generated corpus nonempty? | It does not exist; `generated_corpus_status: BLOCKED-BY-C6.5` is asserted in every record. §1.2. |
+| 7 | Is the generated corpus nonempty? | **Yes, as of CD-161**: 131 cases at `corpus_version` 0.5.0, replayed on both Tier-1 targets with identical per-case observations. Every record now carries `generated_corpus_status: PASS`. §1.2. (Originally: it did not exist, and every record asserted `BLOCKED-BY-C6.5`.) |
 | 8 | Is determinism actually a second run? | Yes — a second **process**, compared on a printed build key and generated-source hash. Verified locally: `match`. |
 | 9 | Is installed-runtime execution outside the checkout? | Yes, and proven on the real path after R1: `c63_closure_evidence` builds against a copied runtime; the CI release smoke runs the installed `stark` under `STARK_REQUIRE_INSTALLED_RUNTIME=1`; and a negative step removes the installed runtime, leaves the checkout in place, and requires the build to fail. |
 | 10 | Is offline operation actively proved? | `--locked --offline` with an emitted lock over a path-only graph with no `source`/`checksum` — nothing in the graph *can* reach a registry. |

@@ -1,0 +1,18 @@
+[
+  {"mutation_id": "MU01", "witness_case_id": "gen__t01__0268b2da", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU02", "witness_case_id": "gen__t16__91e36f19", "expected_field": "trap line", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "trap line", "result": "PASS"},
+  {"mutation_id": "MU03", "witness_case_id": "gen__t16__91e36f19", "expected_field": "trap category", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "trap category", "result": "PASS"},
+  {"mutation_id": "MU04", "witness_case_id": "sentinel__12_drop_identities", "expected_field": "drop_log", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "drop_log", "result": "PASS"},
+  {"mutation_id": "MU05", "witness_case_id": "sentinel__12_drop_identities", "expected_field": "drop_log", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "drop_log", "result": "PASS"},
+  {"mutation_id": "MU06", "witness_case_id": "sentinel__12_drop_identities", "expected_field": "drop_log", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "drop_log", "result": "PASS"},
+  {"mutation_id": "MU07", "witness_case_id": "sentinel__12_drop_identities", "expected_field": "drop_log", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "drop_log", "result": "PASS"},
+  {"mutation_id": "MU08", "witness_case_id": "sentinel__07_two_generic_instances", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU09", "witness_case_id": "sentinel__08_two_trait_impls", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU10", "witness_case_id": "sentinel__09_two_function_value_targets", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU11", "witness_case_id": "sentinel__11_insertion_order_not_sorted", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU12", "witness_case_id": "sentinel__10_slice_mutation_through_view", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU13", "witness_case_id": "sentinel__13_float32_rendering", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU14", "witness_case_id": "gen__t16__91e36f19", "expected_field": "trap source_file", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "trap source_file", "result": "PASS"},
+  {"mutation_id": "MU15", "witness_case_id": "gen__t01__0268b2da", "expected_field": "stdout_bytes", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "stdout_bytes", "result": "PASS"},
+  {"mutation_id": "MU16", "witness_case_id": "gen__t01__0268b2da", "expected_field": "exit_status", "unmodified_agrees": true, "mutation_detected": true, "reported_field": "exit_status", "result": "PASS"}
+]

@@ -1,10 +1,10 @@
 {
   "schema_version": "c6.4-evidence-1",
   "work_package": "WP-C6.4",
-  "commit_sha": "4844702e1f1c9c8d6c11bde5fec9dfca793f096c",
+  "commit_sha": "8a23772eeafa1a3605e6776b0b4bf50402b7d20d",
   "dirty_worktree": false,
-  "timestamp_utc": "2026-07-26T07:17:17.968826+00:00",
-  "runner_provider": "GitHub Actions 1000001249",
+  "timestamp_utc": "2026-07-26T21:50:41.697239+00:00",
+  "runner_provider": "GitHub Actions 1000001520",
   "os_name": "Linux",
   "os_version": "6.17.0-1020-azure",
   "architecture": "x86_64",
@@ -24,6 +24,11 @@
     "c64_platform_matrix",
     "three_engine_differential",
     "mir_differential",
+    "c65_generated_corpus",
+    "c65_metamorphic",
+    "c65_mutation",
+    "c65_package",
+    "c65_corpus_integrity",
     "exec_snapshots",
     "c63_closure_evidence",
     "conformance",
@@ -47,7 +52,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 2.23,
+      "duration_s": 2.72,
       "ok": true,
       "note": ""
     },
@@ -70,7 +75,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 15.52,
+      "duration_s": 16.59,
       "ok": true,
       "note": ""
     },
@@ -91,7 +96,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 13.67,
+      "duration_s": 12.21,
       "ok": true,
       "note": ""
     },
@@ -107,12 +112,12 @@
         "--nocapture"
       ],
       "exit_code": 0,
-      "passed": 88,
+      "passed": 109,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 13.22,
+      "duration_s": 12.71,
       "ok": true,
       "note": ""
     },
@@ -131,7 +136,106 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.58,
+      "duration_s": 0.5,
+      "ok": true,
+      "note": ""
+    },
+    {
+      "name": "c65_generated_corpus",
+      "group": "semantics",
+      "argv": [
+        "cargo",
+        "test",
+        "--test",
+        "c6_generated_corpus",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "ignored_names": [],
+      "skipped": 0,
+      "duration_s": 47.15,
+      "ok": true,
+      "note": ""
+    },
+    {
+      "name": "c65_metamorphic",
+      "group": "semantics",
+      "argv": [
+        "cargo",
+        "test",
+        "--test",
+        "c6_metamorphic"
+      ],
+      "exit_code": 0,
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "ignored_names": [],
+      "skipped": 0,
+      "duration_s": 16.44,
+      "ok": true,
+      "note": ""
+    },
+    {
+      "name": "c65_mutation",
+      "group": "semantics",
+      "argv": [
+        "cargo",
+        "test",
+        "--test",
+        "c6_mutation"
+      ],
+      "exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "ignored_names": [],
+      "skipped": 0,
+      "duration_s": 7.55,
+      "ok": true,
+      "note": ""
+    },
+    {
+      "name": "c65_package",
+      "group": "semantics",
+      "argv": [
+        "cargo",
+        "test",
+        "--test",
+        "c6_package"
+      ],
+      "exit_code": 0,
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "ignored_names": [],
+      "skipped": 0,
+      "duration_s": 5.08,
+      "ok": true,
+      "note": ""
+    },
+    {
+      "name": "c65_corpus_integrity",
+      "group": "semantics",
+      "argv": [
+        "cargo",
+        "test",
+        "--test",
+        "c6_corpus_manifest",
+        "--test",
+        "c6_corpus_generator"
+      ],
+      "exit_code": 0,
+      "passed": 38,
+      "failed": 0,
+      "ignored": 0,
+      "ignored_names": [],
+      "skipped": 0,
+      "duration_s": 16.9,
       "ok": true,
       "note": ""
     },
@@ -150,7 +254,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.45,
+      "duration_s": 0.37,
       "ok": true,
       "note": ""
     },
@@ -171,7 +275,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.83,
+      "duration_s": 0.65,
       "ok": true,
       "note": ""
     },
@@ -190,7 +294,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.49,
+      "duration_s": 0.4,
       "ok": true,
       "note": ""
     },
@@ -207,7 +311,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.17,
+      "duration_s": 0.15,
       "ok": true,
       "note": ""
     },
@@ -223,7 +327,7 @@
         "--no-fail-fast"
       ],
       "exit_code": 0,
-      "passed": 1461,
+      "passed": 1560,
       "failed": 0,
       "ignored": 2,
       "ignored_names": [
@@ -231,7 +335,7 @@
         "real_inference_agrees_with_reference"
       ],
       "skipped": 0,
-      "duration_s": 97.14,
+      "duration_s": 173.57,
       "ok": true,
       "note": ""
     }
@@ -241,13 +345,18 @@
     "c64_platform_matrix",
     "three_engine_differential",
     "mir_differential",
+    "c65_generated_corpus",
+    "c65_metamorphic",
+    "c65_mutation",
+    "c65_package",
+    "c65_corpus_integrity",
     "exec_snapshots",
     "c63_closure_evidence",
     "conformance",
     "release_package",
     "workspace"
   ],
-  "passed_count": 1705,
+  "passed_count": 1882,
   "failed_count": 0,
   "ignored_count": 2,
   "classified_ignores": {
@@ -256,9 +365,9 @@
   },
   "unclassified_ignores": [],
   "skipped_count": 0,
-  "generated_corpus_version": null,
-  "generated_corpus_case_count": 0,
-  "generated_corpus_status": "BLOCKED-BY-C6.5",
+  "generated_corpus_version": "0.5.0",
+  "generated_corpus_case_count": 131,
+  "generated_corpus_status": "PASS",
   "determinism_first_hash": "key=46495c4a7f2951dca6c06f8722c3b37e source=a4bcc0d28de22d82",
   "determinism_second_hash": "key=46495c4a7f2951dca6c06f8722c3b37e source=a4bcc0d28de22d82",
   "determinism_result": "match",

@@ -104,6 +104,10 @@ evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138).
 CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
+**WP-C6.4's row 24 is CLOSED as of CD-161 (`8a23772`)** — the C6.5 corpus replayed on both Tier-1
+targets with identical per-case observations, both records carrying `generated_corpus_status: PASS`.
+Row 24 was the only bar to `CLOSED`; the closure decision is the owner's. The historical record
+follows.
 **WP-C6.4 CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS — ACCEPTED BY THE OWNER (CD-146;
 built CD-143, reviewed CD-144, evidenced CD-145) — Tier-1 platform matrix.**
 Phases 0/a/b/c/d are built: the matrix is frozen (`C6-PLATFORM-MATRIX.md`, 25 rows), target
@@ -153,8 +157,11 @@ provenance; blocks a trapping package case) and **DEV-114** (canonical package s
 nondeterministic for a diamond graph; ESCALATED). **C6.5-9 (CD-160) built the Tier-1 machinery** —
 `c65-corpus` jobs on both targets, §16.2 measured identity, the §16.4 comparator with per-case
 observation-hash equality, §20.7's thirteen controls, and the C6.4 harness now running the corpus and
-measuring row 24's fields. **Row 24 is NOT flipped**: that needs two agreeing records from CI, which
-this commit only makes possible.
+measuring row 24's fields. **CD-161 then produced them: TIER-1 CORPUS AGREEMENT at `8a23772`** —
+131/131 on both targets with identical per-case observation hashes, **C6.4 row 24 flipped to PASS**,
+and both C6.4 records refreshed at that commit carrying `generated_corpus_status: PASS`. Recommended
+WP-C6.5 status **`PARTIAL`**: the Tier-1 evidence is complete, the breadth (metamorphic floor, per-row
+witnesses, §17's eight review passes) is not.
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
 tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
@@ -3263,6 +3270,44 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-161 [2026-07-27, **TIER-1 CORPUS AGREEMENT at `8a23772`; C6.4 ROW 24 CLOSED; WP-C6.5 recommended
+  `PARTIAL`**] CI run 30221728539, all 15 jobs green. Evidence DOWNLOADED from the runners, not
+  regenerated locally (§16.6), and re-verified clause by clause against the artifacts.
+  - **The claim.** Both Tier-1 targets replayed the corpus at ONE commit: **131 cases, 131
+    AGREEMENT, 0 failed, 0 skipped, FULL evidence, clean worktrees** — and
+    `compare-c65-evidence.py` found the same commit, corpus version 0.5.0, generator version, seed,
+    manifest hash and generator hash, identical counts, two DIFFERENT triples, and **identical
+    per-case observation hashes for all 131 cases**. That last clause is the claim: two records can
+    agree on every total while having observed different bytes. Verified independently here — no
+    duplicate IDs, no case on one target only, no differing hash, every result `AGREEMENT`.
+    Platform metadata that differs (OS, arch, Python 3.14.6 vs 3.12.3) is reported, not treated as
+    disagreement.
+  - **C6.4 ROW 24: BLOCKED-BY-C6.5 → PASS.** Both C6.4 records at the same commit carry
+    `generated_corpus_status: PASS`, `generated_corpus_version: 0.5.0`,
+    `generated_corpus_case_count: 131`, MEASURED by the harness from the corpus lock. The C6.4
+    records were REFRESHED at `8a23772` rather than amended — the earlier `4844702` records are
+    superseded under C6.4's own re-qualification rule, since C6.5 changed `starkc/tests` extensively.
+    Workspace 1560/1560 with 2 classified ignores, `three_engine_differential` 109/109, determinism
+    `match`, no deviations, on both targets. **Row 24 was the only thing between WP-C6.4 and
+    `CLOSED`**; that decision is the owner's to record.
+  - **16 mutation controls PASS** in their own CI job, all with `unmodified_agrees` and
+    `mutation_detected` true.
+  - **Recommended WP-C6.5 status: `PARTIAL`, not `CANDIDATE-COMPLETE`.** §23 reserves the latter for
+    "all implementation and local evidence complete, final Tier-1 evidence pending" — here the Tier-1
+    evidence is the part that is DONE. Outstanding: the metamorphic floor (20 groups/40 members
+    against 24/48; M08/M09 blocked on package graphs), per-row witnesses (21 against 136 matrix
+    rows), `UnwrapNone`/`UnwrapErr` trap cases, the §11.11 retention workflow, templates T13/T14 and
+    T17–T19, §15.1's dependency-trap provenance (blocked by DEV-113), **§17's eight review passes —
+    not started**, and the open defects DEV-113, DEV-114 and the CD-150 CE3.
+  - **WP-C2.12:** its deliverable — a versioned manifest-driven corpus replayed across three engines
+    on both Tier-1 targets, with metamorphic and mutation controls — is delivered and evidenced. NOT
+    recorded as closed here: closure is a governance act, and doing it inside a package whose own
+    status is `PARTIAL` would bury it. Recommended for the owner on this evidence.
+  - **Evidence committed:** `starkc/docs/compiler/evidence/c6.5/` (both summaries, both per-case
+    files, `mutations.json`, `c65-tier1-agreement.md`) and refreshed `evidence/c6.4/` records. This
+    commit touches no file under `starkc/src`, `starkc/tests` or `starkc/scripts`, so the records
+    remain valid for the commit they name.
 
 - CD-160 [2026-07-27, **WP-C6.5-9 commit 11 — Tier-1 machinery and the C6.4 handoff; row 24 NOT
   flipped**] The jobs, records and comparator exist; the Tier-1 CLAIM does not, and this entry does
