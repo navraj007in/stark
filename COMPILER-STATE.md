@@ -104,9 +104,19 @@ evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138).
 CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
+**WP-C6.4 OPENED (CD-143) — Tier-1 platform matrix. IMPLEMENTATION COMPLETE, EVIDENCE OUTSTANDING.**
+Phases 0/a/b/c/d are built: the matrix is frozen (`C6-PLATFORM-MATRIX.md`, 25 rows), target
+classification is CENTRALISED in the new `starkc/src/target.rs` (before this, the rustc host WAS the
+target and `stark-64-v1` was inherited by any triple), the §34 portability audit found TEN host
+assumptions of which eight are fixed, and the qualification harness + Tier-1 comparison gate + three
+CI jobs exist. **What does not exist is the thing C6.4 is for: a real Tier-1 platform record.** §35
+("no real platform run means no platform claim") means the status is NOT-YET until CI produces both
+records at one commit and the comparison reports agreement; and because the deterministic GENERATED
+corpus belongs to C6.5, the best status ever available to C6.4 is
+`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`, never `CLOSED`. Details in `WP-C6.4.md`.
 Also open:
 C4/C5/C6
-platform matrix, C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
+C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
 DEV-105 CLOSED by CD-138 — none is C6.2.)**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
@@ -3182,6 +3192,52 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-143 [2026-07-26, **WP-C6.4 OPENED and BUILT — the compiler had no notion of a target**]
+  The Tier-1 platform matrix. Owner directed it to start ahead of the C6.3 confirming run; that run
+  landed first anyway (CD-142), so C6.4 opens on an admitted runtime. Baseline `5d2c85d`.
+  - **The finding that shapes the package.** Before this, *the compiler had no target
+    classification at all*: `backend/generated_rust/build.rs` read `host:` out of `rustc -vV` and
+    used it as the target, `stark-64-v1` was applied to whatever that turned out to be, and the
+    executable suffix came from the COMPILER'S OWN `std::env::consts::EXE_SUFFIX`. Three separate
+    places for one assumption, each correct exactly while host and target are the same string.
+    Nothing rejected an unsupported target, so rustc or the linker would necessarily have been the
+    first detector — a §14 stop condition. `starkc/src/target.rs` is now the single place a triple
+    is interpreted; every other site asks it.
+  - **Ten host assumptions found (F1–F10 in `WP-C6.4.md` §2), eight fixed.** The one worth naming:
+    **F3** — `stark-runtime/src/vec.rs` checked bounds as `i as usize >= v.len()` with `i: u64`, at
+    four sites. On a 32-bit target the cast TRUNCATES first, so `v[0x1_0000_0000]` on a one-element
+    vector narrows to `0`, passes the check, and RETURNS ELEMENT 0 instead of trapping
+    `IndexOutOfBounds`. Unreachable on Tier 1 (both targets are 64-bit) and therefore not a live
+    defect — but it is exactly the class the audit exists to expose, and it was load-bearing the
+    moment F2 (any triple inherits `stark-64-v1`) stopped being hypothetical. Fixed on BOTH axes
+    independently: `narrow_index` compares in `u64`, and preflight admits only named 64-bit targets.
+  - Also fixed: **F4** the compiled-in source-checkout runtime fallback could make an
+    installed-runtime test pass for the wrong reason (`STARK_REQUIRE_INSTALLED_RUNTIME=1` now turns
+    it off); **F5** the generated crate was built `--offline` but never `--locked` and had no lock at
+    all (both added; the lock's runtime version is READ from the runtime being linked, not
+    hardcoded); **F6** the generated `Cargo.toml` escaped paths with Rust's `Debug` used as TOML
+    quoting, which diverges on control characters and non-UTF-8 bytes; **F10** three of §8.3's six
+    error classes did not exist.
+  - **NOT DONE — and this is the substance of C6.4, not a detail.** No Tier-1 platform record
+    exists. The harness (`scripts/run-c64-qualification.py`), the comparison gate
+    (`scripts/compare-c64-evidence.py`, which requires the two records to be for the two DIFFERENT
+    Tier-1 targets at one commit with matching per-command observations) and three CI jobs are
+    written, but `docs/compiler/evidence/c6.4/` holds no `.json`. That directory's README says so
+    explicitly, because a locally simulated record would defeat the only purpose those files have.
+    Formal review passes A/D/E (§12) are also not written up; C was performed as the §2 audit.
+  - **Row 24 is permanently blocked inside this package.** The deterministic GENERATED corpus is
+    C6.5's (the `WP-C6.5` chapter of `WP-C6-ENTRY.md`, §§38–45); `tests/exec_snapshots/corpus.lock` is the FROZEN
+    execution corpus, a different artifact already covered by other rows. Every evidence record
+    carries `generated_corpus_status: BLOCKED-BY-C6.5` so the state is asserted, not merely absent.
+  - **Evidence for this commit (scoped, per the CD-142 rule — CI is the exhaustive net):** `--lib`
+    463 + `stark-runtime --lib` 23, `c64_platform_matrix` 14, `native_build_cli` 9,
+    `c63_closure_evidence` 2, `native_c5_1b_skeleton` + `native_c5_3_aggregates_enums` 20,
+    `native_c5_2b_locals` 2 — the last five are what prove `--locked` plus the emitted lock builds
+    under real Cargo. `fmt --check` clean. Clippy and the full suite are CI's.
+  - **Two `native_build_cli` tests pinned the old Cargo argv** and were updated, not worked around:
+    they now assert `build --locked --offline`, which is a stronger assertion than the one they
+    replaced.
 
 - CD-142 [2026-07-26, **WP-C6.3 CLOSED — on a full three-platform run**]
   CD-138 item 7 required C6.3 to be re-closed "on a full clean run" and not before. That condition

@@ -23,16 +23,30 @@ pub fn build_and_link(
     let rustc_version = parse_rustc_field(&rustc_verbose, "release: ")
         .ok_or_else(|| BackendDiagnostic::Io("could not parse `release:` from rustc -vV".into()))?
         .to_string();
-    let target_triple = parse_rustc_field(&rustc_verbose, "host: ")
-        .ok_or_else(|| BackendDiagnostic::Io("could not parse `host:` from rustc -vV".into()))?
-        .to_string();
-    let versions = version::build_versions(rustc_version, target_triple);
+
+    // WP-C6.4a (§8.4): target preflight, from the rustc probe alone -- before any source is
+    // emitted, before the generated crate exists, and before Cargo or the linker runs. An
+    // unsupported target must not be discovered by a later rustc error.
+    let selection = preflight_from_rustc_verbose(&rustc_verbose)?;
+    let versions = version::build_versions(rustc_version, selection.selected_triple().to_string());
 
     // WP-C5.3e (CD-067): resolve the requested named contract BEFORE emitting. An unknown name
     // is rejected here rather than defaulted, because a layout answer is observable and
     // target-specific -- a silent fallback would report values for a target nobody asked about.
     let layout = crate::layout::contract_for(&options.target_contract)
         .map_err(|e| BackendDiagnostic::Unsupported(e.0))?;
+    // WP-C6.4a: and it must be the contract the SELECTED TARGET declares. Resolving a valid
+    // contract name is not the same as resolving the right one -- without this, a build could
+    // answer `size_of` from one target's contract while recording another target's triple.
+    if layout.identity.target_contract != selection.selected.layout_contract {
+        return Err(BackendDiagnostic::TargetRejected(
+            crate::target::TargetError::LayoutContractMismatch {
+                target: selection.selected_triple(),
+                declared: selection.selected.layout_contract,
+                requested: layout.identity.target_contract.clone(),
+            },
+        ));
+    }
     let source = emit_program::emit(program, &versions, &layout)?;
     let build_key = compute_build_key(program, &versions, &layout);
     let crate_dir = options.target_dir.join("debug").join(&build_key);
@@ -44,17 +58,30 @@ pub fn build_and_link(
         &crate_dir.join("Cargo.toml"),
         &generated_cargo_toml(&toolchain.runtime_crate),
     )?;
+    // WP-C6.4c (§10.7): the lock the `--locked` below is checked against. `stark-runtime` is
+    // dependency-free, so the whole graph is two path-only packages and the lock is fully
+    // determined by the generated crate itself -- no registry, no versions to resolve, no
+    // network. Writing it is what makes `--locked` a real assertion rather than a flag Cargo
+    // would satisfy by generating whatever it liked.
+    write_file(
+        &crate_dir.join("Cargo.lock"),
+        &generated_cargo_lock(&read_runtime_version(&toolchain.runtime_crate)?),
+    )?;
     write_file(&src_dir.join("main.rs"), &source.main_rs)?;
     write_file(
         &crate_dir.join("build.json"),
-        &build_manifest_json(&versions, &build_key, &layout),
+        &build_manifest_json(&versions, &build_key, &layout, &selection),
     )?;
 
     // §11.3 offline rule: `stark-runtime` is dependency-free, so `--offline` never needs a
-    // registry index and proves no accidental network dependency crept in.
+    // registry index and proves no accidental network dependency crept in. `--locked` (WP-C6.4c)
+    // adds the other half: Cargo must accept the lock as written rather than update it, so a
+    // dependency appearing in the generated graph fails the build instead of being resolved
+    // silently.
     let manifest_path = crate_dir.join("Cargo.toml");
     let cargo_args = vec![
         OsString::from("build"),
+        OsString::from("--locked"),
         OsString::from("--offline"),
         OsString::from("--manifest-path"),
         manifest_path.into_os_string(),
@@ -94,10 +121,15 @@ pub fn build_and_link(
         )));
     }
 
+    // WP-C6.4a: the suffix comes from the SELECTED TARGET, not from `std::env::consts::EXE_SUFFIX`
+    // (the compiler's own host). Identical today, since preflight admits only host builds; the
+    // point is that the value is now derived from the thing it describes.
     let binary_path = crate_dir
         .join("target")
         .join("debug")
-        .join(generated_binary_filename(std::env::consts::EXE_SUFFIX));
+        .join(generated_binary_filename(
+            selection.selected.executable_suffix,
+        ));
     if !binary_path.exists() {
         return Err(BackendDiagnostic::BuildFailed(Box::new(
             BackendBuildFailure {
@@ -143,6 +175,18 @@ fn parse_rustc_field<'a>(verbose: &'a str, field: &str) -> Option<&'a str> {
     verbose.lines().find_map(|line| line.strip_prefix(field))
 }
 
+/// WP-C6.4a (§8.4). Split out from [`build_and_link`] so the rejection can be tested from a
+/// synthetic `rustc -vV` transcript alone: that proves the refusal happens at the probe, with no
+/// crate emitted and no Cargo invoked, without requiring an unsupported machine to run the test on.
+fn preflight_from_rustc_verbose(
+    rustc_verbose: &str,
+) -> Result<crate::target::TargetSelection, BackendDiagnostic> {
+    let host_triple = parse_rustc_field(rustc_verbose, "host: ")
+        .ok_or_else(|| BackendDiagnostic::Io("could not parse `host:` from rustc -vV".into()))?;
+    crate::target::preflight(host_triple, None, &crate::target::HostOnlyAvailability)
+        .map_err(BackendDiagnostic::TargetRejected)
+}
+
 fn generated_cargo_toml(runtime_path: &Path) -> String {
     format!(
         "# GENERATED by the STARK native backend (WP-C5.1b). Do not edit.\n\
@@ -161,12 +205,101 @@ fn generated_cargo_toml(runtime_path: &Path) -> String {
          path = \"src/main.rs\"\n\
          \n\
          [dependencies]\n\
-         stark-runtime = {{ path = {:?} }}\n\
+         stark-runtime = {{ path = {} }}\n\
          \n\
          [profile.dev]\n\
          panic = \"abort\"\n",
-        runtime_path,
+        toml_basic_string(runtime_path),
     )
+}
+
+/// A TOML **basic string** for a filesystem path (§9.10).
+///
+/// This used to be `{:?}` on the `Path` -- Rust's `Debug`, used as if it were TOML quoting. The
+/// two agree on the cases that occur constantly (a backslash becomes `\\`, a quote becomes `\"`,
+/// so Windows paths happen to come out right) and disagree exactly where a hand-rolled escape
+/// always disagrees: `Debug` renders a control character as `\u{7}` and a non-UTF-8 byte as
+/// `\xNN`, and TOML accepts neither spelling. Escaping to TOML's own rules removes the pun.
+///
+/// Lossy conversion is deliberate and safe here: a path that is not valid UTF-8 cannot be written
+/// into a TOML document at all, and the replacement character produces a path that fails loudly at
+/// Cargo rather than a document that fails to parse.
+fn toml_basic_string(path: &Path) -> String {
+    let mut out = String::with_capacity(path.as_os_str().len() + 2);
+    out.push('"');
+    for c in path.to_string_lossy().chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{8}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            // TOML requires the remaining control characters as `\uXXXX` -- four hex digits, not
+            // Rust's `\u{...}` form.
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\u{:04X}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The generated crate's `Cargo.lock` (§10.7).
+///
+/// Fully determined, with nothing to resolve: the generated binary crate depends on exactly one
+/// path package, which itself has no dependencies. Version 3 is the format both the pinned
+/// toolchain and every currently supported Cargo accept. Path dependencies carry no `source` and
+/// no `checksum`, which is precisely why no registry -- and therefore no network -- is reachable
+/// from this graph.
+///
+/// The runtime's version is read from the runtime crate actually being linked, not hardcoded: a
+/// lock that disagrees with the crate it locks is one Cargo rejects under `--locked`, and the
+/// installed runtime is a different file from the one this compiler was built beside.
+fn generated_cargo_lock(runtime_version: &str) -> String {
+    format!(
+        "# GENERATED by the STARK native backend (WP-C6.4c). Do not edit.\n\
+         version = 3\n\
+         \n\
+         [[package]]\n\
+         name = \"stark-generated\"\n\
+         version = \"0.0.0\"\n\
+         dependencies = [\n\
+         \x20\"stark-runtime\",\n\
+         ]\n\
+         \n\
+         [[package]]\n\
+         name = \"stark-runtime\"\n\
+         version = \"{runtime_version}\"\n"
+    )
+}
+
+/// The `version = "…"` of the `[package]` table in the runtime crate's manifest.
+///
+/// Deliberately a narrow scan rather than a TOML parse: the file is one this repository writes,
+/// the field is the first `version =` in it, and adding a TOML dependency to the compiler to read
+/// one line of a manifest it already controls is not a trade worth making. A failure to find it is
+/// reported rather than defaulted -- a guessed version would produce a lock Cargo rejects under
+/// `--locked`, with a far less obvious message than this one.
+fn read_runtime_version(runtime_crate: &Path) -> Result<String, BackendDiagnostic> {
+    let manifest_path = runtime_crate.join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|e| BackendDiagnostic::Io(format!("reading {}: {e}", manifest_path.display())))?;
+    text.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("version"))
+        .and_then(|rest| rest.trim_start().strip_prefix('='))
+        .map(|rest| rest.trim().trim_matches('"').to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            BackendDiagnostic::Io(format!(
+                "no `version = \"…\"` in {}; cannot write a lock for the generated crate",
+                manifest_path.display()
+            ))
+        })
 }
 
 /// §11.1: source-content + version + target + profile hash, for build isolation/diagnostics
@@ -311,15 +444,27 @@ fn join_tys<'a>(tys: impl Iterator<Item = &'a crate::mir::MirTy>) -> String {
 
 /// WP-C5.3e (CD-067): the report carries the layout contract's IDENTITY, so a build's observable
 /// `size_of`/`align_of` answers can always be attributed to a named contract at a stated version.
+/// WP-C6.4a adds `host_triple`, `target_tier` and `target_pointer_width` beside the existing
+/// `target_triple`, which now names the SELECTED target. Host and selected target are separate
+/// fields even while they are always equal, because §33 asks the record to identify them
+/// separately -- a manifest that cannot tell them apart is one that will report the host as the
+/// target the day they differ, and say nothing about having done so.
+///
+/// The version record embedded in the binary itself (`stark_runtime::version::BuildVersions`) is
+/// deliberately NOT extended: it is the runtime crate's shared type, its surface is separately
+/// versioned (§9.2), and a binary that can only ever be a host build has nothing to disambiguate.
+/// The compiler-side manifest is where target metadata belongs while cross-compilation is C7's.
 fn build_manifest_json(
     versions: &BuildVersions,
     build_key: &str,
     layout: &crate::layout::TargetLayout,
+    selection: &crate::target::TargetSelection,
 ) -> String {
     format!(
         "{{\n  \"build_key\": {},\n  \"compiler_version\": {},\n  \"mir_version\": {},\n  \
          \"mir_runtime_surface\": {},\n  \"runtime_version\": {},\n  \"backend_version\": {},\n  \
-         \"rustc_version\": {},\n  \"target_triple\": {},\n  \"profile\": {},\n  \
+         \"rustc_version\": {},\n  \"host_triple\": {},\n  \"target_triple\": {},\n  \
+         \"target_tier\": {},\n  \"target_pointer_width\": {},\n  \"profile\": {},\n  \
          \"target_contract\": {},\n  \"layout_contract_version\": {},\n  \
          \"compiler_layout_revision\": {}\n}}\n",
         json_str(build_key),
@@ -329,7 +474,10 @@ fn build_manifest_json(
         json_str(&versions.runtime_version),
         json_str(&versions.backend_version),
         json_str(&versions.rustc_version),
+        json_str(&selection.host_triple),
         json_str(&versions.target_triple),
+        json_str(&selection.selected.tier.to_string()),
+        selection.selected.pointer_width,
         json_str(&versions.profile),
         json_str(&layout.identity.target_contract),
         layout.identity.layout_contract_version,
@@ -374,6 +522,132 @@ mod tests {
     use crate::source::SourceFile;
     use crate::typecheck;
     use std::sync::Arc;
+
+    /// A synthetic `rustc -vV` transcript. The preflight tests below read one of these and never
+    /// touch a real toolchain — which is the point: §8.4 says an unsupported target must be
+    /// rejected before Cargo and the linker, and the only way to *prove* that is to show the
+    /// refusal happening with nothing but the probe's output in hand.
+    fn rustc_verbose_for(host: &str) -> String {
+        format!(
+            "rustc 1.93.0 (254b59607 2026-01-19)\nbinary: rustc\ncommit-hash: 254b59607\n\
+             commit-date: 2026-01-19\nhost: {host}\nrelease: 1.93.0\nLLVM version: 21.1.8\n"
+        )
+    }
+
+    #[test]
+    fn preflight_accepts_a_tier1_host_and_reports_it_as_the_selected_target() {
+        for host in crate::target::tier1_triples() {
+            let selection = preflight_from_rustc_verbose(&rustc_verbose_for(host)).unwrap();
+            assert_eq!(selection.host_triple, host);
+            assert_eq!(selection.selected_triple(), host);
+            assert_eq!(selection.selected.tier, crate::target::Tier::One);
+        }
+    }
+
+    /// §8.4/§8.5(5). The rejection is produced from the rustc probe alone — no crate directory,
+    /// no `Cargo.toml`, no Cargo process — so an unsupported target can never be discovered by a
+    /// later rustc or linker error.
+    #[test]
+    fn preflight_rejects_an_unsupported_host_before_anything_is_generated() {
+        let error = preflight_from_rustc_verbose(&rustc_verbose_for("riscv64gc-unknown-linux-gnu"))
+            .unwrap_err();
+        match error {
+            BackendDiagnostic::TargetRejected(crate::target::TargetError::UnsupportedByStark {
+                ref requested,
+                ..
+            }) => assert_eq!(requested, "riscv64gc-unknown-linux-gnu"),
+            other => panic!("expected TargetRejected/UnsupportedByStark, got {other:?}"),
+        }
+        // And it is not the "backend cannot lower this" class, which means something else.
+        assert!(!matches!(
+            preflight_from_rustc_verbose(&rustc_verbose_for("riscv64gc-unknown-linux-gnu")),
+            Err(BackendDiagnostic::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn a_rustc_transcript_without_a_host_field_is_an_io_error_not_a_target_rejection() {
+        assert!(matches!(
+            preflight_from_rustc_verbose("release: 1.93.0\n"),
+            Err(BackendDiagnostic::Io(_))
+        ));
+    }
+
+    /// §9.10. The old `{:?}` spelling passed the first three of these and failed the fourth.
+    #[test]
+    fn manifest_paths_are_escaped_to_toml_rules_not_rust_debug_rules() {
+        assert_eq!(
+            toml_basic_string(Path::new("/plain/path")),
+            "\"/plain/path\""
+        );
+        assert_eq!(
+            toml_basic_string(Path::new("/with space/rt")),
+            "\"/with space/rt\""
+        );
+        assert_eq!(
+            toml_basic_string(Path::new(r"C:\Users\runner\stark-runtime")),
+            r#""C:\\Users\\runner\\stark-runtime""#
+        );
+        // Unicode is left literal: TOML basic strings take it verbatim, and escaping it would
+        // change a path that was already correct.
+        assert_eq!(
+            toml_basic_string(Path::new("/tmp/naïve/ünïcode")),
+            "\"/tmp/naïve/ünïcode\""
+        );
+        // The case Rust's `Debug` renders as `\u{7}`, which TOML does not accept.
+        assert_eq!(
+            toml_basic_string(Path::new("/tmp/a\u{7}b")),
+            "\"/tmp/a\\u0007b\""
+        );
+        assert_eq!(toml_basic_string(Path::new("/tmp/a\tb")), "\"/tmp/a\\tb\"");
+        assert_eq!(
+            toml_basic_string(Path::new("/tmp/say \"hi\"")),
+            "\"/tmp/say \\\"hi\\\"\""
+        );
+    }
+
+    /// A generated manifest carrying an adversarial path must still be a document Cargo can read.
+    /// Checked structurally rather than by parsing TOML (the compiler has no TOML dependency, by
+    /// design): the escaped path occupies exactly one line, and its quotes are balanced.
+    #[test]
+    fn a_generated_manifest_with_an_adversarial_runtime_path_stays_one_well_formed_line() {
+        for path in [
+            "/tmp/with space/stark-runtime",
+            r"C:\Users\stark runner\lib\stark\stark-runtime",
+            "/tmp/naïve path/stark-runtime",
+        ] {
+            let manifest = generated_cargo_toml(Path::new(path));
+            let dep_line = manifest
+                .lines()
+                .find(|l| l.starts_with("stark-runtime = "))
+                .expect("dependency line");
+            assert!(dep_line.ends_with('}'), "{dep_line}");
+            let quotes = dep_line.matches('"').count() - dep_line.matches("\\\"").count();
+            assert_eq!(quotes, 2, "unbalanced quoting in {dep_line}");
+        }
+    }
+
+    /// §10.7: `--locked` is only an assertion if a lock exists to be checked against, and the lock
+    /// must name the runtime version actually being linked.
+    #[test]
+    fn the_generated_lock_names_both_packages_and_the_runtime_version() {
+        let lock = generated_cargo_lock("0.1.0");
+        assert!(lock.contains("name = \"stark-generated\""));
+        assert!(lock.contains("name = \"stark-runtime\""));
+        assert!(lock.contains("version = \"0.1.0\""));
+        // A path-only graph has no registry source and no checksum -- which is what makes the
+        // `--offline` build provably network-free rather than warm-cache-dependent.
+        assert!(!lock.contains("source = "));
+        assert!(!lock.contains("checksum = "));
+    }
+
+    #[test]
+    fn the_runtime_version_is_read_from_the_runtime_crate_being_linked() {
+        let runtime = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime");
+        assert_eq!(read_runtime_version(&runtime).unwrap(), "0.1.0");
+        let missing = read_runtime_version(Path::new("/nonexistent/stark-runtime"));
+        assert!(matches!(missing, Err(BackendDiagnostic::Io(_))));
+    }
 
     /// One labelled, single-input mutation. Named aliases rather than inline `Box<dyn Fn>`
     /// signatures so the tests below read as what they are: a list of "change exactly this, then

@@ -46,6 +46,110 @@ jobs:
       - name: Release package structure and installer tests
         run: python scripts/test_build_release.py
 
+  # WP-C6.4c (§10.4): the Tier-1 platform qualification record.
+  #
+  # This deliberately re-runs commands `build-and-test` already covers, which §10.4 otherwise
+  # discourages. The reason: `build-and-test` is the broad net across three platforms and proves
+  # the tree is green; a C6.4 evidence record has to be SELF-CONTAINED — its own commands, its own
+  # counts, its own measured platform identity, at one named commit — because that record is what a
+  # Gate C6 claim rests on. Reading counts out of another job's logs would make the claim depend on
+  # log scraping rather than on an artifact. Both jobs run in parallel, so the wall clock is
+  # unchanged.
+  #
+  # Tier-1 only. Windows is Tier-2 and gets a gap report (`c64-windows-gap`), never a
+  # qualification record — §36, and Review D question 12: green Windows CI must not be mistakable
+  # for Tier-1 qualification.
+  c64-qualification:
+    name: C6.4 tier-1 qualification (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+          - name: macos-arm64
+            os: macos-14
+            triple: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: Qualification run
+        run: |
+          python3 scripts/run-c64-qualification.py \
+            --expected-target ${{ matrix.triple }} \
+            --commit "$GITHUB_SHA" \
+            --output-dir "$RUNNER_TEMP/c64-evidence"
+      # Uploaded even on failure: a failed qualification is evidence too, and §12.4(5) asks for
+      # artifacts to survive the failure that makes them worth reading.
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c64-evidence-${{ matrix.name }}
+          path: ${{ runner.temp }}/c64-evidence/
+
+  # §10.4: two green jobs are not agreement. This is the job that compares them.
+  c64-tier1-comparison:
+    name: C6.4 tier-1 agreement
+    needs: c64-qualification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c64-evidence-*
+          path: evidence
+          merge-multiple: true
+      - name: Compare Tier-1 records
+        run: |
+          python3 starkc/scripts/compare-c64-evidence.py \
+            evidence/macos-arm64.json evidence/linux-x64.json \
+            --out evidence/qualification-summary.md
+      - name: Publish summary
+        if: always()
+        run: cat evidence/qualification-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c64-qualification-summary
+          path: evidence/qualification-summary.md
+
+  # §36: Windows is Tier-2. This job gathers the gap report's raw material and must NOT gate a
+  # Tier-1 claim, which is why it is `continue-on-error` and why its artifact is named a gap
+  # report rather than evidence.
+  c64-windows-gap:
+    name: C6.4 windows tier-2 gap probe
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: C6.4 platform suite on Windows
+        shell: bash
+        run: cargo test --test c64_platform_matrix -- --nocapture 2>&1 | tee "$RUNNER_TEMP/windows-c64.log"
+      - name: Upload gap probe log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c64-windows-gap-probe
+          path: ${{ runner.temp }}/windows-c64.log
+
   release-package-smoke:
     name: release package smoke (${{ matrix.name }})
     strategy:

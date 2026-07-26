@@ -44,6 +44,11 @@ pub enum BuildCommandError {
     MirVerification(String),
     Toolchain(ToolchainError),
     UnsupportedNative(String),
+    /// WP-C6.4a: target preflight refused the build, before any crate was generated. Kept
+    /// distinct from `UnsupportedNative` (an unlowered construct) and from `BackendBuild` (a
+    /// rustc/linker failure) because §8.4 requires an unsupported target to be rejected on its
+    /// own terms rather than surfacing as a downstream tool failure.
+    TargetRejected(crate::target::TargetError),
     BackendBuild(Box<NativeBackendBuildError>),
     ArtifactMissing(PathBuf),
     ArtifactInstall {
@@ -166,6 +171,7 @@ pub fn build_current_package(
 fn map_backend_error(error: BackendDiagnostic, toolchain: &ToolchainInfo) -> BuildCommandError {
     match error {
         BackendDiagnostic::Unsupported(message) => BuildCommandError::UnsupportedNative(message),
+        BackendDiagnostic::TargetRejected(error) => BuildCommandError::TargetRejected(error),
         BackendDiagnostic::BuildFailed(failure) => {
             BuildCommandError::BackendBuild(Box::new(NativeBackendBuildError {
                 failure: *failure,

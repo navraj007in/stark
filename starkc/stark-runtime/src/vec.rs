@@ -10,6 +10,24 @@
 //! the STARK expression is, not where the runtime is), and the ones handing out an INTERIOR borrow
 //! (`get`/`get_mut`, by-reference iteration, slice views).
 
+/// Narrow a STARK index to a Rust one, or `None` when it is out of range (WP-C6.4b, F3).
+///
+/// The comparison happens in `u64`, the width STARK's index actually has. Writing it the obvious
+/// way — `i as usize >= v.len()` — is correct only where `usize` is at least 64 bits: on a 32-bit
+/// target the cast TRUNCATES first, so `v[0x1_0000_0000]` on a one-element vector narrows to `0`,
+/// passes the check, and returns element 0 instead of trapping `IndexOutOfBounds`. A silent wrong
+/// value where the language requires a trap is the worst outcome available, and it would be
+/// invisible on every target this compiler currently admits.
+///
+/// Target preflight (`starkc::target`) admits only 64-bit targets, so that path is unreachable
+/// today. This is written to be right anyway rather than right-by-coincidence: the two guards are
+/// independent, and the day a 32-bit target is named, the one that has to be remembered is the one
+/// that gets forgotten.
+#[inline]
+fn narrow_index(i: u64, len: usize) -> Option<usize> {
+    (i < len as u64).then_some(i as usize)
+}
+
 /// `Vec::new()` — an empty vector.
 pub fn new<T>() -> Vec<T> {
     Vec::new()
@@ -73,41 +91,47 @@ pub fn iter_next<'a, T>(it: &mut VecIter<'a, T>) -> Option<&'a T> {
 /// own `SourceInfo` at compile time and bakes it in, exactly as `Terminator::Checked` does for array
 /// and arithmetic traps (DEV-107, closed — the earlier `"<vec index>"` placeholder is gone).
 pub fn index_get<T: Copy>(v: &[T], i: u64, file: &str, line: u32, column: u32) -> T {
-    if i as usize >= v.len() {
-        crate::trap::abort(
+    match narrow_index(i, v.len()) {
+        Some(i) => v[i],
+        None => crate::trap::abort(
             crate::trap::TrapCategory::IndexOutOfBounds,
             file,
             line,
             column,
-        );
+        ),
     }
-    v[i as usize]
 }
 
 /// `v.remove(i)` — removes and RETURNS the element at `i`, shifting the rest left. Traps
 /// `IndexOutOfBounds` at the user's location when `i` is past the end.
 pub fn remove<T>(v: &mut Vec<T>, i: u64, file: &str, line: u32, column: u32) -> T {
-    if i as usize >= v.len() {
-        crate::trap::abort(
+    match narrow_index(i, v.len()) {
+        Some(i) => v.remove(i),
+        None => crate::trap::abort(
             crate::trap::TrapCategory::IndexOutOfBounds,
             file,
             line,
             column,
-        );
+        ),
     }
-    v.remove(i as usize)
 }
 
 /// `v.get(i)` / `v.get_mut(i)` (0.1-A4) — CHECKED interior access that never traps: `None` when out
 /// of range, distinct from the trapping `v[i]`. The reference borrows into the live `Vec`.
 pub fn get_ref<T>(v: &[T], i: u64) -> Option<&T> {
-    v.get(i as usize)
+    match narrow_index(i, v.len()) {
+        Some(i) => Some(&v[i]),
+        None => None,
+    }
 }
 
 /// Takes `&mut [T]` rather than `&mut Vec<T>`: checked access never changes the length, and a
 /// `&mut Vec<T>` receiver coerces. (`remove` DOES change the length, so it keeps the `Vec`.)
 pub fn get_mut_ref<T>(v: &mut [T], i: u64) -> Option<&mut T> {
-    v.get_mut(i as usize)
+    match narrow_index(i, v.len()) {
+        Some(i) => Some(&mut v[i]),
+        None => None,
+    }
 }
 
 /// `Vec::clear(&mut self)` — drop every element, length becomes 0.

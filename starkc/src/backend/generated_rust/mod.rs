@@ -21,6 +21,13 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub enum BackendDiagnostic {
     Unsupported(String),
+    /// WP-C6.4a: target preflight refused the build. A separate variant from `Unsupported`
+    /// because the two mean opposite things to a user -- `Unsupported` is "this backend increment
+    /// does not lower that construct yet", while this is "this compiler does not build for that
+    /// machine". It carries the classification rather than a formatted string so the CLI, the
+    /// tests, and the qualification harness can distinguish an unsupported target from a missing
+    /// toolchain (§8.3) without matching on prose.
+    TargetRejected(crate::target::TargetError),
     /// WP-C5.5: the generated crate's Cargo process failed (or reported success without the
     /// promised artifact). This is structured process evidence for the CLI, never a STARK
     /// source diagnostic.

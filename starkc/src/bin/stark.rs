@@ -301,6 +301,25 @@ fn render_build_error(error: &starkc::native_build::BuildCommandError, verbose: 
         BuildCommandError::UnsupportedNative(message) => {
             eprintln!("error: native build does not yet support this program: {message}")
         }
+        // WP-C6.4a (§8.1): the diagnostic names the supported tier-1 targets, and separates
+        // "STARK does not build for that machine" from "that machine's Rust toolchain is not
+        // installed" -- the remedies are different, and neither is a program error.
+        BuildCommandError::TargetRejected(error) => {
+            eprintln!("error: {error}");
+            match &error {
+                starkc::target::TargetError::UnsupportedByStark { .. } => eprintln!(
+                    "help: STARK qualifies {} for native builds",
+                    starkc::target::tier1_triples().join(" and ")
+                ),
+                starkc::target::TargetError::SupportedButToolchainMissing { .. } => {
+                    eprintln!("help: install the Rust toolchain support for that target")
+                }
+                starkc::target::TargetError::HostOrTargetMetadataMismatch { .. }
+                | starkc::target::TargetError::LayoutContractMismatch { .. } => {
+                    eprintln!("help: this is a compiler-internal target-metadata inconsistency")
+                }
+            }
+        }
         BuildCommandError::BackendBuild(error) => {
             let failure = &error.failure;
             eprintln!(

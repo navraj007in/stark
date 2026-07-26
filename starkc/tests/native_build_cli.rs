@@ -185,9 +185,16 @@ fn main() { let pair = Pair { left: 19, right: 23 }; assert_eq(pair.left + pair.
     assert!(output.status.success(), "{}", stderr(&output));
     let invocations = std::fs::read_to_string(cargo_log).unwrap();
     assert!(invocations.lines().any(|line| line == "--version"));
-    assert!(invocations
-        .lines()
-        .any(|line| line.starts_with("build --offline --manifest-path")));
+    // WP-C6.4c: the generated crate is built `--locked --offline`. `--offline` alone proved no
+    // network was reached; `--locked` is the other half — Cargo must accept the emitted lock as
+    // written rather than resolve a graph of its own, so a dependency appearing in the generated
+    // crate fails the build instead of being silently satisfied.
+    assert!(
+        invocations
+            .lines()
+            .any(|line| line.starts_with("build --locked --offline --manifest-path")),
+        "cargo invocations:\n{invocations}"
+    );
     let output_text = stdout(&output);
     let generated = output_text
         .lines()
@@ -251,7 +258,7 @@ fn backend_failure_reports_and_retains_exact_generated_directory() {
     assert!(error.contains("cargo: "), "{error}");
     assert!(
         error.contains(&format!(
-            "command: RUSTC=rustc {} build --offline --manifest-path ",
+            "command: RUSTC=rustc {} build --locked --offline --manifest-path ",
             cargo_wrapper.display()
         )),
         "{error}"

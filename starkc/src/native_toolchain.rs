@@ -134,6 +134,21 @@ pub fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
+/// Set to `1` to refuse the source-checkout fallback below (WP-C6.4c, §10.6).
+///
+/// The fallback is baked in at compile time (`CARGO_MANIFEST_DIR`), so an installed `stark` built
+/// from a checkout keeps finding that checkout's runtime for as long as it exists on disk. That
+/// makes an installed-runtime test capable of passing for the wrong reason: if the install layout
+/// were broken, the fallback would quietly supply a runtime anyway and the test would stay green.
+/// §10.6 is explicit that "a pass while the source checkout remains an accidental dependency is
+/// invalid", so qualification sets this and the fallback becomes a hard error instead of a silent
+/// rescue.
+pub const REQUIRE_INSTALLED_RUNTIME_VAR: &str = "STARK_REQUIRE_INSTALLED_RUNTIME";
+
+fn require_installed_runtime() -> bool {
+    std::env::var_os(REQUIRE_INSTALLED_RUNTIME_VAR).is_some_and(|v| v == "1")
+}
+
 pub fn discover_runtime(current_exe: Option<&Path>) -> Result<PathBuf, ToolchainError> {
     if let Some(override_path) = std::env::var_os("STARK_RUNTIME_DIR") {
         let path = PathBuf::from(override_path);
@@ -150,6 +165,9 @@ pub fn discover_runtime(current_exe: Option<&Path>) -> Result<PathBuf, Toolchain
                 return Ok(path);
             }
         }
+    }
+    if require_installed_runtime() {
+        return Err(ToolchainError::RuntimeMissing { attempted });
     }
     let candidate = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime");
     attempted.push(candidate.clone());

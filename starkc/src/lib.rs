@@ -35,5 +35,6 @@ pub mod package;
 pub mod parser;
 pub mod resolve;
 pub mod source;
+pub mod target;
 pub mod test_runner;
 pub mod typecheck;
