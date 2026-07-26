@@ -318,6 +318,12 @@ jobs:
             throw "build failed (exit $status) but not for the missing installed runtime"
           }
           Write-Host "installed stark refused to build without its installed runtime, for that reason (exit $status)"
+          # REQUIRED, and the reason is subtle: GitHub appends `exit $LASTEXITCODE` to a pwsh step,
+          # and $LASTEXITCODE is still 1 from the build we DELIBERATELY made fail. Without this the
+          # step reports failure having asserted exactly what it set out to assert — the first run
+          # of this check logged "refused ... (exit 1)" and then failed the job on that same 1.
+          # The bash branch does not need it: its last command is the echo, which exits 0.
+          exit 0
 
   fixture-conformance:
     name: spec fixture conformance
