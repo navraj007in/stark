@@ -39,15 +39,23 @@ Readiness classification: `INTERPRETER_READY` for the reduced package surface;
 From `/Users/nexper/Documents/GitHub/stark/stark-json`:
 
 - `../starkc/target/debug/stark check`: passed, `stark-json: OK`
-- `../starkc/target/debug/stark test`: passed, 4 tests passed
+- `../starkc/target/debug/stark test`: passed, 9 tests passed
 - `../starkc/target/debug/stark fmt --check`: passed
-- `../starkc/target/debug/stark build`: failed, native build reports package library has no `main`
+- `../starkc/target/debug/stark build`: not used as native acceptance evidence because this is a
+  library package without `main`
 
 From `/Users/nexper/Documents/GitHub/stark/stark-json-consumer`:
 
 - `../starkc/target/debug/stark check`: passed, `stark-json-consumer: OK`
 - `../starkc/target/debug/stark run`: passed, output `null`
 - `../starkc/target/debug/stark fmt --check`: passed
+- `../starkc/target/debug/stark build`: failed, `native build does not yet support this program:
+  unit expression form (C4.5)`
+
+Fixtures:
+
+- Valid fixture files: 17
+- Invalid fixture files: 32
 
 ## Blockers
 
@@ -101,7 +109,8 @@ fn f(e: &E) -> String {
 - ACTUAL RESULT: no public scalar-from-codepoint constructor found in current package surface
 - REQUIRED CAPABILITY: append decoded Unicode scalar to `String`
 - NORMATIVE BASIS: string and Unicode semantics in work package Section 15
-- WORKAROUND: syntax/limit validation proceeds; decoded string content is not complete
+- WORKAROUND: direct UTF-8, simple escapes, and ASCII Unicode escapes decode; non-ASCII Unicode
+  escapes return `InvalidUtf8`
 - CLASSIFICATION: `RUNTIME_STRING`
 
 ## Final Status

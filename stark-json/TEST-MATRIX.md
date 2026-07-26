@@ -9,13 +9,15 @@
 | ARR-001 | ARRAYS | `[1,true,null]` | parse success | test runner | PASS |
 | OBJ-001 | OBJECTS | `{"a":1}` | parse success | test runner | PASS |
 | DUP-001 | DUPLICATE_KEYS | `{"a":1,"a":2}` | duplicate key position | test runner | PASS |
-| STR-001 | UNICODE | `"\u0061"` | escape accepted | test runner | PARTIAL |
+| STR-001 | UNICODE | `"\u0061"` | escape accepted and decoded as `a` | test runner | PASS |
 | STR-002 | SURROGATES | lone high/low surrogate escapes | exact error positions | test runner | PASS |
 | LIM-001 | LIMITS | `max_input_bytes = 2`, input `123` | limit error | test runner | PASS |
 | ENC-001 | ENCODING | consumer `encode(&value)` | compact JSON | interpreter | BLOCKED |
 | CROSS-001 | CROSS_PACKAGE | `stark-json-consumer` | dependency import and run | check/run | PASS |
 | FMT-001 | FORMATTER | `stark fmt --check` | canonical formatting | formatter | PASS |
-| NATIVE-001 | THREE_ENGINE | `stark build` on library | native evidence | native build | BLOCKED |
+| FIX-001 | FIXTURES | `fixtures/valid` | 17 classified valid cases | checked in | PASS |
+| FIX-002 | FIXTURES | `fixtures/invalid` | 32 classified invalid cases | checked in | PASS |
+| NATIVE-001 | THREE_ENGINE | `stark build` on consumer | native evidence | native build | BLOCKED |
 
 The complete work-package matrix remains open because the current compiler/runtime blockers prevent
 exact public API spelling, compliant borrowed recursive encoding, and decoded Unicode scalar storage.

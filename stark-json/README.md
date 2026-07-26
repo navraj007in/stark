@@ -1,7 +1,7 @@
 # stark-json v0.1
 
-`stark-json` is a pure-STARK JSON package scaffold and partial implementation for the
-`STARK JSON v0.1` work package.
+`stark-json` is a pure-STARK JSON package partial implementation for the `STARK JSON v0.1`
+work package.
 
 ## Scope
 
@@ -13,6 +13,8 @@ Implemented and checked under the current compiler:
 - parser entry points `parse` and `parse_with_limits`;
 - byte-oriented recursive descent for primitives, numbers, arrays, objects, whitespace, duplicate
   checks, position tracking, and selected limits;
+- decoded string preservation for direct UTF-8 input, simple escapes, and ASCII `\u00XX` escapes;
+- 17 valid fixtures and 32 invalid fixtures;
 - package-local tests and a sibling cross-package consumer.
 
 Current compiler/runtime blockers prevent a complete compliant implementation:
@@ -23,9 +25,8 @@ Current compiler/runtime blockers prevent a complete compliant implementation:
   `encode(value: &JsonValue)` cannot inspect recursive `String`, `Vec`, or object payloads without
   move errors. The function currently preserves the required signature but returns `null`.
 - There is no public scalar-from-codepoint constructor for decoding non-ASCII `\uXXXX` escapes into
-  actual Unicode scalar values.
-- To keep package tests executable, parsed string contents currently validate syntax and limits but
-  return an empty decoded string.
+  actual Unicode scalar values. Non-ASCII Unicode escapes currently return `InvalidUtf8` rather than
+  silently producing the wrong string.
 
 ## API
 

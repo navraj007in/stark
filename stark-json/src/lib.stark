@@ -343,19 +343,18 @@ fn has_duplicate_key(members: &Vec<JsonMember>, key: &str) -> Bool {
 
 fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, JsonError> {
     consume_byte(cursor)?;
+    let mut out = String::new();
     let mut out_len: UInt64 = 0u64;
-    let mut decoded_bytes: UInt64 = 0u64;
 
     while true {
         match peek_byte(cursor) {
             None => {
-
                 return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
             }
             Some(b) => {
                 if b == QUOTE {
                     consume_byte(cursor)?;
-                    return Ok(String::new());
+                    return Ok(out);
                 } else if b == BACKSLASH {
                     let start_offset = cursor.offset;
                     let start_line = cursor.line;
@@ -363,7 +362,6 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                     consume_byte(cursor)?;
                     match peek_byte(cursor) {
                         None => {
-
                             return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
                         }
                         Some(e) => {
@@ -377,6 +375,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push('"');
                             } else if e == BACKSLASH {
                                 consume_byte(cursor)?;
                                 out_len = check_string_limit(
@@ -387,6 +386,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push('\\');
                             } else if e == SLASH {
                                 consume_byte(cursor)?;
                                 out_len = check_string_limit(
@@ -397,6 +397,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push('/');
                             } else if e == 98u8 {
                                 consume_byte(cursor)?;
                                 out_len = check_string_limit(
@@ -407,6 +408,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push(char_from_ascii(8u8));
                             } else if e == 102u8 {
                                 consume_byte(cursor)?;
                                 out_len = check_string_limit(
@@ -417,6 +419,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push(char_from_ascii(12u8));
                             } else if e == 110u8 {
                                 consume_byte(cursor)?;
                                 out_len = check_string_limit(
@@ -427,6 +430,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push('\n');
                             } else if e == 114u8 {
                                 consume_byte(cursor)?;
                                 out_len = check_string_limit(
@@ -437,6 +441,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push('\r');
                             } else if e == 116u8 {
                                 consume_byte(cursor)?;
                                 out_len = check_string_limit(
@@ -447,6 +452,7 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                     start_line,
                                     start_column,
                                 )?;
+                                out.push('\t');
                             } else if e == 117u8 {
                                 consume_byte(cursor)?;
                                 let code = parse_hex4(cursor)?;
@@ -470,14 +476,25 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                                         code,
                                     )?;
                                 } else {
-                                    out_len = check_codepoint_limit(
+                                    if code > 0x7Fu32 {
+                                        return Err(
+                                            error_at(
+                                                JsonErrorKind::InvalidUtf8,
+                                                start_offset,
+                                                start_line,
+                                                start_column,
+                                            ),
+                                        );
+                                    }
+                                    out_len = check_string_limit(
                                         out_len,
+                                        1u64,
                                         limits,
                                         start_offset,
                                         start_line,
                                         start_column,
-                                        code,
                                     )?;
+                                    out.push(char_from_ascii(code as UInt8));
                                 }
                             } else {
                                 return Err(error_here(cursor, JsonErrorKind::InvalidEscape));
@@ -499,11 +516,12 @@ fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, Json
                         cursor.line,
                         cursor.column,
                     )?;
+                    out.push_str(cursor.input.as_str().substring(start, end));
                 }
             }
         }
     }
-    Ok(String::new())
+    Err(error_here(cursor, JsonErrorKind::UnexpectedEnd))
 }
 
 fn parse_low_surrogate_escape(
