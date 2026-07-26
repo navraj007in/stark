@@ -416,7 +416,32 @@ def markdown(record: dict, results: list[StepResult]) -> str:
             f"| `{' '.join(r.argv)}` | {'PASS' if r.ok else 'FAIL'} | {r.passed} | {r.failed} "
             f"| {r.ignored} | {r.skipped} | {r.duration_s} |"
         )
+    # §17.1's template names "semantic observations", "installed runtime" and "offline build" as
+    # their own sections. They are not separate sections here because they are not separate runs —
+    # each is established by a command in the table above. Saying which one, rather than leaving a
+    # reader to infer it, is the point of this block.
     lines += [
+        "",
+        "## Coverage of the required observations",
+        "",
+        "| Required observation (§17.1 / §35) | Established by |",
+        "|---|---|",
+        "| stdout/stderr bytes, line termination, Unicode | `c64_platform_matrix` "
+        "(`platform_stdout_is_exact_bytes_including_unicode_and_line_termination`) |",
+        "| trap class, category, provenance, exit status, pre-trap prefix | `c64_platform_matrix` "
+        "(`platform_trap_reports_category_provenance_and_exit_status`) |",
+        "| three-engine semantic agreement, incl. Drop observations | `three_engine_differential` |",
+        "| frozen execution corpus | `mir_differential`, `exec_snapshots` |",
+        "| installed runtime, outside the checkout | `c63_closure_evidence`; "
+        "`c64_platform_matrix::portability_installed_runtime_requirement_refuses_the_checkout_fallback` |",
+        "| locked offline generated build | `c63_closure_evidence`; "
+        "`c64_platform_matrix::portability_generated_crate_is_locked_and_network_free` |",
+        "| frozen multi-package workspace | `workspace` (`native_c5_4_workspace`); "
+        "`release_package` |",
+        "| target preflight and recorded metadata | `c64_platform_matrix` (`target_preflight_*`, "
+        "`portability_build_manifest_records_host_and_selected_target_separately`) |",
+        "| generated corpus | **not established** — "
+        f"{record['generated_corpus_status']}, see `WP-C6.4.md` §1.2 |",
         "",
         "## Determinism rerun",
         "",
