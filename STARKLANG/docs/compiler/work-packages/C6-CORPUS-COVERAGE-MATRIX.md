@@ -2,8 +2,9 @@
 
 **Owner:** WP-C6.5 (`WP-C6.5.md`)
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §40 (corpus categories); execution plan §7.2–§7.5
-**Frozen:** 2026-07-26 at `b0d7a72`; amended 2026-07-26 by owner decision **CD-148** (rows O13 and
-V19 only — see §9)
+**Frozen:** 2026-07-26 at `b0d7a72`; amended 2026-07-26 by owner decision **CD-148** — rows O13 and
+V19 re-dispositioned, and rows **K15–K17 added** for the entry contract that phase 0 omitted
+(finding C65-F2 / DEV-111). See §9.
 **Status:** phase C6.5-0 complete. Every §7.3 category is decomposed and dispositioned. No corpus
 case has been written yet — the `ADD-*` rows are the worklist for phases C6.5-3 through C6.5-7.
 
@@ -38,8 +39,8 @@ row to the C6.5 standard. `ADD-HANDWRITTEN` / `ADD-GENERATED` / `ADD-METAMORPHIC
 > needs nothing from C6.5"*. Every such row is re-observed under the unified comparator during
 > C6.5-5 replay. Rows that need more than re-observation say so.
 
-**Counts:** 133 rows across 8 groups — 17 expressions/statements, 13 control transfer, 13 patterns,
-24 values/types, 15 calls/dispatch, 24 ownership/Drop, 13 traps, 14 packages/environment.
+**Counts:** 136 rows across 8 groups — 17 expressions/statements, 13 control transfer, 13 patterns,
+24 values/types, 15 calls/dispatch, 24 ownership/Drop, 13 traps, 17 packages/environment.
 
 ---
 
@@ -267,7 +268,7 @@ evidence and belongs to V04, not here. A trap row here would encode the supersed
 
 ---
 
-## 8. Packages and environment (14 rows)
+## 8. Packages and environment (17 rows)
 
 | ID | Sub-category | Normative rule | Package shape | Evidence | Disposition |
 | --- | --- | --- | --- | --- | --- |
@@ -285,9 +286,25 @@ evidence and belongs to V04, not here. A trap row here would encode the supersed
 | K12 | installed runtime | §9.2 | workspace | `c63_closure_evidence`, CI release smoke + negative step (CD-144 R1) | EXISTING-EVIDENCE |
 | K13 | Unicode path | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_unicode` | EXISTING-EVIDENCE |
 | K14 | path containing spaces | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_spaces` | EXISTING-EVIDENCE |
+| K15 | entry signature set | PROC-MAIN-001 | single-file | `c65_entry_exit_contract` | **BLOCKED-BY-OTHER-C6-WP** (DEV-111) — the native backend refuses every non-`Unit` entry; HIR/MIR agree after the DEV-111 fix |
+| K16 | normal exit status (`Int32`, `Ok(Int32)`) | PROC-EXIT-001 | single-file | `c65_entry_exit_contract` | **BLOCKED-BY-OTHER-C6-WP** (DEV-111) — two-engine only until native accepts a non-`Unit` entry |
+| K17 | `Err(message)` → stderr + status 1 | PROC-EXIT-001, PROC-STREAM-001 | single-file | `c65_entry_exit_contract` | **BLOCKED-BY-OTHER-C6-WP** (DEV-111) — two-engine only; native refuses, and no engine can compare `eprint` output (see the group note) |
 
-**Group gaps:** K09 needs a metamorphic pair. K06 needs a specification check before it can be
+**Group gaps.** K09 needs a metamorphic pair. K06 needs a specification check before it can be
 classified at all — recorded as an open question rather than guessed.
+
+**K15–K17 were missing from the matrix entirely** and were added when finding **C65-F2** (DEV-111,
+`WP-C6.5.md` §6) ran the entry contract through all three engines. Exit status had been covered only
+as X12 (exit 101 after a trap); normal nonzero statuses, the `Err` stderr write and the entry
+signature set had no row. So the §7.5 exit condition "no category silently omitted" did not hold when
+phase 0 was declared complete.
+
+**A related channel gap, recorded here because it has no row of its own and cannot get one yet.**
+`eprint`/`eprintln` are normative (06-Standard-Library IO) but are **unobservable in every engine**:
+the HIR oracle writes them to the *host* process's stderr (`src/interp.rs:2779`) rather than into
+`Execution.stderr`, MIR has no lowering for them, and the native backend emits none. §8.3's
+`stderr_bytes` field can therefore only ever compare the `Err`-completion write until that is closed.
+Not classified as `NOT-APPLICABLE-NON-CORE` — §4.3 forbids exactly that reasoning.
 
 ---
 
@@ -298,12 +315,19 @@ classified at all — recorded as an open question rather than guessed.
 | `EXISTING-EVIDENCE` (all re-observed under the unified comparator in C6.5-5) | 127 |
 | `NOT-APPLICABLE-NON-CORE` | 4 — P08, P13, V20, K06 (K06 provisional) |
 | `ADD-METAMORPHIC` | 1 — K09 |
-| `BLOCKED-BY-OTHER-C6-WP` | 1 — V19 (`HashSet`), a real C6 blocker |
+| `BLOCKED-BY-OTHER-C6-WP` | 4 — V19 (`HashSet`), K15/K16/K17 (the entry contract, DEV-111) |
 
 Both blocker-shaped rows moved under CD-148, in opposite directions: **O13 out** (the refusal it
 cited was superseded by C6.1d's unrolling; proven by execution, not by ledger reading) and **V19 in**
-(a lowering gap cannot be a non-Core exclusion under §4.3). The count of blockers is unchanged at
-one; which row it is, is not.
+(a lowering gap cannot be a non-Core exclusion under §4.3). **K15–K17 then arrived under CD-149** —
+rows that did not exist until the entry contract was actually run (DEV-111): normal exit statuses,
+the `Err` stderr write, and the entry-signature set had no representation in the original 133.
+
+**Two of the matrix's inherited dispositions have now failed on contact with a run, and nothing else
+has been re-derived yet.** O13 was blocked and is not; the entry contract was absent and is a
+blocker. Both were produced the same way as the other 130 rows — from ledger records and existing
+test names, not from executing the category. That is the case for C6.5-5's replay being the thing
+that establishes this matrix, rather than the matrix establishing coverage.
 
 **What this roll-up does not mean.** 127 `EXISTING-EVIDENCE` rows is not "C6.5 is nearly done". It
 means the *category surface* is already exercised somewhere. What C6.5 owes on top of it, and what

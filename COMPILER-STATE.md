@@ -132,10 +132,26 @@ change** (88 passed / 0 ignored / 0 self-skipped at `c789e4b`, identical to V0; 
 lands). The other **22 forked suites are
 not yet migrated** — owner chose incremental migration in coverage-matrix order — so until each is,
 its C6.2/C6.3 evidence still rests on its own local notion of agreement. Matrix roll-up: 127
-EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **1 BLOCKED — V19 `HashSet`**
-(a lowering gap, which §4.3 forbids as a non-Core exclusion). O13 left the blocker list: the refusal
-it cited (CD-038) was superseded by C6.1d's unrolling (CD-084 G2) and the program runs in all three
-engines today. Still owed and not reduced by any of the above: the §39 observation shape, a
+EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **4 BLOCKED — V19 `HashSet`**
+(a lowering gap, which §4.3 forbids as a non-Core exclusion) **and K15–K17, the entry contract
+(DEV-111)**. O13 left the blocker list: the refusal it cited (CD-038) was superseded by C6.1d's
+unrolling (CD-084 G2) and the program runs in all three engines today.
+
+**DEV-111 (CD-149) — the executable entry contract diverged in all three engines.** PROC-EXIT-001
+says an `Int32` entry returns that status and an `Err(message)` entry writes `message` + LF to
+stderr and returns 1; the oracle did both, **MIR reported status 0 with no stderr for every
+non-`Unit` entry** (including a MISSED TRAP on an out-of-range status), and **native refuses to
+build any non-`Unit` entry at all**. MIR is FIXED (`entry_termination`; `MirExecution` gains
+`stderr`; not a contract change — `MirExecution` is absent from `mir.md`). Native is ESCALATED as a
+Gate C6 blocker under `WP-C6-ENTRY.md` §3 required result 6. Two further escalations flagged, not
+resolved: `invalid-exit-status` has **no `TrapCategory`** (CE3 — trap identity is frozen), and the
+Unit VALUE is unwritable (`02-Syntax-Grammar.md:324` calls `()` the Unit value; the checker rejects
+it), so PROC-EXIT-001's `Ok(Unit)` branch cannot be written. Retained:
+`starkc/tests/c65_entry_exit_contract.rs` (7 tests, each boundary naming the condition that retires
+it). **The matrix had no row for any of this** — the second inherited disposition to fail on contact
+with a run.
+
+Still owed and not reduced by any of the above: the §39 observation shape, a
 generated corpus (0 of ≥64 cases), metamorphic breadth (7 groups against a floor of 24; M08–M12 have
 none), 16 mutation controls (0 exist), and adversarial sentinels.
 Also open:
@@ -3216,6 +3232,53 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-149 [2026-07-26, **DEV-111 — the entry/exit contract diverged in all three engines; MIR fixed,
+  native escalated**] Owner decision: fix MIR, escalate native. Found while building §8.3's
+  `stderr_bytes` field, by asking what each engine does with a `main` that returns something.
+  - **The divergence**, against PROC-MAIN-001/PROC-EXIT-001 (07-Modules-and-Packages):
+    `main -> Result<Unit, String>` returning `Err("boom")` — spec says status 1 with `boom\n` on
+    stderr; oracle correct, **MIR status 0 with no stderr**, **native refuses to build**.
+    `main -> Int32 { 3 }` — spec says status 3; oracle correct, **MIR status 0**, native refuses.
+    `main -> Int32 { 300 }` — spec says trap `invalid-exit-status`; oracle traps, **MIR completes
+    with status 0**, native refuses. `main()` returning `Unit` agrees three ways. So: two wrong
+    outputs and a **missed trap**, §18.4's first two high-priority classes.
+  - **Cause.** `run_program` matched `Ok(_)` on the entry call and hardcoded `status: 0`, discarding
+    the entry's return value; `MirExecution` had no stderr field at all. The HIR oracle has
+    implemented the rule correctly since Phase 4E, so the whole `Err`/`Int32` half of the entry
+    contract was unobservable on the MIR side while looking like agreement on `Unit` programs — 0 is
+    also what a `Unit` entry reports.
+  - **MIR fixed** (`entry_termination`): status derived from the returned value, `MirExecution`
+    gains `stderr`. **Not a contract change** — `MirExecution` appears nowhere in `mir.md`, the same
+    test CD-084 applied to `FnKey`; no MIR shape, `RuntimeFn` or runtime-surface version moved.
+  - **Native escalated as a Gate C6 blocker.** `Unsupported("the entry instance must return Unit to
+    become Rust's fn main()")` refuses a program PROC-MAIN-001 declares a legal executable target —
+    "a C5-style unsupported profile remaining for normative executable Core", which `WP-C6-ENTRY.md`
+    §3 lists as **required result 6** for closing C6. A backend feature build does not belong inside
+    a corpus package (§18.5).
+  - **Two further escalations this produced, flagged not resolved.** (1) `invalid-exit-status` has
+    **no `TrapCategory`** — the nine categories contain nothing for it, the oracle raises it
+    uncategorised, and adding one is a **CE3** (WP-C6.0 froze trap identity); MIR therefore fails
+    loudly there rather than completing with a wrong status. (2) **The Unit value is unwritable**:
+    `02-Syntax-Grammar.md:324` declares `()` the Unit value, the checker rejects
+    `let x: Unit = ()` (E0001 "expected 'Unit', found '()'"), and `Ok({})` fails at lowering — so
+    PROC-EXIT-001's `Ok(Unit)` branch cannot be expressed in source. Spec-vs-checker conflict.
+  - **A channel gap, recorded because it bounds §8.3.** `eprint`/`eprintln` are normative but
+    observable in NO engine: the oracle writes them to the host process's stderr
+    (`src/interp.rs:2779`) rather than into `Execution.stderr`, MIR has no lowering, native emits
+    none. `stderr_bytes` can only compare the `Err`-completion write until that is closed. Not
+    classified non-Core — §4.3 forbids exactly that reasoning.
+  - **Retained** (§18.3): `starkc/tests/c65_entry_exit_contract.rs`, 7 tests — four two-engine cases
+    checking every PROC-EXIT-001 field against the rule stated independently, and three boundary
+    tests that each **name the condition that retires them** (native accepts a non-`Unit` entry; the
+    trap gains a category; `()` typechecks as `Unit`). A boundary test that keeps passing after its
+    boundary moves is exactly how O13 went stale.
+  - **The matrix had NO row for any of this.** PROC-MAIN-001 and PROC-EXIT-001 appeared in none of
+    the 133 rows; exit status was covered only as X12 (exit 101 after a trap). Rows **K15–K17**
+    added, matrix now 136 rows, 4 BLOCKED (V19 + K15/K16/K17). So the §7.5 exit condition "no
+    category silently omitted" did not hold when phase 0 was declared complete — **the second
+    inherited disposition to fail on contact with a run**, after O13, which is the argument for
+    C6.5-5's replay re-deriving all of them rather than trusting the matrix.
 
 - CD-148 [2026-07-26, **OWNER DECISIONS on C65-F1, O13 and V19; WP-C6.5-1 comparator extracted**]
   Three dispositions and the plan's §19 commit 2.

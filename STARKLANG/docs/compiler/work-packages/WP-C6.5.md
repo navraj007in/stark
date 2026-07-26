@@ -2,7 +2,9 @@
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
 **Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, coverage matrix) complete; C6.5-1 at the plan's
-commit-2 boundary (comparator extracted, no observation-shape change yet).
+commit-2 boundary (comparator extracted, no observation-shape change yet). Two findings raised and
+dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
+DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
 `WP-C2.12`.
 **Execution plan:** `WP-C6.5-Full-Differential-Generated-Corpus-Execution-Plan.md` (repo root,
@@ -145,11 +147,11 @@ closure checklist is read that way.
 
 | Exit condition | State |
 | --- | --- |
-| matrix covers all §40 categories | yes — 8 groups, 133 rows, `C6-CORPUS-COVERAGE-MATRIX.md` |
+| matrix covers all §40 categories | 133 rows at phase exit; **not met as stated** — the entry contract (PROC-MAIN-001/PROC-EXIT-001) had no row, added as K15–K17 under CD-149, now 136. See §6.5 |
 | every row has a normative citation or justified non-Core classification | yes |
 | current evidence linked by exact test/case ID | yes — rows cite frozen-corpus case IDs, `three_engine_test!` case names, and C6.x suite names |
 | every gap has an execution disposition | yes — one of §7.4's nine classifications |
-| no category silently omitted | yes |
+| no category silently omitted | **no, as it turned out** — the entry contract was omitted, found by running it (§6) |
 
 **Recorded now, so it is not discovered late:** the matrix's dispositions are what the rest of the
 package executes against. `ADD-HANDWRITTEN` rows are the C6.5-3 worklist, `ADD-GENERATED` the
@@ -215,8 +217,91 @@ The blocker count is unchanged at one. Which row it is, is not.
 
 ---
 
+## 6. Finding C65-F2 — the entry/exit contract diverges in all three engines (DEV-111)
 
-## 6. What comes next
+Found while building §8.3's `stderr_bytes` field, by asking what each engine does with a program
+whose `main` returns something. Recorded here **before any compiler change**, per §18.3.
+
+### 6.1 The §18.1 record
+
+| Field | Value |
+| --- | --- |
+| case_id | `entry_exit__01..04` (retained as `starkc/tests/c65_entry_exit_contract.rs`) |
+| seed / generator_version / template / dimensions | n/a — hand-written probe, not generated |
+| category | packages/environment (entry contract) and traps |
+| normative rules | **PROC-MAIN-001**, **PROC-EXIT-001** (07-Modules-and-Packages, "Executable and target contract") |
+| first differing field | `exit_status`, then `stderr` |
+| platform | macOS 26.5.2 arm64, `aarch64-apple-darwin` |
+| commit | `b7e804a` |
+| reproduction | `cargo test --test c65_entry_exit_contract` |
+
+| Program | PROC-EXIT-001 requires | HIR oracle | MIR | native |
+| --- | --- | --- | --- | --- |
+| `main -> Result<Unit, String>` returning `Err("boom")` | status 1, `boom\n` on stderr | status 1 + stderr — correct | **status 0, no stderr** | **build refused** |
+| `main -> Int32 { 3 }` | status 3 | status 3 — correct | **status 0** | **build refused** |
+| `main -> Int32 { 300 }` | trap `invalid-exit-status` | traps — correct | **completes, status 0** | **build refused** |
+| `main()` returning `Unit` | status 0 | correct | correct | correct |
+
+### 6.2 Authority (§18.2)
+
+**MIR is wrong**, and the HIR oracle is right. `run_program` matches `Ok(_)` on the entry call and
+hardcodes `status: 0`, so the entry's return value is discarded; `MirExecution` has no `stderr`
+field at all. Two of the three rows are wrong output and the third is a **missed trap** — §18.4's
+first and second high-priority classes.
+
+**Native is a Gate C6 blocker, not a C6.5 defect.** `Unsupported("the entry instance must return
+Unit to become Rust's fn main()")` refuses a program PROC-MAIN-001 declares a legal executable
+target. That is precisely "a C5-style unsupported profile remaining for normative executable Core",
+which `WP-C6-ENTRY.md` §3 lists as **required result 6** for closing Gate C6. Escalated by owner
+decision rather than built inside a corpus package.
+
+### 6.3 Two escalations this finding produces
+
+1. **The `invalid-exit-status` trap has no category.** PROC-EXIT-001 requires a language trap for an
+   out-of-range status. The nine `TrapCategory` values contain nothing for it, the HIR oracle raises
+   it as an uncategorised `RuntimeError`, and `oracle_category` therefore cannot normalise it — the
+   comparator would fail on the *message*, not the semantics. Adding a category is a **CE3**: trap
+   identity is one of the contracts WP-C6.0 froze. Until it is decided, MIR raises a loud
+   `Internal` error there rather than silently completing with status 0.
+2. **The Unit value is unwritable.** `02-Syntax-Grammar.md:324` declares `TupleLiteral ::= '(' ')'`
+   the Unit value, but the checker rejects `let x: Unit = ();` with E0001 *"type mismatch: expected
+   'Unit', found '()'"*, and `Ok({})` fails at lowering ("block in value position yielded no
+   value"). So PROC-EXIT-001's `Ok(Unit)` branch cannot be expressed in source at all. Either the
+   grammar's comment or the checker's type identity is wrong — a spec-vs-implementation conflict,
+   CE-shaped, flagged rather than resolved.
+
+### 6.4 Disposition — CD-149: fix MIR, escalate native
+
+**MIR fixed.** `run_program` now derives termination from the value `main` returned
+(`entry_termination`, `mir/interp.rs`), and `MirExecution` gained the `stderr` field the oracle's
+`Execution` has carried since Phase 4E. `Int32` → that status, `Ok(Int32)` → that status,
+`Err(message)` → status 1 with `message` + LF on stderr. Not a contract change: `MirExecution`
+appears nowhere in `mir.md` — the same test CD-084 applied to `FnKey` — and no MIR shape,
+`RuntimeFn` or runtime-surface version moved.
+
+**Native escalated**, per §18.5's stop-and-escalate list: a backend that can emit a non-`Unit` entry
+is a feature build, and it belongs to a decision of its own rather than to a corpus package.
+
+**Retained** as `starkc/tests/c65_entry_exit_contract.rs`, 7 tests: four two-engine cases comparing
+every PROC-EXIT-001 field with the normative answer stated independently, and three boundary tests
+that pin each escalation *and name the condition that retires it* — if native starts accepting a
+non-`Unit` entry, if the trap gains a category, or if `()` starts typechecking as `Unit`, the
+corresponding test fails and says what to do. A boundary test that silently keeps passing after its
+boundary moves is how O13 became stale.
+
+### 6.5 What it says about the matrix
+
+**PROC-MAIN-001 and PROC-EXIT-001 appear in none of the 133 rows.** Exit status is covered only as
+X12 (exit 101 after a trap); normal nonzero statuses, the `Err` stderr write, and the entry-signature
+set are absent. The §7.5 exit condition "no category silently omitted" was therefore not met when
+phase 0 was declared complete. Rows **K15–K17** are added for the entry contract, and the omission
+is recorded rather than quietly backfilled: two of the matrix's inherited dispositions have now
+failed on contact with an actual run (O13, and this), which is the argument for C6.5-5's replay
+re-deriving all of them.
+
+---
+
+## 7. What comes next
 
 §19's commit 3 — the §8.3 observation model, the §8.5 trap-stderr normalizer, the §8.7 returned-value
 and §8.8 Drop-log protocols, and the §8.10 comparator unit tests that prove each new field is

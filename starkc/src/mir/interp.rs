@@ -109,6 +109,17 @@ pub enum MirRunError {
 pub struct MirExecution {
     pub output: String,
     pub status: u8,
+    /// DEV-111: bytes destined for the Core stderr stream on normal `Err` completion —
+    /// PROC-EXIT-001's *"`Err(message)` writes `message` plus LF to stderr and returns status 1"*.
+    /// Until DEV-111 this engine had no stderr channel at all, so the whole `Err` half of the
+    /// entry contract was silently unobservable here while the HIR oracle implemented it. The
+    /// oracle's `Execution` has carried the same field since Phase 4E; this is the MIR counterpart,
+    /// deliberately named and shaped identically so the comparator can compare them directly.
+    ///
+    /// `eprint`/`eprintln` do NOT flow here — they have no MIR lowering at all (their oracle
+    /// implementation writes to the host process's stderr), which is recorded as an open channel
+    /// gap in `C6-CORPUS-COVERAGE-MATRIX.md` §8 rather than papered over.
+    pub stderr: String,
 }
 
 /// A failed run, still carrying the stdout accumulated before the failure (C4.5e-0): the
@@ -154,14 +165,76 @@ pub fn run_program(
         drop_plans: std::collections::BTreeMap::new(),
     };
     match cx.call(main_index, Vec::new()) {
-        Ok(_) => Ok(MirExecution {
-            output: cx.output,
-            status: 0,
-        }),
+        Ok(value) => match entry_termination(value) {
+            Ok((status, stderr)) => Ok(MirExecution {
+                output: cx.output,
+                status,
+                stderr,
+            }),
+            Err(error) => Err(MirFailure {
+                error,
+                output: cx.output,
+            }),
+        },
         Err(error) => Err(MirFailure {
             error,
             output: cx.output,
         }),
+    }
+}
+
+/// PROC-EXIT-001, on the value `main` returned. **DEV-111**: this engine used to match `Ok(_)` and
+/// report status 0 unconditionally, discarding the entry's return value — so `fn main() -> Int32 { 3 }`
+/// completed with status 0 here and status 3 in the HIR oracle, and an `Err` return lost both its
+/// status and its stderr write. Three engines, three answers, on a signature PROC-MAIN-001 declares
+/// a legal executable target.
+///
+/// The rule, quoted: *"Normal `Unit` and `Ok(Unit)` return status 0. `Int32` and `Ok(Int32)` must be
+/// in `0..=255` and return that status; an out-of-range value traps as `invalid-exit-status`.
+/// `Err(message)` writes `message` plus LF to stderr and returns status 1."* The mapping below is
+/// the same one `interp::main_result_to_status` applies, so the two engines derive their termination
+/// from one reading of the rule rather than two.
+///
+/// `Result` is `EnumRef::CoreResult` with `Ok` = variant 0 and `Err` = variant 1 (lowering, the
+/// `Builtin::Ok`/`Builtin::Err` constructors). `MirValue::Enum` does not carry its `EnumRef`, but it
+/// does not need to: PROC-MAIN-001 admits exactly `Unit`, `Int32`, `Result<Unit, String>` and
+/// `Result<Int32, String>` as entry types, and the checker rejects everything else before lowering.
+fn entry_termination(value: MirValue) -> Result<(u8, String), MirRunError> {
+    fn status_of(value: MirValue) -> Result<u8, MirRunError> {
+        match value {
+            MirValue::Unit => Ok(0),
+            MirValue::Int(status) => u8::try_from(status).map_err(|_| {
+                // PROC-EXIT-001 makes this a language TRAP (`invalid-exit-status`), and a trap
+                // needs a `TrapCategory` to be comparable across engines. None of the nine
+                // categories covers it, the HIR oracle raises it as an uncategorised
+                // `RuntimeError`, and adding a category is a CE3 — trap identity is one of the
+                // contracts WP-C6.0 froze. So this fails LOUDLY and deterministically here rather
+                // than completing with a wrong status, and the real fix waits on that decision.
+                MirRunError::Internal(format!(
+                    "entry returned out-of-range exit status {status}: PROC-EXIT-001 requires a \
+                     language trap (`invalid-exit-status`), which has no `TrapCategory` — \
+                     DEV-111, escalated as a CE3"
+                ))
+            }),
+            other => Err(MirRunError::Internal(format!(
+                "entry returned {other:?}, which PROC-MAIN-001 does not admit as an entry type"
+            ))),
+        }
+    }
+
+    match value {
+        MirValue::Enum { variant: 0, fields } => Ok((
+            status_of(fields.into_iter().next().unwrap_or(MirValue::Unit))?,
+            String::new(),
+        )),
+        MirValue::Enum { variant: 1, fields } => match fields.into_iter().next() {
+            Some(MirValue::String(message)) => Ok((1, format!("{message}\n"))),
+            Some(MirValue::Str(message)) => Ok((1, format!("{message}\n"))),
+            other => Err(MirRunError::Internal(format!(
+                "entry error payload is {other:?}, not the String PROC-MAIN-001 requires"
+            ))),
+        },
+        other => Ok((status_of(other)?, String::new())),
     }
 }
 
