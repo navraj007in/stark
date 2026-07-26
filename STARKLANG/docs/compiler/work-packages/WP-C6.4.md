@@ -5,7 +5,10 @@
 (R1–R5, §2). **Both Tier-1 records exist and agree at `4844702`** (CI run 30192449131, all 11 jobs
 green), taken under the strengthened comparator. Matrix rows 1–23 MET, row 25 REPORT-ONLY with G1
 and G3 closed. **Row 24 is now PASS** (CD-161, `8a23772`).
-Closure status: was **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`**, **accepted by the owner
+Closure status: **`CLOSED` — owner directive, 2026-07-27 (CD-162)**, on the refreshed same-commit
+Tier-1 evidence at `8a23772`: 131/131 corpus agreement on macOS-arm64 and Linux-x64 with identical
+per-case observation hashes, and row 24 `PASS`. The prior ceiling was
+**`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`**, **accepted by the owner
 2026-07-26 (CD-146)**. Not `CLOSED`, and no decision could have made it so — row 24 needs an
 artifact that does not exist yet (§1.2, §5).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37 (tracked, normative), §5 (fixed decisions and

@@ -8,6 +8,7 @@
 discarded, not carried forward — the comparator that now guards this matrix refuses them. Row 24 is
 **PASS as of `8a23772` (CD-161)** — the C6.5 corpus replayed on both
 Tier-1 targets with identical per-case observations; row 25 is REPORT-ONLY with G1 and G3 closed.
+**WP-C6.4 is CLOSED by owner directive CD-162 (2026-07-27) on this evidence.**
 
 ## How to read this file
 

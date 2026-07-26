@@ -104,7 +104,11 @@ evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138).
 CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
-**WP-C6.4's row 24 is CLOSED as of CD-161 (`8a23772`)** — the C6.5 corpus replayed on both Tier-1
+**WP-C6.4 is CLOSED (CD-162, owner directive) and WP-C2.12 is CLOSED (CD-162)**, both on the
+`8a23772` Tier-1 evidence. **WP-C6.5 remains `PARTIAL`**: §17's reviews are complete and found 13
+issues, three of them blocking — the corpus covers 5 of 9 trap categories, 23 suites still use private
+comparators, and 36 of 136 matrix rows have corpus evidence. See `WP-C6.5-REVIEWS.md`.
+**Row 24 is CLOSED as of CD-161 (`8a23772`)** — the C6.5 corpus replayed on both Tier-1
 targets with identical per-case observations, both records carrying `generated_corpus_status: PASS`.
 Row 24 was the only bar to `CLOSED`; the closure decision is the owner's. The historical record
 follows.
@@ -3270,6 +3274,43 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-162 [2026-07-27, **OWNER DIRECTIVE — WP-C6.4 CLOSED; WP-C2.12 CLOSED; WP-C6.5 stays PARTIAL;
+  §17 reviews run**]
+  - **WP-C6.4 — CLOSED.** The owner accepts the refreshed same-commit Tier-1 evidence at `8a23772`:
+    131/131 corpus agreement on macOS-arm64 and Linux-x64, identical per-case observation hashes, row
+    24 `PASS`. The ceiling `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS` (CD-146) is discharged.
+  - **WP-C2.12 — CLOSED**, recorded as its own governance closure rather than folded into C6.5. Its
+    inherited deliverable — a versioned, manifest-driven generated corpus replayed across HIR, MIR and
+    native on both Tier-1 targets, with metamorphic and mutation controls — is delivered and evidenced
+    at `starkc/docs/compiler/evidence/c6.5/`.
+  - **WP-C6.5 — remains `PARTIAL`.** Not candidate-complete: breadth and review obligations stand.
+  - **§17's eight adversarial closure reviews are COMPLETE** — `WP-C6.5-REVIEWS.md`, ~90 questions
+    answered against artifacts, **13 findings**, none acted on (the owner's rule: record before
+    correcting). Three are new blockers:
+    - **R-01 (HIGH):** the corpus covers **5 of 9 admitted trap categories**, not the 7 the WP's own
+      report claimed. `DivideByZero` and `AssertFailure` are in T16's dimension space but were
+      **dropped by the per-template budget of 5**; `UnwrapNone`/`UnwrapErr` were never in it. A budget
+      that can delete a required category is the wrong mechanism for a template whose dimensions ARE
+      the coverage claim. §10.4 is not met.
+    - **R-02 (HIGH):** **23 three-engine suites still use private comparators — zero migrated** since
+      CD-148 chose incremental migration, and one of them (`c65_entry_exit_contract`) was ADDED by
+      C6.5 while the finding was open. Most `EXISTING-EVIDENCE` matrix rows therefore rest on
+      comparators the C6.5 authority has never seen, and no closure claim may cite them.
+    - **R-07 (MEDIUM):** **36 of 136 matrix rows** have corpus evidence, and nothing validates that a
+      case's `subcategories` names a real row — proven by ten metamorphic family IDs passing
+      validation while naming rows that do not exist (R-13). Same failure shape as CD-154's fabricated
+      rule citations, caught there and uncaught here.
+  - Remaining findings: mutation controls cover **7 of 15 comparator fields** (R-03); the metamorphic
+    floor is unmet (R-04) and **DEV-114 blocks M08/M09 outright, not merely the floor** (R-05, a link
+    not previously stated); the **shared-file lease protocol was not followed** for
+    `three_engine_differential.rs` and `mir/lower.rs` (R-06); retention and divergence-retention have
+    never been exercised (R-08); `MAX_LOOP_ITERATIONS` is declared but unenforced (R-09);
+    `stderr_observation` equality is tautological between the interpreters (R-10); no generator-side
+    ID collision check (R-11); the summary records skip counts without identities (R-12).
+  - **Cost note that shapes sequencing:** the Tier-1 evidence names commit `8a23772`, and C6.4's
+    re-qualification rule invalidates a record once `starkc/src|tests|scripts` changes — so fixing
+    R-01, R-03, R-07, R-09, R-11 or R-13 costs a fresh Tier-1 run. R-06 and R-12 are docs/schema only.
 
 - CD-161 [2026-07-27, **TIER-1 CORPUS AGREEMENT at `8a23772`; C6.4 ROW 24 CLOSED; WP-C6.5 recommended
   `PARTIAL`**] CI run 30221728539, all 15 jobs green. Evidence DOWNLOADED from the runners, not
