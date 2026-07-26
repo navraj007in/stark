@@ -240,15 +240,23 @@ jobs:
           (
             cd tests/fixtures/c5-native-workspace/app
             "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
-          )
+          ) >"$RUNNER_TEMP/negative.out" 2>&1
           status=$?
           set -e
           mv "$RUNNER_TEMP/runtime-hidden" "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime"
+          cat "$RUNNER_TEMP/negative.out"
           if [ $status -eq 0 ]; then
             echo "FAIL: installed stark built with no installed runtime — it fell back to the checkout" >&2
             exit 1
           fi
-          echo "installed stark correctly refused to build without its installed runtime (exit $status)"
+          # Any non-zero exit would satisfy the check above, including one for an unrelated reason.
+          # Requiring the runtime-missing diagnostic is what makes this a controlled experiment
+          # rather than "something went wrong after we moved a directory".
+          if ! grep -q "native runtime installation is missing" "$RUNNER_TEMP/negative.out"; then
+            echo "FAIL: build failed (exit $status) but not for the missing installed runtime" >&2
+            exit 1
+          fi
+          echo "installed stark refused to build without its installed runtime, for that reason (exit $status)"
       # The same two halves on Windows. The variable is set for the smoke and REMOVED afterwards
       # (in `finally`, so a thrown error still restores it) rather than left set for the rest of
       # the job, where it would silently change the behaviour of any later step.
@@ -294,8 +302,9 @@ jobs:
           $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
           Push-Location tests/fixtures/c5-native-workspace/app
           try {
-            & (Join-Path $prefix "bin/stark.exe") build --locked --offline
+            $output = & (Join-Path $prefix "bin/stark.exe") build --locked --offline 2>&1
             $status = $LASTEXITCODE
+            $output | ForEach-Object { Write-Host $_ }
           } finally {
             Pop-Location
             Remove-Item Env:\STARK_REQUIRE_INSTALLED_RUNTIME -ErrorAction SilentlyContinue
@@ -304,7 +313,11 @@ jobs:
           if ($status -eq 0) {
             throw "installed stark built with no installed runtime -- it fell back to the checkout"
           }
-          Write-Host "installed stark correctly refused to build without its installed runtime (exit $status)"
+          # As on Unix: a non-zero exit alone would also be satisfied by an unrelated failure.
+          if ($output -join "`n" -notmatch "native runtime installation is missing") {
+            throw "build failed (exit $status) but not for the missing installed runtime"
+          }
+          Write-Host "installed stark refused to build without its installed runtime, for that reason (exit $status)"
 
   fixture-conformance:
     name: spec fixture conformance
