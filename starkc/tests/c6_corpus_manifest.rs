@@ -91,7 +91,16 @@ fn every_rule_id_the_matrix_cites_exists_in_the_spec() {
             .join("STARKLANG/docs/compiler/work-packages/C6-CORPUS-COVERAGE-MATRIX.md"),
     )
     .expect("the coverage matrix");
-    let missing: Vec<String> = rule_ids_in(&matrix)
+    // Only TABLE ROWS are citations. The document's own note about CD-154 has to name the
+    // fabricated identifiers it is reporting (`OWN-DROP-001`, `FN-VALUE-001`, …), and a checker that
+    // could not tell a citation from a description of one would force that finding to be written
+    // vaguely — which is the opposite of the point.
+    let cited_in_rows: std::collections::BTreeSet<String> = matrix
+        .lines()
+        .filter(|line| line.trim_start().starts_with('|'))
+        .flat_map(rule_ids_in)
+        .collect();
+    let missing: Vec<String> = cited_in_rows
         .into_iter()
         .filter(|id| !spec.contains(id))
         .collect();
