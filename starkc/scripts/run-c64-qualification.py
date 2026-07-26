@@ -14,10 +14,19 @@ commit: `--commit` is checked against `git rev-parse HEAD`, because an evidence 
 field was supplied by the caller proves nothing about the tree that was tested.
 
 **A skip is not a pass.** §19 says no required skipped test may be counted as passing, and this
-suite has two ways to skip quietly: Cargo's own `ignored` count, and the `SKIP:` lines the native
-tests print when no rustc is present (they return success). Both are detected, and both fail a
-required command. That is deliberate — a qualification run on a machine without a Rust toolchain
-would otherwise report a green matrix having executed almost nothing.
+suite has two ways to skip quietly: Cargo's own `ignored` count, and the `SKIP:` lines eleven
+native/differential suites print when no rustc is present — they return success, so the exit code
+says nothing. Both are detected, and both fail a required command. That is deliberate: a
+qualification run on a machine without a Rust toolchain would otherwise report a green matrix
+having executed almost nothing.
+
+Detecting the second kind needs `--nocapture`, and this is the subtlety that makes the check real
+rather than decorative: **libtest discards a PASSING test's output**, so a `SKIP:` line printed by
+a test that then returns success is invisible under a plain `cargo test`. Every step whose suite
+can self-skip therefore runs with `-- --nocapture` (`Step.nocapture`). The whole-workspace step
+does not — its output would be enormous — so for that step the guarantee is narrower and is stated
+honestly here: it rests on the exit code and on ignore-name parsing, not on `SKIP:` detection. The
+suites that can self-skip are all covered individually by their own steps.
 
 Usage:
 
@@ -69,6 +78,13 @@ class Step:
     why: str
     required: bool = True
     cwd: Path = STARKC
+    # Append `-- --nocapture`. Required for any suite that can self-skip, because libtest hides a
+    # passing test's output and the `SKIP:` line would otherwise never be seen. See the module
+    # docstring.
+    nocapture: bool = False
+
+    def command(self) -> list[str]:
+        return [*self.argv, "--", "--nocapture"] if self.nocapture else list(self.argv)
 
 
 @dataclass
@@ -129,12 +145,14 @@ def steps_for(quick: bool) -> list[Step]:
             ["cargo", "test", "--test", "c64_platform_matrix"],
             "platform",
             "The C6.4 suite itself: preflight, portability, output bytes, traps, determinism.",
+            nocapture=True,
         ),
         Step(
             "three_engine_differential",
             ["cargo", "test", "--test", "three_engine_differential"],
             "semantics",
             "§10.5: HIR/MIR/native agreement, compared against real native stdout.",
+            nocapture=True,
         ),
         Step(
             "mir_differential",
@@ -153,6 +171,7 @@ def steps_for(quick: bool) -> list[Step]:
             ["cargo", "test", "--test", "c63_closure_evidence"],
             "runtime",
             "§10.6/§10.7: installed-runtime build, offline build, version-mismatch detection.",
+            nocapture=True,
         ),
         Step(
             "conformance",
@@ -217,8 +236,9 @@ CLASSIFIED_IGNORES = {
 
 def run_step(step: Step, env: dict[str, str]) -> StepResult:
     start = datetime.datetime.now()
+    argv = step.command()
     proc = subprocess.run(
-        step.argv,
+        argv,
         cwd=step.cwd,
         env=env,
         capture_output=True,
@@ -229,7 +249,7 @@ def run_step(step: Step, env: dict[str, str]) -> StepResult:
     result = StepResult(
         name=step.name,
         group=step.group,
-        argv=step.argv,
+        argv=argv,
         exit_code=proc.returncode,
         duration_s=round(duration, 2),
     )
@@ -444,7 +464,9 @@ def main() -> int:
         print(f"Tier-1 targets: {', '.join(TIER1)}")
         for step in steps_for(args.quick):
             flag = "required" if step.required else "optional"
-            print(f"\n[{step.group}/{flag}] {step.name}\n  $ {' '.join(step.argv)}\n  {step.why}")
+            print(
+                f"\n[{step.group}/{flag}] {step.name}\n  $ {' '.join(step.command())}\n  {step.why}"
+            )
         return 0
 
     rustc_verbose = probe(["rustc", "-vV"])

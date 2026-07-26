@@ -30,6 +30,23 @@ The harness refuses to describe a run it did not make: `--expected-target` is co
 and a self-skipped test (`SKIP:` — printed when no rustc is present) fails the command that
 contained it rather than counting as a pass.
 
+## How the records get here
+
+They are produced on the runner and downloaded, never regenerated locally — a locally regenerated
+"copy" of a CI record is a different run wearing the same filename.
+
+```bash
+gh run download <run-id> --pattern 'c64-evidence-*' --dir /tmp/c64
+gh run download <run-id> --name c64-qualification-summary --dir /tmp/c64
+cp /tmp/c64/{macos-arm64,linux-x64}.{json,md} /tmp/c64/qualification-summary.md \
+   starkc/docs/compiler/evidence/c6.4/
+```
+
+Check before committing them: both records must name the same `commit_sha`, that commit must be the
+one being claimed, `dirty_worktree` must be `false` and `quick_mode` must be absent or `false` in
+both, and `unclassified_ignores` must be empty. The comparison job asserts all of this — the manual
+check is for the case where someone downloads from the wrong run.
+
 ## How the two records become one claim
 
 ```bash
