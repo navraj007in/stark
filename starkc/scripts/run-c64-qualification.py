@@ -84,6 +84,8 @@ class StepResult:
     duration_s: float = 0.0
     note: str = ""
     ok: bool = False
+    ignored_names: list[str] = field(default_factory=list)
+    unclassified_ignores: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -188,6 +190,30 @@ RESULT_RE = re.compile(
     r"test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured"
 )
 
+# `test some::path::name ... ignored, reason`
+IGNORED_RE = re.compile(r"^test (\S+) \.\.\. ignored", re.MULTILINE)
+
+# §10.4: "skipped tests fail qualification **unless explicitly classified outside the required
+# matrix**". This is that classification, and it is a closed list rather than a count.
+#
+# Counting ignores would let a NEW ignore replace a retired one silently, which is precisely the
+# way a required observation goes missing without anyone deciding it should. Naming them means an
+# ignore that is not on this list fails the run, and putting one on the list is a decision with a
+# reason attached.
+#
+# Both current entries are opt-in tensor-track tests that need an external artifact this matrix
+# does not supply. Neither observes Core runtime semantics, which is what C6.4 qualifies.
+CLASSIFIED_IGNORES = {
+    "imports_and_verifies_checksum_pinned_reference_model": (
+        "gate-4 tensor track; needs a checksum-verified ResNet50 named by "
+        "STARK_GATE4_REFERENCE_ONNX. Outside the C6.4 Core-runtime matrix."
+    ),
+    "real_inference_agrees_with_reference": (
+        "gate-5 tensor track; downloads and links ONNX Runtime and runs Python. "
+        "Outside the C6.4 Core-runtime matrix."
+    ),
+}
+
 
 def run_step(step: Step, env: dict[str, str]) -> StepResult:
     start = datetime.datetime.now()
@@ -216,15 +242,31 @@ def run_step(step: Step, env: dict[str, str]) -> StepResult:
     # nothing; the printed line is the only evidence that a required observation did not happen.
     result.skipped = combined.count("SKIP:")
 
+    # Which tests were ignored, by name, so each can be checked against the classification rather
+    # than against a count.
+    ignored_names = {name.rsplit("::", 1)[-1] for name in IGNORED_RE.findall(combined)}
+    result.ignored_names = sorted(ignored_names)
+    result.unclassified_ignores = sorted(ignored_names - set(CLASSIFIED_IGNORES))
+
     result.ok = proc.returncode == 0
     if step.required and result.skipped:
         result.ok = False
         result.note = (
             f"{result.skipped} test(s) skipped themselves; a required observation did not run"
         )
-    elif step.required and result.ignored:
+    elif step.required and result.unclassified_ignores:
         result.ok = False
-        result.note = f"{result.ignored} test(s) ignored in a required command"
+        result.note = (
+            f"unclassified ignored test(s): {', '.join(result.unclassified_ignores)}. Either the "
+            "observation is required — in which case fix the test — or classify it in "
+            "CLASSIFIED_IGNORES with a reason."
+        )
+    elif step.required and result.ignored and not ignored_names:
+        # `cargo` reported a nonzero ignored count but printed no `... ignored` lines to attribute
+        # it to. Attributing nothing to a nonzero count is exactly the state this check exists to
+        # prevent, so it fails rather than being waved through.
+        result.ok = False
+        result.note = f"{result.ignored} ignored test(s) that could not be identified by name"
     elif proc.returncode != 0:
         tail = "\n".join(combined.strip().splitlines()[-25:])
         result.note = f"exit {proc.returncode}\n{tail}"
@@ -485,6 +527,7 @@ def main() -> int:
                 "passed": r.passed,
                 "failed": r.failed,
                 "ignored": r.ignored,
+                "ignored_names": r.ignored_names,
                 "skipped": r.skipped,
                 "duration_s": r.duration_s,
                 "ok": r.ok,
@@ -496,6 +539,17 @@ def main() -> int:
         "passed_count": sum(r.passed for r in results),
         "failed_count": sum(r.failed for r in results),
         "ignored_count": sum(r.ignored for r in results),
+        # Named, with the reason each was excluded from the required matrix. A reader can audit the
+        # decision; a count alone can only be believed.
+        "classified_ignores": {
+            name: CLASSIFIED_IGNORES[name]
+            for r in results
+            for name in r.ignored_names
+            if name in CLASSIFIED_IGNORES
+        },
+        "unclassified_ignores": sorted(
+            {name for r in results for name in r.unclassified_ignores}
+        ),
         "skipped_count": sum(r.skipped for r in results),
         "generated_corpus_version": None,
         "generated_corpus_case_count": 0,

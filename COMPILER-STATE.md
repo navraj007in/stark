@@ -3230,6 +3230,28 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     C6.5's (the `WP-C6.5` chapter of `WP-C6-ENTRY.md`, §§38–45); `tests/exec_snapshots/corpus.lock` is the FROZEN
     execution corpus, a different artifact already covered by other rows. Every evidence record
     carries `generated_corpus_status: BLOCKED-BY-C6.5` so the state is asserted, not merely absent.
+  - **FIRST CI RUN (`8d894e8`, run 30190825336): 9 of 11 jobs green, and the two failures were the
+    HARNESS DOING ITS JOB.** (a) **The Windows gap probe PASSED 14/14** — the first run of the C6.4
+    suite on a platform outside the claim: exact stdout bytes with no CRLF, identical trap category
+    and `file:line:column`, exit 101, the flushed pre-trap prefix, `--locked --offline` under
+    Windows Cargo, and builds under spaced and Unicode paths. Gap-report G1 closes as `portable`.
+    That is evidence about the SHARED RUNTIME, not about Windows — and it was not guaranteed.
+    (b) **Both Tier-1 qualification jobs FAILED, correctly**, on `workspace: 2 test(s) ignored in a
+    required command`. The two ignores are pre-existing opt-in tensor-track tests needing external
+    artifacts. The defect was MINE, in the harness: §10.4 permits an ignored test "unless explicitly
+    classified outside the required matrix", and I built the refusal without the classification.
+    Fixed by NAMING them — `CLASSIFIED_IGNORES` is a closed list with a reason per entry, not a
+    count, because counting would let a new ignore silently replace a retired one. The harness now
+    parses `test <name> ... ignored` lines, fails any unclassified name, ALSO fails when a nonzero
+    ignored count cannot be attributed to names, and records both sets in the evidence.
+  - **Review passes A/B/D/E performed** (`WP-C6.4.md` §4.5), against the tree rather than from
+    memory. Strongest answer: `grep -rn "cfg(" stark-runtime/src` excluding `cfg(test)` returns
+    NOTHING — there is no conditional compilation anywhere in the runtime, so two platforms cannot
+    take different semantic paths; they compile the same code. **Review B found a real duplication**
+    (B-1): the Python qualification scripts carried their own tier table, exactly what §8.2 forbids.
+    Python cannot call `src/target.rs`, so the copy is now CHECKED against it by a test that fails
+    on drift. One probe is honestly NOT run: file-not-found mapping, because `std-full` file
+    operations are absent from every engine.
   - **Evidence for this commit (scoped, per the CD-142 rule — CI is the exhaustive net):** `--lib`
     463 + `stark-runtime --lib` 23, `c64_platform_matrix` 14, `native_build_cli` 9,
     `c63_closure_evidence` 2, `native_c5_1b_skeleton` + `native_c5_3_aggregates_enums` 20,

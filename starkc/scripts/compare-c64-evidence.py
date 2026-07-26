@@ -48,6 +48,9 @@ IDENTICAL = (
     "failed_count",
     "ignored_count",
     "skipped_count",
+    # An ignore classified on one platform and not the other would mean the two runs made
+    # different observations while reporting the same totals.
+    "unclassified_ignores",
     "overall_result",
 )
 

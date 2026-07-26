@@ -60,7 +60,7 @@ All commands run from `starkc/`.
 | 22 | three-engine suite | HIR/MIR/native agreement against real native stdout | `cargo test --test three_engine_differential` | same | none | green | PRE-EXISTING |
 | 23 | determinism rerun | two runs in separate **processes** agree on build key and generated source | `run-c64-qualification.py` (runs `determinism_` twice) | same | none | `determinism_result: match` | IMPLEMENTED |
 | 24 | generated corpus | the deterministic generated corpus runs on both Tier-1 targets | — | — | — | — | **BLOCKED-BY-C6.5** |
-| 25 | Windows disposition | a classified gap report exists | CI `c64-windows-gap` probe | `cargo test --test c64_platform_matrix` | — | four classified gaps, none semantic | REPORT-ONLY |
+| 25 | Windows disposition | a classified gap report exists | CI `c64-windows-gap` probe | `cargo test --test c64_platform_matrix` | — | four classified gaps, none semantic; G1 observed and closed `portable` | REPORT-ONLY |
 
 ### Row 24 — the one blocked row
 
@@ -83,7 +83,7 @@ commands. Empty until a Tier-1 CI run exists.
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1–23 | all Tier-1 rows | — | — | `evidence/c6.4/{macos-arm64,linux-x64}.json` | — | — | NOT-YET |
 | 24 | generated corpus | n/a | n/a | — | — | corpus does not exist | BLOCKED-BY-C6.5 |
-| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `1ef4e8b` (CI baseline) | G1 unobserved | REPORT-ONLY |
+| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `8d894e8` (run 30190825336) | G1 CLOSED — 14/14 on Windows; G2–G4 open, none semantic | REPORT-ONLY |
 
 Tier-1 agreement is not a column here: it is a separate artifact,
 `evidence/c6.4/qualification-summary.md`, produced by `scripts/compare-c64-evidence.py`. It
@@ -109,3 +109,4 @@ The §34 audit's findings, with where each was answered. Full statements in `WP-
 | F8 | (none) output bytes were already host-independent | recorded as safe; rows 10–12 observe it anyway |
 | F9 | `/tmp` in the gate-7 comparator fixture | out of matrix; recorded in the Windows gap report as G4 |
 | F10 | §8.3's error classification was half-absent | `TargetError` + `BackendDiagnostic::TargetRejected` + `BuildCommandError::TargetRejected`; rows 4–5 |
+| B-1 | the Python qualification scripts carried their own copy of the tier table | the copy is now CHECKED against `src/target.rs` by `target_preflight_python_harness_tier_table_matches_the_compiler`; the last remaining copy (`build-release.py`'s `"windows" in target`) is gap-report G3 |

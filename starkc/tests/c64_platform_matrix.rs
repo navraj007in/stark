@@ -204,6 +204,53 @@ fn target_preflight_diagnostic_names_the_supported_tier1_targets() {
     }
 }
 
+/// §8.2 forbids duplicating triple matching across CLI, builder, backend, tests and scripts. The
+/// Rust side is centralised in `src/target.rs`, but the qualification scripts are Python and cannot
+/// call it, so they carry their own tier table. Review B (`WP-C6.4.md` §7.2) recorded that as a
+/// real duplication rather than waving it through.
+///
+/// This is the compensating control: the copy is *checked* against the compiler's table instead of
+/// merely believed. A target added or re-tiered in `src/target.rs` and not in the scripts fails
+/// here, which is the failure mode a hand-mirrored constant actually has — silent divergence, not
+/// a broken build.
+#[test]
+fn target_preflight_python_harness_tier_table_matches_the_compiler() {
+    let scripts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts");
+    let qualification = std::fs::read_to_string(scripts.join("run-c64-qualification.py"))
+        .expect("qualification harness");
+    let comparison =
+        std::fs::read_to_string(scripts.join("compare-c64-evidence.py")).expect("comparison gate");
+
+    for spec in target::known_targets() {
+        let expected = format!("\"{}\": \"{}\"", spec.triple, spec.tier);
+        assert!(
+            qualification.contains(&expected),
+            "run-c64-qualification.py must map {} to {} — its tier table has drifted from \
+             src/target.rs",
+            spec.triple,
+            spec.tier
+        );
+    }
+    for triple in target::tier1_triples() {
+        let quoted = format!("\"{triple}\"");
+        assert!(
+            qualification.contains(&quoted) && comparison.contains(&quoted),
+            "both scripts must name the tier-1 target {triple}"
+        );
+    }
+    // And the scripts must not claim a Tier-1 target the compiler does not name.
+    for line in comparison.lines().chain(qualification.lines()) {
+        if let Some(rest) = line.trim().strip_prefix("TIER1 = ") {
+            for candidate in rest.split('"').filter(|s| s.contains('-')) {
+                assert!(
+                    target::classify(candidate).is_some_and(|s| s.tier == Tier::One),
+                    "{candidate} is listed as tier-1 by a script but is not tier-1 to the compiler"
+                );
+            }
+        }
+    }
+}
+
 /// §8.5(14). The two failures need different remedies — retarget versus install — so they must be
 /// different classes, not two spellings of one.
 #[test]

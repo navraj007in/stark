@@ -1,9 +1,11 @@
 # C6.4 Windows Tier-2 gap report — `x86_64-pc-windows-msvc`
 
-**Status:** OPEN — probe added, first Windows run of the C6.4 suite not yet observed.
+**Status:** OPEN — three bounded gaps (G2–G4), all harness/portability, none semantic. **G1 is
+CLOSED: the C6.4 suite passes on Windows, 14/14.**
 **Authority:** `WP-C6-ENTRY.md` §36; execution plan §11.
-**Baseline:** the last fully green CI run is `1ef4e8b` (Actions run 30188909346, all 7 jobs,
-including `windows-x64`), recorded in `COMPILER-STATE.md` CD-142.
+**Baseline:** CI run 30190825336 at `8d894e8` — the first run of the C6.4 suite on Windows. Its
+`build-and-test (windows-x64)` and `release package smoke (windows-x64)` jobs are green at the same
+commit, as they were at `1ef4e8b` (`COMPILER-STATE.md` CD-142).
 
 Windows is **Tier 2**. Its incompleteness does not block a Tier-1 C6 claim. A *semantic*
 divergence in shared code is a real defect regardless of tier, and is not dismissible as "Windows
@@ -36,25 +38,39 @@ suite passes there", not "Windows agrees with macOS and Linux".
 
 Every row carries exactly one primary classification from §11.1's list.
 
-### G1 — The C6.4 platform suite has never run on Windows
+### G1 — The C6.4 platform suite on Windows — **CLOSED, portable**
 
 | | |
 | --- | --- |
 | Area | platform matrix |
-| Exact command | `cargo test --test c64_platform_matrix` |
-| Exact commit | added in this work package; not yet run on `windows-latest` |
-| Actual result | **not yet observed** |
-| Expected Tier-1 result | 14 passed, 0 failed, 0 ignored |
-| Classification | **harness adaptation** (provisional — it becomes `portable` or a real defect once observed) |
-| User impact | none directly; it is an evidence gap |
-| Shared-code impact | the suite asserts exact stdout bytes, `\n` (never CRLF), trap category, `file:line:column` provenance and exit 101 — all shared runtime code, so a Windows failure here would be a shared defect, not a Windows workaround |
-| Bounded fix estimate | unknown until the probe runs |
-| C6 blocker? | **no** (Tier 2) |
-| Owner/gate | C6.4 |
-| Evidence | CI job `c64-windows-gap`, artifact `c64-windows-gap-probe` |
+| Exact command | `cargo test --test c64_platform_matrix -- --nocapture` |
+| Exact commit | `8d894e8`, CI run 30190825336, job `C6.4 windows tier-2 gap probe` |
+| Actual result | **14 passed, 0 failed, 0 ignored** (2.84s) |
+| Expected Tier-1 result | the same 14 |
+| Classification | **portable** |
+| User impact | none |
+| Shared-code impact | none — and this is the substantive part of the result |
+| C6 blocker? | no |
+| Owner/gate | closed in C6.4 |
 
-The probe is `continue-on-error` by design: it must gather Windows facts without giving a Tier-2
-platform a veto over a Tier-1 claim.
+What the pass actually establishes, since these are the assertions most likely to break on a
+platform with different conventions:
+
+- `platform_stdout_is_exact_bytes_including_unicode_and_line_termination` — Windows produced the
+  same bytes, and the explicit "no `\r`" assertion held. Nothing translates STARK's newline;
+- `platform_trap_reports_category_provenance_and_exit_status` — same trap category, same
+  `trapsite.stark:4:11` provenance, exit 101, and the pre-trap stdout prefix flushed (CD-120
+  Contract B);
+- `portability_builds_and_runs_under_paths_containing_spaces` / `…_unicode` — real builds under
+  both, with the runtime install prefix inside the awkward path, so the TOML escaping (F6) holds
+  against Windows-shaped paths;
+- `portability_generated_crate_is_locked_and_network_free` — `--locked --offline` builds under
+  Windows Cargo with the emitted lock;
+- `target_preflight_classifies_windows_tier2_and_intel_mac_tier3` — the `.exe` suffix comes from
+  the target table, and the running host classified itself as tier-2.
+
+The probe stays `continue-on-error`: it gathers Windows facts without giving a Tier-2 platform a
+veto over a Tier-1 claim. That it currently passes does not change the tier.
 
 ### G2 — Two different installer paths assert the same thing
 
@@ -116,9 +132,13 @@ shared classifier, not by a Windows-specific branch.
 
 ## 4. Disposition
 
-Windows is **Tier-2 with a bounded gap list**: one evidence gap awaiting its first probe run (G1)
-and three harness/portability items (G2–G4), none of them semantic, none blocking a Tier-1 claim.
-No Windows-specific workaround has been introduced, so §11.3's condition "does not weaken Tier-1
-evidence" holds trivially.
+Windows is **Tier-2 with a bounded gap list**: G1 closed as `portable` on its first probe run, and
+three harness/portability items (G2–G4) remain, none of them semantic, none blocking a Tier-1
+claim. No Windows-specific workaround has been introduced, so §11.3's condition "does not weaken
+Tier-1 evidence" holds trivially — there is nothing Windows-specific to weaken it with.
 
-This report is updated — not rewritten — when the `c64-windows-gap` probe first reports.
+The stronger reading, worth stating because it was not guaranteed: every observation the C6.4
+matrix defines is **already platform-neutral on a third platform**, one that is not part of the
+claim and had never run this suite. That is evidence about the shared runtime, not about Windows.
+
+Updated, not rewritten, as further probe runs report.
