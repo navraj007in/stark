@@ -121,7 +121,23 @@ by construction**, which is why `CLOSED` is not available and the ceiling is
 `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`, **accepted by the owner 2026-07-26 (CD-146)**. Row 24
 ticks — and C6.4 becomes `CLOSED` — when C6.5's corpus replays through the harness C6.4 already
 built; no new platform work is needed for it. Details in `WP-C6.4.md`; evidence in
-`starkc/docs/compiler/evidence/c6.4/`.
+`starkc/docs/compiler/evidence/c6.4/`. **Those Tier-1 records are invalidated as of CD-148**, which
+touches `starkc/tests` — expected, and exactly what §3.5 of the C6.5 plan requires (C6.4 evidence
+regenerated at the exact final corpus commit, older records not reused).
+
+**WP-C6.5 `PARTIAL` — phase 0 done (CD-147), phase C6.5-1 at the plan's commit-2 boundary
+(CD-148).** `starkc/tests/support/differential.rs` is now the single three-engine comparator
+authority, extracted mechanically from `three_engine_differential.rs` with **no observation-shape
+change** (88 passed / 0 ignored / 0 self-skipped at `c789e4b`, identical to V0; 89 once the O13 case
+lands). The other **22 forked suites are
+not yet migrated** — owner chose incremental migration in coverage-matrix order — so until each is,
+its C6.2/C6.3 evidence still rests on its own local notion of agreement. Matrix roll-up: 127
+EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **1 BLOCKED — V19 `HashSet`**
+(a lowering gap, which §4.3 forbids as a non-Core exclusion). O13 left the blocker list: the refusal
+it cited (CD-038) was superseded by C6.1d's unrolling (CD-084 G2) and the program runs in all three
+engines today. Still owed and not reduced by any of the above: the §39 observation shape, a
+generated corpus (0 of ≥64 cases), metamorphic breadth (7 groups against a floor of 24; M08–M12 have
+none), 16 mutation controls (0 exist), and adversarial sentinels.
 Also open:
 C4/C5/C6
 C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
@@ -3200,6 +3216,51 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-148 [2026-07-26, **OWNER DECISIONS on C65-F1, O13 and V19; WP-C6.5-1 comparator extracted**]
+  Three dispositions and the plan's §19 commit 2.
+  - **C65-F1 — option (1).** Extract the comparator, adopt it in `three_engine_differential.rs`,
+    migrate the other 22 forked suites in COVERAGE-MATRIX order as C6.5 touches each category. Forks
+    stay alive in the interim; a suite still on its own local helper is not evidence for the
+    required claim until migrated, and §22's closure checklist is read that way.
+  - **Commit 2 done, mechanically.** `starkc/tests/support/differential.rs` is now the comparator
+    authority: engine runners, normalisation (`oracle_category`, `runtime_category`,
+    `parse_native_trap`), `compare_outcomes`, the case entry points and the `three_engine_test!`
+    macro, moved verbatim and made `pub`. `three_engine_differential.rs` keeps its case declarations
+    and the comparator's own negative tests. Consumers include it with `#[macro_use] mod support;`
+    (the existing `tests/common/mod.rs` convention); the macro uses absolute paths so a migrating
+    suite needs that one line. **88 passed / 0 failed / 0 ignored / 0 self-skipped at the extraction
+    commit `c789e4b` — identical to V0, which is the point of a mechanical move; 89 with the O13
+    case below.** `fmt --check` clean, `clippy --tests` clean. **No observation-shape change**: §8.3–§8.10
+    are commit 3, kept separate so a later disagreement is attributable to the extension, not the
+    move.
+  - **O13 (non-Copy array iteration) — the BLOCKER DID NOT EXIST; row was stale.** It was carried in
+    from CD-038's "narrowed, not closed" (a runtime loop index names no `ConstIndex`; reading by
+    copy would double-free). CD-038 also recorded what would close it — "unrolling or
+    runtime-indexed drop flags" — and **WP-C6.1d took the unrolling option** (CD-084 G2, closing
+    DEV-090). Two ledger records; the matrix inherited the older. Settled by EXECUTION, not by
+    reading either: `o13_non_copy_array_by_value_iteration_agrees` pins stdout to `"idid\n"`
+    independently of the engines, so a wrong Drop schedule (both elements at the end, or neither)
+    fails even under unanimous agreement. All three engines produce it. Row → EXISTING-EVIDENCE.
+    **Method note, deliberately recorded:** §3.6 exists to stop a legal Core program hiding behind a
+    blocker, and here it was pointing at a program that already worked. The matrix's other 132
+    dispositions were built the same way — from records rather than from runs — which is what
+    C6.5-5's replay re-derives.
+  - **V19 (`HashSet<T>`) — NOT-APPLICABLE-NON-CORE → BLOCKED-BY-OTHER-C6-WP.** §4.3(1) requires
+    genuine absence from normative Core v1. `HashSet` is specified in 06-Standard-Library and named
+    in the `std-full` profile; row V18 covers `HashMap` — equally `std-full` — as existing evidence,
+    so "core-min only" is not the rule the matrix runs on; and CD-142's own words call the exclusion
+    "a lowering gap like C6.3c's adapters", exactly the reason §4.3's closing line forbids.
+    `c63d_map_key_identity::hashset_is_hir_only` pins the boundary and says so itself: *"if it now
+    lowers, promote it to a three-engine case"*. A C6 blocker held for a lowering package, not a
+    corpus exclusion.
+  - **Matrix roll-up now:** 127 EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE (P08, P13, V20, K06),
+    1 ADD-METAMORPHIC (K09), 1 BLOCKED (V19). 133 rows unchanged; the blocker count is unchanged at
+    one and the row it names is not.
+  - **This commit touches `starkc/tests`, so it INVALIDATES the WP-C6.4 Tier-1 records at
+    `4844702`** under CD-146's re-qualification rule. Expected and already planned for: §3.5
+    requires C6.4 evidence to be regenerated at the exact final corpus commit and forbids reusing
+    older records once the corpus changes the commit. Row 24 remains BLOCKED-BY-C6.5 either way.
 
 - CD-147 [2026-07-26, **WP-C6.5 OPENED — phase 0 done; the comparator is already forked 23 ways**]
   Baseline `b0d7a72` (the plan's `61008f6` had advanced six commits and is superseded). Tracked

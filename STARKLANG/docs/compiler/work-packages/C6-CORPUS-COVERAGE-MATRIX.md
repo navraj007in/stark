@@ -2,7 +2,8 @@
 
 **Owner:** WP-C6.5 (`WP-C6.5.md`)
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §40 (corpus categories); execution plan §7.2–§7.5
-**Frozen:** 2026-07-26 at `b0d7a72`
+**Frozen:** 2026-07-26 at `b0d7a72`; amended 2026-07-26 by owner decision **CD-148** (rows O13 and
+V19 only — see §9)
 **Status:** phase C6.5-0 complete. Every §7.3 category is decomposed and dispositioned. No corpus
 case has been written yet — the `ADD-*` rows are the worklist for phases C6.5-3 through C6.5-7.
 
@@ -141,19 +142,25 @@ Recorded as `ADD-HANDWRITTEN` work under the non-Core classification, not as cov
 | V16 | `Vec<T>` | VEC-001 | `c63b_vec_box`, `collection_iter__01` | EXISTING-EVIDENCE →T11 |
 | V17 | `Box<T>` | BOX-001 | `c63b_vec_box`, `option_result__03_box_and_layout_queries` | EXISTING-EVIDENCE →T11 |
 | V18 | `HashMap<K,V>` | MAP-001, CE4 insertion order | `c63d_map_key_identity`, `collection_iter__02` | EXISTING-EVIDENCE →T12 →MU11 |
-| V19 | `HashSet<T>` | — | — | **NOT-APPLICABLE-NON-CORE** — HIR-only, no MIR representation; excluded by decision at C6.3 close (CD-142) and pinned by boundary tests. Not executable on all three engines, so not a corpus row |
+| V19 | `HashSet<T>` | 06-Standard-Library §`HashSet<T>`, `std-full` | `c63d_map_key_identity::hashset_is_hir_only` (pins the refusal, not the semantics) | **BLOCKED-BY-OTHER-C6-WP** (CD-148) — normative in `std-full`, runs in HIR, refused at lowering. A MIR gap, which §4.3 forbids as a non-Core reason |
 | V20 | files/resources | — | — | **NOT-APPLICABLE-NON-CORE** — `std-full` profile, absent from every engine; C6.3f EXCLUDED (CD-142) |
 | V21 | function types | FN-VALUE-001 | `function_value_stored_in_a_struct_field`, `…_in_a_tuple` | EXISTING-EVIDENCE →T09 |
 | V22 | references | REF-001 | `native_c61f_*` (6 suites), `exclusive_references_cross_the_call_boundary_and_mutate` | EXISTING-EVIDENCE →T13 |
 | V23 | mutable references | REF-MUT-001 | `native_c61f_reborrow`, `native_c61f_b3_stored_refs` | EXISTING-EVIDENCE →T13 |
 | V24 | nested/generic combinations | GEN-001 | `nested_and_repeated_instantiations_each_see_their_own_frame`, `recursive_generic_instance_agrees`, `c62c_associated_types` | EXISTING-EVIDENCE →T07 |
 
-**Group gaps:** V19 and V20 are the only non-Core classifications in the whole matrix, and both
-inherit an existing recorded decision rather than introducing one. Note that V19's exclusion reason
-is *"no MIR representation"* — §4.3 says a category is **not** `NOT-APPLICABLE` merely because MIR
-cannot execute it. It qualifies here only because `HashSet` is additionally absent from the
-`core-min` conformance profile; **if that reading is wrong, V19 becomes `ESCALATION-REQUIRED`**.
-Flagged rather than assumed.
+**Group gaps: V19 is the matrix's single `BLOCKED` row (CD-148).** It was carried in as
+`NOT-APPLICABLE-NON-CORE` on the reading that `HashSet` is absent from the `core-min` profile. That
+reading does not survive §4.3, and the owner reclassified it. Three facts, none of them in dispute:
+`HashSet<T>` is specified normatively in 06-Standard-Library and named in the `std-full` profile, so
+§4.3(1)'s "genuinely absent from normative Core v1" fails; row V18 covers `HashMap` — equally
+`std-full` — as `EXISTING-EVIDENCE`, so "core-min only" is not the rule this matrix actually runs
+on; and CD-142's own words call the exclusion "a lowering gap like C6.3c's adapters", which is
+exactly the reason §4.3's closing line forbids. `hashset_is_hir_only` pins the boundary and says so
+itself — *"if it now lowers, promote it to a three-engine case"*. It is therefore a C6 blocker on the
+same footing O13 was thought to be, held open for a lowering package. V20 (files/resources) is
+unaffected and remains the matrix's one non-Core classification in this group: absent from every
+engine, not merely from MIR.
 
 ---
 
@@ -206,7 +213,7 @@ below is `EXISTING-EVIDENCE` **plus** a re-observation obligation under the prot
 | O10 | partial struct move | OWN-PARTIAL-001 | `a_non_copy_field_moved_out_of_a_struct_agrees` | EXISTING-EVIDENCE →T14 |
 | O11 | partial enum move | OWN-PARTIAL-001 | `a_partially_moved_value_destroys_only_the_surviving_field` | EXISTING-EVIDENCE →T14 |
 | O12 | array element consumption | A5 `ConstIndex` | `native_c5_3_aggregates_enums` | EXISTING-EVIDENCE |
-| O13 | non-Copy array iteration | — | — | **BLOCKED-BY-OTHER-C6-WP** — narrowed and refused at CD-038: a runtime loop index gives V-MOVE-1 nothing precise to track, and reading by copy would double-free. Recorded as a C6 blocker per §3.6, **not** a quarantine |
+| O13 | non-Copy array iteration | OWN-MOVE-001, A5 `ConstIndex` | `o13_non_copy_array_by_value_iteration_agrees` | EXISTING-EVIDENCE →T14 — **was `BLOCKED`; the row was stale** (CD-148) |
 | O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | EXISTING-EVIDENCE →T14 |
 | O15 | normal scope Drop | OWN-DROP-001 | `ownership_drop__01_move_and_drop_order` | EXISTING-EVIDENCE →T15 |
 | O16 | break/continue/return Drop | OWN-DROP-001 | `c61e_a_local_live_at_break_is_destroyed` +2 | EXISTING-EVIDENCE →T15 |
@@ -219,9 +226,16 @@ below is `EXISTING-EVIDENCE` **plus** a re-observation obligation under the prot
 | O23 | collection element Drop | VEC-001 | `c63b_vec_box` (`Vec<String>`, CD-135/136) | EXISTING-EVIDENCE |
 | O24 | Box inner Drop | BOX-001 | `c63b_vec_box` | EXISTING-EVIDENCE |
 
-**Group gaps:** O13 is the single `BLOCKED` row in the matrix and is a **C6 blocker**, per §3.6 —
-a legal Core program the corpus must not hide behind a quarantine. It needs the owner's disposition
-before C6.5 can claim ownership coverage complete.
+**Group gaps (CD-148): none.** O13 was carried into this matrix as its only `BLOCKED` row, inherited
+from CD-038's "narrowed, not closed" wording — by-value iteration over a non-`Copy` array element,
+refused because a runtime loop index gives move analysis nothing precise to name. CD-038 recorded
+what would close it ("unrolling or runtime-indexed drop flags"), and **WP-C6.1d took the unrolling
+option** (CD-084 G2, closing DEV-090). The ledger therefore held two records and the matrix
+inherited the older one. Decided by execution rather than by reading either:
+`o13_non_copy_array_by_value_iteration_agrees` moves each element into the loop binding and pins the
+stdout to `"idid\n"` independently of the engines, so a wrong Drop schedule — both elements dropped
+at the end, or neither — fails even if all three engines agree on it. All three engines produce it.
+The blocker does not exist.
 
 ---
 
@@ -281,12 +295,17 @@ classified at all — recorded as an open question rather than guessed.
 
 | Disposition | Rows |
 | --- | --- |
-| `EXISTING-EVIDENCE` (all re-observed under the unified comparator in C6.5-5) | 126 |
-| `NOT-APPLICABLE-NON-CORE` | 5 — P08, P13, V19, V20, K06 (K06 provisional) |
+| `EXISTING-EVIDENCE` (all re-observed under the unified comparator in C6.5-5) | 127 |
+| `NOT-APPLICABLE-NON-CORE` | 4 — P08, P13, V20, K06 (K06 provisional) |
 | `ADD-METAMORPHIC` | 1 — K09 |
-| `BLOCKED-BY-OTHER-C6-WP` | 1 — O13, a real C6 blocker |
+| `BLOCKED-BY-OTHER-C6-WP` | 1 — V19 (`HashSet`), a real C6 blocker |
 
-**What this roll-up does not mean.** 126 `EXISTING-EVIDENCE` rows is not "C6.5 is nearly done". It
+Both blocker-shaped rows moved under CD-148, in opposite directions: **O13 out** (the refusal it
+cited was superseded by C6.1d's unrolling; proven by execution, not by ledger reading) and **V19 in**
+(a lowering gap cannot be a non-Core exclusion under §4.3). The count of blockers is unchanged at
+one; which row it is, is not.
+
+**What this roll-up does not mean.** 127 `EXISTING-EVIDENCE` rows is not "C6.5 is nearly done". It
 means the *category surface* is already exercised somewhere. What C6.5 owes on top of it, and what
 the rest of the package is:
 

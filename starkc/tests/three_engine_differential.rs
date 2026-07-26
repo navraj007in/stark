@@ -2334,3 +2334,50 @@ fn conditional_panic_message_agrees_across_engines() {
         "too big",
     );
 }
+
+// ------------------------------------------------- WP-C6.5 matrix row O13 --
+//
+// By-value iteration over a non-`Copy` array element. CD-038 NARROWED this rather than closing it
+// ("the loop index is a runtime counter, so no `ConstIndex` names the consumed element ... closing
+// that needs unrolling or runtime-indexed drop flags"), and the C6 coverage matrix inherited that
+// as its only `BLOCKED` row. WP-C6.1d then took the unrolling option (CD-084 G2) and closed
+// DEV-090. This case decides which of the two records is current, by execution rather than by
+// reading the ledger: each element is moved into the loop binding and destroyed at the end of its
+// own iteration, so the Drop marks are observable in all three engines.
+const O13_ARRAY_BY_VALUE_ITER: &str = r#"struct Loud { x: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { print("d"); }
+}
+fn main() {
+    let a: [Loud; 2] = [Loud { x: 1 }, Loud { x: 2 }];
+    let mut s: Int32 = 0;
+    for e in a {
+        s = s + e.x;
+        print("i");
+    }
+    assert_eq(s, 3);
+    println("");
+}
+"#;
+
+#[test]
+fn o13_non_copy_array_by_value_iteration_agrees() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    let outcome = three_engine("o13_array_by_value_iter", O13_ARRAY_BY_VALUE_ITER);
+    // Stated independently of the engines: one Drop mark per iteration, AFTER that iteration's
+    // body and BEFORE the next element is moved out. Three engines agreeing on a wrong Drop
+    // schedule -- dropping both elements at the end, or not at all -- still fails here.
+    match outcome {
+        Outcome::Completed { ref stdout, exit } => {
+            assert_eq!(
+                stdout, "idid\n",
+                "O13: per-iteration move and Drop schedule"
+            );
+            assert_eq!(exit, 0);
+        }
+        other => panic!("O13: expected completion, got {other:#?}"),
+    }
+}

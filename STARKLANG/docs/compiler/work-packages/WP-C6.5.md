@@ -1,7 +1,8 @@
 # WP-C6.5 — Full Differential and Generated Corpus
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
-**Status:** `PARTIAL` — phase C6.5-0 (re-pin, inventory, coverage matrix) complete. No code written.
+**Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, coverage matrix) complete; C6.5-1 at the plan's
+commit-2 boundary (comparator extracted, no observation-shape change yet).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
 `WP-C2.12`.
 **Execution plan:** `WP-C6.5-Full-Differential-Generated-Corpus-Execution-Plan.md` (repo root,
@@ -57,7 +58,7 @@ single-platform version of it is not evidence.
 absorbed, rewritten or relabelled as the C6 generated corpus. The new corpus gets its own manifest,
 generator version and lock (§9.5: "Do not reuse `exec_snapshots/corpus.lock`").
 
-The 7 inherited metamorphic pairs already cover five of the twelve required families:
+The 7 inherited metamorphic pairs already cover seven of the twelve required families:
 
 | Inherited pair | Family |
 | --- | --- |
@@ -76,7 +77,8 @@ equivalent loop forms) have **no** inherited pair. Each family also needs a seco
 
 - `exec_snapshots.rs` — HIR snapshots over the frozen corpus, 4 tests.
 - `mir_differential.rs` — HIR vs verified MIR, 132 tests.
-- `three_engine_differential.rs` — HIR/MIR/native, 88 tests: **83 from a `three_engine_test!`
+- `three_engine_differential.rs` — HIR/MIR/native, 88 tests at the baseline (89 after CD-148 adds
+  the O13 case): **83 from a `three_engine_test!`
   macro** plus 5 explicit tests. The comparator is `three_engine()`, `compare_outcomes()`,
   `parse_native_trap()`, `agree_completing()`, `agree_trapping()`.
 
@@ -131,6 +133,12 @@ matrix already cites which suite supplies each row's evidence, so migration orde
 rather than file convenience. This is flagged for the owner before C6.5-1 begins because it changes
 the phase's cost, not merely its shape.
 
+**Owner disposition — CD-148, 2026-07-26: option (1).** Extract, adopt in
+`three_engine_differential.rs`, migrate the remaining 22 suites in coverage-matrix order as C6.5
+touches each category. The forks stay alive in the interim and are all retired before closure; a
+suite still on its own helper is not evidence for the required claim until it is migrated, and §22's
+closure checklist is read that way.
+
 ---
 
 ## 3. Phase C6.5-0 exit (§7.5)
@@ -150,11 +158,70 @@ C6.5-7 witnesses. A row moved to `NOT-APPLICABLE-NON-CORE` after this point need
 justification recorded, not an edit.
 
 ---
+## 4. Phase C6.5-1 — comparator extraction (§8, commit 2)
 
-## 4. What comes next
+**Done, mechanically, at the plan's §19 commit 2 boundary: no observation-shape change.**
 
-C6.5-1, subject to the owner's disposition of C65-F1 above. Its first commit is §19's Commit 2:
-mechanical extraction with no observation-shape change, existing suites still passing.
+`starkc/tests/support/differential.rs` is now the comparator authority. It carries — verbatim, made
+`pub` — the engine runners (`run_hir`, `run_mir`, `run_native`), the normalisation
+(`oracle_category`, `runtime_category`, `parse_native_trap`), the comparator (`compare_outcomes`),
+the case entry points (`three_engine`, `agree_completing`, `agree_trapping`,
+`agree_trapping_with_message`) and the `three_engine_test!` macro. `three_engine_differential.rs`
+keeps its case declarations and the comparator's own negative tests, and nothing else.
+
+Consumers include it with `#[macro_use] mod support;` — the repo's existing `tests/common/mod.rs`
+convention. The macro refers to the module by absolute path, so a migrating suite needs that one
+line rather than an import list.
+
+| Check | Result |
+| --- | --- |
+| `cargo test --test three_engine_differential` at the extraction commit `c789e4b` | 88 passed, 0 failed, **0 ignored**, 0 self-skipped — identical to the V0 baseline, which is the point of a mechanical move |
+| the same command after §5's O13 case lands | 89 passed, 0 failed, 0 ignored, 0 self-skipped |
+| `cargo fmt --all -- --check` | clean |
+| `cargo clippy --tests` | clean |
+| Behaviour change | none — the diff moves code and adds `pub` |
+
+**Not yet done in this phase:** §8.3's full observation shape, §8.5's exhaustive trap-stderr
+normalizer, §8.7's returned-observation protocol, §8.8's Drop-log protocol and §8.10's seventeen
+comparator unit tests. Those are commit 3, deliberately separated so that a later disagreement is
+attributable to the extension and not to the move. The 22 unmigrated suites remain forked.
+
+---
+
+## 5. Matrix amendments under CD-148
+
+Both of the matrix's owner-flagged rows moved, in opposite directions. Neither was settled by
+reading the ledger.
+
+**O13 (non-Copy array iteration) — `BLOCKED` → `EXISTING-EVIDENCE`.** The row inherited CD-038's
+"narrowed, not closed": a runtime loop index names no `ConstIndex`, and reading by copy would double
+free. CD-038 also recorded what would close it — "unrolling or runtime-indexed drop flags" — and
+**WP-C6.1d took the unrolling option** (CD-084 G2, closing DEV-090). Two ledger records, the older
+one inherited. Settled by execution: `o13_non_copy_array_by_value_iteration_agrees` pins stdout to
+`"idid\n"` independently of the engines, so a wrong Drop schedule fails even under unanimous
+agreement. All three engines produce it. **This is the shape §3.6 exists to prevent and it was
+pointing at the wrong row** — worth noting, because the matrix's other 132 dispositions were built
+the same way, from records rather than from runs, and C6.5-5's replay is what re-derives them.
+
+**V19 (`HashSet<T>`) — `NOT-APPLICABLE-NON-CORE` → `BLOCKED-BY-OTHER-C6-WP`.** §4.3(1) requires
+genuine absence from normative Core v1. `HashSet` is specified in 06-Standard-Library and named in
+`std-full`; row V18 covers `HashMap`, equally `std-full`, as existing evidence; and CD-142's own
+words call the exclusion "a lowering gap like C6.3c's adapters" — precisely the reason §4.3's
+closing line forbids. `c63d_map_key_identity::hashset_is_hir_only` pins the boundary and says
+outright *"if it now lowers, promote it to a three-engine case"*. It is a C6 blocker held for a
+lowering package, not a corpus exclusion.
+
+The blocker count is unchanged at one. Which row it is, is not.
+
+---
+
+
+## 6. What comes next
+
+§19's commit 3 — the §8.3 observation model, the §8.5 trap-stderr normalizer, the §8.7 returned-value
+and §8.8 Drop-log protocols, and the §8.10 comparator unit tests that prove each new field is
+load-bearing. Migration of the 22 remaining forked suites then proceeds in matrix order under
+CD-148's option (1).
 
 Status remains `PARTIAL` until the comparator, matrix, manifest, generator, replay, metamorphic and
 mutation requirements are all complete (§23). C6.5 has **no** valid "candidate complete but corpus
