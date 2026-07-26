@@ -2,7 +2,12 @@
 
 This directory holds the Tier-1 qualification records for `WP-C6.4`.
 
-**It is empty of platform records on purpose.** `WP-C6-ENTRY.md` §35 says "no real platform run
+**The records now present are from CI run 30191381334 at `61008f6`** — both Tier-1 targets PASS,
+1705 tests each, determinism `match`, no unclassified ignores, and `qualification-summary.md`
+reports TIER-1 AGREEMENT. Everything below still governs how they got here and how the next set
+must.
+
+**No record here is ever written by hand.** `WP-C6-ENTRY.md` §35 says "no real platform run
 means no platform claim", and the execution plan's §2 forbids `CLOSED` "while a required
 real-platform or generated-corpus run is absent". A hand-written or locally-simulated record here
 would defeat the only thing these files are for. The records arrive from CI, produced by the

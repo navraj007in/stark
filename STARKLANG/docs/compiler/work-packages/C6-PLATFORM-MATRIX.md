@@ -3,9 +3,11 @@
 **Owner:** WP-C6.4 (`WP-C6.4.md`)
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37
 **Frozen:** 2026-07-26, at `5d2c85d` (Gate C6, immediately after WP-C6.3 closed via CD-142)
-**Status:** rows have owners, commands and implementations; **no Tier-1 platform run has been
-recorded yet**, so every "actual result" cell is empty by design (§35: no real platform run means
-no platform claim).
+**Status:** **both Tier-1 records exist and agree**, at `61008f6` (CI run 30191381334) — 1705
+tests passed on each target, 0 failed, identical per-command counts, determinism `match`, no
+unclassified ignores. Rows 1–23 are MET; row 24 is BLOCKED-BY-C6.5; row 25 is REPORT-ONLY and its
+G1 is closed. See `evidence/c6.4/qualification-summary.md` for the comparison, which is the artifact
+that turns two green jobs into one agreement claim.
 
 ## How to read this file
 
@@ -77,11 +79,19 @@ cannot be read off as merely absent.
 ## Table B — evidence
 
 Filled from `starkc/docs/compiler/evidence/c6.4/*.json`, produced on the runner that ran the
-commands. Empty until a Tier-1 CI run exists.
+commands and downloaded, not regenerated. Rows are grouped where one command establishes several:
+splitting a single `c64_platform_matrix` run across eight rows would report the same observation
+eight times and read as eight independent confirmations.
 
 | # | Area | macOS-arm64 actual | Linux-x64 actual | Artifact | Exact commit | Deviation | Closure |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1–23 | all Tier-1 rows | — | — | `evidence/c6.4/{macos-arm64,linux-x64}.json` | — | — | NOT-YET |
+| 1–8 | target preflight and metadata | `c64_platform_matrix` 15/15 | 15/15 | `evidence/c6.4/{macos-arm64,linux-x64}.json` | `61008f6` | none | MET |
+| 9 | compiler/runtime compatibility | `c63_closure_evidence` 2/2 | 2/2 | same | `61008f6` | none | MET |
+| 10–14 | output bytes, line termination, traps | within `c64_platform_matrix` 15/15; `three_engine_differential` 88/88 | same counts | same | `61008f6` | none | MET |
+| 15–18 | paths, temp dirs, manifest escaping | within `c64_platform_matrix` 15/15 | same | same | `61008f6` | none | MET |
+| 19–20 | installed runtime, locked offline build | `c63_closure_evidence` 2/2 + `c64_platform_matrix` | same | same | `61008f6` | none | MET |
+| 21–22 | frozen workspace, three-engine | `workspace` 1461/1461; `mir_differential` 132; `exec_snapshots` 4; `three_engine_differential` 88 | identical counts | same | `61008f6` | none | MET |
+| 23 | determinism rerun | `match` | `match` | same | `61008f6` | none | MET |
 | 24 | generated corpus | n/a | n/a | — | — | corpus does not exist | BLOCKED-BY-C6.5 |
 | 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `8d894e8` (run 30190825336) | G1 CLOSED — 14/14 on Windows; G2–G4 open, none semantic | REPORT-ONLY |
 

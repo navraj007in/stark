@@ -1,9 +1,11 @@
 # WP-C6.4 — Tier-1 Platform Matrix
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
-**Status:** IMPLEMENTATION COMPLETE — awaiting the Tier-1 platform runs.
-Recommended closure status: **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`**, and not before both
-Tier-1 records exist (§5).
+**Status:** COMPLETE for everything C6.4 can reach. Both Tier-1 records exist and agree
+(`61008f6`, CI run 30191381334); matrix rows 1–23 are MET, row 25 is REPORT-ONLY with G1 closed,
+and row 24 is BLOCKED-BY-C6.5 by construction.
+Recommended closure status: **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`** — awaiting the owner's
+decision (§5).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37 (tracked, normative), §5 (fixed decisions and
 escalation classes), §6 (scope boundaries), §30 (runtime compatibility), §48 (validation at the
 closure commit).
@@ -255,10 +257,28 @@ that construct").
 
 ## 4. Evidence status
 
-**No Tier-1 platform record exists yet.** Every "actual result" cell in `C6-PLATFORM-MATRIX.md`
-Table B is empty, and `starkc/docs/compiler/evidence/c6.4/` holds no `.json` record. This is the
-required state, not an omission: §35 says no real platform run means no platform claim, and a
-locally simulated record would defeat the only purpose those files have.
+**Both Tier-1 records exist, and they agree.** CI run 30191381334 at `61008f6`:
+
+| | macOS-arm64 | Linux-x64 |
+| --- | --- | --- |
+| overall | PASS | PASS |
+| passed | 1705 | 1705 |
+| failed | 0 | 0 |
+| ignored | 2 (both classified) | 2 (both classified) |
+| unclassified ignores | none | none |
+| self-skipped | 0 | 0 |
+| determinism rerun | `match` | `match` |
+| rustc | 1.97.1 (8bab26f4f 2026-07-14) | 1.97.1 (8bab26f4f 2026-07-14) |
+
+`qualification-summary.md` reports **TIER-1 AGREEMENT**: same commit, same compiler/MIR/runtime/
+backend/layout versions, and identical per-command counts — `c64_platform_matrix` 15,
+`three_engine_differential` 88, `mir_differential` 132, `exec_snapshots` 4, `c63_closure_evidence`
+2, `conformance` 3, `workspace` 1461. The comparison exits non-zero on any disagreement, so this is
+an assertion rather than two lists printed side by side.
+
+The records are committed as downloaded from the runner. They were **not** taken from the earlier
+passing runs at `9ff8d35` or `e80df80`: the harness changed after each, and evidence has to describe
+the commit it claims.
 
 ### 4.1 The first CI run (`8d894e8`, run 30190825336) — and what it caught
 
@@ -390,18 +410,17 @@ the Windows gap report.
 
 Ordered, with nothing else outstanding:
 
-1. push, and let `c64-qualification` produce both Tier-1 records at one commit (the first attempt,
-   run 30190825336, failed on an unclassified ignore — see §4.1 — and that is fixed);
-2. `c64-tier1-comparison` reports TIER-1 AGREEMENT;
-3. commit the two records plus `qualification-summary.md` into
-   `starkc/docs/compiler/evidence/c6.4/`, and fill `C6-PLATFORM-MATRIX.md` Table B from them;
+1. ~~let `c64-qualification` produce both Tier-1 records at one commit~~ — **done**, `61008f6`;
+2. ~~`c64-tier1-comparison` reports TIER-1 AGREEMENT~~ — **done**;
+3. ~~commit the two records plus `qualification-summary.md`, and fill Table B~~ — **done**;
 4. ~~read the `c64-windows-gap` probe and resolve G1~~ — **done**: 14/14 on Windows, G1 closed as
    `portable` (§4.1);
-5. record the owner's closure decision.
+5. **record the owner's closure decision — the only step left.**
 
-Until (1) and (2), the honest status is `NOT-YET`. With them, and with row 24 still blocked, it is
-`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. `CLOSED` is not available while the generated corpus
-does not exist.
+Steps 1–4 are done, so the status is now `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. `CLOSED` is
+not available and will not be until C6.5's generated corpus exists and replays through this
+harness on both Tier-1 targets (§1.2). That is a decision about C6.5's schedule, not about whether
+C6.4 did its work.
 
 ---
 

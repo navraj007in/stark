@@ -104,16 +104,19 @@ evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138).
 CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
-**WP-C6.4 OPENED (CD-143) — Tier-1 platform matrix. IMPLEMENTATION COMPLETE, EVIDENCE OUTSTANDING.**
+**WP-C6.4 CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS (CD-143) — Tier-1 platform matrix.**
 Phases 0/a/b/c/d are built: the matrix is frozen (`C6-PLATFORM-MATRIX.md`, 25 rows), target
 classification is CENTRALISED in the new `starkc/src/target.rs` (before this, the rustc host WAS the
 target and `stark-64-v1` was inherited by any triple), the §34 portability audit found TEN host
 assumptions of which eight are fixed, and the qualification harness + Tier-1 comparison gate + three
-CI jobs exist. **What does not exist is the thing C6.4 is for: a real Tier-1 platform record.** §35
-("no real platform run means no platform claim") means the status is NOT-YET until CI produces both
-records at one commit and the comparison reports agreement; and because the deterministic GENERATED
-corpus belongs to C6.5, the best status ever available to C6.4 is
-`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`, never `CLOSED`. Details in `WP-C6.4.md`.
+CI jobs exist. **BOTH TIER-1 RECORDS EXIST AND AGREE** — CI run 30191381334 at `61008f6`: 1705
+passed / 0 failed on EACH of macos-arm64 and linux-x64, 2 ignores (both classified), 0 unclassified,
+0 self-skipped, determinism `match`, and `qualification-summary.md` reports TIER-1 AGREEMENT on
+identical per-command counts. Matrix rows 1–23 MET; row 25 REPORT-ONLY with G1 closed (Windows
+passed the C6.4 suite 14/14 on its first run); **row 24 (generated corpus) BLOCKED-BY-C6.5 by
+construction**, which is why `CLOSED` is not available and the status caps at
+`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. Awaiting the owner's closure decision — the only
+outstanding step. Details in `WP-C6.4.md`; evidence in `starkc/docs/compiler/evidence/c6.4/`.
 Also open:
 C4/C5/C6
 C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
@@ -3252,6 +3255,23 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     Python cannot call `src/target.rs`, so the copy is now CHECKED against it by a test that fails
     on drift. One probe is honestly NOT run: file-not-found mapping, because `std-full` file
     operations are absent from every engine.
+  - **THE QUALIFYING RUN: CI 30191381334 at `61008f6`, both tier-1 jobs and the agreement gate
+    green.** macos-arm64 and linux-x64 each: 1705 passed, 0 failed, 2 ignored (both classified), 0
+    unclassified, 0 self-skipped, determinism `match`, rustc 1.97.1. Identical per-command counts —
+    `c64_platform_matrix` 15, `three_engine_differential` 88, `mir_differential` 132,
+    `exec_snapshots` 4, `c63_closure_evidence` 2, `conformance` 3, `workspace` 1461. The records are
+    committed AS DOWNLOADED from the runners, and deliberately NOT taken from the two earlier
+    passing runs (`9ff8d35`, `e80df80`): the harness changed after each, and evidence has to
+    describe the commit it claims.
+  - **A third harness defect, found by reasoning rather than by a run: THE SKIP DETECTOR COULD NOT
+    SEE A SKIP.** Eleven native/differential suites print `SKIP:` and return SUCCESS when no rustc
+    is present, and the harness failed a required command on that — except libtest DISCARDS a
+    passing test's output, so the line was invisible under a plain `cargo test`. A detector that
+    cannot observe what it detects is worse than none, because it reads as coverage. Every step
+    whose suite can self-skip now runs `-- --nocapture`; the workspace step does not (its output
+    would be enormous) and its narrower guarantee is stated in the harness docstring rather than
+    left implied. PROVED by running the built c64 binary under `env -i PATH=/usr/bin`: 7 SKIP lines
+    appear and the step fails.
   - **Evidence for this commit (scoped, per the CD-142 rule — CI is the exhaustive net):** `--lib`
     463 + `stark-runtime --lib` 23, `c64_platform_matrix` 14, `native_build_cli` 9,
     `c63_closure_evidence` 2, `native_c5_1b_skeleton` + `native_c5_3_aggregates_enums` 20,
