@@ -1,0 +1,6 @@
+use offline_dep::offline_message;
+
+fn main() {
+    println(offline_message().as_str());
+}
+

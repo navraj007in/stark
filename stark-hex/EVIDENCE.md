@@ -4,7 +4,7 @@
 
 - Package: `stark-hex`
 - Package path: `/Users/nexper/Documents/GitHub/stark/stark-hex`
-- Compiler/repository head at implementation start: `7b5c10b0fe181e76aeef3c008ae186cc107b01ca`
+- Compiler/repository head at latest qualification: `0c59c8044d8e1301c85f127aba619f5075b758bb`
 - Platform: macOS host, `Australia/Sydney` local timezone
 - Toolchain: repository `starkc/target/debug/stark`
 - Precondition result: `INTERPRETER_READY`
@@ -34,7 +34,7 @@
 # result: stark-hex: OK
 
 ../starkc/target/debug/stark test
-# result: 9 passed; 0 failed; 0 ignored; 212ms total
+# result: 10 passed; 0 failed; 0 ignored; 196ms total
 
 ../starkc/target/debug/stark fmt --check
 # result: pass
@@ -58,10 +58,10 @@
 
 ## Test Counts
 
-- Package tests: 9 passed, 0 failed, 0 ignored
+- Package tests: 10 passed, 0 failed, 0 ignored
 - Valid decode cases: 16 minimum, covered by tests
 - Invalid-length cases: 6
-- Invalid-character cases: 11 plus precedence cases
+- Invalid-character cases: 11 named cases, all 106 invalid ASCII bytes, plus precedence cases
 - Round-trip cases: full domain lower/upper
 - Canonicality cases: mixed-case `aB`
 - Fixtures: 9 checked in, mapped to package tests
@@ -87,8 +87,8 @@ I/O for pure Core tests.
 
 ```text
 BLOCKER ID: HEX-NATIVE-001
-PACKAGE COMMIT: uncommitted worktree
-COMPILER COMMIT: 7b5c10b0fe181e76aeef3c008ae186cc107b01ca
+PACKAGE COMMIT: fd79de4186 plus uncommitted test/evidence hardening
+COMPILER COMMIT: 0c59c8044d8e1301c85f127aba619f5075b758bb
 EXECUTION ENGINE: native build
 MINIMISED STARK SOURCE:
   use stark_hex::decode;

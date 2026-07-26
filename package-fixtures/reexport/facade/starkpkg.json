@@ -1,0 +1,8 @@
+{
+  "name": "pkg-reexport-facade",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "dependencies": {
+    "core_pkg": { "package": "pkg-reexport-core", "path": "../core", "version": "0.1.0" }
+  }
+}

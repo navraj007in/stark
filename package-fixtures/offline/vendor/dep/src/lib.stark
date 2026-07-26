@@ -1,0 +1,4 @@
+pub fn offline_message() -> String {
+    String::from("offline:path")
+}
+

@@ -1,0 +1,10 @@
+use alpha_pkg::alpha;
+use beta_pkg::beta;
+
+fn main() {
+    let mut out = alpha();
+    out.push_str("|");
+    out.push_str(beta().as_str());
+    println(out.as_str());
+}
+

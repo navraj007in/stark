@@ -155,18 +155,30 @@ fn json_list(items: &[String]) -> String {
 /// panics becomes a classified failure rather than aborting the replay — §12.1's "continue through
 /// all cases and produce a complete summary".
 fn replay(case: &Case, filters: &Filters) -> CaseResult {
-    let source_path = corpus_root().join(&case.sources[0]);
-    let source = match std::fs::read_to_string(&source_path) {
-        Ok(text) => text,
-        Err(e) => {
-            return CaseResult {
-                case_id: case.case_id.clone(),
-                engines: Vec::new(),
-                observation_hash: String::new(),
-                outcome: Err((
-                    Admission::ObservationDivergence,
-                    format!("cannot read {}: {e}", case.sources[0]),
-                )),
+    // §12.1 step 4: construct the package graph. A package case is STAGED to a scratch directory
+    // first — resolution writes `stark.lock` into the root package, which would dirty the corpus
+    // and break its lock, and concurrent cases sharing a root would race on that file.
+    let staged = case
+        .package_root
+        .as_ref()
+        .map(|root| support::differential::stage_package(&case.case_id, &corpus_root(), root));
+    let source = match &staged {
+        Some(_) => String::new(),
+        None => {
+            let source_path = corpus_root().join(&case.sources[0]);
+            match std::fs::read_to_string(&source_path) {
+                Ok(text) => text,
+                Err(e) => {
+                    return CaseResult {
+                        case_id: case.case_id.clone(),
+                        engines: Vec::new(),
+                        observation_hash: String::new(),
+                        outcome: Err((
+                            Admission::ObservationDivergence,
+                            format!("cannot read {}: {e}", case.sources[0]),
+                        )),
+                    }
+                }
             }
         }
     };
@@ -205,14 +217,22 @@ fn replay(case: &Case, filters: &Filters) -> CaseResult {
         };
     }
 
-    let front = stage!(
-        "front-end",
-        support::differential::front_end(&name, &source)
-    );
-    let program = stage!("front-end", {
-        match starkc::mir::lower::lower_program(&front.hir, &front.tables, front.file.clone()) {
-            Ok(program) => program,
-            Err(e) => panic!("{name}: lowering failed: {} @ {:?}", e.what, e.span),
+    // §12.1 steps 4–6: a package case is compiled from its graph, a single-file case from its text.
+    let (front, program) = stage!("front-end", {
+        match &staged {
+            Some(root) => support::differential::front_end_package(root),
+            None => {
+                let front = support::differential::front_end(&name, &source);
+                let program = match starkc::mir::lower::lower_program(
+                    &front.hir,
+                    &front.tables,
+                    front.file.clone(),
+                ) {
+                    Ok(program) => program,
+                    Err(e) => panic!("{name}: lowering failed: {} @ {:?}", e.what, e.span),
+                };
+                (front, program)
+            }
         }
     });
 
@@ -295,6 +315,21 @@ fn replay(case: &Case, filters: &Filters) -> CaseResult {
                 ));
             }
         }
+    }
+
+    // §12.6's `C6_KEEP_TEMP` is honoured here: the staged package survives a run when set, which is
+    // what makes a failing package case reproducible by hand.
+    if let (Some(scratch), false) = (&staged, filters.keep_temp) {
+        // The staged ROOT may be a subdirectory of the copy (a workspace); remove the copy itself.
+        let case_copy = scratch
+            .ancestors()
+            .find(|dir| {
+                dir.file_name()
+                    .map(|n| n.to_string_lossy().starts_with("stark_c6pkg_"))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(scratch.as_path());
+        let _ = std::fs::remove_dir_all(case_copy);
     }
 
     let observation_hash = observations

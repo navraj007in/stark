@@ -52,6 +52,7 @@ use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -406,6 +407,123 @@ fn message_class(message: Option<&String>) -> TrapMessageClass {
         Some(text) => TrapMessageClass::UserMessageExact(text.clone()),
         None => TrapMessageClass::CategoryOnly,
     }
+}
+
+/// A package or workspace case, compiled from a package graph rather than from one source string
+/// (§15.1).
+///
+/// **Always compiled from a COPY.** `PackageGraph` resolution writes `stark.lock` into the root
+/// package, so pointing it at the checked-in corpus would both dirty the tree and break
+/// `corpus.lock`'s hashes — and, running under `cargo test`'s thread pool, two cases sharing a root
+/// would race on the same lock file (fatal on Windows). The copy is the caller's; this function
+/// takes the path it should use.
+pub fn front_end_package(root_package: &Path) -> (Front, starkc::mir::MirProgram) {
+    use starkc::options::LanguageOptions;
+    use starkc::package::{find_package_root, PackageGraph};
+    use starkc::parser::parse_package_graph;
+
+    let manifest = find_package_root(root_package)
+        .unwrap_or_else(|e| panic!("{}: no starkpkg.json: {e:?}", root_package.display()));
+    let graph = PackageGraph::load_from_root(&manifest)
+        .unwrap_or_else(|e| panic!("{}: package graph: {e:?}", root_package.display()));
+    let (ast, parse_diags) = parse_package_graph(&graph, LanguageOptions::CORE);
+    assert!(
+        parse_diags.is_empty(),
+        "{}: parse: {parse_diags:?}",
+        root_package.display()
+    );
+    // The root file is named by its REAL path, as `parse_package_graph` named it: entry-point
+    // discovery matches the root file against the parsed graph, and a logical name produces
+    // "program without a `main` function". §15.2's "trap source names remain logical source paths"
+    // is therefore a property of the COMPILER here, not something this harness can impose — see
+    // `c6_package.rs`, which measures it rather than assuming either answer.
+    let entry = root_package.join("src/main.stark");
+    let entry_text =
+        std::fs::read_to_string(&entry).unwrap_or_else(|e| panic!("{}: {e}", entry.display()));
+    let root_file = Arc::new(SourceFile::new(
+        entry.to_string_lossy().into_owned(),
+        entry_text,
+    ));
+    let (hir, resolve_diags) = resolve(&ast, root_file.clone());
+    assert!(
+        resolve_diags.is_empty(),
+        "{}: resolve: {resolve_diags:?}",
+        root_package.display()
+    );
+    let checked = typecheck::analyze(&hir, root_file.clone());
+    let errors: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{}: typecheck: {errors:?}",
+        root_package.display()
+    );
+    let front = Front {
+        hir,
+        file: root_file,
+        tables: checked.tables,
+    };
+    let program = match lower_program(&front.hir, &front.tables, front.file.clone()) {
+        Ok(program) => program,
+        Err(e) => panic!(
+            "{}: lowering failed: {} @ {:?}",
+            root_package.display(),
+            e.what,
+            e.span
+        ),
+    };
+    (front, program)
+}
+
+/// Copies a corpus package case into a scratch directory and returns the staged ROOT package.
+///
+/// The whole CASE DIRECTORY is copied, not just the root package: a workspace's root depends on its
+/// siblings by relative path (`"model": { "path": "../model" }`), so staging `app/` alone leaves the
+/// dependency dangling. The case directory is `cases/<kind>/<case>`; `package_root` names the root
+/// package inside it, which for a workspace is a subdirectory and for a single package is the case
+/// directory itself.
+pub fn stage_package(case_id: &str, corpus_root: &Path, package_root: &str) -> PathBuf {
+    let parts: Vec<&str> = package_root.split('/').collect();
+    assert!(
+        parts.len() >= 3,
+        "package_root `{package_root}` is not under cases/<kind>/<case>"
+    );
+    let case_dir = parts[..3].join("/");
+    let remainder = parts[3..].join("/");
+    let (scratch, _) = stage_dir(case_id, &corpus_root.join(&case_dir));
+    if remainder.is_empty() {
+        scratch
+    } else {
+        scratch.join(remainder)
+    }
+}
+
+/// Copies a directory tree into a scratch location. Returns the copy's root twice for callers that
+/// want to keep the handle and the path separately.
+pub fn stage_dir(case_id: &str, corpus_case_root: &Path) -> (PathBuf, PathBuf) {
+    fn copy_tree(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).expect("scratch package dir");
+        for entry in std::fs::read_dir(from).expect("read package dir") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().expect("name").to_owned();
+            if path.is_dir() {
+                copy_tree(&path, &to.join(name));
+            } else {
+                std::fs::copy(&path, to.join(name)).expect("copy package file");
+            }
+        }
+    }
+    let scratch = std::env::temp_dir().join(format!(
+        "stark_c6pkg_{case_id}_{}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&scratch);
+    copy_tree(corpus_case_root, &scratch);
+    (scratch.clone(), scratch)
 }
 
 // ------------------------------------------------------------------ engine 1 --

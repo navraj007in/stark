@@ -34,7 +34,7 @@ import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "0.4.0"
+CORPUS_VERSION = "0.5.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -350,6 +350,9 @@ def build_lock() -> str:
         "# corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the",
         "# twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent",
         "# until §15 rather than approximated single-file. Minor.",
+        "# corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root",
+        "# package with a module, and a three-package workspace exercising a dependency-to-dependency",
+        "# call, a re-export, a cross-package generic and a cross-package Drop. Minor.",
         f"corpus_version = {CORPUS_VERSION}",
         f"generator_version = {(ROOT / 'generator-version.txt').read_text(encoding='utf-8').strip()}",
         f"generator_seed = {DEFAULT_SEED}",

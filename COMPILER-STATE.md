@@ -147,7 +147,10 @@ by §12: the package-graph step and shard-summary merging; by §13: **M08/M09 an
 blocked on package graphs. **C6.5-7 (CD-158) closed the mutation controls: all sixteen §14.3
 mutations detected** against real witnesses by the production comparator, with source-level routing
 controls for the two route-sensitive ones — the negative control that makes the rest of the evidence
-mean something.
+mean something. **C6.5-8 (CD-159, PARTIAL) added package breadth** — corpus `0.5.0`, 131 cases,
+**131/131 AGREEMENT** — and found two defects: **DEV-113** (absolute paths in package trap
+provenance; blocks a trapping package case) and **DEV-114** (canonical package symbols
+nondeterministic for a diamond graph; ESCALATED).
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
 tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
@@ -3256,6 +3259,45 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-159 [2026-07-27, **WP-C6.5-8 commit 10 PARTIAL — package breadth; DEV-113 and DEV-114 found**]
+  Corpus `0.5.0`, **131 cases, replay 131/131 AGREEMENT**. Two package cases: a root package with a
+  module, and a three-package workspace (`app → logic → model`) covering a dependency-to-dependency
+  call, a re-export, a cross-package generic, a cross-package function value, and a **`Drop` type
+  from the leaf package destroyed in the root**, observed through the §8.8 protocol. The replay now
+  STAGES package cases before compiling — resolution writes `stark.lock` into the root package, so
+  compiling in place would dirty the corpus and break its own lock, and concurrent cases sharing a
+  root would race on that file. `C6_KEEP_TEMP` is honoured.
+  - **DEV-113 — a package build puts ABSOLUTE PATHS in trap provenance.** §15.2 requires no absolute
+    path in semantic identity and logical trap source names; for a package graph, file identity IS
+    the filesystem path, so the same workspace staged at two locations reports different provenance.
+    **Consequence: a trapping package case cannot join the corpus** — its observation would depend on
+    where the repo was checked out. Second half: the HIR oracle attributes every trap to the ROOT
+    file whatever file trapped, while MIR attributes it correctly, so a dependency-trap case would
+    make the engines disagree about WHICH FILE. §15.1's "source provenance in dependency trap" is
+    therefore NOT covered. Both halves pinned by tests that retire when the behaviour changes.
+  - **DEV-114 — canonical package symbols are NONDETERMINISTIC for a diamond graph.** With
+    `app → {logic, model}` and `logic → model`, the same function is `model::leaf@[]` in one process
+    and `logic::model::leaf@[]` in the next — same sources, same manifests, same declaration order;
+    six consecutive runs produced both forms. The prefix is assigned by whichever traversal path
+    reaches the package first, and that traversal follows a per-process-seeded hash map. Canonical
+    symbols are the identity that reaches the backend, so two builds of one workspace can produce
+    differently-named code — against PKG-IDENTITY-001 and CD-108's deterministic identity.
+    **ESCALATED, not fixed** (§18.5): choosing the canonical name for a package reachable by several
+    paths is a compiler decision. The corpus workspace is a CHAIN, not a diamond, so no corpus case
+    is flaky; the defect needed a purpose-built graph to surface.
+  - **A methodological error recorded against myself.** My first reorder experiment reused the
+    relocation helper, which compiles BEFORE rewriting the manifest and leaves a stale `stark.lock`.
+    That made the result depend on run order and I briefly wrote it up as "symbols depend on
+    declaration order" — plausible and wrong. The clean experiment showed order-independence and
+    process-nondeterminism instead. A contaminated experiment that produces a believable defect is
+    worse than no experiment.
+  - **Still owed by §15:** dependency-trap provenance (blocked by DEV-113), cross-package trait impls,
+    CLI `--locked --offline`, installed-runtime cases (held by `c63_closure_evidence`), and M08/M09 as
+    corpus metamorphic groups — covered as harness checks, which does NOT raise the §13.2 group count.
+  - **Evidence:** `c6_package` 6/6 (relocation, reorder, both DEV pins, offline resolution),
+    `c6_generated_corpus` 131/131, `c6_metamorphic` 3/3, `c6_corpus_manifest` 30/30, clippy and fmt
+    clean.
 
 - CD-158 [2026-07-27, **WP-C6.5-7 commit 9 — all sixteen mutation controls detected**]
   The negative control for the whole package. Every other phase shows the corpus and comparator

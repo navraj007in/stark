@@ -1,0 +1,6 @@
+use dep_lib::message;
+
+fn main() {
+    println(message().as_str());
+}
+

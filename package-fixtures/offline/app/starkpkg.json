@@ -1,0 +1,8 @@
+{
+  "name": "pkg-offline-app",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "offline_dep": { "package": "pkg-offline-dep", "path": "../vendor/dep", "version": "0.1.0" }
+  }
+}

@@ -8,8 +8,9 @@ commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds
 outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals);
 **C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
 residuals); **C6.5-6 PARTIAL** (20 metamorphic groups over ten families; M08/M09 blocked on package
-graphs — §12.1); **C6.5-7 complete** (all 16 mutations detected). Corpus `0.4.0`: 129 cases, replay
-**129/129 AGREEMENT**. Two findings raised and
+graphs — §12.1); **C6.5-7 complete** (all 16 mutations detected); **C6.5-8 PARTIAL** (package cases, staged package
+replay, relocation and reorder measured; **DEV-113** and **DEV-114** found — §14.1). Corpus `0.5.0`:
+131 cases, replay **131/131 AGREEMENT**. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -713,12 +714,71 @@ Evidence: `target/c6.5-evidence/mutations.json` in the §21.3 schema.
 
 ---
 
-## 14. What comes next
+## 14. Phase C6.5-8 — package breadth (§15, commit 10) — **PARTIAL**
 
-§19's commit 10 — §15's package, relocation, ordering and offline breadth. It is the **prerequisite
-for four separate outstanding items**: §10.5's package cases, §11's T17–T19 templates, §12.1's package
-graph in the replay, and §13's M08/M09 families and the metamorphic floor. Everything single-file is
-now done; what remains is mostly what a package graph unblocks. Migration of the 22 forked suites proceeds
+**Done: the corpus has package cases, the replay builds package graphs, and §15.2/§15.3 are
+measured.** Corpus `0.5.0`, 131 cases, replay **131/131 AGREEMENT**.
+
+Two package cases, chosen to cover several §15.1 shapes per graph rather than one shape per case:
+
+- `pkg__module_root_and_module` — root package + module (cross-file resolution in one package);
+- `pkg__workspace_three_packages` — `app → logic → model`, covering a dependency-to-dependency call,
+  a **re-exported** symbol, a generic instantiated **across a package boundary**, a function value
+  crossing two boundaries, and a **`Drop` type from the leaf package destroyed in the root** —
+  observed through the §8.8 protocol.
+
+**The replay now stages package cases** to a scratch directory before compiling. Resolution writes
+`stark.lock` into the root package, so compiling in place would dirty the corpus and break its own
+lock; concurrent cases sharing a root would also race on that file. `C6_KEEP_TEMP` is honoured here,
+which is what makes a failing package case reproducible by hand.
+
+### 14.1 Two defects this phase found
+
+**DEV-113 — a package build puts absolute paths in trap provenance.** §15.2 requires that no
+absolute path enter semantic identity and that trap source names stay logical. For a package graph
+they do not: file identity is the filesystem path, so the same workspace staged at two locations
+reports different trap provenance. **Consequence: a trapping package case cannot join the corpus**,
+because its observation would depend on where the repository was checked out. A second half of the
+same finding: the HIR oracle attributes every trap to the ROOT file whatever file trapped, while MIR
+attributes it correctly — so a dependency-trap case would make the two engines disagree about *which
+file*. §15.1's last shape ("source provenance in dependency trap") is therefore **not covered**, and
+both halves are pinned by tests that retire when the behaviour changes.
+
+**DEV-114 — canonical package symbols are nondeterministic for a diamond graph.** In `app → {logic,
+model}` with `logic → model`, the same function is `model::leaf@[]` in one process and
+`logic::model::leaf@[]` in the next: same sources, same manifests, same declaration order. Six
+consecutive runs produced both. The prefix is assigned by whichever traversal path reaches the
+package first, and that traversal follows a per-process-seeded hash map. Canonical symbols are the
+identity that reaches the backend, so two builds of one workspace can produce differently-named code
+— against PKG-IDENTITY-001 and CD-108's deterministic identity. **Escalated, not fixed**: choosing
+the canonical name for a package reachable by several paths is a compiler decision.
+
+**And a methodological note I am recording against myself.** My first version of the reorder
+experiment reused the relocation helper, which compiles *before* rewriting the manifest and leaves a
+`stark.lock` behind. The stale lock made the result depend on run order, and I briefly wrote it up as
+"symbols depend on declaration order" — a plausible, wrong finding. The clean experiment showed
+order-independence and process-nondeterminism instead. A contaminated experiment that produces a
+believable defect is worse than no experiment.
+
+### 14.2 What §15 still owes
+
+| §15 requirement | State |
+| --- | --- |
+| §15.1 dependency-trap provenance | **blocked by DEV-113** |
+| §15.1 trait impl across a package boundary | not covered |
+| §15.2 relocation | covered for symbols and observations; **provenance fails (DEV-113)** |
+| §15.3 dependency reorder | observation-stable; symbol comparison blocked by DEV-114 |
+| §15.4 `--locked --offline` via the CLI | not run; the library path is checked (relative paths only, lock written), and the generated crate is already covered by `c64_platform_matrix` |
+| §15.5 installed-runtime cases | not covered here — `c63_closure_evidence` holds that evidence |
+| M08/M09 as corpus metamorphic groups | **still absent.** They are covered as harness-level checks, which does not raise the §13.2 group count: a corpus case has one source set, and these transformations act on where that set lives |
+
+---
+
+## 15. What comes next
+
+§19's commit 11 — CI and Tier-1 machinery (§16): the corpus replay on both Tier-1 targets, exact-commit
+records, shard-summary merging, and C6.4's row 24. Outstanding from earlier phases: §8.1, §10.1, §11.1,
+§12.1 and §14.2 — with DEV-113 and DEV-114 now the two findings that gate package coverage. Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

@@ -59,6 +59,11 @@ pub struct Case {
     pub subcategories: Vec<String>,
     pub sources: Vec<String>,
     pub package_graph: String,
+    /// For a `package`/`workspace` case: the corpus-relative directory holding the ROOT package's
+    /// `starkpkg.json`. Explicit rather than inferred from the source list — a convention like
+    /// "the shallowest manifest" would silently pick the wrong root the first time a case has two
+    /// candidate packages at the same depth.
+    pub package_root: Option<String>,
     pub language_options: Vec<String>,
     pub expected_outcome: String,
     pub expected_trap_category: Option<String>,
@@ -225,6 +230,7 @@ fn assign(case: &mut Case, key: &str, value: Value) -> Result<(), String> {
         "subcategories" => case.subcategories = want_list(key, value)?,
         "sources" => case.sources = want_list(key, value)?,
         "package_graph" => case.package_graph = want_str(key, value)?,
+        "package_root" => case.package_root = Some(want_str(key, value)?),
         "language_options" => case.language_options = want_list(key, value)?,
         "expected_outcome" => case.expected_outcome = want_str(key, value)?,
         "expected_trap_category" => case.expected_trap_category = Some(want_str(key, value)?),
@@ -295,6 +301,33 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
         }
         if case.sources.is_empty() {
             return Err(format!("{id}: no sources"));
+        }
+        // A package case must say where its root manifest is, and a single-file case must not
+        // pretend to have one.
+        match (case.package_graph.as_str(), &case.package_root) {
+            ("single-file", None) => {}
+            ("single-file", Some(_)) => {
+                return Err(format!("{id}: a single-file case has no package_root"))
+            }
+            (_, None) => {
+                return Err(format!(
+                "{id}: a `{}` case must name its `package_root` (the directory holding the root \
+                     starkpkg.json)",
+                case.package_graph
+            ))
+            }
+            (_, Some(root)) => {
+                if !root_dir_ok(root) {
+                    return Err(format!(
+                        "{id}: package_root `{root}` is not a safe relative path"
+                    ));
+                }
+                if !root.starts_with("cases/") && !root.starts_with("metamorphic/") {
+                    return Err(format!(
+                        "{id}: package_root `{root}` is outside the case tree"
+                    ));
+                }
+            }
         }
         if case.required_engines.is_empty() {
             return Err(format!("{id}: no required_engines"));
@@ -444,6 +477,13 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
 /// Every corpus source file, corpus-root-relative, `/`-separated, sorted. Only `.stark` files
 /// count as sources; the manifest, lock, README and generator are corpus INFRASTRUCTURE and are
 /// hashed separately (§9.5) rather than treated as cases.
+fn root_dir_ok(path: &str) -> bool {
+    !path.starts_with('/')
+        && !path.contains(':')
+        && !path.contains('\\')
+        && !path.split('/').any(|part| part == "..")
+}
+
 pub fn enumerate_sources(root: &Path) -> Result<Vec<String>, String> {
     fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) -> Result<(), String> {
         let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;

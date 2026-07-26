@@ -22,16 +22,19 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
-corpus_version = 0.4.0
+# corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
+# package with a module, and a three-package workspace exercising a dependency-to-dependency
+# call, a re-export, a cross-package generic and a cross-package Drop. Minor.
+corpus_version = 0.5.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
-manifest_sha256 = c915f4fad03c3670861c5d1acab58f9b27898f4f3ef557a1954bbbe48e8ef81e
+manifest_sha256 = d2694ce7a537aa2cdc78d9eff37f1847406156178960ec9fa2832de46e67c2a8
 generated_manifest_sha256 = 84610938f93a7365375117de317faf90405c5fc171c009539cf7117026b0e45a
 templates_sha256 = 87b75db3399d792ba13e4b9ca849c4e88a37733f24456be8aaf9ff048faa6e70
 metamorphic_sha256 = 81e98cfb3bfd41f69c513ecbcc99a68c56e2a3647adf649499b088303716fce7
-generator_sha256 = b118862e0539260a36b38fa0023580a18be41801d51f1793e4cd2247d1c9b371
-case_count = 129
-handwritten_count = 53
+generator_sha256 = df9cc4d82b3e29fac6e965c60d6d1c95df20ab5c6eb13b79b2b6ad9df4a2482a
+case_count = 131
+handwritten_count = 55
 generated_count = 70
 retained_count = 6
 metamorphic_group_count = 20
@@ -105,6 +108,11 @@ bb3f12738b14ca19f37e7f04329869def4adc14003807bca128ce5f9be349da5  cases/generate
 11f91885b4a3b74b727cbbed854f4a26c9c1af267c56677dde4db566be84cdd6  cases/generated/gen__t20__b6feee0e.stark
 b409dd8cdd1aaf1ecf4771223c889f2f78b462c708c2b47d8a76a91e8ddf6abc  cases/generated/gen__t20__cd54c97b.stark
 7e157825dd09670f08ee0e6dc4d921185108ad834690aed50ed6c560c7e52415  cases/generated/gen__t20__e7b48a55.stark
+bff2fce7ab3a2f25bd031cae426d9b08015e9c4776d06d526093e2f6b11d04ff  cases/handwritten/pkg__module/src/helper.stark
+ae10f2aa556a1aeeac63addfcab85a6dd2f3bb8f3aae8ff8f0a59a4a71aa6880  cases/handwritten/pkg__module/src/main.stark
+d28ab80c7a7ebed20fd230478d465411e3feb95e89d3a4cf95c931568b3d8870  cases/handwritten/pkg__workspace/app/src/main.stark
+100a836c446765d73ef8990a1a6a264e2f80e6c29844131d78dc73485e4d678d  cases/handwritten/pkg__workspace/logic/src/main.stark
+dee710f6423e0f9945da16e4b4985164eb120c9890666d86f710bc1a6101b673  cases/handwritten/pkg__workspace/model/src/main.stark
 973da2d15052eb8af0dcf25ba17edffc03694983193540c361a297e3ad651288  cases/handwritten/sentinel__01_eq_always_true.stark
 896b3c0a701e91e2abb11da4f34af5c933be29e45162b2cce15e9ae930f70c26  cases/handwritten/sentinel__02_reverse_ord.stark
 730b47e7d47b283e6c1397a8779d00845e67a42dcf0541112a1cd284d11a93c8  cases/handwritten/sentinel__03_constant_hash_distinct_eq.stark

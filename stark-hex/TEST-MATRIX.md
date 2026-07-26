@@ -15,6 +15,7 @@
 | DEC-CHAR-002 | DECODE_INVALID_CHARACTER | leading/trailing whitespace | reject | InvalidCharacter | exact | test | pass |
 | DEC-CHAR-003 | DECODE_INVALID_CHARACTER | separators `: - _` | reject | InvalidCharacter | exact | test | pass |
 | DEC-CHAR-004 | DECODE_INVALID_CHARACTER | `gg`, `0g`, non-ASCII | reject | InvalidCharacter | exact | test | pass |
+| DEC-CHAR-005 | DECODE_INVALID_CHARACTER | every invalid ASCII byte | reject | InvalidCharacter | 0/raw byte | test | pass |
 | PREC-001 | ERROR_PRECEDENCE | `x`, `0x0`, `abc`, `abz`, `é` | specified precedence | exact | exact | test | pass |
 | RT-001 | ROUND_TRIP | representative + full domain | decode(encode(bytes)) == bytes | none | n/a | test | pass |
 | CAN-001 | CANONICALITY | `aB` | lower `ab`, upper `AB` | none | n/a | test | pass |

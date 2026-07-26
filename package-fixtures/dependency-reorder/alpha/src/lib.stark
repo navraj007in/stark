@@ -1,0 +1,4 @@
+pub fn alpha() -> String {
+    String::from("alpha")
+}
+

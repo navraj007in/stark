@@ -1,0 +1,24 @@
+// §15.1 root package. Exercises, in one graph: a dependency-to-dependency call, a re-exported
+// symbol, a generic instantiated across a package boundary, a function value crossing two
+// boundaries, and a `Drop` type from the LEAF package destroyed here in the root.
+use logic::apply;
+use logic::get_quadruple;
+use logic::echo_twice;
+use logic::tag;
+use logic::Tagged;
+
+fn main() {
+    let f: fn(Int32) -> Int32 = get_quadruple();
+    print(apply(f, 5));
+    print("|");
+    let widened: Int64 = echo_twice(3, 4);
+    print(widened);
+    // The line must END before the Drop frames: a §8.8 frame has to occupy a whole line, and
+    // the harness refuses one that appears mid-line rather than silently losing the event.
+    println("|");
+    {
+        let first: Tagged = tag(1);
+        let second: Tagged = tag(2);
+    }
+    print("end");
+}

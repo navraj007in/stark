@@ -1,0 +1,9 @@
+{
+  "name": "pkg-reorder-app-a",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "alpha_pkg": { "package": "pkg-reorder-alpha", "path": "../alpha", "version": "0.1.0" },
+    "beta_pkg": { "package": "pkg-reorder-beta", "path": "../beta", "version": "0.1.0" }
+  }
+}

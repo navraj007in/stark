@@ -1,0 +1,10 @@
+// §15.1: root package + module. The module is a second FILE in one package, so this covers
+// cross-file resolution and cross-file trap provenance without a dependency edge.
+mod helper;
+
+fn main() {
+    let p: helper::Point = helper::make_point(3, 4);
+    print(helper::sum(p));
+    print("|");
+    print(helper::scaled(5, 3));
+}

@@ -1,0 +1,4 @@
+fn main() {
+    println("relocated:stable");
+}
+

@@ -1,0 +1,4 @@
+pub fn core_message() -> String {
+    String::from("reexport:core")
+}
+

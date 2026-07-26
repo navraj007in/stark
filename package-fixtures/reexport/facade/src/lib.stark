@@ -1,0 +1,6 @@
+use core_pkg::core_message;
+
+pub fn facade_message() -> String {
+    core_message()
+}
+

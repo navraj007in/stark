@@ -1,0 +1,13 @@
+pub struct Point { pub x: Int32, pub y: Int32 }
+
+pub fn make_point(a: Int32, b: Int32) -> Point {
+    Point { x: a, y: b }
+}
+
+pub fn sum(p: Point) -> Int32 {
+    p.x + p.y
+}
+
+pub fn scaled(v: Int32, factor: Int32) -> Int32 {
+    v * factor
+}

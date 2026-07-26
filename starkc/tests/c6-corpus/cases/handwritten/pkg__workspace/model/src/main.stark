@@ -1,0 +1,24 @@
+// §15.1 leaf package. Provides a generic function instantiated across the package boundary, a
+// non-capturing function used as a cross-package function value, and a `Drop` type whose
+// destruction is observed in the ROOT package — so Drop crosses a package boundary.
+pub struct Tagged { pub id: Int32 }
+
+impl Drop for Tagged {
+    fn drop(&mut self) {
+        print("@@stark-drop:Tagged#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+pub fn tag(id: Int32) -> Tagged {
+    Tagged { id: id }
+}
+
+pub fn echo<T>(value: T) -> T {
+    value
+}
+
+pub fn quadruple(n: Int32) -> Int32 {
+    n * 4
+}

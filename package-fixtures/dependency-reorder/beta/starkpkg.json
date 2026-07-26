@@ -1,0 +1,6 @@
+{
+  "name": "pkg-reorder-beta",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "dependencies": {}
+}

@@ -1,0 +1,6 @@
+use facade::facade_message;
+
+fn main() {
+    println(facade_message().as_str());
+}
+

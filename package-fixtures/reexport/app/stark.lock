@@ -1,0 +1,19 @@
+{
+  "packages": [
+    {
+      "name": "core_pkg",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+      }
+    },
+    {
+      "name": "facade",
+      "version": "0.1.0",
+      "sha256": "",
+      "dependencies": {
+        "core_pkg": "0.1.0"
+      }
+    }
+  ]
+}

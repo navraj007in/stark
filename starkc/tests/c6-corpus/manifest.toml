@@ -92,6 +92,36 @@ required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
 normative_rules = ["TYPE-PRIM-001"]
 
 [[case]]
+case_id = "pkg__module_root_and_module"
+kind = "handwritten"
+category = "packages-environment"
+subcategories = ["K02"]
+sources = ["cases/handwritten/pkg__module/src/main.stark", "cases/handwritten/pkg__module/src/helper.stark"]
+package_graph = "package"
+package_root = "cases/handwritten/pkg__module"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["MOD-FILE-001", "MOD-VIS-001"]
+expected_stdout = ["7|15"]
+
+[[case]]
+case_id = "pkg__workspace_three_packages"
+kind = "handwritten"
+category = "packages-environment"
+subcategories = ["K03", "K04", "K05"]
+sources = ["cases/handwritten/pkg__workspace/app/src/main.stark", "cases/handwritten/pkg__workspace/logic/src/main.stark", "cases/handwritten/pkg__workspace/model/src/main.stark"]
+package_graph = "workspace"
+package_root = "cases/handwritten/pkg__workspace/app"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PKG-RESOLVE-001", "MOD-REEXPORT-001", "DROP-ORDER-001"]
+drop_protocol = true
+expected_stdout = ["20|7|", "end"]
+expected_drop_log = ["Tagged#2", "Tagged#1"]
+
+[[case]]
 case_id = "sentinel__01_eq_always_true"
 kind = "handwritten"
 category = "values-types"

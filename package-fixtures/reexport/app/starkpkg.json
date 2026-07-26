@@ -1,0 +1,8 @@
+{
+  "name": "pkg-reexport-app",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "facade": { "package": "pkg-reexport-facade", "path": "../facade", "version": "0.1.0" }
+  }
+}

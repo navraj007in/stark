@@ -1,0 +1,6 @@
+{
+  "name": "pkg-offline-dep",
+  "version": "0.1.0",
+  "entry": "src/lib.stark",
+  "dependencies": {}
+}

@@ -1,0 +1,4 @@
+pub fn beta() -> String {
+    String::from("beta")
+}
+

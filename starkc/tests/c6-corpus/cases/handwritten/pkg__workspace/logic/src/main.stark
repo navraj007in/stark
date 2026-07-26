@@ -1,0 +1,21 @@
+// §15.1 middle package: calls its own dependency (dependency-to-dependency), re-exports a symbol
+// from it, and returns a cross-package function value.
+use model::echo;
+use model::quadruple;
+
+pub use model::tag;
+pub use model::Tagged;
+
+pub fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 {
+    f(v)
+}
+
+pub fn get_quadruple() -> fn(Int32) -> Int32 {
+    quadruple
+}
+
+pub fn echo_twice(a: Int32, b: Int64) -> Int64 {
+    let first: Int32 = echo(a);
+    let second: Int64 = echo(b);
+    (first as Int64) + second
+}
