@@ -29,6 +29,23 @@ A case is a single `.stark` file or a directory holding a complete package/works
 
 ## What is here today
 
+**19 cases: 13 handwritten sentinels (§10.3) and 6 retained.**
+
+The sentinels are the point of C6.5-3, not filler. Each is built so that the *likely wrong*
+implementation fails it: an `Eq` that always answers true (so a structurally-comparing HashMap
+reports two entries instead of one — CD-133's live defect), an `Ord` that reverses, a constant `Hash`
+with distinct `Eq`, a `Display` sharing nothing with the layout, a `Clone` that changes a marker, a
+non-zero `Default`, two generic instances / two trait impls / two function-value targets each
+returning different sentinels, a slice mutation visible through the view, an insertion order distinct
+from both sorted and hash order, Drop identities that expose reversal, omission and duplication, and
+a `Float32` whose rendering differs from the same value widened to `Float64`.
+
+Every sentinel **pins its observation in the manifest** (`expected_stdout` or `expected_drop_log`),
+and `c6_corpus_cases.rs` enforces that it does. That is deliberate: a wrong implementation is usually
+wrong in all three engines at once — a structural `Display` fallback, a sorted map iteration, a
+declaration-order Drop schedule — and those agree perfectly. Three-engine agreement alone would pass
+them.
+
 Six `retained` cases, from DEV-111 and DEV-112 — the entry-contract defects WP-C6.5 found while
 building the observation model. They are here rather than only in a test file because §18.3 requires
 a retained case to remain a permanent regression, and because a corpus whose machinery has never
@@ -65,6 +82,8 @@ Two entry-contract programs are deliberately **not** corpus cases:
 | `normative_rules` | at least one, for every non-quarantined case |
 | `return_probe` | the probe function name, for §8.7 framed-return cases |
 | `drop_protocol` | `true` when the case emits §8.8 Drop frames |
+| `expected_stdout` | the exact stdout, as lines joined by `\n`; what makes a sentinel discriminating rather than merely agreed |
+| `expected_drop_log` | §8.8 Drop identities in destruction order; requires `drop_protocol = true` |
 | `deviation` | a recorded, non-blocking difference — e.g. an engine that cannot run this case yet |
 | `quarantine` | reason class + `CD-###` authority; only §4.4's three allowed classes parse |
 
@@ -82,6 +101,7 @@ to write one.
 python3 tests/c6-corpus/generate.py --lock    # regenerate after any corpus change
 python3 tests/c6-corpus/generate.py --check   # what CI asks: is the lock current?
 cargo test --test c6_corpus_manifest          # strict manifest + lock integrity
+cargo test --test c6_corpus_cases             # run every case on the engines it declares
 ```
 
 Then bump `corpus_version` in `generate.py` and the assertion in `c6_corpus_manifest.rs`, per §9.6:

@@ -70,6 +70,14 @@ pub struct Case {
     pub generator_version: Option<String>,
     pub template_id: Option<String>,
     pub normative_rules: Vec<String>,
+    /// The exact stdout all three engines must produce, as lines joined by `\n` (§10.3). Stated in
+    /// the manifest rather than left to agreement because a sentinel's whole purpose is to fail
+    /// under a wrong implementation — and three engines sharing one wrong rendering agree perfectly.
+    /// Empty means "not pinned"; a case whose observation IS its output should pin it.
+    pub expected_stdout: Vec<String>,
+    /// The §8.8 Drop identities, in the order they must be destroyed. Same reasoning: unanimity on a
+    /// wrong Drop schedule is still wrong.
+    pub expected_drop_log: Vec<String>,
     pub return_probe: Option<String>,
     pub drop_protocol: bool,
     pub deviation: Option<String>,
@@ -194,6 +202,8 @@ fn assign(case: &mut Case, key: &str, value: Value) -> Result<(), String> {
         "generator_version" => case.generator_version = Some(want_str(key, value)?),
         "template_id" => case.template_id = Some(want_str(key, value)?),
         "normative_rules" => case.normative_rules = want_list(key, value)?,
+        "expected_stdout" => case.expected_stdout = want_list(key, value)?,
+        "expected_drop_log" => case.expected_drop_log = want_list(key, value)?,
         "return_probe" => case.return_probe = Some(want_str(key, value)?),
         "drop_protocol" => case.drop_protocol = want_bool(key, value)?,
         "deviation" => case.deviation = Some(want_str(key, value)?),
@@ -271,6 +281,12 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
         if case.quarantine.is_none() && case.normative_rules.is_empty() {
             return Err(format!(
                 "{id}: a Core case must cite at least one normative rule"
+            ));
+        }
+        if !case.expected_drop_log.is_empty() && !case.drop_protocol {
+            return Err(format!(
+                "{id}: an expected Drop log needs `drop_protocol = true` — the frames are only \
+                 parsed out of stdout for cases that declare the protocol"
             ));
         }
         if case.kind == "generated"

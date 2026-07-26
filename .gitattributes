@@ -4,3 +4,9 @@
 *.snap text eol=lf
 *.ast text eol=lf
 *.stderr text eol=lf
+
+# WP-C6.5 differential corpus: the lock hashes the manifest and the generator as BYTES, so their
+# checked-out representation has to be identical on every host too -- not just the `.stark` sources.
+# Without this, Windows checks `manifest.toml`/`generate.py` out as CRLF and `corpus.lock` cannot
+# match anywhere but the machine that wrote it (CI caught exactly that at CD-152).
+starkc/tests/c6-corpus/** text eol=lf

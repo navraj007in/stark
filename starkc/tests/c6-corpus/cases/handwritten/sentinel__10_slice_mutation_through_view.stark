@@ -1,0 +1,15 @@
+// §10.3 sentinel: a mutation made through an exclusive slice view must be visible in the owner.
+// An engine that COPIED the elements into the view instead of borrowing them prints the original
+// value and fails — the "slice copy instead of view" defect §18.4 ranks high-priority.
+fn bump(view: &mut [Int32]) {
+    view[0] = view[0] + 100;
+}
+fn main() {
+    let mut xs: [Int32; 3] = [1, 2, 3];
+    // `&mut xs[0..2]` is the normative way to take a view: there is no implicit array-to-slice
+    // coercion, so the range borrow is what produces `&mut [Int32]`.
+    bump(&mut xs[0..2]);
+    assert_eq(xs[0], 101);
+    assert_eq(xs[1], 2);
+    print(xs[0]);
+}

@@ -1,0 +1,13 @@
+// §10.3 sentinel: two function VALUES with the same type and different targets, called through the
+// same variable. An engine that resolved the call statically to whichever target it saw first
+// prints 55 twice; one that reassigned correctly prints 55 then 66.
+fn five() -> Int32 { 55 }
+fn six() -> Int32 { 66 }
+fn main() {
+    let mut f: fn() -> Int32 = five;
+    assert_eq(f(), 55);
+    print(f());
+    f = six;
+    assert_eq(f(), 66);
+    print(f());
+}

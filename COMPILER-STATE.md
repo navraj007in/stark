@@ -131,9 +131,12 @@ extracted mechanically first (88 passed, identical to V0), then extended to the 
 observation shape** — stderr bytes, exit status, returned observation and a parsed Drop log, with
 trap stderr normalised rather than byte-matched and 18 comparator tests proving each field is
 load-bearing (**109 passed / 0 ignored / 0 self-skipped**). **C6.5-2 (CD-152) added the corpus
-itself** — `starkc/tests/c6-corpus/`, strict manifest, hash lock, 28 manifest/lock tests, seeded with
-the 6 retained DEV-111/DEV-112 cases at `corpus_version` 0.1.0; the ≥64-case generated corpus remains
-unbuilt. The other **22 forked suites are
+itself** — `starkc/tests/c6-corpus/`, strict manifest, hash lock, 28 manifest/lock tests — and
+**C6.5-3 (CD-153, PARTIAL) added the thirteen §10.3 adversarial sentinels**, each pinning its
+observation in the manifest because a wrong implementation is usually wrong in all three engines at
+once and they would otherwise agree. `corpus_version` 0.2.0, 19 cases. Still owed by §10: per-row
+witnesses, the trap balance (no trap case is in the corpus yet), and package breadth; the ≥64-case
+generated corpus of §11 remains unbuilt. The other **22 forked suites are
 not yet migrated** — owner chose incremental migration in coverage-matrix order — so until each is,
 its C6.2/C6.3 evidence still rests on its own local notion of agreement. Matrix roll-up: 127
 EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **4 BLOCKED — V19 `HashSet`**
@@ -3239,6 +3242,41 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-153 [2026-07-26, **WP-C6.5-3 commit 5 PARTIAL — the thirteen §10.3 sentinels**]
+  `corpus_version` **0.2.0**: 19 cases (13 handwritten sentinels, 6 retained). Each is built so the
+  LIKELY WRONG implementation fails it, which is §10.3's stated bar — "a case that would still pass
+  under the likely wrong implementation is insufficient". What each catches: structural key
+  comparison in a `HashMap` (CD-133's live defect), comparing fields instead of the user's `cmp`,
+  equal hashes treated as equal keys, a structural `Display` fallback, `Clone` as a structural copy,
+  zero-initialisation instead of `Default`, monomorphising a generic once and reusing the body,
+  picking the first matching impl, resolving an indirect call statically, copying elements into a
+  slice view (§18.4's "slice copy instead of view"), sorting or hash-ordering a map, a
+  declaration-order/omitted/duplicated Drop schedule, and carrying `Float32` arithmetic at f64 width
+  (DEV-109's defect).
+  - **The load-bearing decision: every sentinel PINS its observation in the manifest**
+    (`expected_stdout` / `expected_drop_log`), and a test enforces that it does. A wrong
+    implementation is usually wrong in ALL THREE ENGINES AT ONCE — a structural `Display` fallback, a
+    sorted map iteration, a declaration-order Drop schedule — and those agree perfectly, so
+    three-engine agreement alone would pass every sentinel above. Not theoretical: the `Float32`
+    sentinel failed on first run against a wrong expectation of mine, which is the mechanism working.
+  - **`c6_corpus_cases.rs`** runs each case on the engines its manifest entry declares — three-engine
+    where native builds it, two-engine for the DEV-111 entry cases native refuses. Deliberately NOT
+    §12's replay harness (commit 7: admission classification, timeouts, sharding, filters, evidence
+    schema); it exists now so no case is added in a state where nothing runs it.
+  - **Two surface findings while writing the cases, recorded not worked around.** (1) `T::assoc()`
+    through a type PARAMETER does not resolve (`E0200 "undefined variable 'T::tag'"`); TRAIT-ASSOC-001
+    covers `T::Item` for associated TYPES, so whether an associated FUNCTION is callable through a
+    parameter is a spec question — flagged, and the sentinel rewritten onto a `&T` receiver.
+    (2) No implicit array→slice coercion: `&mut xs[0..2]` is the normative view form. Correct as
+    specified; recorded because the first draft assumed otherwise.
+  - **C6.5-3 is PARTIAL and the remainder is named**: §10.2's per-row witnesses (13 sentinels against
+    136 rows), §10.4's completion/trap balance (NO trap case is in the corpus yet), §10.5's package
+    breadth (every case is single-file), and §10.3's "same filename in different package locations".
+    Sentinels went first because nothing else in the plan substitutes for them and the roll-up named
+    "adversarial sentinels: 0".
+  - **Evidence:** `c6_corpus_cases` 2/2 (19 cases), `c6_corpus_manifest` 28/28,
+    `c65_entry_exit_contract` 8/8, `generate.py --check` current, `fmt` clean.
 
 - CD-152 [2026-07-26, **WP-C6.5-2 commit 4 — the corpus exists: manifest, layout, lock**]
   `starkc/tests/c6-corpus/` with the §9.1 layout, a strict manifest, a generated lock, and **28

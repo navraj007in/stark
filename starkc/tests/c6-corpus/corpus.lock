@@ -12,16 +12,33 @@
 # corpus_version 0.1.0 (WP-C6.5-2, 2026-07-26, CD-152): the corpus is created with the
 # retained DEV-111/DEV-112 entry-contract cases, so the machinery locks real files rather
 # than being vacuously green on an empty tree.
-corpus_version = 0.1.0
+# corpus_version 0.2.0 (WP-C6.5-3, 2026-07-26, CD-153): the thirteen §10.3 adversarial
+# sentinels, each pinning its observation in the manifest so it fails under the LIKELY WRONG
+# implementation rather than only under engine disagreement. Minor: new cases, no change to
+# any existing source or expectation.
+corpus_version = 0.2.0
 generator_version = 0.1.0
 generator_seed = unset-until-c6.5-4
-manifest_sha256 = 6ff84d6838b826c8adfdb5c96b93f957dc88931dedd7032a3656e197e037106b
-generator_sha256 = 3edb04d46b32ba2eba8ce18f765f702f8e7c1de74ea5a45c70ea40c714ed5161
-case_count = 6
-handwritten_count = 0
+manifest_sha256 = c915f4fad03c3670861c5d1acab58f9b27898f4f3ef557a1954bbbe48e8ef81e
+generator_sha256 = c8637dd8d4eaf94dba4944a79fa84f7ec3d0a816fd50eb8ea90bb315883d2faa
+case_count = 19
+handwritten_count = 13
 generated_count = 0
 retained_count = 6
 metamorphic_group_count = 0
+973da2d15052eb8af0dcf25ba17edffc03694983193540c361a297e3ad651288  cases/handwritten/sentinel__01_eq_always_true.stark
+896b3c0a701e91e2abb11da4f34af5c933be29e45162b2cce15e9ae930f70c26  cases/handwritten/sentinel__02_reverse_ord.stark
+730b47e7d47b283e6c1397a8779d00845e67a42dcf0541112a1cd284d11a93c8  cases/handwritten/sentinel__03_constant_hash_distinct_eq.stark
+c08b721556f6940806a3e726c0b7cf6f0d305a2e7699256255f5210941a11e63  cases/handwritten/sentinel__04_display_unlike_layout.stark
+8961c61f4f82bec70b1139715f230c88408510ef1779999e03b3803be165e6f0  cases/handwritten/sentinel__05_clone_changes_marker.stark
+cd1b569a059380309cb5a8096aeaea63ee42d0765c3ddf9de597e65a313211b3  cases/handwritten/sentinel__06_default_nonzero.stark
+34a1a4d69a1fae8ca0fda7fabbfdcf8fbbc430ae56851fe37522409ccb51e3e9  cases/handwritten/sentinel__07_two_generic_instances.stark
+0185f3217c8f2cafc3b55ffb7ef5f0d990601c2a1999d6720644f8d334edad6e  cases/handwritten/sentinel__08_two_trait_impls.stark
+14430287e43a1dbfb3b75f90a799cf9a9a3ccb3b2437ef9fbfd401fbeec7f14b  cases/handwritten/sentinel__09_two_function_value_targets.stark
+3d0e2ca7d9ee952cda6df11c5626b88e478003204d4bd81e8f9e3414d28e3599  cases/handwritten/sentinel__10_slice_mutation_through_view.stark
+da744bb48a7b4d985bfc1fb7af91bcb8ecc1d1100bde518bf17b24d9863c7355  cases/handwritten/sentinel__11_insertion_order_not_sorted.stark
+5bb44a53542fe9389dd952f5f1b1af7d17d10a692fecb120974088f1454e8b4c  cases/handwritten/sentinel__12_drop_identities.stark
+0c6f41ad73895d29d21319d42193a751ab6622f2d4afcef9adc4394ed7ef3f3b  cases/handwritten/sentinel__13_float32_rendering.stark
 35d47bdb8e195fa4364859685eba982f8199696f66104cb9010510ae39d7ce7a  cases/retained/entry_exit__01_unit_entry.stark
 f6441e116ccf387ab837781ac0fb056730c8f1341233bcf46051c2060989ebcf  cases/retained/entry_exit__02_int32_status.stark
 1d2686fcd48f2d85691ec540b93425788150007223d260901d6569671d98adf5  cases/retained/entry_exit__03_err_stderr.stark

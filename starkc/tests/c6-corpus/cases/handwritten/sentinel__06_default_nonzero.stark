@@ -1,0 +1,11 @@
+// §10.3 sentinel: a `Default` that is not the zero value. An engine that zero-initialised instead of
+// calling the user's `default` reports 0.
+struct Configured { v: Int32 }
+impl Default for Configured {
+    fn default() -> Configured { Configured { v: 42 } }
+}
+fn main() {
+    let c: Configured = Configured::default();
+    assert_eq(c.v, 42);
+    print(c.v);
+}

@@ -1,0 +1,18 @@
+// §10.3 sentinel: an `Eq` that answers `true` for every pair. A HashMap keyed by it must therefore
+// collapse two structurally DIFFERENT keys into one entry. An engine that compares keys
+// structurally instead of through the user's lawful `Eq` reports 2 and fails here — which is
+// exactly the divergence CD-133 found live in MIR.
+struct Always { v: Int32 }
+impl Eq for Always {
+    fn eq(&self, other: &Always) -> Bool { true }
+}
+impl Hash for Always {
+    fn hash(&self) -> UInt64 { 1u64 }
+}
+fn main() {
+    let mut m: HashMap<Always, Int32> = HashMap::new();
+    m.insert(Always { v: 1 }, 10);
+    m.insert(Always { v: 2 }, 20);
+    assert_eq(m.len(), 1);
+    print(m.len());
+}

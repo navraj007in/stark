@@ -18,7 +18,7 @@ use support::corpus::{
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
 /// this assertion is what makes the second half unskippable.
-const EXPECTED_CORPUS_VERSION: &str = "0.1.0";
+const EXPECTED_CORPUS_VERSION: &str = "0.2.0";
 
 // ------------------------------------------------------------- the real corpus --
 
@@ -276,24 +276,30 @@ fn unsorted_manifest_rejected() {
 
 // ------------------------------------------------------------- lock rejections --
 
-/// A scratch corpus: the real manifest and generator, plus whichever sources the test wants. Built
-/// under the harness's temp dir so nothing touches the checked-in corpus.
+/// A scratch copy of the whole corpus — every source, plus the manifest and generator. Built under
+/// the harness's temp dir so a test can mutate it without touching the checked-in corpus, and copied
+/// WHOLESALE rather than dir-by-dir: a partial copy makes the lock fail for the copier's reason
+/// instead of the test's, which is how these three tests first went red.
 fn scratch_corpus(tag: &str) -> std::path::PathBuf {
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).expect("scratch dir");
+        for entry in std::fs::read_dir(from).expect("read corpus") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().expect("name").to_owned();
+            if path.is_dir() {
+                copy_tree(&path, &to.join(name));
+            } else if name != "corpus.lock" {
+                std::fs::copy(&path, to.join(name)).expect("copy corpus file");
+            }
+        }
+    }
     let root = std::env::temp_dir().join(format!(
         "stark_c6corpus_{tag}_{}_{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(root.join("cases/retained")).expect("scratch corpus");
-    for name in ["manifest.toml", "generate.py"] {
-        std::fs::copy(corpus_root().join(name), root.join(name)).expect("copy infrastructure");
-    }
-    for entry in std::fs::read_dir(corpus_root().join("cases/retained")).expect("retained cases") {
-        let path = entry.expect("entry").path();
-        let name = path.file_name().expect("name").to_owned();
-        std::fs::copy(&path, root.join("cases/retained").join(name)).expect("copy case");
-    }
+    copy_tree(&corpus_root(), &root);
     root
 }
 

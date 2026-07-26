@@ -90,3 +90,173 @@ expected_outcome = "completion"
 required_engines = ["hir", "mir", "native-debug"]
 required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
 normative_rules = ["TYPE-PRIM-001"]
+
+[[case]]
+case_id = "sentinel__01_eq_always_true"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["V18"]
+sources = ["cases/handwritten/sentinel__01_eq_always_true.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-DISPATCH-001", "TRAIT-LAW-001", "STD-HASH-001"]
+expected_stdout = ["1"]
+
+[[case]]
+case_id = "sentinel__02_reverse_ord"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D08"]
+sources = ["cases/handwritten/sentinel__02_reverse_ord.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-DISPATCH-001", "STD-HOOK-001"]
+expected_stdout = ["1"]
+
+[[case]]
+case_id = "sentinel__03_constant_hash_distinct_eq"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["V18"]
+sources = ["cases/handwritten/sentinel__03_constant_hash_distinct_eq.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001", "TRAIT-LAW-001"]
+expected_stdout = ["2010"]
+
+[[case]]
+case_id = "sentinel__04_display_unlike_layout"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D08"]
+sources = ["cases/handwritten/sentinel__04_display_unlike_layout.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PRINT-DISPLAY-001", "STD-HOOK-001"]
+expected_stdout = ["CUSTOM"]
+
+[[case]]
+case_id = "sentinel__05_clone_changes_marker"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D08"]
+sources = ["cases/handwritten/sentinel__05_clone_changes_marker.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HOOK-001", "EXEC-DISPATCH-001"]
+expected_stdout = ["101"]
+
+[[case]]
+case_id = "sentinel__06_default_nonzero"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D08"]
+sources = ["cases/handwritten/sentinel__06_default_nonzero.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HOOK-001", "EXEC-DISPATCH-001"]
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "sentinel__07_two_generic_instances"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D05"]
+sources = ["cases/handwritten/sentinel__07_two_generic_instances.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-GENERIC-001", "EXEC-DISPATCH-001"]
+expected_stdout = ["1122"]
+
+[[case]]
+case_id = "sentinel__08_two_trait_impls"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D06"]
+sources = ["cases/handwritten/sentinel__08_two_trait_impls.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-DISPATCH-001", "TRAIT-DEF-001"]
+expected_stdout = ["3344"]
+
+[[case]]
+case_id = "sentinel__09_two_function_value_targets"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D09"]
+sources = ["cases/handwritten/sentinel__09_two_function_value_targets.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-FN-001", "EXEC-DISPATCH-001"]
+expected_stdout = ["5566"]
+
+[[case]]
+case_id = "sentinel__10_slice_mutation_through_view"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["V11"]
+sources = ["cases/handwritten/sentinel__10_slice_mutation_through_view.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["REF-SLICE-001", "REF-PROJECT-001"]
+expected_stdout = ["101"]
+
+[[case]]
+case_id = "sentinel__11_insertion_order_not_sorted"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["V18"]
+sources = ["cases/handwritten/sentinel__11_insertion_order_not_sorted.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001"]
+expected_stdout = ["301020"]
+
+[[case]]
+case_id = "sentinel__12_drop_identities"
+kind = "handwritten"
+category = "ownership-drop"
+subcategories = ["O17", "O20", "O21"]
+sources = ["cases/handwritten/sentinel__12_drop_identities.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["DROP-ORDER-001", "DROP-EXACT-001"]
+drop_protocol = true
+expected_drop_log = ["Loud#3", "Loud#2", "Loud#1"]
+
+[[case]]
+case_id = "sentinel__13_float32_rendering"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["V03"]
+sources = ["cases/handwritten/sentinel__13_float32_rendering.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-FLOAT-FORMAT-001"]
+expected_stdout = ["0.1|0.10000000149011612"]

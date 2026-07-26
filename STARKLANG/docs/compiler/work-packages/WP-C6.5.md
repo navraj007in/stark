@@ -4,7 +4,8 @@
 **Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, matrix) and **C6.5-2 (manifest, layout, lock)**
 complete; **C6.5-1 complete** (comparator extracted and extended to the full §39 observation shape,
 commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds in matrix order.
-Corpus `0.1.0`: 6 retained cases, 0 handwritten, 0 generated. Two findings raised and
+**C6.5-3 PARTIAL** (§10.3 sentinels done; per-row witnesses, trap balance and package breadth
+outstanding — §8.1). Corpus `0.2.0`: 13 handwritten, 6 retained, 0 generated. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -412,11 +413,71 @@ templates — is still entirely unbuilt; this phase built the thing that will ho
 
 ---
 
-## 8. What comes next
+## 8. Phase C6.5-3 — hand-written completion (§10, commit 5) — **PARTIAL**
 
-§19's commit 5 — hand-written category completion (§10): focused witnesses for the matrix rows that
-need them, sentinels that prove the WRONG route is observable rather than only that the right one
-works, and the completion/trap balance §10.4 requires. Migration of the 22 forked suites proceeds
+**Done: the thirteen §10.3 sentinels, and a bridge that runs every corpus case.**
+
+`corpus_version` **0.2.0** — 19 cases: 13 handwritten sentinels, 6 retained. Each sentinel is built so
+the *likely wrong* implementation fails it, which §10.3 states as the bar ("a case that would still
+pass under the likely wrong implementation is insufficient"):
+
+| Sentinel | The wrong implementation it catches |
+| --- | --- |
+| `Eq` always true | structural key comparison in a `HashMap` — CD-133's live defect |
+| reverse `Ord` | comparing fields directly instead of through the user's `cmp` |
+| constant `Hash`, distinct `Eq` | treating equal hashes as equal keys; hash/sorted iteration order |
+| `Display` unlike layout | a structural/debug rendering fallback |
+| `Clone` changing a marker | clone as a structural copy |
+| non-zero `Default` | zero-initialisation |
+| two generic instances | monomorphising once and reusing the body |
+| two trait impls | picking the first matching impl |
+| two function-value targets | resolving an indirect call statically |
+| slice mutation through a view | copying elements into the view (§18.4's "slice copy instead of view") |
+| insertion order ≠ sorted order | sorting, or iterating hash buckets |
+| Drop identities | declaration-order, omitted or duplicated destruction |
+| `Float32` rendering | carrying f32 arithmetic at f64 width — DEV-109's defect |
+
+**Every sentinel pins its observation in the manifest** (`expected_stdout` / `expected_drop_log`), and
+a test enforces that it does. This is the phase's central point: a wrong implementation is usually
+wrong in *all three engines at once*, and those agree perfectly. Three-engine agreement alone would
+pass every sentinel above. The pinning is what converts agreement into evidence — and it is not
+theoretical: the `Float32` sentinel failed on first run against a wrong expectation of mine, which is
+the mechanism working.
+
+**`c6_corpus_cases.rs`** runs each case on the engines its manifest entry declares — three-engine
+where native builds it, two-engine for the DEV-111 entry cases the native backend refuses. Deliberately
+NOT §12's replay harness (commit 7, which adds admission classification, timeouts, sharding, filters
+and the evidence schema): it exists now so no case is added in a state where nothing runs it.
+
+Two surface findings while writing the cases, both recorded rather than worked around:
+
+1. **`T::assoc()` through a type parameter does not resolve** — `E0200 "undefined variable 'T::tag'"`.
+   TRAIT-ASSOC-001 speaks of `T::Item` as a projection for associated *types*; whether an associated
+   *function* is callable through a parameter in Core v1 is a spec question, so the sentinel was
+   rewritten onto a `&T` receiver and this is flagged, not assumed out of scope.
+2. **No implicit array→slice coercion** — `&mut xs[0..2]` is the normative way to take a view. Correct
+   as specified; recorded because the first draft assumed otherwise.
+
+### 8.1 What §10 still owes
+
+| §10 requirement | State |
+| --- | --- |
+| §10.2 a hand-written witness per matrix row | **not started** — 13 sentinels cover a fraction of 136 rows |
+| §10.4 completion/trap balance, one direct case per admitted trap category | **not started** — no trap case is in the corpus yet |
+| §10.5 package breadth (multi-file, dependency, re-export, relocation, offline, installed runtime, Unicode/spaced paths) | **not started** — every case is currently single-file |
+| §10.3 "same filename in different package locations" | **not started** — needs a package graph, so it lands with §10.5 |
+| §10.6 phase exit | **not met** |
+
+C6.5-3 is `PARTIAL`. The sentinels were done first because they are the requirement nothing else in
+the plan substitutes for, and because the roll-up named "adversarial sentinels: 0" as an outstanding
+gap.
+
+---
+
+## 9. What comes next
+
+the rest of §10 — the per-row witnesses, §10.4's trap balance, and §10.5's package breadth (see
+§8.1). Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

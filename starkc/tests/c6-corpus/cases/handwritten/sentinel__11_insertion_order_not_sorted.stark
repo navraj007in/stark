@@ -1,0 +1,14 @@
+// §10.3 sentinel: insertion order chosen so it is DISTINCT from both sorted order and any plausible
+// hash order. STD-HASH-001's CE4 amendment requires first-insertion order, so 30/10/20 must come
+// back in that order — an engine that sorted, or that iterated a hash table's buckets, produces
+// 10/20/30 or something arbitrary.
+fn main() {
+    let mut m: HashMap<Int32, Int32> = HashMap::new();
+    m.insert(30, 3);
+    m.insert(10, 1);
+    m.insert(20, 2);
+    assert_eq(m.len(), 3);
+    for k in m.keys() {
+        print(*k);
+    }
+}

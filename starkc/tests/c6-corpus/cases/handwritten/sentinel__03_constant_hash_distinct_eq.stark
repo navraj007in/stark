@@ -1,0 +1,20 @@
+// §10.3 sentinel: every key hashes to the same bucket, but `Eq` distinguishes them. The map must
+// keep BOTH entries and visit them in first-insertion order (STD-HASH-001 + the CE4 ordering
+// amendment). An engine that treated equal hashes as equal keys reports 1; one that iterated in
+// hash or sorted order prints them the wrong way round.
+struct Collide { v: Int32 }
+impl Eq for Collide {
+    fn eq(&self, other: &Collide) -> Bool { self.v == other.v }
+}
+impl Hash for Collide {
+    fn hash(&self) -> UInt64 { 7u64 }
+}
+fn main() {
+    let mut m: HashMap<Collide, Int32> = HashMap::new();
+    m.insert(Collide { v: 20 }, 1);
+    m.insert(Collide { v: 10 }, 2);
+    assert_eq(m.len(), 2);
+    for k in m.keys() {
+        print(k.v);
+    }
+}

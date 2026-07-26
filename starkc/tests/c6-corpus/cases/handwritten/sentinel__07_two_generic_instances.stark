@@ -1,0 +1,30 @@
+// §10.3 sentinel: two instantiations of one generic function returning DIFFERENT sentinel values.
+// An engine that monomorphised once and reused the body for both instances — or that resolved the
+// bound to a single impl — prints the same value twice.
+//
+// The bound is exercised through a `&T` receiver rather than `T::tag()`: calling an associated
+// function through a type PARAMETER does not resolve today (E0200 "undefined variable 'T::tag'"),
+// which is recorded as an open question rather than assumed to be out of scope. This shape tests the
+// same thing — one generic body, two instances, two answers.
+trait Tag {
+    fn tag(&self) -> Int32;
+}
+struct Red { v: Int32 }
+struct Blue { v: Int32 }
+impl Tag for Red {
+    fn tag(&self) -> Int32 { 11 }
+}
+impl Tag for Blue {
+    fn tag(&self) -> Int32 { 22 }
+}
+fn tag_of<T: Tag>(value: &T) -> Int32 {
+    value.tag()
+}
+fn main() {
+    let red: Red = Red { v: 0 };
+    let blue: Blue = Blue { v: 0 };
+    assert_eq(tag_of(&red), 11);
+    assert_eq(tag_of(&blue), 22);
+    print(tag_of(&red));
+    print(tag_of(&blue));
+}

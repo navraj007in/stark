@@ -780,6 +780,30 @@ pub fn three_engine(tag: &str, source: &str) -> Observation {
     hir
 }
 
+/// Two engines only: the HIR oracle and MIR, compared by the same comparator.
+///
+/// Not a weaker standard applied for convenience — it is for cases the native backend REFUSES to
+/// build, where running two engines is the whole truth available and the third is a recorded
+/// blocker (DEV-111's entry-contract cases are the current population). The corpus manifest states
+/// which engines a case requires, so a case cannot quietly opt out of native: dropping
+/// `native-debug` from `required_engines` is a visible edit that needs a `deviation` beside it.
+pub fn two_engine(tag: &str, source: &str) -> Observation {
+    let name = format!("two_engine_{tag}.stark");
+    let front = front_end(&name, source);
+    let program = match lower_program(&front.hir, &front.tables, front.file.clone()) {
+        Ok(program) => program,
+        Err(e) => panic!("{name}: lowering failed: {} @ {:?}", e.what, e.span),
+    };
+    let hir = run_hir(&name, &front);
+    let mir = run_mir(&name, &program);
+    if let Some(field) = first_difference(&hir, &mir) {
+        panic!(
+            "{name}: HIR/MIR DISAGREEMENT on {field}\n--- HIR oracle ---\n{hir:#?}\n--- MIR ---\n{mir:#?}"
+        );
+    }
+    hir
+}
+
 /// All three completed normally with exit 0 — i.e. every in-program assertion held in every
 /// engine. Meaningful only because `a_false_assertion_traps_in_all_three_engines` proves a FALSE
 /// assertion is observable; see `three_engine_differential.rs`.

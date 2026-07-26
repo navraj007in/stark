@@ -1,0 +1,19 @@
+// §10.3 sentinel: Drop identities chosen so that reversal, omission and duplication are each
+// distinguishable. Three values, destroyed in reverse declaration order (OWN-DROP-ORDER-001), each
+// emitting its own §8.8 frame — so `Loud#3, Loud#2, Loud#1` is the only passing log. An engine that
+// dropped in declaration order, skipped the moved-out value, or dropped it twice produces a
+// different sequence, and the harness compares the parsed log rather than printed text.
+struct Loud { id: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) {
+        print("@@stark-drop:Loud#");
+        print(self.id);
+        println("@@");
+    }
+}
+fn main() {
+    let first: Loud = Loud { id: 1 };
+    let second: Loud = Loud { id: 2 };
+    let third: Loud = Loud { id: 3 };
+    assert_eq(first.id + second.id + third.id, 6);
+}

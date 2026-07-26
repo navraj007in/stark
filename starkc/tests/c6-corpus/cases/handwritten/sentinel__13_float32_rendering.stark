@@ -1,0 +1,15 @@
+// §10.3 sentinel: a `Float32` whose rendering differs from the same value widened to `Float64`.
+// NUM-FLOAT-FORMAT-001 renders at the DECLARED width, so `0.1f32` prints `0.1` while the same value
+// cast to `Float64` prints `0.10000000149011612` — the f64 nearest to the f32, not to 0.1.
+//
+// That pair is the discrimination: an engine carrying `Float32` arithmetic at f64 width and rounding
+// only at display (DEV-109's defect) prints the long form for BOTH. Note that `0.1` written directly
+// as a `Float64` prints `0.1`, so a naive narrow-vs-literal comparison would pass under the defect —
+// the cast is what makes the two renderings differ.
+fn main() {
+    let narrow: Float32 = 0.1f32;
+    let widened: Float64 = narrow as Float64;
+    print(narrow);
+    print("|");
+    print(widened);
+}

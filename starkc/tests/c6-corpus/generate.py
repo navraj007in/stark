@@ -23,7 +23,7 @@ import pathlib
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "0.1.0"
+CORPUS_VERSION = "0.2.0"
 # Set once the C6.5-4 generator exists; until then no case is generated, and saying "unset" is more
 # honest than recording a seed nothing was produced from.
 GENERATOR_SEED = "unset-until-c6.5-4"
@@ -91,6 +91,10 @@ def build_lock() -> str:
         "# corpus_version 0.1.0 (WP-C6.5-2, 2026-07-26, CD-152): the corpus is created with the",
         "# retained DEV-111/DEV-112 entry-contract cases, so the machinery locks real files rather",
         "# than being vacuously green on an empty tree.",
+        "# corpus_version 0.2.0 (WP-C6.5-3, 2026-07-26, CD-153): the thirteen §10.3 adversarial",
+        "# sentinels, each pinning its observation in the manifest so it fails under the LIKELY WRONG",
+        "# implementation rather than only under engine disagreement. Minor: new cases, no change to",
+        "# any existing source or expectation.",
         f"corpus_version = {CORPUS_VERSION}",
         f"generator_version = {(ROOT / 'generator-version.txt').read_text(encoding='utf-8').strip()}",
         f"generator_seed = {GENERATOR_SEED}",

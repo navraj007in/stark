@@ -1,0 +1,12 @@
+// §10.3 sentinel: a `Display` whose rendering shares nothing with the value's structural layout.
+// PRINT-DISPLAY-001 requires `print` to dispatch to the user's `fmt`; an engine that fell back to a
+// structural/debug rendering would print the fields instead of `CUSTOM` — and would do so in EVERY
+// engine, which is why the expected bytes are pinned in the manifest rather than left to agreement.
+struct Hidden { a: Int32, b: Int32 }
+impl Display for Hidden {
+    fn fmt(&self) -> String { String::from("CUSTOM") }
+}
+fn main() {
+    let h: Hidden = Hidden { a: 1, b: 2 };
+    print(h);
+}

@@ -1,0 +1,14 @@
+// §10.3 sentinel: a `Clone` that deliberately does NOT produce an equal value. An engine that
+// implemented clone as a structural copy — the obvious wrong implementation — leaves the marker at
+// 1 and fails the assertion.
+struct Marked { v: Int32 }
+impl Clone for Marked {
+    fn clone(&self) -> Marked { Marked { v: self.v + 100 } }
+}
+fn main() {
+    let original: Marked = Marked { v: 1 };
+    let copy: Marked = original.clone();
+    assert_eq(copy.v, 101);
+    assert_eq(original.v, 1);
+    print(copy.v);
+}

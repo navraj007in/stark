@@ -1,0 +1,22 @@
+// §10.3 sentinel: two impls of one trait, each returning a distinct value, selected by receiver
+// type. An engine that picked the first matching impl — the classic wrong dispatch — prints 33
+// twice.
+trait Speak {
+    fn speak(&self) -> Int32;
+}
+struct First { v: Int32 }
+struct Second { v: Int32 }
+impl Speak for First {
+    fn speak(&self) -> Int32 { 33 }
+}
+impl Speak for Second {
+    fn speak(&self) -> Int32 { 44 }
+}
+fn main() {
+    let a: First = First { v: 0 };
+    let b: Second = Second { v: 0 };
+    assert_eq(a.speak(), 33);
+    assert_eq(b.speak(), 44);
+    print(a.speak());
+    print(b.speak());
+}

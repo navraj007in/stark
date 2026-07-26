@@ -1,0 +1,17 @@
+// §10.3 sentinel: an `Ord` that reverses the natural order. `<` desugars to the user's `cmp`
+// (TYPE-OP-001), so the value with the LARGER field must compare as less. An engine that compared
+// the fields directly, or that used a structural fallback, orders them the other way and fails.
+struct Rev { v: Int32 }
+impl Eq for Rev {
+    fn eq(&self, other: &Rev) -> Bool { self.v == other.v }
+}
+impl Ord for Rev {
+    fn cmp(&self, other: &Rev) -> Ordering { other.v.cmp(&self.v) }
+}
+fn main() {
+    let big: Rev = Rev { v: 9 };
+    let small: Rev = Rev { v: 1 };
+    assert(big < small);
+    assert(small > big);
+    print(1);
+}
