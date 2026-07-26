@@ -1,0 +1,7 @@
+fn main() {
+    let mut buffer: String = String::from("ab");
+    buffer.push_str("cd");
+    let size: UInt64 = buffer.len();
+    assert_eq(size, 4);
+    print(buffer);
+}

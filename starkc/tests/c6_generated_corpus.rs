@@ -493,7 +493,7 @@ fn write_evidence(
          \"corpus_version\": \"{}\",\n  \"generator_version\": \"{}\",\n  \"seed\": \"{}\",\n  \
          \"manifest_sha256\": \"{}\",\n  \"generator_sha256\": \"{}\",\n  \"case_count\": {},\n  \
          \"handwritten_count\": {},\n  \"generated_count\": {},\n  \"retained_count\": {},\n  \
-         \"metamorphic_family_count\": 0,\n  \"metamorphic_group_count\": {},\n  \
+         \"metamorphic_family_count\": {},\n  \"metamorphic_group_count\": {},\n  \
          \"mutation_count\": 0,\n  \"passed_count\": {},\n  \"failed_count\": {},\n  \
          \"skipped_count\": 0,\n  \"quarantined_count\": 0,\n  \"full_evidence\": {},\n  \
          \"filters\": \"{}\",\n  \"result\": \"{}\"\n}}\n",
@@ -507,7 +507,16 @@ fn write_evidence(
         count_kind("handwritten"),
         count_kind("generated"),
         count_kind("retained"),
-        header("metamorphic_group_count"),
+        results
+            .iter()
+            .filter_map(|(case, _)| case.metamorphic_family.as_deref())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        results
+            .iter()
+            .filter_map(|(case, _)| case.metamorphic_group.as_deref())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
         passed,
         failed,
         filters.is_full_evidence(),

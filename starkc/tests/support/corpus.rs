@@ -66,6 +66,15 @@ pub struct Case {
     pub required_targets: Vec<String>,
     pub metamorphic_family: Option<String>,
     pub metamorphic_group: Option<String>,
+    /// `base` or `transformed` (§13.3). A group is exactly one of each; the harness pairs them by
+    /// group, so a group with two bases or two transformed members is a malformed group rather than
+    /// a pair that quietly compares something to itself.
+    pub metamorphic_role: Option<String>,
+    /// The named rule or narrow equivalence that makes the transformation semantics-preserving
+    /// (§13.3). Recorded per group because the preconditions are real constraints — scope insertion
+    /// is invalid over a `Drop` type, arm reordering is invalid past a catch-all — and a pair whose
+    /// precondition is unstated cannot be reviewed.
+    pub metamorphic_precondition: Option<String>,
     pub generator_seed: Option<String>,
     pub generator_version: Option<String>,
     pub template_id: Option<String>,
@@ -223,6 +232,8 @@ fn assign(case: &mut Case, key: &str, value: Value) -> Result<(), String> {
         "required_targets" => case.required_targets = want_list(key, value)?,
         "metamorphic_family" => case.metamorphic_family = Some(want_str(key, value)?),
         "metamorphic_group" => case.metamorphic_group = Some(want_str(key, value)?),
+        "metamorphic_role" => case.metamorphic_role = Some(want_str(key, value)?),
+        "metamorphic_precondition" => case.metamorphic_precondition = Some(want_str(key, value)?),
         "generator_seed" => case.generator_seed = Some(want_str(key, value)?),
         "generator_version" => case.generator_version = Some(want_str(key, value)?),
         "template_id" => case.template_id = Some(want_str(key, value)?),
@@ -337,7 +348,23 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
         }
         match (&case.metamorphic_family, &case.metamorphic_group) {
             (None, None) => {}
-            (Some(_), Some(_)) => {}
+            (Some(_), Some(_)) => {
+                // §13.3 requires the role and the precondition too: without the role the harness
+                // cannot tell which member is the base, and without the precondition the claim that
+                // the transformation preserves semantics is unreviewable.
+                if case.metamorphic_role.is_none() || case.metamorphic_precondition.is_none() {
+                    return Err(format!(
+                        "{id}: a metamorphic member needs `metamorphic_role` and \
+                         `metamorphic_precondition` (§13.3)"
+                    ));
+                }
+                let role = case.metamorphic_role.as_deref().unwrap_or_default();
+                if role != "base" && role != "transformed" {
+                    return Err(format!(
+                        "{id}: metamorphic_role must be base or transformed"
+                    ));
+                }
+            }
             _ => {
                 return Err(format!(
                     "{id}: a metamorphic member needs BOTH family and group"

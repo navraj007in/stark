@@ -1,0 +1,13 @@
+trait Weight {
+    fn weight(&self) -> Int32;
+}
+struct Stone { v: Int32 }
+impl Weight for Stone {
+    fn weight(&self) -> Int32 { 21 }
+}
+fn main() {
+    let s: Stone = Stone { v: 0 };
+    let w: Int32 = Weight::weight(&s);
+    assert_eq(w, 21);
+    print(w);
+}

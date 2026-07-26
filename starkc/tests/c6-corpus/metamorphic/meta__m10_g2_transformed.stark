@@ -1,0 +1,13 @@
+fn add(a: Int32, b: Int32) -> Int32 {
+    a + b
+}
+fn main() {
+    let mut total: Int32 = 0;
+    let mut i: Int32 = 0;
+    while i < 4 {
+        total = add(total, i);
+        i = i + 1;
+    }
+    assert_eq(total, 6);
+    print(total);
+}

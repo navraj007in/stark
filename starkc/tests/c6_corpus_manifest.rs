@@ -19,7 +19,7 @@ use support::corpus::{
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
 /// this assertion is what makes the second half unskippable.
-const EXPECTED_CORPUS_VERSION: &str = "0.3.0";
+const EXPECTED_CORPUS_VERSION: &str = "0.4.0";
 
 // ------------------------------------------------------------- the real corpus --
 

@@ -30,10 +30,11 @@ import pathlib
 import shutil
 import sys
 
+import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "0.3.0"
+CORPUS_VERSION = "0.4.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -201,6 +202,46 @@ GENERATED_MANIFEST_HEADER = """# WP-C6.5 GENERATED cases (§11) — written by `
 """
 
 
+def write_metamorphic(out_root: pathlib.Path) -> list:
+    """§13 pairs. Both members of a group are written as ordinary cases carrying family/group
+    metadata, so the replay harness runs them like any other case AND the metamorphic harness can
+    pair them up. Nothing about a pair is special-cased in the replay — a pair whose members did not
+    also individually agree across engines would be meaningless."""
+    pairs_dir = out_root / "metamorphic"
+    if pairs_dir.exists():
+        shutil.rmtree(pairs_dir)
+    pairs_dir.mkdir(parents=True)
+    entries = []
+    for group in metamorphic_registry.groups():
+        for role, source in (("base", group.base), ("transformed", group.transformed)):
+            case_id = f"meta__{group.family_id.lower()}_{group.group_id}_{role}"
+            (pairs_dir / f"{case_id}.stark").write_text(source, encoding="utf-8", newline="\n")
+            body = [
+                "[[case]]",
+                f'case_id = "{case_id}"',
+                'kind = "handwritten"',
+                f'category = "{group.category}"',
+                f'subcategories = ["{group.family_id}"]',
+                f'sources = ["metamorphic/{case_id}.stark"]',
+                'package_graph = "single-file"',
+                'expected_outcome = "completion"',
+                'required_engines = ["hir", "mir", "native-debug"]',
+                'required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]',
+                "normative_rules = ["
+                + ", ".join(f'"{rule}"' for rule in group.normative_rules)
+                + "]",
+                f'metamorphic_family = "{group.family_id}"',
+                f'metamorphic_group = "{group.family_id}-{group.group_id}"',
+                f'metamorphic_role = "{role}"',
+                f'metamorphic_precondition = "{group.precondition}"',
+                "expected_stdout = ["
+                + ", ".join(f'"{line}"' for line in group.expected_stdout)
+                + "]",
+            ]
+            entries.append((case_id, "\n".join(body) + "\n"))
+    return entries
+
+
 def write_generated(out_root: pathlib.Path, seed: str) -> None:
     cases_dir = out_root / "cases" / "generated"
     if cases_dir.exists():
@@ -216,7 +257,12 @@ def write_generated(out_root: pathlib.Path, seed: str) -> None:
             f"only {len(entries)} generated cases; §11.4's floor is {GENERATED_FLOOR}. Lowering the "
             f"floor needs a recorded rationale, not a quiet edit"
         )
-    text = GENERATED_MANIFEST_HEADER + "\n" + "\n".join(entries)
+    # Metamorphic members are cases too, and share the generated manifest because both are written
+    # by `--write`. Sorted together so the file obeys the manifest's ascending-case_id rule.
+    numbered = [(entry.split('case_id = "')[1].split('"')[0], entry) for entry in entries]
+    numbered.extend(write_metamorphic(out_root))
+    numbered.sort(key=lambda pair: pair[0])
+    text = GENERATED_MANIFEST_HEADER + "\n" + "\n".join(entry for _, entry in numbered)
     (out_root / "generated.manifest.toml").write_text(text, encoding="utf-8", newline="\n")
 
 
@@ -228,13 +274,17 @@ def check_generated() -> int:
         scratch = pathlib.Path(tmp)
         write_generated(scratch, DEFAULT_SEED)
         drift = []
-        checked_in = sorted((ROOT / "cases" / "generated").glob("*.stark"))
-        regenerated = sorted((scratch / "cases" / "generated").glob("*.stark"))
+        checked_in = sorted((ROOT / "cases" / "generated").glob("*.stark")) + sorted(
+            (ROOT / "metamorphic").glob("*.stark")
+        )
+        regenerated = sorted((scratch / "cases" / "generated").glob("*.stark")) + sorted(
+            (scratch / "metamorphic").glob("*.stark")
+        )
         if [p.name for p in checked_in] != [p.name for p in regenerated]:
             only_in = {p.name for p in checked_in} ^ {p.name for p in regenerated}
             drift.append(f"case set differs: {sorted(only_in)}")
         for path in regenerated:
-            mirror = ROOT / "cases" / "generated" / path.name
+            mirror = ROOT / path.relative_to(scratch)
             if not mirror.exists() or mirror.read_bytes() != path.read_bytes():
                 drift.append(f"{path.name} differs")
         if (ROOT / "generated.manifest.toml").read_bytes() != (
@@ -258,6 +308,16 @@ def list_templates() -> int:
     print("not in the registry (recorded, not stubbed):")
     for template_id, why in sorted(template_registry.MISSING_TEMPLATES.items()):
         print(f"  {template_id}  {why}")
+    families = {}
+    for group in metamorphic_registry.groups():
+        families.setdefault(group.family_id, []).append(group.group_id)
+    total_groups = sum(len(ids) for ids in families.values())
+    print(f"metamorphic: {len(families)} families, {total_groups} groups, {total_groups * 2} members")
+    for family, group_ids in sorted(families.items()):
+        print(f"  {family}  groups {', '.join(sorted(group_ids))}")
+    print("metamorphic families absent (recorded, not approximated):")
+    for family, why in sorted(metamorphic_registry.MISSING_FAMILIES.items()):
+        print(f"  {family}  {why}")
     return 0
 
 
@@ -287,12 +347,16 @@ def build_lock() -> str:
         "# corpus_version 0.3.0 (WP-C6.5-4, 2026-07-26, CD-155): the deterministic generator and its",
         "# 70 cases across 15 templates. `generator_sha256` and `templates_sha256` pin the producer as",
         "# well as the product -- regenerating with a changed template changes the lock. Minor.",
+        "# corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the",
+        "# twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent",
+        "# until §15 rather than approximated single-file. Minor.",
         f"corpus_version = {CORPUS_VERSION}",
         f"generator_version = {(ROOT / 'generator-version.txt').read_text(encoding='utf-8').strip()}",
         f"generator_seed = {DEFAULT_SEED}",
         f"manifest_sha256 = {sha256(ROOT / 'manifest.toml')}",
         f"generated_manifest_sha256 = {sha256(ROOT / 'generated.manifest.toml')}",
         f"templates_sha256 = {sha256(ROOT / 'templates.py')}",
+        f"metamorphic_sha256 = {sha256(ROOT / 'metamorphic.py')}",
         f"generator_sha256 = {sha256(ROOT / 'generate.py')}",
         f"case_count = {len(cases)}",
         f"handwritten_count = {kinds.count('handwritten')}",

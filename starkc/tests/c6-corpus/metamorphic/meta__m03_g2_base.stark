@@ -1,0 +1,9 @@
+fn identity<T>(value: T) -> T {
+    value
+}
+fn main() {
+    let a: Int64 = 9;
+    let b: Int64 = identity(a);
+    assert_eq(b, 9);
+    print(b);
+}

@@ -1,0 +1,8 @@
+fn main() {
+    let mut total: Int32 = 0;
+    for i in 0..4 {
+        total = total + i;
+    }
+    assert_eq(total, 6);
+    print(total);
+}

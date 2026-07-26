@@ -1,0 +1,9 @@
+fn main() {
+    {
+        let first: Int32 = 6;
+        let second: Int32 = 7;
+        let product: Int32 = first * second;
+        assert_eq(product, 42);
+        print(product);
+    }
+}

@@ -1,0 +1,7 @@
+fn main() {
+    let mut text: String = String::from("ab");
+    text.push_str("cd");
+    let length: UInt64 = text.len();
+    assert_eq(length, 4);
+    print(text);
+}

@@ -1,0 +1,8 @@
+fn triple(v: Int32) -> Int32 {
+    v + 30
+}
+fn main() {
+    let out: Int32 = triple(5);
+    assert_eq(out, 35);
+    print(out);
+}

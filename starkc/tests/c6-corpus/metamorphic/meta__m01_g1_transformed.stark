@@ -1,0 +1,7 @@
+fn main() {
+    let alpha: Int32 = 6;
+    let beta: Int32 = 7;
+    let gamma: Int32 = alpha * beta;
+    assert_eq(gamma, 42);
+    print(gamma);
+}

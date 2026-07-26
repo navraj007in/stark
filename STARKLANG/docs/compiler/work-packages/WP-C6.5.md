@@ -7,7 +7,8 @@ commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds
 **C6.5-3 PARTIAL** (§10.3 sentinels done; per-row witnesses, trap balance and package breadth
 outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals);
 **C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
-residuals). Corpus `0.3.0`: 70 generated, 13 handwritten, 6 retained; replay 89/89 AGREEMENT. Two findings raised and
+residuals); **C6.5-6 PARTIAL** (20 metamorphic groups over ten families; M08/M09 blocked on package
+graphs — §12.1). Corpus `0.4.0`: 129 cases, replay **129/129 AGREEMENT**. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -618,12 +619,64 @@ invalidate stored records for no semantic reason.
 
 ---
 
-## 12. What comes next
+## 12. Phase C6.5-6 — metamorphic families (§13, commit 8) — **PARTIAL**
 
-§19's commit 8 — §13's metamorphic families: 12 families against a floor of 24 groups / 48 members,
-of which 7 groups exist (inherited) and M08–M12 have none. The outstanding items from earlier phases
-are listed in §8.1 (§10 witnesses, trap balance, package breadth), §10.1 (retention workflow, package
-templates) and §11.1 (package graph in the replay). Migration of the 22 forked suites proceeds
+**Done: 20 groups over ten of the twelve families, 40 member cases.** Corpus `0.4.0`, 129 cases
+total; the full replay is **129/129 AGREEMENT**.
+
+| Family | Transformation | Precondition that makes it semantics-preserving |
+| --- | --- | --- |
+| M01 | alpha-renaming | locals only, no shadowing, no collision with a standard item (NAME-SHADOW-001) |
+| M02 | scope insertion | **no `Drop` type in the base** — an inner block ends earlier, so with `Drop` the destruction point moves (DROP-ORDER-001) and a *correct* compiler would disagree |
+| M03 | explicit vs inferred generics | the explicit argument is what inference selects (TYPE-GENERIC-001) |
+| M04 | qualified vs unqualified trait call | exactly one impl in scope (TRAIT-ASSOC-001) |
+| M05 | shorthand vs explicit fields | field names equal local names, declaration order unchanged (EXEC-AGG-001) |
+| M06 | nested vs sequential pattern | `Copy` scrutinee, evaluated once either way (PAT-OWN-001) |
+| M07 | non-overlapping arm reorder | distinct variants, **no catch-all** (PAT-USEFUL-001, §13.5) |
+| M10 | helper extraction | extracted expression is side-effect-free and evaluated once (EXEC-ONCE-001) |
+| M11 | direct call vs function value | non-capturing value reaching the same function (TYPE-FN-001) |
+| M12 | `while` vs range `for` | body owns and drops nothing, counter is `Copy` (§13.6, DROP-LOOP-001) |
+
+**The preconditions are constraints, not commentary.** Scope insertion is *refused* over a
+`Drop`-bearing base by an assertion in the generator, because that transformation is not
+semantics-preserving there — the pair would fail against a correct compiler, and "fix it by relaxing
+the comparison" is exactly what §13.7 forbids. Arm reordering asserts there is no wildcard.
+
+**Two fake pairs my own generator produced, both caught by its own guard.** `add()` asserts the
+transformed source differs from the base, and it fired twice: M12/g2, where a post-hoc
+`.replace("total + i", …)` broke the transform's anchor so it returned the input unchanged, and — a
+different symptom of the same habit — M05/g2, where a blind `.replace("3", "8")` turned `Int32` into
+`Int82`. Both are the same root cause: **generating variants by substring surgery over source.** Every
+base is now a parameterised builder. Worth recording because an identity-transform pair passes
+trivially and looks like evidence.
+
+**§13.4's comparison is per engine, then across engines:** `HIR(base) == HIR(transformed)`,
+`MIR(base) == MIR(transformed)`, `native(base) == native(transformed)`, with three-engine agreement
+for both members coming from the §12 replay, which runs metamorphic members as ordinary cases. A
+divergence report names the engine, the first differing field, and the precondition — because §13.7
+requires normative analysis to decide whether a diverging pair is a compiler defect or an invalid
+transformation, and the precondition is where that analysis starts.
+
+### 12.1 The floor is not met, and a test says so
+
+§13.2 requires **24 groups / 48 members across all twelve families**. This delivers 20/40 across ten.
+**M08 (workspace relocation) and M09 (dependency declaration reorder) transform a package graph**, and
+every corpus case is single-file until §15 — a single-file "relocation" pair would prove nothing about
+relocation, so they are absent rather than approximated.
+
+`the_metamorphic_floor_is_reported_honestly` asserts the present state *and* that it is below the
+floor, so when M08/M09 become buildable the test fails and demands the expectation be raised. A
+shortfall recorded only in prose is a shortfall that gets forgotten.
+
+---
+
+## 13. What comes next
+
+§19's commit 9 — §14's mutation controls: 16 required mutations, each with a witness proving the
+corpus DETECTS a deliberately broken compiler. That is the one remaining check on whether any of this
+evidence can fail. Outstanding items from earlier phases: §8.1 (§10 witnesses, trap balance, package
+breadth), §10.1 (retention workflow, package templates), §11.1 (package graph in the replay), §12.1
+(M08/M09). Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

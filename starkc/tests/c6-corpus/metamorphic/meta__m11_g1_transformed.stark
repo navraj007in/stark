@@ -1,0 +1,9 @@
+fn triple(v: Int32) -> Int32 {
+    v * 3
+}
+fn main() {
+    let f: fn(Int32) -> Int32 = triple;
+    let out: Int32 = f(5);
+    assert_eq(out, 15);
+    print(out);
+}

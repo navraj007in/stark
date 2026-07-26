@@ -139,9 +139,12 @@ cases — 70 generated across 15 templates, 13 sentinels, 6 retained**, with §1
 test and §11.10's determinism proven by running the generator (same seed byte-identical, relocation
 stable, seed and generator-version both part of case identity, no absolute paths). **C6.5-5 (CD-156) then built the §12 replay** — the named entry point, with §12.2 admission
 classifications, per-case timeouts, content-addressed sharding, §12.6 filters that cannot be mistaken
-for closure evidence, and §21 evidence output: **89 cases, 89 AGREEMENT, result PASS**. Still owed by
+for closure evidence, and §21 evidence output: **89 cases, 89 AGREEMENT, result PASS**. **C6.5-6 (CD-157, PARTIAL) added 20 metamorphic
+groups** over ten of the twelve §13.1 families (40 members; corpus `0.4.0`, replay **129/129
+AGREEMENT**), with each group's semantics-preserving precondition recorded and enforced. Still owed by
 §10: per-row witnesses and package breadth; by §11: the retained-case workflow and package templates;
-by §12: the package-graph step and shard-summary merging.
+by §12: the package-graph step and shard-summary merging; by §13: **M08/M09 and the 24/48 floor**, all
+blocked on package graphs.
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
 tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
@@ -3250,6 +3253,44 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-157 [2026-07-26, **WP-C6.5-6 commit 8 PARTIAL — 20 metamorphic groups; the floor is not met and
+  a test says so**] Corpus `0.4.0`, **129 cases, replay 129/129 AGREEMENT**. Ten of §13.1's twelve
+  families, two independent groups each, 40 member cases.
+  - **Families:** M01 renaming, M02 scope insertion, M03 explicit-vs-inferred generics, M04
+    qualified-vs-unqualified trait call, M05 shorthand-vs-explicit fields, M06 nested-vs-sequential
+    pattern, M07 non-overlapping arm reorder, M10 helper extraction, M11 direct-call-vs-function-value,
+    M12 `while`-vs-range-`for`.
+  - **The preconditions are CONSTRAINTS, not commentary.** Scope insertion is refused over a
+    `Drop`-bearing base by an assertion, because there it is NOT semantics-preserving — the inner
+    block ends earlier, destruction moves (DROP-ORDER-001), and the pair would fail against a CORRECT
+    compiler. Arm reordering asserts no catch-all (§13.5). Loop equivalence asserts no owning value in
+    the body (§13.6).
+  - **Two FAKE PAIRS my own generator produced, both caught by its own guard.** `add()` asserts the
+    transformed source differs from the base, and it fired twice: M12/g2, where a post-hoc
+    `.replace("total + i", …)` broke the transform's anchor so it returned the input unchanged; and
+    M05/g2, where a blind `.replace("3", "8")` turned `Int32` into `Int82`. Same root cause —
+    **generating variants by substring surgery over source** — now fixed by making every base a
+    parameterised builder. An identity-transform pair passes trivially and looks like evidence, which
+    is why that assertion exists.
+  - **§13.4 comparison:** per engine (`HIR(base) == HIR(transformed)`, same for MIR and native), then
+    three-engine agreement for both members via the §12 replay, which runs metamorphic members as
+    ordinary cases. Divergence reports name the engine, the first differing field AND the
+    precondition, because §13.7 requires normative analysis to decide defect-vs-invalid-transformation
+    and the precondition is where that starts.
+  - **THE FLOOR IS NOT MET.** §13.2 requires 24 groups / 48 members over all twelve families; this is
+    20/40 over ten. **M08 (workspace relocation) and M09 (dependency reorder) transform a PACKAGE
+    GRAPH**, and every case is single-file until §15 — a single-file "relocation" pair proves nothing
+    about relocation, so they are absent rather than approximated.
+    `the_metamorphic_floor_is_reported_honestly` asserts both the present state and that it is BELOW
+    the floor, so when M08/M09 become buildable the test fails and demands the expectation be raised.
+    A shortfall recorded only in prose is one that gets forgotten.
+  - **Also this commit:** `dc72136` fixed the clippy `field_reassign_with_default` errors CD-156
+    shipped, which had turned main red on all six jobs (and, as at CD-154, was failing another
+    author's commits). CI's exact clippy invocation was run before this push.
+  - **Evidence:** `c6_metamorphic` 3/3, `c6_generated_corpus` 6/6 (129 cases, 81s),
+    `c6_corpus_generator` 8/8, `c6_corpus_manifest` 30/30, `clippy --workspace --all-targets
+    --all-features` clean, `fmt` clean.
 
 - CD-156 [2026-07-26, **WP-C6.5-5 commit 7 — the full three-engine replay; 89/89 AGREEMENT**]
   `starkc/tests/c6_generated_corpus.rs`, the plan's named §12.1 entry point: validate manifest, verify

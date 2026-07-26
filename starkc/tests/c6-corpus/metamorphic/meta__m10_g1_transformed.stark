@@ -1,0 +1,10 @@
+fn multiply(a: Int32, b: Int32) -> Int32 {
+    a * b
+}
+fn main() {
+    let first: Int32 = 6;
+    let second: Int32 = 7;
+    let product: Int32 = multiply(first, second);
+    assert_eq(product, 42);
+    print(product);
+}

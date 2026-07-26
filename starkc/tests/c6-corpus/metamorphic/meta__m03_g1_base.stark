@@ -1,0 +1,9 @@
+fn identity<T>(value: T) -> T {
+    value
+}
+fn main() {
+    let a: Int32 = 9;
+    let b: Int32 = identity(a);
+    assert_eq(b, 9);
+    print(b);
+}

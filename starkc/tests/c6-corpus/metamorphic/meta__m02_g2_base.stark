@@ -1,0 +1,8 @@
+fn main() {
+    let mut values: Vec<Int32> = Vec::new();
+    values.push(2);
+    values.push(3);
+    let count: UInt64 = values.len();
+    assert_eq(count, 2);
+    print(count);
+}

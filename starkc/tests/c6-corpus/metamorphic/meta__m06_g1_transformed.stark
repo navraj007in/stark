@@ -1,0 +1,13 @@
+fn main() {
+    let value: Option<Option<Int32>> = Some(Some(5));
+    let inner: Option<Int32> = match value {
+        Some(inner) => inner,
+        None => None,
+    };
+    let out: Int32 = match inner {
+        Some(v) => v,
+        None => -1,
+    };
+    assert_eq(out, 5);
+    print(out);
+}

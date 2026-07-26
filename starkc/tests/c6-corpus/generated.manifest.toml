@@ -1142,3 +1142,683 @@ generator_seed = "c6.5-default"
 generator_version = "0.1.0"
 template_id = "T20"
 expected_stdout = ["(7, true)", ""]
+
+[[case]]
+case_id = "meta__m01_g1_base"
+kind = "handwritten"
+category = "expressions-statements"
+subcategories = ["M01"]
+sources = ["metamorphic/meta__m01_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NAME-RESOLVE-001", "NAME-SHADOW-001"]
+metamorphic_family = "M01"
+metamorphic_group = "M01-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "locals only; no shadowing introduced and no name collides with a standard item (NAME-SHADOW-001)"
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "meta__m01_g1_transformed"
+kind = "handwritten"
+category = "expressions-statements"
+subcategories = ["M01"]
+sources = ["metamorphic/meta__m01_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NAME-RESOLVE-001", "NAME-SHADOW-001"]
+metamorphic_family = "M01"
+metamorphic_group = "M01-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "locals only; no shadowing introduced and no name collides with a standard item (NAME-SHADOW-001)"
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "meta__m01_g2_base"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M01"]
+sources = ["metamorphic/meta__m01_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NAME-RESOLVE-001", "TEXT-UTF8-001"]
+metamorphic_family = "M01"
+metamorphic_group = "M01-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "locals only, including an owning `String` local whose Drop point is unchanged by renaming"
+expected_stdout = ["abcd"]
+
+[[case]]
+case_id = "meta__m01_g2_transformed"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M01"]
+sources = ["metamorphic/meta__m01_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NAME-RESOLVE-001", "TEXT-UTF8-001"]
+metamorphic_family = "M01"
+metamorphic_group = "M01-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "locals only, including an owning `String` local whose Drop point is unchanged by renaming"
+expected_stdout = ["abcd"]
+
+[[case]]
+case_id = "meta__m02_g1_base"
+kind = "handwritten"
+category = "expressions-statements"
+subcategories = ["M02"]
+sources = ["metamorphic/meta__m02_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["DROP-ORDER-001", "NAME-SCOPE-001"]
+metamorphic_family = "M02"
+metamorphic_group = "M02-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "no `Drop` type in the base, so the earlier end of the inserted block moves no destruction (DROP-ORDER-001)"
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "meta__m02_g1_transformed"
+kind = "handwritten"
+category = "expressions-statements"
+subcategories = ["M02"]
+sources = ["metamorphic/meta__m02_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["DROP-ORDER-001", "NAME-SCOPE-001"]
+metamorphic_family = "M02"
+metamorphic_group = "M02-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "no `Drop` type in the base, so the earlier end of the inserted block moves no destruction (DROP-ORDER-001)"
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "meta__m02_g2_base"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M02"]
+sources = ["metamorphic/meta__m02_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NAME-SCOPE-001", "DROP-COLLECTION-001"]
+metamorphic_family = "M02"
+metamorphic_group = "M02-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "the `Vec` local is declared inside the inserted block in both forms, so its destruction point is the same statement (DROP-COLLECTION-001)"
+expected_stdout = ["2"]
+
+[[case]]
+case_id = "meta__m02_g2_transformed"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M02"]
+sources = ["metamorphic/meta__m02_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NAME-SCOPE-001", "DROP-COLLECTION-001"]
+metamorphic_family = "M02"
+metamorphic_group = "M02-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "the `Vec` local is declared inside the inserted block in both forms, so its destruction point is the same statement (DROP-COLLECTION-001)"
+expected_stdout = ["2"]
+
+[[case]]
+case_id = "meta__m03_g1_base"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M03"]
+sources = ["metamorphic/meta__m03_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-GENERIC-001", "TYPE-INFER-001"]
+metamorphic_family = "M03"
+metamorphic_group = "M03-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "the explicit argument is exactly what inference selects (TYPE-GENERIC-001)"
+expected_stdout = ["9"]
+
+[[case]]
+case_id = "meta__m03_g1_transformed"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M03"]
+sources = ["metamorphic/meta__m03_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-GENERIC-001", "TYPE-INFER-001"]
+metamorphic_family = "M03"
+metamorphic_group = "M03-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "the explicit argument is exactly what inference selects (TYPE-GENERIC-001)"
+expected_stdout = ["9"]
+
+[[case]]
+case_id = "meta__m03_g2_base"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M03"]
+sources = ["metamorphic/meta__m03_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-GENERIC-001", "TYPE-INFER-001"]
+metamorphic_family = "M03"
+metamorphic_group = "M03-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "same, at a second width — a rule that held only at one type would not be a rule"
+expected_stdout = ["9"]
+
+[[case]]
+case_id = "meta__m03_g2_transformed"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M03"]
+sources = ["metamorphic/meta__m03_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-GENERIC-001", "TYPE-INFER-001"]
+metamorphic_family = "M03"
+metamorphic_group = "M03-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "same, at a second width — a rule that held only at one type would not be a rule"
+expected_stdout = ["9"]
+
+[[case]]
+case_id = "meta__m04_g1_base"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M04"]
+sources = ["metamorphic/meta__m04_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TRAIT-ASSOC-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M04"
+metamorphic_group = "M04-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "exactly one impl is in scope, so both spellings select the same instance (TRAIT-ASSOC-001)"
+expected_stdout = ["14"]
+
+[[case]]
+case_id = "meta__m04_g1_transformed"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M04"]
+sources = ["metamorphic/meta__m04_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TRAIT-ASSOC-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M04"
+metamorphic_group = "M04-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "exactly one impl is in scope, so both spellings select the same instance (TRAIT-ASSOC-001)"
+expected_stdout = ["14"]
+
+[[case]]
+case_id = "meta__m04_g2_base"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M04"]
+sources = ["metamorphic/meta__m04_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TRAIT-ASSOC-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M04"
+metamorphic_group = "M04-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "same precondition, second sentinel value — so a pair that passed by returning a constant the harness expected anyway is distinguishable"
+expected_stdout = ["21"]
+
+[[case]]
+case_id = "meta__m04_g2_transformed"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M04"]
+sources = ["metamorphic/meta__m04_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TRAIT-ASSOC-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M04"
+metamorphic_group = "M04-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "same precondition, second sentinel value — so a pair that passed by returning a constant the harness expected anyway is distinguishable"
+expected_stdout = ["21"]
+
+[[case]]
+case_id = "meta__m05_g1_base"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M05"]
+sources = ["metamorphic/meta__m05_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-AGG-001", "TYPE-NOMINAL-001"]
+metamorphic_family = "M05"
+metamorphic_group = "M05-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "field names equal the local names and declaration order is unchanged, so field completion order is identical (EXEC-AGG-001)"
+expected_stdout = ["34"]
+
+[[case]]
+case_id = "meta__m05_g1_transformed"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M05"]
+sources = ["metamorphic/meta__m05_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-AGG-001", "TYPE-NOMINAL-001"]
+metamorphic_family = "M05"
+metamorphic_group = "M05-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "field names equal the local names and declaration order is unchanged, so field completion order is identical (EXEC-AGG-001)"
+expected_stdout = ["34"]
+
+[[case]]
+case_id = "meta__m05_g2_base"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M05"]
+sources = ["metamorphic/meta__m05_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-AGG-001", "TYPE-NOMINAL-001"]
+metamorphic_family = "M05"
+metamorphic_group = "M05-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "same, at different values"
+expected_stdout = ["89"]
+
+[[case]]
+case_id = "meta__m05_g2_transformed"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["M05"]
+sources = ["metamorphic/meta__m05_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-AGG-001", "TYPE-NOMINAL-001"]
+metamorphic_family = "M05"
+metamorphic_group = "M05-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "same, at different values"
+expected_stdout = ["89"]
+
+[[case]]
+case_id = "meta__m06_g1_base"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M06"]
+sources = ["metamorphic/meta__m06_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-OWN-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M06"
+metamorphic_group = "M06-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "the scrutinee is `Copy` and evaluated once in both forms; no arm binding outlives its arm (PAT-OWN-001)"
+expected_stdout = ["5"]
+
+[[case]]
+case_id = "meta__m06_g1_transformed"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M06"]
+sources = ["metamorphic/meta__m06_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-OWN-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M06"
+metamorphic_group = "M06-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "the scrutinee is `Copy` and evaluated once in both forms; no arm binding outlives its arm (PAT-OWN-001)"
+expected_stdout = ["5"]
+
+[[case]]
+case_id = "meta__m06_g2_base"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M06"]
+sources = ["metamorphic/meta__m06_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-OWN-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M06"
+metamorphic_group = "M06-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "same, on the inner-None path, so the pair covers a second arm of the decomposition"
+expected_stdout = ["-1"]
+
+[[case]]
+case_id = "meta__m06_g2_transformed"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M06"]
+sources = ["metamorphic/meta__m06_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-OWN-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M06"
+metamorphic_group = "M06-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "same, on the inner-None path, so the pair covers a second arm of the decomposition"
+expected_stdout = ["-1"]
+
+[[case]]
+case_id = "meta__m07_g1_base"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M07"]
+sources = ["metamorphic/meta__m07_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-USEFUL-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M07"
+metamorphic_group = "M07-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "three distinct variants, no catch-all, so no arm shadows another (PAT-USEFUL-001, §13.5)"
+expected_stdout = ["2"]
+
+[[case]]
+case_id = "meta__m07_g1_transformed"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M07"]
+sources = ["metamorphic/meta__m07_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-USEFUL-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M07"
+metamorphic_group = "M07-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "three distinct variants, no catch-all, so no arm shadows another (PAT-USEFUL-001, §13.5)"
+expected_stdout = ["2"]
+
+[[case]]
+case_id = "meta__m07_g2_base"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M07"]
+sources = ["metamorphic/meta__m07_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-USEFUL-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M07"
+metamorphic_group = "M07-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "same, selecting the last arm before the reorder and the first after it — the case that would expose an order-sensitive selection"
+expected_stdout = ["3"]
+
+[[case]]
+case_id = "meta__m07_g2_transformed"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["M07"]
+sources = ["metamorphic/meta__m07_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PAT-USEFUL-001", "PAT-EXHAUST-001"]
+metamorphic_family = "M07"
+metamorphic_group = "M07-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "same, selecting the last arm before the reorder and the first after it — the case that would expose an order-sensitive selection"
+expected_stdout = ["3"]
+
+[[case]]
+case_id = "meta__m10_g1_base"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M10"]
+sources = ["metamorphic/meta__m10_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-ONCE-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M10"
+metamorphic_group = "M10-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "the extracted expression has no side effects and is evaluated exactly once in both forms (EXEC-ONCE-001)"
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "meta__m10_g1_transformed"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M10"]
+sources = ["metamorphic/meta__m10_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-ONCE-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M10"
+metamorphic_group = "M10-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "the extracted expression has no side effects and is evaluated exactly once in both forms (EXEC-ONCE-001)"
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "meta__m10_g2_base"
+kind = "handwritten"
+category = "control-transfer"
+subcategories = ["M10"]
+sources = ["metamorphic/meta__m10_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-ONCE-001", "EXEC-CFLOW-001"]
+metamorphic_family = "M10"
+metamorphic_group = "M10-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "extraction inside a loop body: the call happens once per iteration in both forms (EXEC-ONCE-001)"
+expected_stdout = ["6"]
+
+[[case]]
+case_id = "meta__m10_g2_transformed"
+kind = "handwritten"
+category = "control-transfer"
+subcategories = ["M10"]
+sources = ["metamorphic/meta__m10_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-ONCE-001", "EXEC-CFLOW-001"]
+metamorphic_family = "M10"
+metamorphic_group = "M10-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "extraction inside a loop body: the call happens once per iteration in both forms (EXEC-ONCE-001)"
+expected_stdout = ["6"]
+
+[[case]]
+case_id = "meta__m11_g1_base"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M11"]
+sources = ["metamorphic/meta__m11_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-FN-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M11"
+metamorphic_group = "M11-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "the function value is non-capturing and the indirect call reaches the same function (TYPE-FN-001, EXEC-DISPATCH-001)"
+expected_stdout = ["15"]
+
+[[case]]
+case_id = "meta__m11_g1_transformed"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M11"]
+sources = ["metamorphic/meta__m11_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-FN-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M11"
+metamorphic_group = "M11-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "the function value is non-capturing and the indirect call reaches the same function (TYPE-FN-001, EXEC-DISPATCH-001)"
+expected_stdout = ["15"]
+
+[[case]]
+case_id = "meta__m11_g2_base"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M11"]
+sources = ["metamorphic/meta__m11_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-FN-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M11"
+metamorphic_group = "M11-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "same, with a different target body so the pair is not satisfied by a constant"
+expected_stdout = ["35"]
+
+[[case]]
+case_id = "meta__m11_g2_transformed"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["M11"]
+sources = ["metamorphic/meta__m11_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-FN-001", "EXEC-DISPATCH-001"]
+metamorphic_family = "M11"
+metamorphic_group = "M11-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "same, with a different target body so the pair is not satisfied by a constant"
+expected_stdout = ["35"]
+
+[[case]]
+case_id = "meta__m12_g1_base"
+kind = "handwritten"
+category = "control-transfer"
+subcategories = ["M12"]
+sources = ["metamorphic/meta__m12_g1_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-FOR-001", "DROP-LOOP-001"]
+metamorphic_family = "M12"
+metamorphic_group = "M12-g1"
+metamorphic_role = "base"
+metamorphic_precondition = "the body owns and drops nothing and the counter is `Copy`, so `while` and a range `for` have identical ownership and Drop timing (§13.6, DROP-LOOP-001)"
+expected_stdout = ["6"]
+
+[[case]]
+case_id = "meta__m12_g1_transformed"
+kind = "handwritten"
+category = "control-transfer"
+subcategories = ["M12"]
+sources = ["metamorphic/meta__m12_g1_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-FOR-001", "DROP-LOOP-001"]
+metamorphic_family = "M12"
+metamorphic_group = "M12-g1"
+metamorphic_role = "transformed"
+metamorphic_precondition = "the body owns and drops nothing and the counter is `Copy`, so `while` and a range `for` have identical ownership and Drop timing (§13.6, DROP-LOOP-001)"
+expected_stdout = ["6"]
+
+[[case]]
+case_id = "meta__m12_g2_base"
+kind = "handwritten"
+category = "control-transfer"
+subcategories = ["M12"]
+sources = ["metamorphic/meta__m12_g2_base.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-FOR-001", "DROP-LOOP-001"]
+metamorphic_family = "M12"
+metamorphic_group = "M12-g2"
+metamorphic_role = "base"
+metamorphic_precondition = "same precondition, different accumulation"
+expected_stdout = ["12"]
+
+[[case]]
+case_id = "meta__m12_g2_transformed"
+kind = "handwritten"
+category = "control-transfer"
+subcategories = ["M12"]
+sources = ["metamorphic/meta__m12_g2_transformed.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-FOR-001", "DROP-LOOP-001"]
+metamorphic_family = "M12"
+metamorphic_group = "M12-g2"
+metamorphic_role = "transformed"
+metamorphic_precondition = "same precondition, different accumulation"
+expected_stdout = ["12"]

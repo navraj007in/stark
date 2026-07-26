@@ -186,7 +186,10 @@ fn a_generator_version_change_reselects_cases() {
         return;
     }
     let fake_root = scratch("version_root");
-    for name in ["generate.py", "templates.py"] {
+    // Every module the generator imports, not just the entry point: `generate.py` imports both
+    // registries, so copying it alone produced a ModuleNotFoundError that read as "the patched
+    // generator failed" rather than "the test copied too little".
+    for name in ["generate.py", "templates.py", "metamorphic.py"] {
         std::fs::copy(corpus_dir().join(name), fake_root.join(name)).expect("copy generator");
     }
     std::fs::write(fake_root.join("generator-version.txt"), b"9.9.9\n").expect("version");
