@@ -539,9 +539,11 @@ fn replaying_a_shard_twice_produces_identical_observation_hashes() {
         return;
     }
     let (cases, _) = load();
-    let mut filters = Filters::default();
-    filters.shard_index = Some(0);
-    filters.shard_total = Some(16);
+    let filters = Filters {
+        shard_index: Some(0),
+        shard_total: Some(16),
+        ..Default::default()
+    };
     let selected: Vec<&Case> = cases.iter().filter(|case| filters.selects(case)).collect();
     assert!(!selected.is_empty(), "shard 0 of 16 is empty");
 
@@ -582,9 +584,11 @@ fn sharding_partitions_the_corpus_exactly() {
     for shard_total in [1u64, 2, 3, 4, 8, 16] {
         let mut seen: Vec<&str> = Vec::new();
         for index in 0..shard_total {
-            let mut filters = Filters::default();
-            filters.shard_index = Some(index);
-            filters.shard_total = Some(shard_total);
+            let filters = Filters {
+                shard_index: Some(index),
+                shard_total: Some(shard_total),
+                ..Default::default()
+            };
             for case in cases.iter().filter(|case| filters.selects(case)) {
                 assert!(
                     !seen.contains(&case.case_id.as_str()),
