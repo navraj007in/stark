@@ -1,0 +1,188 @@
+use super::default_limits;
+use super::encode_query;
+use super::parse_request_target;
+use super::parse_request_target_with_limits;
+use super::percent_decode;
+use super::percent_encode_component;
+use super::QueryParameter;
+use super::UrlLimits;
+
+fn assert_decode(input: &str, expected: &str) {
+    match percent_decode(input) {
+        Ok(value) => {
+            if value.as_str() != expected {
+                panic("decoded value mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected percent decode success");
+        }
+    }
+}
+
+fn assert_decode_error(input: &str, offset: UInt64) {
+    match percent_decode(input) {
+        Ok(_) => {
+            panic("expected percent decode error");
+        }
+        Err(err) => {
+            if err.offset != offset {
+                panic("percent decode error offset mismatch");
+            }
+        }
+    }
+}
+
+fn assert_target(input: &str, path: &str, query_len: UInt64) {
+    match parse_request_target(input) {
+        Ok(target) => {
+            if target.path.as_str() != path {
+                panic("path mismatch");
+            }
+            if target.query.len() != query_len {
+                panic("query length mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected request target parse success");
+        }
+    }
+}
+
+fn test_percent_encode_component() {
+    if percent_encode_component("abcXYZ012-._~").as_str() != "abcXYZ012-._~" {
+        panic("unreserved characters should not be encoded");
+    }
+    if percent_encode_component("a b/c?x=y&z").as_str() != "a%20b%2Fc%3Fx%3Dy%26z" {
+        panic("reserved component characters should be encoded");
+    }
+    if percent_encode_component("%").as_str() != "%25" {
+        panic("percent should be encoded");
+    }
+}
+
+fn test_percent_decode_strict_escapes() {
+    assert_decode("a%20b", "a b");
+    assert_decode("%2f%2F", "//");
+    assert_decode("plain", "plain");
+    assert_decode_error("%", 0u64);
+    assert_decode_error("%A", 0u64);
+    assert_decode_error("%GG", 0u64);
+    assert_decode_error("a%0X", 1u64);
+}
+
+fn test_percent_decode_utf8() {
+    assert_decode_error("caf%C3%A9", 3u64);
+    assert_decode_error("%C0%AF", 0u64);
+    assert_decode_error("%E0%80%80", 0u64);
+    assert_decode_error("%ED%A0%80", 0u64);
+    assert_decode_error("%F4%90%80%80", 0u64);
+}
+
+fn test_parse_request_target_examples() {
+    assert_target("/health", "/health", 0u64);
+    assert_target("/users/123", "/users/123", 0u64);
+    assert_target("/files/a%20b.txt", "/files/a b.txt", 0u64);
+}
+
+fn test_parse_query_order_repeated_and_empty_values() {
+    match parse_request_target("/search?q=stark&page=2&tag=compiler&tag=language&empty=") {
+        Ok(target) => {
+            if target.path.as_str() != "/search" {
+                panic("query target path mismatch");
+            }
+            if target.query.len() != 5u64 {
+                panic("query count mismatch");
+            }
+            if target.query[0u64].name.as_str() != "q" || target.query[0u64].value.as_str() != "stark" {
+                panic("first query parameter mismatch");
+            }
+            if target.query[2u64].name.as_str() != "tag" || target.query[2u64].value.as_str() != "compiler" {
+                panic("first repeated parameter mismatch");
+            }
+            if target.query[3u64].name.as_str() != "tag" || target.query[3u64].value.as_str() != "language" {
+                panic("second repeated parameter mismatch");
+            }
+            if target.query[4u64].name.as_str() != "empty" || target.query[4u64].value.as_str() != "" {
+                panic("empty value mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected query target parse success");
+        }
+    }
+}
+
+fn test_encoded_separators_are_data_after_splitting() {
+    match parse_request_target("/users/a%2Fb?q=x%2Fy&eq=a%3Db&and=a%26b") {
+        Ok(target) => {
+            if target.path.as_str() != "/users/a/b" {
+                panic("encoded slash in path data mismatch");
+            }
+            if target.query[0u64].value.as_str() != "x/y" {
+                panic("encoded slash in query mismatch");
+            }
+            if target.query[1u64].value.as_str() != "a=b" {
+                panic("encoded equals in query mismatch");
+            }
+            if target.query[2u64].value.as_str() != "a&b" {
+                panic("encoded ampersand in query mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected encoded separator parse success");
+        }
+    }
+}
+
+fn test_invalid_query_pair_and_limits() {
+    match parse_request_target("/search?q") {
+        Err(err) => {
+            if err.offset != 8u64 {
+                panic("invalid query pair offset mismatch");
+            }
+        }
+        Ok(_) => {
+            panic("expected invalid query pair");
+        }
+    }
+
+    let limits = UrlLimits { max_input_bytes: 4u64, max_query_parameters: 1u64 };
+    match parse_request_target_with_limits("/abcd", &limits) {
+        Err(_) => {}
+        Ok(_) => {
+            panic("expected input limit error");
+        }
+    }
+
+    let larger = UrlLimits { max_input_bytes: 100u64, max_query_parameters: 1u64 };
+    match parse_request_target_with_limits("/?a=1&b=2", &larger) {
+        Err(err) => {
+            if err.offset != 6u64 {
+                panic("query parameter limit offset mismatch");
+            }
+        }
+        Ok(_) => {
+            panic("expected query parameter limit error");
+        }
+    }
+}
+
+fn test_encode_query() {
+    let mut parameters: Vec<QueryParameter> = Vec::new();
+    parameters.push(QueryParameter { name: String::from("q"), value: String::from("stark lang") });
+    parameters.push(QueryParameter { name: String::from("tag"), value: String::from("compiler") });
+    parameters.push(QueryParameter { name: String::from("tag"), value: String::from("ml/runtime") });
+    parameters.push(QueryParameter { name: String::from("empty"), value: String::from("") });
+
+    if encode_query(&parameters).as_str() != "q=stark%20lang&tag=compiler&tag=ml%2Fruntime&empty=" {
+        panic("encoded query mismatch");
+    }
+}
+
+fn test_default_limits_are_available() {
+    let limits = default_limits();
+    if limits.max_input_bytes == 0u64 || limits.max_query_parameters == 0u64 {
+        panic("default limits should be nonzero");
+    }
+}
