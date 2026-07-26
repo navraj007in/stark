@@ -336,6 +336,15 @@ Per-command counts are identical: `c64_platform_matrix` 15, `three_engine_differ
 the same verdict was reproduced locally by running the comparator against the downloaded records —
 so the claim does not rest solely on a CI job having exited zero.
 
+**Why the records name `4844702` while HEAD is later.** A record cannot describe the commit that
+adds it — the file must exist before it can be committed. The commit that landed these (`eb3d27b`)
+changes documentation, the state file and the evidence files themselves, and **no source, no test
+and no script** (`git diff --stat 4844702..eb3d27b`), so the qualified artefact is unchanged. The
+standing rule, not a caveat about this one: **any later commit touching `starkc/src`,
+`starkc/tests`, `starkc/scripts`, `starkc/target-matrix.json` or `stark-runtime` invalidates these
+records and requires a fresh qualification run.** That rule is what forced this round's retake —
+R1–R5 touched the scripts, so the `61008f6` records could not stand even though they had passed.
+
 **The earlier records were discarded, not carried forward.** `61008f6` produced two passing,
 agreeing records; R1–R5 then strengthened the harness and comparator, and those records lack
 `target_pointer_width`, `layout_contract_version`, `compiler_layout_revision` and `required_steps`
