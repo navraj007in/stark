@@ -1,0 +1,308 @@
+# C6-CORPUS-COVERAGE-MATRIX — WP-C6.5
+
+**Owner:** WP-C6.5 (`WP-C6.5.md`)
+**Authority:** `starkc/docs/WP-C6-ENTRY.md` §40 (corpus categories); execution plan §7.2–§7.5
+**Frozen:** 2026-07-26 at `b0d7a72`
+**Status:** phase C6.5-0 complete. Every §7.3 category is decomposed and dispositioned. No corpus
+case has been written yet — the `ADD-*` rows are the worklist for phases C6.5-3 through C6.5-7.
+
+## How to read this file
+
+§7.2's required column set is distributed across the per-group tables and this header, so the
+tables stay readable:
+
+- **`accepted_surface`** — implied by the normative rule cited on each row; a row whose surface the
+  front end rejects is `NOT-APPLICABLE-NON-CORE` with the rejection named.
+- **`Tier-1_required`** — **yes for every Core row**, uniformly. C6.5's claim is that both Tier-1
+  targets agree, so no Core row is exempt. Rows that are not Tier-1 required are exactly the
+  `NOT-APPLICABLE-NON-CORE` ones.
+- **`HIR` / `MIR` / `native_debug`** — folded into the **Evidence** column, which names the suite
+  supplying the row. A suite listed there runs all three engines unless the row says otherwise.
+- **`generated_template_ids` / `metamorphic_families` / `mutation_witnesses`** — carried in the
+  **Disposition** column as `→T##`, `→M##`, `→MU##` tags, so a row states in one place what it
+  still owes.
+- **`package_shape`**, **`trap_or_completion`**, **`drop_observation`** — own columns where the row
+  varies; where a whole group is uniform (e.g. every trap row is `trap`) it is stated once in the
+  group's preamble instead of repeated 13 times.
+
+**Disposition vocabulary** (§7.4). `EXISTING-EVIDENCE` means an existing suite already covers the
+row to the C6.5 standard. `ADD-HANDWRITTEN` / `ADD-GENERATED` / `ADD-METAMORPHIC` /
+`ADD-MUTATION-WITNESS` are worklist items. `NOT-APPLICABLE-NON-CORE` requires a cited absence.
+`BLOCKED-BY-DEFECT`, `BLOCKED-BY-OTHER-C6-WP` and `ESCALATION-REQUIRED` name their blocker.
+
+> **A caveat that applies to every `EXISTING-EVIDENCE` row.** Existing evidence was produced by one
+> of the **23 forked comparators** recorded as finding C65-F1 in `WP-C6.5.md` §2. None of them
+> observes the full §39 shape — no stderr bytes, no returned observation, no explicit Drop log. So
+> `EXISTING-EVIDENCE` here means *"this row has real three-engine evidence today"*, not *"this row
+> needs nothing from C6.5"*. Every such row is re-observed under the unified comparator during
+> C6.5-5 replay. Rows that need more than re-observation say so.
+
+**Counts:** 133 rows across 8 groups — 17 expressions/statements, 13 control transfer, 13 patterns,
+24 values/types, 15 calls/dispatch, 24 ownership/Drop, 13 traps, 14 packages/environment.
+
+---
+
+## 1. Expressions and statements (17 rows)
+
+Uniform: `package_shape = single-file` unless noted; `drop_observation = none` unless noted.
+
+| ID | Sub-category | Normative rule | Outcome | Evidence | Disposition |
+| --- | --- | --- | --- | --- | --- |
+| E01 | literals | 01-Lexical §literals | completion | `primitive__01`, `scalar_arithmetic_agrees` | EXISTING-EVIDENCE →T01 |
+| E02 | identifiers | 04-Semantic NAME-RES-001 | completion | `expr_stmt__01` | EXISTING-EVIDENCE |
+| E03 | blocks and block tails | 02-Syntax block-expr | completion | `expr_stmt__02_if_else_and_block_tail` | EXISTING-EVIDENCE →M02 |
+| E04 | let and mutable assignment | 03-Type LET-001 | completion | `expr_stmt__01`, `cross_block_non_copy_moves_agree` | EXISTING-EVIDENCE |
+| E05 | unary operations | NUM-OP-001 | completion | `scalar_arithmetic_agrees` | EXISTING-EVIDENCE →T01 |
+| E06 | binary arithmetic | NUM-OP-001 | both | `scalar_arithmetic_agrees`, `integer_overflow_trap_agrees` | EXISTING-EVIDENCE →T01 →MU01 |
+| E07 | bitwise operations | NUM-BITWISE-001 | both | `primitive__04_bitwise_shift_pow_and_ordering`, `invalid_shift_trap_agrees` | EXISTING-EVIDENCE |
+| E08 | comparisons | PRIM-TRAIT-001 | completion | `ordering_comparisons_agree` | EXISTING-EVIDENCE →T02 |
+| E09 | casts | NUM-CAST-001 | both | `float_to_int_boundary_conversions_agree`, `cast_failure_trap_agrees` | EXISTING-EVIDENCE |
+| E10 | direct calls | CALL-001 | completion | `direct_calls_agree` | EXISTING-EVIDENCE →M10 |
+| E11 | method calls | TYPE-METHOD-002 | completion | `struct_enum_trait__01` | EXISTING-EVIDENCE |
+| E12 | associated functions | TYPE-ASSOC-001 | completion | `struct_enum_trait__05` | EXISTING-EVIDENCE |
+| E13 | function values and indirect calls | FN-VALUE-001 | completion | `function_value_in_local_and_indirect_call` +6 siblings | EXISTING-EVIDENCE →T09 →M11 →MU10 |
+| E14 | returns | CTRL-RETURN-001 | completion | `c61e_a_local_is_destroyed_on_return` | EXISTING-EVIDENCE |
+| E15 | expression statements | 02-Syntax stmt | completion | `expr_stmt__01` | EXISTING-EVIDENCE |
+| E16 | discarded values | OWN-DISCARD-001 | completion, drop-observing | `ownership_drop__03_discarded_values_and_nested_patterns` | EXISTING-EVIDENCE |
+| E17 | assertions and panic | TRAP-ASSERT-001 | trap | `a_false_assertion_traps_in_all_three_engines`, `a_false_bare_assertion_traps…`, `panic_message_agrees_across_engines` | EXISTING-EVIDENCE →T16 |
+
+**Group gaps:** none requiring new hand-written witnesses. Every row is re-observed under the
+unified comparator in C6.5-5; E06/E13/E17 additionally carry mutation obligations.
+
+---
+
+## 2. Control transfer (13 rows)
+
+| ID | Sub-category | Normative rule | Outcome | Evidence | Disposition |
+| --- | --- | --- | --- | --- | --- |
+| C01 | if/else | CTRL-IF-001 | completion | `branches_both_directions_agree` | EXISTING-EVIDENCE →T02 |
+| C02 | nested if | CTRL-IF-001 | completion | `expr_stmt__02` | EXISTING-EVIDENCE |
+| C03 | `loop` | CTRL-LOOP-001 | completion | `infinite_loop_with_mid_body_break_agrees` | EXISTING-EVIDENCE →M12 |
+| C04 | `while` | CTRL-WHILE-001 | completion | `multi_iteration_loop_agrees` | EXISTING-EVIDENCE →M12 |
+| C05 | range `for` | CTRL-FOR-001 | completion | `expr_stmt__03_loops_break_continue` | EXISTING-EVIDENCE →T03 →M12 |
+| C06 | array `for` | CTRL-FOR-001 | completion | `collection_iter__03_slice_views_and_array_iteration` | EXISTING-EVIDENCE |
+| C07 | user iterator `for` | ITER-001 | completion | `c63c_iterators` | EXISTING-EVIDENCE |
+| C08 | `break` | CTRL-BREAK-001 | completion, drop-observing | `c61e_a_local_live_at_break_is_destroyed` | EXISTING-EVIDENCE →T15 |
+| C09 | `continue` | CTRL-CONTINUE-001 | completion, drop-observing | `c61e_a_local_live_at_continue_is_destroyed` | EXISTING-EVIDENCE →T15 |
+| C10 | early return | CTRL-RETURN-001 | completion, drop-observing | `c61e_a_local_is_destroyed_on_return` | EXISTING-EVIDENCE →T15 |
+| C11 | `match` | CTRL-MATCH-001 | completion | `expr_stmt__04_match_and_patterns` | EXISTING-EVIDENCE →T04 →M07 |
+| C12 | `?` propagation | ERR-TRY-001 | completion | `question_mark_propagation_agrees`, `option_result__02` | EXISTING-EVIDENCE →T10 |
+| C13 | trap termination | TRAP-ABORT-001 | trap, drop-observing | `no_destructor_runs_after_a_trap` +4 `c61e_no_destructor_runs_after_*` | EXISTING-EVIDENCE |
+
+**Group gaps:** M12 (equivalent loop forms) has no metamorphic pair — C03/C04/C05 are the base
+candidates. §13.6 constrains it: only forms whose ownership and **Drop timing** are normatively
+equivalent may be paired, which rules out naive `while`↔`for` substitution over an owning
+collection.
+
+---
+
+## 3. Patterns (13 rows)
+
+| ID | Sub-category | Normative rule | Outcome | Evidence | Disposition |
+| --- | --- | --- | --- | --- | --- |
+| P01 | wildcard | PAT-WILD-001 | completion | `expr_stmt__04` | EXISTING-EVIDENCE |
+| P02 | binding | PAT-BIND-001 | completion | `c61e_a_match_arm_binding_is_destroyed_at_arm_end` | EXISTING-EVIDENCE |
+| P03 | tuple | PAT-TUPLE-001 | completion | `tuple_construction_and_projection_agree` | EXISTING-EVIDENCE →T04 |
+| P04 | struct | PAT-STRUCT-001 | completion | `struct_construction_and_field_projection_agree` | EXISTING-EVIDENCE →M05 |
+| P05 | enum variant | PAT-ENUM-001 | completion | `enum_construction_and_matching_agree` | EXISTING-EVIDENCE →T06 |
+| P06 | nested patterns | PAT-NEST-001 | completion | `ownership_drop__03`, `pattern_nested_match` | EXISTING-EVIDENCE →M06 |
+| P07 | literal patterns | PAT-LIT-001 | completion | `match_order_ascending` | EXISTING-EVIDENCE →M07 |
+| P08 | range patterns | — | — | — | **NOT-APPLICABLE-NON-CORE** — 02-Syntax-Grammar declares no range-pattern form; the parser rejects it. Boundary to be pinned by a negative acceptance test (§4.3(4)) |
+| P09 | `ref`/`mut` bindings | PAT-REF-001 | completion | `c61e_a_failed_pattern_test_leaves_the_scrutinee_for_the_matching_arm` | EXISTING-EVIDENCE |
+| P10 | ignored fields | PAT-STRUCT-001 | completion | `struct_enum_trait__02` | EXISTING-EVIDENCE |
+| P11 | partial-move patterns | OWN-PARTIAL-001 | completion, drop-observing | `a_partially_moved_value_destroys_only_the_surviving_field`, `consuming_match_of_a_non_copy_payload_agrees` | EXISTING-EVIDENCE →T14 |
+| P12 | array patterns | PAT-ARRAY-001 | completion | `array_construction_and_indexing_agree` (A5/`ConstIndex`) | EXISTING-EVIDENCE |
+| P13 | match-arm guards | — | — | — | **NOT-APPLICABLE-NON-CORE** — no guard form in 02-Syntax-Grammar; parser rejects. Negative test to pin |
+
+**Group gaps:** P08 and P13 need the §4.3(4) negative acceptance tests that pin their absence.
+Recorded as `ADD-HANDWRITTEN` work under the non-Core classification, not as coverage.
+
+---
+
+## 4. Values and types (24 rows)
+
+| ID | Sub-category | Normative rule | Evidence | Disposition |
+| --- | --- | --- | --- | --- |
+| V01 | Int8/16/32/64 | NUM-INT-001 | `primitive__01_integer_widths_and_overflow_traps` | EXISTING-EVIDENCE →T01 |
+| V02 | UInt8/16/32/64 | NUM-INT-001 | `primitive__01` | EXISTING-EVIDENCE →T01 |
+| V03 | Float32 | NUM-FLOAT-001, CD-140 | `c63e_float32`, `layout_primitives_agree_exactly` | EXISTING-EVIDENCE →MU13 |
+| V04 | Float64 | NUM-FLOAT-001 | `primitive__03_float_arithmetic_and_casts` | EXISTING-EVIDENCE |
+| V05 | Bool | PRIM-TRAIT-001 | `branches_both_directions_agree` | EXISTING-EVIDENCE |
+| V06 | Char | PRIM-CHAR-001 | `c63a_string` (char push/pop, Unicode) | EXISTING-EVIDENCE |
+| V07 | String | STR-001 | `c63a_string` | EXISTING-EVIDENCE →T11 |
+| V08 | `str` | STR-001 | `c63a_string` (stored interior `&str`) | EXISTING-EVIDENCE →T11 |
+| V09 | tuple | TYPE-TUPLE-001 | `tuple_construction_and_projection_agree`, `layout_tuples_agree_exactly` | EXISTING-EVIDENCE |
+| V10 | array | TYPE-ARRAY-001 | `array_construction_and_indexing_agree`, `layout_arrays_agree_exactly` | EXISTING-EVIDENCE |
+| V11 | slice | SLICE-001 | `collection_iter__03`, `c63b_trapping_ops` | EXISTING-EVIDENCE →MU12 |
+| V12 | struct | TYPE-STRUCT-001 | `struct_enum_trait__01`, `layout_structs_agree_exactly` | EXISTING-EVIDENCE →T05 |
+| V13 | enum | TYPE-ENUM-001 | `enum_discriminant_selection_agrees`, `enum_payload_field_order_agrees` | EXISTING-EVIDENCE →T06 |
+| V14 | `Option<T>` | OPT-001 | `option_construction_and_matching_agree`, `option_result__01` | EXISTING-EVIDENCE →T10 |
+| V15 | `Result<T,E>` | RES-001 | `result_construction_and_matching_agree`, `option_result__02` | EXISTING-EVIDENCE →T10 |
+| V16 | `Vec<T>` | VEC-001 | `c63b_vec_box`, `collection_iter__01` | EXISTING-EVIDENCE →T11 |
+| V17 | `Box<T>` | BOX-001 | `c63b_vec_box`, `option_result__03_box_and_layout_queries` | EXISTING-EVIDENCE →T11 |
+| V18 | `HashMap<K,V>` | MAP-001, CE4 insertion order | `c63d_map_key_identity`, `collection_iter__02` | EXISTING-EVIDENCE →T12 →MU11 |
+| V19 | `HashSet<T>` | — | — | **NOT-APPLICABLE-NON-CORE** — HIR-only, no MIR representation; excluded by decision at C6.3 close (CD-142) and pinned by boundary tests. Not executable on all three engines, so not a corpus row |
+| V20 | files/resources | — | — | **NOT-APPLICABLE-NON-CORE** — `std-full` profile, absent from every engine; C6.3f EXCLUDED (CD-142) |
+| V21 | function types | FN-VALUE-001 | `function_value_stored_in_a_struct_field`, `…_in_a_tuple` | EXISTING-EVIDENCE →T09 |
+| V22 | references | REF-001 | `native_c61f_*` (6 suites), `exclusive_references_cross_the_call_boundary_and_mutate` | EXISTING-EVIDENCE →T13 |
+| V23 | mutable references | REF-MUT-001 | `native_c61f_reborrow`, `native_c61f_b3_stored_refs` | EXISTING-EVIDENCE →T13 |
+| V24 | nested/generic combinations | GEN-001 | `nested_and_repeated_instantiations_each_see_their_own_frame`, `recursive_generic_instance_agrees`, `c62c_associated_types` | EXISTING-EVIDENCE →T07 |
+
+**Group gaps:** V19 and V20 are the only non-Core classifications in the whole matrix, and both
+inherit an existing recorded decision rather than introducing one. Note that V19's exclusion reason
+is *"no MIR representation"* — §4.3 says a category is **not** `NOT-APPLICABLE` merely because MIR
+cannot execute it. It qualifies here only because `HashSet` is additionally absent from the
+`core-min` conformance profile; **if that reading is wrong, V19 becomes `ESCALATION-REQUIRED`**.
+Flagged rather than assumed.
+
+---
+
+## 5. Calls and dispatch (15 rows)
+
+| ID | Sub-category | Normative rule | Evidence | Disposition |
+| --- | --- | --- | --- | --- |
+| D01 | free function | CALL-001 | `direct_calls_agree` | EXISTING-EVIDENCE |
+| D02 | inherent method | TYPE-METHOD-002 | `struct_enum_trait__01` | EXISTING-EVIDENCE |
+| D03 | user trait | TRAIT-001 | `c62d_operator_coretrait` | EXISTING-EVIDENCE →T08 →MU09 |
+| D04 | CoreTrait | PRIM-TRAIT-001 | `c62d_operator_coretrait` | EXISTING-EVIDENCE →T08 |
+| D05 | default trait method | TRAIT-DEFAULT-001 | `struct_enum_trait__04_trait_default_and_override` | EXISTING-EVIDENCE |
+| D06 | fully qualified call | TRAIT-QUAL-001 | `trait_call_qualified` | EXISTING-EVIDENCE →M04 |
+| D07 | generic parameter method | GEN-BOUND-001 | `struct_enum_trait__03_generic_function_and_trait_bound` | EXISTING-EVIDENCE →T07 |
+| D08 | associated function | TYPE-ASSOC-001 | `struct_enum_trait__05` | EXISTING-EVIDENCE |
+| D09 | associated type result | ASSOC-TYPE-001 | `c62c_associated_types` | EXISTING-EVIDENCE |
+| D10 | explicit/inferred type args | GEN-INFER-001 | `generics_explicit` / `generics_inferred` | EXISTING-EVIDENCE →M03 |
+| D11 | function pointer | FN-VALUE-001 | `function_value_as_parameter`, `function_value_returned_from_a_function` | EXISTING-EVIDENCE →T09 →MU10 |
+| D12 | cross-package call | PKG-001 | `native_c5_4_linkage`, `native_c5_4_workspace` | EXISTING-EVIDENCE →T17 |
+| D13 | dependency-to-dependency call | PKG-DEP-001 | `native_c5_4_workspace` (3-package) | EXISTING-EVIDENCE →T17 |
+| D14 | Drop-only reachability | OWN-DROP-001 | `native_c6_1_ownership` | EXISTING-EVIDENCE |
+| D15 | trait-only reachability | TRAIT-001 | `c62b_f2_specific_instance` | EXISTING-EVIDENCE |
+
+**Group gaps:** none in coverage; D03/D11 owe adversarial-sentinel mutation witnesses (§14.4 —
+*two* trait impls and *two* function targets returning **different** sentinels, so a wrong route is
+observable). The existing cases were written to prove a route works, not to distinguish it from the
+wrong route; that distinction is the C6.5-7 obligation.
+
+---
+
+## 6. Ownership and Drop (24 rows)
+
+Uniform: every row is `drop_observation = required` unless it is a pure borrow row.
+**Every row in this group is subject to the same limitation:** existing Drop evidence is *printed
+output from user `Drop` impls*, compared as ordinary stdout. C6.5-1's §8.8 Drop-log protocol turns
+that into a parsed, sequence-checked `drop_log` removed from stdout before comparison. So every row
+below is `EXISTING-EVIDENCE` **plus** a re-observation obligation under the protocol.
+
+| ID | Sub-category | Normative rule | Evidence | Disposition |
+| --- | --- | --- | --- | --- |
+| O01 | Copy assignment | OWN-COPY-001 | `c61f_structural_copy` | EXISTING-EVIDENCE →MU07 |
+| O02 | Move assignment | OWN-MOVE-001 | `a_moved_value_is_destroyed_by_its_new_owner` | EXISTING-EVIDENCE →MU07 |
+| O03 | move into call | OWN-MOVE-001 | `cross_block_non_copy_moves_agree` | EXISTING-EVIDENCE |
+| O04 | move return | OWN-MOVE-001 | `native_c61f_ret_refs` | EXISTING-EVIDENCE |
+| O05 | borrow | REF-001 | `ownership_drop__02_shared_borrow_does_not_move` | EXISTING-EVIDENCE |
+| O06 | mutable borrow | REF-MUT-001 | `exclusive_references_cross_the_call_boundary_and_mutate` | EXISTING-EVIDENCE |
+| O07 | reborrow | REF-REBORROW-001 | `native_c61f_reborrow` | EXISTING-EVIDENCE →T13 |
+| O08 | stored reference | REF-STORE-001 | `native_c61f_b3_stored_refs` | EXISTING-EVIDENCE →T13 |
+| O09 | returned reference | REF-RET-001 | `native_c61f_ret_refs` (CD-112) | EXISTING-EVIDENCE →T13 |
+| O10 | partial struct move | OWN-PARTIAL-001 | `a_non_copy_field_moved_out_of_a_struct_agrees` | EXISTING-EVIDENCE →T14 |
+| O11 | partial enum move | OWN-PARTIAL-001 | `a_partially_moved_value_destroys_only_the_surviving_field` | EXISTING-EVIDENCE →T14 |
+| O12 | array element consumption | A5 `ConstIndex` | `native_c5_3_aggregates_enums` | EXISTING-EVIDENCE |
+| O13 | non-Copy array iteration | — | — | **BLOCKED-BY-OTHER-C6-WP** — narrowed and refused at CD-038: a runtime loop index gives V-MOVE-1 nothing precise to track, and reading by copy would double-free. Recorded as a C6 blocker per §3.6, **not** a quarantine |
+| O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | EXISTING-EVIDENCE →T14 |
+| O15 | normal scope Drop | OWN-DROP-001 | `ownership_drop__01_move_and_drop_order` | EXISTING-EVIDENCE →T15 |
+| O16 | break/continue/return Drop | OWN-DROP-001 | `c61e_a_local_live_at_break_is_destroyed` +2 | EXISTING-EVIDENCE →T15 |
+| O17 | exact reverse field order | OWN-DROP-ORDER-001 | `struct_fields_are_destroyed_in_reverse_declaration_order` | EXISTING-EVIDENCE →MU06 |
+| O18 | own destructor before fields | OWN-DROP-ORDER-001 | `own_destructor_runs_before_fields` | EXISTING-EVIDENCE |
+| O19 | active enum payload only | OWN-DROP-001 | `enum_destroys_the_active_variant_payload_a`/`_b` | EXISTING-EVIDENCE |
+| O20 | no duplicate Drop | OWN-DROP-ONCE-001 | `a_moved_value_is_destroyed_exactly_once` | EXISTING-EVIDENCE →MU05 |
+| O21 | no skipped Drop | OWN-DROP-ONCE-001 | `c61e_a_loop_body_local_is_destroyed_each_iteration` | EXISTING-EVIDENCE →MU04 |
+| O22 | no Drop after trap | TRAP-ABORT-001 | `no_destructor_runs_after_a_trap` +4 `c61e_*` | EXISTING-EVIDENCE |
+| O23 | collection element Drop | VEC-001 | `c63b_vec_box` (`Vec<String>`, CD-135/136) | EXISTING-EVIDENCE |
+| O24 | Box inner Drop | BOX-001 | `c63b_vec_box` | EXISTING-EVIDENCE |
+
+**Group gaps:** O13 is the single `BLOCKED` row in the matrix and is a **C6 blocker**, per §3.6 —
+a legal Core program the corpus must not hide behind a quarantine. It needs the owner's disposition
+before C6.5 can claim ownership coverage complete.
+
+---
+
+## 7. Traps (13 rows)
+
+Uniform: `trap_or_completion = trap`; every row requires exact source provenance
+(`file:line:column`), exit 101 and pre-trap stdout.
+
+| ID | Sub-category | Normative rule | Evidence | Disposition |
+| --- | --- | --- | --- | --- |
+| X01 | integer overflow | NUM-INT-OVERFLOW-001 | `integer_overflow_trap_agrees`, `primitive__02` | EXISTING-EVIDENCE →T16 |
+| X02 | divide by zero | NUM-INT-DIV-001 | `divide_by_zero_trap_agrees`, `remainder_by_zero_trap_agrees` | EXISTING-EVIDENCE |
+| X03 | invalid shift | NUM-SHIFT-001 | `invalid_shift_trap_agrees` | EXISTING-EVIDENCE |
+| X04 | cast failure | NUM-CAST-001 | `cast_failure_trap_agrees`, `out_of_range_cast_is_a_cast_failure_not_an_overflow`, 3 float-boundary cases | EXISTING-EVIDENCE |
+| X05 | index out of bounds | IDX-001 | `index_out_of_bounds_traps_in_all_three_engines`, `negative_index_traps…`, `the_last_valid_index_does_not_trap` | EXISTING-EVIDENCE →MU02 |
+| X06 | unwrap None | OPT-UNWRAP-001 | `a_trap_from_an_option_payload_agrees` | EXISTING-EVIDENCE |
+| X07 | unwrap Err | RES-UNWRAP-001 | `c63b_trapping_ops` | EXISTING-EVIDENCE |
+| X08 | assert failure | TRAP-ASSERT-001 | `a_false_assertion_traps…`, `a_false_bare_assertion_traps…` | EXISTING-EVIDENCE |
+| X09 | panic with message | TRAP-PANIC-001 | `panic_message_agrees_across_engines`, `conditional_panic_message_agrees…` (CD-136) | EXISTING-EVIDENCE |
+| X10 | source provenance | TRAP-PROV-001 | every trap case asserts `file:line`; DEV-107 closed | EXISTING-EVIDENCE →MU02 →MU14 |
+| X11 | output before trap | CD-120 Contract B | `c64_platform_matrix::platform_trap_reports_…` | EXISTING-EVIDENCE →MU15 |
+| X12 | exit 101 | TRAP-ABORT-001 | `c64_platform_matrix::platform_trap_reports_…` | EXISTING-EVIDENCE →MU16 |
+| X13 | no cleanup after trap | TRAP-ABORT-001 | 5 `c61e_no_destructor_runs_after_*` | EXISTING-EVIDENCE |
+
+**Note on float division.** There is no float-divide-by-zero trap row, and that is correct:
+NUM-FLOAT-OP-001 makes float division **total**, and CD-139 recorded CD-006's supersession by
+succession of authority. `cd139_float_division` (13 three-engine cases) is the completion-side
+evidence and belongs to V04, not here. A trap row here would encode the superseded rule.
+
+---
+
+## 8. Packages and environment (14 rows)
+
+| ID | Sub-category | Normative rule | Package shape | Evidence | Disposition |
+| --- | --- | --- | --- | --- | --- |
+| K01 | single file | PKG-001 | single-file | most of the corpus | EXISTING-EVIDENCE |
+| K02 | multi-file package | PKG-MOD-001 | package | `multi_file__01_cross_file_execution_and_provenance` | EXISTING-EVIDENCE →T17 |
+| K03 | dependency | PKG-DEP-001 | workspace | `native_c5_4_linkage` | EXISTING-EVIDENCE |
+| K04 | dependency-to-dependency | PKG-DEP-001 | workspace | `native_c5_4_workspace` | EXISTING-EVIDENCE →T17 |
+| K05 | re-export | PKG-USE-001 | workspace | `native_c5_4_linkage` | EXISTING-EVIDENCE |
+| K06 | package alias | — | — | — | **NOT-APPLICABLE-NON-CORE** unless 07-Modules declares an alias form — **to confirm during C6.5-3**; if it exists, this becomes `ADD-HANDWRITTEN` |
+| K07 | workspace relocation | PKG-IDENT-001, CD-108 | workspace | `native_build_cli::frozen_three_package_workspace_builds_through_cli_after_relocation`, `c62e_deterministic_identity` | EXISTING-EVIDENCE →M08 |
+| K08 | dependency declaration reorder | CD-108 | workspace | `c62e_deterministic_identity` | EXISTING-EVIDENCE →M09 |
+| K09 | source declaration reorder | NAME-RES-001 | package | — | **ADD-METAMORPHIC** →M09 sibling; no existing pair |
+| K10 | locked build | PKG-LOCK-001 | workspace | `c64_platform_matrix::portability_generated_crate_is_locked_and_network_free` | EXISTING-EVIDENCE →T19 |
+| K11 | offline build | §11.3 | workspace | `c63_closure_evidence` | EXISTING-EVIDENCE →T19 |
+| K12 | installed runtime | §9.2 | workspace | `c63_closure_evidence`, CI release smoke + negative step (CD-144 R1) | EXISTING-EVIDENCE |
+| K13 | Unicode path | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_unicode` | EXISTING-EVIDENCE |
+| K14 | path containing spaces | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_spaces` | EXISTING-EVIDENCE |
+
+**Group gaps:** K09 needs a metamorphic pair. K06 needs a specification check before it can be
+classified at all — recorded as an open question rather than guessed.
+
+---
+
+## 9. Roll-up
+
+| Disposition | Rows |
+| --- | --- |
+| `EXISTING-EVIDENCE` (all re-observed under the unified comparator in C6.5-5) | 126 |
+| `NOT-APPLICABLE-NON-CORE` | 5 — P08, P13, V19, V20, K06 (K06 provisional) |
+| `ADD-METAMORPHIC` | 1 — K09 |
+| `BLOCKED-BY-OTHER-C6-WP` | 1 — O13, a real C6 blocker |
+
+**What this roll-up does not mean.** 126 `EXISTING-EVIDENCE` rows is not "C6.5 is nearly done". It
+means the *category surface* is already exercised somewhere. What C6.5 owes on top of it, and what
+the rest of the package is:
+
+1. **One comparator** instead of 23 (finding C65-F1) — without which "the engines agree" has 23
+   different meanings.
+2. **The full §39 observation shape** — no row today is observed with stderr bytes, a returned
+   observation, or a parsed Drop log. Every ownership row's Drop evidence is currently printed
+   stdout.
+3. **A generated corpus** — 0 of the required ≥64 cases across ≥10 templates exist. Every `→T##`
+   tag above is unbuilt.
+4. **Metamorphic breadth** — 7 inherited groups against a floor of 24 groups / 48 members, and 5
+   of 12 families have no group at all (M08–M12).
+5. **Mutation controls** — 0 of 16. Every `→MU##` tag is unbuilt. The one existing negative test,
+   `the_comparator_rejects_disagreeing_outcomes`, covers a fraction of MU-nothing specifically.
+6. **Adversarial sentinels** — D03/D11's cases prove a route works, not that the *wrong* route is
+   observable, which is what §14.4 requires of a mutation witness.
+
+Items 2–6 are the substance of phases C6.5-1 through C6.5-7, and none of them is reduced by the
+row count.

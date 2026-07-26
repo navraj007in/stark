@@ -3201,6 +3201,48 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-147 [2026-07-26, **WP-C6.5 OPENED — phase 0 done; the comparator is already forked 23 ways**]
+  Baseline `b0d7a72` (the plan's `61008f6` had advanced six commits and is superseded). Tracked
+  worktree clean; CI green, run 30192715611, all 11 jobs. V0: `exec_snapshots` 4,
+  `mir_differential` 132, `three_engine_differential` 88, `c64_platform_matrix` 15, `fmt` clean,
+  **0 ignored and 0 self-skipped in all four**. Full workspace not re-run locally — CI carries
+  stronger exact-commit evidence for this commit and repeating a weaker single-platform version of
+  it is not evidence.
+  - **C65-F1, and it resizes phase C6.5-1.** The plan's §3.3/§8.2 assume ONE three-engine
+    comparator to extract mechanically out of `three_engine_differential.rs`. Measured: **23 test
+    files run all three engines, each with its own comparison logic** — every `c62*`, `c63*`,
+    `native_c6*`, `native_c61f_*`, `cd139_float_division`, `native_c5_4_workspace`, and
+    `three_engine_differential` itself. They share a SHAPE (assert HIR status, assert MIR status,
+    assert HIR/MIR output equal, then native) without sharing CODE, and nothing calls the
+    "shared" one — it is one of twenty-three, not the authority.
+  - **Why that is a finding and not tidiness.** Every C6.2/C6.3/C6.4 claim about collections,
+    strings, formatting, iterators, ownership and generics rests on one of these local helpers,
+    each written to the standard its own work package needed. The union of 23 ad hoc definitions
+    of "the engines agree" is not a definition — and C6.5's required claim is precisely that the
+    three engines produce the same NORMATIVE observations. None of the 23 observes the §39 shape:
+    no stderr bytes, no returned observation, no explicit Drop log. Every ownership row's Drop
+    evidence today is printed stdout compared as ordinary output.
+  - **Recorded for the owner with a recommendation, not resolved silently:** extract the
+    `three_engine_differential` comparator, adopt it there, and migrate the other 22 incrementally
+    as C6.5 touches each category (matrix order, not file order). The alternatives — migrate all 23
+    at once, or leave inherited suites untouched — are stated in `WP-C6.5.md` §2 with their costs.
+  - **`C6-CORPUS-COVERAGE-MATRIX.md`: 133 rows across the eight §7.3 groups**, every row carrying a
+    normative citation and one of §7.4's dispositions, and citing existing evidence by exact case
+    or test name. 126 EXISTING-EVIDENCE, 5 NOT-APPLICABLE-NON-CORE (P08 range patterns, P13 match
+    guards, V19 `HashSet`, V20 files, K06 package alias — the last provisional pending a spec
+    check), 1 ADD-METAMORPHIC (K09), **1 BLOCKED (O13, non-Copy array iteration — a real C6
+    blocker under §3.6, narrowed and refused at CD-038, NOT a quarantine)**.
+  - **126 EXISTING-EVIDENCE is not "nearly done", and the matrix says so.** It means the category
+    SURFACE is exercised somewhere. Still owed: one comparator instead of 23; the full §39
+    observation shape; a generated corpus (0 of ≥64 cases, 0 of ≥10 templates); metamorphic breadth
+    (7 inherited groups against a floor of 24, and 5 of 12 families — M08–M12 — have no group at
+    all); 16 mutation controls (0 exist); and adversarial sentinels, since the current dispatch and
+    function-value cases prove a route WORKS rather than that the wrong route is observable.
+  - **One flagged self-check:** V19's `NOT-APPLICABLE` rests on `HashSet` being absent from the
+    `core-min` profile, not merely unrepresentable in MIR — §4.3 explicitly forbids the latter as a
+    reason. If that reading is wrong, V19 becomes ESCALATION-REQUIRED. Stated in the matrix rather
+    than assumed.
+
 - CD-146 [2026-07-26, **OWNER DECISION — WP-C6.4 accepted as
   CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS**]
   The owner accepted the recommended status. Recorded so the ledger carries a decision rather than
