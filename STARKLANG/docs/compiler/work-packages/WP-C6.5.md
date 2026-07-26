@@ -263,14 +263,16 @@ decision rather than built inside a corpus package.
    comparator would fail on the *message*, not the semantics. Adding a category is a **CE3**: trap
    identity is one of the contracts WP-C6.0 froze. Until it is decided, MIR raises a loud
    `Internal` error there rather than silently completing with status 0.
-2. **The Unit value is unwritable.** `02-Syntax-Grammar.md:324` declares `TupleLiteral ::= '(' ')'`
-   the Unit value, but the checker rejects `let x: Unit = ();` with E0001 *"type mismatch: expected
-   'Unit', found '()'"*, and `Ok({})` fails at lowering ("block in value position yielded no
-   value"). So PROC-EXIT-001's `Ok(Unit)` branch cannot be expressed in source at all. Either the
-   grammar's comment or the checker's type identity is wrong — a spec-vs-implementation conflict,
-   CE-shaped, flagged rather than resolved.
+2. **The Unit value was unwritable — DEV-112, and NOT a governance question.** The checker rejected
+   `let x: Unit = ();` with E0001 *"type mismatch: expected 'Unit', found '()'"*, and `Ok({})` fails
+   at lowering, so PROC-EXIT-001's `Ok(Unit)` clause could not be expressed in source at all. I first
+   recorded this as a spec-vs-implementation conflict needing a decision. **That was wrong, and the
+   correction matters:** TYPE-PRIM-001 states outright that *"`Unit` and `()` are two spellings of
+   the same single-inhabitant type"*, and 03-Type-System repeats it in the tuple rules ("`()` is
+   `Unit`"). The specification is unambiguous, so this was a plain conformance bug in the checker.
+   Fixed under CD-150 — see §6.4.
 
-### 6.4 Disposition — CD-149: fix MIR, escalate native
+### 6.4 Disposition — CD-149 and CD-150
 
 **MIR fixed.** `run_program` now derives termination from the value `main` returned
 (`entry_termination`, `mir/interp.rs`), and `MirExecution` gained the `stderr` field the oracle's
@@ -282,12 +284,28 @@ appears nowhere in `mir.md` — the same test CD-084 applied to `FnKey` — and 
 **Native escalated**, per §18.5's stop-and-escalate list: a backend that can emit a non-`Unit` entry
 is a feature build, and it belongs to a decision of its own rather than to a corpus package.
 
-**Retained** as `starkc/tests/c65_entry_exit_contract.rs`, 7 tests: four two-engine cases comparing
-every PROC-EXIT-001 field with the normative answer stated independently, and three boundary tests
-that pin each escalation *and name the condition that retires it* — if native starts accepting a
-non-`Unit` entry, if the trap gains a category, or if `()` starts typechecking as `Unit`, the
-corresponding test fails and says what to do. A boundary test that silently keeps passing after its
-boundary moves is how O13 became stale.
+**The trap CE3 is bundled with the native entry work (CD-150).** The backend increment that emits a
+non-`Unit` entry has to emit the `invalid-exit-status` trap anyway, so the `mir.md` amendment, the
+implementation and the three-engine evidence are one package rather than three. Nothing is lost by
+waiting: the case is pinned by a test that fails the day either half lands. Meanwhile MIR fails
+loudly there rather than completing with status 0.
+
+**DEV-112 fixed (CD-150) — `()` now typechecks as `Unit`.** Canonicalised at construction in all
+three engines rather than taught to `unify` as an equivalence, so the two spellings are *one type* as
+TYPE-PRIM-001 says, and `Ty::Tuple([])` is no longer constructible from source: `unit_or_tuple` in
+the checker, `Constant::Unit` in `mir/lower.rs`, `Value::Unit` in the oracle. The fix had to reach
+all three — fixing only the checker produced `MIR-0004 "aggregate Tuple assigned to incompatible type
+Unit"`, and fixing checker + lowering left the oracle's `Ok(Tuple([]))` failing
+`main_result_to_status`. Each engine's disagreement surfaced as its own failure, which is the
+argument for the entry-contract cases running both interpreters rather than one.
+
+**Retained** as `starkc/tests/c65_entry_exit_contract.rs`, **8 tests**: five two-engine cases
+comparing every PROC-EXIT-001 field against the normative answer stated independently — including
+`Ok(Unit)`, the clause DEV-112 had made unreachable — plus the `Unit`-literal case, and two boundary
+tests that pin the remaining escalations *and name the condition that retires each*. If native starts
+accepting a non-`Unit` entry, or the trap gains a category, the corresponding test fails and says
+what to do. A boundary test that silently keeps passing after its boundary moves is how O13 became
+stale.
 
 ### 6.5 What it says about the matrix
 

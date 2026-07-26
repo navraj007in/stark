@@ -15,8 +15,15 @@
 //! `mir/interp.rs` — and every case below now compares the two interpreters field by field, with
 //! the normative answer stated independently so two engines agreeing on a wrong status still fails.
 //!
-//! Three things are pinned here as boundaries rather than fixed, each with the condition that
-//! retires it:
+//! **DEV-112, fixed here too (CD-150).** The same investigation found that `()` did not typecheck as
+//! `Unit` — the checker gave the empty tuple its own type, so `let x: Unit = ()` failed and **no
+//! value of type `Unit` could be written at all**, leaving PROC-EXIT-001's `Ok(Unit)` clause
+//! unreachable from source. TYPE-PRIM-001 settles it outright — *"`Unit` and `()` are two spellings
+//! of the same single-inhabitant type"* — so this was a conformance bug, not a spec conflict, and
+//! all three engines now canonicalise: `unit_or_tuple` in the checker, `Constant::Unit` in lowering,
+//! `Value::Unit` in the oracle.
+//!
+//! Two things remain pinned as boundaries rather than fixed, each with the condition that retires it:
 //!
 //! 1. **Native refuses every non-`Unit` entry** (`Unsupported: the entry instance must return Unit`).
 //!    PROC-MAIN-001 makes those signatures legal executable targets, so this is "a C5-style
@@ -25,11 +32,9 @@
 //!    package. When it lands, promote these to three-engine cases.
 //! 2. **`invalid-exit-status` has no `TrapCategory`.** PROC-EXIT-001 requires a language trap for an
 //!    out-of-range status; the nine categories contain nothing for it and adding one is a CE3
-//!    (WP-C6.0 froze trap identity). MIR fails loudly there instead of completing with a wrong
-//!    status.
-//! 3. **The Unit value is unwritable.** `02-Syntax-Grammar.md:324` calls `()` the Unit value; the
-//!    checker rejects `let x: Unit = ()` as a type mismatch. So PROC-EXIT-001's `Ok(Unit)` branch
-//!    cannot be expressed in source. Spec-vs-checker conflict, CE-shaped, flagged not resolved.
+//!    (WP-C6.0 froze trap identity). Owner decision CD-150: **bundle that amendment with the native
+//!    entry work**, since the backend that emits a non-`Unit` entry has to emit this trap anyway.
+//!    Until then MIR fails loudly there instead of completing with a wrong status.
 
 use starkc::backend::generated_rust::{emit_native_debug, BackendDiagnostic, NativeBuildOptions};
 use starkc::diag::Severity;
@@ -276,28 +281,36 @@ fn native_refuses_every_non_unit_entry_signature() {
     }
 }
 
-/// **Escalation 3, pinned.** `02-Syntax-Grammar.md:324` declares `TupleLiteral ::= '(' ')'` the Unit
-/// value, and the checker rejects it as a distinct type. PROC-EXIT-001's `Ok(Unit)` branch is
-/// therefore unwritable: `Ok(())` fails here, and `Ok({})` fails later, at lowering, with "block in
-/// value position yielded no value".
-///
-/// Pinned rather than fixed because the two documents disagree about which one is wrong, and that
-/// is a specification decision.
+/// **DEV-112, fixed under CD-150.** `()` now typechecks as `Unit`, as TYPE-PRIM-001 requires — the
+/// checker used to give the empty tuple its own type that unified with nothing, so no value of type
+/// `Unit` could be written at all. Both spellings, in type and value position.
 #[test]
-fn the_unit_value_literal_does_not_typecheck_as_unit() {
-    let errors = front_end(
+fn the_unit_value_literal_typechecks_as_unit() {
+    let observed = both_interpreters(
         "entry_exit__06.stark",
-        "fn main() {\n    let x: Unit = ();\n}\n",
-    )
-    .err()
-    .expect(
-        "if `()` now typechecks as Unit, the spec conflict is resolved — write the `Ok(Unit)` \
-             entry case PROC-EXIT-001 requires and delete this test",
+        "fn main() {\n    let x: Unit = ();\n    let y: () = ();\n    print(\"ok\");\n}\n",
     );
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.contains("E0001") && e.contains("expected 'Unit', found '()'")),
-        "unexpected diagnostics: {errors:?}"
+    assert_eq!(observed.stdout, "ok");
+    assert_eq!(observed.status, 0);
+}
+
+/// PROC-EXIT-001: "Normal `Unit` and **`Ok(Unit)`** return status 0."
+///
+/// This is the branch DEV-112 made unreachable: the rule gives `Ok(Unit)` its own clause, and until
+/// `()` typechecked as `Unit` there was no way to construct the value, so a `Result<Unit, String>`
+/// entry could only ever return `Err`.
+#[test]
+fn ok_unit_entry_completes_with_status_zero() {
+    let observed = both_interpreters(
+        "entry_exit__07.stark",
+        "fn main() -> Result<Unit, String> {\n    Ok(())\n}\n",
+    );
+    assert_eq!(
+        observed,
+        Termination {
+            stdout: String::new(),
+            status: 0,
+            stderr: String::new(),
+        }
     );
 }

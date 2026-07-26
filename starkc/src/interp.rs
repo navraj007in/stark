@@ -1535,6 +1535,12 @@ impl<'a> Interpreter<'a> {
                 }
             }
             hir::ExprKind::Tuple(values) => match self.eval_aggregate_elements(values)? {
+                // DEV-112 / TYPE-PRIM-001: `()` IS `Unit`, one type with two spellings, so it
+                // evaluates to the Unit VALUE rather than to an empty tuple. Both other engines
+                // canonicalise the same way (`unit_or_tuple` in the checker, `Constant::Unit` in
+                // lowering); an oracle that produced `Tuple([])` here would make `Ok(())` fail
+                // `main_result_to_status`, which is exactly how this surfaced.
+                Ok(values) if values.is_empty() => Ok(Flow::Value(Value::Unit)),
                 Ok(values) => Ok(Flow::Value(Value::Tuple(values))),
                 Err(propagated) => Ok(Flow::Propagate(propagated)),
             },

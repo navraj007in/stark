@@ -145,10 +145,13 @@ build any non-`Unit` entry at all**. MIR is FIXED (`entry_termination`; `MirExec
 `stderr`; not a contract change — `MirExecution` is absent from `mir.md`). Native is ESCALATED as a
 Gate C6 blocker under `WP-C6-ENTRY.md` §3 required result 6. Two further escalations flagged, not
 resolved: `invalid-exit-status` has **no `TrapCategory`** (CE3 — trap identity is frozen), and the
-Unit VALUE is unwritable (`02-Syntax-Grammar.md:324` calls `()` the Unit value; the checker rejects
-it), so PROC-EXIT-001's `Ok(Unit)` branch cannot be written. Retained:
-`starkc/tests/c65_entry_exit_contract.rs` (7 tests, each boundary naming the condition that retires
-it). **The matrix had no row for any of this** — the second inherited disposition to fail on contact
+Unit VALUE was unwritable. **Both dispositioned by CD-150:** the CE3 is BUNDLED with the native entry
+work (the same increment must emit that trap), and the Unit gap was **DEV-112, FIXED** — TYPE-PRIM-001
+says `Unit` and `()` are two spellings of one type, so it was a conformance bug rather than the
+spec conflict I first called it; canonicalised in all three engines, which unblocked
+PROC-EXIT-001's `Ok(Unit)` clause. Retained:
+`starkc/tests/c65_entry_exit_contract.rs` (8 tests after CD-150, each remaining boundary naming the
+condition that retires it). **The matrix had no row for any of this** — the second inherited disposition to fail on contact
 with a run.
 
 Still owed and not reduced by any of the above: the §39 observation shape, a
@@ -3232,6 +3235,36 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-150 [2026-07-26, **owner decisions on DEV-111's two escalations; DEV-112 FIXED**]
+  - **The `invalid-exit-status` trap category (CE3): BUNDLED with the native entry-signature work.**
+    The backend increment that emits a non-`Unit` `main` must emit this trap anyway, so one `mir.md`
+    amendment, one implementation and one set of three-engine evidence rather than three. Nothing is
+    lost waiting: `c65_entry_exit_contract` pins the case and fails the day either half lands.
+    Meanwhile MIR fails loudly there instead of completing with status 0.
+  - **DEV-112 — `()` did not typecheck as `Unit`. FIXED, and my classification of it was wrong.**
+    I recorded it as a spec-vs-checker conflict needing an owner decision. **TYPE-PRIM-001 settles it
+    outright**: *"`Unit` and `()` are two spellings of the same single-inhabitant type"*, and
+    03-Type-System repeats it in the tuple rules ("`()` is `Unit`"). So it was a plain conformance
+    bug, not governance — the correction is recorded because "this needs your decision" was the
+    expensive part of the mistake, not the diagnosis.
+  - **Why it was not cosmetic.** `Ty::Tuple([])` unified with nothing, so **no value of type `Unit`
+    could be written at all**, and PROC-EXIT-001 gives `Ok(Unit)` its own exit-status clause while
+    PROC-MAIN-001 admits `Result<Unit, String>` entries. The success branch of a legal entry
+    signature was unreachable from source; such a `main` could only ever return `Err`.
+  - **Fixed by canonicalising at construction in all three engines**, not by teaching `unify` that
+    two representations are interchangeable — so they are ONE type as the rule says, and
+    `Ty::Tuple([])` is no longer constructible from source: `unit_or_tuple` (checker),
+    `Constant::Unit` (`mir/lower.rs`), `Value::Unit` (oracle). **All three were required, and each
+    announced itself separately:** checker-only produced `MIR-0004 "aggregate Tuple assigned to
+    incompatible type Unit"`; checker+lowering left the oracle's `Ok(Tuple([]))` failing
+    `main_result_to_status` ("entrypoint returned a value inconsistent with its checked signature").
+    A single-engine fix would have looked complete against a single-engine test.
+  - **Evidence:** `c65_entry_exit_contract` 8/8 (adds `ok_unit_entry_completes_with_status_zero` and
+    the `Unit`-literal case; the former is the clause DEV-112 had made unreachable), `--lib` 463,
+    `mir_differential` 132, `exec_snapshots`, `conformance` green, `fmt` clean. Type identity is
+    cross-cutting, so the exhaustive net is CI's three-platform `--all-targets --all-features` run,
+    per the standing rule — not a local full suite.
 
 - CD-149 [2026-07-26, **DEV-111 — the entry/exit contract diverged in all three engines; MIR fixed,
   native escalated**] Owner decision: fix MIR, escalate native. Found while building §8.3's

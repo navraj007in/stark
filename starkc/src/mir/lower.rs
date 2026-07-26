@@ -3341,6 +3341,13 @@ impl<'a> FnLowerer<'a> {
                     span,
                 })
             }
+            hir::ExprKind::Tuple(elems) if elems.is_empty() => {
+                // DEV-112 / TYPE-PRIM-001: `()` IS `Unit`, so it lowers to the Unit constant, not
+                // to a zero-field tuple aggregate. Without this the checker (which canonicalises
+                // the type) and lowering disagree, and the verifier says so:
+                // "aggregate Tuple assigned to incompatible type Unit" (MIR-0004).
+                Ok(Operand::Const(Constant::Unit))
+            }
             hir::ExprKind::Tuple(elems) => {
                 let ops = elems
                     .iter()

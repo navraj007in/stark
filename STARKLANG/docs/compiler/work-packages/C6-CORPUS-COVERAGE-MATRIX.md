@@ -299,6 +299,13 @@ as X12 (exit 101 after a trap); normal nonzero statuses, the `Err` stderr write 
 signature set had no row. So the §7.5 exit condition "no category silently omitted" did not hold when
 phase 0 was declared complete.
 
+**DEV-112, closed on the way (CD-150).** `Ok(Unit)` — PROC-EXIT-001's own clause for a
+`Result<Unit, String>` entry — was **unwritable**: the checker gave `()` a type that unified with
+nothing, so no value of type `Unit` could be constructed at all. TYPE-PRIM-001 makes `Unit` and `()`
+two spellings of one type, so this was a conformance bug; all three engines now canonicalise, and
+`ok_unit_entry_completes_with_status_zero` covers the clause. K16 is still `BLOCKED` for the native
+half only.
+
 **A related channel gap, recorded here because it has no row of its own and cannot get one yet.**
 `eprint`/`eprintln` are normative (06-Standard-Library IO) but are **unobservable in every engine**:
 the HIR oracle writes them to the *host* process's stderr (`src/interp.rs:2779`) rather than into

@@ -49,6 +49,28 @@ pub enum ExtensionTy {
     ModelError,
 }
 
+/// **TYPE-PRIM-001**, applied where a tuple type is built: *"`Unit` and `()` are two spellings of
+/// the same single-inhabitant type"* (03-Type-System also states it directly — "`()` is `Unit`").
+///
+/// DEV-112: the checker used to give the empty tuple its own type, `Ty::Tuple([])`, which unified
+/// with nothing — so `let x: Unit = ();` failed E0001 with the memorable *"expected 'Unit', found
+/// '()'"*, and there was **no way to write a value of type `Unit` at all**. That is not cosmetic:
+/// PROC-EXIT-001 gives `Ok(Unit)` its own exit-status rule and PROC-MAIN-001 admits
+/// `Result<Unit, String>` entries, so the success branch of a legal entry signature was unreachable
+/// from source. Found by DEV-111's entry-contract cases.
+///
+/// Canonicalising at construction — rather than teaching `unify` that two representations are
+/// interchangeable — is what makes them *the same type* as the rule says, instead of two types with
+/// a special case. `Ty::Tuple([])` is therefore not constructible from source, and no comparison
+/// site has to know about the equivalence.
+fn unit_or_tuple(elems: Vec<Ty>) -> Ty {
+    if elems.is_empty() {
+        Ty::Primitive(Primitive::Unit)
+    } else {
+        Ty::Tuple(elems)
+    }
+}
+
 /// Structural search for a type constructor anywhere inside `ty` (WP-C4.5c helpers for
 /// auditing grounded generic instantiations before publication).
 fn ty_contains(ty: &Ty, pred: &dyn Fn(&Ty) -> bool) -> bool {
@@ -2202,8 +2224,8 @@ impl<'a> TypeChecker<'a> {
                 Ty::Slice(Box::new(elem_ty))
             }
             hir::TypeKind::Tuple(types) => {
-                let elems = types.iter().map(|&t| self.convert_hir_type(t)).collect();
-                Ty::Tuple(elems)
+                let elems: Vec<Ty> = types.iter().map(|&t| self.convert_hir_type(t)).collect();
+                unit_or_tuple(elems)
             }
             hir::TypeKind::Ref { mutable, inner } => {
                 let inner_ty = self.convert_hir_type(*inner);
@@ -4959,8 +4981,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             hir::ExprKind::Tuple(elems) => {
-                let tys = elems.iter().map(|&e| self.check_expr(e)).collect();
-                Ty::Tuple(tys)
+                let tys: Vec<Ty> = elems.iter().map(|&e| self.check_expr(e)).collect();
+                unit_or_tuple(tys)
             }
             hir::ExprKind::Array(elems) => {
                 let elem_var = self.new_type_var();
