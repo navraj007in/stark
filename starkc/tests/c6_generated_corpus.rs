@@ -531,7 +531,7 @@ fn write_evidence(
          \"metamorphic_family_count\": {},\n  \"metamorphic_group_count\": {},\n  \
          \"mutation_count\": 0,\n  \"passed_count\": {},\n  \"failed_count\": {},\n  \
          \"skipped_count\": 0,\n  \"quarantined_count\": 0,\n  \"full_evidence\": {},\n  \
-         \"filters\": \"{}\",\n  \"result\": \"{}\"\n}}\n",
+         \"filters\": \"{}\",\n{}  \"result\": \"{}\"\n}}\n",
         commit_sha(),
         header("corpus_version"),
         header("generator_version"),
@@ -556,9 +556,62 @@ fn write_evidence(
         failed,
         filters.is_full_evidence(),
         json_escape(&format!("{filters:?}")),
+        measured_identity()
+            .into_iter()
+            .map(|(key, value)| format!("  \"{key}\": \"{}\",\n", json_escape(&value)))
+            .collect::<String>(),
         result,
     );
     let _ = std::fs::write(dir.join("summary.json"), summary);
+}
+
+/// §16.2's platform and toolchain identity, MEASURED in the process that produced the record.
+///
+/// A record whose target triple or toolchain came from the caller proves nothing about the machine
+/// that ran the corpus — the same reasoning C6.4's harness applies to `--expected-target`.
+fn measured_identity() -> Vec<(&'static str, String)> {
+    fn tool(program: &str, args: &[&str]) -> String {
+        std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .unwrap_or_else(|| "unavailable".to_string())
+    }
+    fn rustc_field(name: &str) -> String {
+        let verbose = tool("rustc", &["-vV"]);
+        verbose
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .map(|out| !out.stdout.is_empty())
+        .unwrap_or(true);
+    vec![
+        ("target_triple", rustc_field("host:")),
+        ("os", std::env::consts::OS.to_string()),
+        ("architecture", std::env::consts::ARCH.to_string()),
+        ("rustc", tool("rustc", &["--version"])),
+        ("cargo", tool("cargo", &["--version"])),
+        ("python", tool("python3", &["--version"])),
+        ("mir_version", starkc::mir::MIR_VERSION.to_string()),
+        (
+            "backend_version",
+            starkc::backend::version::BACKEND_VERSION.to_string(),
+        ),
+        (
+            "runtime_version",
+            starkc::backend::version::RUNTIME_VERSION.to_string(),
+        ),
+        ("dirty_worktree", dirty.to_string()),
+    ]
 }
 
 fn commit_sha() -> String {

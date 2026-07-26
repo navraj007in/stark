@@ -121,10 +121,12 @@ EXPECTED_TO_DIFFER = (
     "python_version",
 )
 
-# The one state WP-C6.4 may legitimately be in for the generated corpus (§1.2 of WP-C6.4.md).
-# Anything else — including a nonzero case count — means either C6.5 has landed (and this constant
-# needs revisiting together with matrix row 24) or a record is misreporting.
-EXPECTED_CORPUS_STATUS = "BLOCKED-BY-C6.5"
+# WP-C6.5 §16.5 handoff. Until the C6.5 corpus existed this was `BLOCKED-BY-C6.5` and a nonzero case
+# count was itself a problem; the corpus now exists and is replayed by this harness, so the required
+# state inverts: `PASS`, with a real case count. A record reporting `BLOCKED-BY-C6.5` today means the
+# qualification run did not execute the corpus steps — which is a missing observation, not a legacy
+# state to tolerate.
+EXPECTED_CORPUS_STATUS = "PASS"
 
 # Per-command fields compared for exact equality across the two platforms.
 COMMAND_FIELDS = ("ok", "exit_code", "passed", "failed", "ignored", "skipped")
@@ -250,11 +252,13 @@ def validate_record(record: dict, label: str, problems: list[str]) -> None:
             f"{EXPECTED_CORPUS_STATUS!r}. If C6.5 has landed, matrix row 24 and this constant "
             "must be revisited together."
         )
-    if record.get("generated_corpus_case_count"):
+    if not record.get("generated_corpus_case_count"):
         problems.append(
-            f"[{label}] reports {record['generated_corpus_case_count']} generated corpus case(s) "
-            "while the corpus is blocked"
+            f"[{label}] reports no generated corpus cases; row 24 requires the corpus to have been "
+            "replayed, and a zero count means it was not"
         )
+    if not record.get("generated_corpus_version"):
+        problems.append(f"[{label}] records no generated_corpus_version")
 
     # Determinism.
     if record.get("determinism_result") != "match":

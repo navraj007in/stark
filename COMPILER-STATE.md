@@ -150,7 +150,11 @@ controls for the two route-sensitive ones — the negative control that makes th
 mean something. **C6.5-8 (CD-159, PARTIAL) added package breadth** — corpus `0.5.0`, 131 cases,
 **131/131 AGREEMENT** — and found two defects: **DEV-113** (absolute paths in package trap
 provenance; blocks a trapping package case) and **DEV-114** (canonical package symbols
-nondeterministic for a diamond graph; ESCALATED).
+nondeterministic for a diamond graph; ESCALATED). **C6.5-9 (CD-160) built the Tier-1 machinery** —
+`c65-corpus` jobs on both targets, §16.2 measured identity, the §16.4 comparator with per-case
+observation-hash equality, §20.7's thirteen controls, and the C6.4 harness now running the corpus and
+measuring row 24's fields. **Row 24 is NOT flipped**: that needs two agreeing records from CI, which
+this commit only makes possible.
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
 tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
@@ -3259,6 +3263,45 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-160 [2026-07-27, **WP-C6.5-9 commit 11 — Tier-1 machinery and the C6.4 handoff; row 24 NOT
+  flipped**] The jobs, records and comparator exist; the Tier-1 CLAIM does not, and this entry does
+  not make one. Two records at one commit have to come from CI first — asserting agreement from the
+  machinery that would produce it is exactly the substitution §16.5 forbids.
+  - **CI jobs (§16.1):** `c65-corpus` on macos-arm64 and linux-x64 (integrity, full replay,
+    metamorphic, package breadth; platform-named artifact), `c65-mutation-controls` as its OWN job so
+    a run where the mutations were skipped looks different from one where they passed, and
+    `c65-tier1-comparison` with `if: always()` — a skipped comparison is an absence a reader must
+    interpret, not a report.
+  - **§16.2 identity, MEASURED in-process:** target triple from `rustc -vV`, OS, architecture,
+    rustc/cargo/python, MIR/backend/runtime versions, and `dirty_worktree` from `git status`. A record
+    whose triple came from its caller proves nothing about the machine that ran the corpus.
+  - **The §16.4 comparator** requires same commit, corpus/generator version, seed, manifest and
+    generator hashes, identical counts, both `PASS` and FULL evidence, clean worktrees, two DIFFERENT
+    Tier-1 triples, and — the strongest clause — identical **per-case observation hashes**. Two
+    records can agree on every count while having observed different bytes. Platform metadata expected
+    to differ is reported, never treated as disagreement.
+  - **§20.7's controls are tests** (`c6_tier1_controls`, 13): same platform twice, different commit /
+    corpus version / seed / manifest hash, dirty worktree, filtered run, a skip, a failure, a missing
+    record, a case present on only one target, a differing per-case observation — plus one VALID pair
+    that must be accepted, without which "rejects everything" would pass the rest.
+  - **C6.4 handoff (§16.5):** the qualification harness runs the five C6.5 corpus commands and
+    MEASURES `generated_corpus_version` and `generated_corpus_case_count` from the corpus lock;
+    `generated_corpus_status` is derived from whether those steps passed IN THAT RUN — `NOT-RUN`,
+    `PARTIAL`, `FAIL` or `PASS`. Verified: a `--only fmt` probe correctly reports version 0.5.0, 131
+    cases and status `NOT-RUN`. `compare-c64-evidence.py`'s expectation inverts from
+    `BLOCKED-BY-C6.5` to `PASS` with a nonzero count — a record still reporting the old status now
+    means the corpus steps did not execute.
+  - **Row 24 is deliberately NOT flipped.** It flips when two records exist and agree, not when the
+    machinery to produce them lands.
+  - **Also this commit:** `1c47908` fixed a Windows-only failure CD-159 shipped — my DEV-113 pin used
+    `ends_with("app/src/main.stark")`, and Windows returns a MIXED path (`…\ws\app\src/main.stark`)
+    because the OS builds the directory part with backslashes while the entry suffix is composed with
+    a literal `/` in the compiler. Separators are normalised now, and the inconsistency is noted in
+    DEV-113's record rather than absorbed.
+  - **Evidence:** `c6_tier1_controls` 13/13, `c6_package` 6/6, corpus replay 131/131, clippy and fmt
+    clean. Still owed by §16: sharded jobs and merge (not needed at ~90s per target), the real Tier-1
+    comparison, row 24, and evidence import.
 
 - CD-159 [2026-07-27, **WP-C6.5-8 commit 10 PARTIAL — package breadth; DEV-113 and DEV-114 found**]
   Corpus `0.5.0`, **131 cases, replay 131/131 AGREEMENT**. Two package cases: a root package with a

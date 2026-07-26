@@ -9,8 +9,9 @@ outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lis
 **C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
 residuals); **C6.5-6 PARTIAL** (20 metamorphic groups over ten families; M08/M09 blocked on package
 graphs — §12.1); **C6.5-7 complete** (all 16 mutations detected); **C6.5-8 PARTIAL** (package cases, staged package
-replay, relocation and reorder measured; **DEV-113** and **DEV-114** found — §14.1). Corpus `0.5.0`:
-131 cases, replay **131/131 AGREEMENT**. Two findings raised and
+replay, relocation and reorder measured; **DEV-113** and **DEV-114** found — §14.1); **C6.5-9
+MACHINERY ONLY** (Tier-1 jobs, §16.2 identity, the §16.4 comparator and §20.7's controls; row 24
+deliberately NOT flipped — §15.1). Corpus `0.5.0`: 131 cases, replay **131/131 AGREEMENT**. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -774,11 +775,61 @@ believable defect is worse than no experiment.
 
 ---
 
-## 15. What comes next
+## 15. Phase C6.5-9 — Tier-1 machinery and the C6.4 handoff (§16, commit 11) — **MACHINERY ONLY**
 
-§19's commit 11 — CI and Tier-1 machinery (§16): the corpus replay on both Tier-1 targets, exact-commit
-records, shard-summary merging, and C6.4's row 24. Outstanding from earlier phases: §8.1, §10.1, §11.1,
-§12.1 and §14.2 — with DEV-113 and DEV-114 now the two findings that gate package coverage. Migration of the 22 forked suites proceeds
+**Built, not yet evidenced.** This commit adds the jobs, the records and the comparator; the Tier-1
+*claim* needs CI to produce two records at one commit, which happens after this push. Nothing here
+asserts that both targets agree — that would be the exact substitution §16.5 forbids.
+
+**CI jobs (§16.1).** `c65-corpus` (macos-arm64, linux-x64) runs corpus integrity, the full replay,
+metamorphic pairs and package breadth, and uploads a platform-named record. `c65-mutation-controls`
+runs the sixteen mutations as its own job, so a run where they were *skipped* looks different from one
+where they passed. `c65-tier1-comparison` compares the two corpus records, with `if: always()` for the
+same reason the C6.4 comparison has it: a skipped comparison is an absence a reader must interpret,
+not a report.
+
+**The record now carries §16.2's identity, measured** — target triple from `rustc -vV`, OS,
+architecture, toolchain versions, MIR/backend/runtime versions, and `dirty_worktree` from `git
+status`. Measured in the process that produced the record, because a record whose triple came from
+its caller proves nothing about the machine that ran the corpus.
+
+**The comparator (§16.4)** requires same commit, corpus version, generator version, seed, manifest
+and generator hashes, identical counts, both records `PASS` and **full evidence**, clean worktrees,
+two *different* Tier-1 triples, and — the strongest clause — identical **per-case observation
+hashes**. Two records can agree on every count while having observed different bytes; that clause is
+what makes the difference visible. Platform metadata expected to differ is reported and never treated
+as disagreement.
+
+**§20.7's twelve controls exist as tests** (`c6_tier1_controls`, 13 tests): same platform twice,
+different commit, corpus version, seed and manifest hash, dirty worktree, filtered run, a skip, a
+failure, a missing record, a case present on only one target, a differing per-case observation — and
+one valid pair that must be *accepted*, without which "rejects everything" would pass the other
+twelve.
+
+**C6.4 handoff (§16.5).** The qualification harness now runs the five C6.5 corpus commands and
+**measures** `generated_corpus_version` and `generated_corpus_case_count` from the corpus lock, with
+`generated_corpus_status` derived from whether those steps actually passed in that run — `NOT-RUN`,
+`PARTIAL`, `FAIL` or `PASS`. `compare-c64-evidence.py`'s expectation inverts from `BLOCKED-BY-C6.5` to
+`PASS` with a nonzero case count: a record still reporting the old status now means the corpus steps
+did not execute, which is a missing observation rather than a legacy state to tolerate.
+
+### 15.1 What §16 still owes
+
+| §16 requirement | State |
+| --- | --- |
+| §16.1 sharded jobs and `c65-${platform}-merge` | not built — the full replay is ~90s per target, so sharding is not yet needed; the shard *machinery* exists and is tested |
+| §16.4 an actual Tier-1 comparison of two real records | **pending the first CI run at this commit** |
+| §16.5 row 24 flipped to `PASS` | **not done, deliberately** — it flips when two records exist and agree, not when the machinery to produce them lands |
+| §16.6 evidence import | commit 12 |
+
+---
+
+## 16. What comes next
+
+§19's commit 12 — evidence and closure records (§16.6, §22): import the CI-produced Tier-1 records
+rather than regenerating them locally, verify the §16.6 checklist against them, flip C6.4 row 24, and
+work the §22 closure checklist. Outstanding from earlier phases: §8.1, §10.1, §11.1, §12.1, §14.2 and
+§15.1 above. Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

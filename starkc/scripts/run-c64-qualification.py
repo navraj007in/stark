@@ -44,6 +44,7 @@ import argparse
 import datetime
 import json
 import os
+import pathlib
 import platform
 import re
 import shutil
@@ -113,6 +114,53 @@ class Evidence:
     deviations: list[str] = field(default_factory=list)
 
 
+# WP-C6.5 §16.5. The corpus steps whose collective result decides row 24. Named explicitly rather
+# than "every step tagged semantics", so adding an unrelated semantics step cannot silently become
+# part of a corpus claim.
+C65_CORPUS_STEPS = (
+    "c65_generated_corpus",
+    "c65_metamorphic",
+    "c65_mutation",
+    "c65_package",
+    "c65_corpus_integrity",
+)
+
+
+def generated_corpus_fields(results: list) -> dict:
+    """§16.5's row-24 fields, MEASURED.
+
+    The version and case count are read from the corpus's own lock and manifest — the same files the
+    corpus tests verify — not passed in or assumed. The status is `PASS` only when every C6.5 corpus
+    step in THIS run passed; a record that reported `PASS` while its own commands failed would be
+    exactly the kind of evidence C6.4's re-qualification rule exists to prevent.
+    """
+    corpus = pathlib.Path("tests/c6-corpus")
+    version = None
+    case_count = 0
+    lock = corpus / "corpus.lock"
+    if lock.is_file():
+        for line in lock.read_text(encoding="utf-8").splitlines():
+            if line.startswith("corpus_version = "):
+                version = line.split(" = ", 1)[1].strip()
+            elif line.startswith("case_count = "):
+                case_count = int(line.split(" = ", 1)[1].strip())
+    ran = {r.name: r for r in results}
+    present = [name for name in C65_CORPUS_STEPS if name in ran]
+    if not present:
+        status = "NOT-RUN"
+    elif len(present) != len(C65_CORPUS_STEPS):
+        status = "PARTIAL"
+    elif all(ran[name].ok for name in present):
+        status = "PASS"
+    else:
+        status = "FAIL"
+    return {
+        "generated_corpus_version": version,
+        "generated_corpus_case_count": case_count,
+        "generated_corpus_status": status,
+    }
+
+
 def steps_for(quick: bool) -> list[Step]:
     """The §10.5 command set.
 
@@ -162,6 +210,47 @@ def steps_for(quick: bool) -> list[Step]:
             ["cargo", "test", "--test", "mir_differential"],
             "semantics",
             "§10.5: the frozen corpus through both interpreters.",
+        ),
+        # WP-C6.5 §16.5: the generated-corpus commands this record's row 24 depends on. They are
+        # separate steps rather than one, so a failure names WHICH claim broke -- replay, pair
+        # preservation, mutation sensitivity or package breadth.
+        Step(
+            "c65_generated_corpus",
+            ["cargo", "test", "--test", "c6_generated_corpus"],
+            "semantics",
+            "§16.5: the C6.5 corpus replayed through every engine each case declares.",
+            nocapture=True,
+        ),
+        Step(
+            "c65_metamorphic",
+            ["cargo", "test", "--test", "c6_metamorphic"],
+            "semantics",
+            "§16.5: metamorphic pairs preserved by each engine.",
+        ),
+        Step(
+            "c65_mutation",
+            ["cargo", "test", "--test", "c6_mutation"],
+            "semantics",
+            "§16.5: the sixteen mutation controls -- proof the corpus can fail.",
+        ),
+        Step(
+            "c65_package",
+            ["cargo", "test", "--test", "c6_package"],
+            "semantics",
+            "§16.5: package relocation, dependency reorder and the DEV-113/DEV-114 pins.",
+        ),
+        Step(
+            "c65_corpus_integrity",
+            [
+                "cargo",
+                "test",
+                "--test",
+                "c6_corpus_manifest",
+                "--test",
+                "c6_corpus_generator",
+            ],
+            "semantics",
+            "§16.5: manifest validation, lock integrity, generator determinism.",
         ),
         Step(
             "exec_snapshots",
@@ -628,9 +717,7 @@ def main() -> int:
             {name for r in results for name in r.unclassified_ignores}
         ),
         "skipped_count": sum(r.skipped for r in results),
-        "generated_corpus_version": None,
-        "generated_corpus_case_count": 0,
-        "generated_corpus_status": "BLOCKED-BY-C6.5",
+        **generated_corpus_fields(results),
         "determinism_first_hash": first,
         "determinism_second_hash": second,
         "determinism_result": determinism,

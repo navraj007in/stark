@@ -98,6 +98,123 @@ jobs:
           name: c64-evidence-${{ matrix.name }}
           path: ${{ runner.temp }}/c64-evidence/
 
+  # WP-C6.5 §16.1: the corpus's own Tier-1 jobs. Separate from `c64-qualification` because they
+  # produce a DIFFERENT artifact — a corpus record with per-case observation hashes — and because a
+  # corpus failure should be readable as such rather than as one red step inside a platform record.
+  #
+  # The C6.4 qualification job also runs the corpus commands (§16.5, for row 24); this job is what
+  # produces the machine-readable corpus evidence the Tier-1 corpus comparison consumes.
+  c65-corpus:
+    name: C6.5 corpus replay (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+          - name: macos-arm64
+            os: macos-14
+            triple: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: Corpus integrity
+        run: |
+          python3 tests/c6-corpus/generate.py --check
+          cargo test --test c6_corpus_manifest --test c6_corpus_generator
+      - name: Full corpus replay
+        env:
+          C6_EVIDENCE_DIR: ${{ runner.temp }}/c65-evidence
+        run: cargo test --test c6_generated_corpus -- --nocapture
+      - name: Metamorphic families
+        env:
+          C6_EVIDENCE_DIR: ${{ runner.temp }}/c65-evidence
+        run: cargo test --test c6_metamorphic
+      - name: Package breadth
+        env:
+          C6_EVIDENCE_DIR: ${{ runner.temp }}/c65-evidence
+        run: cargo test --test c6_package
+      - name: Name the record by platform
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/c65-evidence"
+          if [ -f "$RUNNER_TEMP/c65-evidence/summary.json" ]; then
+            mv "$RUNNER_TEMP/c65-evidence/summary.json" \
+               "$RUNNER_TEMP/c65-evidence/${{ matrix.name }}-summary.json"
+            mv "$RUNNER_TEMP/c65-evidence/per-case.json" \
+               "$RUNNER_TEMP/c65-evidence/${{ matrix.name }}-per-case.json"
+          fi
+      - name: Upload corpus evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c65-evidence-${{ matrix.name }}
+          path: ${{ runner.temp }}/c65-evidence/
+
+  # §14: the mutation controls, as their own job. They are the negative control for every other
+  # claim here, so a run where they were skipped must be visibly different from one where they
+  # passed — a step inside another job would not be.
+  c65-mutation-controls:
+    name: C6.5 mutation controls
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: starkc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - name: Mutation controls
+        env:
+          C6_EVIDENCE_DIR: ${{ runner.temp }}/c65-mutations
+        run: cargo test --test c6_mutation -- --nocapture
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c65-mutation-evidence
+          path: ${{ runner.temp }}/c65-mutations/
+
+  # §16.4: two green corpus jobs are not agreement, for the same reason two green platform jobs are
+  # not. `if: always()` for the same reason as the C6.4 comparison: a skipped comparison is an
+  # absence a reader has to interpret, not a report.
+  c65-tier1-comparison:
+    name: C6.5 corpus tier-1 agreement
+    needs: c65-corpus
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c65-evidence-*
+          path: evidence
+          merge-multiple: true
+        continue-on-error: true
+      - name: Compare corpus records
+        run: |
+          mkdir -p evidence
+          python3 starkc/scripts/compare-c65-evidence.py \
+            evidence/macos-arm64-summary.json evidence/linux-x64-summary.json \
+            --per-case evidence/macos-arm64-per-case.json evidence/linux-x64-per-case.json \
+            --output evidence/c65-tier1-agreement.md
+      - name: Upload agreement report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c65-tier1-agreement
+          path: evidence/
+
   # §10.4: two green jobs are not agreement. This is the job that compares them.
   #
   # `if: always()` is load-bearing, not defensive. Without it a failed qualification job would
