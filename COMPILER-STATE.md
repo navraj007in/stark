@@ -76,15 +76,11 @@ DECLARED width in the operation's identity; scalar and every composite context r
 `Vec<String>`, and aggregates one level down (`Vec<(String, Int32)>`, `Vec<[String; 2]>`,
 `Vec<Option<String>>`, `Vec<Result<String, _>>`) — read by REFERENCE rather than by copy.
 **DEV-106 (trap-message three-engine parity) and DEV-107 (native `v[i]` OOB provenance) are both
-CLOSED** (CD-136, CD-131). **C6.3e is PARTIAL (CD-138) — every blocking DEFECT is now closed,
-but the confirming run is not complete, so the status does not move yet.** DEV-108 CLOSED (CD-138:
-FIXED by a loop-aware block order, not refused — the payload type was never the cause); DEV-105
-CLOSED (CD-138); DEV-110 CLOSED (CD-139); DEV-109 CLOSED (CD-140). What remains is EVIDENCE, not
-implementation: the 24 native/backend targets have not been run against `loop_aware_order`, which
-changes block emission for every generated body containing a loop. CD-127 is the precedent for why
-that specific run matters — a structured plan that VALIDATES but is wrong produces an infinite loop
-rather than a failure, so it is not caught by anything already green. Historical note on the two
-`Float32` VALUE-semantics defects, both found by DEV-105's own evidence — DEV-109 (`Float32` arithmetic is
+CLOSED** (CD-136, CD-131). **C6.3e is CLOSED (CD-142).** DEV-108 CLOSED (CD-138: FIXED by a
+loop-aware block order, not refused — the payload type was never the cause); DEV-105 CLOSED
+(CD-138); DEV-110 CLOSED (CD-139); DEV-109 CLOSED (CD-140); confirmed by a full three-platform run
+(CD-142). Historical note on the two `Float32` VALUE-semantics defects, both found by DEV-105's own
+evidence — DEV-109 (`Float32` arithmetic is
 carried in f64 and rounded only at display, so casts and overflow observe the wrong precision) and
 DEV-110 (ESCALATED: NUM-FLOAT-OP-001 says float division by zero does NOT trap, recorded owner
 decision CD-006 says it does; HIR follows the spec and MIR follows CD-006). DEFERRED to a future decision (CD-125): composite `Box`
@@ -98,18 +94,16 @@ shared `TypeContext::eq_impls` table. CD-133 fixed a LIVE HIR↔MIR divergence f
 compared keys structurally, ignoring user `Eq`). EXCLUDED and pinned by boundary tests: `HashSet`
 (HIR-only — no MIR representation, so a lowering gap like C6.3c's adapters) and Drop-bearing keys/
 values (refused before MIR, which keeps entry Drop order unobservable and legitimately unspecified).**
-**WP-C6.3 is PARTIAL (CD-138, correcting CD-137).** a/b/c/d are closed and C6.3f (files) is
+**WP-C6.3 is CLOSED (CD-142; PARTIAL under CD-138, which corrected CD-137).** a/b/c/d are closed and C6.3f (files) is
 EXCLUDED — absent from every engine and in the optional, already-unclaimable `std-full` profile — and
 the CD-116 CLOSURE EVIDENCE is discharged (installed-runtime + offline build + version-mismatch
 detection, `tests/c63_closure_evidence.rs`). **C6.3e is not closed**: CD-137 claimed completion while
 DEV-105 stood as a known WRONG OUTPUT inside the admitted domain rather than an excluded feature, and
 those two statements cannot both hold. DEV-105 is now CLOSED, and so are the two defects its
-evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138). **No DEFECT blocks
-C6.3 closure.** What blocks it is the confirming run: 40 of 76 test targets are green — including the
-frozen corpus (`mir_differential`, 132), `conformance`, `exec_snapshots`, and all C6.3 evidence — but
-the native/backend targets have not been re-run since `loop_aware_order` changed block emission.
-C6.3 is re-closed on that run, not before. Escalations named above (`Box`/`HashMap` Display
-semantics) are excluded by decision, not blocking.**
+evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138). **WP-C6.3 is
+CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
+macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
+(`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
 Also open:
 C4/C5/C6
 platform matrix, C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
@@ -3188,6 +3182,31 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-142 [2026-07-26, **WP-C6.3 CLOSED — on a full three-platform run**]
+  CD-138 item 7 required C6.3 to be re-closed "on a full clean run" and not before. That condition
+  is now met, by the CI run for `1ef4e8b` (Actions run 30188909346), **all 7 jobs green**:
+  `cargo test --workspace --all-targets --all-features` on **linux-x64, macos-arm64 and
+  windows-x64**, plus release-package smoke on all three and spec-fixture conformance. `cargo fmt`
+  and `clippy --workspace --all-targets --all-features -D warnings` are clean in the same jobs.
+  - **This is stronger evidence than the local run it replaced**, in two ways that matter. It is
+    `--all-targets --all-features` rather than the plain `--workspace` I had queued, and it is three
+    platforms rather than one. The specific risk I had named — `loop_aware_order` changing block
+    emission for every generated body with a loop, where a plan that VALIDATES but is wrong yields an
+    infinite loop rather than a failure (the CD-127 precedent) — is exercised by every native target
+    on every platform, including a Windows host whose toolchain and linker differ from this one.
+  - **The local "wave 2" did NOT contribute to this closure.** I terminated it (`SIGTERM`, exit 143)
+    after 3 of 24 targets once CI made it redundant. Recorded explicitly so the evidence trail is not
+    read as 24 local targets plus CI.
+  - **CI was RED for the four commits before this one** (`3f8e993` onward, CD-141) — so this is also
+    the first green build since the C6.3e work began, and the first evidence that the whole series
+    holds together on Linux and Windows rather than only on the development host.
+  - **What C6.3 closes as.** a/b/c/d/e closed; f (files) EXCLUDED — absent from every engine and in
+    the optional, already-unclaimable `std-full` profile. Carried forward as excluded-by-decision,
+    not defects: `HashSet` (HIR-only, no MIR representation), Drop-bearing map keys/values,
+    composite `Box` elements (CD-125), `HashMap`/bare-struct `Display` (CD-136, CE-shaped), and the
+    six iterator forms in `WP-ITER-LOWERING-PROPOSAL.md`. Deprecated but present:
+    `CheckedOp::FloatDiv`/`FloatRem`, whose removal is a separately versioned cleanup.
 
 - CD-141 [2026-07-26, **CI RED SINCE `3f8e993` — the three-engine harness ignored the category the
   oracle states**]
