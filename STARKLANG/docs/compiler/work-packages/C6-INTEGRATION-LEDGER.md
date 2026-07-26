@@ -364,3 +364,20 @@ rather than invented, and the process correction follows them.
 afterwards from a commit. Two further shared files are in scope for the coming batch —
 `starkc/tests/three_engine_differential.rs` again (R-02 migration) and `starkc/tests/exec_snapshots.rs`
 if the inherited corpus is touched — and both will be entered before the work starts, not after.
+
+
+## Shared-file leases — WP-C6.5 consolidated batch (recorded IN ADVANCE, 2026-07-27, CD-164)
+
+Owner approved all three decision packets and ordered one consolidated qualified-path batch. These
+leases are entered before the work starts, which is the correction R-06 demanded.
+
+| file · owning track · reason | base SHA | API impact | tests required | lease start | lease release |
+| --- | --- | --- | --- | --- | --- |
+| `starkc/src/mir/mod.rs` · Track A · CE3: `TrapCategory::InvalidExitStatus` | `f7f0276` | additive enum variant; `MIR_VERSION` unchanged, runtime surface unchanged (`abort` already takes a category) | `--lib`, `mir_differential`, `three_engine_differential`, `c65_entry_exit_contract`, corpus replay | CD-164 | pending |
+| `starkc/tests/three_engine_differential.rs` · Track A · R-02 migration of the last suites onto the shared comparator | `f7f0276` | none — case declarations only | `three_engine_differential`, corpus replay | CD-164 | pending |
+| `starkc/stark-runtime/src/lib.rs` (via `trap.rs`) · Track A · CE3: matching runtime category + message | `f7f0276` | additive variant; runtime version bump | `-p stark-runtime`, `c63_closure_evidence` | CD-164 | pending |
+| `starkc/src/backend/generated_rust/mod.rs` + `emit_program.rs` · Track A · CE3: non-`Unit` entry emission | `f7f0276` | generated `fn main()` shape changes for non-`Unit` entries only | every `native_*` suite, corpus replay | CD-164 | pending |
+
+`starkc/tests/exec_snapshots.rs` is **not** leased: the frozen corpus is single-file and names its own
+cases, so DEV-113's logical-path change should not reach it. If that proves wrong the lease is taken
+before the file is edited, not after.
