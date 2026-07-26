@@ -1,0 +1,16 @@
+struct Loud { id: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) {
+        print("@@stark-drop:Loud#");
+        print(self.id);
+        println("@@");
+    }
+}
+fn main() {
+    let mut once: Int32 = 0;
+    while once < 1 {
+        let loud1: Loud = Loud { id: 1 };
+        once = once + 1;
+    }
+    print("done");
+}

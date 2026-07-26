@@ -1,0 +1,9 @@
+fn main() {
+    let value: Option<Int32> = None;
+    let out: Int32 = match value {
+        Some(v) => v,
+        None => -1,
+    };
+    assert_eq(out, -1);
+    print(out);
+}

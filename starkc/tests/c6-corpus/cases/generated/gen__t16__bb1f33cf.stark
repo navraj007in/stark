@@ -1,0 +1,6 @@
+fn main() {
+    print("before");
+    let xs: [Int32; 2] = [1, 2];
+    let i: Int32 = 5;
+    print(xs[i]);
+}

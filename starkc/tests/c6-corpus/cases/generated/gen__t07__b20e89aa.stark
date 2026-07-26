@@ -1,0 +1,12 @@
+fn pick<T>(a: T, b: T, take_first: Bool) -> T {
+    if take_first { a } else { b }
+}
+fn main() {
+    let x: Int32 = 7;
+    let y: Int32 = 9;
+    let picked: Int32 = pick(x, y, true);
+    assert_eq(picked, 7);
+    let s: Bool = pick(true, false, true);
+    assert(s == true);
+    print(picked);
+}

@@ -1,0 +1,10 @@
+fn main() {
+    let mut total: Int64 = 0;
+    let mut i: Int64 = 0;
+    while i < 0 {
+        total = total + i * 1;
+        i = i + 1;
+    }
+    assert_eq(total, 0);
+    print(total);
+}

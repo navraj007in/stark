@@ -5,7 +5,8 @@
 complete; **C6.5-1 complete** (comparator extracted and extended to the full §39 observation shape,
 commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds in matrix order.
 **C6.5-3 PARTIAL** (§10.3 sentinels done; per-row witnesses, trap balance and package breadth
-outstanding — §8.1). Corpus `0.2.0`: 13 handwritten, 6 retained, 0 generated. Two findings raised and
+outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals).
+Corpus `0.3.0`: 70 generated, 13 handwritten, 6 retained. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -516,10 +517,66 @@ left for the owner.
 
 ---
 
-## 10. What comes next
+## 10. Phase C6.5-4 — the deterministic generator (§11, commit 6)
 
-the rest of §10 — the per-row witnesses, §10.4's trap balance, and §10.5's package breadth (see
-§8.1). Migration of the 22 forked suites proceeds
+**Done.** `corpus_version` **0.3.0** — 89 cases: **70 generated** across **15 templates**, 13
+handwritten sentinels, 6 retained. §11.4's floor (≥64 cases, ≥10 templates, completion *and* trap,
+full provenance per case) is met and asserted by a test rather than counted by hand.
+
+**Selection (§11.2).** Dimension tuples are enumerated in sorted order, ranked by
+`SHA-256(generator_version | seed | template_id | canonical_dimensions)`, truncated to a per-template
+budget of 5, and the case ID is the template plus a digest prefix. Nothing host-dependent enters
+identity — no filesystem order, PID, timestamp, absolute path or Python-version-dependent
+representation. The dimension tuple is canonicalised by an explicit function rather than by `repr`,
+which is stable in practice but not contractually.
+
+**Expectations come from the template, not from an engine.** Each generated case carries its
+`expected_stdout` (or `expected_drop_log`, or `expected_trap_category`) computed by the template's own
+semantic model. This is the same principle as the sentinels and the reason both exist: the corpus
+claims the three engines agree with the *specification*, and an expectation read back from one engine
+could only ever show that the engines agree with each other.
+
+**Registry (§11.5): 15 of the 20 named families.** T01 arithmetic, T02 comparison/branch, T03 bounded
+loop, T04 match/pattern, T05 struct projection, T06 enum payload move, T07 generic instances, T08
+trait dispatch, T09 function values, T10 Option/Result with `?`, T11 String/Vec flow, T12 collection
+order, T15 Drop order via the §8.8 protocol, T16 every admitted trap category, T20 composite
+formatting. **Absent and recorded rather than stubbed** — `--list-templates` prints them with reasons —
+T13 (borrow/reborrow/reference return) and T14 (partial move/reinit) are handwritten today; T17/T18/T19
+need package graphs, which arrive with §15.
+
+**Valid by construction (§11.7), not by trial.** Each template's dimension space excludes tuples that
+would produce an invalid or accidentally-trapping program — unsigned subtraction that would go
+negative is filtered out, for instance, because overflow traps and T01 is a completion template. No
+case was found by generating and discarding failures. All 70 pass on all three engines.
+
+**Determinism proven by running it (§11.10), 8 tests:** same seed twice byte-identical; relocation to a
+different (and deeper) output root identical; pre-existing junk in the output directory irrelevant; a
+different seed reselects but stays reproducible and keeps the same count; a *generator version* change
+reselects — which is what makes "a version change requires corpus-version review" enforceable rather
+than advisory; no absolute path anywhere in the generated corpus; `--check` byte-identical.
+
+**Two parser bugs the generated data found in my own tooling**, both fixed: the manifest list parser
+split on `,` and so tore `expected_stdout = ["[1, 2, 3]"]` in half — a rendered array is legitimate
+data — and the lock generator referenced a constant I had renamed. The first is worth naming: it was
+found by real data, not by review.
+
+### 10.1 What §11 still owes
+
+| §11 requirement | State |
+| --- | --- |
+| §11.11 retained-case workflow tested with a synthetic failure | **not done** — retention is documented and the retained cases exist, but the `cases/retained/<DEV-ID>/original/` + `reduced/` flow has not been exercised |
+| T13/T14 templates | absent; the shapes are covered by handwritten cases |
+| T17/T18/T19 package templates | blocked on §15 package graphs |
+| package dimensions in §11.4's dimension list | absent for the same reason |
+
+---
+
+## 11. What comes next
+
+§19's commit 7 — §12's full replay harness (admission classification, per-case timeouts, sharding,
+replay filters, the §21 evidence schema), which is what turns `c6_corpus_cases.rs` from a bridge into
+the qualification path. The rest of §10 (per-row witnesses, trap balance beyond the generated T16
+cases, package breadth) and §11.11's retention workflow remain outstanding — see §8.1 and §10.1. Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

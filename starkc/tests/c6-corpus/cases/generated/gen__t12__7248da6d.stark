@@ -1,0 +1,9 @@
+fn main() {
+    let mut m: HashMap<Int32, Int32> = HashMap::new();
+    m.insert(5, 0);
+    m.insert(4, 1);
+    assert_eq(m.len(), 2);
+    for k in m.keys() {
+        print(*k);
+    }
+}

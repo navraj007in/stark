@@ -136,17 +136,42 @@ fn parse_value(text: &str) -> Result<Value, String> {
         return Ok(Value::Bool(false));
     }
     if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
-        let inner = inner.trim();
-        if inner.is_empty() {
-            return Ok(Value::List(Vec::new()));
-        }
-        let mut items = Vec::new();
-        for item in inner.split(',') {
-            items.push(parse_string(item.trim())?);
-        }
-        return Ok(Value::List(items));
+        return Ok(Value::List(parse_list_items(inner.trim())?));
     }
     Ok(Value::Str(parse_string(text)?))
+}
+
+/// A list body, scanned rather than split on `,` — a value may legitimately CONTAIN a comma
+/// (`expected_stdout = ["[1, 2, 3]"]` is a rendered array), and splitting first would tear it in
+/// half. Quotes delimit; commas outside quotes separate.
+fn parse_list_items(body: &str) -> Result<Vec<String>, String> {
+    let mut items = Vec::new();
+    let mut rest = body;
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return Ok(items);
+        }
+        let after_open = rest
+            .strip_prefix('"')
+            .ok_or_else(|| format!("expected a double-quoted string in a list, found {rest:?}"))?;
+        let end = after_open
+            .find('"')
+            .ok_or_else(|| format!("unterminated string in a list: {rest:?}"))?;
+        let (item, tail) = after_open.split_at(end);
+        if item.contains('\\') {
+            return Err(format!(
+                "quotes and backslashes are not supported in manifest strings: {item:?}"
+            ));
+        }
+        items.push(item.to_string());
+        rest = tail[1..].trim_start();
+        match rest.strip_prefix(',') {
+            Some(next) => rest = next,
+            None if rest.is_empty() => return Ok(items),
+            None => return Err(format!("expected `,` between list items, found {rest:?}")),
+        }
+    }
 }
 
 fn parse_string(text: &str) -> Result<String, String> {
@@ -364,8 +389,9 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
         }
     }
 
-    // Enumeration order is part of the contract (§9.3): the manifest is sorted by case_id, so a
-    // corpus run's order does not depend on who appended last.
+    // Enumeration order is part of the contract (§9.3). `load_manifests` sorts the merged set and
+    // checks each FILE's internal order separately; this guards callers that build a case list
+    // directly, including every rejection test.
     let sorted: Vec<&str> = {
         let mut ids: Vec<&str> = cases.iter().map(|c| c.case_id.as_str()).collect();
         ids.sort_unstable();
@@ -610,10 +636,38 @@ pub fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/c6-corpus")
 }
 
+/// The corpus is described by TWO manifests: `manifest.toml` for hand-authored cases and
+/// `generated.manifest.toml` for `--write` output. The split keeps a regeneration from ever
+/// touching a case a person wrote, and keeps a person from editing an expectation the generator
+/// derived. Each file must be internally sorted; the merged set is sorted for enumeration, so case
+/// order does not depend on which file a case came from.
+pub fn load_manifests(root: &Path) -> Result<Vec<Case>, String> {
+    let mut merged: Vec<Case> = Vec::new();
+    for name in ["manifest.toml", "generated.manifest.toml"] {
+        let path = root.join(name);
+        if !path.is_file() {
+            if name == "manifest.toml" {
+                return Err(format!("{name} is missing"));
+            }
+            continue; // the generated half is absent until `generate.py --write` has run
+        }
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{name}: {e}"))?;
+        let cases = parse_manifest(&text).map_err(|reason| format!("{name}: {reason}"))?;
+        let ids: Vec<&str> = cases.iter().map(|c| c.case_id.as_str()).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        if ids != sorted {
+            return Err(format!("{name}: cases are not in ascending case_id order"));
+        }
+        merged.extend(cases);
+    }
+    merged.sort_by(|a, b| a.case_id.cmp(&b.case_id));
+    Ok(merged)
+}
+
 pub fn load() -> (Vec<Case>, Lock) {
     let root = corpus_root();
-    let manifest = std::fs::read_to_string(root.join("manifest.toml")).expect("manifest.toml");
-    let cases = parse_manifest(&manifest).unwrap_or_else(|reason| panic!("manifest: {reason}"));
+    let cases = load_manifests(&root).unwrap_or_else(|reason| panic!("manifest: {reason}"));
     validate(&cases, &root).unwrap_or_else(|reason| panic!("manifest: {reason}"));
     let lock_text = std::fs::read_to_string(root.join("corpus.lock")).expect("corpus.lock");
     let lock = parse_lock(&lock_text).unwrap_or_else(|reason| panic!("corpus.lock: {reason}"));

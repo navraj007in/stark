@@ -134,9 +134,11 @@ load-bearing (**109 passed / 0 ignored / 0 self-skipped**). **C6.5-2 (CD-152) ad
 itself** — `starkc/tests/c6-corpus/`, strict manifest, hash lock, 28 manifest/lock tests — and
 **C6.5-3 (CD-153, PARTIAL) added the thirteen §10.3 adversarial sentinels**, each pinning its
 observation in the manifest because a wrong implementation is usually wrong in all three engines at
-once and they would otherwise agree. `corpus_version` 0.2.0, 19 cases. Still owed by §10: per-row
-witnesses, the trap balance (no trap case is in the corpus yet), and package breadth; the ≥64-case
-generated corpus of §11 remains unbuilt.
+once and they would otherwise agree. **C6.5-4 (CD-155) then built the deterministic generator: corpus `0.3.0`, 89
+cases — 70 generated across 15 templates, 13 sentinels, 6 retained**, with §11.4's floor asserted by
+test and §11.10's determinism proven by running the generator (same seed byte-identical, relocation
+stable, seed and generator-version both part of case identity, no absolute paths). Still owed by §10:
+per-row witnesses and package breadth; by §11: the retained-case workflow and the package templates.
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
 tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
@@ -3245,6 +3247,44 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-155 [2026-07-26, **WP-C6.5-4 commit 6 — the deterministic generator; corpus 0.3.0, 89 cases**]
+  **70 generated cases across 15 templates**, plus the 13 sentinels and 6 retained. §11.4's floor
+  (≥64 cases, ≥10 templates, completion AND trap, full provenance per case) is met and ASSERTED BY A
+  TEST rather than counted by hand.
+  - **Selection (§11.2):** dimension tuples enumerated in sorted order, ranked by
+    `SHA-256(generator_version | seed | template_id | canonical_dimensions)`, truncated to a
+    per-template budget of 5; case ID = template + digest prefix. Nothing host-dependent enters
+    identity — no filesystem order, PID, timestamp, absolute path, or Python-representation
+    dependence (the dimension tuple is canonicalised by an explicit function, not `repr`, which is
+    stable in practice but not contractually).
+  - **Expectations come from the TEMPLATE, not from an engine.** Same principle as the sentinels and
+    the reason both exist: the corpus claims the three engines agree with the SPECIFICATION, and an
+    expectation read back from one engine could only show the engines agree with each other.
+  - **Registry: 15 of §11.5's 20 families** (T01–T12, T15, T16, T20). **T13/T14 absent** (borrow/
+    reborrow/reference return, partial move/reinit — covered by handwritten cases today) and
+    **T17/T18/T19 blocked on package graphs (§15)**. `--list-templates` prints the absent ones with
+    reasons, so the registry never implies coverage it does not have.
+  - **Valid by construction (§11.7), not by trial:** each template's dimension space excludes tuples
+    that would produce invalid or accidentally-trapping programs (unsigned subtraction that would go
+    negative is filtered — overflow traps, and T01 is a completion template). No case was found by
+    generating and discarding failures. **All 70 pass on all three engines.**
+  - **Determinism proven by RUNNING the generator (§11.10), 8 tests:** same seed twice byte-identical;
+    relocation to a different and deeper root identical; pre-existing junk in the output directory
+    irrelevant; a different seed reselects but stays reproducible with the same count; a GENERATOR
+    VERSION change reselects, which is what makes "a version change requires corpus-version review"
+    enforceable rather than advisory; no absolute path anywhere in the generated corpus; `--check`
+    byte-identical.
+  - **Two bugs in my own tooling that the generated DATA found, both fixed:** the manifest list parser
+    split on `,` and tore `expected_stdout = ["[1, 2, 3]"]` in half (a rendered array is legitimate
+    data — the parser now scans quoted items on both the Rust and Python sides), and the lock builder
+    referenced a constant I had renamed. Worth recording: review had not caught either.
+  - **Still owed by §11:** the §11.11 retained-case workflow has NOT been exercised with a synthetic
+    failure (retention is documented and retained cases exist, but the
+    `cases/retained/<DEV-ID>/original|reduced` flow is untested), and the package dimensions wait on
+    §15.
+  - **Evidence:** `c6_corpus_cases` 2/2 over **89 cases** (63s), `c6_corpus_generator` 8/8,
+    `c6_corpus_manifest` 30/30, `generate.py --check` current, `fmt` clean.
 
 - CD-154 [2026-07-26, **C65-F3 — the coverage matrix cited 69 INVENTED rule IDs; repaired and now
   machine-checked**]

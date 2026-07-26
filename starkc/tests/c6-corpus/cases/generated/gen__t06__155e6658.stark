@@ -1,0 +1,12 @@
+enum Held { Empty, Full(String) }
+fn describe(held: Held) -> String {
+    match held {
+        Held::Empty => String::from("empty"),
+        Held::Full(inner) => inner,
+    }
+}
+fn main() {
+    let held: Held = Held::Empty;
+    let text: String = describe(held);
+    print(text);
+}

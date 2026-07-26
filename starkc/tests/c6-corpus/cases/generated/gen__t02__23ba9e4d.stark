@@ -1,0 +1,9 @@
+fn main() {
+    let a: Int64 = 3;
+    let b: Int64 = 5;
+    if a < b {
+        print("yes");
+    } else {
+        print("no");
+    }
+}

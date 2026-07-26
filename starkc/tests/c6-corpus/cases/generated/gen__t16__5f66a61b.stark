@@ -1,0 +1,6 @@
+fn main() {
+    print("before");
+    let big: Int64 = 4294967296;
+    let small: Int32 = big as Int32;
+    print(small);
+}

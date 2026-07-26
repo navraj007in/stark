@@ -1,0 +1,11 @@
+fn main() {
+    let mut m: HashMap<Int32, Int32> = HashMap::new();
+    m.insert(9, 0);
+    m.insert(1, 1);
+    m.insert(8, 2);
+    m.insert(2, 3);
+    assert_eq(m.len(), 4);
+    for k in m.keys() {
+        print(*k);
+    }
+}

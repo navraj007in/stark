@@ -1,0 +1,7 @@
+fn main() {
+    print("before");
+    let a: Int32 = 1;
+    let s: Int32 = 64;
+    let b: Int32 = a << s;
+    print(b);
+}

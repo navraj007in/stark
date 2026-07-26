@@ -1,0 +1,15 @@
+fn step() -> Result<Int32, String> {
+    Ok(11)
+}
+fn run() -> Result<Int32, String> {
+    let v: Int32 = step()?;
+    Ok(v * 2)
+}
+fn main() {
+    let out: Int32 = match run() {
+        Ok(v) => v,
+        Err(e) => -1,
+    };
+    assert_eq(out, 22);
+    print(out);
+}

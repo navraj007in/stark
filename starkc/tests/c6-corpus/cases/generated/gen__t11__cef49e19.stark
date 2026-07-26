@@ -1,0 +1,9 @@
+fn extend(mut s: String) -> String {
+    s.push_str("0");
+    s
+}
+fn main() {
+    let base: String = String::from("x");
+    let out: String = extend(base);
+    print(out);
+}

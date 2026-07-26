@@ -1,0 +1,11 @@
+enum Shape { Zero(Int32), One(Int32), Two(Int32) }
+fn main() {
+    let value: Shape = Shape::Zero(7);
+    let scaled: Int32 = match value {
+        Shape::Zero(v) => v * 1,
+        Shape::One(v) => v * 2,
+        Shape::Two(v) => v * 3,
+    };
+    assert_eq(scaled, 7);
+    print(scaled);
+}

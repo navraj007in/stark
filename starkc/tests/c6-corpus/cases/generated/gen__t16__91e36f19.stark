@@ -1,0 +1,6 @@
+fn main() {
+    print("before");
+    let a: Int32 = 2147483647;
+    let b: Int32 = a + 1;
+    print(b);
+}

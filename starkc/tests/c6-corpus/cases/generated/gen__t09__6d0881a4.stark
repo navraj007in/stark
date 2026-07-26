@@ -1,0 +1,9 @@
+fn inc(v: Int32) -> Int32 { v + 1 }
+fn twice(v: Int32) -> Int32 { v * 2 }
+fn apply(f: fn(Int32) -> Int32, v: Int32) -> Int32 { f(v) }
+fn main() {
+    let f: fn(Int32) -> Int32 = inc;
+    let out: Int32 = apply(f, 21);
+    assert_eq(out, 22);
+    print(out);
+}

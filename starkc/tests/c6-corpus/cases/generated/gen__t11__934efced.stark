@@ -1,0 +1,9 @@
+fn fill(mut v: Vec<Int32>) -> Vec<Int32> {
+    v
+}
+fn main() {
+    let base: Vec<Int32> = Vec::new();
+    let out: Vec<Int32> = fill(base);
+    assert_eq(out.len(), 0);
+    print(out.len());
+}

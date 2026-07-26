@@ -1,0 +1,9 @@
+fn main() {
+    let a: Int32 = 3;
+    let b: Int32 = 5;
+    if a != b {
+        print("yes");
+    } else {
+        print("no");
+    }
+}

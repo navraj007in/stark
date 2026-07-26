@@ -1,0 +1,4 @@
+fn main() {
+    let xs: [Int32; 3] = [1, 2, 3];
+    println(xs);
+}

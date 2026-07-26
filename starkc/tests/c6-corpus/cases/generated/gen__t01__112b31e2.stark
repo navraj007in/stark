@@ -1,0 +1,7 @@
+fn main() {
+    let a: UInt64 = 100;
+    let b: UInt64 = 7;
+    let c: UInt64 = a + b;
+    assert_eq(c, 107);
+    print(c);
+}

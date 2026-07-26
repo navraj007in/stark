@@ -1,0 +1,4 @@
+fn main() {
+    let pair: (Int32, Bool) = (7, true);
+    println(pair);
+}

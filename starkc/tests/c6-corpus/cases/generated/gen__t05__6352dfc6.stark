@@ -1,0 +1,9 @@
+struct Point { x: Int64, y: Int64 }
+fn main() {
+    let mut p: Point = Point { x: 1, y: 2 };
+    p.x = p.x + 5;
+    assert_eq(p.x, 6);
+    assert_eq(p.y, 2);
+    print(p.x);
+    print(p.y);
+}

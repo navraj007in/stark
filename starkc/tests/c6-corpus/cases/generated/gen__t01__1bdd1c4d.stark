@@ -1,0 +1,7 @@
+fn main() {
+    let a: Int64 = 100;
+    let b: Int64 = 7;
+    let c: Int64 = a - b;
+    assert_eq(c, 93);
+    print(c);
+}

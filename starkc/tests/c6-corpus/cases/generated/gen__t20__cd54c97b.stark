@@ -1,0 +1,4 @@
+fn main() {
+    let value: Option<Int32> = Some(5);
+    println(value);
+}

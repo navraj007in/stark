@@ -16,7 +16,9 @@ c6-corpus/
   manifest.toml          one [[case]] per case — the schema is §9.2, documented below
   corpus.lock            per-source hashes + counts (§9.5); generated, never hand-edited
   generator-version.txt  version of generate.py's case-generation behaviour
-  generate.py            lock generation today; case generation from C6.5-4
+  generate.py            case generation (§11) and lock generation (§9.5)
+  templates.py           the §11.5 template registry: one function per semantic template
+  generated.manifest.toml  generated cases — written by --write, never hand-edited
   cases/
     handwritten/         C6.5-3: focused witnesses for categories the matrix names
     generated/           C6.5-4: deterministic template output, regenerable from seed
@@ -29,7 +31,15 @@ A case is a single `.stark` file or a directory holding a complete package/works
 
 ## What is here today
 
-**19 cases: 13 handwritten sentinels (§10.3) and 6 retained.**
+**89 cases: 70 generated (§11), 13 handwritten sentinels (§10.3), 6 retained.**
+
+The 70 generated cases come from 15 templates at a budget of 5 each, selected deterministically:
+dimension tuples are enumerated in sorted order, ranked by
+`SHA-256(generator_version | seed | template_id | canonical_dimensions)`, and truncated to the budget.
+Nothing about the host — filesystem order, PID, wall clock, absolute paths, Python version — enters
+identity, which is what makes a generated case something another machine can reproduce and check.
+Each case's expected observation comes from its template's semantic model, not from running an engine:
+an expectation read back from an engine could only prove the engines agree with each other.
 
 The sentinels are the point of C6.5-3, not filler. Each is built so that the *likely wrong*
 implementation fails it: an `Eq` that always answers true (so a structurally-comparing HashMap
@@ -98,10 +108,14 @@ to write one.
 ## Changing the corpus
 
 ```bash
-python3 tests/c6-corpus/generate.py --lock    # regenerate after any corpus change
-python3 tests/c6-corpus/generate.py --check   # what CI asks: is the lock current?
+python3 tests/c6-corpus/generate.py --list-templates   # the registry and its budgets
+python3 tests/c6-corpus/generate.py --write           # (re)generate cases/generated/
+python3 tests/c6-corpus/generate.py --check           # byte-compare against what is checked in
+python3 tests/c6-corpus/generate.py --seed S --out D  # generate elsewhere, under another seed
+python3 tests/c6-corpus/generate.py --lock            # regenerate corpus.lock
 cargo test --test c6_corpus_manifest          # strict manifest + lock integrity
 cargo test --test c6_corpus_cases             # run every case on the engines it declares
+cargo test --test c6_corpus_generator         # determinism, bounds and the acceptance floor
 ```
 
 Then bump `corpus_version` in `generate.py` and the assertion in `c6_corpus_manifest.rs`, per §9.6:
