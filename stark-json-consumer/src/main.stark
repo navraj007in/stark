@@ -1,0 +1,13 @@
+use stark_json::encode;
+use stark_json::parse;
+
+fn main() {
+    match parse("{\"a\":1}") {
+        Ok(value) => {
+            println(encode(&value).as_str());
+        }
+        Err(_) => {
+            panic("consumer parse failed");
+        }
+    }
+}

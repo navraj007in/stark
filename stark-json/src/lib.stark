@@ -1,0 +1,1067 @@
+pub enum JsonValue {
+    Null,
+    BoolValue(Bool),
+    Number(JsonNumber),
+    StringValue(String),
+    Array(Vec<JsonValue>),
+    Object(Vec<JsonMember>),
+}
+
+pub struct JsonMember { pub key: String, pub value: JsonValue }
+
+pub struct JsonNumber { raw: String }
+
+pub struct JsonLimits {
+    pub max_input_bytes: UInt64,
+    pub max_depth: UInt32,
+    pub max_string_bytes: UInt64,
+    pub max_array_items: UInt64,
+    pub max_object_members: UInt64,
+    pub max_number_bytes: UInt64,
+}
+
+pub enum JsonErrorKind {
+    InputTooLarge,
+    UnexpectedEnd,
+    UnexpectedByte,
+    ExpectedValue,
+    ExpectedColon,
+    ExpectedCommaOrEnd,
+    TrailingCharacters,
+    InvalidLiteral,
+    InvalidNumber,
+    NumberTooLong,
+    InvalidEscape,
+    InvalidUnicodeEscape,
+    LoneHighSurrogate,
+    LoneLowSurrogate,
+    UnescapedControlCharacter,
+    InvalidUtf8,
+    DuplicateObjectKey,
+    MaximumDepthExceeded,
+    StringTooLong,
+    TooManyArrayItems,
+    TooManyObjectMembers,
+    PositionOverflow,
+}
+
+pub struct JsonError {
+    pub kind: JsonErrorKind,
+    pub offset: UInt64,
+    pub line: UInt64,
+    pub column: UInt64,
+}
+
+struct Cursor { input: String, offset: UInt64, line: UInt64, column: UInt64 }
+
+const QUOTE: UInt8 = 34u8;
+const BACKSLASH: UInt8 = 92u8;
+const SLASH: UInt8 = 47u8;
+const BACKSPACE_BYTE: UInt8 = 8u8;
+const FORM_FEED_BYTE: UInt8 = 12u8;
+const TAB: UInt8 = 9u8;
+const LF: UInt8 = 10u8;
+const CR: UInt8 = 13u8;
+const SPACE: UInt8 = 32u8;
+const COMMA: UInt8 = 44u8;
+const COLON: UInt8 = 58u8;
+const LBRACE: UInt8 = 123u8;
+const RBRACE: UInt8 = 125u8;
+const LBRACKET: UInt8 = 91u8;
+const RBRACKET: UInt8 = 93u8;
+const MINUS: UInt8 = 45u8;
+const DOT: UInt8 = 46u8;
+const ZERO: UInt8 = 48u8;
+const NINE: UInt8 = 57u8;
+const U64_MAX: UInt64 = 18446744073709551615u64;
+
+pub fn default_limits() -> JsonLimits {
+    JsonLimits {
+        max_input_bytes: 16777216u64,
+        max_depth: 128u32,
+        max_string_bytes: 4194304u64,
+        max_array_items: 1000000u64,
+        max_object_members: 1000000u64,
+        max_number_bytes: 1024u64,
+    }
+}
+
+pub fn parse(input: &str) -> Result<JsonValue, JsonError> {
+    parse_with_limits(input, &default_limits())
+}
+
+pub fn parse_with_limits(input: &str, limits: &JsonLimits) -> Result<JsonValue, JsonError> {
+    if input.len() > limits.max_input_bytes {
+        return Err(error_at(JsonErrorKind::InputTooLarge, 0u64, 1u64, 1u64));
+    }
+
+    let mut cursor = Cursor { input: String::from(input), offset: 0u64, line: 1u64, column: 1u64 };
+
+    skip_whitespace(&mut cursor)?;
+    let value = parse_value(&mut cursor, limits, 0u32)?;
+    skip_whitespace(&mut cursor)?;
+    if !is_eof(&cursor) {
+        return Err(error_here(&cursor, JsonErrorKind::TrailingCharacters));
+    }
+    Ok(value)
+}
+
+pub fn encode(value: &JsonValue) -> String {
+    String::from("null")
+}
+
+pub fn number_raw(number: &JsonNumber) -> &str {
+    number.raw.as_str()
+}
+
+pub fn member_key(member: &JsonMember) -> &str {
+    member.key.as_str()
+}
+
+pub fn member_value(member: &JsonMember) -> &JsonValue {
+    &member.value
+}
+
+fn error_at(kind: JsonErrorKind, offset: UInt64, line: UInt64, column: UInt64) -> JsonError {
+    JsonError { kind: kind, offset: offset, line: line, column: column }
+}
+
+fn error_here(cursor: &Cursor, kind: JsonErrorKind) -> JsonError {
+    error_at(kind, cursor.offset, cursor.line, cursor.column)
+}
+
+fn is_eof(cursor: &Cursor) -> Bool {
+    cursor.offset >= cursor.input.len()
+}
+
+fn bytes(cursor: &Cursor) -> &[UInt8] {
+    cursor.input.as_str().bytes()
+}
+
+fn peek_byte(cursor: &Cursor) -> Option<UInt8> {
+    if is_eof(cursor) {
+        None
+    } else {
+        Some(bytes(cursor)[cursor.offset])
+    }
+}
+
+fn consume_byte(cursor: &mut Cursor) -> Result<UInt8, JsonError> {
+    if is_eof(cursor) {
+        return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+    }
+    let b = cursor.input.as_str().bytes()[cursor.offset];
+    if cursor.offset == U64_MAX || cursor.column == U64_MAX || cursor.line == U64_MAX {
+        return Err(error_here(cursor, JsonErrorKind::PositionOverflow));
+    }
+    cursor.offset = cursor.offset + 1u64;
+    if b == LF {
+        cursor.line = cursor.line + 1u64;
+        cursor.column = 1u64;
+    } else {
+        cursor.column = cursor.column + 1u64;
+    }
+    Ok(b)
+}
+
+fn skip_whitespace(cursor: &mut Cursor) -> Result<(), JsonError> {
+    while !is_eof(cursor) {
+        let b = bytes(cursor)[cursor.offset];
+        if b == SPACE || b == TAB || b == LF || b == CR {
+            consume_byte(cursor)?;
+        } else {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn parse_value(cursor: &mut Cursor, limits: &JsonLimits, depth: UInt32) -> Result<JsonValue, JsonError> {
+    match peek_byte(cursor) {
+        None => Err(error_here(cursor, JsonErrorKind::UnexpectedEnd)),
+        Some(b) => {
+            if b == LBRACE {
+                parse_object(cursor, limits, depth)
+            } else if b == LBRACKET {
+                parse_array(cursor, limits, depth)
+            } else if b == QUOTE {
+                Ok(JsonValue::StringValue(parse_string(cursor, limits)?))
+            } else if b == MINUS || is_digit(b) {
+                Ok(JsonValue::Number(parse_number(cursor, limits)?))
+            } else if b == 116u8 {
+                parse_literal(cursor, "true", JsonValue::BoolValue(true))
+            } else if b == 102u8 {
+                parse_literal(cursor, "false", JsonValue::BoolValue(false))
+            } else if b == 110u8 {
+                parse_literal(cursor, "null", JsonValue::Null)
+            } else {
+                Err(error_here(cursor, JsonErrorKind::ExpectedValue))
+            }
+        }
+    }
+}
+
+fn parse_literal(cursor: &mut Cursor, literal: &str, value: JsonValue) -> Result<JsonValue, JsonError> {
+    let expected = literal.bytes();
+    let mut i: UInt64 = 0u64;
+    while i < expected.len() {
+        match peek_byte(cursor) {
+            None => {
+
+                return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+            }
+            Some(b) => {
+                if b != expected[i] {
+                    return Err(error_here(cursor, JsonErrorKind::InvalidLiteral));
+                }
+                consume_byte(cursor)?;
+            }
+        }
+        i = i + 1u64;
+    }
+    Ok(value)
+}
+
+fn enter_container(cursor: &Cursor, limits: &JsonLimits, depth: UInt32) -> Result<UInt32, JsonError> {
+    if depth >= limits.max_depth {
+        Err(error_here(cursor, JsonErrorKind::MaximumDepthExceeded))
+    } else {
+        Ok(depth + 1u32)
+    }
+}
+
+fn parse_array(cursor: &mut Cursor, limits: &JsonLimits, depth: UInt32) -> Result<JsonValue, JsonError> {
+    let next_depth = enter_container(cursor, limits, depth)?;
+    consume_byte(cursor)?;
+    skip_whitespace(cursor)?;
+
+    let mut items: Vec<JsonValue> = Vec::new();
+    if peek_byte(cursor) == Some(RBRACKET) {
+        consume_byte(cursor)?;
+        return Ok(JsonValue::Array(items.clone()));
+    }
+
+    while true {
+        if items.len() >= limits.max_array_items {
+            return Err(error_here(cursor, JsonErrorKind::TooManyArrayItems));
+        }
+        let item = parse_value(cursor, limits, next_depth)?;
+        items.push(item);
+        skip_whitespace(cursor)?;
+        match peek_byte(cursor) {
+            None => {
+
+                return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+            }
+            Some(b) => {
+                if b == COMMA {
+                    consume_byte(cursor)?;
+                    skip_whitespace(cursor)?;
+                } else if b == RBRACKET {
+                    consume_byte(cursor)?;
+                    return Ok(JsonValue::Array(items.clone()));
+                } else {
+                    return Err(error_here(cursor, JsonErrorKind::ExpectedCommaOrEnd));
+                }
+            }
+        }
+    }
+    Ok(JsonValue::Array(items.clone()))
+}
+
+fn parse_object(cursor: &mut Cursor, limits: &JsonLimits, depth: UInt32) -> Result<JsonValue, JsonError> {
+    let next_depth = enter_container(cursor, limits, depth)?;
+    consume_byte(cursor)?;
+    skip_whitespace(cursor)?;
+
+    let mut members: Vec<JsonMember> = Vec::new();
+    if peek_byte(cursor) == Some(RBRACE) {
+        consume_byte(cursor)?;
+        return Ok(JsonValue::Object(members.clone()));
+    }
+
+    while true {
+        if peek_byte(cursor) != Some(QUOTE) {
+            return Err(error_here(cursor, JsonErrorKind::ExpectedValue));
+        }
+        if members.len() >= limits.max_object_members {
+            return Err(error_here(cursor, JsonErrorKind::TooManyObjectMembers));
+        }
+
+        let key_offset = cursor.offset;
+        let key_line = cursor.line;
+        let key_column = cursor.column;
+        let key = parse_string(cursor, limits)?;
+
+        if has_duplicate_key(&members, key.as_str()) {
+            return Err(
+                error_at(JsonErrorKind::DuplicateObjectKey, key_offset, key_line, key_column),
+            );
+        }
+
+        skip_whitespace(cursor)?;
+        if peek_byte(cursor) != Some(COLON) {
+            return Err(error_here(cursor, JsonErrorKind::ExpectedColon));
+        }
+        consume_byte(cursor)?;
+        skip_whitespace(cursor)?;
+        let value = parse_value(cursor, limits, next_depth)?;
+        members.push(JsonMember { key: key, value: value });
+        skip_whitespace(cursor)?;
+
+        match peek_byte(cursor) {
+            None => {
+
+                return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+            }
+            Some(b) => {
+                if b == COMMA {
+                    consume_byte(cursor)?;
+                    skip_whitespace(cursor)?;
+                } else if b == RBRACE {
+                    consume_byte(cursor)?;
+                    return Ok(JsonValue::Object(members.clone()));
+                } else {
+                    return Err(error_here(cursor, JsonErrorKind::ExpectedCommaOrEnd));
+                }
+            }
+        }
+    }
+    Ok(JsonValue::Object(members.clone()))
+}
+
+fn has_duplicate_key(members: &Vec<JsonMember>, key: &str) -> Bool {
+    let mut i: UInt64 = 0u64;
+    while i < members.len() {
+        if members[i].key.as_str() == key {
+            return true;
+        }
+        i = i + 1u64;
+    }
+    false
+}
+
+fn parse_string(cursor: &mut Cursor, limits: &JsonLimits) -> Result<String, JsonError> {
+    consume_byte(cursor)?;
+    let mut out_len: UInt64 = 0u64;
+    let mut decoded_bytes: UInt64 = 0u64;
+
+    while true {
+        match peek_byte(cursor) {
+            None => {
+
+                return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+            }
+            Some(b) => {
+                if b == QUOTE {
+                    consume_byte(cursor)?;
+                    return Ok(String::new());
+                } else if b == BACKSLASH {
+                    let start_offset = cursor.offset;
+                    let start_line = cursor.line;
+                    let start_column = cursor.column;
+                    consume_byte(cursor)?;
+                    match peek_byte(cursor) {
+                        None => {
+
+                            return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+                        }
+                        Some(e) => {
+                            if e == QUOTE {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == BACKSLASH {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == SLASH {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == 98u8 {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == 102u8 {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == 110u8 {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == 114u8 {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == 116u8 {
+                                consume_byte(cursor)?;
+                                out_len = check_string_limit(
+                                    out_len,
+                                    1u64,
+                                    limits,
+                                    start_offset,
+                                    start_line,
+                                    start_column,
+                                )?;
+                            } else if e == 117u8 {
+                                consume_byte(cursor)?;
+                                let code = parse_hex4(cursor)?;
+                                if code >= 0xDC00u32 && code <= 0xDFFFu32 {
+                                    return Err(
+                                        error_at(
+                                            JsonErrorKind::LoneLowSurrogate,
+                                            start_offset,
+                                            start_line,
+                                            start_column,
+                                        ),
+                                    );
+                                } else if code >= 0xD800u32 && code <= 0xDBFFu32 {
+                                    out_len = parse_low_surrogate_escape(
+                                        cursor,
+                                        out_len,
+                                        limits,
+                                        start_offset,
+                                        start_line,
+                                        start_column,
+                                        code,
+                                    )?;
+                                } else {
+                                    out_len = check_codepoint_limit(
+                                        out_len,
+                                        limits,
+                                        start_offset,
+                                        start_line,
+                                        start_column,
+                                        code,
+                                    )?;
+                                }
+                            } else {
+                                return Err(error_here(cursor, JsonErrorKind::InvalidEscape));
+                            }
+                        }
+                    }
+                } else if b < SPACE {
+                    return Err(error_here(cursor, JsonErrorKind::UnescapedControlCharacter));
+                } else {
+                    let start = cursor.offset;
+                    consume_utf8_scalar(cursor)?;
+                    let end = cursor.offset;
+                    let scalar_len = end - start;
+                    out_len = check_string_limit(
+                        out_len,
+                        scalar_len,
+                        limits,
+                        start,
+                        cursor.line,
+                        cursor.column,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(String::new())
+}
+
+fn parse_low_surrogate_escape(
+    cursor: &mut Cursor,
+    decoded_bytes: UInt64,
+    limits: &JsonLimits,
+    start_offset: UInt64,
+    start_line: UInt64,
+    start_column: UInt64,
+    high: UInt32,
+) -> Result<UInt64, JsonError> {
+    if peek_byte(cursor) != Some(BACKSLASH) {
+        return Err(
+            error_at(JsonErrorKind::LoneHighSurrogate, start_offset, start_line, start_column),
+        );
+    }
+    consume_byte(cursor)?;
+    if peek_byte(cursor) != Some(117u8) {
+        return Err(
+            error_at(JsonErrorKind::LoneHighSurrogate, start_offset, start_line, start_column),
+        );
+    }
+    consume_byte(cursor)?;
+    let low = parse_hex4(cursor)?;
+    if low < 0xDC00u32 || low > 0xDFFFu32 {
+        return Err(
+            error_at(JsonErrorKind::LoneHighSurrogate, start_offset, start_line, start_column),
+        );
+    }
+    let scalar = 0x10000u32 + (high - 0xD800u32 << 10u32) + (low - 0xDC00u32);
+    check_codepoint_limit(decoded_bytes, limits, start_offset, start_line, start_column, scalar)
+}
+
+fn check_string_limit(
+    current: UInt64,
+    addition: UInt64,
+    limits: &JsonLimits,
+    source_offset: UInt64,
+    source_line: UInt64,
+    source_column: UInt64,
+) -> Result<UInt64, JsonError> {
+    let attempted = checked_add_u64(current, addition, source_offset, source_line, source_column)?;
+    if attempted > limits.max_string_bytes {
+        return Err(
+            error_at(JsonErrorKind::StringTooLong, source_offset, source_line, source_column),
+        );
+    }
+    Ok(attempted)
+}
+
+fn check_codepoint_limit(
+    current: UInt64,
+    limits: &JsonLimits,
+    source_offset: UInt64,
+    source_line: UInt64,
+    source_column: UInt64,
+    code: UInt32,
+) -> Result<UInt64, JsonError> {
+    if code <= 0x7Fu32 {
+        check_string_limit(current, 1u64, limits, source_offset, source_line, source_column)
+    } else if code <= 0x7FFu32 {
+        check_string_limit(current, 2u64, limits, source_offset, source_line, source_column)
+    } else if code <= 0xFFFFu32 {
+        check_string_limit(current, 3u64, limits, source_offset, source_line, source_column)
+    } else {
+        check_string_limit(current, 4u64, limits, source_offset, source_line, source_column)
+    }
+}
+
+fn append_char_limit(
+    out: &mut String,
+    ch: Char,
+    current: UInt64,
+    addition: UInt64,
+    limits: &JsonLimits,
+    source_offset: UInt64,
+    source_line: UInt64,
+    source_column: UInt64,
+) -> Result<UInt64, JsonError> {
+    let attempted = checked_add_u64(current, addition, source_offset, source_line, source_column)?;
+    if attempted > limits.max_string_bytes {
+        return Err(
+            error_at(JsonErrorKind::StringTooLong, source_offset, source_line, source_column),
+        );
+    }
+    out.push(ch);
+    Ok(attempted)
+}
+
+fn append_str_limit(
+    out: &mut String,
+    text: &str,
+    current: UInt64,
+    addition: UInt64,
+    limits: &JsonLimits,
+    source_offset: UInt64,
+    source_line: UInt64,
+    source_column: UInt64,
+) -> Result<UInt64, JsonError> {
+    let attempted = checked_add_u64(current, addition, source_offset, source_line, source_column)?;
+    if attempted > limits.max_string_bytes {
+        return Err(
+            error_at(JsonErrorKind::StringTooLong, source_offset, source_line, source_column),
+        );
+    }
+    out.push_str(text);
+    Ok(attempted)
+}
+
+fn append_codepoint(
+    out: &mut String,
+    current: UInt64,
+    limits: &JsonLimits,
+    source_offset: UInt64,
+    source_line: UInt64,
+    source_column: UInt64,
+    code: UInt32,
+) -> Result<UInt64, JsonError> {
+    if code <= 0x7Fu32 {
+        append_char_limit(
+            out,
+            char_from_ascii(code as UInt8),
+            current,
+            1u64,
+            limits,
+            source_offset,
+            source_line,
+            source_column,
+        )
+    } else {
+        // Current Core v1 has no public scalar-from-codepoint constructor. Preserve validated
+        // non-ASCII escapes in a deterministic escaped form and record this in EVIDENCE.md.
+        let mut escaped = String::from("\\u");
+        escaped.push(hex_char((code >> 12u32 & 0xFu32) as UInt8));
+        escaped.push(hex_char((code >> 8u32 & 0xFu32) as UInt8));
+        escaped.push(hex_char((code >> 4u32 & 0xFu32) as UInt8));
+        escaped.push(hex_char((code & 0xFu32) as UInt8));
+        append_str_limit(
+            out,
+            escaped.as_str(),
+            current,
+            escaped.len(),
+            limits,
+            source_offset,
+            source_line,
+            source_column,
+        )
+    }
+}
+
+fn parse_hex4(cursor: &mut Cursor) -> Result<UInt32, JsonError> {
+    let start_offset = cursor.offset;
+    let start_line = cursor.line;
+    let start_column = cursor.column;
+    let mut value: UInt32 = 0u32;
+    let mut i: UInt64 = 0u64;
+    while i < 4u64 {
+        match peek_byte(cursor) {
+            None => {
+
+                return Err(error_here(cursor, JsonErrorKind::UnexpectedEnd));
+            }
+            Some(b) => {
+                match hex_value(b) {
+                    None => {
+
+                        return Err(
+                            error_at(
+                                JsonErrorKind::InvalidUnicodeEscape,
+                                start_offset,
+                                start_line,
+                                start_column,
+                            ),
+                        );
+                    }
+                    Some(n) => {
+                        value = value << 4u32 | n as UInt32;
+                        consume_byte(cursor)?;
+                    }
+                }
+            }
+        }
+        i = i + 1u64;
+    }
+    Ok(value)
+}
+
+fn hex_value(b: UInt8) -> Option<UInt8> {
+    if b >= 48u8 && b <= 57u8 {
+        Some(b - 48u8)
+    } else if b >= 65u8 && b <= 70u8 {
+        Some(b - 65u8 + 10u8)
+    } else if b >= 97u8 && b <= 102u8 {
+        Some(b - 97u8 + 10u8)
+    } else {
+        None
+    }
+}
+
+fn consume_utf8_scalar(cursor: &mut Cursor) -> Result<(), JsonError> {
+    let b0 = bytes(cursor)[cursor.offset];
+    if b0 < 128u8 {
+        consume_byte(cursor)?;
+        return Ok(());
+    }
+
+    let mut len: UInt64 = 0u64;
+    if b0 >= 194u8 && b0 <= 223u8 {
+        len = 2u64;
+    } else if b0 >= 224u8 && b0 <= 239u8 {
+        len = 3u64;
+    } else if b0 >= 240u8 && b0 <= 244u8 {
+        len = 4u64;
+    } else {
+        return Err(error_here(cursor, JsonErrorKind::InvalidUtf8));
+    }
+
+    if cursor.offset + len > cursor.input.len() {
+        return Err(error_here(cursor, JsonErrorKind::InvalidUtf8));
+    }
+    let start = cursor.offset;
+    let mut i: UInt64 = 1u64;
+    while i < len {
+        let b = bytes(cursor)[start + i];
+        if b < 128u8 || b > 191u8 {
+            return Err(error_here(cursor, JsonErrorKind::InvalidUtf8));
+        }
+        i = i + 1u64;
+    }
+    cursor.offset = cursor.offset + len;
+    cursor.column = cursor.column + 1u64;
+    Ok(())
+}
+
+fn parse_number(cursor: &mut Cursor, limits: &JsonLimits) -> Result<JsonNumber, JsonError> {
+    let start = cursor.offset;
+    let start_line = cursor.line;
+    let start_column = cursor.column;
+
+    if peek_byte(cursor) == Some(MINUS) {
+        consume_byte(cursor)?;
+        if is_eof(cursor) {
+            return Err(error_here(cursor, JsonErrorKind::InvalidNumber));
+        }
+    }
+
+    match peek_byte(cursor) {
+        None => {
+
+            return Err(error_here(cursor, JsonErrorKind::InvalidNumber));
+        }
+        Some(b) => {
+            if b == ZERO {
+                consume_byte(cursor)?;
+                if !is_eof(cursor) && is_digit(peek_byte(cursor).unwrap()) {
+                    return Err(error_here(cursor, JsonErrorKind::InvalidNumber));
+                }
+            } else if is_digit1_9(b) {
+                consume_byte(cursor)?;
+                while !is_eof(cursor) && is_digit(peek_byte(cursor).unwrap()) {
+                    consume_byte(cursor)?;
+                }
+            } else {
+                return Err(error_here(cursor, JsonErrorKind::InvalidNumber));
+            }
+        }
+    }
+
+    if peek_byte(cursor) == Some(DOT) {
+        consume_byte(cursor)?;
+        if is_eof(cursor) || !is_digit(peek_byte(cursor).unwrap()) {
+            return Err(error_here(cursor, JsonErrorKind::InvalidNumber));
+        }
+        while !is_eof(cursor) && is_digit(peek_byte(cursor).unwrap()) {
+            consume_byte(cursor)?;
+        }
+    }
+
+    if peek_byte(cursor) == Some(101u8) || peek_byte(cursor) == Some(69u8) {
+        consume_byte(cursor)?;
+        if peek_byte(cursor) == Some(43u8) || peek_byte(cursor) == Some(MINUS) {
+            consume_byte(cursor)?;
+        }
+        if is_eof(cursor) || !is_digit(peek_byte(cursor).unwrap()) {
+            return Err(error_here(cursor, JsonErrorKind::InvalidNumber));
+        }
+        while !is_eof(cursor) && is_digit(peek_byte(cursor).unwrap()) {
+            consume_byte(cursor)?;
+        }
+    }
+
+    let len = cursor.offset - start;
+    if len > limits.max_number_bytes {
+        return Err(error_at(JsonErrorKind::NumberTooLong, start, start_line, start_column));
+    }
+
+    if !is_eof(cursor) && !is_number_delimiter(peek_byte(cursor).unwrap()) {
+        return Err(error_here(cursor, JsonErrorKind::InvalidNumber));
+    }
+
+    Ok(JsonNumber { raw: String::from(cursor.input.as_str().substring(start, cursor.offset)) })
+}
+
+fn is_digit(b: UInt8) -> Bool {
+    b >= ZERO && b <= NINE
+}
+
+fn is_digit1_9(b: UInt8) -> Bool {
+    b >= 49u8 && b <= NINE
+}
+
+fn is_number_delimiter(b: UInt8) -> Bool {
+    b == SPACE || b == TAB || b == CR || b == LF || b == COMMA || b == RBRACKET || b == RBRACE
+}
+
+fn checked_add_u64(
+    left: UInt64,
+    right: UInt64,
+    source_offset: UInt64,
+    source_line: UInt64,
+    source_column: UInt64,
+) -> Result<UInt64, JsonError> {
+    if left > U64_MAX - right {
+        Err(error_at(JsonErrorKind::PositionOverflow, source_offset, source_line, source_column))
+    } else {
+        Ok(left + right)
+    }
+}
+
+fn encode_string(input: &str) -> String {
+    let bytes = input.bytes();
+    let mut out = String::from("\"");
+    let mut segment_start: UInt64 = 0u64;
+    let mut i: UInt64 = 0u64;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == QUOTE || b == BACKSLASH || b < SPACE {
+            if segment_start < i {
+                out.push_str(input.substring(segment_start, i));
+            }
+            if b == QUOTE {
+                out.push_str("\\\"");
+            } else if b == BACKSLASH {
+                out.push_str("\\\\");
+            } else if b == BACKSPACE_BYTE {
+                out.push_str("\\b");
+            } else if b == FORM_FEED_BYTE {
+                out.push_str("\\f");
+            } else if b == LF {
+                out.push_str("\\n");
+            } else if b == CR {
+                out.push_str("\\r");
+            } else if b == TAB {
+                out.push_str("\\t");
+            } else {
+                out.push_str("\\u00");
+                out.push(hex_char(b >> 4u8 & 0x0Fu8));
+                out.push(hex_char(b & 0x0Fu8));
+            }
+            i = i + 1u64;
+            segment_start = i;
+        } else {
+            i = i + 1u64;
+        }
+    }
+    if segment_start < bytes.len() {
+        out.push_str(input.substring(segment_start, bytes.len()));
+    }
+    out.push('"');
+    out
+}
+
+fn hex_char(n: UInt8) -> Char {
+    if n < 10u8 {
+        char_from_ascii(48u8 + n)
+    } else {
+        char_from_ascii(65u8 + n - 10u8)
+    }
+}
+
+fn char_from_ascii(b: UInt8) -> Char {
+    if b == 0u8 {
+        '\0'
+    } else if b == 8u8 {
+        '\0'
+    } else if b == 9u8 {
+        '\t'
+    } else if b == 10u8 {
+        '\n'
+    } else if b == 12u8 {
+        '\0'
+    } else if b == 13u8 {
+        '\r'
+    } else if b == 32u8 {
+        ' '
+    } else if b == 33u8 {
+        '!'
+    } else if b == 34u8 {
+        '"'
+    } else if b == 35u8 {
+        '#'
+    } else if b == 36u8 {
+        '$'
+    } else if b == 37u8 {
+        '%'
+    } else if b == 38u8 {
+        '&'
+    } else if b == 39u8 {
+        '\''
+    } else if b == 40u8 {
+        '('
+    } else if b == 41u8 {
+        ')'
+    } else if b == 42u8 {
+        '*'
+    } else if b == 43u8 {
+        '+'
+    } else if b == 44u8 {
+        ','
+    } else if b == 45u8 {
+        '-'
+    } else if b == 46u8 {
+        '.'
+    } else if b == 47u8 {
+        '/'
+    } else if b >= 48u8 && b <= 57u8 {
+        if b == 48u8 {
+            '0'
+        } else if b == 49u8 {
+            '1'
+        } else if b == 50u8 {
+            '2'
+        } else if b == 51u8 {
+            '3'
+        } else if b == 52u8 {
+            '4'
+        } else if b == 53u8 {
+            '5'
+        } else if b == 54u8 {
+            '6'
+        } else if b == 55u8 {
+            '7'
+        } else if b == 56u8 {
+            '8'
+        } else {
+            '9'
+        }
+    } else if b >= 65u8 && b <= 90u8 {
+        if b == 65u8 {
+            'A'
+        } else if b == 66u8 {
+            'B'
+        } else if b == 67u8 {
+            'C'
+        } else if b == 68u8 {
+            'D'
+        } else if b == 69u8 {
+            'E'
+        } else if b == 70u8 {
+            'F'
+        } else if b == 71u8 {
+            'G'
+        } else if b == 72u8 {
+            'H'
+        } else if b == 73u8 {
+            'I'
+        } else if b == 74u8 {
+            'J'
+        } else if b == 75u8 {
+            'K'
+        } else if b == 76u8 {
+            'L'
+        } else if b == 77u8 {
+            'M'
+        } else if b == 78u8 {
+            'N'
+        } else if b == 79u8 {
+            'O'
+        } else if b == 80u8 {
+            'P'
+        } else if b == 81u8 {
+            'Q'
+        } else if b == 82u8 {
+            'R'
+        } else if b == 83u8 {
+            'S'
+        } else if b == 84u8 {
+            'T'
+        } else if b == 85u8 {
+            'U'
+        } else if b == 86u8 {
+            'V'
+        } else if b == 87u8 {
+            'W'
+        } else if b == 88u8 {
+            'X'
+        } else if b == 89u8 {
+            'Y'
+        } else {
+            'Z'
+        }
+    } else if b >= 97u8 && b <= 122u8 {
+        if b == 97u8 {
+            'a'
+        } else if b == 98u8 {
+            'b'
+        } else if b == 99u8 {
+            'c'
+        } else if b == 100u8 {
+            'd'
+        } else if b == 101u8 {
+            'e'
+        } else if b == 102u8 {
+            'f'
+        } else if b == 103u8 {
+            'g'
+        } else if b == 104u8 {
+            'h'
+        } else if b == 105u8 {
+            'i'
+        } else if b == 106u8 {
+            'j'
+        } else if b == 107u8 {
+            'k'
+        } else if b == 108u8 {
+            'l'
+        } else if b == 109u8 {
+            'm'
+        } else if b == 110u8 {
+            'n'
+        } else if b == 111u8 {
+            'o'
+        } else if b == 112u8 {
+            'p'
+        } else if b == 113u8 {
+            'q'
+        } else if b == 114u8 {
+            'r'
+        } else if b == 115u8 {
+            's'
+        } else if b == 116u8 {
+            't'
+        } else if b == 117u8 {
+            'u'
+        } else if b == 118u8 {
+            'v'
+        } else if b == 119u8 {
+            'w'
+        } else if b == 120u8 {
+            'x'
+        } else if b == 121u8 {
+            'y'
+        } else {
+            'z'
+        }
+    } else {
+        '?'
+    }
+}
+
+mod tests;
