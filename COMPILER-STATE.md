@@ -3275,6 +3275,42 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-163 [2026-07-27, **review corrections landed; three decision packets prepared**]
+  - **Landed (docs/ledger only, so the `8a23772` Tier-1 evidence stands):** R-06's two lease
+    violations recorded retrospectively in `C6-INTEGRATION-LEDGER.md` with the process correction and
+    the next batch's leases entered IN ADVANCE; R-10's wording corrected so no claim says stderr is
+    "compared three ways" (it is parsed on the native side and CONSTRUCTED for both interpreters, so
+    HIR-vs-MIR equality on that field is implied by the category); and the false "7 of 9 trap
+    categories" line corrected to **5 of 9** with its cause.
+  - **R-12 DEFERRED with cause.** The owner allowed it "provided this remains outside the qualified
+    execution path" — it is not. The summary writer is `starkc/tests/c6_generated_corpus.rs`, so
+    recording skip/ignore identities now would invalidate the Tier-1 records before the packets are
+    dispositioned. It moves into the consolidated batch.
+  - **Three decision packets prepared** (`WP-C6.5-DECISION-PACKETS.md`), each with root cause,
+    normative requirement, choices, recommendation, compatibility impact, implementation surface and
+    required regression evidence:
+    - **DEV-113** — root cause split in two: (A) package `SourceFile`s are named by FILESYSTEM PATH
+      (`parser.rs:173/340/401`), so provenance moves with the checkout; (B) `RuntimeError` carries a
+      span and NO file (`interp.rs:35–58`), so the oracle blames the entry file for every trap — even
+      though the interpreter tracks `self.file` per callable and discards it at the raise site.
+      Recommended: logical `<package>/<relative>` names plus attaching the file to `RuntimeError`.
+      PKG-IDENTITY-001 already says identity is "never an absolute checkout path".
+    - **DEV-114** — root cause found exactly: `parser.rs:200` iterates
+      `HashMap<String, Dependency>`, whose order is per-process random; each dependency becomes a
+      synthetic `Mod`, and a memo means whichever path is walked FIRST fixes the nesting.
+      Recommended: canonical prefix = **the package's own name**, independent of the path taken, plus
+      sorted iteration. **TYPE-NOMINAL-001 settles it** — identity is "canonical package instance +
+      module path + item name", so a dependency edge is not a module-path segment, and
+      PKG-IDENTITY-001 adds that re-exports preserve identity.
+    - **CD-150 CE3** — precise semantics proposed for `TrapCategory::InvalidExitStatus` (message
+      class `CategoryOnly`, provenance at the `main` signature, status 101, range `0..=255` applied
+      after unwrapping `Ok`), all four PROC-MAIN-001 entry signatures on all three engines, the
+      `mir.md` trap-identity amendment, and the generated-`fn main()` shape change. Recommendation:
+      implement both halves together, as CD-150 intended.
+  - **Sequencing recorded:** packets 1 and 2 are independent; **R-04/R-05's metamorphic floor depends
+    on packet 2**, because M08/M09 cannot be built while a diamond graph's symbols are
+    nondeterministic. Awaiting the owner's disposition before any qualified-path change.
+
 - CD-162 [2026-07-27, **OWNER DIRECTIVE — WP-C6.4 CLOSED; WP-C2.12 CLOSED; WP-C6.5 stays PARTIAL;
   §17 reviews run**]
   - **WP-C6.4 — CLOSED.** The owner accepts the refreshed same-commit Tier-1 evidence at `8a23772`:
