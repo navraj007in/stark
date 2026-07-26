@@ -8,7 +8,8 @@ commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds
 outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals);
 **C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
 residuals); **C6.5-6 PARTIAL** (20 metamorphic groups over ten families; M08/M09 blocked on package
-graphs — §12.1). Corpus `0.4.0`: 129 cases, replay **129/129 AGREEMENT**. Two findings raised and
+graphs — §12.1); **C6.5-7 complete** (all 16 mutations detected). Corpus `0.4.0`: 129 cases, replay
+**129/129 AGREEMENT**. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -670,13 +671,54 @@ shortfall recorded only in prose is a shortfall that gets forgotten.
 
 ---
 
-## 13. What comes next
+## 13. Phase C6.5-7 — mutation controls (§14, commit 9)
 
-§19's commit 9 — §14's mutation controls: 16 required mutations, each with a witness proving the
-corpus DETECTS a deliberately broken compiler. That is the one remaining check on whether any of this
-evidence can fail. Outstanding items from earlier phases: §8.1 (§10 witnesses, trap balance, package
-breadth), §10.1 (retention workflow, package templates), §11.1 (package graph in the replay), §12.1
-(M08/M09). Migration of the 22 forked suites proceeds
+**Done: all sixteen §14.3 mutations detected**, each against a real passing corpus case, each
+rejected by the production comparator naming the intended field.
+
+This is the phase that decides whether anything before it means much. Every other phase shows the
+corpus and the comparator **agree**; a suite of passing tests cannot distinguish "the engines match"
+from "the harness cannot tell them apart". §14 is the negative control for the whole package.
+
+| | Mutation | Witness | Field |
+| --- | --- | --- | --- |
+| MU01 | wrong arithmetic | a generated T01 case | `stdout_bytes` |
+| MU02/03 | wrong trap line / category | a generated T16 overflow trap | `trap line` / `trap category` |
+| MU04/05/06/07 | omitted / duplicated / reversed Drop, copied move | the three-event Drop sentinel | `drop_log` |
+| MU08/09/10 | wrong generic instance / trait impl / function-value target | the three dispatch sentinels | `stdout_bytes` |
+| MU11 | changed collection order | insertion order 30/10/20 | `stdout_bytes` |
+| MU12 | slice view became a copy | the view-mutation sentinel | `stdout_bytes` |
+| MU13 | `Float32` rendered as `Float64` | the width sentinel | `stdout_bytes` |
+| MU14 | generated-Rust path replacing source path | the trap witness, mutated to `src/main.rs` | `trap source_file` |
+| MU15/16 | missing output / wrong exit normalisation | the arithmetic witness | `stdout_bytes` / `exit_status` |
+
+**Three rules keep it from being theatre**, each enforced rather than intended: the witness must
+agree *before* mutation (a detection on an already-failing case proves nothing); the mutation must
+actually change the observation (asserted — the same identity-transform trap the metamorphic
+generator hit twice); and nothing is simulated by asserting `false` — the comparator under test is
+`compare_observations`, the function the replay itself uses.
+
+**Routing controls (§14.5).** For the two routing-sensitive mutations, mutating an observation is not
+enough: it shows the comparator would catch a wrong answer, not that a wrong *route* produces one. So
+MU09 and MU12 additionally run the wrong route as a **real program** — calling the other trait impl,
+and passing an array by value instead of taking a view — and assert its observation differs from the
+witness. Without those, both mutations would rest on my assertion that the sentinel discriminates.
+
+**One gap, recorded rather than papered over.** `returned_observation` has no corpus witness: the
+§8.7 framed-probe cases live in `three_engine_differential.rs`, not the corpus. That field's
+sensitivity is proven against a constructed pair instead, which is comparator evidence rather than
+corpus evidence, and the distinction is stated in the test.
+
+Evidence: `target/c6.5-evidence/mutations.json` in the §21.3 schema.
+
+---
+
+## 14. What comes next
+
+§19's commit 10 — §15's package, relocation, ordering and offline breadth. It is the **prerequisite
+for four separate outstanding items**: §10.5's package cases, §11's T17–T19 templates, §12.1's package
+graph in the replay, and §13's M08/M09 families and the metamorphic floor. Everything single-file is
+now done; what remains is mostly what a package graph unblocks. Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

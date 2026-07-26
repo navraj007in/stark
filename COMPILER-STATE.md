@@ -144,7 +144,10 @@ groups** over ten of the twelve §13.1 families (40 members; corpus `0.4.0`, rep
 AGREEMENT**), with each group's semantics-preserving precondition recorded and enforced. Still owed by
 §10: per-row witnesses and package breadth; by §11: the retained-case workflow and package templates;
 by §12: the package-graph step and shard-summary merging; by §13: **M08/M09 and the 24/48 floor**, all
-blocked on package graphs.
+blocked on package graphs. **C6.5-7 (CD-158) closed the mutation controls: all sixteen §14.3
+mutations detected** against real witnesses by the production comparator, with source-level routing
+controls for the two route-sensitive ones — the negative control that makes the rest of the evidence
+mean something.
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
 tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
@@ -3253,6 +3256,36 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-158 [2026-07-27, **WP-C6.5-7 commit 9 — all sixteen mutation controls detected**]
+  The negative control for the whole package. Every other phase shows the corpus and comparator
+  AGREE; a suite of passing tests cannot distinguish "the engines match" from "the harness cannot
+  tell them apart". §14 is what separates those.
+  - **Mechanism (§14.5), per mutation:** take a REAL passing corpus case, run it through the REAL
+    engines, clone one normalised observation, apply ONE precise test-only mutation, invoke the
+    PRODUCTION comparator, require rejection naming the intended field.
+  - **The sixteen:** MU01 arithmetic (generated T01) → `stdout_bytes`; MU02/03 trap line/category
+    (generated T16 overflow) → `trap line`/`trap category`; MU04–07 omitted/duplicated/reversed Drop
+    and copied move (the three-event Drop sentinel) → `drop_log`; MU08/09/10 wrong generic instance /
+    trait impl / function-value target (the three dispatch sentinels) → `stdout_bytes`; MU11 sorted
+    instead of insertion order → `stdout_bytes`; MU12 slice view copied → `stdout_bytes`; MU13
+    `Float32` rendered as `Float64` → `stdout_bytes`; MU14 generated-Rust path replacing user source
+    → `trap source_file`; MU15/16 missing output / wrong exit → `stdout_bytes`/`exit_status`.
+  - **Three rules enforced, not intended** (§14.6/§14.7): the witness must agree BEFORE mutation (a
+    detection on an already-failing case proves nothing); the mutation must actually change the
+    observation (asserted — the identity-transform trap CD-157's generator hit twice); and no
+    mutation is simulated by asserting `false`, since the comparator under test is
+    `compare_observations`, the function the replay itself uses.
+  - **Routing controls (§14.5).** Mutating an observation shows the comparator would catch a wrong
+    ANSWER, not that a wrong ROUTE produces one. So MU09 and MU12 additionally run the wrong route as
+    a REAL PROGRAM — calling the other trait impl, and passing an array by value instead of taking a
+    view — and assert the observation differs. Without those, both rest on my assertion that the
+    sentinel discriminates.
+  - **One recorded gap:** `returned_observation` has no corpus witness (the §8.7 framed-probe cases
+    live in `three_engine_differential.rs`, not the corpus), so that field's sensitivity is proven
+    against a constructed pair — comparator evidence, not corpus evidence, and the test says so.
+  - **Evidence:** `c6_mutation` 4/4, `target/c6.5-evidence/mutations.json` in the §21.3 schema,
+    `clippy --workspace --all-targets --all-features` clean, `fmt` clean.
 
 - CD-157 [2026-07-26, **WP-C6.5-6 commit 8 PARTIAL — 20 metamorphic groups; the floor is not met and
   a test says so**] Corpus `0.4.0`, **129 cases, replay 129/129 AGREEMENT**. Ten of §13.1's twelve
