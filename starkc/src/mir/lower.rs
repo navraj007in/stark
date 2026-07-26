@@ -1481,6 +1481,23 @@ impl<'a> FnLowerer<'a> {
         Ok(None)
     }
 
+    /// WP-C6.3e (CD-136): the place an AGGREGATE Display arm projects into, with any reference
+    /// layers peeled off.
+    ///
+    /// CD-135 made an owning `Vec` element arrive as `&T`, which means an aggregate element —
+    /// `Vec<(String, Int32)>`, `Vec<Option<String>>` — now reaches the tuple/array/`Option`/`Result`
+    /// arms BEHIND a reference. Projecting `Field(0)`/`ConstIndex`/`Discriminant` straight onto that
+    /// is ill-formed MIR (MIR-0003/0008/0010): the verifier rejects it, so the user saw a compiler
+    /// internal error instead of either a render or a named refusal. Peeling restores the value
+    /// place those projections require. (The `String`/`str`/`Vec`/user-nominal arms deliberately do
+    /// NOT peel — they consume the reference itself.)
+    fn deref_place(mut place: Place, layers: u32) -> Place {
+        for _ in 0..layers {
+            place.projection.push(Projection::Deref);
+        }
+        place
+    }
+
     /// WP-C6.3e: a `&Vec<T>` operand for the Display renderer, whether `place` holds the `Vec`
     /// itself or ALREADY holds a reference to one. The recursive case makes the difference real: a
     /// `Vec<Vec<T>>` element arrives as `&Vec<T>`, and borrowing that again would build `&&Vec<T>`,
@@ -7377,6 +7394,7 @@ impl<'a> FnLowerer<'a> {
                 Ok(())
             }
             MirTy::Tuple(elems) => {
+                let place = Self::deref_place(place, layers);
                 self.print_str_lit("(", span);
                 for (i, elem_ty) in elems.iter().enumerate() {
                     if i > 0 {
@@ -7404,6 +7422,7 @@ impl<'a> FnLowerer<'a> {
                         span,
                     );
                 }
+                let place = Self::deref_place(place, layers);
                 self.print_str_lit("[", span);
                 for i in 0..*n {
                     if i > 0 {
@@ -7425,6 +7444,7 @@ impl<'a> FnLowerer<'a> {
                 // `&payload` for any type. A Copy payload is read by value. A deeper non-Copy payload
                 // (e.g. a tuple owning a `String`) needs a non-trailing variant-field VALUE read and
                 // is refused by the backend there (cleanly, pre-rustc) — no lowering gate needed.
+                let place = Self::deref_place(place, layers);
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),
@@ -7459,6 +7479,7 @@ impl<'a> FnLowerer<'a> {
                 // As for `Option`: a leaf owner payload (`String`, a user `Display` nominal) renders
                 // by the backend's trailing variant-field borrow; a Copy payload by value; a deeper
                 // non-Copy payload is refused by the backend (pre-rustc). No lowering gate needed.
+                let place = Self::deref_place(place, layers);
                 let disc = self.new_temp(MirTy::Int64);
                 self.emit(
                     Statement::Assign(Place::local(disc), Rvalue::Discriminant(place.clone())),

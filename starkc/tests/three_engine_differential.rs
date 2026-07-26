@@ -76,6 +76,15 @@ enum Outcome {
         /// C4.5e-0: output emitted before the trap is observable, so two programs printing
         /// different prefixes before the same trap are different outcomes.
         stdout_before: String,
+        /// DEV-106 (CD-136): the USER-supplied text of a message-carrying trap — `panic(msg)`.
+        /// `None` for a category-only trap (overflow, index, cast, …), where each engine words its
+        /// own prose and there is no canonical string to compare.
+        ///
+        /// Category and location were always compared; the MESSAGE was not, because the harness
+        /// REFUSED message-carrying traps outright ("needs string values — outside the C5.2-admitted
+        /// surface"). Strings landed in C6.3a, so that refusal was stale and the text is now
+        /// comparable across all three engines.
+        message: Option<String>,
     },
 }
 
@@ -210,12 +219,16 @@ fn run_hir(name: &str, front: &Front) -> Outcome {
                 err.message
             );
             let (line, column) = front.file.line_col(err.span.lo);
+            let category = oracle_category(&err.message);
             Outcome::Trapped {
-                category: oracle_category(&err.message),
+                category,
                 file: front.file.name.clone(),
                 line: line as u32,
                 column: column as u32,
                 stdout_before: partial,
+                // `panic(msg)` raises the rendered message verbatim as its `RuntimeError`, so for
+                // that category the error text IS the user string.
+                message: (category == TrapCategory::Panic).then(|| err.message.clone()),
             }
         }
     }
@@ -247,11 +260,6 @@ fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Outcome {
                 "{name}: MIR trap carries an invalid FileId"
             );
             assert!(
-                message.is_none(),
-                "{name}: a message-carrying trap ({message:?}) needs string values — WP-C5.3, \
-                 outside the C5.2-admitted surface this harness compares"
-            );
-            assert!(
                 matches!(source.origin, Origin::UserCode),
                 "{name}: trap origin is {:?}; the harness compares exact user-source locations, \
                  so a synthetic-origin trap needs its own documented correspondence rule",
@@ -265,6 +273,7 @@ fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Outcome {
                 line: line as u32,
                 column: column as u32,
                 stdout_before: output,
+                message,
             }
         }
         Err(MirFailure {
@@ -302,13 +311,14 @@ fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> Outco
     let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
     match run.status.code() {
         Some(101) => {
-            let (category, file, line, column) = parse_native_trap(name, &stderr);
+            let (category, file, line, column, message) = parse_native_trap(name, &stderr);
             Outcome::Trapped {
                 category,
                 file,
                 line,
                 column,
                 stdout_before: stdout,
+                message,
             }
         }
         Some(code) => {
@@ -329,7 +339,7 @@ fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> Outco
 /// error: runtime trap: <category message>
 ///   --> <file>:<line>:<column>
 /// ```
-fn parse_native_trap(name: &str, stderr: &str) -> (TrapCategory, String, u32, u32) {
+fn parse_native_trap(name: &str, stderr: &str) -> (TrapCategory, String, u32, u32, Option<String>) {
     let message = stderr
         .lines()
         .find_map(|l| l.strip_prefix("error: runtime trap: "))
@@ -361,7 +371,16 @@ fn parse_native_trap(name: &str, stderr: &str) -> (TrapCategory, String, u32, u3
         .next()
         .unwrap_or_else(|| panic!("{name}: unparseable file in {location:?}"))
         .to_string();
-    (category, file, line, column)
+    // DEV-106: `trap::abort_with_message` prints the user's text on its own line AFTER the `-->`
+    // location, indented. A category-only trap prints no such line, which is exactly the `None`
+    // case — so the shape of the stderr distinguishes the two without a second parse mode.
+    let user_message = stderr
+        .lines()
+        .skip_while(|l| !l.trim().starts_with("--> "))
+        .nth(1)
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
+    (category, file, line, column, user_message)
 }
 
 // ----------------------------------------------------------------- the check --
@@ -450,6 +469,36 @@ fn agree_trapping(tag: &str, source: &str, expected: TrapCategory, expected_line
         Outcome::Trapped { category, line, .. } => {
             assert_eq!(category, expected, "{tag}: trap category");
             assert_eq!(line, expected_line, "{tag}: trap line");
+        }
+        other => panic!("{tag}: expected a trap, got {other:#?}"),
+    }
+}
+
+/// DEV-106 (CD-136): all three trapped with the same category, line AND the same user-supplied
+/// MESSAGE. `three_engine` already requires the three outcomes to be identical, so the message is
+/// compared engine-to-engine by construction; `expected_message` additionally pins it to the text
+/// the source actually wrote, so three engines agreeing on the WRONG string still fails.
+fn agree_trapping_with_message(
+    tag: &str,
+    source: &str,
+    expected: TrapCategory,
+    expected_line: u32,
+    expected_message: &str,
+) {
+    let outcome = three_engine(tag, source);
+    match outcome {
+        Outcome::Trapped {
+            category,
+            line,
+            ref message,
+            ..
+        } => {
+            assert_eq!(category, expected, "{tag}: trap category");
+            assert_eq!(line, expected_line, "{tag}: trap line");
+            let message = message.as_deref().unwrap_or_else(|| {
+                panic!("{tag}: expected a message-carrying trap, got {outcome:#?}")
+            });
+            assert_eq!(message, expected_message, "{tag}: trap message");
         }
         other => panic!("{tag}: expected a trap, got {other:#?}"),
     }
@@ -2589,6 +2638,18 @@ fn the_comparator_rejects_disagreeing_outcomes() {
             line,
             column,
             stdout_before: String::new(),
+            message: None,
+        }
+    }
+    /// DEV-106: the same trap, carrying a user message.
+    fn trapped_with(category: TrapCategory, line: u32, message: &str) -> Outcome {
+        Outcome::Trapped {
+            category,
+            file: "x.stark".to_string(),
+            line,
+            column: 1,
+            stdout_before: String::new(),
+            message: Some(message.to_string()),
         }
     }
     /// Asserts the comparator rejects this triple, and that the reason names the disagreeing
@@ -2628,6 +2689,36 @@ fn the_comparator_rejects_disagreeing_outcomes() {
         &trap,
         &trap,
         &done,
+        "MIR/NATIVE",
+    );
+
+    // DEV-106: the trap MESSAGE alone. Proven to FAIL before it is trusted to pass — the same
+    // discipline CD-053 applied to the harness itself. Without this, `message` could be carried and
+    // silently never compared, which is precisely the gap DEV-106 named.
+    let boom = trapped_with(TrapCategory::Panic, 2, "boom");
+    let other = trapped_with(TrapCategory::Panic, 2, "different");
+    assert!(compare_outcomes("t.stark", &boom, &boom, &boom).is_ok());
+    rejects(
+        "trap message differs (MIR)",
+        &boom,
+        &other,
+        &boom,
+        "HIR/MIR",
+    );
+    rejects(
+        "trap message differs (native)",
+        &boom,
+        &boom,
+        &other,
+        "MIR/NATIVE",
+    );
+    // A message-carrying trap and a category-only one are different outcomes, even at the same
+    // category and line.
+    rejects(
+        "one engine lost the message",
+        &boom,
+        &boom,
+        &trapped(TrapCategory::Panic, 2, 1),
         "MIR/NATIVE",
     );
 
@@ -2680,4 +2771,43 @@ fn the_comparator_rejects_disagreeing_outcomes() {
             "NATIVE_STDOUT_SUPPORTED",
         );
     }
+}
+
+// ---------------------------------------------------------- DEV-106: trap MESSAGE parity --
+//
+// Until CD-136 this harness REFUSED message-carrying traps ("needs string values — outside the
+// C5.2-admitted surface"), so `panic(msg)` was never compared across engines at all: category and
+// location were checked, the text was not. Strings landed in C6.3a, so the refusal was stale.
+// These cases pin the user's string byte-for-byte in HIR, MIR and native together.
+
+#[test]
+fn panic_message_agrees_across_engines() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    agree_trapping_with_message(
+        "panicmsg",
+        "fn main() {\n    panic(\"the sky is falling\");\n}\n",
+        TrapCategory::Panic,
+        2,
+        "the sky is falling",
+    );
+}
+
+/// A panic reached only on a taken branch, after output — so the message is compared alongside the
+/// pre-trap stdout prefix (CD-120 Contract B) rather than in isolation.
+#[test]
+fn conditional_panic_message_agrees_across_engines() {
+    if !rustc_available() {
+        eprintln!("SKIP: no rustc in this environment.");
+        return;
+    }
+    agree_trapping_with_message(
+        "panicmsgcond",
+        "fn main() {\n    print(\"before\");\n    let x: Int32 = 5;\n    if x > 3 {\n        panic(\"too big\");\n    }\n}\n",
+        TrapCategory::Panic,
+        5,
+        "too big",
+    );
 }

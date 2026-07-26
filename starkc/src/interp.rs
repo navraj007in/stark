@@ -22,14 +22,38 @@ pub struct RuntimeError {
     /// False for executable-target selection failures detected before the
     /// entrypoint starts. Those are compiler errors, not language traps.
     pub is_trap: bool,
+    /// DEV-106 (CD-136): the trap category when the interpreter KNOWS it, rather than leaving it to
+    /// be recovered by matching this error's prose.
+    ///
+    /// Set for `panic(msg)`, whose message is arbitrary USER text that no prose table could
+    /// classify — the three-engine harness previously had to reject such a trap outright rather
+    /// than risk defaulting it to whatever category the other engines reported. Every other trap
+    /// leaves this `None` and keeps its existing prose-matched classification.
+    pub trap_category: Option<crate::mir::TrapCategory>,
 }
 
 impl RuntimeError {
+    /// A trap whose category is recovered from its prose by the consumer.
     fn new(message: impl Into<String>, span: Span) -> Self {
         Self {
             message: message.into(),
             span,
             is_trap: true,
+            trap_category: None,
+        }
+    }
+
+    /// DEV-106: a trap whose category the interpreter states outright.
+    fn with_category(
+        message: impl Into<String>,
+        span: Span,
+        category: crate::mir::TrapCategory,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            is_trap: true,
+            trap_category: Some(category),
         }
     }
 
@@ -38,6 +62,7 @@ impl RuntimeError {
             message: message.into(),
             span,
             is_trap: false,
+            trap_category: None,
         }
     }
 }
@@ -2454,9 +2479,12 @@ impl<'a> Interpreter<'a> {
             Builtin::Panic => {
                 let value = args.pop().unwrap_or(Value::Unit);
                 let deref = self.deref_value(value, span)?;
-                Err(RuntimeError::new(
+                // DEV-106: the message is arbitrary USER text, so the category is stated rather
+                // than left to be inferred from prose.
+                Err(RuntimeError::with_category(
                     self.format_runtime_value(&deref, span)?,
                     span,
+                    crate::mir::TrapCategory::Panic,
                 ))
             }
             Builtin::Assert => match args.pop() {

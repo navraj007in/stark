@@ -502,6 +502,113 @@ fn refused_natively(tag: &str, src: &str, expect: &str) {
     }
 }
 
+// ---- CD-136: a non-Copy AGGREGATE element inside a `Vec` ----
+//
+// CD-135 made an owning element arrive as `&T`, but only the `Vec`/`String`/`str` arms were made
+// reference-aware. An aggregate element then reached the tuple/array/`Option`/`Result` arms behind a
+// reference and they projected straight through it, emitting ill-formed MIR — the verifier rejected
+// it (MIR-0003/0008/0010), so the user saw a compiler internal error rather than a render or a named
+// refusal. Every arm that projects INTO a value now peels the reference first.
+
+#[test]
+fn composite_vec_of_tuples_with_owning_field() {
+    agree_out(
+        "vec_tuple_string",
+        "fn main() { let mut v: Vec<(String, Int32)> = Vec::new(); \
+         v.push((String::from(\"a\"), 1)); v.push((String::from(\"b\"), 2)); println(v); }",
+    );
+}
+
+#[test]
+fn composite_vec_of_arrays_of_strings() {
+    agree_out(
+        "vec_array_string",
+        "fn main() { let mut v: Vec<[String; 2]> = Vec::new(); \
+         v.push([String::from(\"a\"), String::from(\"b\")]); println(v); }",
+    );
+}
+
+#[test]
+fn composite_vec_of_option_string() {
+    agree_out(
+        "vec_option_string",
+        "fn main() { let mut v: Vec<Option<String>> = Vec::new(); \
+         v.push(Some(String::from(\"a\"))); v.push(None); println(v); }",
+    );
+}
+
+#[test]
+fn composite_vec_of_result_string() {
+    agree_out(
+        "vec_result_string",
+        "fn main() { let mut v: Vec<Result<String, Int32>> = Vec::new(); \
+         v.push(Ok(String::from(\"a\"))); println(v); }",
+    );
+}
+
+/// **DEV-108 — the one C6.3e shape that fails AS A RUSTC ERROR rather than a named refusal.**
+///
+/// `Result<Vec<String>, Int32>` reaches `cargo build` of the generated crate and fails there with
+/// `E0502`: the drop-glue slot borrow collides with the payload borrow held across the render. Every
+/// other boundary in this file is a deliberate pre-rustc diagnostic, so this one violates the
+/// design and is recorded rather than hidden.
+///
+/// It is NOT guarded pre-rustc, deliberately: the neighbouring shapes `Option<Vec<String>>` and
+/// `Result<Vec<Int32>, Int32>` both render three-engine, so any guard broad enough to catch this
+/// would refuse working programs. Finding the precise predicate needs a real debugging pass on the
+/// generated crate — an owner-scoped decision, not something to guess at here.
+///
+/// This test pins the CURRENT behaviour. If the underlying borrow conflict is fixed, it fails and
+/// the case should be promoted to `agree_out`.
+#[test]
+fn result_of_vec_of_string_fails_at_rustc_dev_108() {
+    if !rustc_available() {
+        return;
+    }
+    let file = Arc::new(SourceFile::new(
+        "c63e_res_vec_string.stark".to_string(),
+        "fn main() { let r: Result<Vec<String>, Int32> = Ok(Vec::new()); println(r); }".to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    assert!(
+        !checked
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "DEV-108 case is expected to type-check"
+    );
+    let program =
+        lower_program(&hir, &checked.tables, file).unwrap_or_else(|e| panic!("lower: {}", e.what));
+    let verified = verify_program(&program).unwrap_or_else(|e| panic!("verify: {e:?}"));
+    let dir = std::env::temp_dir().join(format!("stark_c63e_dev108_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let result = emit_native_debug(
+        &verified,
+        &NativeBuildOptions {
+            target_dir: dir.clone(),
+            target_contract: "stark-64-v1".to_string(),
+        },
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(e) => {
+            let text = format!("{e:?}");
+            assert!(
+                text.contains("E0502"),
+                "DEV-108: expected the recorded rustc borrow error, got: {text}"
+            );
+        }
+        Ok(_) => panic!(
+            "DEV-108 now BUILDS — the borrow conflict is fixed. Promote this case to `agree_out` \
+             and close the deviation."
+        ),
+    }
+}
+
 // ---- Refused pre-rustc (a bounded, TESTED boundary — not an admitted divergence). Lowering must
 // reject these; typecheck accepts them (they are well-typed). ----
 

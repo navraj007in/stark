@@ -72,22 +72,32 @@ three-engine — CD-127's structured emission gave loops borrow precision (E0502
 AT LOWERING (deterministic): `Float32` in the
 COMPOSITE Display path only (DEV-105; a SCALAR `println(Float32)` is admitted — the interpreters agree,
 only the native binary diverges), arrays > 64 (unroll cap), and a droppable composite carrying a borrow
-(generated lifetimes). C6.3e
-remaining: `Vec<String>` (the Vec arm reads elements by COPY — needs by-REFERENCE Vec access, not
-borrow precision); a non-Copy COMPOSITE enum payload (deeper than a leaf); `Float32` (DEV-105);
-trap-message three-engine parity (DEV-106, narrowed — partial output already comparable).
-DEV-107 (native `v[i]` OOB provenance) is CLOSED by CD-131. DEFERRED to a future decision (CD-125): composite `Box`
+(generated lifetimes). CD-135/136 added `Vec` of OWNING elements —
+`Vec<String>`, and aggregates one level down (`Vec<(String, Int32)>`, `Vec<[String; 2]>`,
+`Vec<Option<String>>`, `Vec<Result<String, _>>`) — read by REFERENCE rather than by copy.
+**DEV-106 (trap-message three-engine parity) and DEV-107 (native `v[i]` OOB provenance) are both
+CLOSED** (CD-136, CD-131). C6.3e remaining: `Float32` (DEV-105 — needs an owner ruling on where
+`f32` rounding canonically occurs). Recorded deviations: DEV-108 (`Result<Vec<String>, Int32>` fails
+as a rustc `E0502` rather than a named pre-rustc refusal — deliberately unguarded, since neighbouring
+shapes work). DEFERRED to a future decision (CD-125): composite `Box`
 elements — `Box<T>` is not a Display type today (typechecker E0500) and making it one is a semantics
-choice, not a lowering slice.**
+choice, not a lowering slice. ESCALATED (CD-136): whether a `HashMap`/bare struct renders under
+`Display` at all, and in what form — CE-shaped, currently E0500 in the front end but with latent
+HIR-only renderings that would diverge the day either is admitted.**
 **WP-C6.3d CLOSED by amendment (CD-132/133/134): native `HashMap` on the CE4 insertion-ordered
 representation, with identity by the key type's lawful `Eq` reaching MIR and the backend through one
 shared `TypeContext::eq_impls` table. CD-133 fixed a LIVE HIR↔MIR divergence found on the way (MIR
 compared keys structurally, ignoring user `Eq`). EXCLUDED and pinned by boundary tests: `HashSet`
 (HIR-only — no MIR representation, so a lowering gap like C6.3c's adapters) and Drop-bearing keys/
 values (refused before MIR, which keeps entry Drop order unobservable and legitimately unspecified).**
+**WP-C6.3 is COMPLETE for its admitted domain (CD-137): a/b/c/d/e all closed, C6.3f (files)
+EXCLUDED — absent from every engine and in the optional, already-unclaimable `std-full` profile — and
+the CD-116 CLOSURE EVIDENCE discharged (installed-runtime + offline build + version-mismatch
+detection, `tests/c63_closure_evidence.rs`). The only C6.3 item still needing an OWNER decision is
+DEV-105 (`Float32` Display: where `f32` rounding canonically occurs), plus the escalations named
+above (`Box`/`HashMap` Display semantics) and DEV-108 (recorded, unguarded).**
 Also open:
-**WP-C6.3** (files C6.3f; the C6.3e formatting tail; runtime version/install/
-offline-build evidence is a C6.3 CLOSURE requirement — recorded CD-116, not yet satisfied), C4/C5/C6
+C4/C5/C6
 platform matrix, C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
 DEV-105 (Float32 widening cross-engine) still open — none is C6.2.)**
 
@@ -3158,6 +3168,88 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-137 [2026-07-26, **WP-C6.3f EXCLUDED + the C6.3 CLOSURE EVIDENCE discharged (CD-116)**]
+  The two remaining C6.3 items, resolved in opposite directions — one excluded on evidence, one
+  satisfied with new evidence.
+  - **WP-C6.3f (files) — EXCLUDED, not built.** `File` is implemented NOWHERE: zero mentions in
+    `interp.rs`, zero in `mir/lower.rs` (only four in `typecheck.rs`). So it is not a native-parity
+    gap at all — nothing exists for native to fall behind. Two further facts settle it: `std/io/` is
+    its own module (the spec's own layout, analogous to `System.IO`), and file IO is **`std-full`**,
+    which `STD-PROFILE-001` makes an OPTIONAL capability — Core v1 conformance requires only
+    `core-min`. Building it would mean an entire std module across HIR, MIR, runtime and native, plus
+    STD-IO-001's resource semantics (a non-`Copy` `File` whose ownership moves but cannot be cloned,
+    UTF-8-validating reads, short-write handling, and "dropping an open file attempts close but
+    cannot surface a new language trap" — which reaches into the Drop/trap machinery).
+  - **Why excluding it costs nothing that was still available.** `std-full` is *indivisible* — a
+    claim requires everything in it. `HashSet` (CD-134) and the iterator combinators (CD-130) are
+    already excluded, and both are `std-full`, so the profile was ALREADY unclaimable. Excluding
+    files changes what STARK implements, not what it can advertise: `core-min` plus a partial,
+    unclaimable subset of `std-full`. If file IO is wanted it deserves its own std-library work
+    package with its own scope, exactly like `WP-ITER-LOWERING-PROPOSAL.md`.
+  - **Note for the record:** the io module's `core-min` half — `print`/`println` — has been native
+    since CD-113. It is only the `std-full` half that is absent.
+  - **C6.3 CLOSURE EVIDENCE discharged (CD-116).** That requirement — runtime version review plus
+    installed-layout and offline-build proofs — was recorded as "must land before C6.3 closes" and
+    had not. New `tests/c63_closure_evidence.rs`, 2 cases:
+    (a) **installed runtime + offline build.** `NativeToolchainOptions::runtime_crate` is a PATH and
+    every other native test points it at the working tree; this test COPIES the runtime (Cargo.toml +
+    `src/*.rs` only — no `target/`, no `.git`) into a temp directory and builds against the copy, so a
+    program that only compiled because of something in the checkout fails here. It exercises what
+    C6.3 ADDED — composite formatting, `String`, `Vec`, `iter()`, `HashMap` — and asserts exact
+    output. The offline half needs no separate test: `build_and_link` passes `--offline`
+    unconditionally, and the copied crate has neither a vendored registry nor network, so a runtime
+    dependency regression fails HERE.
+    (b) **version identity is CHECKED, not merely recorded** — a stale linked runtime is rejected
+    before user code runs (§9.2), with the matching case asserted first so the rejection is not
+    vacuous. This matters precisely BECAUSE the runtime can now be installed separately.
+  - **Both proven to fail before being trusted:** the installed-runtime assertion was inverted and
+    observed to fail against the real binary's output.
+
+- CD-136 [2026-07-26, **WP-C6.3e — DEV-106 CLOSED (trap-message parity); a CD-135 regression fixed**]
+  Three changes: the deviation that was the point of this slice, a defect CD-135 introduced and an
+  external probe caught, and one recorded deviation left open on purpose.
+  - **DEV-106 CLOSED — trap MESSAGE parity across engines.** The three-engine harness compared trap
+    category and location but not TEXT, because it REFUSED message-carrying traps outright ("needs
+    string values — outside the C5.2-admitted surface"): `panic(msg)` was never compared at all. That
+    refusal was stale once strings landed in C6.3a. `Outcome::Trapped` now carries
+    `message: Option<String>`, filled by all three engines — MIR from its own trap payload, native by
+    parsing the line `trap::abort_with_message` prints after the `-->` location, and HIR from the
+    error text. **`RuntimeError` gained `trap_category: Option<TrapCategory>`** so the interpreter
+    STATES a `panic`'s category instead of leaving it to be recovered from prose: a user message is
+    arbitrary text that no prose table can classify, which is exactly why the harness had to reject
+    it before. Every other trap keeps its prose-matched category.
+  - **Proven to FAIL before being trusted to pass** (the CD-053 discipline): the comparator's own
+    self-test now includes cases where only the MESSAGE differs, and where one engine loses it
+    entirely, asserting rejection names the disagreeing pair. Plus two real three-engine cases —
+    `panic("the sky is falling")` and a conditional panic after output, so the message is compared
+    alongside the pre-trap stdout prefix.
+  - **A CD-135 REGRESSION, found by an external probe and confirmed here.** CD-135 made an owning
+    `Vec` element arrive as `&T` but only made the `Vec`/`String`/`str` arms reference-aware. An
+    AGGREGATE element then reached the tuple/array/`Option`/`Result` arms behind a reference and they
+    projected straight through it, emitting ILL-FORMED MIR: `Vec<(String, Int32)>` → MIR-0003,
+    `Vec<[String; 2]>` → MIR-0010, `Vec<Option<String>>` and `Vec<Result<String, _>>` → MIR-0008.
+    Verifier errors, not diagnostics — a compiler internal error surfaced to the user. I had tested
+    the arms I CHANGED, not the arms that would now RECEIVE references. Fixed by peeling the
+    reference (`deref_place`) in every arm that projects into a value; the arms that consume the
+    reference itself deliberately do not peel. All four now render three-engine.
+  - **DEV-108 [recorded, NOT guarded]:** `Result<Vec<String>, Int32>` fails at `cargo build` of the
+    generated crate with `E0502` — the drop-glue slot borrow colliding with the payload borrow held
+    across the render. It is the ONE C6.3e shape that fails as a rustc error rather than a named
+    pre-rustc refusal, so it is recorded rather than hidden. Deliberately NOT guarded: the
+    neighbouring `Option<Vec<String>>` and `Result<Vec<Int32>, Int32>` both render three-engine, so
+    any guard broad enough to catch it would refuse working programs, and the precise predicate needs
+    a debugging pass on the generated crate. Pinned by `result_of_vec_of_string_fails_at_rustc_dev_108`,
+    which fails loudly if the conflict is ever fixed so the case gets promoted.
+  - **Evidence.** `c63e_formatting.rs` 52; `three_engine_differential` +2 message cases and the
+    extended comparator self-test.
+  - **ESCALATED, not resolved — `HashMap`/bare-struct `Display` is CE-shaped.** `println(m)` for any
+    map is E0500 today (`type_is_displayable` admits only `Option`/`Result`/`Vec`/tuple/array/slice
+    plus user-`Display` nominals), as is a struct without a `Display` impl. But the HIR interpreter
+    still carries renderings for both (`HashMap{k: v, …}`; `{v: 1}`), and `emit_display_value` has no
+    map arm at all — so the day either is admitted to `Display`, it is an instant three-engine
+    divergence. Whether a map renders, and in what form, is a language-`Display` semantics decision
+    (the same class as CD-123), so it is flagged for the owner rather than settled here.
 
 - CD-135 [2026-07-26, **WP-C6.3e — `Vec` of OWNING elements renders (by reference, not by copy)**]
   `Vec<String>` Display was refused because the Vec renderer read each element with `VecIndexGet`,
