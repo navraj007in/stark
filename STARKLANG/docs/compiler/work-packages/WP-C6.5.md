@@ -1,9 +1,10 @@
 # WP-C6.5 — Full Differential and Generated Corpus
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
-**Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, coverage matrix) complete; **C6.5-1 complete**
-(comparator extracted and extended to the full §39 observation shape, commits 2 and 3), except for
-migrating the 22 still-forked suites, which proceeds in matrix order. Two findings raised and
+**Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, matrix) and **C6.5-2 (manifest, layout, lock)**
+complete; **C6.5-1 complete** (comparator extracted and extended to the full §39 observation shape,
+commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds in matrix order.
+Corpus `0.1.0`: 6 retained cases, 0 handwritten, 0 generated. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -363,12 +364,61 @@ re-deriving all of them.
 
 ---
 
-## 7. What comes next
+## 7. Phase C6.5-2 — corpus manifest, layout and lock (§9, commit 4)
 
-§19's commit 4 — the corpus manifest, layout and lock (§9), which is the first phase that produces
-corpus artifacts rather than harness. Migration of the 22 forked suites proceeds alongside it in
-matrix order under CD-148's option (1); each migrated suite is a step toward the required claim
-resting on one comparator rather than twenty-three.
+**Done.** `starkc/tests/c6-corpus/` exists with the §9.1 layout, a strict manifest, a generated lock,
+and 28 tests — 3 on the real corpus, 25 proving the validator refuses what §9.3 says it must.
+
+**Parser choice (§9.4).** Option 2: a deliberately small strict reader for the manifest subset
+(`tests/support/corpus.rs`). Option 1 was checked first and does not apply — the workspace has no
+TOML parser to reuse, and §9.4 forbids adding a network-fetched dependency to parse a test manifest.
+The subset is `[[case]]` headers plus `key = "string" / ["a", "b"] / true`, with **unknown keys
+rejected**: a parser that skips what it does not understand turns a typo'd attribute into an
+attribute nobody checks.
+
+**The corpus is seeded, not empty.** Six `retained` cases — DEV-111 and DEV-112's entry-contract
+sources — because §18.3 requires a retained case to remain a permanent regression, and because a lock
+that has never hashed a real file proves nothing about the lock. `c65_entry_exit_contract.rs` now
+reads them with `include_str!`, so the corpus source and the expectation cannot drift: editing a case
+changes its hash in `corpus.lock` and the assertion that pins its observation, in one change.
+
+Two entry-contract programs are deliberately not cases, and the README says why: the out-of-range
+status (no replayable observation until the CE3 lands) and the pre-DEV-112 `()` rejection (history,
+not a case).
+
+**Quarantine is unwritable where §4.4 forbids it.** The validator accepts only three reason classes —
+`non-core-feature`, `external-artifact`, `environment` — each requiring a `CD-###` authority. There
+is no spelling for "the engines disagree", "wrong output", "wrong Drop order" or "native refuses an
+accepted program": those are C6 blockers that keep the gate open, and the test
+`semantic_quarantine_rejected` proves the door is shut rather than merely discouraged.
+
+**Lock integrity (§9.5).** Per-source SHA-256 plus manifest and generator hashes and five counts;
+`generate.py --lock` writes it and `--check` is what CI asks. The generator hashes ITSELF into the
+lock, so changing how the corpus is produced invalidates it. The version assertion in
+`c6_corpus_manifest.rs` is the deliberate speed bump: regenerating is easy, and doing it without a
+`corpus_version` bump fails, so no edit can quietly redefine the baseline later claims are measured
+against.
+
+| Check | Result |
+| --- | --- |
+| `cargo test --test c6_corpus_manifest` | 28 passed, 0 failed, 0 ignored |
+| `cargo test --test c65_entry_exit_contract` | 8 passed (now reading corpus sources) |
+| `python3 tests/c6-corpus/generate.py --check` | `corpus.lock is current` |
+| `cargo fmt --all -- --check` | clean |
+
+`corpus_version` **0.1.0**; `generator_version` 0.1.0; case_count 6 (0 handwritten, 0 generated,
+6 retained, 0 metamorphic groups). The generated corpus §11 requires — ≥64 cases across ≥10
+templates — is still entirely unbuilt; this phase built the thing that will hold it.
+
+---
+
+## 8. What comes next
+
+§19's commit 5 — hand-written category completion (§10): focused witnesses for the matrix rows that
+need them, sentinels that prove the WRONG route is observable rather than only that the right one
+works, and the completion/trap balance §10.4 requires. Migration of the 22 forked suites proceeds
+alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
+required claim resting on one comparator rather than twenty-three.
 
 Status remains `PARTIAL` until the comparator, matrix, manifest, generator, replay, metamorphic and
 mutation requirements are all complete (§23). C6.5 has **no** valid "candidate complete but corpus

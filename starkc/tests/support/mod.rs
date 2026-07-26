@@ -10,4 +10,5 @@
 
 #![allow(dead_code)]
 
+pub mod corpus;
 pub mod differential;

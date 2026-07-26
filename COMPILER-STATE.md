@@ -130,7 +130,10 @@ commit 3).** `starkc/tests/support/differential.rs` is the single three-engine c
 extracted mechanically first (88 passed, identical to V0), then extended to the **full §39
 observation shape** — stderr bytes, exit status, returned observation and a parsed Drop log, with
 trap stderr normalised rather than byte-matched and 18 comparator tests proving each field is
-load-bearing (**109 passed / 0 ignored / 0 self-skipped**). The other **22 forked suites are
+load-bearing (**109 passed / 0 ignored / 0 self-skipped**). **C6.5-2 (CD-152) added the corpus
+itself** — `starkc/tests/c6-corpus/`, strict manifest, hash lock, 28 manifest/lock tests, seeded with
+the 6 retained DEV-111/DEV-112 cases at `corpus_version` 0.1.0; the ≥64-case generated corpus remains
+unbuilt. The other **22 forked suites are
 not yet migrated** — owner chose incremental migration in coverage-matrix order — so until each is,
 its C6.2/C6.3 evidence still rests on its own local notion of agreement. Matrix roll-up: 127
 EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **4 BLOCKED — V19 `HashSet`**
@@ -3236,6 +3239,36 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-152 [2026-07-26, **WP-C6.5-2 commit 4 — the corpus exists: manifest, layout, lock**]
+  `starkc/tests/c6-corpus/` with the §9.1 layout, a strict manifest, a generated lock, and **28
+  tests — 3 on the real corpus, 25 proving the validator REFUSES what §9.3 requires**. A validator
+  whose only evidence is a valid manifest is a validator nobody has watched refuse anything.
+  - **Parser (§9.4): option 2, a deliberately small strict reader** (`tests/support/corpus.rs`).
+    Option 1 was checked and does not apply — the workspace has no TOML parser to reuse, and §9.4
+    forbids adding a network-fetched dependency to parse a test manifest. Subset: `[[case]]` plus
+    `key = "string" / ["a","b"] / true`. **Unknown keys are rejected**, because a parser that skips
+    what it does not understand turns a typo'd attribute into an attribute nobody checks.
+  - **Seeded with the 6 retained DEV-111/DEV-112 cases, not empty.** §18.3 requires a retained case
+    to remain a permanent regression, and a lock that has never hashed a real file proves nothing.
+    `c65_entry_exit_contract.rs` reads them via `include_str!`, so corpus source and expectation
+    cannot drift — one edit changes the hash in `corpus.lock` AND the assertion pinning the
+    observation. Deliberately NOT cases, with the reason in the README: the out-of-range status (no
+    replayable observation until the CE3 lands) and the pre-DEV-112 `()` rejection (history).
+  - **§4.4's disallowed quarantines are unspellable, not discouraged.** Three reason classes parse —
+    `non-core-feature`, `external-artifact`, `environment` — each requiring a `CD-###` authority.
+    There is no syntax for "the engines disagree", "wrong output", "wrong Drop order" or "native
+    refuses an accepted program". `semantic_quarantine_rejected` proves the door is shut.
+  - **Lock (§9.5):** per-source SHA-256, manifest and generator hashes, five counts. `generate.py
+    --lock` writes it, `--check` is the CI question, and the generator hashes ITSELF in — changing
+    how the corpus is produced invalidates the lock. `c6_corpus_manifest.rs` asserts
+    `corpus_version` against a constant, so regenerating without a version bump fails rather than
+    quietly redefining the baseline every later claim is measured against.
+  - **Evidence:** `c6_corpus_manifest` 28/28, `c65_entry_exit_contract` 8/8, `generate.py --check`
+    current, `fmt` clean. `corpus_version` **0.1.0**, `generator_version` 0.1.0, case_count 6
+    (0 handwritten, 0 generated, 6 retained, 0 metamorphic groups).
+  - **What this is not.** The generated corpus §11 requires — ≥64 cases across ≥10 templates — is
+    entirely unbuilt. This phase built the container, and the container is not the evidence.
 
 - CD-151 [2026-07-26, **WP-C6.5-1 commit 3 — the §39 observation model; the comparator now compares
   what the claim is about**] The plan's §8.3–§8.10, additive to commit 2's mechanical extraction.

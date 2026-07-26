@@ -1,0 +1,5 @@
+fn main() {
+    let x: Unit = ();
+    let y: () = ();
+    print("ok");
+}

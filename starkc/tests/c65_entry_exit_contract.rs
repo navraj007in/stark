@@ -48,6 +48,20 @@ use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
 
+// The retained sources live in the C6 corpus (`tests/c6-corpus/cases/retained/`, kind =
+// "retained"), not inline here: §18.3 requires a retained case to stay a permanent regression, and
+// `include_str!` is what keeps the corpus source and the expectation from drifting apart. Editing a
+// case changes its hash in `corpus.lock` AND the assertions below, in one change.
+const UNIT_ENTRY: &str = include_str!("c6-corpus/cases/retained/entry_exit__01_unit_entry.stark");
+const INT32_STATUS: &str =
+    include_str!("c6-corpus/cases/retained/entry_exit__02_int32_status.stark");
+const ERR_STDERR: &str = include_str!("c6-corpus/cases/retained/entry_exit__03_err_stderr.stark");
+const MAX_STATUS: &str = include_str!("c6-corpus/cases/retained/entry_exit__04_max_status.stark");
+const OK_UNIT_ENTRY: &str =
+    include_str!("c6-corpus/cases/retained/entry_exit__05_ok_unit_entry.stark");
+const UNIT_LITERAL: &str =
+    include_str!("c6-corpus/cases/retained/entry_exit__06_unit_literal.stark");
+
 /// What both interpreters report for one program: exactly the fields PROC-EXIT-001 specifies.
 #[derive(Debug, PartialEq, Eq)]
 struct Termination {
@@ -130,10 +144,7 @@ fn both_interpreters(name: &str, source: &str) -> Termination {
 /// PROC-EXIT-001: "Normal `Unit` ... return status 0."
 #[test]
 fn unit_entry_completes_with_status_zero() {
-    let observed = both_interpreters(
-        "entry_exit__01.stark",
-        "fn main() {\n    print(\"x\");\n}\n",
-    );
+    let observed = both_interpreters("entry_exit__01_unit_entry.stark", UNIT_ENTRY);
     assert_eq!(
         observed,
         Termination {
@@ -150,7 +161,7 @@ fn unit_entry_completes_with_status_zero() {
 /// only checked HIR-vs-MIR *agreement* on the `Unit` case would never have noticed.
 #[test]
 fn int32_entry_returns_its_value_as_the_exit_status() {
-    let observed = both_interpreters("entry_exit__02.stark", "fn main() -> Int32 {\n    3\n}\n");
+    let observed = both_interpreters("entry_exit__02_int32_status.stark", INT32_STATUS);
     assert_eq!(
         observed,
         Termination {
@@ -164,10 +175,7 @@ fn int32_entry_returns_its_value_as_the_exit_status() {
 /// PROC-EXIT-001: "`Err(message)` writes `message` plus LF to stderr and returns status 1."
 #[test]
 fn err_entry_writes_the_message_to_stderr_and_returns_status_one() {
-    let observed = both_interpreters(
-        "entry_exit__03.stark",
-        "fn main() -> Result<Unit, String> {\n    Err(String::from(\"boom\"))\n}\n",
-    );
+    let observed = both_interpreters("entry_exit__03_err_stderr.stark", ERR_STDERR);
     assert_eq!(
         observed,
         Termination {
@@ -183,7 +191,7 @@ fn err_entry_writes_the_message_to_stderr_and_returns_status_one() {
 /// keeps the `u8` conversion honest rather than trusting that some value in the middle works.
 #[test]
 fn the_last_in_range_exit_status_is_not_a_trap() {
-    let observed = both_interpreters("entry_exit__04.stark", "fn main() -> Int32 {\n    255\n}\n");
+    let observed = both_interpreters("entry_exit__04_max_status.stark", MAX_STATUS);
     assert_eq!(observed.status, 255);
 }
 
@@ -243,11 +251,8 @@ fn an_out_of_range_exit_status_is_refused_by_both_engines_pending_a_trap_categor
 #[test]
 fn native_refuses_every_non_unit_entry_signature() {
     for (name, source) in [
-        ("entry_exit__02.stark", "fn main() -> Int32 {\n    3\n}\n"),
-        (
-            "entry_exit__03.stark",
-            "fn main() -> Result<Unit, String> {\n    Err(String::from(\"boom\"))\n}\n",
-        ),
+        ("entry_exit__02_int32_status.stark", INT32_STATUS),
+        ("entry_exit__03_err_stderr.stark", ERR_STDERR),
     ] {
         let front = front_end(name, source).expect("accepted by the front end");
         let program = lower_program(&front.hir, &front.tables, front.file.clone())
@@ -286,10 +291,7 @@ fn native_refuses_every_non_unit_entry_signature() {
 /// `Unit` could be written at all. Both spellings, in type and value position.
 #[test]
 fn the_unit_value_literal_typechecks_as_unit() {
-    let observed = both_interpreters(
-        "entry_exit__06.stark",
-        "fn main() {\n    let x: Unit = ();\n    let y: () = ();\n    print(\"ok\");\n}\n",
-    );
+    let observed = both_interpreters("entry_exit__06_unit_literal.stark", UNIT_LITERAL);
     assert_eq!(observed.stdout, "ok");
     assert_eq!(observed.status, 0);
 }
@@ -301,10 +303,7 @@ fn the_unit_value_literal_typechecks_as_unit() {
 /// entry could only ever return `Err`.
 #[test]
 fn ok_unit_entry_completes_with_status_zero() {
-    let observed = both_interpreters(
-        "entry_exit__07.stark",
-        "fn main() -> Result<Unit, String> {\n    Ok(())\n}\n",
-    );
+    let observed = both_interpreters("entry_exit__05_ok_unit_entry.stark", OK_UNIT_ENTRY);
     assert_eq!(
         observed,
         Termination {

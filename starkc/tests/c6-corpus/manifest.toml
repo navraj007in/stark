@@ -1,0 +1,92 @@
+# WP-C6.5 differential corpus manifest (§9.2).
+#
+# One `[[case]]` table per case, in ASCENDING case_id order — enumeration order is part of the
+# contract (§9.3 "nondeterministic ordering" is a rejection), so the manifest is sorted and the
+# validator enforces it rather than trusting whoever edits this file next.
+#
+# The reader is a deliberately small strict parser for exactly the subset used here
+# (`tests/support/corpus.rs`, per §9.4 option 2): comments, `[[case]]` headers, and
+# `key = "string"` / `key = ["a", "b"]` / `key = true` values. No nesting, no inline tables, no
+# numbers. Anything outside that subset — including an unknown key — is an error, not an ignored
+# line, because a silently ignored key is a case attribute nobody is checking.
+#
+# Every field is documented in `README.md`. Fields that carry no invariant for a given case are
+# omitted rather than written empty, EXCEPT where a rule requires presence (a generated case must
+# carry seed/version/template; a metamorphic member must carry family/group; a trap case must
+# carry its expected category).
+
+[[case]]
+case_id = "entry_exit__01_unit_entry"
+kind = "retained"
+category = "packages-environment"
+subcategories = ["K15", "K16"]
+sources = ["cases/retained/entry_exit__01_unit_entry.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PROC-MAIN-001", "PROC-EXIT-001"]
+
+[[case]]
+case_id = "entry_exit__02_int32_status"
+kind = "retained"
+category = "packages-environment"
+subcategories = ["K16"]
+sources = ["cases/retained/entry_exit__02_int32_status.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PROC-EXIT-001"]
+deviation = "DEV-111: the native backend refuses every non-Unit entry (Unsupported: the entry instance must return Unit). A Gate C6 blocker under WP-C6-ENTRY §3 required result 6, escalated at CD-149; this case becomes three-engine when that lands."
+
+[[case]]
+case_id = "entry_exit__03_err_stderr"
+kind = "retained"
+category = "packages-environment"
+subcategories = ["K17"]
+sources = ["cases/retained/entry_exit__03_err_stderr.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PROC-EXIT-001", "PROC-STREAM-001"]
+deviation = "DEV-111: the native backend refuses every non-Unit entry. Also the only case in the corpus with non-empty normative stderr, so it is what keeps the stderr_bytes field from comparing empty-to-empty everywhere."
+
+[[case]]
+case_id = "entry_exit__04_max_status"
+kind = "retained"
+category = "packages-environment"
+subcategories = ["K16"]
+sources = ["cases/retained/entry_exit__04_max_status.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PROC-EXIT-001"]
+deviation = "DEV-111: the native backend refuses every non-Unit entry. 255 is the last in-range status; 256 is the first that must trap, which is the CE3 held at CD-150."
+
+[[case]]
+case_id = "entry_exit__05_ok_unit_entry"
+kind = "retained"
+category = "packages-environment"
+subcategories = ["K16"]
+sources = ["cases/retained/entry_exit__05_ok_unit_entry.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["PROC-EXIT-001", "TYPE-PRIM-001"]
+deviation = "DEV-111 for the native half. This is the clause DEV-112 had made unreachable: until `()` typechecked as `Unit` there was no way to construct the value PROC-EXIT-001's Ok(Unit) rule is about."
+
+[[case]]
+case_id = "entry_exit__06_unit_literal"
+kind = "retained"
+category = "values-types"
+subcategories = ["V09"]
+sources = ["cases/retained/entry_exit__06_unit_literal.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-PRIM-001"]
