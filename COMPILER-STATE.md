@@ -104,17 +104,18 @@ evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138).
 CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
-**WP-C6.4 (CD-143/CD-144) — Tier-1 platform matrix. Implementation complete; Tier-1 records being
-retaken at the corrected commit.**
+**WP-C6.4 CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS (CD-143/CD-144/CD-145) — Tier-1 platform
+matrix.**
 Phases 0/a/b/c/d are built: the matrix is frozen (`C6-PLATFORM-MATRIX.md`, 25 rows), target
 classification is CENTRALISED in the new `starkc/src/target.rs` (before this, the rustc host WAS the
 target and `stark-64-v1` was inherited by any triple), the §34 portability audit found TEN host
 assumptions of which eight are fixed, and the qualification harness + Tier-1 comparison gate + three
-CI jobs exist. CI run 30191381334 at `61008f6` produced two PASSING, AGREEING Tier-1
-records (1705 passed each, TIER-1 AGREEMENT), so the mechanism is proven. **Those records were then
-REMOVED (CD-144)**: the owner's second review round strengthened the comparator, and records lacking
-its now-required fields are refused by it — keeping them would claim qualification from evidence the
-current gate rejects. Fresh records come from the corrected commit. Matrix row 25 REPORT-ONLY with
+CI jobs exist. **BOTH TIER-1 RECORDS EXIST AND AGREE, at `4844702`** (CI run 30192449131,
+**all 11 jobs green**): 1705 passed / 0 failed on EACH target, 2 ignores both classified, 0
+unclassified, 0 self-skipped, no deviations, determinism `match`, TIER-1 AGREEMENT on identical
+per-command counts — and the same verdict reproduced LOCALLY against the downloaded records, so the
+claim does not rest on a CI job having exited zero. The earlier `61008f6` records also passed and
+agreed but were DISCARDED (CD-144), because the strengthened comparator refuses them. Matrix row 25 REPORT-ONLY with
 G1 and G3 closed (Windows passed the C6.4 suite 14/14); **row 24 (generated corpus) BLOCKED-BY-C6.5
 by construction**, which is why `CLOSED` is not available and the ceiling is
 `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. Details in `WP-C6.4.md`; evidence in
@@ -3197,6 +3198,35 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-145 [2026-07-26, **WP-C6.4 tier-1 evidence retaken under the strengthened gate; a check that
+  failed by succeeding**]
+  CI run 30192449131 at `4844702`, **all 11 jobs green**. Both tier-1 records: 1705 passed / 0
+  failed, 2 ignores (both classified by full libtest name), 0 unclassified, 0 self-skipped, no
+  deviations, determinism `match`, pointer width 64, `stark-64-v1` v1 rev 1. Identical per-command
+  counts. `qualification-summary.md` reports TIER-1 AGREEMENT, **and I reproduced that verdict
+  locally against the downloaded records** — the claim does not rest on a CI job having exited zero.
+  - **The Windows release smoke failed twice, and BOTH times the check itself was correct.** The
+    step logged `installed stark correctly refused to build without its installed runtime (exit 1)`
+    and then failed the job on that same `1`: GitHub appends `exit $LASTEXITCODE` to every `pwsh`
+    step, and `$LASTEXITCODE` was still 1 from the build the check DELIBERATELY makes fail. A
+    passing assertion and a failing step were therefore the same observable state, which makes the
+    step unreadable in both directions — a real regression would have looked identical. Fixed with
+    `exit 0` after the assertions. The bash branch never had it (its last command is the echo),
+    which the `279b4a7` run confirms: linux and macos smokes passed with the same negative check.
+  - **This is the third control in this package whose success and failure states were
+    indistinguishable until CI ran it** — after the ignore classification (CD-144 R-context) and the
+    skip detector that could not see a skip (CD-144 R3/R4 neighbourhood). Recorded as a pattern
+    rather than three unrelated fixes: every one was a check I wrote, validated locally against the
+    happy path, and shipped without exercising its failure path. The compensating discipline that
+    did work is the one now in `test_c64_scripts.py` — 43 tests, each mutating exactly one thing and
+    asserting the REFUSAL.
+  - **Evidence committed:** `docs/compiler/evidence/c6.4/{macos-arm64,linux-x64}.{json,md}` and
+    `qualification-summary.md`, downloaded from the runners, not regenerated. Matrix Table B rows
+    1–23 MET at `4844702`.
+  - **Status: `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`.** Row 24 (deterministic generated corpus)
+    is C6.5's and cannot be satisfied here, so `CLOSED` remains unavailable. Owner decision is the
+    only outstanding step.
 
 - CD-144 [2026-07-26, **WP-C6.4 owner review round — five findings, and the Tier-1 records withdrawn**]
   The owner reviewed the delivered package and found five defects. All fixed. Stated as the defect,

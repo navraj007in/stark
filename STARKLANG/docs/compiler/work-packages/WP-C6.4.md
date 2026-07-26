@@ -1,12 +1,12 @@
 # WP-C6.4 — Tier-1 Platform Matrix
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
-**Status:** implementation complete, including the owner's second review round (R1–R5, §2).
-**The Tier-1 records from the earlier run were REMOVED, not carried forward**: the comparator now
-requires fields those records do not carry, and evidence must describe the commit it claims.
-Fresh records come from the corrected commit's CI run (§4).
-Recommended closure status once they land and agree:
-**`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`** — awaiting the owner's decision (§5).
+**Status:** COMPLETE for everything C6.4 can reach, including the owner's second review round
+(R1–R5, §2). **Both Tier-1 records exist and agree at `4844702`** (CI run 30192449131, all 11 jobs
+green), taken under the strengthened comparator. Matrix rows 1–23 MET, row 25 REPORT-ONLY with G1
+and G3 closed, row 24 BLOCKED-BY-C6.5 by construction.
+Recommended closure status: **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`** — awaiting the owner's
+decision (§5).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37 (tracked, normative), §5 (fixed decisions and
 escalation classes), §6 (scope boundaries), §30 (runtime compatibility), §48 (validation at the
 closure commit).
@@ -316,20 +316,31 @@ equivalence established by the cross-platform observations — now appears in bo
 
 ## 4. Evidence status
 
-**The Tier-1 records were removed and must be regenerated.** CI run 30191381334 at `61008f6` did
-produce two passing, agreeing records (1705 passed each, determinism `match`, TIER-1 AGREEMENT), and
-they were committed. The owner's second review round (R1–R5) then changed the harness and the
-comparator, so those records:
+**Both Tier-1 records exist and agree, at `4844702`** — CI run 30192449131, all 11 jobs green.
 
-- lack fields the comparator now requires — `target_pointer_width`, `layout_contract_version`,
-  `compiler_layout_revision`, `required_steps`;
-- carry ignored-test identities truncated to their final `::` component (R4);
-- describe a release smoke that did not set `STARK_REQUIRE_INSTALLED_RUNTIME` (R1).
+| | macOS-arm64 | Linux-x64 |
+| --- | --- | --- |
+| overall | PASS | PASS |
+| passed | 1705 | 1705 |
+| failed | 0 | 0 |
+| ignored | 2, both classified | 2, both classified |
+| unclassified ignores | none | none |
+| self-skipped | 0 | 0 |
+| deviations | none | none |
+| determinism rerun | `match` | `match` |
+| pointer width / layout | 64 / `stark-64-v1` v1 rev 1 | 64 / `stark-64-v1` v1 rev 1 |
 
-Run against the strengthened comparator they are **refused**, naming exactly those fields — which is
-the comparator behaving correctly, not a regression. Keeping them would mean claiming Tier-1
-qualification from evidence the current gate rejects. They are deleted; the replacements come from
-this commit's CI run, per §7 of the review directive: *do not reuse evidence from an earlier commit*.
+Per-command counts are identical: `c64_platform_matrix` 15, `three_engine_differential` 88,
+`mir_differential` 132, `exec_snapshots` 4, `c63_closure_evidence` 2, `conformance` 3, `workspace`
+1461 (with the 2 classified ignores). `qualification-summary.md` reports **TIER-1 AGREEMENT**, and
+the same verdict was reproduced locally by running the comparator against the downloaded records —
+so the claim does not rest solely on a CI job having exited zero.
+
+**The earlier records were discarded, not carried forward.** `61008f6` produced two passing,
+agreeing records; R1–R5 then strengthened the harness and comparator, and those records lack
+`target_pointer_width`, `layout_contract_version`, `compiler_layout_revision` and `required_steps`
+and carry truncated ignore identities. Run against the current comparator they are **refused**.
+Keeping them would have claimed qualification from evidence this gate rejects.
 
 ### 4.1 The first CI run (`8d894e8`, run 30190825336) — and what it caught
 
@@ -464,18 +475,14 @@ this.
 
 ## 5. What closure requires
 
-1. ~~let `c64-qualification` produce both Tier-1 records at one commit~~ — the mechanism is proven
-   (three green runs: `e80df80`, `61008f6`, and the earlier `9ff8d35`). **Must be redone at this
-   commit**, because R1–R5 changed the harness, the comparator and the smoke;
-2. `c64-tier1-comparison` reports TIER-1 AGREEMENT at that commit;
-3. commit the two records plus `qualification-summary.md`, and fill `C6-PLATFORM-MATRIX.md`
-   Table B from them;
+1. ~~let `c64-qualification` produce both Tier-1 records at one commit~~ — **done** at `4844702`;
+2. ~~`c64-tier1-comparison` reports TIER-1 AGREEMENT~~ — **done**, and reproduced locally;
+3. ~~commit the two records plus `qualification-summary.md`, and fill Table B~~ — **done**;
 4. ~~read the `c64-windows-gap` probe and resolve G1~~ — **done**: 14/14 on Windows, G1 closed as
    `portable` (§4.1). G3 is also closed, by the target-matrix work;
 5. **record the owner's closure decision.**
 
-Steps 1–3 are a single CI cycle on this commit. The status is `NOT-YET` until they complete, then
-`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. `CLOSED` is not available and will not be until C6.5's
+Steps 1–4 are done. The status is `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. `CLOSED` is not available and will not be until C6.5's
 generated corpus exists and replays through this harness on both Tier-1 targets (§1.2) — a decision
 about C6.5's schedule, not about whether C6.4 did its work.
 
@@ -486,8 +493,8 @@ about C6.5's schedule, not about whether C6.4 did its work.
 | baseline and matrix | commit pinned, versions recorded, matrix complete (25 rows), corpus sequencing resolved |
 | target preflight | host and selected target identified separately; Tier-1 accepted; unsupported rejected before Cargo; missing toolchain distinguished; layout and suffix selected from the target; metadata recorded; mismatch rejects before user code |
 | portability | all eleven §34 categories audited; ten findings (F1–F10) dispositioned, eight fixed; no substring target matching remains anywhere |
-| evidence | harness, comparator and CI wiring complete and tested (43 fixture tests); **the two Tier-1 records are pending this commit's run** |
-| Tier-1 agreement | mechanism proven on three earlier runs; to be re-established here |
+| evidence | complete — harness, comparator and CI wiring tested by 43 fixture tests; both Tier-1 records committed at `4844702` with no deviations and no unclassified ignores |
+| Tier-1 agreement | **established** at `4844702`, and reproduced locally against the downloaded records |
 | Windows | real run inspected, gap report complete, G1 and G3 closed, G2 and G4 open and classified, none semantic |
 | reviews and records | A, B, D, E complete (§4.5) and corrected by R1–R5; C is the §2 register; ledger and state updated; **owner closure decision outstanding** |
 

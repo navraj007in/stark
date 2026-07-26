@@ -3,11 +3,10 @@
 **Owner:** WP-C6.4 (`WP-C6.4.md`)
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37
 **Frozen:** 2026-07-26, at `5d2c85d` (Gate C6, immediately after WP-C6.3 closed via CD-142)
-**Status:** every row is implemented and its command exists. Rows 1–23 await a Tier-1 record at the
-current commit: an earlier run (`61008f6`) produced two passing, agreeing records, but the owner's
-second review round strengthened the comparator and those records no longer satisfy it, so they were
-removed rather than carried forward (see the note under Table B). Row 24 is BLOCKED-BY-C6.5; row 25
-is REPORT-ONLY with G1 and G3 closed.
+**Status:** rows 1–23 **MET** on records taken at `4844702` under the strengthened comparator
+(CI 30192449131, all 11 jobs green, TIER-1 AGREEMENT). The earlier records from `61008f6` were
+discarded, not carried forward — the comparator that now guards this matrix refuses them. Row 24 is
+BLOCKED-BY-C6.5; row 25 is REPORT-ONLY with G1 and G3 closed.
 
 ## How to read this file
 
@@ -85,16 +84,20 @@ eight times and read as eight independent confirmations.
 
 | # | Area | macOS-arm64 actual | Linux-x64 actual | Artifact | Exact commit | Deviation | Closure |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1–23 | all Tier-1 rows | pending | pending | `evidence/c6.4/{macos-arm64,linux-x64}.json` | pending | — | NOT-YET |
+| 1–8 | target preflight and metadata | `c64_platform_matrix` 15/15 | 15/15 | `evidence/c6.4/{macos-arm64,linux-x64}.json` | `4844702` | none | MET |
+| 9 | compiler/runtime compatibility | `c63_closure_evidence` 2/2 | 2/2 | same | `4844702` | none | MET |
+| 10–14 | output bytes, line termination, traps | `c64_platform_matrix` 15/15; `three_engine_differential` 88/88 | identical | same | `4844702` | none | MET |
+| 15–18 | paths, temp dirs, manifest escaping | within `c64_platform_matrix` 15/15 | identical | same | `4844702` | none | MET |
+| 19–20 | installed runtime, locked offline build | `c63_closure_evidence` 2/2, `c64_platform_matrix`, **and the release smoke's positive + negative pair** | identical | same, plus `release package smoke` | `4844702` | none | MET |
+| 21–22 | frozen workspace, three-engine | `workspace` 1461/1461 (2 classified ignores); `mir_differential` 132; `exec_snapshots` 4; `three_engine_differential` 88 | identical | same | `4844702` | none | MET |
+| 23 | determinism rerun | `match` | `match` | same | `4844702` | none | MET |
 | 24 | generated corpus | n/a | n/a | — | — | corpus does not exist | BLOCKED-BY-C6.5 |
-| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `8d894e8` (run 30190825336) | G1 and G3 CLOSED; G2, G4 open, none semantic | REPORT-ONLY |
+| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `4844702` (probe green again) | G1, G3 CLOSED; G2, G4 open, none semantic | REPORT-ONLY |
 
-**Why rows 1–23 read `pending` again.** They were filled from CI run 30191381334 at `61008f6`, which
-passed on both Tier-1 targets and reported TIER-1 AGREEMENT. The owner's second review round
-(R1–R5, `WP-C6.4.md` §2) then strengthened the harness and the comparator, and those records lack
-fields the comparator now requires — run against it today they are **refused**. Rather than leave
-Table B asserting agreement from evidence the current gate rejects, the records were deleted and
-the row reset. The mechanism is proven; the observation must be retaken at the corrected commit.
+**Records at `4844702`, CI run 30192449131, all 11 jobs green.** Both Tier-1 targets: 1705 passed,
+0 failed, 2 ignored (both classified), 0 unclassified, 0 self-skipped, determinism `match`, no
+deviations. `qualification-summary.md` reports TIER-1 AGREEMENT on identical per-command counts, and
+the same verdict was reproduced locally against the downloaded records.
 
 Tier-1 agreement is not a column here: it is a separate artifact,
 `evidence/c6.4/qualification-summary.md`, produced by `scripts/compare-c64-evidence.py`. It
