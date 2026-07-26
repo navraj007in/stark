@@ -280,6 +280,14 @@ The records are committed as downloaded from the runner. They were **not** taken
 passing runs at `9ff8d35` or `e80df80`: the harness changed after each, and evidence has to describe
 the commit it claims.
 
+**Why the records name `61008f6` while HEAD is later.** A record cannot describe the commit that
+adds it — the file has to exist before it can be committed. The commit that landed these
+(`b4d5e8e`) changes documentation, the state file, and the evidence files themselves and **no
+source, no test and no script** (`git diff --stat 61008f6..b4d5e8e`), so the qualified artefact is
+unchanged. Any later commit that touches `starkc/src`, `starkc/tests`, `starkc/scripts` or
+`stark-runtime` invalidates these records and needs a fresh qualification run; that is the standing
+rule, not a caveat about this one.
+
 ### 4.1 The first CI run (`8d894e8`, run 30190825336) — and what it caught
 
 Nine of eleven jobs green, including every pre-existing job on all three platforms. Two results
