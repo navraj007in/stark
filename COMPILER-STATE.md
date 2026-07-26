@@ -104,8 +104,8 @@ evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138).
 CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
-**WP-C6.4 CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS (CD-143/CD-144/CD-145) — Tier-1 platform
-matrix.**
+**WP-C6.4 CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS — ACCEPTED BY THE OWNER (CD-146;
+built CD-143, reviewed CD-144, evidenced CD-145) — Tier-1 platform matrix.**
 Phases 0/a/b/c/d are built: the matrix is frozen (`C6-PLATFORM-MATRIX.md`, 25 rows), target
 classification is CENTRALISED in the new `starkc/src/target.rs` (before this, the rustc host WAS the
 target and `stark-64-v1` was inherited by any triple), the §34 portability audit found TEN host
@@ -118,7 +118,9 @@ claim does not rest on a CI job having exited zero. The earlier `61008f6` record
 agreed but were DISCARDED (CD-144), because the strengthened comparator refuses them. Matrix row 25 REPORT-ONLY with
 G1 and G3 closed (Windows passed the C6.4 suite 14/14); **row 24 (generated corpus) BLOCKED-BY-C6.5
 by construction**, which is why `CLOSED` is not available and the ceiling is
-`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. Details in `WP-C6.4.md`; evidence in
+`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`, **accepted by the owner 2026-07-26 (CD-146)**. Row 24
+ticks — and C6.4 becomes `CLOSED` — when C6.5's corpus replays through the harness C6.4 already
+built; no new platform work is needed for it. Details in `WP-C6.4.md`; evidence in
 `starkc/docs/compiler/evidence/c6.4/`.
 Also open:
 C4/C5/C6
@@ -3198,6 +3200,36 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-146 [2026-07-26, **OWNER DECISION — WP-C6.4 accepted as
+  CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS**]
+  The owner accepted the recommended status. Recorded so the ledger carries a decision rather than
+  an open question.
+  - **What this accepts.** Matrix rows 1–23 MET on two agreeing Tier-1 records at `4844702`
+    (CI 30192449131, all 11 jobs green; 1705 passed / 0 failed each; TIER-1 AGREEMENT, reproduced
+    locally). Row 25 REPORT-ONLY with G1 and G3 closed. The §34 portability audit and its ten
+    findings, the owner's five review findings (R1–R5), and review passes A/B/C/D/E are complete.
+  - **What this does NOT do: it is not closure, and no decision could have made it closure.**
+    Row 24 — the deterministic generated corpus replayed on both Tier-1 targets — is WP-C6.5's, and
+    the artifact does not exist. `CLOSED` becomes available only when C6.5's corpus replays through
+    the harness C6.4 already built; that needs no new platform work, only the corpus.
+  - **The re-qualification rule stands and is load-bearing.** Any commit touching `starkc/src`,
+    `starkc/tests`, `starkc/scripts`, `starkc/target-matrix.json` or `stark-runtime` invalidates
+    these records and requires a fresh qualification run. This is not boilerplate: it is exactly
+    what forced the `61008f6` records to be discarded this round despite their having passed.
+  - **Carried forward, open and named** — none blocking this status: row 24 (C6.5); gap-report G2
+    (two installer scripts asserting the same thing) and G4 (`/tmp` in a gate-7 fixture), both
+    harness, neither semantic; `LinkerOrExternalToolFailure` still conflated with generated-crate
+    compile errors inside `BackendDiagnostic::BuildFailed`; and the file-not-found mapping probe,
+    which is unrun because `std-full` file operations are absent from every engine, so there is no
+    mapping to probe.
+  - **The lesson this package leaves.** THREE controls shipped with indistinguishable success and
+    failure states — the ignore classification, the skip detector that could not observe a skip
+    (libtest hides passing output), and a Windows step that failed the job by asserting correctly
+    (`$LASTEXITCODE` leaked through `pwsh`). Each was validated against its happy path only. The
+    compensating discipline is `scripts/test_c64_scripts.py`: 43 tests, each mutating exactly one
+    thing and asserting the REFUSAL. Apply that shape to C6.5's mutation controls (§43), which are
+    the same problem stated as a work package.
 
 - CD-145 [2026-07-26, **WP-C6.4 tier-1 evidence retaken under the strengthened gate; a check that
   failed by succeeding**]

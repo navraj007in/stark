@@ -5,8 +5,9 @@
 (R1–R5, §2). **Both Tier-1 records exist and agree at `4844702`** (CI run 30192449131, all 11 jobs
 green), taken under the strengthened comparator. Matrix rows 1–23 MET, row 25 REPORT-ONLY with G1
 and G3 closed, row 24 BLOCKED-BY-C6.5 by construction.
-Recommended closure status: **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`** — awaiting the owner's
-decision (§5).
+Closure status: **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`**, **accepted by the owner
+2026-07-26 (CD-146)**. Not `CLOSED`, and no decision could have made it so — row 24 needs an
+artifact that does not exist yet (§1.2, §5).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37 (tracked, normative), §5 (fixed decisions and
 escalation classes), §6 (scope boundaries), §30 (runtime compatibility), §48 (validation at the
 closure commit).
@@ -489,9 +490,9 @@ this.
 3. ~~commit the two records plus `qualification-summary.md`, and fill Table B~~ — **done**;
 4. ~~read the `c64-windows-gap` probe and resolve G1~~ — **done**: 14/14 on Windows, G1 closed as
    `portable` (§4.1). G3 is also closed, by the target-matrix work;
-5. **record the owner's closure decision.**
+5. ~~record the owner's closure decision~~ — **done**: accepted 2026-07-26, CD-146.
 
-Steps 1–4 are done. The status is `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. `CLOSED` is not available and will not be until C6.5's
+All five steps are done. The status is `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`, accepted. `CLOSED` is not available and will not be until C6.5's
 generated corpus exists and replays through this harness on both Tier-1 targets (§1.2) — a decision
 about C6.5's schedule, not about whether C6.4 did its work.
 
@@ -505,7 +506,7 @@ about C6.5's schedule, not about whether C6.4 did its work.
 | evidence | complete — harness, comparator and CI wiring tested by 43 fixture tests; both Tier-1 records committed at `4844702` with no deviations and no unclassified ignores |
 | Tier-1 agreement | **established** at `4844702`, and reproduced locally against the downloaded records |
 | Windows | real run inspected, gap report complete, G1 and G3 closed, G2 and G4 open and classified, none semantic |
-| reviews and records | A, B, D, E complete (§4.5) and corrected by R1–R5; C is the §2 register; ledger and state updated; **owner closure decision outstanding** |
+| reviews and records | A, B, D, E complete (§4.5) and corrected by R1–R5; C is the §2 register; ledger and state updated; **owner decision recorded (CD-146)** |
 
 ---
 
