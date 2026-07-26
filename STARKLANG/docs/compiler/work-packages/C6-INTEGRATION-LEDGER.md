@@ -343,3 +343,24 @@ _(CE3/CE4/CE8/CE9 recorded here before implementation continues — none yet.)_
 C6.0 complete: three agents can implement separate semantic areas without editing the same
 authority-bearing code or making conflicting assumptions. Wave 1 may open (Track A ownership matrix,
 Track B generic/trait matrix + corpus scaffolding, Track C runtime inventory + String/str).
+
+
+---
+
+## Shared-file leases — WP-C6.5 (recorded retrospectively, 2026-07-27, CD-163)
+
+**These are late entries, and that is the finding.** §17 Review H (R-06) found that C6.5 edited two
+files on the §2 shared list without recording a lease. No concurrent track was editing either file
+and no conflict occurred, but the protocol defines a lease as a *coordination record*, and an
+unrecorded lease is indistinguishable from none. The entries below are reconstructed from the commits
+rather than invented, and the process correction follows them.
+
+| file · owning track · reason | base SHA | API impact | tests required | lease start | lease release |
+| --- | --- | --- | --- | --- | --- |
+| `starkc/tests/three_engine_differential.rs` · Track A (Claude) · §8.2 mechanical comparator extraction, then the §8.3 observation model | `b0d7a72` | none — the file keeps its case declarations; runners and comparator move to `tests/support/differential.rs` | `three_engine_differential` (88 → 109), `fmt`, `clippy` | CD-148 (`c789e4b`) | CD-151 (`9526072`) |
+| `starkc/src/mir/lower.rs` · Track A (Claude) · DEV-112: `()` lowers to `Constant::Unit`, not a zero-field tuple aggregate | `feeb271` | none — no MIR shape, `RuntimeFn` or surface version changed; one lowering arm added | `--lib` 463, `mir_differential` 132, `exec_snapshots`, `conformance`, `c65_entry_exit_contract` | CD-150 (`6ee9417`) | CD-150 (`6ee9417`) |
+
+**Process correction.** A lease is recorded *here* at the moment the edit is planned, not inferred
+afterwards from a commit. Two further shared files are in scope for the coming batch —
+`starkc/tests/three_engine_differential.rs` again (R-02 migration) and `starkc/tests/exec_snapshots.rs`
+if the inherited corpus is touched — and both will be entered before the work starts, not after.

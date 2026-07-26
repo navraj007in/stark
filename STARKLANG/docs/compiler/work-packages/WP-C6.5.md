@@ -207,6 +207,7 @@ Trapped   { category, source_file, line, column, message_class, stdout_before_tr
 | §8 requirement | How it is met |
 | --- | --- |
 | §8.4 bytes, not host strings | native output stays `Vec<u8>`; interpreter `String` channels convert with no line-ending translation; only protocol frames are decoded as text |
+| §8.5 what `stderr_observation` actually proves (R-10) | it is **parsed** from the native engine and **constructed** for both interpreters from the same category table, so HIR-vs-MIR equality on that field is implied by the category comparison. It is independent evidence only where one side is native — the claim is not "stderr compared three ways" |
 | §8.5 trap stderr normalised | *parsed* from native stderr, *constructed* for the interpreters from `stark_runtime::trap`'s own category table — the same source the native ABI prints from. Exhaustive over `TrapCategory` by an exhaustive `match`, so a tenth category fails to compile until mapped |
 | §8.6 message classes | `CategoryOnly` / `UserMessageExact` / `RuntimeCompatibility`; a runtime-version mismatch is raised as a harness failure, never classified as a program trap |
 | §8.7 returned observation | `fn probe() -> T` plus a generated wrapper emitting `@@stark-ret:<tag>:<rendered>@@`; frame stripped from normative stdout; a probe that also prints fails |
@@ -844,7 +845,10 @@ HANDWRITTEN CASE COUNT       55  (13 sentinels, 40 metamorphic members, 2 packag
 GENERATED CASE COUNT         70  (15 templates, budget 5)
 RETAINED CASE COUNT          6   (DEV-111/DEV-112 entry contract)
 CATEGORY COVERAGE            8 groups, 136 matrix rows; 21 hand-written witnesses, not per-row
-TRAP CATEGORY COVERAGE       7 of 9 admitted categories generated (T16); UnwrapNone/UnwrapErr absent
+TRAP CATEGORY COVERAGE       5 of 9 (CORRECTED, R-01) — CastFailure, IndexOutOfBounds,
+                             IntegerOverflow, InvalidShift, Panic. DivideByZero and AssertFailure
+                             are in T16's dimension space but were dropped by the per-template
+                             budget; UnwrapNone/UnwrapErr were never in it. §10.4 NOT met
 DROP COVERAGE                §8.8 protocol; sentinel with 3 events, cross-package Drop, pre-trap log
 PACKAGE COVERAGE             root+module, 3-package workspace; relocation and reorder measured
 METAMORPHIC RESULTS          20 groups / 40 members over 10 families — ALL PRESERVED, floor unmet

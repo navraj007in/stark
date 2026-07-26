@@ -362,5 +362,25 @@ previously visible:
 3. **R-07** — 36 of 136 rows have corpus evidence, and until row citations are validated the
    coverage count itself is unverified.
 
-None of R-01…R-13 has been acted on. Fixes to R-01, R-03, R-07, R-09, R-11 and R-13 touch the
-qualified path and therefore require a fresh Tier-1 run; R-06 and R-12 are docs- or schema-only.
+None of R-01…R-13 was acted on when this document was written. The owner's disposition (2026-07-27,
+CD-163) then ordered the work:
+
+**Landed immediately, because they do not touch the qualified path:**
+
+- **R-06** — retrospective lease entries and a process correction are recorded in
+  `C6-INTEGRATION-LEDGER.md`. Status: **CLOSED (record)**; the underlying protocol violation stands as
+  history.
+- **R-10** — `WP-C6.5.md` §16 now states what `stderr_observation` proves: parsed on the native side,
+  constructed for both interpreters, therefore *not* "compared three ways". Status: **CLOSED**.
+- **R-01's wording** — the report line "7 of 9 admitted trap categories" is corrected to **5 of 9**
+  with the reason. The *coverage gap itself* remains **OPEN** and is batch item 1.
+
+**Deferred to the consolidated batch, with reasons:**
+
+- **R-12** — the owner allowed this now "provided this remains outside the qualified execution path".
+  It is not: the summary writer is `starkc/tests/c6_generated_corpus.rs`, and the C6.4
+  re-qualification rule invalidates the `8a23772` records on any change under `starkc/tests`. Moving
+  it into the batch is the only way to record identities without discarding the Tier-1 evidence
+  before the packets are dispositioned. Status: **OPEN, batched**.
+- **R-01 (coverage), R-02, R-03, R-04, R-05, R-07, R-08, R-09, R-11, R-13** — all touch the qualified
+  path. Status: **OPEN, batched**, in the order the owner set.
