@@ -3159,6 +3159,33 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-135 [2026-07-26, **WP-C6.3e — `Vec` of OWNING elements renders (by reference, not by copy)**]
+  `Vec<String>` Display was refused because the Vec renderer read each element with `VecIndexGet`,
+  which is BY COPY (V-COPY-1) and so demanded a `Copy` element — copying an owning value the `Vec`
+  still holds. CD-131 wired `VecGetRef` natively, which made the fix small.
+  - **The element read now splits on Copy-ness.** A `Copy` element is still read by value; an owning
+    element is read BY REFERENCE through `VecGetRef` → `Option<&T>`, whose `Some` payload is reached
+    by a trailing `VariantField` — borrowable since CD-126. The `None` arm is unreachable (`idx <
+    len` holds) but is still emitted as a real discriminant switch rather than assumed away.
+  - **The renderer's `Vec` borrow is now reference-aware.** The recursive case made this real: a
+    `Vec<Vec<T>>` element arrives as `&Vec<T>`, and borrowing that again built `&&Vec<T>`, which the
+    verifier rejected (MIR-0004). `vec_ref_for_display` yields the `&Vec<T>` operand whether the
+    place holds the `Vec` or already holds a reference to one.
+  - **Evidence.** `c63e_formatting.rs` 47: `Vec<String>` (multi-element and empty) three-engine.
+  - **A FINDING, recorded not fixed: the `Vec`-of-`Vec` drop-glue refusal looks over-broad.**
+    `Vec<Vec<Int32>>` Display type-checks, lowers and VERIFIES, then the native backend refuses it
+    when the printed `Vec` is dropped (Contract C) with the C6.3b-era
+    "destructor-in-runtime-collection" deferral. That guard's own comment lists "nested `Vec`/`Box`"
+    among the element kinds carrying NO user destructor and therefore expected to pass — but it tests
+    `DropPlan::is_noop()`, which is literally `matches!(self, Noop)`, and a `Vec<Int32>` element's
+    plan is `VecElements { Int32 }`: non-`Noop` yet running no user destructor anywhere. The precise
+    question is "does this plan run any USER destructor, RECURSIVELY", not "is the plan empty".
+    Widening a drop-glue refusal is C6.3b's scope, not this formatting slice's, so it is pinned by
+    `composite_vec_of_vecs_refused_by_drop_glue` and left for an owner-scoped decision.
+  - **C6.3e remaining:** `Float32` (DEV-105 — needs a ruling on where `f32` rounding canonically
+    occurs before implementation); trap-message three-engine parity (DEV-106); nested user `Display`
+    inside a `Vec`/`Option`/`Result` payload where the payload is itself a non-Copy COMPOSITE.
+
 - CD-134 [2026-07-26, **WP-C6.3d CLOSED by amendment — native `HashMap`; exclusions named**]
   The CE4 representation (CD-132) is implemented natively and the §27 matrix is proven three-engine
   for the admitted domain. Per the owner's closure ruling, C6.3d is closed **only** for that domain,

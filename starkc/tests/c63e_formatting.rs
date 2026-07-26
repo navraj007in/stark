@@ -412,6 +412,96 @@ fn composite_array_of_strings() {
     );
 }
 
+// ---- Vec of OWNING elements (CD-135): read by reference (`VecGetRef`) rather than by copy ----
+
+#[test]
+fn composite_vec_of_strings() {
+    agree_out(
+        "vec_string",
+        "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"a\")); \
+         v.push(String::from(\"bc\")); println(v); }",
+    );
+}
+
+#[test]
+fn composite_vec_of_strings_empty() {
+    agree_out(
+        "vec_string_empty",
+        "fn main() { let v: Vec<String> = Vec::new(); println(v); }",
+    );
+}
+
+/// A `Vec<Vec<Int32>>` renders fine as far as Display is concerned — the recursion nests a runtime
+/// loop inside a runtime loop and MIR verifies — but it is refused by an INDEPENDENT, pre-existing
+/// backend limitation: dropping the printed Vec (CD-120 Contract C) hits the C6.3b-era
+/// "destructor-in-runtime-collection" deferral on `Vec`-of-`Vec`.
+///
+/// Worth noting for whoever picks that up: the refusal looks OVER-BROAD against its own stated
+/// intent. Its comment lists "nested `Vec`/`Box`" among the element kinds that carry no user
+/// destructor and should pass, but the guard tests `DropPlan::is_noop()`, which is literally
+/// `matches!(self, Noop)` — and a `Vec<Int32>` element's plan is `VecElements { Int32 }`, non-`Noop`
+/// yet running no user destructor anywhere. The precise question is "does this plan run any USER
+/// destructor, recursively", not "is the plan empty". Left as a finding rather than fixed here:
+/// widening a drop-glue refusal is C6.3b's scope, not this formatting slice's.
+#[test]
+fn composite_vec_of_vecs_refused_by_drop_glue() {
+    refused_natively(
+        "vec_vec",
+        "fn main() { let mut a: Vec<Int32> = Vec::new(); a.push(1); a.push(2); \
+         let mut b: Vec<Int32> = Vec::new(); b.push(3); \
+         let mut v: Vec<Vec<Int32>> = Vec::new(); v.push(a); v.push(b); println(v); }",
+        "destructor-in-runtime-collection",
+    );
+}
+
+/// Type-checks, lowers, and VERIFIES, but the native backend refuses it with a named limitation
+/// containing `expect` — a deterministic pre-rustc boundary, not a rustc error.
+fn refused_natively(tag: &str, src: &str, expect: &str) {
+    if !rustc_available() {
+        return;
+    }
+    let file = Arc::new(SourceFile::new(
+        format!("c63e_{tag}.stark"),
+        src.to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
+    let (hir, rd) = resolve(&ast, file.clone());
+    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
+    let checked = typecheck::analyze(&hir, file.clone());
+    let errs: Vec<_> = checked
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
+    let program = lower_program(&hir, &checked.tables, file)
+        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
+    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
+    let dir = std::env::temp_dir().join(format!("stark_c63e_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let result = emit_native_debug(
+        &verified,
+        &NativeBuildOptions {
+            target_dir: dir.clone(),
+            target_contract: "stark-64-v1".to_string(),
+        },
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Err(e) => {
+            let text = format!("{e:?}");
+            assert!(
+                text.contains(expect),
+                "{tag}: expected a refusal mentioning {expect:?}, got: {text}"
+            );
+        }
+        Ok(_) => {
+            panic!("{tag}: this is expected to be refused; if it now builds, make it positive")
+        }
+    }
+}
+
 // ---- Refused pre-rustc (a bounded, TESTED boundary — not an admitted divergence). Lowering must
 // reject these; typecheck accepts them (they are well-typed). ----
 

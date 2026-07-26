@@ -1481,6 +1481,35 @@ impl<'a> FnLowerer<'a> {
         Ok(None)
     }
 
+    /// WP-C6.3e: a `&Vec<T>` operand for the Display renderer, whether `place` holds the `Vec`
+    /// itself or ALREADY holds a reference to one. The recursive case makes the difference real: a
+    /// `Vec<Vec<T>>` element arrives as `&Vec<T>`, and borrowing that again would build `&&Vec<T>`,
+    /// which the verifier rejects (MIR-0004).
+    fn vec_ref_for_display(
+        &mut self,
+        place: &Place,
+        ty: &MirTy,
+        layers: u32,
+        ref_ty: &MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        if layers > 0 {
+            return self.read_place(place.clone(), ty, span);
+        }
+        let temp = self.new_temp(ref_ty.clone());
+        self.emit(
+            Statement::Assign(
+                Place::local(temp),
+                Rvalue::RefOf {
+                    mutable: false,
+                    place: place.clone(),
+                },
+            ),
+            self.info(span),
+        );
+        Ok(Operand::Copy(Place::local(temp)))
+    }
+
     /// WP-C6.3d (STD-HASH-001): the selected `Eq::eq` instance for a nominal used as a map KEY.
     /// Structurally identical to [`Self::drop_impl_key`] — same impl scan, same `FnKey`/symbol
     /// construction — differing only in the trait and member name it looks for.
@@ -7470,13 +7499,10 @@ impl<'a> FnLowerer<'a> {
             // runs after the whole render, in `lower_print_composite` (Contract C).
             MirTy::Core(crate::hir::CoreType::Vec, elem_args) => {
                 let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
-                if !self.is_copy(&elem) {
-                    return unsupported(
-                        "Display of a `Vec` with non-Copy elements (owning String/Box/Vec) is a \
-                         later C6.3e slice",
-                        span,
-                    );
-                }
+                // A Copy element is read BY VALUE (`VecIndexGet`); an owning element (`String`, …)
+                // is read BY REFERENCE (`VecGetRef`), because copying it out would duplicate a value
+                // the Vec still owns. Both render through the same recursion.
+                let elem_is_copy = self.is_copy(&elem);
                 // CD-127: a user-nominal element renders through its `Display::fmt`, whose returned
                 // `String` is borrowed then dropped PER ITERATION. That loop-carried borrow used to
                 // be rejected (E0502) because the dispatch loop gave rustc no borrow precision
@@ -7491,23 +7517,8 @@ impl<'a> FnLowerer<'a> {
                 // loop would still be live at that drop (E0502). Each short borrow dies at its call.
                 let len = self.new_temp(MirTy::UInt64);
                 {
-                    let vref = self.new_temp(ref_ty.clone());
-                    self.emit(
-                        Statement::Assign(
-                            Place::local(vref),
-                            Rvalue::RefOf {
-                                mutable: false,
-                                place: place.clone(),
-                            },
-                        ),
-                        self.info(span),
-                    );
-                    self.emit_runtime_call(
-                        RuntimeFn::VecLen,
-                        vec![Operand::Copy(Place::local(vref))],
-                        Place::local(len),
-                        span,
-                    );
+                    let vref = self.vec_ref_for_display(&place, ty, layers, &ref_ty, span)?;
+                    self.emit_runtime_call(RuntimeFn::VecLen, vec![vref], Place::local(len), span);
                 }
                 let idx = self.new_temp(MirTy::UInt64);
                 self.emit(
@@ -7570,32 +7581,61 @@ impl<'a> FnLowerer<'a> {
                 );
                 self.print_str_lit(", ", span);
                 self.terminate(Terminator::Goto { target: render }, self.info(span), render);
-                // render: `elem = vec[idx]` (Copy), display it, then `idx += 1`, loop. A fresh
-                // shared borrow (see above) that dies at the `VecIndexGet` call.
-                let elem_tmp = self.new_temp(elem.clone());
+                // render: read the element, display it, then `idx += 1` and loop. Each read takes a
+                // FRESH shared borrow (see above) that dies at its runtime call.
                 {
-                    let vref = self.new_temp(ref_ty.clone());
-                    self.emit(
-                        Statement::Assign(
-                            Place::local(vref),
-                            Rvalue::RefOf {
-                                mutable: false,
-                                place: place.clone(),
+                    let vref = self.vec_ref_for_display(&place, ty, layers, &ref_ty, span)?;
+                    if elem_is_copy {
+                        let elem_tmp = self.new_temp(elem.clone());
+                        self.emit_runtime_call(
+                            RuntimeFn::VecIndexGet,
+                            vec![vref, Operand::Copy(Place::local(idx))],
+                            Place::local(elem_tmp),
+                            span,
+                        );
+                        self.emit_display_value(Place::local(elem_tmp), &elem, span)?;
+                    } else {
+                        // `VecGetRef` yields `Option<&T>` and never traps — `idx < len` holds here,
+                        // so the `None` arm is unreachable, but it is still a real discriminant
+                        // switch rather than an assumption. The `Some` payload is a `&T` reached
+                        // through a trailing `VariantField`, which CD-126 made borrowable.
+                        let elem_ref_ty = MirTy::Ref {
+                            mutable: false,
+                            inner: Box::new(elem.clone()),
+                        };
+                        let opt_ty = MirTy::Enum(EnumRef::CoreOption, vec![elem_ref_ty.clone()]);
+                        let opt = self.new_temp(opt_ty);
+                        self.emit_runtime_call(
+                            RuntimeFn::VecGetRef,
+                            vec![vref, Operand::Copy(Place::local(idx))],
+                            Place::local(opt),
+                            span,
+                        );
+                        let disc = self.new_temp(MirTy::Int64);
+                        self.emit(
+                            Statement::Assign(
+                                Place::local(disc),
+                                Rvalue::Discriminant(Place::local(opt)),
+                            ),
+                            self.info(span),
+                        );
+                        let some_blk = self.new_block();
+                        let after = self.new_block();
+                        self.terminate(
+                            Terminator::SwitchInt {
+                                scrut: Operand::Copy(Place::local(disc)),
+                                arms: vec![(1, some_blk)],
+                                otherwise: after,
                             },
-                        ),
-                        self.info(span),
-                    );
-                    self.emit_runtime_call(
-                        RuntimeFn::VecIndexGet,
-                        vec![
-                            Operand::Copy(Place::local(vref)),
-                            Operand::Copy(Place::local(idx)),
-                        ],
-                        Place::local(elem_tmp),
-                        span,
-                    );
+                            self.info(span),
+                            some_blk,
+                        );
+                        let mut payload = Place::local(opt);
+                        payload.projection.push(Projection::VariantField(1, 0));
+                        self.emit_display_value(payload, &elem_ref_ty, span)?;
+                        self.terminate(Terminator::Goto { target: after }, self.info(span), after);
+                    }
                 }
-                self.emit_display_value(Place::local(elem_tmp), &elem, span)?;
                 // idx += 1 — a checked add, like every other integer arithmetic in MIR.
                 let after_incr = self.new_block();
                 self.terminate(
