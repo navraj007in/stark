@@ -226,7 +226,7 @@ comparator to reject it, naming both the disagreeing pair and the field.
 
 Three of them are worth calling out because they cover the failure modes stdout comparison cannot
 see: **Drop reversal** (same identities, same count, only the order differs), **pre-trap Drop change**
-(TRAP-ABORT-001 says destructors do not run after a trap, so the retained log is itself an
+(DROP-ABORT-001 says destructors do not run after a trap, so the retained log is itself an
 observation), and **internal MIR error** — which runs a real `fn main() -> Int32 { 300 }`, DEV-111's
 escalated case, and requires the harness to fail loudly rather than report a completion.
 
@@ -474,7 +474,49 @@ gap.
 
 ---
 
-## 9. What comes next
+## 9. Finding C65-F3 — the matrix cited 69 invented rule IDs (CD-154)
+
+Found while choosing citations for the §10.3 sentinels: checking the matrix's rule IDs against the
+spec showed that **69 of the 84 distinct identifiers it cited do not exist in any specification
+document** — 100 occurrences across ~130 rows. `OWN-DROP-001`, `FN-VALUE-001`, `MAP-001`,
+`TRAP-ABORT-001`, `CTRL-IF-001`, `PAT-WILD-001`, `VEC-001`, `SLICE-001`, `REF-001`: all
+plausible-looking, all fabricated. The real identifiers are `DROP-EXACT-001`, `TYPE-FN-001`,
+`STD-HASH-001`, `DROP-ABORT-001`, `EXEC-EVAL-001`, `SYN-PATTERN-001`, `DROP-COLLECTION-001`,
+`REF-SLICE-001`, `REF-IDENTITY-001`.
+
+**This is the worst of the three phase-0 failures, and it is a different kind.** O13's disposition was
+a wrong judgement inherited from a stale ledger entry; the missing entry-contract rows were an
+omission. This was invented content presented as grounding — and §7.5's exit condition *"every row has
+a normative citation or justified non-Core classification"* was recorded as met, because nothing
+checked whether the citations resolved to anything. A fabricated citation is worse than a blank one: a
+reader who follows it finds nothing, and every reader who does not follow it assumes someone did.
+
+**Repaired.** All 136 rows re-cited against the spec's actual rules, each chosen for what the rule
+says rather than for what its name resembles — `break`/`continue`/`return`/`?` to EXEC-CFLOW-001 (they
+are one rule about normal control transfer), Drop order to DROP-ORDER-001 and Drop-once to
+DROP-EXACT-001, every trap row to TRAP-CATEGORY-001 with DROP-ABORT-001 where the claim is
+about post-trap cleanup, `Box`/`Option`/`Result` payload destruction to DROP-ORDER-001's own bullet
+list. Two substring collisions the mechanical pass introduced (`PRIM-TRAIT-001` → `PRIM-TRAIT-DEF-001`,
+`TEXT-ITER-001` → `TEXT-EXEC-FOR-001`) were caught by re-verifying every ID afterwards rather than
+trusting the edit.
+
+**Guarded, so it cannot recur silently.** Two tests:
+`every_rule_id_the_matrix_cites_exists_in_the_spec` reads the matrix and fails on any ID the spec does
+not define, and the corpus validator applies the same rule to each case's `normative_rules` —
+`a_manifest_citing_an_invented_rule_is_rejected` proves that check refuses rather than merely runs.
+The authority set is parsed from the numbered source documents only; the generated `STARK-Core-v1.md`
+is excluded, so a stale compilation cannot validate an ID the sources no longer define.
+
+**Elsewhere, audited and reported rather than quietly fixed.** The same pattern exists at smaller
+scale in closed-gate records: `WP-C3-ENTRY.md` (7 invented IDs, including `STD-ITER-001`,
+`STD-OPTION-001`, `STD-VEC-001`), `WP-C1.3.md` (1), `WP-C1.6.md` (2). The `CORE-Q-0##` references in
+the WP-C2.x documents are a separate question-numbering scheme, not spec rules, and are fine.
+Rewriting closed-gate documents is a governance decision, not a C6.5 edit, so those are named here and
+left for the owner.
+
+---
+
+## 10. What comes next
 
 the rest of §10 — the per-row witnesses, §10.4's trap balance, and §10.5's package breadth (see
 §8.1). Migration of the 22 forked suites proceeds

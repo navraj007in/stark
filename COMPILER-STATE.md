@@ -136,7 +136,10 @@ itself** — `starkc/tests/c6-corpus/`, strict manifest, hash lock, 28 manifest/
 observation in the manifest because a wrong implementation is usually wrong in all three engines at
 once and they would otherwise agree. `corpus_version` 0.2.0, 19 cases. Still owed by §10: per-row
 witnesses, the trap balance (no trap case is in the corpus yet), and package breadth; the ≥64-case
-generated corpus of §11 remains unbuilt. The other **22 forked suites are
+generated corpus of §11 remains unbuilt.
+**CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
+a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
+tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
 not yet migrated** — owner chose incremental migration in coverage-matrix order — so until each is,
 its C6.2/C6.3 evidence still rests on its own local notion of agreement. Matrix roll-up: 127
 EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **4 BLOCKED — V19 `HashSet`**
@@ -3242,6 +3245,42 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-154 [2026-07-26, **C65-F3 — the coverage matrix cited 69 INVENTED rule IDs; repaired and now
+  machine-checked**]
+  Found while choosing citations for the §10.3 sentinels. Of the **84 distinct normative rule IDs the
+  matrix cited, 69 exist in no specification document** — 100 occurrences across ~130 rows.
+  `OWN-DROP-001`, `FN-VALUE-001`, `MAP-001`, `TRAP-ABORT-001`, `CTRL-IF-001`, `PAT-WILD-001`,
+  `VEC-001`, `SLICE-001`, `REF-001`: all plausible-looking, all fabricated. The real rules are
+  `DROP-EXACT-001`, `TYPE-FN-001`, `STD-HASH-001`, `DROP-ABORT-001`, `EXEC-EVAL-001`,
+  `SYN-PATTERN-001`, `DROP-COLLECTION-001`, `REF-SLICE-001`, `REF-IDENTITY-001`.
+  - **This is the worst of the three phase-0 failures and a DIFFERENT KIND.** O13 was a wrong
+    judgement inherited from a stale ledger entry; the missing entry-contract rows were an omission.
+    This was invented content presented as grounding, and §7.5's exit condition "every row has a
+    normative citation" was recorded as MET because nothing compared the citations to the spec. A
+    fabricated citation is worse than a blank one: whoever follows it finds nothing, and everyone who
+    does not follow it assumes someone did.
+  - **Repaired:** all 136 rows re-cited against the spec's real rules, each chosen for what the rule
+    SAYS rather than what its name resembles — `break`/`continue`/`return`/`?` all to EXEC-CFLOW-001
+    (one rule about normal control transfer), Drop order to DROP-ORDER-001 and Drop-once to
+    DROP-EXACT-001, trap rows to TRAP-CATEGORY-001 with DROP-ABORT-001 where the claim is about
+    post-trap cleanup, `Box`/`Option`/`Result` payload destruction to DROP-ORDER-001's own bullet.
+    Two substring collisions the mechanical pass introduced (`PRIM-TRAIT-001` → `PRIM-TRAIT-DEF-001`,
+    `TEXT-ITER-001` → `TEXT-EXEC-FOR-001`) were caught by re-verifying every ID after the edit rather
+    than trusting it.
+  - **Guarded so it cannot recur silently:** `every_rule_id_the_matrix_cites_exists_in_the_spec` reads
+    the matrix and fails on any ID the spec does not define; the corpus validator applies the same
+    check to each case's `normative_rules`, and `a_manifest_citing_an_invented_rule_is_rejected`
+    proves that check REFUSES rather than merely runs. The authority set is parsed from the numbered
+    source documents only — the generated `STARK-Core-v1.md` is excluded, so a stale compilation
+    cannot validate an ID the sources no longer define.
+  - **Audited elsewhere, reported not silently fixed:** the same pattern exists at smaller scale in
+    closed-gate records — `WP-C3-ENTRY.md` (7, incl. `STD-ITER-001`, `STD-OPTION-001`, `STD-VEC-001`),
+    `WP-C1.3.md` (1), `WP-C1.6.md` (2). The `CORE-Q-0##` references in WP-C2.x are a separate
+    question-numbering scheme, not spec rules, and are fine. Rewriting closed-gate documents is a
+    governance decision, not a C6.5 edit, so they are named for the owner.
+  - **Evidence:** `c6_corpus_manifest` 30/30 (two new citation tests), `c6_corpus_cases` 2/2, `fmt`
+    clean.
 
 - CD-153 [2026-07-26, **WP-C6.5-3 commit 5 PARTIAL — the thirteen §10.3 sentinels**]
   `corpus_version` **0.2.0**: 19 cases (13 handwritten sentinels, 6 retained). Each is built so the

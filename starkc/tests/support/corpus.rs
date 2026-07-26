@@ -283,6 +283,17 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
                 "{id}: a Core case must cite at least one normative rule"
             ));
         }
+        // ...and the rule must EXIST. See `spec_rule_ids`: the coverage matrix was built with 69
+        // invented identifiers out of 84, so "cites a rule" is only meaningful once the citation is
+        // checked against the specification.
+        for rule in &case.normative_rules {
+            if !spec_rule_ids().contains(rule) {
+                return Err(format!(
+                    "{id}: `{rule}` is not a rule defined in STARKLANG/docs/spec — a citation that \
+                     resolves to nothing is worse than none, because it looks like grounding"
+                ));
+            }
+        }
         if !case.expected_drop_log.is_empty() && !case.drop_protocol {
             return Err(format!(
                 "{id}: an expected Drop log needs `drop_protocol = true` — the frames are only \
@@ -536,6 +547,62 @@ pub fn verify_lock(root: &Path, lock: &Lock, cases: &[Case]) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+/// Every normative rule ID the specification actually defines, parsed from the normative source
+/// documents under `STARKLANG/docs/spec/`.
+///
+/// This exists because of a real failure: phase C6.5-0 built the coverage matrix with **69 of its 84
+/// cited rule IDs invented** — `OWN-DROP-001`, `FN-VALUE-001`, `MAP-001`, `TRAP-ABORT-001` and 65
+/// others are plausible-looking identifiers that appear in no spec document. The §7.5 exit condition
+/// "every row has a normative citation" was satisfied by fabricated text, and nothing checked it
+/// (CD-154). A citation nobody verifies is worse than no citation: it *looks* like grounding.
+///
+/// So citations are now machine-checked, here and for the matrix itself. The generated
+/// `STARK-Core-v1.md` is excluded deliberately — it is a compilation of the source documents, so
+/// reading it would let a stale generated copy validate an ID the sources no longer define.
+pub fn spec_rule_ids() -> BTreeSet<String> {
+    let spec_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo root")
+        .join("STARKLANG/docs/spec");
+    let mut ids = BTreeSet::new();
+    for entry in std::fs::read_dir(&spec_dir).expect("spec directory") {
+        let path = entry.expect("spec entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.ends_with(".md") || name.starts_with("STARK-Core-v1") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("spec file");
+        ids.extend(rule_ids_in(&text));
+    }
+    assert!(
+        ids.len() > 50,
+        "only {} rule IDs found under STARKLANG/docs/spec — the parser or the path is wrong, and a \
+         silently empty authority set would make every citation check vacuous",
+        ids.len()
+    );
+    ids
+}
+
+/// Rule-ID-shaped tokens in one document: `WORD-WORD-001`, at least two segments before the number.
+/// `CD-`/`DEV-` prefixes are governance references, not spec rules, and are excluded.
+pub fn rule_ids_in(text: &str) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for token in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        let Some((head, tail)) = token.rsplit_once('-') else {
+            continue;
+        };
+        let digits = tail.len() == 3 && tail.chars().all(|c| c.is_ascii_digit());
+        let shaped = head.contains('-')
+            && head
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-');
+        if digits && shaped && !token.starts_with("CD-") && !token.starts_with("DEV-") {
+            ids.insert(token.to_string());
+        }
+    }
+    ids
 }
 
 /// The corpus root, as an absolute path — tests must not depend on the process working directory.

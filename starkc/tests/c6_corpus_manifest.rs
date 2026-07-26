@@ -13,7 +13,8 @@
 mod support;
 
 use support::corpus::{
-    corpus_root, load, parse_lock, parse_manifest, sha256_hex, validate, verify_lock,
+    corpus_root, load, parse_lock, parse_manifest, rule_ids_in, sha256_hex, spec_rule_ids,
+    validate, verify_lock,
 };
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
@@ -69,6 +70,47 @@ fn the_lock_carries_every_required_header() {
             "corpus.lock is missing `{key}`"
         );
     }
+}
+
+/// **CD-154.** Every normative rule ID cited by the coverage matrix must be a rule the
+/// specification actually defines.
+///
+/// This is the test that should have existed at phase C6.5-0. The matrix was built citing **69
+/// invented identifiers out of 84** — `OWN-DROP-001`, `FN-VALUE-001`, `MAP-001`, `TRAP-ABORT-001`,
+/// `CTRL-IF-001` and 64 more — and its exit condition "every row has a normative citation" passed
+/// because nothing compared the citations to the spec. Fabricated grounding is worse than absent
+/// grounding: a reader who follows the reference finds nothing, and everyone else assumes it was
+/// checked.
+#[test]
+fn every_rule_id_the_matrix_cites_exists_in_the_spec() {
+    let spec = spec_rule_ids();
+    let matrix = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repo root")
+            .join("STARKLANG/docs/compiler/work-packages/C6-CORPUS-COVERAGE-MATRIX.md"),
+    )
+    .expect("the coverage matrix");
+    let missing: Vec<String> = rule_ids_in(&matrix)
+        .into_iter()
+        .filter(|id| !spec.contains(id))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the coverage matrix cites {} rule ID(s) that no spec document defines: {}",
+        missing.len(),
+        missing.join(", ")
+    );
+}
+
+/// The manifest's citations are checked by `validate`; this proves that check REJECTS, rather than
+/// trusting that it runs.
+#[test]
+fn a_manifest_citing_an_invented_rule_is_rejected() {
+    rejected(
+        &valid_case().replace("\"PROC-EXIT-001\"", "\"OWN-DROP-001\""),
+        "is not a rule defined in",
+    );
 }
 
 // ------------------------------------------------------- §20.1 rejection tests --
