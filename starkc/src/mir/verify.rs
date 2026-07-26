@@ -93,12 +93,85 @@ pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Ve
             errors: &mut errors,
         };
         cx.verify();
+        verify_map_key_eq(program, body, &mut errors);
     }
     if errors.is_empty() {
         Ok(VerifiedMirProgram { program })
     } else {
         Err(errors)
     }
+}
+
+/// CD-138 (V-MAP-1): every `HashMap` whose KEY is nominal must carry an `Eq` instance in
+/// `TypeContext::eq_impls`.
+///
+/// Key identity is decided by the key type's lawful `Eq` (STD-HASH-001), so both execution engines
+/// read this table. Neither can proceed without it — and before this check they failed
+/// DIFFERENTLY: the MIR interpreter fell back to structural equality (silently answering with
+/// derived equality a program never asked for), while the backend refused to emit. That is a
+/// divergence in the failure itself, and the fallback is the worse half, because it produces an
+/// ANSWER.
+///
+/// A nominal key always has an entry — it needs `impl Eq` to satisfy the key bound at all — so a
+/// missing one is a compiler defect (lowering failed to record the impl it selected), not a
+/// rejectable program. Verification is where a compiler defect must surface, ahead of either
+/// engine, rather than as a wrong result in one and a refusal in the other.
+fn verify_map_key_eq(program: &MirProgram, body: &MirBody, errors: &mut Vec<MirError>) {
+    fn walk(ty: &MirTy, program: &MirProgram, body: &MirBody, errors: &mut Vec<MirError>) {
+        match ty {
+            MirTy::Core(crate::hir::CoreType::HashMap, args) => {
+                if let Some(
+                    key @ (MirTy::Struct(item, key_args)
+                    | MirTy::Enum(crate::mir::EnumRef::User(item), key_args)),
+                ) = args.first()
+                {
+                    if !program
+                        .types
+                        .eq_impls
+                        .contains_key(&(item.0, key_args.clone()))
+                    {
+                        errors.push(MirError {
+                            code: "MIR-0018",
+                            message: format!(
+                                "internal: HashMap key type {key:?} has no recorded `Eq` instance; \
+                                 key identity cannot be decided"
+                            ),
+                            symbol: body.instance.symbol.clone(),
+                            block: 0,
+                        });
+                    }
+                }
+                for arg in args {
+                    walk(arg, program, body, errors);
+                }
+            }
+            MirTy::Struct(_, args)
+            | MirTy::Enum(_, args)
+            | MirTy::Core(_, args)
+            | MirTy::Tuple(args) => {
+                for arg in args {
+                    walk(arg, program, body, errors);
+                }
+            }
+            MirTy::Array(inner, _) | MirTy::Slice(inner) | MirTy::Ref { inner, .. } => {
+                walk(inner, program, body, errors)
+            }
+            MirTy::FnPtr { params, ret } => {
+                for p in params {
+                    walk(p, program, body, errors);
+                }
+                walk(ret, program, body, errors);
+            }
+            _ => {}
+        }
+    }
+    for local in &body.locals {
+        walk(&local.ty, program, body, errors);
+    }
+    for param in &body.params {
+        walk(param, program, body, errors);
+    }
+    walk(&body.ret, program, body, errors);
 }
 
 struct BodyCx<'a> {
@@ -479,7 +552,12 @@ impl<'a> BodyCx<'a> {
                     | MirBinOp::Le
                     | MirBinOp::Gt
                     | MirBinOp::Ge => self.expect_ty(expected, &MirTy::Bool, "comparison", bi),
-                    MirBinOp::FloatAdd | MirBinOp::FloatSub | MirBinOp::FloatMul => {
+                    MirBinOp::FloatAdd
+                    | MirBinOp::FloatSub
+                    | MirBinOp::FloatMul
+                    // CD-139: total IEEE division and remainder — same typing rule, no trap.
+                    | MirBinOp::FloatDiv
+                    | MirBinOp::FloatRem => {
                         if !matches!(lt, MirTy::Float32 | MirTy::Float64) {
                             self.err("MIR-0004", bi, format!("float BinOp on {lt:?}"));
                         }
@@ -2104,6 +2182,9 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         PrintlnUInt64 | PrintUInt64 => (vec![MirTy::UInt64], MirTy::Unit),
         PrintlnBool | PrintBool => (vec![MirTy::Bool], MirTy::Unit),
         PrintlnFloat64 | PrintFloat64 => (vec![MirTy::Float64], MirTy::Unit),
+        // 0.1-A9 (DEV-105): the width-preserving pair REQUIRES a `Float32` operand — that is what
+        // makes the declared width part of the operation's identity rather than a convention.
+        PrintlnFloat32 | PrintFloat32 => (vec![MirTy::Float32], MirTy::Unit),
         // --- A1 (CD-031) String/str surface ---
         PrintlnStr | PrintStr => (vec![str_ref()], MirTy::Unit),
         StringNew => (vec![], MirTy::String),

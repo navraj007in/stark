@@ -546,67 +546,38 @@ fn composite_vec_of_result_string() {
     );
 }
 
-/// **DEV-108 — the one C6.3e shape that fails AS A RUSTC ERROR rather than a named refusal.**
+/// **DEV-108, CLOSED by CD-138 — this shape now renders three-engine.**
 ///
-/// `Result<Vec<String>, Int32>` reaches `cargo build` of the generated crate and fails there with
-/// `E0502`: the drop-glue slot borrow collides with the payload borrow held across the render. Every
-/// other boundary in this file is a deliberate pre-rustc diagnostic, so this one violates the
-/// design and is recorded rather than hidden.
+/// It used to reach `cargo build` of the generated crate and fail there with `E0502`, the ONE C6.3e
+/// shape that failed as a rustc error rather than at a boundary this compiler owns. The cause was
+/// not the payload type at all: the body fell back to the DISPATCH loop, where a `match` on a
+/// runtime value makes every local live in every arm, so the payload borrow appeared live across
+/// the slot's drop glue. It fell back because a plain RPO does not keep a loop's blocks contiguous
+/// — the `Vec` render loop's header landed at index 11 with its body at 20-29 — and a `Loop` scope
+/// is an RPO span, so the plan was correctly abandoned rather than emitted wrongly.
 ///
-/// It is NOT guarded pre-rustc, deliberately: the neighbouring shapes `Option<Vec<String>>` and
-/// `Result<Vec<Int32>, Int32>` both render three-engine, so any guard broad enough to catch this
-/// would refuse working programs. Finding the precise predicate needs a real debugging pass on the
-/// generated crate — an owner-scoped decision, not something to guess at here.
-///
-/// This test pins the CURRENT behaviour. If the underlying borrow conflict is fixed, it fails and
-/// the case should be promoted to `agree_out`.
+/// `loop_aware_order` keeps each natural loop contiguous, the plan validates, and structured
+/// emission gives rustc the borrow precision it needs. Nothing about `Result` or `Vec<String>` was
+/// special: the neighbouring `Option<Vec<String>>` worked only because its DFS happened to visit the
+/// loop body first. That is why no narrow guard on the payload type would have been right.
 #[test]
-fn result_of_vec_of_string_fails_at_rustc_dev_108() {
-    if !rustc_available() {
-        return;
-    }
-    let file = Arc::new(SourceFile::new(
-        "c63e_res_vec_string.stark".to_string(),
-        "fn main() { let r: Result<Vec<String>, Int32> = Ok(Vec::new()); println(r); }".to_string(),
-    ));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    assert!(
-        !checked
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "DEV-108 case is expected to type-check"
+fn result_of_vec_of_string_renders() {
+    agree_out(
+        "resvecstring",
+        "fn main() { let r: Result<Vec<String>, Int32> = Ok(Vec::new()); println(r); }",
     );
-    let program =
-        lower_program(&hir, &checked.tables, file).unwrap_or_else(|e| panic!("lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("verify: {e:?}"));
-    let dir = std::env::temp_dir().join(format!("stark_c63e_dev108_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let result = emit_native_debug(
-        &verified,
-        &NativeBuildOptions {
-            target_dir: dir.clone(),
-            target_contract: "stark-64-v1".to_string(),
-        },
+}
+
+/// The same shape carrying ELEMENTS, and the `Err` side, so the fix is not pinned by an empty
+/// container: both variants of the enum render, and the `Ok` payload renders its `String`s.
+#[test]
+fn result_of_vec_of_string_both_variants() {
+    agree_out(
+        "resvecstringfull",
+        "fn main() { let mut v: Vec<String> = Vec::new(); v.push(String::from(\"a\")); \
+         v.push(String::from(\"b\")); let ok: Result<Vec<String>, Int32> = Ok(v); println(ok); \
+         let e: Result<Vec<String>, Int32> = Err(7); println(e); }",
     );
-    let _ = std::fs::remove_dir_all(&dir);
-    match result {
-        Err(e) => {
-            let text = format!("{e:?}");
-            assert!(
-                text.contains("E0502"),
-                "DEV-108: expected the recorded rustc borrow error, got: {text}"
-            );
-        }
-        Ok(_) => panic!(
-            "DEV-108 now BUILDS — the borrow conflict is fixed. Promote this case to `agree_out` \
-             and close the deviation."
-        ),
-    }
 }
 
 // ---- Refused pre-rustc (a bounded, TESTED boundary — not an admitted divergence). Lowering must
@@ -638,24 +609,13 @@ fn refused_by_lowering(tag: &str, src: &str) {
     );
 }
 
-// DEV-105: a SCALAR top-level `println(Float32)` is ADMITTED (the interpreters agree; only the
-// native binary sees the f32-rounded value — an interpreter-only frozen-corpus snapshot relies on
-// this). `Float32` is refused only where it would leak silently through native: the COMPOSITE path.
-#[test]
-fn float32_in_tuple_refused() {
-    refused_by_lowering(
-        "f32_tuple",
-        "fn main() { let x: Float32 = 0.1f32; println((x, 1)); }",
-    );
-}
-
-#[test]
-fn float32_in_option_refused() {
-    refused_by_lowering(
-        "f32_opt",
-        "fn main() { let x: Float32 = 0.1f32; let o: Option<Float32> = Some(x); println(o); }",
-    );
-}
+// DEV-105's two composite `Float32` refusals lived here and are GONE (CD-138). They were a
+// stand-in for a missing operation, not a real boundary: with no width-preserving print, a
+// `Float32` inside a composite widened to `Float64` and only the native binary rendered it
+// differently, so lowering refused the shape rather than emit a silent divergence. Surface 0.1-A9
+// supplies `PrintFloat32`/`PrintlnFloat32`, and every shape they refused — tuple, array, `Option`,
+// `Result`, `Vec` — now renders three-engine in `c63e_float32.rs`. Deleting them rather than
+// inverting them keeps the `Float32` evidence in one file.
 
 /// A large array exceeds the unroll cap and is refused (bounded, not silently quadratic).
 #[test]

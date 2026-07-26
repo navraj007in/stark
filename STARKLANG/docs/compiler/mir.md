@@ -14,8 +14,35 @@ change requires a version bump" reading. Amendments approved under this policy t
 the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`), **A3**
 (bitwise/shift/exponentiation arithmetic — recorded in full below), and **A4**
 (`Rvalue::LayoutQuery`, type-preserving `size_of`/`align_of` — `mir-amendment-A4-layout.md`,
-CD-036), and **A5** (`Projection::ConstIndex` — recorded below, CD-038). All are additive and
+CD-036), **A5** (`Projection::ConstIndex` — recorded below, CD-038), and **A6**
+(`MirBinOp::FloatDiv`/`FloatRem` — recorded below, CD-139). All are additive and
 remain MIR v0.1.
+
+**A6 shape amendment (WP-C6.3e, CD-139, owner-approved under CE3, 2026-07-26).** Adds two
+`MirBinOp` variants, `FloatDiv` and `FloatRem`.
+
+Contract: same typing rule as `FloatAdd`/`FloatSub`/`FloatMul` — both operands and the destination
+are the same float type, and the operation is TOTAL. NUM-FLOAT-OP-001 gives floating division by
+zero the IEEE signed infinity or NaN result rather than a trap, and gives `%` a NaN for a zero
+divisor, an infinite dividend, or a NaN operand. Nothing is checked, so nothing is owed a
+terminator.
+
+**Why an amendment rather than reusing the checked forms.** `CheckedOp::FloatDiv`/`FloatRem`
+already existed, so leaving the operations there would have preserved the enum shape at zero
+version cost. The owner rejected that: it would corrupt the conceptual contract, leaving a
+primitive declared trapping that is guaranteed never to trap, inside the family whose whole
+purpose is to mark what can fail. The checked variants are **retained, deprecated, and
+unreachable** — lowering no longer emits them — so this amendment stays additive. Removing them
+is a separately versioned cleanup.
+
+**Provenance.** This corrects CD-006, which made float division and remainder trap. CD-006 is
+**superseded by succession of authority, not reversed on its merits**: it arbitrated a sentence in
+`03-Type-System.md` that WP-C2.9 replaced nine hours later the same day with the explicit paired
+rules NUM-INT-DIV-001 and NUM-FLOAT-OP-001. The HIR oracle already implemented the later rules; only
+MIR trapped, so the two engines disagreed on programs both accepted (DEV-110).
+
+Evidence: `starkc/tests/cd139_float_division.rs` — 13 three-engine cases, of which three pin that
+integer `/` and `%` by zero STILL trap, guarding the over-correction.
 
 **A5 shape amendment (WP-C4.7 post-exit-report, CD-038, owner-approved under CE3).** Adds one
 projection form, `ConstIndex(u64)`.
@@ -281,7 +308,8 @@ Rvalue   ::= Use(Operand)
            | UnOp(op, Operand)                     -- non-trapping unaries (not, float neg)
            | BinOp(op, Operand, Operand)           -- non-trapping only: comparisons on
                                                    --   comparable primitives, Bool ops,
-                                                   --   float add/sub/mul (IEEE per CD-006),
+                                                   --   float add/sub/mul and, per A6/CD-139,
+                                                   --   float div/rem (all IEEE and TOTAL),
                                                    --   integer bitwise and/or/xor (A3)
            | Aggregate(AggKind, Vec<Operand>)      -- struct/tuple/array/enum-variant construction
            | Discriminant(Place)                   -- read enum discriminant as an integer
@@ -297,9 +325,11 @@ Rvalue   ::= Use(Operand)
   `Drop` as a statement, violating this very invariant). This is the contract's central honesty
   invariant: a backend that lowers only rvalues + terminators cannot accidentally skip a trap
   check or hide a user-code call, because both are control flow, not expression side effects.
-  (Integer negation traps on `MIN`, so `Neg` on integers is a checked terminator, not a `UnOp`;
-  float division and remainder trap on zero divisors per CD-006, so they are checked
-  terminators too.)
+  (Integer negation traps on `MIN`, so `Neg` on integers is a checked terminator, not a `UnOp`.
+  **Float division and remainder are NOT — corrected by A6/CD-139.** They were checked terminators
+  under CD-006, which has been superseded: NUM-FLOAT-OP-001 makes them TOTAL, so they are pure
+  `BinOp` rvalues like the other float operators. Integer `/` and `%` remain checked terminators
+  under NUM-INT-DIV-001.)
 - `Move` vs `Copy` on operands is decided by the front end's frozen Copy semantics (fn values,
   references, primitives, all-Copy aggregates are `Copy` — TYPE-FN-001, 03-Type-System §Copy
   and Drop). The verifier enforces move-before-use at the MIR level (V-MOVE-1) as a *defense in
@@ -325,7 +355,8 @@ Terminator ::=
   | Checked { op: CheckedOp, args: Vec<Operand>, dest: Place | ProofLocal, target: BlockId,
               trap: TrapInfo }
         -- trapping primitives: integer add/sub/mul/div/rem/neg, shifts, pow (A3),
-        --   float div/rem (CD-006), numeric `as` casts, and CheckIndex (below).
+        --   numeric `as` casts, and CheckIndex (below). FloatDiv/FloatRem are still
+        --   PRESENT here but DEPRECATED and never emitted (A6/CD-139): they are total.
         -- Exactly ONE normal successor (`target`); the failure outcome is an implicit
         --   abort described by `trap` — there is no unwind or recovery successor of any kind.
   | Trap { info: TrapInfo }            -- unconditional: panic(msg), unwrap on None, assert, …

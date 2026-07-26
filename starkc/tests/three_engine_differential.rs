@@ -219,7 +219,15 @@ fn run_hir(name: &str, front: &Front) -> Outcome {
                 err.message
             );
             let (line, column) = front.file.line_col(err.span.lo);
-            let category = oracle_category(&err.message);
+            // CD-141: the STATED category wins when the oracle supplies one. `panic(msg)`
+            // raises arbitrary USER text, so prose matching cannot classify it — that is the
+            // whole reason DEV-106 added `RuntimeError::trap_category`. This harness kept
+            // classifying by prose regardless, so the two `panic` cases hit
+            // `oracle_category`'s unrecognised-message failure. Prose matching remains the
+            // fallback for every trap the interpreter raises without a category.
+            let category = err
+                .trap_category
+                .unwrap_or_else(|| oracle_category(&err.message));
             Outcome::Trapped {
                 category,
                 file: front.file.name.clone(),

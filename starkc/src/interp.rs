@@ -6073,7 +6073,7 @@ pub fn canonical_float(value: f64) -> String {
 // Float32 is nested inside a tuple/array/struct/collection) route through this for a Float32
 // value instead of `canonical_float`'s `f64` shortest-round-trip digits (which would otherwise
 // produce e.g. `0.10000000149011612` for `0.1f32` instead of the shorter, correct `0.1`).
-fn canonical_float32(value: f32) -> String {
+pub fn canonical_float32(value: f32) -> String {
     stark_runtime::format::canonical_float32(value)
 }
 

@@ -69,17 +69,25 @@ compares real stdout (`NATIVE_STDOUT_SUPPORTED = true`). `Option`/`Result` of a 
 `Display` nominal now render three-engine — the backend's trailing variant-field BORROW (CD-126) fixed
 the enum-payload limit (E0716). Nested user `Display` inside a `Vec` also renders
 three-engine — CD-127's structured emission gave loops borrow precision (E0502 gone). Bounded/refused
-AT LOWERING (deterministic): `Float32` in the
-COMPOSITE Display path only (DEV-105; a SCALAR `println(Float32)` is admitted — the interpreters agree,
-only the native binary diverges), arrays > 64 (unroll cap), and a droppable composite carrying a borrow
-(generated lifetimes). CD-135/136 added `Vec` of OWNING elements —
+AT LOWERING (deterministic): arrays > 64 (unroll cap), and a droppable composite carrying a borrow
+(generated lifetimes). **`Float32` is no longer refused anywhere — DEV-105 is CLOSED (CD-138) by the
+approved CE3 `PrintFloat32`/`PrintlnFloat32` at `MIR_RUNTIME_SURFACE` 0.1-A9, which carries the
+DECLARED width in the operation's identity; scalar and every composite context render three-engine.** CD-135/136 added `Vec` of OWNING elements —
 `Vec<String>`, and aggregates one level down (`Vec<(String, Int32)>`, `Vec<[String; 2]>`,
 `Vec<Option<String>>`, `Vec<Result<String, _>>`) — read by REFERENCE rather than by copy.
 **DEV-106 (trap-message three-engine parity) and DEV-107 (native `v[i]` OOB provenance) are both
-CLOSED** (CD-136, CD-131). C6.3e remaining: `Float32` (DEV-105 — needs an owner ruling on where
-`f32` rounding canonically occurs). Recorded deviations: DEV-108 (`Result<Vec<String>, Int32>` fails
-as a rustc `E0502` rather than a named pre-rustc refusal — deliberately unguarded, since neighbouring
-shapes work). DEFERRED to a future decision (CD-125): composite `Box`
+CLOSED** (CD-136, CD-131). **C6.3e is PARTIAL (CD-138) — every blocking DEFECT is now closed,
+but the confirming run is not complete, so the status does not move yet.** DEV-108 CLOSED (CD-138:
+FIXED by a loop-aware block order, not refused — the payload type was never the cause); DEV-105
+CLOSED (CD-138); DEV-110 CLOSED (CD-139); DEV-109 CLOSED (CD-140). What remains is EVIDENCE, not
+implementation: the 24 native/backend targets have not been run against `loop_aware_order`, which
+changes block emission for every generated body containing a loop. CD-127 is the precedent for why
+that specific run matters — a structured plan that VALIDATES but is wrong produces an infinite loop
+rather than a failure, so it is not caught by anything already green. Historical note on the two
+`Float32` VALUE-semantics defects, both found by DEV-105's own evidence — DEV-109 (`Float32` arithmetic is
+carried in f64 and rounded only at display, so casts and overflow observe the wrong precision) and
+DEV-110 (ESCALATED: NUM-FLOAT-OP-001 says float division by zero does NOT trap, recorded owner
+decision CD-006 says it does; HIR follows the spec and MIR follows CD-006). DEFERRED to a future decision (CD-125): composite `Box`
 elements — `Box<T>` is not a Display type today (typechecker E0500) and making it one is a semantics
 choice, not a lowering slice. ESCALATED (CD-136): whether a `HashMap`/bare struct renders under
 `Display` at all, and in what form — CE-shaped, currently E0500 in the front end but with latent
@@ -90,16 +98,22 @@ shared `TypeContext::eq_impls` table. CD-133 fixed a LIVE HIR↔MIR divergence f
 compared keys structurally, ignoring user `Eq`). EXCLUDED and pinned by boundary tests: `HashSet`
 (HIR-only — no MIR representation, so a lowering gap like C6.3c's adapters) and Drop-bearing keys/
 values (refused before MIR, which keeps entry Drop order unobservable and legitimately unspecified).**
-**WP-C6.3 is COMPLETE for its admitted domain (CD-137): a/b/c/d/e all closed, C6.3f (files)
+**WP-C6.3 is PARTIAL (CD-138, correcting CD-137).** a/b/c/d are closed and C6.3f (files) is
 EXCLUDED — absent from every engine and in the optional, already-unclaimable `std-full` profile — and
-the CD-116 CLOSURE EVIDENCE discharged (installed-runtime + offline build + version-mismatch
-detection, `tests/c63_closure_evidence.rs`). The only C6.3 item still needing an OWNER decision is
-DEV-105 (`Float32` Display: where `f32` rounding canonically occurs), plus the escalations named
-above (`Box`/`HashMap` Display semantics) and DEV-108 (recorded, unguarded).**
+the CD-116 CLOSURE EVIDENCE is discharged (installed-runtime + offline build + version-mismatch
+detection, `tests/c63_closure_evidence.rs`). **C6.3e is not closed**: CD-137 claimed completion while
+DEV-105 stood as a known WRONG OUTPUT inside the admitted domain rather than an excluded feature, and
+those two statements cannot both hold. DEV-105 is now CLOSED, and so are the two defects its
+evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138). **No DEFECT blocks
+C6.3 closure.** What blocks it is the confirming run: 40 of 76 test targets are green — including the
+frozen corpus (`mir_differential`, 132), `conformance`, `exec_snapshots`, and all C6.3 evidence — but
+the native/backend targets have not been re-run since `loop_aware_order` changed block emission.
+C6.3 is re-closed on that run, not before. Escalations named above (`Box`/`HashMap` Display
+semantics) are excluded by decision, not blocking.**
 Also open:
 C4/C5/C6
 platform matrix, C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
-DEV-105 (Float32 widening cross-engine) still open — none is C6.2.)**
+DEV-105 CLOSED by CD-138 — none is C6.2.)**
 
 **CD-053 (owner directive, 2026-07-21), four parts.** (1) The three-engine differential harness
 was built NOW as the WP-C5.2 closure addendum rather than deferred to WP-C5.6 —
@@ -968,7 +982,13 @@ Optional tracks: ArtifactInfra=blocked (no second artifact impl yet)  TensorExpa
   rework** — none of it touched native-compilation framing. Both brief files are left on disk
   as-is (the original for historical reference, the "(1)" revision as the new live source); this
   is a content decision, not a file-management one, and neither file was deleted or renamed.
-- CD-006 [2026-07-18, WP-C1.5] Resolved a spec-internal tension in `03-Type-System.md`'s Numeric
+- CD-006 [2026-07-18, WP-C1.5] **SUPERSEDED 2026-07-26 by CD-139 — succession of authority, NOT
+  reversal on the merits. Do not cite this decision for float behaviour.** It arbitrated wording in
+  `03-Type-System.md` that WP-C2.9 replaced the same day (08:47 → 17:29) with the explicit paired
+  rules NUM-INT-DIV-001 (integer zero division traps) and NUM-FLOAT-OP-001 (floating zero division
+  does not). The sentence it read is gone from the spec; its integer half survives under
+  NUM-INT-DIV-001. Original entry follows.
+  Resolved a spec-internal tension in `03-Type-System.md`'s Numeric
   Semantics section, found during the WP-C1.5 audit and flagged to the user rather than resolved
   unilaterally (CE2-shaped): the section states both "Division or modulo by zero is a runtime
   error and MUST trap" and, in an adjacent bullet, "Floating-point operations follow IEEE-754
@@ -3169,6 +3189,177 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-141 [2026-07-26, **CI RED SINCE `3f8e993` — the three-engine harness ignored the category the
+  oracle states**]
+  The GitHub Actions run for `3f8e993` failed on all three platforms (macOS, Linux, Windows), on
+  `panic_message_agrees_across_engines` and `conditional_panic_message_agrees_across_engines`. Not
+  product code — the harness. **This is the deferred failure from committing before the full suite
+  finished**, on the owner's instruction "commit and push for now; if the full suite fails it will
+  be resolved". Resolved here.
+  - **The defect.** CD-136 (DEV-106) added `RuntimeError::trap_category` for exactly one reason:
+    `panic(msg)` raises arbitrary USER text, so no prose table can classify it. The harness then
+    kept classifying by prose anyway and never read the new field, so both `panic` cases hit
+    `oracle_category`'s deliberate unrecognised-message failure — the guard doing its job against a
+    caller that should not have reached it. The call site even tested `category ==
+    TrapCategory::Panic` to decide whether to carry the message, a branch `oracle_category` could
+    never produce.
+  - **Fix:** the STATED category wins when the oracle supplies one; prose matching stays as the
+    fallback for every trap raised without one. One line, plus the reason.
+  - **Why it escaped locally:** the two cases were added in the same change and the suite was not
+    run to completion before pushing. The lesson is the one already recorded for lowering refusals —
+    a new test that exercises a NEW field must run before the commit that introduces both.
+
+- CD-140 [2026-07-26, **DEV-109 CLOSED — `Float32` VALUES are binary32, not just `Float32` DISPLAY**]
+  Owner directive: DEV-109 stays inside WP-C6.3 rather than being re-scoped to a C4-era defect.
+  - **What was wrong.** DEV-105 gave `Float32` a print operation that honours the declared width,
+    which fixed RENDERING. It did not make the VALUE binary32. Both interpreters carry every float
+    in an f64, so a `Float32` local could hold a value no f32 can represent, and only the printer
+    rounded it. That is the worse failure mode of the two: a number that PRINTS as `inf` while
+    arithmetic still treats it as finite looks correct at the point a developer would check it.
+    NUM-FLOAT-FORMAT-001 requires IEEE binary32 for `Float32`, and NUM-FLOAT-REPRO-001 requires the
+    same result bits for the same declared type and sequence of operations — both about VALUES.
+  - **The HIR oracle was already right**, via `normalize_numeric`, which narrows to f32 whenever the
+    expression's static type is `Float32`. Only MIR was wrong, so this was a live HIR↔MIR divergence
+    of the same family as CD-133 (HashMap keys) and CD-139 (float division) — the third this gate.
+    Native was never wrong: it holds a real `f32`.
+  - **Fixed at three points, mirroring the oracle.** (1) **Literal:** a `Float32` literal lowers to
+    the nearest BINARY32 value carried in the f64 constant — NUM-FLOAT-LIT-001 converts a decimal
+    literal directly to the DESTINATION format, so `0.1f32` denotes the f32 nearest 0.1, and storing
+    the f64 nearest 0.1 made the constant observably wider than its own type. (2) **Cast:**
+    integer-to-`Float32` rounds once (NUM-FLOAT-CONV-001); it had been sharing the `Float64` arm, so
+    it did not round at all. Float-to-`Float32` already narrowed. (3) **Assignment:** any value
+    stored into a `Float32` destination is rounded to binary32. Every float rvalue reaches a typed
+    destination, so that one site covers arithmetic, negation and operand reads together — the
+    destination's declared type is the MIR-level equivalent of the oracle's static expression type.
+  - **Evidence: 8 new three-engine cases in `tests/c63e_float32.rs` (21 total).** Widening a literal
+    exposes its narrowing (`0.1f32 as Float64` → `0.10000000149011612`), arithmetic rounds at every
+    step, overflow becomes a REAL infinity so `inf - inf` is `NaN` (the case that exposed the
+    defect — it previously stayed finite at `3.4e39` and merely printed as `inf`, so the subtraction
+    gave `0.0`), underflow reaches exactly zero, `16777217 as Float32` rounds to `16777216.0` (the
+    first integer binary32 cannot represent), `Float32` division by zero, NaN surviving a widening
+    cast and staying unordered, and a ten-iteration accumulation where a missing per-step rounding
+    compounds rather than cancelling.
+  - **CD-139 is what made this testable.** Constructing an `inf` or a `NaN` requires a division by
+    zero, and that trapped in MIR until CD-139, which is why `c63e_float32.rs` originally had to
+    scope its edges to infinities reached by overflow and skip NaN entirely. The two defects were
+    found together and had to be fixed in that order.
+
+- CD-139 [2026-07-26, **DEV-110 CLOSED — float division/remainder are TOTAL; CD-006 superseded;
+  MIR amendment A6**]
+  **Owner ruling: "CD-006 is superseded — not reversed on its merits — by the later normative WP-C2.9
+  drafting of NUM-INT-DIV-001 and NUM-FLOAT-OP-001; HIR, MIR, and native execution must align with
+  those later rules."** Succession of authority, not a change of mind.
+  - **The evidence that made this a succession rather than a conflict.** I first reported DEV-110 as
+    a live spec-vs-decision standoff needing a merits ruling. That framing was wrong, and the
+    primary sources say so: (a) CD-006 arbitrated the sentence "Division or modulo by zero is a
+    runtime error and MUST trap" in `03-Type-System.md`, which is **no longer in that file**;
+    (b) CD-006 landed 2026-07-18 08:47 (`785c1be`) and NUM-FLOAT-OP-001 landed the same day at
+    17:29 (`b702a31`, WP-C2.9) — nine hours later; (c) WP-C2.9 deliberately SPLIT the cases into
+    adjacent paired rules, NUM-INT-DIV-001 "integer division by zero and remainder by zero trap"
+    and NUM-FLOAT-OP-001 "floating division by zero does not trap", which is authoring intent, not
+    an oversight; (d) TRAP-CATEGORY-001 defers to "the owning numeric rule" and so does not
+    re-create the ambiguity; and (e) CD-006's own text records "No spec or code edits made under
+    this decision" — it was a do-not-re-litigate note pinned to prose that was then rewritten.
+    (f) The HIR oracle already followed the spec: `interp.rs`'s "division by zero" error is inside
+    the INTEGER arm, and there is no float trap anywhere in it. Only MIR had one. Charter §1.6 rule
+    6 makes the interpreter the semantic reference, so MIR was the straggler.
+  - **MIR amendment A6 (CE3, owner-approved), narrow and additive:** adds `MirBinOp::FloatDiv` and
+    `MirBinOp::FloatRem`. **This was the owner's correction to my implementation plan.** I proposed
+    "emit a plain `BinOp`" as if that avoided a shape change; it does not — `MirBinOp` held only
+    `FloatAdd`/`FloatSub`/`FloatMul`, and `FloatDiv`/`FloatRem` existed ONLY under `CheckedOp`. The
+    owner's reasoning for amending rather than economising: keeping a total IEEE operation inside
+    `CheckedOp` would preserve the enum shape while corrupting its contract — a primitive declared
+    trapping that is guaranteed never to trap. `MIR_VERSION` stays `0.1` (additive variant, the A5
+    precedent); the runtime surface is untouched (no `RuntimeFn`).
+  - `CheckedOp::FloatDiv`/`FloatRem` are **retained, deprecated, and unreachable**, so the amendment
+    stays additive. Removal is a separately versioned cleanup, not part of this change.
+  - **Evidence: `tests/cd139_float_division.rs`, 13 three-engine cases.** Signed infinities (both
+    signs, and by a NEGATIVE-zero divisor — the sign of the divisor selects the sign of the
+    infinity, which a "return infinity on a zero divisor" shortcut would miss), `0.0/0.0` → NaN,
+    all three NaN producers for `%` (zero divisor, infinite dividend, NaN operand), an ordinary
+    remainder that still computes, `Float32` on the same path, NaN propagation through `+`/`*`/`-`,
+    NaN's unordered comparisons, and a shape assertion that lowering no longer emits the deprecated
+    checked ops.
+  - **Half the file guards the OVER-correction, and that is deliberate.** "Division by zero no
+    longer traps" is true of floats and false of integers; a fix applied to the headline rather
+    than to NUM-FLOAT-OP-001 specifically would silently make integer division total. Signed and
+    unsigned integer `/` and `%` by zero must still trap in every engine, and are pinned here.
+  - **Unblocks DEV-109's evidence.** `inf` and `NaN` previously could not be CONSTRUCTED in a test:
+    every route ran through a division by zero, and that trapped in MIR. `c63e_float32.rs` had to
+    scope its edge cases to infinities reached by overflow for exactly this reason. `inf - inf` is
+    now a reachable case — and it is the one that exposes DEV-109 most sharply.
+
+- CD-138 [2026-07-26, **C6.3 CLOSURE CORRECTION — DEV-105 CLOSED (0.1-A9); WP-C6.3 back to PARTIAL**]
+  An external review rejected CD-137's closure claim, correctly. I had marked WP-C6.3 complete while
+  DEV-105 sat as a KNOWN WRONG-OUTPUT defect inside the admitted domain — not an excluded feature.
+  Those two statements cannot coexist, and the reviewer was right that the second invalidates the
+  first. **WP-C6.3 and C6.3e are PARTIAL.**
+  - **CE3 APPROVED and implemented (owner): `PrintFloat32`/`PrintlnFloat32`, `MIR_RUNTIME_SURFACE`
+    0.1-A8 → 0.1-A9.** Additive; `PrintFloat64`'s arity and meaning are untouched.
+  - **DEV-105 CLOSED.** PRINT-DISPLAY-001 renders a float at its DECLARED IEEE width, so `0.1f32`
+    must print `0.1`. This was never an open semantics question — the spec answers it — only a
+    missing width-preserving operation. `Float32` no longer passes through `widen_for_print` in
+    EITHER the scalar or the composite path; the verifier REQUIRES a `Float32` operand (the declared
+    width is part of the operation's identity, not a convention); the MIR interpreter narrows its f64
+    storage at that boundary; the backend calls an `f32` runtime function. All three route through
+    the one `canonical_float32`. **The composite Float32 refusal is removed** — tuple, array,
+    `Option`, `Result` and `Vec` all render `Float32` elements.
+  - **Correction to the review's instruction on the frozen corpus:** it asked for a non-binary-exact
+    value to be added because `2.5` "cannot detect width substitution". The corpus ALREADY prints
+    `0.1f32` and records `0.1`, so no change was needed — and that fact refined the diagnosis: since
+    `mir_differential` passed, MIR was already printing `0.1`. Only NATIVE was wrong. MIR agreed by
+    accident (its constant never actually narrowed to f32); it now agrees for the right reason.
+  - **Evidence:** new `tests/c63e_float32.rs`, 11 three-engine cases — scalar `println`/`print`, a
+    value whose f32 and f64 renderings visibly differ, tuple/array/`Option`/`Result`/`Vec` elements,
+    negative zero, max finite, min subnormal, and infinities.
+  - **THREE NEW DEFECTS, found by writing that evidence.** Each is value semantics, not formatting,
+    so each is recorded rather than absorbed into a Display slice:
+    - **DEV-109 — `Float32` arithmetic does not maintain binary32 precision.** Both interpreters hold
+      a `Float32` as f64 and round only AT DISPLAY. So `0.1f32 as Float64` is a no-op in MIR (giving
+      `0.1`) while HIR rounds (giving `0.10000000149011612`), and an overflowing `Float32` product is
+      stored unrounded — `3.4e39`, not `inf` — so `inf - inf` yields `0.0` instead of `NaN`. The
+      RENDERING becomes an infinity while the VALUE never does. NUM-FLOAT-FORMAT-001 requires IEEE
+      binary32 for all value observations.
+    - **DEV-110 [ESCALATED — a spec-vs-decision conflict, not a bug to pick a side on].**
+      NUM-FLOAT-OP-001: "floating division by zero does not trap: it produces the IEEE infinity or
+      NaN result." **CD-006** is a recorded OWNER decision (2026-07-18) to keep trapping for floats,
+      taken when the spec text was ambiguous. The normative text is now unambiguous and contradicts
+      it. HIR follows the spec (yields `inf`); MIR follows CD-006 (traps `DivideByZero`). Charter
+      §1.6 rule 1 says the spec governs and rule 3 forbids inventing a third behaviour — but
+      overriding a recorded owner decision is not mine to do, and CD-006 was itself flagged CE2-shaped
+      rather than resolved unilaterally. It returns the same way.
+    - Both blocked the obvious way to construct `inf`/`NaN` in a test, which is how they surfaced.
+  - **CD-138 also hardens the C6.3d `Eq` dispatch (review item 4).** `Option<usize>` conflated "a
+    primitive key, which legitimately compares structurally" with "a nominal key whose `eq_impls`
+    entry is missing" — and the backend REFUSES the second, so the MIR interpreter would have
+    silently executed structural equality for a program native declines to build. Replaced by an
+    explicit `KeyEqMode { Structural, UserEq(index), MissingForNominal }`, where the third is an
+    INTERNAL ERROR. A nominal key always has an entry (it needs `impl Eq` to satisfy the key bound),
+    so a missing one is a compiler defect and now says so.
+  - **DEV-108 CLOSED — FIXED, not refused, and the diagnosis inverted the framing.** The review
+    asked for a precise pre-rustc refusal, suggesting a predicate over the payload's drop plan. That
+    would have been wrong, because the payload was never the cause. The body fell back to the
+    DISPATCH loop, where a `match` on a runtime value makes every local live in every arm, so the
+    payload borrow appeared live across the slot's drop glue — `E0502`. It fell back because a plain
+    RPO does not keep a natural loop's blocks CONTIGUOUS, and a `Loop` scope is an RPO SPAN: the
+    `Vec` render loop's header landed at index 11 with its body at 20-29 and eight unrelated blocks
+    between, so `structured_plan` correctly abandoned the plan rather than emit a loop that
+    re-executes non-members. The DFS simply took the loop-EXIT successor first at that header.
+    `Option<Vec<String>>` worked only because its DFS happened to go the other way — so a guard on
+    the payload type would have refused a working program AND missed every other shape with the same
+    ordering accident. Fixed by `loop_aware_order`: emit a block once every forward predecessor is
+    emitted, preferring the innermost open loop's members, closing a loop when none is ready (sound
+    because a reducible loop is single-entry). Both `Result<Vec<String>, Int32>` variants now render
+    three-engine. **General consequence: fewer bodies fall back to dispatch, so borrow precision
+    improves across the backend, not just for this shape.**
+  - **Still open, and why C6.3 stays PARTIAL:** DEV-109 and DEV-110 — both `Float32` VALUE
+    semantics, both outside Display, and DEV-110 needs an owner ruling rather than an implementation.
+  - **Governance correction (review item 3):** CD-134's Drop-bearing exclusion is recorded as
+    "per the owner's closure ruling", and that is accurate — it was a direct answer to a question put
+    to the owner offering exclusion or full implementation. It is NOT derived from the earlier
+    review, which presented both outcomes without choosing. Stated here explicitly so the record
+    shows a superseding decision rather than an inherited one.
+
 - CD-137 [2026-07-26, **WP-C6.3f EXCLUDED + the C6.3 CLOSURE EVIDENCE discharged (CD-116)**]
   The two remaining C6.3 items, resolved in opposite directions — one excluded on evidence, one
   satisfied with new evidence.
@@ -3233,16 +3424,37 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     the arms I CHANGED, not the arms that would now RECEIVE references. Fixed by peeling the
     reference (`deref_place`) in every arm that projects into a value; the arms that consume the
     reference itself deliberately do not peel. All four now render three-engine.
-  - **DEV-108 [recorded, NOT guarded]:** `Result<Vec<String>, Int32>` fails at `cargo build` of the
+  - **DEV-108 [CLOSED by CD-138 — fixed, see there. Original record follows.]:** `Result<Vec<String>, Int32>` fails at `cargo build` of the
     generated crate with `E0502` — the drop-glue slot borrow colliding with the payload borrow held
     across the render. It is the ONE C6.3e shape that fails as a rustc error rather than a named
     pre-rustc refusal, so it is recorded rather than hidden. Deliberately NOT guarded: the
     neighbouring `Option<Vec<String>>` and `Result<Vec<Int32>, Int32>` both render three-engine, so
     any guard broad enough to catch it would refuse working programs, and the precise predicate needs
-    a debugging pass on the generated crate. Pinned by `result_of_vec_of_string_fails_at_rustc_dev_108`,
-    which fails loudly if the conflict is ever fixed so the case gets promoted.
-  - **Evidence.** `c63e_formatting.rs` 52; `three_engine_differential` +2 message cases and the
-    extended comparator self-test.
+    a debugging pass on the generated crate. It WAS pinned by `result_of_vec_of_string_fails_at_rustc_dev_108`, which
+    was written to fail loudly if the conflict was ever fixed so the case would get promoted — and
+    that is exactly what happened. CD-138 replaced it with `result_of_vec_of_string_renders` plus a
+    both-variants companion. The "deliberately not guarded" reasoning above turned out to be right
+    for the wrong reason: no payload-type guard would have been correct, because the payload was
+    never the cause (see CD-138).
+  - **DEV-109 [OPEN, CD-138 — `Float32` arithmetic does not maintain binary32 precision].** Both
+    interpreters hold a `Float32` in an f64 and round only AT DISPLAY, so the VALUE observes f64
+    precision while its RENDERING observes f32. Two consequences, both engine-divergent: `0.1f32 as
+    Float64` is a no-op in MIR (yielding `0.1`) while HIR rounds first (yielding
+    `0.10000000149011612`); and a `Float32` product that overflows binary32 is stored unrounded
+    (`3.4e39`), so it PRINTS as `inf` but is not infinite — `inf - inf` gives `0.0` instead of `NaN`.
+    NUM-FLOAT-FORMAT-001 requires IEEE binary32 for value observations, not only for display.
+    Surfaced by DEV-105's own evidence while trying to construct a `NaN`.
+  - **DEV-110 [ESCALATED, CD-138 — float division by zero: NUM-FLOAT-OP-001 vs CD-006].**
+    NUM-FLOAT-OP-001 states that "floating division by zero does not trap: it produces the IEEE
+    infinity or NaN result". **CD-006** (owner, 2026-07-18) decided the opposite — keep trapping —
+    when the spec text was read as ambiguous. It is no longer ambiguous. HIR follows the spec and
+    yields `inf`; MIR follows CD-006 and traps `DivideByZero`; the engines disagree on a program
+    both accept. Charter §1.6 rule 1 makes the spec govern, but overriding a recorded OWNER decision
+    is not an implementation call, and CD-006 was itself flagged CE2-shaped rather than settled
+    unilaterally — so it returns the same way rather than being silently reversed here.
+  - **Evidence.** `c63e_formatting.rs` 51 (DEV-108 promoted to a three-engine case plus a
+    both-variants companion; the two composite `Float32` refusals deleted — A9 admits those shapes); `c63e_float32.rs` 13; `c63d_map_key_identity.rs` 15;
+    `three_engine_differential` +2 message cases and the extended comparator self-test.
   - **ESCALATED, not resolved — `HashMap`/bare-struct `Display` is CE-shaped.** `println(m)` for any
     map is E0500 today (`type_is_displayable` admits only `Option`/`Result`/`Vec`/tuple/array/slice
     plus user-`Display` nominals), as is a struct without a `Display` impl. But the HIR interpreter

@@ -411,7 +411,7 @@ struct StructuredPlan {
 /// partially overlaps rather than nesting, the plan is abandoned rather than emitted wrongly.
 fn structured_plan(body: &MirBody) -> Option<StructuredPlan> {
     let n = body.blocks.len();
-    let rpo = reachable_rpo(body);
+    let rpo = loop_aware_order(body);
     let mut index_of = vec![usize::MAX; n];
     for (i, &b) in rpo.iter().enumerate() {
         index_of[b as usize] = i;
@@ -575,6 +575,129 @@ fn structured_plan(body: &MirBody) -> Option<StructuredPlan> {
         opens,
         closes,
     })
+}
+
+/// CD-138: the emission order — a reverse postorder in which **every natural loop is contiguous**.
+///
+/// A plain RPO is a valid topological order of the forward edges, but it does NOT keep a loop's
+/// blocks together, and `structured_plan` needs contiguity: a `Loop` scope is an RPO SPAN, so any
+/// non-member landing inside that span would be emitted inside the loop body and re-executed every
+/// iteration. The plan validation catches that and abandons the whole plan, dropping the body to
+/// the dispatch loop — which has no borrow precision at all, because a `match` on a runtime value
+/// makes every local live in every arm.
+///
+/// That is exactly how DEV-108 failed. Printing a `Result<Vec<String>, Int32>` gives the DFS a
+/// choice at the `Vec` loop's header, and it took the loop-EXIT successor first — so the exit path
+/// (the rest of the program, including the join and the drops) finished earlier in postorder and
+/// landed at LOWER RPO indices than the loop body. The loop's header sat at index 11 with its body
+/// at 20-29 and eight unrelated blocks in between. Nothing was wrong with the CFG: it is perfectly
+/// reducible, and the same program with an `Option` payload happened to get a DFS order where the
+/// body followed the header. The generated crate then failed at `rustc` with `E0502` rather than at
+/// any boundary this compiler owns.
+///
+/// The order here is the standard loop-aware one: emit a block once every forward predecessor is
+/// emitted, preferring blocks belonging to the innermost loop still open, and closing a loop when
+/// none of its members are ready. In a reducible CFG a loop is single-entry, so once the header is
+/// emitted no member ever waits on anything outside — "no member ready" therefore means the loop is
+/// genuinely finished, not merely blocked.
+///
+/// `None` if the forward edges cannot be topologically ordered at all (an irreducible CFG); the
+/// caller falls back to the dispatch loop, which remains correct, just imprecise.
+fn loop_aware_order(body: &MirBody) -> Vec<u32> {
+    let n = body.blocks.len();
+    let rpo = reachable_rpo(body);
+    let mut index_of = vec![usize::MAX; n];
+    for (i, &b) in rpo.iter().enumerate() {
+        index_of[b as usize] = i;
+    }
+
+    // Forward vs. back edges, by the same rule the plan uses: an edge to a block at or before the
+    // source in RPO closes a cycle.
+    let mut preds: Vec<Vec<u32>> = vec![Vec::new(); n];
+    let mut back_edges: Vec<(u32, u32)> = Vec::new();
+    let mut forward_pred_count = vec![0usize; n];
+    for (i, &b) in rpo.iter().enumerate() {
+        for t in terminator_successors(&body.blocks[b as usize].terminator.0) {
+            let ti = index_of[t as usize];
+            if ti == usize::MAX {
+                continue;
+            }
+            preds[t as usize].push(b);
+            if ti <= i {
+                back_edges.push((b, t));
+            } else {
+                forward_pred_count[t as usize] += 1;
+            }
+        }
+    }
+    if back_edges.is_empty() {
+        return rpo; // No loops: a plain RPO is already contiguous by vacuity.
+    }
+
+    // Natural-loop membership per header, unioned over that header's latches.
+    let mut members: Vec<Option<Vec<bool>>> = vec![None; n];
+    for &(latch, header) in &back_edges {
+        let set = members[header as usize].get_or_insert_with(|| {
+            let mut v = vec![false; n];
+            v[header as usize] = true;
+            v
+        });
+        let mut stack = vec![latch];
+        if !set[latch as usize] {
+            set[latch as usize] = true;
+        }
+        while let Some(x) = stack.pop() {
+            for &p in &preds[x as usize] {
+                if !set[p as usize] {
+                    set[p as usize] = true;
+                    stack.push(p);
+                }
+            }
+        }
+    }
+
+    let mut order: Vec<u32> = Vec::with_capacity(rpo.len());
+    let mut emitted = vec![false; n];
+    let mut remaining = forward_pred_count;
+    let mut open: Vec<u32> = Vec::new(); // headers of the loops currently being emitted
+    while order.len() < rpo.len() {
+        // Ready in RPO order, so the result stays as close to the baseline order as contiguity
+        // allows — an unnecessary reshuffle would churn every generated body for no gain.
+        let ready: Vec<u32> = rpo
+            .iter()
+            .copied()
+            .filter(|&b| !emitted[b as usize] && remaining[b as usize] == 0)
+            .collect();
+        let Some(&first) = ready.first() else {
+            return rpo; // Not topologically orderable; the plan will reject it and fall back.
+        };
+        let pick = loop {
+            let Some(&header) = open.last() else {
+                break first;
+            };
+            let inside = members[header as usize]
+                .as_ref()
+                .and_then(|set| ready.iter().copied().find(|&b| set[b as usize]));
+            match inside {
+                Some(b) => break b,
+                None => {
+                    open.pop();
+                }
+            }
+        };
+        if members[pick as usize].is_some() {
+            open.push(pick);
+        }
+        emitted[pick as usize] = true;
+        order.push(pick);
+        for t in terminator_successors(&body.blocks[pick as usize].terminator.0) {
+            if index_of[t as usize] != usize::MAX && index_of[t as usize] > index_of[pick as usize]
+            {
+                remaining[t as usize] -= 1;
+            }
+        }
+    }
+    order
 }
 
 /// The reachable blocks in reverse postorder (a plain DFS postorder, reversed).
@@ -900,7 +1023,19 @@ fn emit_call(
             &arg_exprs,
             dest_ty,
             site,
-            map_key_eq_fn(args, env).as_deref(),
+            match map_key_eq(args, env) {
+                BackendKeyEq::NotAMap => None,
+                BackendKeyEq::Structural => Some("stark_runtime::map::structural_eq".to_string()),
+                BackendKeyEq::UserEq(symbol) => Some(symbol),
+                BackendKeyEq::MissingForNominal => {
+                    return Err(BackendDiagnostic::Unsupported(
+                        "internal: a HashMap with a nominal key reached the backend with no \
+                         recorded `Eq` instance (CD-138); verification should have rejected this"
+                            .to_string(),
+                    ))
+                }
+            }
+            .as_deref(),
         ),
     }
 }
@@ -909,26 +1044,47 @@ fn emit_call(
 /// for a nominal key (from `TypeContext::eq_impls`, the same table the MIR interpreter reads), or
 /// the structural comparator for a primitive/`String` key, whose Rust `==` IS its lawful STARK `Eq`.
 ///
-/// A nominal key ALWAYS has an entry: it needs an `impl Eq` to satisfy the key bound at all. So a
-/// missing entry means a non-nominal key, not a lookup failure.
-fn map_key_eq_fn(args: &[Operand], env: &TyEnv) -> Option<String> {
-    let (Operand::Copy(place) | Operand::Move(place)) = args.first()? else {
-        return None;
+/// CD-138: three-state, matching `mir::interp::KeyEqMode`, because an `Option` conflated two
+/// unrelated situations — "not a map operation, so no comparator is wanted" and "a nominal key
+/// whose `Eq` instance is missing". The first is normal; the second is a compiler defect, and
+/// collapsing them let each engine react to it differently.
+///
+/// `MissingForNominal` should now be unreachable: `verify::verify_map_key_eq` rejects it ahead of
+/// both engines. It is kept as a distinct state so that if it ever does arrive, the backend reports
+/// what it is instead of falling through a `None` arm shared with every non-map call.
+enum BackendKeyEq {
+    /// Not a map operation — no key comparator applies.
+    NotAMap,
+    /// The key's Rust `==` is its lawful STARK `Eq` (primitives, `String`).
+    Structural,
+    /// The user's selected `Eq::eq`, already mangled.
+    UserEq(String),
+    /// A nominal key with no recorded `Eq` instance — a compiler defect.
+    MissingForNominal,
+}
+
+fn map_key_eq(args: &[Operand], env: &TyEnv) -> BackendKeyEq {
+    let Some(Operand::Copy(place) | Operand::Move(place)) = args.first() else {
+        return BackendKeyEq::NotAMap;
     };
-    let mut ty = env.place_ty(place).ok()?;
+    let Ok(mut ty) = env.place_ty(place) else {
+        return BackendKeyEq::NotAMap;
+    };
     while let MirTy::Ref { inner, .. } = ty {
         ty = *inner;
     }
     let MirTy::Core(crate::hir::CoreType::HashMap, type_args) = ty else {
-        return None;
+        return BackendKeyEq::NotAMap;
     };
-    match type_args.first()? {
-        MirTy::Struct(item, args) | MirTy::Enum(crate::mir::EnumRef::User(item), args) => env
-            .types
-            .eq_impls
-            .get(&(item.0, args.clone()))
-            .map(|symbol| mangle::function_name_for_symbol(symbol)),
-        _ => Some("stark_runtime::map::structural_eq".to_string()),
+    match type_args.first() {
+        None => BackendKeyEq::NotAMap,
+        Some(MirTy::Struct(item, args) | MirTy::Enum(crate::mir::EnumRef::User(item), args)) => {
+            match env.types.eq_impls.get(&(item.0, args.clone())) {
+                Some(symbol) => BackendKeyEq::UserEq(mangle::function_name_for_symbol(symbol)),
+                None => BackendKeyEq::MissingForNominal,
+            }
+        }
+        Some(_) => BackendKeyEq::Structural,
     }
 }
 
@@ -1365,6 +1521,9 @@ fn emit_binop(op: MirBinOp, l: String, r: String) -> Result<String, BackendDiagn
         FloatAdd => "+",
         FloatSub => "-",
         FloatMul => "*",
+        // CD-139: Rust's `/` and `%` on floats are IEEE 754 and total, matching NUM-FLOAT-OP-001.
+        FloatDiv => "/",
+        FloatRem => "%",
         BitAnd => "&",
         BitOr => "|",
         BitXor => "^",

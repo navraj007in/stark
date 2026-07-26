@@ -250,6 +250,16 @@ impl<'a> Interp<'a> {
                 match stmt {
                     Statement::Assign(place, rvalue) => {
                         let value = self.eval_rvalue(here, rvalue)?;
+                        // CD-140: round a `Float32` destination to binary32. This engine carries
+                        // every float in an f64, so without this an f64-precision result would be
+                        // stored under a `Float32` type and only rounded when DISPLAYED —
+                        // observable precision, not a rendering detail. The HIR oracle does the
+                        // same thing at the same point (`normalize_numeric`, keyed on the
+                        // expression's static type); here the destination's declared type is the
+                        // equivalent authority. Every float rvalue reaches a typed destination, so
+                        // this one site covers arithmetic, negation, and operand reads alike.
+                        let ty = self.place_ty(body, place)?;
+                        let value = narrow_to_declared_width(value, &ty);
                         self.write_place(here, place, value)?;
                     }
                     Statement::Nop => {}
@@ -392,25 +402,42 @@ impl<'a> Interp<'a> {
     /// WP-C6.3d: the body index of the selected `Eq::eq` for a map operation's KEY type, or `None`
     /// when the key needs no dispatch (a primitive/`String` key has no user impl, and its structural
     /// comparison IS its lawful `Eq`).
-    fn map_key_eq(&self, body: &MirBody, args: &[Operand]) -> Option<usize> {
-        let (Operand::Copy(place) | Operand::Move(place)) = args.first()? else {
-            return None;
+    fn map_key_eq(&self, body: &MirBody, args: &[Operand]) -> KeyEqMode {
+        let Some(Operand::Copy(place) | Operand::Move(place)) = args.first() else {
+            return KeyEqMode::Structural;
         };
-        let mut ty = self.place_ty(body, place).ok()?;
+        let Ok(mut ty) = self.place_ty(body, place) else {
+            return KeyEqMode::Structural;
+        };
         while let MirTy::Ref { inner, .. } = ty {
             ty = *inner;
         }
         let MirTy::Core(crate::hir::CoreType::HashMap | crate::hir::CoreType::HashSet, type_args) =
             ty
         else {
-            return None;
+            return KeyEqMode::Structural;
         };
-        let (item, key_args) = match type_args.first()? {
-            MirTy::Struct(item, a) | MirTy::Enum(EnumRef::User(item), a) => (*item, a.clone()),
-            _ => return None,
+        let (item, key_args) = match type_args.first() {
+            Some(MirTy::Struct(item, a) | MirTy::Enum(EnumRef::User(item), a)) => {
+                (*item, a.clone())
+            }
+            // A primitive/`String` key: no user impl exists, and its structural comparison IS its
+            // lawful `Eq`.
+            _ => return KeyEqMode::Structural,
         };
-        let symbol = self.program.types.eq_impls.get(&(item.0, key_args))?;
-        self.by_symbol.get(symbol.as_str()).copied()
+        match self
+            .program
+            .types
+            .eq_impls
+            .get(&(item.0, key_args))
+            .and_then(|symbol| self.by_symbol.get(symbol.as_str()).copied())
+        {
+            Some(index) => KeyEqMode::UserEq(index),
+            // A nominal key ALWAYS has an entry — it needs an `impl Eq` to satisfy the key bound at
+            // all — so a missing one is a compiler defect, reported as such rather than silently
+            // becoming structural comparison (which the backend would refuse: CD-138).
+            None => KeyEqMode::MissingForNominal,
+        }
     }
 
     /// WP-C6.3d: the index of the entry whose key equals `query` under the key type's lawful `Eq`,
@@ -418,7 +445,7 @@ impl<'a> Interp<'a> {
     /// the originally stored key and its position).
     fn find_entry(
         &mut self,
-        key_eq: Option<usize>,
+        key_eq: KeyEqMode,
         recv: &Option<MirValue>,
         query: &MirValue,
     ) -> Result<Option<usize>, MirRunError> {
@@ -458,7 +485,7 @@ impl<'a> Interp<'a> {
     #[allow(clippy::too_many_arguments)]
     fn entry_key_matches(
         &mut self,
-        key_eq: Option<usize>,
+        key_eq: KeyEqMode,
         frame: usize,
         generation: u64,
         local: u32,
@@ -467,8 +494,16 @@ impl<'a> Interp<'a> {
         stored_key: &MirValue,
         query: &MirValue,
     ) -> Result<bool, MirRunError> {
-        let Some(body_index) = key_eq else {
-            return Ok(stored_key == query);
+        let body_index = match key_eq {
+            KeyEqMode::Structural => return Ok(stored_key == query),
+            KeyEqMode::UserEq(index) => index,
+            KeyEqMode::MissingForNominal => {
+                return self.internal(
+                    "a nominal HashMap key reached execution with no `eq_impls` entry — key \
+                     identity would silently fall back to structural comparison while the native \
+                     backend refuses the same program (CD-138)",
+                )
+            }
         };
         let mut key_path = path.to_vec();
         key_path.push(ConcreteProj::Index(index));
@@ -1047,6 +1082,11 @@ impl<'a> Interp<'a> {
             (FloatAdd, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a + b),
             (FloatSub, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a - b),
             (FloatMul, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a * b),
+            // CD-139: IEEE division and remainder, TOTAL. Rust's `f64` `/` and `%` are IEEE 754,
+            // so a zero divisor yields the signed infinity or NaN NUM-FLOAT-OP-001 requires
+            // without any special case here — which is exactly why no check is owed.
+            (FloatDiv, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a / b),
+            (FloatRem, MirValue::Float(a), MirValue::Float(b)) => MirValue::Float(a % b),
             // A5: bitwise on the sign-extended i128 carrier — for same-width operands the low
             // bits agree with the true-width result and the value stays in range (no trap).
             (BitAnd, MirValue::Int(a), MirValue::Int(b)) => MirValue::Int(a & b),
@@ -1175,9 +1215,14 @@ impl<'a> Interp<'a> {
                             None // CastFailure trap
                         }
                     }
-                    (MirValue::Int(v), MirTy::Float32 | MirTy::Float64) => {
-                        Some(MirValue::Float(*v as f64))
+                    // CD-140: an integer-to-`Float32` cast rounds ONCE to binary32
+                    // (NUM-FLOAT-CONV-001), so it must narrow like the float-to-`Float32` arm
+                    // below. Sharing the `Float64` arm silently produced an f64-precision result
+                    // for a `Float32` destination.
+                    (MirValue::Int(v), MirTy::Float32) => {
+                        Some(MirValue::Float(f64::from(*v as f32)))
                     }
+                    (MirValue::Int(v), MirTy::Float64) => Some(MirValue::Float(*v as f64)),
                     (MirValue::Float(f), MirTy::Float64) => Some(MirValue::Float(*f)),
                     (MirValue::Float(f), MirTy::Float32) => {
                         Some(MirValue::Float(f64::from(*f as f32)))
@@ -1293,7 +1338,7 @@ impl<'a> Interp<'a> {
         rt: RuntimeFn,
         args: Vec<MirValue>,
         call_info: SourceInfo,
-        key_eq: Option<usize>,
+        key_eq: KeyEqMode,
     ) -> Result<MirValue, MirRunError> {
         use RuntimeFn::*;
         if is_vec_runtime(rt) {
@@ -1343,6 +1388,25 @@ impl<'a> Interp<'a> {
             }
             (PrintFloat64, Some(MirValue::Float(f))) => {
                 let _ = write!(self.output, "{}", crate::interp::canonical_float(f));
+                Ok(MirValue::Unit)
+            }
+            // DEV-105 (0.1-A9): the OPERATION carries the declared width, so the interpreter
+            // narrows its internal f64 storage back to f32 at this boundary and formats there —
+            // `canonical_float32`, the same renderer the HIR oracle and the runtime use.
+            (PrintlnFloat32, Some(MirValue::Float(f))) => {
+                let _ = writeln!(
+                    self.output,
+                    "{}",
+                    crate::interp::canonical_float32(f as f32)
+                );
+                Ok(MirValue::Unit)
+            }
+            (PrintFloat32, Some(MirValue::Float(f))) => {
+                let _ = write!(
+                    self.output,
+                    "{}",
+                    crate::interp::canonical_float32(f as f32)
+                );
                 Ok(MirValue::Unit)
             }
             // --- A1 str/String ops. `arg` holds the reconstructed first argument; the closure
@@ -1705,8 +1769,8 @@ impl<'a> Interp<'a> {
         &mut self,
         rt: RuntimeFn,
         args: Vec<MirValue>,
-        // WP-C6.3d: the selected `Eq::eq` for the key type, resolved at the call site.
-        key_eq: Option<usize>,
+        // WP-C6.3d: how the key type decides identity, resolved at the call site.
+        key_eq: KeyEqMode,
     ) -> Result<MirValue, MirRunError> {
         use RuntimeFn::*;
         let mut args = args.into_iter();
@@ -2103,6 +2167,33 @@ impl<'a> Interp<'a> {
             MirValue::String(s) => Ok(s),
             other => self.internal(format!("trap message operand is {other:?}")),
         }
+    }
+}
+
+/// WP-C6.3d/CD-138: how a map operation decides key identity — see `map_key_eq`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KeyEqMode {
+    /// A primitive or `String` key: Rust equality IS its lawful STARK `Eq`.
+    Structural,
+    /// A nominal key: the body index of its selected `Eq::eq`.
+    UserEq(usize),
+    /// A nominal key with NO recorded `Eq` instance — a compiler defect, never a fallback.
+    MissingForNominal,
+}
+
+/// CD-140 (NUM-FLOAT-FORMAT-001): force a scalar float into the precision of its DECLARED type.
+///
+/// `MirValue::Float` is an f64 whatever the STARK type says, so a `Float32` local could hold a
+/// value no binary32 can represent. That is not a representation detail — it is observable: an
+/// overflowing `Float32` product stayed finite instead of becoming `inf`, so `inf - inf` gave
+/// `0.0` rather than `NaN`, and `0.1f32 as Float64` widened a value that had never been narrowed.
+///
+/// Non-float values and non-`Float32` types pass through untouched. `Float64` needs no rounding —
+/// the carrier already IS binary64.
+fn narrow_to_declared_width(value: MirValue, ty: &MirTy) -> MirValue {
+    match (value, ty) {
+        (MirValue::Float(f), MirTy::Float32) => MirValue::Float(f64::from(f as f32)),
+        (value, _) => value,
     }
 }
 

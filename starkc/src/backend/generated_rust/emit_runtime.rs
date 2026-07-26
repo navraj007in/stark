@@ -68,6 +68,11 @@ pub fn emit_runtime_call(
         PrintlnBool => format!("stark_runtime::format::println_bool({})", arg(0)),
         PrintBool => format!("stark_runtime::format::print_bool({})", arg(0)),
         PrintlnFloat64 => format!("stark_runtime::format::println_f64({} as f64)", arg(0)),
+        // 0.1-A9 (DEV-105): `as f32` is a no-op here — the verifier already requires a `Float32`
+        // operand — but it pins the width at the call site, so a future widening upstream is a
+        // compile error in the generated crate rather than silently wrong digits.
+        PrintlnFloat32 => format!("stark_runtime::format::println_f32({} as f32)", arg(0)),
+        PrintFloat32 => format!("stark_runtime::format::print_f32({} as f32)", arg(0)),
         PrintFloat64 => format!("stark_runtime::format::print_f64({} as f64)", arg(0)),
 
         // --- String construction / conversion ---

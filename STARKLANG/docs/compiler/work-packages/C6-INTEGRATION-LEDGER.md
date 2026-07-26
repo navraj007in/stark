@@ -22,7 +22,7 @@ closure (WP-C6-ENTRY §7K).
 | Frozen three-package workspace | `starkc/tests/fixtures/c5-native-workspace/` (13 symbols, `EXPECTED-SYMBOLS.txt`) |
 | Three-engine snapshot subset | `exec_snapshots/c5_native__01/02` (corpus v1.4.0) |
 | Native Drop fixture | `native_c5_3_aggregates_enums.rs` + three-engine Drop cases |
-| MIR version / runtime surface | `0.1` / `0.1-A8` |
+| MIR version / runtime surface | `0.1` / `0.1-A9` (raised from `0.1-A8` by CD-138 / CE3) |
 | Runtime version / backend version | `0.1` / `0.1` |
 | Target-layout identity | `stark-64-v1` (rev 1) |
 | Toolchain (qualified) | rustc `1.93.0`, cargo `1.93.0`, host `aarch64-apple-darwin` |

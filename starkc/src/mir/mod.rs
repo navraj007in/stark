@@ -40,7 +40,7 @@ pub const MIR_VERSION: &str = "0.1";
 /// user-`Drop` key/value types excluded so no runtime op ever runs a user destructor), plus
 /// the A1-approved-but-deferred Char ops (`StringPushChar`/`StringPopChar`,
 /// `PrintlnChar`/`PrintChar`).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A8";
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A9";
 
 // ------------------------------------------------------------------ identity --
 
@@ -265,6 +265,12 @@ pub enum MirBinOp {
     FloatAdd,
     FloatSub,
     FloatMul,
+    /// A6 (CD-139): TOTAL IEEE division and remainder. NUM-FLOAT-OP-001 gives floating division by
+    /// zero the IEEE infinity or NaN result rather than a trap, and gives `%` a NaN for a zero
+    /// divisor, so neither owes a check — they belong with the other pure float operators, not
+    /// among the checked ones. See `CheckedOp::FloatDiv`/`FloatRem`, now deprecated.
+    FloatDiv,
+    FloatRem,
     // A5: bitwise operators are pure (non-trapping) — for same-width two's-complement operands
     // the result is always representable in the operand width, so no range check is owed.
     BitAnd,
@@ -352,6 +358,11 @@ pub enum CheckedOp {
     /// A5: integer exponentiation (NUM-INT-ARITH-001) — nonnegative exponent required,
     /// each intermediate multiply checked; traps on overflow or negative exponent.
     Pow,
+    /// **DEPRECATED (CD-139), unreachable.** Lowering no longer emits these: NUM-FLOAT-OP-001 makes
+    /// float division and remainder TOTAL, so a checked form is a contradiction — a primitive
+    /// declared trapping that is guaranteed never to trap. Superseded by `MirBinOp::FloatDiv`/
+    /// `FloatRem`. Retained only so this amendment stays additive; removal is a separately versioned
+    /// cleanup.
     FloatDiv,
     FloatRem,
     Cast,
@@ -368,6 +379,14 @@ pub enum RuntimeFn {
     PrintlnUInt64,
     PrintlnBool,
     PrintlnFloat64,
+    /// 0.1-A9 (WP-C6.3e, DEV-105): WIDTH-PRESERVING `Float32` output. PRINT-DISPLAY-001 renders a
+    /// float with "the fewest significant decimal digits that parse back to the same DECLARED IEEE
+    /// value" — for a `Float32` that is the f32, so `0.1f32` must print `0.1`. Routing it through
+    /// `PrintFloat64` widened first and printed `0.10000000149011612`, the shortest round-trip of the
+    /// WIDENED value: conformant for the f64 it had become, wrong for the `Float32` that was
+    /// declared. The operation identity carries the declared width, so every engine formats at f32.
+    PrintFloat32,
+    PrintlnFloat32,
     PrintInt64,
     PrintUInt64,
     PrintBool,

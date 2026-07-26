@@ -3703,6 +3703,16 @@ impl<'a> FnLowerer<'a> {
                             span,
                         }
                     })?;
+                // CD-140: a `Float32` literal is the nearest BINARY32 value, carried in the
+                // f64 constant. 07 NUM-FLOAT-LIT-001 converts a decimal literal directly to the
+                // DESTINATION format, so `0.1f32` denotes the f32 nearest 0.1, not the f64 one.
+                // Storing the f64 made the constant observably wider than its type: `0.1f32 as
+                // Float64` yielded `0.1` here and `0.10000000149011612` in the HIR oracle.
+                let value = if matches!(ty, MirTy::Float32) {
+                    f64::from(value as f32)
+                } else {
+                    value
+                };
                 Ok(Operand::Const(Constant::Float(value, ty)))
             }
             // A1 (CD-031): a decoded UTF-8 `&str` literal.
@@ -3788,11 +3798,22 @@ impl<'a> FnLowerer<'a> {
         let is_float = matches!(operand_ty, MirTy::Float32 | MirTy::Float64);
         if is_float {
             match op {
-                BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                // CD-139: NUM-FLOAT-OP-001 makes ALL FIVE of these TOTAL. Division by zero
+                // yields the IEEE infinity or NaN rather than trapping, and `%` with a zero
+                // divisor yields NaN, so `Div`/`Rem` owe no check and join the others here.
+                // They previously lowered to `CheckedOp::FloatDiv`/`FloatRem` with a
+                // `DivideByZero` trap under CD-006 — an owner ruling on `03-Type-System.md`
+                // wording that WP-C2.9 replaced nine hours later with the explicit paired rules
+                // NUM-INT-DIV-001 (integer zero division traps) and NUM-FLOAT-OP-001 (floating
+                // zero division does not). The owner has ruled CD-006 SUPERSEDED by succession
+                // of authority, not reversed on its merits.
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                     let mir_op = match op {
                         BinOp::Add => MirBinOp::FloatAdd,
                         BinOp::Sub => MirBinOp::FloatSub,
                         BinOp::Mul => MirBinOp::FloatMul,
+                        BinOp::Div => MirBinOp::FloatDiv,
+                        BinOp::Rem => MirBinOp::FloatRem,
                         _ => unreachable!(),
                     };
                     let dest = self.new_temp(operand_ty.clone());
@@ -3801,20 +3822,6 @@ impl<'a> FnLowerer<'a> {
                         self.info(span),
                     );
                     return Ok(Operand::Copy(Place::local(dest)));
-                }
-                BinOp::Div | BinOp::Rem => {
-                    let checked = if matches!(op, BinOp::Div) {
-                        CheckedOp::FloatDiv
-                    } else {
-                        CheckedOp::FloatRem
-                    };
-                    return self.checked_to_temp(
-                        checked,
-                        vec![lhs, rhs],
-                        operand_ty.clone(),
-                        TrapCategory::DivideByZero,
-                        span,
-                    );
                 }
                 _ => unreachable!(),
             }
@@ -4304,6 +4311,20 @@ impl<'a> FnLowerer<'a> {
                     ) {
                         return self
                             .lower_print_composite(args[0], &arg_ty, is_println, dest, span);
+                    }
+                    // DEV-105: a `Float32` keeps its DECLARED width — widening first would print
+                    // the shortest round-trip of the f64 it became, not of the f32 that was
+                    // written. It is the one primitive that must not pass through
+                    // `widen_for_print`.
+                    if matches!(peeled, MirTy::Float32) {
+                        let value = self.lower_expr_to_operand(args[0])?;
+                        let rt = if is_println {
+                            RuntimeFn::PrintlnFloat32
+                        } else {
+                            RuntimeFn::PrintFloat32
+                        };
+                        self.emit_runtime_call(rt, vec![value], dest, span);
+                        return Ok(());
                     }
                     let value = self.lower_expr_to_operand(args[0])?;
                     let (runtime, widened) = self.widen_for_print(value, &arg_ty, span)?;
@@ -7296,17 +7317,15 @@ impl<'a> FnLowerer<'a> {
             | MirTy::Float32
             | MirTy::Float64
             | MirTy::Char => {
-                // DEV-105: a `Float32` composite ELEMENT would reach the native binary with the
-                // f32->f64 widening divergence SILENTLY (inside a tuple/array/Vec/Option). Refuse it
-                // here, in the composite path only — a scalar top-level `println(Float32)` stays
-                // admitted (the interpreters agree; `widen_for_print` widens it), which the
-                // interpreter-only frozen corpus depends on.
+                // DEV-105 CLOSED: a `Float32` element renders at its DECLARED width through the
+                // width-preserving op, in every composite context (tuple, array, `Option`,
+                // `Result`, `Vec`) — the same selection the scalar path makes. The former refusal
+                // here existed only because the widening path was wrong.
                 if matches!(peeled, MirTy::Float32) {
-                    return unsupported(
-                        "Display of a `Float32` inside a composite is deferred (DEV-105: the \
-                         f32->f64 widening diverges on the native binary); use `Float64`",
-                        span,
-                    );
+                    let value = self.read_place(place, &peeled, span)?;
+                    let dest = Place::local(self.new_temp(MirTy::Unit));
+                    self.emit_runtime_call(RuntimeFn::PrintFloat32, vec![value], dest, span);
+                    return Ok(());
                 }
                 let op = self.read_place(place, &peeled, span)?;
                 let (kind, widened) = self.widen_for_print(op, &peeled, span)?;
@@ -8016,17 +8035,15 @@ impl<'a> FnLowerer<'a> {
                 let widened = self.cast_to_temp(value, MirTy::UInt64, span)?;
                 Ok((PrintKind::UInt, widened))
             }
-            // DEV-105: `println` of a `Float32` widens `f32 -> f64`. The HIR and MIR interpreters
-            // agree (both keep the value as f64), so a SCALAR top-level `println(Float32)` is
-            // admitted here — the interpreter-only frozen corpus (`entire_frozen_corpus_agrees`)
-            // relies on it. The native binary alone sees the f32-rounded value
-            // (`0.1f32 as f64 == 0.10000000149011612`); that divergence is refused where it would
-            // otherwise leak SILENTLY through native — the COMPOSITE Display path (see
-            // `emit_display_value`), not the scalar path. `Float64` is unaffected.
-            MirTy::Float32 => {
-                let widened = self.cast_to_temp(value, MirTy::Float64, span)?;
-                Ok((PrintKind::Float, widened))
-            }
+            // DEV-105 CLOSED (0.1-A9): a `Float32` never reaches here — both the scalar and the
+            // composite path select `PrintFloat32`/`PrintlnFloat32`, which preserve the declared
+            // width. Widening it would print the shortest round-trip of the f64 it became rather
+            // than of the `Float32` that was written, which PRINT-DISPLAY-001 forbids.
+            MirTy::Float32 => unsupported(
+                "internal: `Float32` must select the width-preserving print op, not be widened \
+                 (DEV-105 / 0.1-A9)",
+                span,
+            ),
             _ => unsupported("print/println of this type (C4.5)", span),
         }
     }

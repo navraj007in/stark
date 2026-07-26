@@ -15,7 +15,7 @@ for each frozen workload the current lowering supports.
   (`Move` *takes* the value, so any verifier-missed use-after-move explodes loudly instead of
   reading stale data); place reads/writes through projections; total statements; `Checked`
   terminators implementing STARK trap semantics per integer width (overflow bounds per type,
-  divide-by-zero incl. `MIN / -1` via range check, float div/rem-by-zero per CD-006, checked
+  divide-by-zero incl. `MIN / -1` via range check, float div/rem-by-zero per CD-006 (**superseded by CD-139 — floats no longer trap**), checked
   numeric casts); `SwitchInt` with the same `as u128` key wrap the lowering uses; direct,
   indirect (`FnValue`), and runtime calls; a fuel guard (50M steps) turning runaway-loop
   lowering bugs into clean internal errors rather than hangs. **Float printing calls

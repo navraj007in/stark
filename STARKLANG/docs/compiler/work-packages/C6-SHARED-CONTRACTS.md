@@ -17,7 +17,7 @@ C6.0 adds no Core feature and changes no behaviour.
 | Contract | Value | Authority |
 |---|---|---|
 | MIR shape version | `0.1` | `starkc/src/mir/mod.rs` `MIR_VERSION` |
-| MIR runtime surface | `0.1-A8` | `starkc/src/mir/mod.rs` `MIR_RUNTIME_SURFACE` |
+| MIR runtime surface | `0.1-A9` | `starkc/src/mir/mod.rs` `MIR_RUNTIME_SURFACE` |
 | Generated-Rust backend version | `0.1` | `starkc/src/backend/version.rs` `BACKEND_VERSION` |
 | Native runtime version | `0.1` | `starkc/stark-runtime/src/version.rs` `RUNTIME_VERSION` |
 | Target-layout contract | `stark-64-v1` (rev `1`) | `starkc/src/layout.rs` (`contract_for`) |
@@ -115,9 +115,11 @@ destructors. Message-carrying traps need `&str` values (WP-C6.3); message-less t
 ## 7. Runtime-call identity contract
 
 `mir::Callee::Runtime(RuntimeFn)` (`starkc/src/mir/mod.rs`, `enum RuntimeFn`) is the frozen
-runtime-surface identity at surface revision `0.1-A8`. The generated backend currently refuses
-`Callee::Runtime` (`Unsupported`) — WP-C6.3 (Track C) implements the runtime surface behind
-proven-equivalent wrappers. Adding or changing a `RuntimeFn` identity, or changing its signature,
+runtime-surface identity at surface revision **`0.1-A9`** — raised from `0.1-A8` by CD-138's approved
+CE3, which added `PrintFloat32`/`PrintlnFloat32` (additive, so a surface REVISION, not a MIR-shape
+version change; see `mir-amendment-A1-strings-runtime.md` §11 rev. 13). WP-C6.3 (Track C) implements
+the runtime surface behind proven-equivalent wrappers; the backend no longer refuses
+`Callee::Runtime` wholesale, and each remaining unimplemented `RuntimeFn` refuses individually. Adding or changing a `RuntimeFn` identity, or changing its signature,
 is a CE3/CE4 escalation.
 
 ---

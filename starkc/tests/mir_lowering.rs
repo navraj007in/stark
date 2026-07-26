@@ -176,9 +176,13 @@ fn golden_mini_dump() {
     // Note the real shapes this pins: integer literals default to Int32 (Core inference), the
     // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
     // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
-    let expected = "\
-// STARK MIR v0.1 (runtime-surface 0.1-A8)
-
+    // The surface is interpolated rather than written out: it is a REVISION counter that grows
+    // whenever a `RuntimeFn` is added, so pinning it literally here makes an unrelated additive
+    // change fail this golden dump instead of the thing it exists to pin (the lowered shapes).
+    let expected = format!(
+        "// STARK MIR v0.1 (runtime-surface {})\n",
+        starkc::mir::MIR_RUNTIME_SURFACE
+    ) + "
 fn main@[] {
   locals: _0: Unit [ret], _1: Unit [tmp], _2: Int32 [tmp], _3: Int64 [tmp]
   bb0:
@@ -463,7 +467,10 @@ fn string_literal_dump_round_trips_escapes() {
     let program = lower_ok(&front);
     let dump = program.dump();
     assert!(
-        dump.contains("(runtime-surface 0.1-A8)"),
+        dump.contains(&format!(
+            "(runtime-surface {})",
+            starkc::mir::MIR_RUNTIME_SURFACE
+        )),
         "dump header must carry the current runtime surface, got:\n{dump}"
     );
     assert!(

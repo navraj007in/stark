@@ -38,6 +38,16 @@ pub fn print_bool(b: bool) {
 pub fn println_f64(v: f64) {
     crate::output::stdout_line(canonical_float(v).as_bytes());
 }
+/// WP-C6.3e (DEV-105): `Float32` output, rendered at its DECLARED width. Delegates to the same
+/// [`canonical_float32`] the HIR oracle uses, so the engines cannot drift.
+pub fn println_f32(v: f32) {
+    crate::output::stdout_line(canonical_float32(v).as_bytes());
+}
+
+pub fn print_f32(v: f32) {
+    crate::output::stdout_bytes(canonical_float32(v).as_bytes());
+}
+
 pub fn print_f64(v: f64) {
     crate::output::stdout_bytes(canonical_float(v).as_bytes());
 }

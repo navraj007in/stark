@@ -5,12 +5,12 @@ Status: **APPROVED under CE3 as an additive MIR v0.1 amendment, runtime surface 
 corrections, which this revision incorporates (see §11 revision log). Rev. 1's central design
 was approved in principle; rev. 2 resolved eight required corrections; rev. 3 resolves the
 final four. Implementation of the C4.5e main body may begin against this revision.
-**Current runtime surface after subsequent dated enumerations (§11): `0.1-A8`** (rev. 5
+**Current runtime surface after subsequent dated enumerations (§11): `0.1-A9`** (rev. 5
 activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char ops as
 `0.1-A3`; rev. 8 activated checked interior Vec access as `0.1-A4`; rev. 9 activated string
 chars iteration as `0.1-A5`; rev. 10 activated shared slice views as `0.1-A6`, completing the
 A4 `core-min` MIR runtime surface; rev. 11 activated the `Box<T>` group as `0.1-A7`; rev. 12 activated the EXCLUSIVE slice view as
-`0.1-A8`).
+`0.1-A8`; rev. 13 activated the `Float32` print pair as `0.1-A9`).
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -400,6 +400,54 @@ and other interior views into runtime containers (§5d, after C4.5f frame genera
 I/O (C5.1 ABI); any literal-pool/dump-section mechanism.
 
 ## 11. Revision log
+
+**Rev. 13 — surface `0.1-A9` activation (2026-07-26, WP-C6.3e / CD-138, owner-decided under CE3;
+per CD-032's dated-enumeration rule).** Activates the `Float32` print pair, closing DEV-105.
+
+| RuntimeFn | Signature (MIR types) | Traps | Notes |
+|---|---|---|---|
+| `PrintlnFloat32` / `PrintFloat32` | `(Float32) -> Unit` | — | renders at binary32 width per PRINT-DISPLAY-001; the operand type is REQUIRED to be `Float32` (V-PRINT-1) |
+
+**Why this needed an operation rather than a convention.** Every other float print widened its
+operand to `Float64` and used `PrintFloat64`. PRINT-DISPLAY-001 renders a finite float with the
+fewest significant decimal digits that parse back to the same **declared** IEEE value, so `0.1f32`
+must print `0.1` — but after widening, nothing in the IR recorded that a `Float32` had been printed,
+and the declared width was unrecoverable. The loss was invisible until an engine rendered the value,
+and only the NATIVE engine (holding a real `f32`) rendered it differently. Giving the declared width
+its own operation makes the substitution a well-formedness error one engine catches alone, rather
+than a divergence only a three-engine comparison can find.
+
+**Verifier (V-PRINT-1).** `PrintFloat32`/`PrintlnFloat32` require a `Float32` operand and yield
+`Unit`. Rewriting either to its `Float64` counterpart — the pre-A9 lowering exactly — is therefore
+rejected by verification. `PrintFloat64`'s arity and meaning are unchanged; this amendment is purely
+additive, which is why it is a surface REVISION and not a MIR-shape version change.
+
+**Composites.** Lowering must not route a `Float32` through the widening helper in either the scalar
+or the composite path; tuple, array, `Option`, `Result` and `Vec` elements all reach the new pair.
+The composite `Float32` refusal DEV-105 forced is removed.
+
+`MIR_RUNTIME_SURFACE = "0.1-A9"`. Evidence: `tests/c63e_float32.rs` (11 three-engine cases plus the
+`PrintFloat64` substitution mutation and the A9-accepts/A8-rejects surface-gate cases).
+
+**Rev. 13, second part — V-MAP-1 (MIR-0018). NO surface change: it adds no `RuntimeFn`.** Records
+the `TypeContext::eq_impls` table introduced with the HashMap key-identity work (CD-132/133) and
+adds the verifier rule it was missing.
+
+`eq_impls: BTreeMap<(ItemId, Vec<MirTy>), Symbol>` maps a monomorphised nominal type to the `Eq::eq`
+instance selected for it. STD-HASH-001 decides key identity "exclusively with lawful `Eq`", so both
+execution engines read this ONE table rather than each resolving the impl itself — the divergence
+CD-133 found was precisely the MIR interpreter deciding independently (structurally) and silently
+disagreeing with the HIR oracle.
+
+**V-MAP-1:** every `Core(HashMap, [K, V])` reachable from a body's locals, parameters, or return
+type with a NOMINAL `K` must have an `eq_impls` entry for `K`. Violation is **MIR-0018**, an
+INTERNAL error rather than a rejectable program: a nominal key needs `impl Eq` to satisfy the key
+bound at all, so a missing entry means lowering failed to record the impl it selected. Before this
+rule the two engines failed differently — the MIR interpreter fell back to structural equality and
+produced an ANSWER, while the backend refused to emit — and the fallback was the worse half.
+Evidence: `a_missing_eq_instance_fails_verification` (clearing the table is caught) and
+`misrouting_the_eq_instance_changes_the_answer` (substituting a symbol changes the result, the half
+no verifier can catch, which is why the table must be shared rather than reconstructed).
 
 **Rev. 12 — surface `0.1-A8` activation (2026-07-20, WP-C4.7-8.6, owner-decided; per CD-032's
 dated-enumeration rule).** Activates the **exclusive** slice view, completing the slicing surface
