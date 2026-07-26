@@ -1,0 +1,13 @@
+use stark_hex::decode;
+use stark_hex::encode_lower;
+
+fn main() {
+    match decode("48656c6c6f") {
+        Ok(bytes) => {
+            println(encode_lower(bytes.as_slice()).as_str());
+        }
+        Err(_) => {
+            panic("decode failed");
+        }
+    }
+}

@@ -1,0 +1,213 @@
+use super::decode;
+use super::encode_lower;
+use super::encode_upper;
+use super::HexError;
+
+const FULL_LOWER: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff";
+const FULL_UPPER: &str = "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F202122232425262728292A2B2C2D2E2F303132333435363738393A3B3C3D3E3F404142434445464748494A4B4C4D4E4F505152535455565758595A5B5C5D5E5F606162636465666768696A6B6C6D6E6F707172737475767778797A7B7C7D7E7F808182838485868788898A8B8C8D8E8F909192939495969798999A9B9C9D9E9FA0A1A2A3A4A5A6A7A8A9AAABACADAEAFB0B1B2B3B4B5B6B7B8B9BABBBCBDBEBFC0C1C2C3C4C5C6C7C8C9CACBCCCDCECFD0D1D2D3D4D5D6D7D8D9DADBDCDDDEDFE0E1E2E3E4E5E6E7E8E9EAEBECEDEEEFF0F1F2F3F4F5F6F7F8F9FAFBFCFDFEFF";
+
+fn assert_encode(bytes: &[UInt8], lower: &str, upper: &str) {
+    if encode_lower(bytes).as_str() != lower {
+        panic("lower encode mismatch");
+    }
+    if encode_upper(bytes).as_str() != upper {
+        panic("upper encode mismatch");
+    }
+}
+
+fn assert_decode(text: &str, expected: &[UInt8]) {
+    match decode(text) {
+        Ok(actual) => {
+            assert_vec_matches_slice(&actual, expected);
+        }
+        Err(_) => {
+            panic("expected decode success");
+        }
+    }
+}
+
+fn assert_vec_matches_slice(actual: &Vec<UInt8>, expected: &[UInt8]) {
+    if actual.len() != expected.len() {
+        panic("byte vector length mismatch");
+    }
+    let mut i: UInt64 = 0u64;
+    while i < expected.len() {
+        if actual[i] != expected[i] {
+            panic("byte vector content mismatch");
+        }
+        i = i + 1u64;
+    }
+}
+
+fn assert_invalid_length(text: &str) {
+    match decode(text) {
+        Err(HexError::InvalidLength) => {}
+        Err(_) => {
+            panic("expected invalid length");
+        }
+        Ok(_) => {
+            panic("expected decode failure");
+        }
+    }
+}
+
+fn assert_invalid_character(text: &str, index: UInt64, value: UInt8) {
+    match decode(text) {
+        Err(HexError::InvalidCharacter(actual_index, actual_value)) => {
+            if actual_index != index || actual_value != value {
+                panic("invalid character payload mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected invalid character");
+        }
+        Ok(_) => {
+            panic("expected decode failure");
+        }
+    }
+}
+
+fn full_bytes() -> Vec<UInt8> {
+    let mut out: Vec<UInt8> = Vec::new();
+    let mut i: UInt64 = 0u64;
+    while i < 256u64 {
+        out.push(i as UInt8);
+        i = i + 1u64;
+    }
+    out
+}
+
+fn test_api_encode_empty_boundaries_lower_upper() {
+    let empty: &[UInt8] = &[];
+    assert_encode(empty, "", "");
+    assert_encode(&[0u8], "00", "00");
+    assert_encode(&[1u8], "01", "01");
+    assert_encode(&[15u8], "0f", "0F");
+    assert_encode(&[16u8], "10", "10");
+    assert_encode(&[127u8], "7f", "7F");
+    assert_encode(&[128u8], "80", "80");
+    assert_encode(&[171u8], "ab", "AB");
+    assert_encode(&[255u8], "ff", "FF");
+    assert_encode(&[0u8, 127u8, 128u8, 255u8], "007f80ff", "007F80FF");
+}
+
+fn test_encode_all_bytes() {
+    let bytes = full_bytes();
+    if encode_lower(bytes.as_slice()).as_str() != FULL_LOWER {
+        panic("full lower domain mismatch");
+    }
+    if encode_upper(bytes.as_slice()).as_str() != FULL_UPPER {
+        panic("full upper domain mismatch");
+    }
+}
+
+fn test_decode_empty_lower_upper_mixed() {
+    assert_decode("", &[]);
+    assert_decode("00", &[0u8]);
+    assert_decode("01", &[1u8]);
+    assert_decode("0f", &[15u8]);
+    assert_decode("0F", &[15u8]);
+    assert_decode("10", &[16u8]);
+    assert_decode("7f", &[127u8]);
+    assert_decode("7F", &[127u8]);
+    assert_decode("80", &[128u8]);
+    assert_decode("ab", &[171u8]);
+    assert_decode("AB", &[171u8]);
+    assert_decode("aB", &[171u8]);
+    assert_decode("ff", &[255u8]);
+    assert_decode("FF", &[255u8]);
+    assert_decode("007f80ff", &[0u8, 127u8, 128u8, 255u8]);
+    assert_decode("007F80FF", &[0u8, 127u8, 128u8, 255u8]);
+}
+
+fn test_decode_invalid_length() {
+    assert_invalid_length("0");
+    assert_invalid_length("f");
+    assert_invalid_length("abc");
+    assert_invalid_length("ABC");
+    assert_invalid_length("000");
+    assert_invalid_length("12345");
+}
+
+fn test_decode_invalid_character_offsets_and_values() {
+    assert_invalid_character("0x00", 1u64, 120u8);
+    assert_invalid_character(" 00", 0u64, 32u8);
+    assert_invalid_character("00 ", 2u64, 32u8);
+    assert_invalid_character("00\n", 2u64, 10u8);
+    assert_invalid_character("00\t", 2u64, 9u8);
+    assert_invalid_character("00:11", 2u64, 58u8);
+    assert_invalid_character("00-11", 2u64, 45u8);
+    assert_invalid_character("00_11", 2u64, 95u8);
+    assert_invalid_character("gg", 0u64, 103u8);
+    assert_invalid_character("0g", 1u64, 103u8);
+    assert_invalid_character("\u{00e9}0", 0u64, 195u8);
+}
+
+fn test_error_precedence() {
+    assert_invalid_character("x", 0u64, 120u8);
+    assert_invalid_character("0x0", 1u64, 120u8);
+    assert_invalid_length("abc");
+    assert_invalid_character("abz", 2u64, 122u8);
+    assert_invalid_character("\u{00e9}", 0u64, 195u8);
+}
+
+fn test_full_domain_decode_and_round_trip() {
+    let bytes = full_bytes();
+    assert_decode(FULL_LOWER, bytes.as_slice());
+    assert_decode(FULL_UPPER, bytes.as_slice());
+    match decode(encode_lower(bytes.as_slice()).as_str()) {
+        Ok(decoded_lower) => {
+            assert_vec_matches_slice(&decoded_lower, bytes.as_slice());
+        }
+        Err(_) => {
+            panic("lower round trip decode failed");
+        }
+    }
+    match decode(encode_upper(bytes.as_slice()).as_str()) {
+        Ok(decoded_upper) => {
+            assert_vec_matches_slice(&decoded_upper, bytes.as_slice());
+        }
+        Err(_) => {
+            panic("upper round trip decode failed");
+        }
+    }
+}
+
+fn test_canonicality() {
+    match decode("aB") {
+        Ok(bytes) => {
+            if encode_lower(bytes.as_slice()).as_str() != "ab" {
+                panic("canonical lower mismatch");
+            }
+            if encode_upper(bytes.as_slice()).as_str() != "AB" {
+                panic("canonical upper mismatch");
+            }
+        }
+        Err(_) => {
+            panic("canonical decode failed");
+        }
+    }
+}
+
+fn test_determinism_and_input_immutability() {
+    let bytes: Vec<UInt8> = full_bytes();
+    let before_len = bytes.len();
+    let first_lower = encode_lower(bytes.as_slice());
+    let second_lower = encode_lower(bytes.as_slice());
+    if first_lower.as_str() != second_lower.as_str() {
+        panic("encode determinism mismatch");
+    }
+    if bytes.len() != before_len || bytes[171u64] != 171u8 {
+        panic("encode mutated input");
+    }
+
+    let text = String::from("48656c6c6f");
+    let first = decode(text.as_str()).unwrap();
+    let second = decode(text.as_str()).unwrap();
+    if first != second {
+        panic("decode determinism mismatch");
+    }
+    if text.as_str() != "48656c6c6f" {
+        panic("decode mutated input");
+    }
+}
