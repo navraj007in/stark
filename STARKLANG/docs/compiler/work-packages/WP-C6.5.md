@@ -5,8 +5,9 @@
 complete; **C6.5-1 complete** (comparator extracted and extended to the full §39 observation shape,
 commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds in matrix order.
 **C6.5-3 PARTIAL** (§10.3 sentinels done; per-row witnesses, trap balance and package breadth
-outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals).
-Corpus `0.3.0`: 70 generated, 13 handwritten, 6 retained. Two findings raised and
+outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals);
+**C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
+residuals). Corpus `0.3.0`: 70 generated, 13 handwritten, 6 retained; replay 89/89 AGREEMENT. Two findings raised and
 dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
 DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
@@ -571,12 +572,58 @@ found by real data, not by review.
 
 ---
 
-## 11. What comes next
+## 11. Phase C6.5-5 — the full three-engine replay (§12, commit 7)
 
-§19's commit 7 — §12's full replay harness (admission classification, per-case timeouts, sharding,
-replay filters, the §21 evidence schema), which is what turns `c6_corpus_cases.rs` from a bridge into
-the qualification path. The rest of §10 (per-row witnesses, trap balance beyond the generated T16
-cases, package breadth) and §11.11's retention workflow remain outstanding — see §8.1 and §10.1. Migration of the 22 forked suites proceeds
+**Done.** `starkc/tests/c6_generated_corpus.rs` — the plan's named entry point — loads and validates
+the manifest, verifies the lock, enumerates cases in case-ID order, runs each on the engines it
+declares, compares observations field by field, checks them against the manifest's own expectations,
+and writes §21 evidence. The C6.5-3 bridge (`c6_corpus_cases.rs`) is retired: it ran cases but
+produced no evidence, applied no timeout, and could not be narrowed.
+
+**Full-corpus result, this commit:** 89 cases, **89 AGREEMENT, 0 failed**, `full_evidence: true`,
+`result: PASS`, in 99s.
+
+Three properties a plain loop would not have:
+
+1. **Failures are classified** (§12.2's ten admissions plus `TIMEOUT`), and the report says outright
+   when a classification is a **C6 blocker** — "an accepted Core case refused by MIR/native is a
+   blocker" is a rule that only bites if refusal and disagreement look different in the output.
+2. **A filtered run cannot be filed as closure evidence** (§12.6). Every narrowing is recorded and the
+   summary's `result` reads `PARTIAL-FILTERED`. Sharding counts as narrowing: a shard is complete
+   evidence *for the shard*, and evidence for the corpus only once every shard merges.
+3. **A timeout is a failure, not a skip** (§12.4). Per-case work runs on a worker thread against a
+   120s budget with a 3600s whole-replay ceiling. A hung native binary fails its case with the budget
+   named rather than stalling the run — the shape CD-127's infinite-loop miscompile took. The worker
+   thread is abandoned rather than killed, which is deliberate and recorded: a leaked thread in a
+   failing run is a smaller problem than an unattributable hang.
+
+**Sharding (§12.7)** is content-addressed — `u64(SHA-256(case_id)[0..8]) % total` — not index-based,
+so adding one case moves only the cases whose digests demand it instead of reshuffling every shard.
+The partition claims are checked over the real corpus at six shard counts: every case in exactly one
+shard, none omitted, none duplicated.
+
+**Determinism (§12.8)** is proven by replaying a shard twice and comparing observation hashes. The
+hash is over an explicit canonical rendering of the observation, not `Debug` output — `Debug` is
+stable in practice but not by contract, and an evidence hash that moved with a Rust release would
+invalidate stored records for no semantic reason.
+
+### 11.1 What §12 still owes
+
+| §12 requirement | State |
+| --- | --- |
+| §12.1 step 4, "construct the package graph" | single-source only; multi-file cases arrive with §15 |
+| §12.5 generated-crate path in the divergence report | not emitted — the build directory is removed after each case unless `C6_KEEP_TEMP` is set, and wiring that through the runner is §15 work |
+| `C6_KEEP_TEMP` | parsed and recorded, not yet honoured by the native runner |
+| §12.7 shard summary merging | shards produce independent summaries; the deterministic merge is CI work (commit 11) |
+
+---
+
+## 12. What comes next
+
+§19's commit 8 — §13's metamorphic families: 12 families against a floor of 24 groups / 48 members,
+of which 7 groups exist (inherited) and M08–M12 have none. The outstanding items from earlier phases
+are listed in §8.1 (§10 witnesses, trap balance, package breadth), §10.1 (retention workflow, package
+templates) and §11.1 (package graph in the replay). Migration of the 22 forked suites proceeds
 alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
 required claim resting on one comparator rather than twenty-three.
 

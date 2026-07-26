@@ -137,8 +137,11 @@ observation in the manifest because a wrong implementation is usually wrong in a
 once and they would otherwise agree. **C6.5-4 (CD-155) then built the deterministic generator: corpus `0.3.0`, 89
 cases — 70 generated across 15 templates, 13 sentinels, 6 retained**, with §11.4's floor asserted by
 test and §11.10's determinism proven by running the generator (same seed byte-identical, relocation
-stable, seed and generator-version both part of case identity, no absolute paths). Still owed by §10:
-per-row witnesses and package breadth; by §11: the retained-case workflow and the package templates.
+stable, seed and generator-version both part of case identity, no absolute paths). **C6.5-5 (CD-156) then built the §12 replay** — the named entry point, with §12.2 admission
+classifications, per-case timeouts, content-addressed sharding, §12.6 filters that cannot be mistaken
+for closure evidence, and §21 evidence output: **89 cases, 89 AGREEMENT, result PASS**. Still owed by
+§10: per-row witnesses and package breadth; by §11: the retained-case workflow and package templates;
+by §12: the package-graph step and shard-summary merging.
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
 tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
@@ -3247,6 +3250,37 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     negative: `String`/`Vec`/`Box`/`&mut`/`Drop`/mixed stay Move), `native_c61f_nominals.rs`
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
+
+- CD-156 [2026-07-26, **WP-C6.5-5 commit 7 — the full three-engine replay; 89/89 AGREEMENT**]
+  `starkc/tests/c6_generated_corpus.rs`, the plan's named §12.1 entry point: validate manifest, verify
+  lock, enumerate in case-ID order, run each case on the engines it declares, compare field by field,
+  check against the manifest's expectations, write §21 evidence. The C6.5-3 bridge is RETIRED — it ran
+  cases but produced no evidence, applied no timeout and could not be narrowed.
+  - **Result: 89 cases, 89 AGREEMENT, 0 failed, `full_evidence: true`, `result: PASS`, 99s.** Evidence
+    written to `target/c6.5-evidence/{summary,per-case}.json` in the §21.1/§21.2 schemas, with a
+    per-case `observation_hash`.
+  - **Failures are CLASSIFIED** (§12.2's ten admissions plus `TIMEOUT`) and the report says outright
+    when a classification is a **C6 blocker**. "An accepted Core case refused by MIR/native is a
+    blocker" only bites if refusal and disagreement look different in the output; now they do.
+  - **A filtered run cannot be filed as closure evidence** (§12.6): every narrowing is recorded and
+    the summary reads `PARTIAL-FILTERED`. **Sharding counts as narrowing** — a shard is complete
+    evidence for the shard and for the corpus only once merged.
+  - **A timeout is a failure, not a skip** (§12.4): 120s per case on a worker thread, 3600s whole-run
+    ceiling. A hung native binary fails its case with the budget named instead of stalling the run —
+    CD-127's infinite-loop shape. The worker is abandoned rather than killed; recorded as deliberate.
+  - **Sharding (§12.7) is content-addressed**, `u64(SHA-256(case_id)[0..8]) % total`, not index-based:
+    adding one case moves only the cases whose digests demand it rather than reshuffling every shard.
+    Partition claims checked over the real corpus at six shard counts — each case in exactly one
+    shard, none omitted, none duplicated.
+  - **Determinism (§12.8)** proven by replaying a shard twice and comparing observation hashes. The
+    hash is over an EXPLICIT canonical rendering, not `Debug` — `Debug` is stable in practice but not
+    by contract, and an evidence hash that moved with a Rust release would invalidate stored records
+    for no semantic reason.
+  - **Still owed by §12:** the package-graph step (single-source only until §15), the generated-crate
+    path in divergence reports, `C6_KEEP_TEMP` honoured by the native runner (parsed and recorded
+    today), and deterministic shard-summary merging (CI work, commit 11).
+  - **Evidence:** `c6_generated_corpus` 6/6 (99s full replay + determinism + sharding + filters),
+    `c6_corpus_generator` 8/8, `c6_corpus_manifest` 30/30, `fmt` clean.
 
 - CD-155 [2026-07-26, **WP-C6.5-4 commit 6 — the deterministic generator; corpus 0.3.0, 89 cases**]
   **70 generated cases across 15 templates**, plus the 13 sentinels and 6 retained. §11.4's floor

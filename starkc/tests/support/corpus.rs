@@ -673,3 +673,93 @@ pub fn load() -> (Vec<Case>, Lock) {
     let lock = parse_lock(&lock_text).unwrap_or_else(|reason| panic!("corpus.lock: {reason}"));
     (cases, lock)
 }
+
+// ------------------------------------------------------- §12.6/§12.7 replay control --
+
+/// §12.7's deterministic shard assignment: `u64(SHA-256(case_id)[0..8]) % shard_total`.
+///
+/// Content-addressed rather than index-based on purpose. An index-based split (`i % total`) changes
+/// every case's shard when one case is added, so two shards from adjacent commits are not
+/// comparable; a digest split moves only the cases whose digests demand it.
+pub fn shard_of(case_id: &str, shard_total: u64) -> u64 {
+    assert!(shard_total > 0, "shard_total must be positive");
+    let digest = sha256_hex(case_id.as_bytes());
+    let prefix = u64::from_str_radix(&digest[..16], 16).expect("hex prefix");
+    prefix % shard_total
+}
+
+/// §12.6's replay filters, read from the environment.
+///
+/// **A filtered run is a diagnostic run, not closure evidence** — the plan is explicit, so
+/// [`Filters::is_full_evidence`] is recorded in the evidence summary and a filtered summary can never
+/// be mistaken for a complete one.
+#[derive(Debug, Default, Clone)]
+pub struct Filters {
+    pub case: Option<String>,
+    pub category: Option<String>,
+    pub template: Option<String>,
+    pub kind: Option<String>,
+    pub engine: Option<String>,
+    pub shard_index: Option<u64>,
+    pub shard_total: Option<u64>,
+    pub keep_temp: bool,
+}
+
+impl Filters {
+    pub fn from_env() -> Self {
+        fn var(name: &str) -> Option<String> {
+            std::env::var(name).ok().filter(|value| !value.is_empty())
+        }
+        Self {
+            case: var("C6_CASE"),
+            category: var("C6_CATEGORY"),
+            template: var("C6_TEMPLATE"),
+            kind: var("C6_KIND"),
+            engine: var("C6_ENGINE"),
+            shard_index: var("C6_SHARD_INDEX").and_then(|v| v.parse().ok()),
+            shard_total: var("C6_SHARD_TOTAL").and_then(|v| v.parse().ok()),
+            keep_temp: var("C6_KEEP_TEMP").is_some(),
+        }
+    }
+
+    /// True only when nothing narrows the run. Sharding counts as narrowing: a shard is complete
+    /// evidence for the shard, and evidence for the corpus only once every shard is merged (§12.7).
+    pub fn is_full_evidence(&self) -> bool {
+        self.case.is_none()
+            && self.category.is_none()
+            && self.template.is_none()
+            && self.kind.is_none()
+            && self.engine.is_none()
+            && self.shard_index.is_none()
+            && self.shard_total.is_none()
+    }
+
+    pub fn selects(&self, case: &Case) -> bool {
+        if let Some(id) = &self.case {
+            if &case.case_id != id {
+                return false;
+            }
+        }
+        if let Some(category) = &self.category {
+            if &case.category != category {
+                return false;
+            }
+        }
+        if let Some(template) = &self.template {
+            if case.template_id.as_deref() != Some(template.as_str()) {
+                return false;
+            }
+        }
+        if let Some(kind) = &self.kind {
+            if &case.kind != kind {
+                return false;
+            }
+        }
+        if let (Some(index), Some(total)) = (self.shard_index, self.shard_total) {
+            if shard_of(&case.case_id, total) != index {
+                return false;
+            }
+        }
+        true
+    }
+}

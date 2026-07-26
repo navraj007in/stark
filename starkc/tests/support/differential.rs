@@ -669,10 +669,71 @@ pub fn parse_native_trap(name: &str, stderr: &str) -> NativeTrap {
 
 // ----------------------------------------------------------------- the check --
 
+/// A canonical, explicit rendering of an observation — the input to the evidence `observation_hash`
+/// (§21.1).
+///
+/// Written out field by field rather than derived from `Debug`: `Debug` output is stable in practice
+/// but is not a contract, and an evidence hash that changed with a Rust release would invalidate
+/// every stored record for no semantic reason. Bytes are rendered as hex so a non-UTF-8 observation
+/// hashes exactly as it was observed.
+pub fn canonical_form(observation: &Observation) -> String {
+    fn hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for &b in bytes {
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }
+        out
+    }
+    fn drops(log: &[DropEvent]) -> String {
+        log.iter()
+            .map(|event| format!("{}:{}", event.sequence, event.identity))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+    match observation {
+        Observation::Completed(done) => format!(
+            "completed\nstdout={}\nstderr={}\nexit={}\nreturned={}\ndrops={}\n",
+            hex(&done.stdout_bytes),
+            hex(&done.stderr_bytes),
+            done.exit_status,
+            match &done.returned_observation {
+                Some(value) => format!("{}:{}", value.type_tag, hex(&value.rendered)),
+                None => "none".to_string(),
+            },
+            drops(&done.drop_log),
+        ),
+        Observation::Trapped(trap) => {
+            format!(
+            "trapped\ncategory={:?}\nfile={}\nline={}\ncolumn={}\nmessage={}\nstdout_before={}\n\
+             stderr_category={}\nstderr_message={}\nstderr_location={}:{}:{}\nexit={}\ndrops={}\n",
+            trap.category,
+            trap.source_file,
+            trap.line,
+            trap.column,
+            match &trap.message_class {
+                TrapMessageClass::CategoryOnly => "category-only".to_string(),
+                TrapMessageClass::UserMessageExact(text) => format!("exact:{text}"),
+                TrapMessageClass::RuntimeCompatibility => "runtime-compatibility".to_string(),
+            },
+            hex(&trap.stdout_before_trap),
+            trap.stderr_observation.category_text,
+            trap.stderr_observation.user_message.as_deref().unwrap_or("none"),
+            trap.stderr_observation.source_file,
+            trap.stderr_observation.line,
+            trap.stderr_observation.column,
+            trap.exit_status,
+            drops(&trap.drop_log_before_trap),
+        )
+        }
+    }
+}
+
 /// The first field on which two observations differ, named. Field-by-field rather than a derived
 /// `!=` so a failure says WHICH normative dimension disagreed — with nine fields on a trap, "these
 /// two structs differ" is not a useful answer.
-fn first_difference(a: &Observation, b: &Observation) -> Option<&'static str> {
+pub fn first_difference(a: &Observation, b: &Observation) -> Option<&'static str> {
     match (a, b) {
         (Observation::Completed(x), Observation::Completed(y)) => {
             if x.stdout_bytes != y.stdout_bytes {
