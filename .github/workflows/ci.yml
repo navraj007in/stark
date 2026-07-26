@@ -99,30 +99,52 @@ jobs:
           path: ${{ runner.temp }}/c64-evidence/
 
   # §10.4: two green jobs are not agreement. This is the job that compares them.
+  #
+  # `if: always()` is load-bearing, not defensive. Without it a failed qualification job would
+  # SKIP this one, and a skipped job is not a report — it is an absence that a reader has to
+  # interpret. §10.4 forbids letting workflow-level skipping stand in for an explicit TIER-1
+  # DISAGREEMENT. So the comparison runs after success, failure or cancellation of either matrix
+  # job, downloads whatever evidence exists, and the comparator itself reports a missing or
+  # invalid record as a disagreement with a named cause.
   c64-tier1-comparison:
     name: C6.4 tier-1 agreement
     needs: c64-qualification
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # `if-no-files-found: ignore`: when both qualification jobs fail before uploading, the
+      # comparison must still run and say so, rather than failing on the download step with a
+      # message about artifacts.
       - uses: actions/download-artifact@v4
         with:
           pattern: c64-evidence-*
           path: evidence
           merge-multiple: true
+        continue-on-error: true
       - name: Compare Tier-1 records
+        id: compare
         run: |
+          mkdir -p evidence
           python3 starkc/scripts/compare-c64-evidence.py \
             evidence/macos-arm64.json evidence/linux-x64.json \
             --out evidence/qualification-summary.md
+      # Runs even when the comparison exited non-zero, so the disagreement report is published
+      # and uploaded rather than only appearing in a failed step's log.
       - name: Publish summary
         if: always()
-        run: cat evidence/qualification-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+        run: |
+          if [ -f evidence/qualification-summary.md ]; then
+            cat evidence/qualification-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The comparator produced no summary at all." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: c64-qualification-summary
           path: evidence/qualification-summary.md
+          if-no-files-found: warn
 
   # §36: Windows is Tier-2. This job gathers the gap report's raw material and must NOT gate a
   # Tier-1 claim, which is why it is `continue-on-error` and why its artifact is named a gap
@@ -174,9 +196,19 @@ jobs:
           workspaces: starkc
       - name: Build release package
         run: python scripts/build-release.py --skip-tests
+      # WP-C6.4 (§10.6): the installed smoke runs with STARK_REQUIRE_INSTALLED_RUNTIME=1.
+      #
+      # Without it this job could pass for the wrong reason. The source-checkout runtime fallback
+      # is compiled into the binary (`env!("CARGO_MANIFEST_DIR")`), the runner's checkout is still
+      # on disk at that exact path, and so a BROKEN INSTALL LAYOUT would be rescued silently and
+      # the job would stay green. §10.6 is explicit that "a pass while the source checkout remains
+      # an accidental dependency is invalid". With the variable set, discovery of the installed
+      # runtime is the only path that can succeed.
       - name: Install and smoke test (macOS/Linux)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          STARK_REQUIRE_INSTALLED_RUNTIME: "1"
         run: |
           archive="$(find target/packages -maxdepth 1 -name 'stark-*.tar.gz' -print -quit)"
           test -n "$archive"
@@ -192,6 +224,34 @@ jobs:
             "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
             ./target/stark/debug/app
           )
+      # The negative half, and the one that makes the positive half mean something: with the
+      # installed runtime REMOVED and the checkout still present, the same command must FAIL.
+      # If it succeeded, the build above proved nothing about which runtime it used.
+      - name: Installed runtime cannot fall back to the checkout (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          STARK_REQUIRE_INSTALLED_RUNTIME: "1"
+        run: |
+          test -d "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime"
+          mv "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime" "$RUNNER_TEMP/runtime-hidden"
+          test -f stark-runtime/Cargo.toml   # the checkout IS still here, at the compiled-in path
+          set +e
+          (
+            cd tests/fixtures/c5-native-workspace/app
+            "$RUNNER_TEMP/stark-install/bin/stark" build --locked --offline
+          )
+          status=$?
+          set -e
+          mv "$RUNNER_TEMP/runtime-hidden" "$RUNNER_TEMP/stark-install/lib/stark/stark-runtime"
+          if [ $status -eq 0 ]; then
+            echo "FAIL: installed stark built with no installed runtime — it fell back to the checkout" >&2
+            exit 1
+          fi
+          echo "installed stark correctly refused to build without its installed runtime (exit $status)"
+      # The same two halves on Windows. The variable is set for the smoke and REMOVED afterwards
+      # (in `finally`, so a thrown error still restores it) rather than left set for the rest of
+      # the job, where it would silently change the behaviour of any later step.
       - name: Install and smoke test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -207,6 +267,7 @@ jobs:
           if (-not (Test-Path (Join-Path $prefix "lib/stark/stark-runtime/src/lib.rs"))) {
             throw "installed native runtime is missing"
           }
+          $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
           Push-Location tests/fixtures/c5-native-workspace/app
           try {
             & (Join-Path $prefix "bin/stark.exe") run
@@ -217,7 +278,33 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "installed native artifact failed" }
           } finally {
             Pop-Location
+            Remove-Item Env:\STARK_REQUIRE_INSTALLED_RUNTIME -ErrorAction SilentlyContinue
           }
+      - name: Installed runtime cannot fall back to the checkout (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP "stark-install"
+          $runtime = Join-Path $prefix "lib/stark/stark-runtime"
+          $hidden = Join-Path $env:RUNNER_TEMP "runtime-hidden"
+          if (-not (Test-Path $runtime)) { throw "installed runtime was expected to exist" }
+          Move-Item $runtime $hidden
+          # The checkout IS still present at the path compiled into the binary.
+          if (-not (Test-Path "stark-runtime/Cargo.toml")) { throw "checkout runtime is missing" }
+          $env:STARK_REQUIRE_INSTALLED_RUNTIME = "1"
+          Push-Location tests/fixtures/c5-native-workspace/app
+          try {
+            & (Join-Path $prefix "bin/stark.exe") build --locked --offline
+            $status = $LASTEXITCODE
+          } finally {
+            Pop-Location
+            Remove-Item Env:\STARK_REQUIRE_INSTALLED_RUNTIME -ErrorAction SilentlyContinue
+            Move-Item $hidden $runtime
+          }
+          if ($status -eq 0) {
+            throw "installed stark built with no installed runtime -- it fell back to the checkout"
+          }
+          Write-Host "installed stark correctly refused to build without its installed runtime (exit $status)"
 
   fixture-conformance:
     name: spec fixture conformance

@@ -2,10 +2,12 @@
 
 This directory holds the Tier-1 qualification records for `WP-C6.4`.
 
-**The records now present are from CI run 30191381334 at `61008f6`** — both Tier-1 targets PASS,
-1705 tests each, determinism `match`, no unclassified ignores, and `qualification-summary.md`
-reports TIER-1 AGREEMENT. Everything below still governs how they got here and how the next set
-must.
+**There are no platform records here right now, and that is deliberate.** CI run 30191381334 at
+`61008f6` produced two passing, agreeing ones; the owner's second review round then strengthened
+the comparator, which now refuses them for missing `target_pointer_width`,
+`layout_contract_version`, `compiler_layout_revision` and `required_steps`. A record the gate
+rejects cannot support a claim, so they were deleted rather than carried forward. The replacements
+come from the corrected commit's run.
 
 **No record here is ever written by hand.** `WP-C6-ENTRY.md` §35 says "no real platform run
 means no platform claim", and the execution plan's §2 forbids `CLOSED` "while a required

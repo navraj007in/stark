@@ -1,7 +1,8 @@
 # C6.4 Windows Tier-2 gap report — `x86_64-pc-windows-msvc`
 
-**Status:** OPEN — three bounded gaps (G2–G4), all harness/portability, none semantic. **G1 is
-CLOSED: the C6.4 suite passes on Windows, 14/14.**
+**Status:** OPEN — two bounded gaps (G2, G4), both harness, neither semantic. **G1 CLOSED**: the
+C6.4 suite passes on Windows, 14/14. **G3 CLOSED**: the packaging script no longer classifies
+Windows by substring.
 **Authority:** `WP-C6-ENTRY.md` §36; execution plan §11.
 **Baseline:** CI run 30190825336 at `8d894e8` — the first run of the C6.4 suite on Windows. Its
 `build-and-test (windows-x64)` and `release package smoke (windows-x64)` jobs are green at the same
@@ -89,20 +90,23 @@ veto over a Tier-1 claim. That it currently passes does not change the tier.
 The two branches make equivalent assertions in different languages, so a change to one can drift
 from the other silently. Recorded rather than fixed: it is evidence-shaping, not semantics.
 
-### G3 — Triple matching is duplicated in the packaging script
+### G3 — Triple matching duplicated in the packaging script — **CLOSED**
 
 | | |
 | --- | --- |
 | Area | target classification |
-| Exact location | `starkc/scripts/build-release.py:147` — `windows = "windows" in target` |
-| Classification | **portable** (works today) |
-| Shared-code impact | it is a second, weaker copy of the classification `src/target.rs` now owns: a substring test, not a named-target lookup. A triple that merely contains `windows` would be misclassified, and a Windows triple the compiler does not name would still be packaged |
-| Bounded fix estimate | small — have the packaging script take the suffix/installer shape from a compiler-emitted target description rather than re-deriving it |
+| Was | `starkc/scripts/build-release.py` — `windows = "windows" in target` |
+| Classification | **portable**, and fixed rather than tolerated |
+| Shared-code impact | it was a second, weaker copy of what `src/target.rs` owns: a substring test rather than a named-target lookup. Two failure modes, not one — a triple merely *containing* `windows` would be misclassified, and a triple the compiler does not name at all would still be packaged, producing an artifact nothing can qualify |
 | C6 blocker? | no |
-| Owner/gate | C6.4c or C7 (which owns the user-facing target feature anyway) |
+| Owner/gate | closed in C6.4 |
 
-Recorded because §8.2 explicitly forbids duplicating triple matching across CLI, builder, backend,
-tests and scripts, and this is the one remaining copy after C6.4a centralised the Rust side.
+**Fixed** by `starkc/target-matrix.json`, read through `scripts/target_matrix.py` and pinned to
+`src/target.rs` in both directions by `target_matrix_json_matches_the_compiler`. Packaging looks up
+the exact triple and takes the executable suffix, archive format and installer pair from that entry;
+an unknown triple raises `UnknownTarget` instead of being packaged. `test_build_release.py` pins
+both failure modes, including the substring trap `sparc64-windows-unknown` — a triple that contains
+the word and is not a target STARK names.
 
 ### G4 — `/tmp` is hardcoded in the Gate-7 comparator fixture
 
@@ -132,9 +136,9 @@ shared classifier, not by a Windows-specific branch.
 
 ## 4. Disposition
 
-Windows is **Tier-2 with a bounded gap list**: G1 closed as `portable` on its first probe run, and
-three harness/portability items (G2–G4) remain, none of them semantic, none blocking a Tier-1
-claim. No Windows-specific workaround has been introduced, so §11.3's condition "does not weaken
+Windows is **Tier-2 with a bounded gap list**: G1 closed as `portable` on its first probe run, G3
+closed by the target-matrix work, and two harness items (G2, G4) remain, neither semantic, neither
+blocking a Tier-1 claim. No Windows-specific workaround has been introduced, so §11.3's condition "does not weaken
 Tier-1 evidence" holds trivially — there is nothing Windows-specific to weaken it with.
 
 The stronger reading, worth stating because it was not guaranteed: every observation the C6.4

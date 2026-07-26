@@ -1,11 +1,12 @@
 # WP-C6.4 — Tier-1 Platform Matrix
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
-**Status:** COMPLETE for everything C6.4 can reach. Both Tier-1 records exist and agree
-(`61008f6`, CI run 30191381334); matrix rows 1–23 are MET, row 25 is REPORT-ONLY with G1 closed,
-and row 24 is BLOCKED-BY-C6.5 by construction.
-Recommended closure status: **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`** — awaiting the owner's
-decision (§5).
+**Status:** implementation complete, including the owner's second review round (R1–R5, §2).
+**The Tier-1 records from the earlier run were REMOVED, not carried forward**: the comparator now
+requires fields those records do not carry, and evidence must describe the commit it claims.
+Fresh records come from the corrected commit's CI run (§4).
+Recommended closure status once they land and agree:
+**`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`** — awaiting the owner's decision (§5).
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37 (tracked, normative), §5 (fixed decisions and
 escalation classes), §6 (scope boundaries), §30 (runtime compatibility), §48 (validation at the
 closure commit).
@@ -148,6 +149,13 @@ reaching the checkout, and the checkout is not even added to the attempted list.
 `portability_installed_runtime_requirement_refuses_the_checkout_fallback`, which asserts both
 directions — the fallback is still the default, and the switch really removes it.
 
+**And, after R1, by the real installed path.** The unit test above proves the switch works; it says
+nothing about the binary users install. The CI release smoke now runs `stark run` and
+`stark build --locked --offline` under the switch on all three platforms, followed by a negative
+check: with the installed runtime moved aside and the checkout still present at the compiled-in
+path, the same build must fail. Those two together are what make the installed-runtime claim an
+observation rather than an inference.
+
 ### F5 — The generated crate was built `--offline` but never `--locked` *(evidence, P3)* → FIXED
 
 The generated-crate Cargo invocation passed `--offline` and no `--locked`, and no `Cargo.lock` was
@@ -212,6 +220,52 @@ unsupported target and says "install the toolchain" for a missing one. Neither i
 program error, and neither is `Unsupported` (which means "this backend increment does not lower
 that construct").
 
+### Second review round (owner directive, 2026-07-26) — R1–R5
+
+The findings above are from my own §34 audit. The owner's review of the delivered package found
+five more. All are fixed; each is stated as the defect, not as the fix.
+
+**R1 — the installed-runtime proof was a unit test, not the real path.** `STARK_REQUIRE_INSTALLED_
+RUNTIME=1` was proven to disable the checkout fallback *in a unit test*, while the actual release
+smoke — the one that installs a package and runs the installed `stark` — did not set it. So the
+thing shipped to users was still the unproven path. Fixed on all three platforms, and paired with
+the negative half that makes the positive half mean something: with the installed runtime moved
+aside and the checkout still present at the compiled-in path, `stark build` must FAIL. If it
+succeeded, the passing build above proved nothing about which runtime it used.
+
+**R2 — a failed qualification job silently skipped the comparison.** `c64-tier1-comparison`
+depended on `c64-qualification` without `if: always()`, so a matrix failure skipped the comparison
+entirely. §10.4 forbids workflow-level skipping standing in for an explicit TIER-1 DISAGREEMENT —
+and a skipped job is worse than a failing one, because it reads as "not applicable" rather than
+"not established". The comparison now runs after success, failure or cancellation, downloads
+whatever exists, and reports a missing or unreadable record *as* a disagreement with a named cause.
+
+**R3 — the comparator could reach agreement from incomplete evidence.** Two records that both
+omitted a field agreed on it. The comparator now validates each record *before* comparing: required
+metadata present and non-blank, self-consistent platform identity (`selected_target_triple ==
+host_triple`, tier-1, 64-bit, declared layout contract), positive layout contract version and
+compiler layout revision, every command of the fixed qualification set present and passing, corpus
+status exactly `BLOCKED-BY-C6.5` with zero cases, determinism matched with non-blank hashes, and no
+deviation, dirty worktree, quick mode, unclassified ignore or self-skipped test. Only then does it
+compare — including per-command exit codes, all four counts, normative argv, and the **full
+identities** of ignored and unclassified-ignored tests.
+
+**R4 — ignored-test identities were truncated to their last `::` component.** Two modules can each
+hold a `basic_case`; collapsing them would let a classified ignore vouch for an unrelated
+unclassified one, and would make two records with different ignores compare equal. Complete libtest
+names are now stored and compared, kept in a list so the count survives, and the harness fails when
+the number of named ignores does not equal Cargo's reported ignored count — an unattributed ignore
+cannot have been classified.
+
+**R5 — two documentation statements were stale or overstated.** Review A said float division
+follows CD-006; CD-006 was **superseded** by NUM-FLOAT-OP-001 and CD-139 (succession of normative
+authority, not a reversal on the merits). And Review A(4) claimed the absence of `cfg` in the
+runtime *proved* the platforms could not diverge. It does not: identical source can still diverge
+through the host toolchain, LLVM, libc or floating-point behaviour beneath it. The accurate claim —
+no target-conditional semantic implementation, therefore reduced divergence risk, with actual
+equivalence established by the cross-platform observations — now appears in both this document and
+`COMPILER-STATE.md`.
+
 ---
 
 ## 3. What was built
@@ -223,7 +277,10 @@ that construct").
 | `starkc/src/target.rs` | the canonical classifier: `Tier`, `TargetSpec`, `classify`, `select`, `preflight`, `TargetAvailability` (15 unit tests) |
 | `starkc/tests/c64_platform_matrix.rs` | the permanent C6.4 suite: 15 tests across `target_preflight_*`, `portability_*`, `platform_*`, `determinism_*` |
 | `starkc/scripts/run-c64-qualification.py` | the §10 qualification harness — one cross-platform entry point, one evidence pair |
-| `starkc/scripts/compare-c64-evidence.py` | the §10.4 comparison: two records → one Tier-1 agreement claim, or a non-zero exit |
+| `starkc/scripts/compare-c64-evidence.py` | the §10.4 comparison: per-record validation, then comparison; two records → one Tier-1 agreement claim, or a non-zero exit |
+| `starkc/scripts/target_matrix.py` | the one Python reader for the target matrix; every script asks it instead of carrying a table |
+| `starkc/scripts/test_c64_scripts.py` | 43 fixture-driven tests for the harness, the comparator and the matrix reader |
+| `starkc/target-matrix.json` | the repository-owned machine-readable target description, pinned to `src/target.rs` in both directions |
 | `starkc/docs/compiler/evidence/c6.4/README.md` | what lands here, how, and why it is empty until CI fills it |
 | `starkc/docs/compiler/evidence/c6.4/windows-x64-gap-report.md` | §36's Tier-2 disposition: four classified gaps (G1–G4), none semantic |
 | `STARKLANG/docs/compiler/work-packages/C6-PLATFORM-MATRIX.md` | the frozen matrix: 25 rows, requirements and evidence tables |
@@ -239,7 +296,9 @@ that construct").
 | `src/native_toolchain.rs` | `STARK_REQUIRE_INSTALLED_RUNTIME` |
 | `src/lib.rs` | `pub mod target` |
 | `stark-runtime/src/vec.rs` | `narrow_index` — width-independent bounds checks at four sites |
-| `.github/workflows/ci.yml` | `c64-qualification` (2 Tier-1 jobs), `c64-tier1-comparison`, `c64-windows-gap` |
+| `.github/workflows/ci.yml` | `c64-qualification` (2 Tier-1 jobs), `c64-tier1-comparison` (`if: always()`), `c64-windows-gap`; the release smoke now runs under `STARK_REQUIRE_INSTALLED_RUNTIME=1` and is paired with a negative check on both platform branches |
+| `starkc/scripts/build-release.py` | exact named-target lookup; suffix, archive format and installer pair come from the matrix entry, and an unknown triple is refused |
+| `starkc/scripts/test_build_release.py` | four classification tests, including the substring trap `sparc64-windows-unknown` |
 
 ### 3.3 Deliberately not done
 
@@ -257,36 +316,20 @@ that construct").
 
 ## 4. Evidence status
 
-**Both Tier-1 records exist, and they agree.** CI run 30191381334 at `61008f6`:
+**The Tier-1 records were removed and must be regenerated.** CI run 30191381334 at `61008f6` did
+produce two passing, agreeing records (1705 passed each, determinism `match`, TIER-1 AGREEMENT), and
+they were committed. The owner's second review round (R1–R5) then changed the harness and the
+comparator, so those records:
 
-| | macOS-arm64 | Linux-x64 |
-| --- | --- | --- |
-| overall | PASS | PASS |
-| passed | 1705 | 1705 |
-| failed | 0 | 0 |
-| ignored | 2 (both classified) | 2 (both classified) |
-| unclassified ignores | none | none |
-| self-skipped | 0 | 0 |
-| determinism rerun | `match` | `match` |
-| rustc | 1.97.1 (8bab26f4f 2026-07-14) | 1.97.1 (8bab26f4f 2026-07-14) |
+- lack fields the comparator now requires — `target_pointer_width`, `layout_contract_version`,
+  `compiler_layout_revision`, `required_steps`;
+- carry ignored-test identities truncated to their final `::` component (R4);
+- describe a release smoke that did not set `STARK_REQUIRE_INSTALLED_RUNTIME` (R1).
 
-`qualification-summary.md` reports **TIER-1 AGREEMENT**: same commit, same compiler/MIR/runtime/
-backend/layout versions, and identical per-command counts — `c64_platform_matrix` 15,
-`three_engine_differential` 88, `mir_differential` 132, `exec_snapshots` 4, `c63_closure_evidence`
-2, `conformance` 3, `workspace` 1461. The comparison exits non-zero on any disagreement, so this is
-an assertion rather than two lists printed side by side.
-
-The records are committed as downloaded from the runner. They were **not** taken from the earlier
-passing runs at `9ff8d35` or `e80df80`: the harness changed after each, and evidence has to describe
-the commit it claims.
-
-**Why the records name `61008f6` while HEAD is later.** A record cannot describe the commit that
-adds it — the file has to exist before it can be committed. The commit that landed these
-(`b4d5e8e`) changes documentation, the state file, and the evidence files themselves and **no
-source, no test and no script** (`git diff --stat 61008f6..b4d5e8e`), so the qualified artefact is
-unchanged. Any later commit that touches `starkc/src`, `starkc/tests`, `starkc/scripts` or
-`stark-runtime` invalidates these records and needs a fresh qualification run; that is the standing
-rule, not a caveat about this one.
+Run against the strengthened comparator they are **refused**, naming exactly those fields — which is
+the comparator behaving correctly, not a regression. Keeping them would mean claiming Tier-1
+qualification from evidence the current gate rejects. They are deleted; the replacements come from
+this commit's CI run, per §7 of the review directive: *do not reuse evidence from an earlier commit*.
 
 ### 4.1 The first CI run (`8d894e8`, run 30190825336) — and what it caught
 
@@ -346,18 +389,18 @@ Performed against the tree, not from memory. Each answer names the check.
 | --- | --- | --- |
 | 1 | Does any target-specific path redefine STARK semantics? | No. `grep -rn "cfg(target_" src` returns three hits, all in `open_in_browser` (`stark.rs`) — which opens generated documentation in a browser and touches no program semantics. |
 | 2 | Does host integer width affect Core values? | No, and this was the one place it did. `size_of`/`align_of` answer from the declared contract (`layout.rs`, CD-067), and F3 removed the last host-width dependence in the runtime's checked-index surface. |
-| 3 | Does host Rust behaviour replace a STARK rule? | No. Float width is carried per CD-140, float division follows CD-006, and every checked operation traps through the STARK trap ABI rather than Rust's own panic. |
-| 4 | Can macOS and Linux select different semantic runtime paths? | **No — structurally.** `grep -rn "cfg(" stark-runtime/src` (excluding `cfg(test)`) returns **nothing**. There is no conditional compilation anywhere in the runtime, so the two platforms cannot take different paths; they compile the same code. This is the strongest available answer and worth keeping true. |
+| 3 | Does host Rust behaviour replace a STARK rule? | No. Float width is carried per CD-140; **float division follows NUM-FLOAT-OP-001 and CD-139 — CD-006 is superseded by succession of normative authority**, not reversed on its merits (CD-139 records the succession); and every checked operation traps through the STARK trap ABI rather than Rust's own panic. |
+| 4 | Can macOS and Linux select different semantic runtime paths? | **The runtime contains no target-conditional semantic implementation, reducing divergence risk.** `grep -rn "cfg(" stark-runtime/src`, excluding `cfg(test)`, returns nothing, so no target-conditional branch exists to diverge on. That is a risk reduction, not a proof: identical source can still diverge through the host toolchain, LLVM, libc, or floating-point behaviour beneath it. **Actual Tier-1 equivalence is established by the exact cross-platform qualification observations** — the per-command counts and byte-exact expectations compared by `compare-c64-evidence.py`, not by the absence of `cfg`. |
 | 5 | Can a runtime mismatch execute user code? | No. `emit_program` emits `version::check` as the first statement of `fn main`, before the entry block; a mismatch prints and `exit(1)`s. |
 | 6 | Does any normalisation hide output, trap, Drop or provenance differences? | The three-engine harness normalises trap *messages* to categories (deliberate — no canonical message table exists), but the C6.4 rows assert exact bytes and exact `file:line:column` with the same expectation on every platform, so agreement is enforced by a shared expectation rather than by a comparison that could be loosened. |
 | 7 | Does a platform error get misreported as a STARK trap? | No. Exit 101 is reachable only from `trap::abort`/`abort_with_message`. A rustc failure, a missing artifact or a linker failure is `BackendDiagnostic::BuildFailed`, and an unsupported target is now `TargetRejected`. |
-| 8 | Can a Tier-2 workaround alter Tier-1 semantics? | No workaround exists to do so — see (4). Windows passes the matrix on the same unconditional code. |
+| 8 | Can a Tier-2 workaround alter Tier-1 semantics? | No Windows-specific branch exists in the runtime or the backend to carry such a workaround (see 4), and none was added: Windows passes the C6.4 matrix on the same code Tier-1 runs. Were one ever added, only the Tier-1 observations would settle whether it changed anything. |
 
 ### Review B — target and compatibility architecture
 
 | # | Question | Answer |
 | --- | --- | --- |
-| 1 | Is target classification centralised? | In Rust, yes — `src/target.rs` is the only place a triple is interpreted. **Not in Python**: see the finding below. |
+| 1 | Is target classification centralised? | Yes, in both languages after R5's companion fix: `src/target.rs` in Rust, and `target-matrix.json` read through `scripts/target_matrix.py` in Python, pinned to each other in both directions. No substring matching remains. |
 | 2 | Are host and selected target distinct? | Yes — `TargetSelection` carries both, and `build.json` records both. |
 | 3 | Is layout selection versioned? | Yes — `TargetLayout::identity` carries the contract name, contract version and compiler revision, all three recorded in the manifest and in the build key. |
 | 4 | Are compiler/MIR/runtime/backend versions checked? | Recorded, all of them; *checked* at run time only for `runtime_version`, which is the runtime crate's own authority under §9.2. Unchanged by this package. |
@@ -366,13 +409,18 @@ Performed against the tree, not from memory. Each answer names the check.
 | 7 | Can an unknown target inherit a supported layout? | No — `classify` is an exact-match lookup, and the contract is checked against the target's declaration. |
 | 8 | Can installed-runtime discovery fall back to the checkout? | By default yes (unchanged, deliberate); under `STARK_REQUIRE_INSTALLED_RUNTIME=1` no, and the checkout is not even attempted. Note the dev-only `NativeToolchainOptions::development()` still points at the checkout by construction — that is the direct-backend-test entry point, not the CLI path. |
 
-**Finding B-1, fixed in this package.** The qualification scripts are Python and cannot call
-`src/target.rs`, so they carried their own tier table — a second copy of exactly what §8.2 forbids
-duplicating. Rather than accept it or pretend it was not duplication, the copy is now *checked*:
-`target_preflight_python_harness_tier_table_matches_the_compiler` reads both scripts and fails if
-any named target's tier is missing or if a script claims a Tier-1 target the compiler does not.
-The remaining copy is `build-release.py`'s `"windows" in target` substring test, recorded as G3 in
-the Windows gap report.
+**Finding B-1 — fully resolved after R1–R5, not merely checked.** The Python scripts cannot call
+`src/target.rs`, so each carried its own tier table, and `build-release.py` classified Windows with
+the substring test `"windows" in target` — wrong in two directions, since it would classify an
+unknown triple containing the word AND would package a triple the compiler does not name at all.
+
+There is now **one** description, `starkc/target-matrix.json`, read by every Python consumer through
+`scripts/target_matrix.py`, and pinned to `src/target.rs` in **both** directions by
+`target_matrix_json_matches_the_compiler`. Checking one direction catches half the drift — the half
+noticed first. Packaging derives executable suffix, archive format and installer pair from the exact
+entry and raises `UnknownTarget` otherwise; `test_build_release.py` pins that with four cases,
+including the substring trap `sparc64-windows-unknown`. G3 in the Windows gap report is closed by
+this.
 
 ### Review D — evidence and CI
 
@@ -380,15 +428,15 @@ the Windows gap report.
 | --- | --- | --- |
 | 1 | Do both Tier-1 jobs run against the same commit? | Yes — each is given `$GITHUB_SHA` and compares it with `git rev-parse HEAD`; the comparison then requires both records to name the same commit. |
 | 2 | Are exact test counts recorded? | Yes, per command and in aggregate. |
-| 3 | Are ignored/skipped tests visible? | Yes — by **name**, split into `classified_ignores` (with reasons) and `unclassified_ignores`. §4.1. |
-| 4 | Does a failed command stop qualification? | Every step runs (so one failure does not hide the rest), and any failure makes `overall_result: FAIL` and exits non-zero. |
+| 3 | Are ignored/skipped tests visible? | Yes — by **complete libtest name** (R4), split into `classified_ignores` (with reasons) and `unclassified_ignores`, and the count must equal the number of named ignores. §4.1. |
+| 4 | Does a failed command stop qualification? | Every step runs (so one failure does not hide the rest), and any failure makes `overall_result: FAIL` and exits non-zero. After R2 a failed qualification job no longer skips the comparison: it runs under `if: always()` and reports the absent record as a disagreement. |
 | 5 | Are artifacts uploaded even on failure? | Yes — `if: always()` on all three uploads. Demonstrated: the failed run above still produced its evidence. |
 | 6 | Can a partial matrix be mistaken for a complete claim? | No — `--only` and `--quick` each record a deviation naming themselves as not a qualification claim, and the comparison rejects any record with `quick_mode` set. |
 | 7 | Is the generated corpus nonempty? | It does not exist; `generated_corpus_status: BLOCKED-BY-C6.5` is asserted in every record. §1.2. |
 | 8 | Is determinism actually a second run? | Yes — a second **process**, compared on a printed build key and generated-source hash. Verified locally: `match`. |
-| 9 | Is installed-runtime execution outside the checkout? | `c63_closure_evidence` builds against a copied runtime; the CI smoke installs to `$RUNNER_TEMP`; and the fallback can now be switched off. |
+| 9 | Is installed-runtime execution outside the checkout? | Yes, and proven on the real path after R1: `c63_closure_evidence` builds against a copied runtime; the CI release smoke runs the installed `stark` under `STARK_REQUIRE_INSTALLED_RUNTIME=1`; and a negative step removes the installed runtime, leaves the checkout in place, and requires the build to fail. |
 | 10 | Is offline operation actively proved? | `--locked --offline` with an emitted lock over a path-only graph with no `source`/`checksum` — nothing in the graph *can* reach a registry. |
-| 11 | Are platform observations compared rather than listed? | Yes — `compare-c64-evidence.py`, which exits non-zero on any disagreement. Verified against synthetic divergence. |
+| 11 | Are platform observations compared rather than listed? | Yes, and after R3 each record is *validated* before the two are compared, so agreement is unreachable from incomplete evidence. 43 fixture tests in `scripts/test_c64_scripts.py` cover both the acceptance and every refusal. |
 | 12 | Can Windows green be mistaken for Tier-1 qualification? | Structurally no: Windows produces a *gap-probe log*, never an evidence record; the comparison requires the two records to be the two different Tier-1 triples; and the gap report opens by stating what Windows green does and does not prove. |
 
 ### Review E — adversarial probes
@@ -407,7 +455,7 @@ the Windows gap report.
 | output with Unicode and a final newline | `platform_stdout_is_exact_bytes…` | exact bytes, no `\r` |
 | repeated clean build | `determinism_two_clean_builds_agree…` | identical key and source |
 | runtime metadata mismatch | `c63_closure_evidence::a_runtime_version_mismatch_is_detected` | rejected before user code |
-| source checkout unavailable during the installed-runtime test | `portability_installed_runtime_requirement_refuses_the_checkout_fallback` | discovery fails |
+| source checkout unavailable during the installed-runtime test | `portability_installed_runtime_requirement_refuses_the_checkout_fallback`, **and** the CI negative step on all three platforms | discovery fails; the real installed CLI fails too |
 | offline build with no reachable registry | `portability_generated_crate_is_locked_and_network_free` | path-only graph |
 | an intentionally skipped required test fails qualification | **CI run 30190825336** | proved by a real failure, not a simulation (§4.1) |
 | file-not-found mapping | — | **not probed.** `std-full` file operations are excluded from C6.3 and absent from every engine, so there is no mapping to probe |
@@ -416,19 +464,32 @@ the Windows gap report.
 
 ## 5. What closure requires
 
-Ordered, with nothing else outstanding:
-
-1. ~~let `c64-qualification` produce both Tier-1 records at one commit~~ — **done**, `61008f6`;
-2. ~~`c64-tier1-comparison` reports TIER-1 AGREEMENT~~ — **done**;
-3. ~~commit the two records plus `qualification-summary.md`, and fill Table B~~ — **done**;
+1. ~~let `c64-qualification` produce both Tier-1 records at one commit~~ — the mechanism is proven
+   (three green runs: `e80df80`, `61008f6`, and the earlier `9ff8d35`). **Must be redone at this
+   commit**, because R1–R5 changed the harness, the comparator and the smoke;
+2. `c64-tier1-comparison` reports TIER-1 AGREEMENT at that commit;
+3. commit the two records plus `qualification-summary.md`, and fill `C6-PLATFORM-MATRIX.md`
+   Table B from them;
 4. ~~read the `c64-windows-gap` probe and resolve G1~~ — **done**: 14/14 on Windows, G1 closed as
-   `portable` (§4.1);
-5. **record the owner's closure decision — the only step left.**
+   `portable` (§4.1). G3 is also closed, by the target-matrix work;
+5. **record the owner's closure decision.**
 
-Steps 1–4 are done, so the status is now `CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. `CLOSED` is
-not available and will not be until C6.5's generated corpus exists and replays through this
-harness on both Tier-1 targets (§1.2). That is a decision about C6.5's schedule, not about whether
-C6.4 did its work.
+Steps 1–3 are a single CI cycle on this commit. The status is `NOT-YET` until they complete, then
+`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. `CLOSED` is not available and will not be until C6.5's
+generated corpus exists and replays through this harness on both Tier-1 targets (§1.2) — a decision
+about C6.5's schedule, not about whether C6.4 did its work.
+
+### 5.1 Closure checklist (§19), as it now stands
+
+| Group | State |
+| --- | --- |
+| baseline and matrix | commit pinned, versions recorded, matrix complete (25 rows), corpus sequencing resolved |
+| target preflight | host and selected target identified separately; Tier-1 accepted; unsupported rejected before Cargo; missing toolchain distinguished; layout and suffix selected from the target; metadata recorded; mismatch rejects before user code |
+| portability | all eleven §34 categories audited; ten findings (F1–F10) dispositioned, eight fixed; no substring target matching remains anywhere |
+| evidence | harness, comparator and CI wiring complete and tested (43 fixture tests); **the two Tier-1 records are pending this commit's run** |
+| Tier-1 agreement | mechanism proven on three earlier runs; to be re-established here |
+| Windows | real run inspected, gap report complete, G1 and G3 closed, G2 and G4 open and classified, none semantic |
+| reviews and records | A, B, D, E complete (§4.5) and corrected by R1–R5; C is the §2 register; ledger and state updated; **owner closure decision outstanding** |
 
 ---
 

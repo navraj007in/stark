@@ -124,5 +124,65 @@ class ReleasePackageTests(unittest.TestCase):
                 self.assertIn(f"{package_root}/uninstall.ps1", names)
 
 
+class TargetClassificationTests(unittest.TestCase):
+    """WP-C6.4: packaging classifies by exact named target, never by substring.
+
+    The replaced code was `windows = "windows" in target`. These tests pin the two ways that was
+    wrong — a triple the compiler does not name must not be packaged at all, and a triple's shape
+    must not decide its packaging.
+    """
+
+    def test_an_unknown_triple_is_refused_rather_than_packaged(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="stark-release-test-") as temporary:
+            root = Path(temporary)
+            release = root / "release"
+            release.mkdir()
+            for triple in (
+                "x86_64-unknown-linux-musl",
+                "i686-pc-windows-msvc",
+                "aarch64-unknown-linux-gnu",
+                # The substring trap: contains "windows", is not a target STARK names.
+                "sparc64-windows-unknown",
+            ):
+                with self.assertRaises(
+                    build_release.target_matrix.UnknownTarget, msg=triple
+                ):
+                    build_release.package_release(
+                        target=triple,
+                        version="0.1.0-test",
+                        release_dir=release,
+                        out_dir=root / "packages",
+                    )
+
+    def test_packaging_shape_comes_from_the_named_entry(self) -> None:
+        matrix = build_release.target_matrix
+        windows = matrix.require("x86_64-pc-windows-msvc")
+        self.assertEqual(windows.executable_suffix, ".exe")
+        self.assertEqual(windows.archive, "zip")
+        self.assertEqual(windows.installers, ("install.ps1", "uninstall.ps1"))
+        for triple in ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu"):
+            entry = matrix.require(triple)
+            self.assertEqual(entry.executable_suffix, "")
+            self.assertEqual(entry.archive, "tar.gz")
+            self.assertEqual(entry.installers, ("install.sh", "uninstall.sh"))
+            self.assertTrue(entry.is_tier1)
+
+    def test_classification_is_exact_not_prefix_or_substring(self) -> None:
+        matrix = build_release.target_matrix
+        self.assertIsNotNone(matrix.classify("x86_64-unknown-linux-gnu"))
+        for near_miss in (
+            "x86_64-unknown-linux-gnux32",
+            "x86_64-unknown-linux",
+            "86_64-unknown-linux-gnu",
+        ):
+            self.assertIsNone(matrix.classify(near_miss), near_miss)
+
+    def test_tier1_is_exactly_the_two_gate_c6_targets(self) -> None:
+        self.assertEqual(
+            sorted(build_release.target_matrix.tier1_triples()),
+            ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

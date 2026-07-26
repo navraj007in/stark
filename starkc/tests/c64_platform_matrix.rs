@@ -205,50 +205,174 @@ fn target_preflight_diagnostic_names_the_supported_tier1_targets() {
 }
 
 /// §8.2 forbids duplicating triple matching across CLI, builder, backend, tests and scripts. The
-/// Rust side is centralised in `src/target.rs`, but the qualification scripts are Python and cannot
-/// call it, so they carry their own tier table. Review B (`WP-C6.4.md` §7.2) recorded that as a
-/// real duplication rather than waving it through.
+/// Rust side is centralised in `src/target.rs`; the packaging and qualification scripts are Python
+/// and cannot call it. Rather than let each carry its own copy, they all read one repository-owned
+/// export, `target-matrix.json`, and this test pins that export to the compiler's table.
 ///
-/// This is the compensating control: the copy is *checked* against the compiler's table instead of
-/// merely believed. A target added or re-tiered in `src/target.rs` and not in the scripts fails
-/// here, which is the failure mode a hand-mirrored constant actually has — silent divergence, not
-/// a broken build.
+/// **Both directions.** A target present in the compiler and missing from the JSON would make the
+/// packaging script reject a target STARK supports; a target present in the JSON and missing from
+/// the compiler would let it package a target the compiler will not build for. Checking one
+/// direction catches half the drift, which is the half that happens to be noticed first.
+///
+/// A hand-written scan rather than a JSON dependency: `starkc` has no `serde_json`, the file is one
+/// this repository writes in a fixed shape, and adding a dependency to a compiler in order to read
+/// its own export is not a trade worth making. The scan is strict — a malformed entry fails rather
+/// than being skipped, which is what stops "no entries matched" from reading as "everything agreed".
 #[test]
-fn target_preflight_python_harness_tier_table_matches_the_compiler() {
-    let scripts = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts");
-    let qualification = std::fs::read_to_string(scripts.join("run-c64-qualification.py"))
-        .expect("qualification harness");
-    let comparison =
-        std::fs::read_to_string(scripts.join("compare-c64-evidence.py")).expect("comparison gate");
+fn target_matrix_json_matches_the_compiler() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target-matrix.json");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{} must exist and be readable: {e}", path.display()));
 
+    let entries = parse_target_matrix(&text);
+    assert!(
+        !entries.is_empty(),
+        "target-matrix.json declares no targets"
+    );
+
+    // Compiler -> JSON, field by field.
     for spec in target::known_targets() {
-        let expected = format!("\"{}\": \"{}\"", spec.triple, spec.tier);
+        let entry = entries
+            .iter()
+            .find(|e| e.triple == spec.triple)
+            .unwrap_or_else(|| {
+                panic!(
+                    "target-matrix.json is missing `{}`, which src/target.rs names",
+                    spec.triple
+                )
+            });
+        assert_eq!(
+            entry.tier,
+            spec.tier.to_string(),
+            "tier for {}",
+            spec.triple
+        );
+        assert_eq!(
+            entry.layout_contract, spec.layout_contract,
+            "layout_contract for {}",
+            spec.triple
+        );
+        assert_eq!(
+            entry.executable_suffix, spec.executable_suffix,
+            "executable_suffix for {}",
+            spec.triple
+        );
+        assert_eq!(
+            entry.pointer_width, spec.pointer_width,
+            "pointer_width for {}",
+            spec.triple
+        );
+        // Packaging fields have no compiler counterpart, so they are checked for being present and
+        // internally coherent rather than against src/target.rs.
         assert!(
-            qualification.contains(&expected),
-            "run-c64-qualification.py must map {} to {} — its tier table has drifted from \
-             src/target.rs",
-            spec.triple,
-            spec.tier
+            matches!(entry.archive.as_str(), "tar.gz" | "zip"),
+            "unknown archive format `{}` for {}",
+            entry.archive,
+            spec.triple
+        );
+        assert_eq!(
+            entry.installers.len(),
+            2,
+            "{} must declare an install/uninstall pair",
+            spec.triple
         );
     }
-    for triple in target::tier1_triples() {
-        let quoted = format!("\"{triple}\"");
-        assert!(
-            qualification.contains(&quoted) && comparison.contains(&quoted),
-            "both scripts must name the tier-1 target {triple}"
+
+    // JSON -> compiler. This is the direction that would otherwise let the packaging script ship a
+    // target the compiler refuses to build for.
+    for entry in &entries {
+        let spec = target::classify(&entry.triple).unwrap_or_else(|| {
+            panic!(
+                "target-matrix.json declares `{}`, which src/target.rs does not name",
+                entry.triple
+            )
+        });
+        assert_eq!(
+            entry.tier,
+            spec.tier.to_string(),
+            "tier for {}",
+            entry.triple
         );
     }
-    // And the scripts must not claim a Tier-1 target the compiler does not name.
-    for line in comparison.lines().chain(qualification.lines()) {
-        if let Some(rest) = line.trim().strip_prefix("TIER1 = ") {
-            for candidate in rest.split('"').filter(|s| s.contains('-')) {
-                assert!(
-                    target::classify(candidate).is_some_and(|s| s.tier == Tier::One),
-                    "{candidate} is listed as tier-1 by a script but is not tier-1 to the compiler"
-                );
+    assert_eq!(
+        entries.len(),
+        target::known_targets().len(),
+        "target-matrix.json and src/target.rs declare different numbers of targets"
+    );
+}
+
+struct MatrixEntry {
+    triple: String,
+    tier: String,
+    layout_contract: String,
+    executable_suffix: String,
+    pointer_width: u32,
+    archive: String,
+    installers: Vec<String>,
+}
+
+/// A deliberately narrow reader for the fixed shape this repository writes: one object per target,
+/// one field per line. It is not a JSON parser and does not pretend to be — it panics on anything
+/// it does not recognise inside a target object, so a reshaped file fails loudly here instead of
+/// silently matching nothing.
+fn parse_target_matrix(text: &str) -> Vec<MatrixEntry> {
+    let targets_at = text
+        .find("\"targets\"")
+        .expect("target-matrix.json must have a `targets` array");
+    let mut entries = Vec::new();
+    let mut current: Option<MatrixEntry> = None;
+    for line in text[targets_at..].lines() {
+        let line = line.trim();
+        if line == "{" {
+            current = Some(MatrixEntry {
+                triple: String::new(),
+                tier: String::new(),
+                layout_contract: String::new(),
+                executable_suffix: String::new(),
+                pointer_width: 0,
+                archive: String::new(),
+                installers: Vec::new(),
+            });
+            continue;
+        }
+        if line.starts_with('}') {
+            if let Some(entry) = current.take() {
+                assert!(!entry.triple.is_empty(), "a target entry has no triple");
+                entries.push(entry);
             }
+            continue;
+        }
+        let Some(entry) = current.as_mut() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().trim_matches('"');
+        let value = value.trim().trim_end_matches(',').trim();
+        let unquoted = value.trim_matches('"').to_string();
+        match key {
+            "triple" => entry.triple = unquoted,
+            "tier" => entry.tier = unquoted,
+            "layout_contract" => entry.layout_contract = unquoted,
+            "executable_suffix" => entry.executable_suffix = unquoted,
+            "archive" => entry.archive = unquoted,
+            "pointer_width" => {
+                entry.pointer_width = value.parse().expect("pointer_width must be an integer")
+            }
+            "installers" => {
+                entry.installers = value
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(|s| s.trim().trim_matches('"').to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
+            other => panic!("unrecognised field `{other}` in a target-matrix.json entry"),
         }
     }
+    entries
 }
 
 /// §8.5(14). The two failures need different remedies — retarget versus install — so they must be

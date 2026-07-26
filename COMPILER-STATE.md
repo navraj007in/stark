@@ -104,19 +104,21 @@ evidence surfaced (DEV-109 via CD-140, DEV-110 via CD-139) and DEV-108 (CD-138).
 CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features` across linux-x64,
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
-**WP-C6.4 CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS (CD-143) — Tier-1 platform matrix.**
+**WP-C6.4 (CD-143/CD-144) — Tier-1 platform matrix. Implementation complete; Tier-1 records being
+retaken at the corrected commit.**
 Phases 0/a/b/c/d are built: the matrix is frozen (`C6-PLATFORM-MATRIX.md`, 25 rows), target
 classification is CENTRALISED in the new `starkc/src/target.rs` (before this, the rustc host WAS the
 target and `stark-64-v1` was inherited by any triple), the §34 portability audit found TEN host
 assumptions of which eight are fixed, and the qualification harness + Tier-1 comparison gate + three
-CI jobs exist. **BOTH TIER-1 RECORDS EXIST AND AGREE** — CI run 30191381334 at `61008f6`: 1705
-passed / 0 failed on EACH of macos-arm64 and linux-x64, 2 ignores (both classified), 0 unclassified,
-0 self-skipped, determinism `match`, and `qualification-summary.md` reports TIER-1 AGREEMENT on
-identical per-command counts. Matrix rows 1–23 MET; row 25 REPORT-ONLY with G1 closed (Windows
-passed the C6.4 suite 14/14 on its first run); **row 24 (generated corpus) BLOCKED-BY-C6.5 by
-construction**, which is why `CLOSED` is not available and the status caps at
-`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. Awaiting the owner's closure decision — the only
-outstanding step. Details in `WP-C6.4.md`; evidence in `starkc/docs/compiler/evidence/c6.4/`.
+CI jobs exist. CI run 30191381334 at `61008f6` produced two PASSING, AGREEING Tier-1
+records (1705 passed each, TIER-1 AGREEMENT), so the mechanism is proven. **Those records were then
+REMOVED (CD-144)**: the owner's second review round strengthened the comparator, and records lacking
+its now-required fields are refused by it — keeping them would claim qualification from evidence the
+current gate rejects. Fresh records come from the corrected commit. Matrix row 25 REPORT-ONLY with
+G1 and G3 closed (Windows passed the C6.4 suite 14/14); **row 24 (generated corpus) BLOCKED-BY-C6.5
+by construction**, which is why `CLOSED` is not available and the ceiling is
+`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`. Details in `WP-C6.4.md`; evidence in
+`starkc/docs/compiler/evidence/c6.4/`.
 Also open:
 C4/C5/C6
 C6.5 differential corpus, C6.6 gate exit. (F4 parser half `&&T`/`**x`, DEV-083,
@@ -3196,6 +3198,60 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     (Copy-local works, Move-local + any borrow-carrier return refused). `fmt --check` and strict
     `clippy` clean.
 
+- CD-144 [2026-07-26, **WP-C6.4 owner review round — five findings, and the Tier-1 records withdrawn**]
+  The owner reviewed the delivered package and found five defects. All fixed. Stated as the defect,
+  not the fix, because the pattern in three of them is the same: **a control that was proven
+  somewhere other than where it operates.**
+  - **R1 — the installed-runtime proof was a unit test, not the real path.**
+    `STARK_REQUIRE_INSTALLED_RUNTIME=1` was proven to disable the checkout fallback in a unit test
+    while the actual release smoke — the one that installs a package and runs the installed `stark`
+    — did not set it. The thing shipped to users was still the unproven path. Now set on all three
+    platforms, AND paired with the negative half that makes the positive half mean anything: with
+    the installed runtime moved aside and the checkout still present at the compiled-in path,
+    `stark build` must FAIL. Without that step, a passing build proves nothing about WHICH runtime
+    it used.
+  - **R2 — a failed qualification job silently SKIPPED the comparison.** `c64-tier1-comparison`
+    lacked `if: always()`. A skipped job is worse than a failing one: it reads as "not applicable"
+    rather than "not established". §10.4 forbids workflow-level skipping standing in for an
+    explicit TIER-1 DISAGREEMENT. The comparison now runs after success, failure or cancellation,
+    and reports a missing or unreadable record AS a disagreement with a named cause.
+  - **R3 — the comparator could reach agreement from incomplete evidence.** Two records that both
+    omitted a field agreed on it. Each record is now VALIDATED before the two are compared:
+    required metadata non-blank, self-consistent platform identity (selected==host, tier-1, 64-bit,
+    declared contract), positive layout contract version and revision, every command of the fixed
+    set present and passing, corpus exactly `BLOCKED-BY-C6.5` with zero cases, determinism matched
+    with non-blank hashes, no deviation/dirty/quick/unclassified/self-skip. Then compared —
+    per-command exit code, all four counts, normative argv, and FULL ignored-test identities.
+  - **R4 — ignored-test identities were truncated to the last `::` component.** Two modules can each
+    hold a `basic_case`; collapsing them would let a classified ignore vouch for an unrelated
+    unclassified one. Complete libtest names now, in a list so the count survives, and the named
+    count must equal Cargo's ignored count.
+  - **R5 — two documentation claims were stale or overstated.** (a) Review A said float division
+    follows CD-006; **CD-006 is SUPERSEDED by NUM-FLOAT-OP-001 and CD-139** — my own CD-139 entry
+    records that succession, and I then cited the superseded decision three days later. (b) Review
+    A(4) claimed the absence of `cfg` in the runtime PROVED the platforms cannot diverge. It does
+    not: identical source can still diverge through the host toolchain, LLVM, libc or floating-point
+    behaviour beneath it. Corrected in both this file and `WP-C6.4.md` to the accurate claim — no
+    target-conditional semantic implementation, therefore REDUCED RISK, with actual equivalence
+    established by the cross-platform observations.
+  - **B-1 fully resolved, not merely checked.** `build-release.py` classified Windows with
+    `"windows" in target` — wrong in two directions, since it misclassifies an unknown triple
+    containing the word AND packages triples the compiler does not name at all. There is now ONE
+    description, `starkc/target-matrix.json`, read by every Python consumer through
+    `scripts/target_matrix.py` and pinned to `src/target.rs` in BOTH directions by
+    `target_matrix_json_matches_the_compiler`. Checking one direction catches half the drift — the
+    half noticed first. Gap-report G3 CLOSED.
+  - **THE TIER-1 RECORDS WERE WITHDRAWN.** `61008f6`'s records passed and agreed, but the
+    strengthened comparator REFUSES them — they lack `target_pointer_width`,
+    `layout_contract_version`, `compiler_layout_revision` and `required_steps`, and their ignore
+    identities are truncated. Verified by running the new comparator against them. Keeping them
+    would claim qualification from evidence the current gate rejects, so they are deleted and
+    retaken at the corrected commit. Matrix Table B rows 1–23 reset to `pending`.
+  - **Evidence:** `c64_platform_matrix` 15, `test_c64_scripts.py` **43 (new)**,
+    `test_build_release.py` 6 (4 new), `--list` ok, `fmt --check` clean, **`clippy --workspace
+    --all-targets --all-features -D warnings` clean (5m28s)**. The full workspace suite is CI's,
+    per the standing rule recorded in CD-142.
+
 - CD-143 [2026-07-26, **WP-C6.4 OPENED and BUILT — the compiler had no notion of a target**]
   The Tier-1 platform matrix. Owner directed it to start ahead of the C6.3 confirming run; that run
   landed first anyway (CD-142), so C6.4 opens on an admitted runtime. Baseline `5d2c85d`.
@@ -3248,13 +3304,15 @@ DEV-099 fixed (`hir_field_ty` now handles arrays).
     parses `test <name> ... ignored` lines, fails any unclassified name, ALSO fails when a nonzero
     ignored count cannot be attributed to names, and records both sets in the evidence.
   - **Review passes A/B/D/E performed** (`WP-C6.4.md` §4.5), against the tree rather than from
-    memory. Strongest answer: `grep -rn "cfg(" stark-runtime/src` excluding `cfg(test)` returns
-    NOTHING — there is no conditional compilation anywhere in the runtime, so two platforms cannot
-    take different semantic paths; they compile the same code. **Review B found a real duplication**
-    (B-1): the Python qualification scripts carried their own tier table, exactly what §8.2 forbids.
-    Python cannot call `src/target.rs`, so the copy is now CHECKED against it by a test that fails
-    on drift. One probe is honestly NOT run: file-not-found mapping, because `std-full` file
-    operations are absent from every engine.
+    memory. `grep -rn "cfg(" stark-runtime/src` excluding `cfg(test)` returns NOTHING, so the
+    runtime contains **no target-conditional semantic implementation** — which REDUCES divergence
+    risk rather than proving its absence. (An earlier draft of this entry said the two platforms
+    "cannot take different semantic paths"; that overstated it. Identical source can still diverge
+    through the host toolchain, LLVM, libc or the floating-point behaviour beneath it. Actual
+    Tier-1 equivalence is established by the exact cross-platform qualification observations, not
+    by the absence of `cfg`.) **Review B found a real duplication** (B-1): the Python qualification
+    scripts carried their own tier table, exactly what §8.2 forbids. One probe is honestly NOT run:
+    file-not-found mapping, because `std-full` file operations are absent from every engine.
   - **THE QUALIFYING RUN: CI 30191381334 at `61008f6`, both tier-1 jobs and the agreement gate
     green.** macos-arm64 and linux-x64 each: 1705 passed, 0 failed, 2 ignored (both classified), 0
     unclassified, 0 self-skipped, determinism `match`, rustc 1.97.1. Identical per-command counts —

@@ -3,11 +3,11 @@
 **Owner:** WP-C6.4 (`WP-C6.4.md`)
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§32–37
 **Frozen:** 2026-07-26, at `5d2c85d` (Gate C6, immediately after WP-C6.3 closed via CD-142)
-**Status:** **both Tier-1 records exist and agree**, at `61008f6` (CI run 30191381334) — 1705
-tests passed on each target, 0 failed, identical per-command counts, determinism `match`, no
-unclassified ignores. Rows 1–23 are MET; row 24 is BLOCKED-BY-C6.5; row 25 is REPORT-ONLY and its
-G1 is closed. See `evidence/c6.4/qualification-summary.md` for the comparison, which is the artifact
-that turns two green jobs into one agreement claim.
+**Status:** every row is implemented and its command exists. Rows 1–23 await a Tier-1 record at the
+current commit: an earlier run (`61008f6`) produced two passing, agreeing records, but the owner's
+second review round strengthened the comparator and those records no longer satisfy it, so they were
+removed rather than carried forward (see the note under Table B). Row 24 is BLOCKED-BY-C6.5; row 25
+is REPORT-ONLY with G1 and G3 closed.
 
 ## How to read this file
 
@@ -62,7 +62,7 @@ All commands run from `starkc/`.
 | 22 | three-engine suite | HIR/MIR/native agreement against real native stdout | `cargo test --test three_engine_differential` | same | none | green | PRE-EXISTING |
 | 23 | determinism rerun | two runs in separate **processes** agree on build key and generated source | `run-c64-qualification.py` (runs `determinism_` twice) | same | none | `determinism_result: match` | IMPLEMENTED |
 | 24 | generated corpus | the deterministic generated corpus runs on both Tier-1 targets | — | — | — | — | **BLOCKED-BY-C6.5** |
-| 25 | Windows disposition | a classified gap report exists | CI `c64-windows-gap` probe | `cargo test --test c64_platform_matrix` | — | four classified gaps, none semantic; G1 observed and closed `portable` | REPORT-ONLY |
+| 25 | Windows disposition | a classified gap report exists | CI `c64-windows-gap` probe | `cargo test --test c64_platform_matrix` | — | four classified gaps (G1, G3 CLOSED; G2, G4 open), none semantic | REPORT-ONLY |
 
 ### Row 24 — the one blocked row
 
@@ -85,15 +85,16 @@ eight times and read as eight independent confirmations.
 
 | # | Area | macOS-arm64 actual | Linux-x64 actual | Artifact | Exact commit | Deviation | Closure |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1–8 | target preflight and metadata | `c64_platform_matrix` 15/15 | 15/15 | `evidence/c6.4/{macos-arm64,linux-x64}.json` | `61008f6` | none | MET |
-| 9 | compiler/runtime compatibility | `c63_closure_evidence` 2/2 | 2/2 | same | `61008f6` | none | MET |
-| 10–14 | output bytes, line termination, traps | within `c64_platform_matrix` 15/15; `three_engine_differential` 88/88 | same counts | same | `61008f6` | none | MET |
-| 15–18 | paths, temp dirs, manifest escaping | within `c64_platform_matrix` 15/15 | same | same | `61008f6` | none | MET |
-| 19–20 | installed runtime, locked offline build | `c63_closure_evidence` 2/2 + `c64_platform_matrix` | same | same | `61008f6` | none | MET |
-| 21–22 | frozen workspace, three-engine | `workspace` 1461/1461; `mir_differential` 132; `exec_snapshots` 4; `three_engine_differential` 88 | identical counts | same | `61008f6` | none | MET |
-| 23 | determinism rerun | `match` | `match` | same | `61008f6` | none | MET |
+| 1–23 | all Tier-1 rows | pending | pending | `evidence/c6.4/{macos-arm64,linux-x64}.json` | pending | — | NOT-YET |
 | 24 | generated corpus | n/a | n/a | — | — | corpus does not exist | BLOCKED-BY-C6.5 |
-| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `8d894e8` (run 30190825336) | G1 CLOSED — 14/14 on Windows; G2–G4 open, none semantic | REPORT-ONLY |
+| 25 | Windows disposition | n/a | n/a | `evidence/c6.4/windows-x64-gap-report.md` | `8d894e8` (run 30190825336) | G1 and G3 CLOSED; G2, G4 open, none semantic | REPORT-ONLY |
+
+**Why rows 1–23 read `pending` again.** They were filled from CI run 30191381334 at `61008f6`, which
+passed on both Tier-1 targets and reported TIER-1 AGREEMENT. The owner's second review round
+(R1–R5, `WP-C6.4.md` §2) then strengthened the harness and the comparator, and those records lack
+fields the comparator now requires — run against it today they are **refused**. Rather than leave
+Table B asserting agreement from evidence the current gate rejects, the records were deleted and
+the row reset. The mechanism is proven; the observation must be retaken at the corrected commit.
 
 Tier-1 agreement is not a column here: it is a separate artifact,
 `evidence/c6.4/qualification-summary.md`, produced by `scripts/compare-c64-evidence.py`. It
@@ -119,4 +120,9 @@ The §34 audit's findings, with where each was answered. Full statements in `WP-
 | F8 | (none) output bytes were already host-independent | recorded as safe; rows 10–12 observe it anyway |
 | F9 | `/tmp` in the gate-7 comparator fixture | out of matrix; recorded in the Windows gap report as G4 |
 | F10 | §8.3's error classification was half-absent | `TargetError` + `BackendDiagnostic::TargetRejected` + `BuildCommandError::TargetRejected`; rows 4–5 |
-| B-1 | the Python qualification scripts carried their own copy of the tier table | the copy is now CHECKED against `src/target.rs` by `target_preflight_python_harness_tier_table_matches_the_compiler`; the last remaining copy (`build-release.py`'s `"windows" in target`) is gap-report G3 |
+| B-1 | the Python scripts each carried their own tier table, and `build-release.py` classified Windows by substring | ONE description, `target-matrix.json`, read through `scripts/target_matrix.py` by every Python consumer and pinned to `src/target.rs` in BOTH directions by `target_matrix_json_matches_the_compiler`. Packaging derives suffix, archive format and installers from the exact entry and refuses unknown triples. G3 closed |
+| R1 | the installed-runtime switch was proven in a unit test, not on the installed CLI | the CI release smoke runs under `STARK_REQUIRE_INSTALLED_RUNTIME=1` on all three platforms, plus a negative step that removes the installed runtime, leaves the checkout in place, and requires the build to fail; row 19 |
+| R2 | a failed qualification job skipped the comparison | `if: always()` on `c64-tier1-comparison`; a missing or unreadable record is reported as a disagreement, never as a skip |
+| R3 | the comparator could reach agreement from incomplete records | per-record validation before comparison: required metadata, self-consistent platform identity, full command set, corpus state, determinism; 43 fixture tests |
+| R4 | ignored-test identities were truncated to the last `::` component | complete libtest names, stored in a list, with the named count required to equal Cargo's ignored count |
+| R5 | two documentation claims were stale or overstated | float division cites NUM-FLOAT-OP-001 and CD-139 (CD-006 superseded); the `cfg`-absence claim is stated as reduced risk, with equivalence established by the cross-platform observations |

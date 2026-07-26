@@ -1,0 +1,61 @@
+{
+  "schema": "stark-target-matrix-1",
+  "comment": [
+    "The repository-owned machine-readable target description (WP-C6.4).",
+    "",
+    "COMPILER-OWNED FIELDS -- triple, tier, layout_contract, executable_suffix, pointer_width --",
+    "are a projection of `starkc/src/target.rs`'s KNOWN_TARGETS and are pinned to it, in BOTH",
+    "directions, by `tests/c64_platform_matrix.rs::target_matrix_json_matches_the_compiler`. That",
+    "test fails if a target is added, removed or re-tiered on either side. Rust code must read",
+    "`src/target.rs`, never this file: the table is the source of truth and this is its export.",
+    "",
+    "PACKAGING FIELDS -- archive, installers -- have no compiler counterpart and live only here.",
+    "They exist so `scripts/build-release.py` can select an archive format and installer pair by",
+    "exact triple instead of testing whether the string contains \"windows\", which would",
+    "misclassify any unknown triple that happened to contain it and would silently package a",
+    "target the compiler does not name.",
+    "",
+    "Python consumers (build-release.py, run-c64-qualification.py, compare-c64-evidence.py) read",
+    "this file rather than carrying their own copies. Adding a target means editing src/target.rs",
+    "and this file together; the drift test enforces the pairing."
+  ],
+  "source_of_truth": "starkc/src/target.rs",
+  "targets": [
+    {
+      "triple": "aarch64-apple-darwin",
+      "tier": "tier-1",
+      "layout_contract": "stark-64-v1",
+      "executable_suffix": "",
+      "pointer_width": 64,
+      "archive": "tar.gz",
+      "installers": ["install.sh", "uninstall.sh"]
+    },
+    {
+      "triple": "x86_64-unknown-linux-gnu",
+      "tier": "tier-1",
+      "layout_contract": "stark-64-v1",
+      "executable_suffix": "",
+      "pointer_width": 64,
+      "archive": "tar.gz",
+      "installers": ["install.sh", "uninstall.sh"]
+    },
+    {
+      "triple": "x86_64-pc-windows-msvc",
+      "tier": "tier-2",
+      "layout_contract": "stark-64-v1",
+      "executable_suffix": ".exe",
+      "pointer_width": 64,
+      "archive": "zip",
+      "installers": ["install.ps1", "uninstall.ps1"]
+    },
+    {
+      "triple": "x86_64-apple-darwin",
+      "tier": "tier-3",
+      "layout_contract": "stark-64-v1",
+      "executable_suffix": "",
+      "pointer_width": 64,
+      "archive": "tar.gz",
+      "installers": ["install.sh", "uninstall.sh"]
+    }
+  ]
+}

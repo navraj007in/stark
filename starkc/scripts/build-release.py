@@ -21,6 +21,9 @@ import tarfile
 import tempfile
 import zipfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import target_matrix  # noqa: E402  (path is set immediately above)
+
 
 CRATE_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = CRATE_DIR.parent
@@ -144,8 +147,16 @@ def parse_args() -> argparse.Namespace:
 def package_release(
     *, target: str, version: str, release_dir: Path, out_dir: Path
 ) -> tuple[Path, Path]:
-    windows = "windows" in target
-    executable_suffix = ".exe" if windows else ""
+    # WP-C6.4: exact named-target lookup, never a substring test.
+    #
+    # This used to be `windows = "windows" in target`, which is wrong in two directions: it would
+    # classify any unknown triple containing the word as Windows, and — worse — it would happily
+    # package a triple the compiler does not name at all, producing an artifact nothing can
+    # qualify. `require` raises on an unknown triple instead, and the executable suffix, archive
+    # format and installer pair all come from the entry rather than from a boolean.
+    entry = target_matrix.require(target)
+    windows = entry.archive == "zip"
+    executable_suffix = entry.executable_suffix
     package_name = f"stark-{version}-{target}"
     out_dir = out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -171,12 +182,7 @@ def package_release(
             shutil.copytree(runtime_source / dirname, runtime_destination / dirname)
 
         dist_dir = CRATE_DIR / "dist"
-        installer_names = (
-            ("install.ps1", "uninstall.ps1")
-            if windows
-            else ("install.sh", "uninstall.sh")
-        )
-        for installer_name in installer_names:
+        for installer_name in entry.installers:
             destination = staging / installer_name
             shutil.copy2(dist_dir / installer_name, destination)
             if not windows:
@@ -199,11 +205,10 @@ def package_release(
             newline="\n",
         )
 
-        if windows:
-            archive = out_dir / f"{package_name}.zip"
+        archive = out_dir / f"{package_name}.{entry.archive}"
+        if entry.archive == "zip":
             create_zip(staging, archive, package_name)
         else:
-            archive = out_dir / f"{package_name}.tar.gz"
             create_tar_gz(staging, archive, package_name)
 
     checksum = write_checksum(archive)

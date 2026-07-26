@@ -58,10 +58,13 @@ WORK_PACKAGE = "WP-C6.4"
 STARKC = Path(__file__).resolve().parent.parent
 REPO = STARKC.parent
 
-# Tier-1 targets, mirrored from `starkc/src/target.rs`. Duplicated deliberately and asserted
-# against the compiler's own list by `--list`, rather than parsed out of Rust source: the harness
-# must be able to say "the compiler disagrees with the matrix" instead of silently agreeing.
-TIER1 = ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import target_matrix  # noqa: E402  (path is set immediately above)
+
+# From `starkc/target-matrix.json`, which is pinned to `src/target.rs` in both directions by
+# `tests/c64_platform_matrix.rs::target_matrix_json_matches_the_compiler`. The harness used to
+# carry its own copy of this table; it does not any more.
+TIER1 = target_matrix.tier1_triples()
 
 
 @dataclass
@@ -262,11 +265,17 @@ def run_step(step: Step, env: dict[str, str]) -> StepResult:
     # nothing; the printed line is the only evidence that a required observation did not happen.
     result.skipped = combined.count("SKIP:")
 
-    # Which tests were ignored, by name, so each can be checked against the classification rather
-    # than against a count.
-    ignored_names = {name.rsplit("::", 1)[-1] for name in IGNORED_RE.findall(combined)}
-    result.ignored_names = sorted(ignored_names)
-    result.unclassified_ignores = sorted(ignored_names - set(CLASSIFIED_IGNORES))
+    # Which tests were ignored, by their COMPLETE libtest name.
+    #
+    # An earlier version kept only the final `::` component. That is a collision waiting to happen
+    # — two modules can each hold a `basic_case` — and a collision here would let a classified
+    # ignore silently vouch for an unrelated unclassified one. A list, not a set, so the count is
+    # preserved when two binaries ignore identically-named tests.
+    ignored_names = sorted(IGNORED_RE.findall(combined))
+    result.ignored_names = ignored_names
+    result.unclassified_ignores = sorted(
+        name for name in ignored_names if name not in CLASSIFIED_IGNORES
+    )
 
     result.ok = proc.returncode == 0
     if step.required and result.skipped:
@@ -281,12 +290,15 @@ def run_step(step: Step, env: dict[str, str]) -> StepResult:
             "observation is required — in which case fix the test — or classify it in "
             "CLASSIFIED_IGNORES with a reason."
         )
-    elif step.required and result.ignored and not ignored_names:
-        # `cargo` reported a nonzero ignored count but printed no `... ignored` lines to attribute
-        # it to. Attributing nothing to a nonzero count is exactly the state this check exists to
-        # prevent, so it fails rather than being waved through.
+    elif step.required and len(ignored_names) != result.ignored:
+        # Cargo's ignored COUNT and the `... ignored` lines must agree. If they do not, some
+        # ignored test was never attributed to a name, and an unattributed ignore cannot have been
+        # classified. Waving it through is precisely how a required observation goes missing.
         result.ok = False
-        result.note = f"{result.ignored} ignored test(s) that could not be identified by name"
+        result.note = (
+            f"cargo reported {result.ignored} ignored test(s) but {len(ignored_names)} could be "
+            "identified by name; an unattributed ignore cannot be classified"
+        )
     elif proc.returncode != 0:
         tail = "\n".join(combined.strip().splitlines()[-25:])
         result.note = f"exit {proc.returncode}\n{tail}"
@@ -330,12 +342,28 @@ def compiler_constants() -> dict[str, str]:
         match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
         return match.group(1) if match else ""
 
+    def layout_field(name: str) -> int:
+        """A `u32` field of `LayoutIdentity`'s `stark64_v1()` constructor.
+
+        The layout contract's identity is what a build's observable `size_of`/`align_of` answers
+        are attributable to (CD-067). Recording only the contract NAME would let two records agree
+        on `stark-64-v1` while one of them answered from a revised table.
+        """
+        try:
+            text = (STARKC / "src" / "layout.rs").read_text(encoding="utf-8")
+        except OSError:
+            return 0
+        match = re.search(rf"{name}:\s*(\d+)", text)
+        return int(match.group(1)) if match else 0
+
     return {
         "compiler_version": cargo_version(Path("Cargo.toml")),
         "runtime_version": const(Path("stark-runtime/src/version.rs"), "RUNTIME_VERSION"),
         "backend_version": const(Path("src/backend/version.rs"), "BACKEND_VERSION"),
         "mir_version": const(Path("src/mir/mod.rs"), "MIR_VERSION"),
         "mir_runtime_surface": const(Path("src/mir/mod.rs"), "MIR_RUNTIME_SURFACE"),
+        "layout_contract_version": layout_field("layout_contract_version"),
+        "compiler_layout_revision": layout_field("compiler_layout_revision"),
     }
 
 
@@ -537,12 +565,8 @@ def main() -> int:
         deviations.append("determinism rerun did not reproduce the first run's observations")
 
     consts = compiler_constants()
-    tier = {
-        "aarch64-apple-darwin": "tier-1",
-        "x86_64-unknown-linux-gnu": "tier-1",
-        "x86_64-pc-windows-msvc": "tier-2",
-        "x86_64-apple-darwin": "tier-3",
-    }.get(host_triple, "unsupported")
+    entry = target_matrix.classify(host_triple)
+    tier = entry.tier if entry else "unsupported"
 
     record = {
         "schema_version": SCHEMA_VERSION,
@@ -559,12 +583,18 @@ def main() -> int:
         "host_triple": host_triple,
         "selected_target_triple": host_triple,
         "target_tier": tier,
+        # From the target matrix, not asserted: a record that states the pointer width the
+        # comparator then checks is only meaningful if it came from the target's own entry.
+        "target_pointer_width": entry.pointer_width if entry else 0,
         "rustc_version_verbose": rustc_verbose,
         "cargo_version": probe(["cargo", "-V"]),
         "python_version": platform.python_version(),
-        "layout_contract": "stark-64-v1",
+        "layout_contract": entry.layout_contract if entry else "",
         "profile": "debug",
         "quick_mode": args.quick,
+        # The fixed qualification set, so the comparator can tell a complete run from a filtered
+        # one without trusting the `deviations` list to have been populated.
+        "required_steps": [s.name for s in steps_for(False) if s.required],
         "commands": [
             {
                 "name": r.name,
