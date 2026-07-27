@@ -22,7 +22,7 @@ required capability unevidenced · **LOW** precision, hygiene or documentation.
 | # | Sev | Review | Finding | Closure condition affected |
 | --- | --- | --- | --- | --- |
 | R-01 | HIGH | D, F | The corpus covers **5 of 9 admitted trap categories** | §10.4, §22.1 |
-| R-02 | HIGH | B | **23 three-engine suites still use private comparators**; C65-F1 is not discharged — **CLOSED CD-165**: all 23 migrated | §22.3, the required claim (§2) |
+| R-02 | HIGH | B | **23 three-engine suites still use private comparators**; C65-F1 is not discharged — **CLOSED CD-165**: all 23 migrated; 289 tests, 0 failed, 0 skipped | §22.3, the required claim (§2) |
 | R-03 | MEDIUM | F | Mutation controls cover **7 of 15 comparator fields** | §22.5 |
 | R-04 | MEDIUM | E | Metamorphic floor unmet: 20 groups / 40 members vs 24 / 48 | §22.4 |
 | R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor | §22.4 |
@@ -100,6 +100,12 @@ Where a suite pinned its expected stdout independently (`c63a_string`, `c63d_map
 Where it did not — `c63c_iterators` and `c63e_formatting` took the HIR oracle's own output as the
 expectation — the engine-agreement check is real but cannot notice all three rendering the same
 wrong thing; those headers now say so rather than implying a pin they do not have.
+
+**Evidence.** One clean run of all 23 migrated suites at `4bd6675`: **289 passed, 0 failed,
+0 ignored, 0 skipped**, exit 0. The zero-skip count matters as much as the zero-failure count — it
+means every suite ran its native engine, so this is a three-engine result rather than the two-engine
+fallback. No divergence surfaced anywhere: nothing had been hiding behind the weaker check. CI at
+`2f1929a` is green across all 15 jobs including `windows-x64`.
 
 **Original recommended disposition** (retained for the record). Migrate in matrix order as CD-148
 directed; start with the suites the matrix cites most (`c63a_string`, `c63b_*`, `c63c_iterators`,
