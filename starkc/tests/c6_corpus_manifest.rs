@@ -13,13 +13,13 @@
 mod support;
 
 use support::corpus::{
-    corpus_root, load, parse_lock, parse_manifest, rule_ids_in, sha256_hex, spec_rule_ids,
-    validate, verify_lock,
+    corpus_root, load, matrix_template_arrows, parse_lock, parse_manifest, rule_ids_in, sha256_hex,
+    spec_rule_ids, validate, verify_lock,
 };
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
 /// this assertion is what makes the second half unskippable.
-const EXPECTED_CORPUS_VERSION: &str = "0.7.0";
+const EXPECTED_CORPUS_VERSION: &str = "0.8.0";
 
 // ------------------------------------------------------------- the real corpus --
 
@@ -109,6 +109,56 @@ fn every_rule_id_the_matrix_cites_exists_in_the_spec() {
         "the coverage matrix cites {} rule ID(s) that no spec document defines: {}",
         missing.len(),
         missing.join(", ")
+    );
+}
+
+/// **R-07.** Every `→T##` arrow in the matrix names a template that exists AND whose generated
+/// cases cite that row.
+///
+/// The arrow is a coverage claim — "a generator template covers this row too" — and 36 of the 136
+/// rows carried one that was false when §17 checked: 16 named a template in `MISSING_TEMPLATES`
+/// (which emits nothing), and 20 named a real template whose cases never cited the row. Nothing
+/// read the arrows, so nothing could notice. This is that reader.
+///
+/// The corrected rows keep their evidence: an arrow that was not earned was removed, not replaced
+/// with a weaker claim, and the sixteen deferred ones now say `T## DEFERRED` in prose instead of
+/// pointing at a template that will never run.
+#[test]
+fn every_template_arrow_in_the_matrix_is_backed_by_generated_cases() {
+    let (cases, _) = load();
+    let mut covered: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        Default::default();
+    for case in &cases {
+        if let Some(template) = &case.template_id {
+            covered
+                .entry(template.clone())
+                .or_default()
+                .extend(case.subcategories.iter().cloned());
+        }
+    }
+
+    let arrows = matrix_template_arrows();
+    assert!(
+        !arrows.is_empty(),
+        "no `→T##` arrows parsed from the matrix — a silently empty set makes this check vacuous"
+    );
+    let broken: Vec<String> = arrows
+        .iter()
+        .filter(|(row, template)| !covered.get(*template).is_some_and(|rows| rows.contains(*row)))
+        .map(|(row, template)| {
+            let what = match covered.get(template) {
+                None => "that template generates no cases at all".to_string(),
+                Some(rows) => format!("that template covers {rows:?}"),
+            };
+            format!("{row} →{template} ({what})")
+        })
+        .collect();
+    assert!(
+        broken.is_empty(),
+        "{} matrix arrow(s) claim generated coverage that does not exist:\n  {}\n\
+         Either the template must cite the row, or the arrow must go.",
+        broken.len(),
+        broken.join("\n  ")
     );
 }
 

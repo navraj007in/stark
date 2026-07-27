@@ -34,7 +34,7 @@ import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "0.7.0"
+CORPUS_VERSION = "0.8.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -387,6 +387,11 @@ def build_lock() -> str:
         "# corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the",
         "# twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent",
         "# until §15 rather than approximated single-file. Minor.",
+        "# corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated",
+        "# cases genuinely exercise are now CITED by the templates that exercise them, verified",
+        "# against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`",
+        "# arrows and a test that reads every remaining arrow. Metadata only -- no case source",
+        "# changed -- but the coverage claim did, so: minor.",
         "# corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE",
         "# (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and",
         "# gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,",
@@ -397,6 +402,11 @@ def build_lock() -> str:
         "# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native",
         "# emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and",
         "# the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.",
+        "# corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated",
+        "# cases genuinely exercise are now CITED by the templates that exercise them, verified",
+        "# against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`",
+        "# arrows and a test that reads every remaining arrow. Metadata only -- no case source",
+        "# changed -- but the coverage claim did, so: minor.",
         "# corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE",
         "# (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and",
         "# gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,",

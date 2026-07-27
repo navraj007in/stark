@@ -47,7 +47,7 @@ mod support;
 use starkc::mir::TrapCategory;
 use support::differential::{
     agree_completing, agree_returning, agree_trapping, agree_trapping_with_message,
-    compare_observations, front_end, parse_native_trap, run_mir, rustc_available, three_engine,
+    compare_observations, front_end, parse_native_trap, run_mir, three_engine,
     CanonicalReturnedValue, CompletionObservation, DropEvent, Observation, TrapMessageClass,
     TrapObservation, TrapStderrObservation, TRAP_EXIT_STATUS,
 };
@@ -62,7 +62,7 @@ const C5_SNAPSHOT_OVERFLOW: &str =
 
 #[test]
 fn c5_snapshot_completion_replays_through_all_three_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -71,7 +71,7 @@ fn c5_snapshot_completion_replays_through_all_three_engines() {
 
 #[test]
 fn c5_snapshot_overflow_replays_through_all_three_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -2569,7 +2569,7 @@ mod comparator_rules {
 
 #[test]
 fn panic_message_agrees_across_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -2586,7 +2586,7 @@ fn panic_message_agrees_across_engines() {
 /// pre-trap stdout prefix (CD-120 Contract B) rather than in isolation.
 #[test]
 fn conditional_panic_message_agrees_across_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -2645,7 +2645,7 @@ fn main() {
 
 #[test]
 fn a_returned_scalar_agrees_across_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -2659,7 +2659,7 @@ fn a_returned_scalar_agrees_across_engines() {
 
 #[test]
 fn a_returned_string_agrees_across_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -2678,7 +2678,7 @@ fn a_returned_string_agrees_across_engines() {
 
 #[test]
 fn the_drop_log_before_a_trap_agrees_across_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }

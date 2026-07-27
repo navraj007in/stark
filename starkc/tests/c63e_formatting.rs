@@ -16,10 +16,11 @@
 //! engines) and an array longer than 64 (the renderer unrolls per element). Still deferred: composite
 //! `str`/`String` elements, `Box`, `Vec` (a runtime loop), and nested user-`Display`.
 
+mod support;
+
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
+
 use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::interp::run_program;
 use starkc::mir::lower::lower_program;
 use starkc::mir::verify::verify_program;
 use starkc::parser::{parse, ParseMode};
@@ -28,74 +29,14 @@ use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Delegates to the shared comparator (R-02). The private version it replaces took the HIR oracle's
+/// own stdout as the expectation and checked the others against it; that comparison is preserved
+/// and widened to every observation field, but see this file's header on what it does NOT pin.
+fn agree_out(tag: &str, src: &str) {
+    support::differential::agree_completing_available_engines(tag, src);
 }
 
 /// HIR + MIR + native all exit 0, and native stdout equals the HIR oracle's output.
-fn agree_out(tag: &str, src: &str) {
-    let file = Arc::new(SourceFile::new(
-        format!("c63e_{tag}.stark"),
-        src.to_string(),
-    ));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    let errs: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-
-    let hir_exec = interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-    let expect = hir_exec.output;
-
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
-    // These are self-contained three-engine cases, so the MIR oracle's OUTPUT is compared too, not
-    // just its exit status.
-    assert_eq!(
-        mir_exec.output, expect,
-        "{tag}: MIR stdout must equal the HIR oracle"
-    );
-
-    if rustc_available() {
-        let verified = verify_program(&program).unwrap();
-        let dir = std::env::temp_dir().join(format!("stark_c63e_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run");
-        assert!(run.status.success(), "{tag}: native must exit 0");
-        assert_eq!(
-            String::from_utf8_lossy(&run.stdout),
-            expect,
-            "{tag}: native stdout must equal the oracle"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
 #[test]
 fn println_signed_ints() {
     agree_out("int", "fn main() { println(42); println(-7); println(0); }");
@@ -457,7 +398,7 @@ fn composite_vec_of_vecs_refused_by_drop_glue() {
 /// Type-checks, lowers, and VERIFIES, but the native backend refuses it with a named limitation
 /// containing `expect` — a deterministic pre-rustc boundary, not a rustc error.
 fn refused_natively(tag: &str, src: &str, expect: &str) {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         return;
     }
     let file = Arc::new(SourceFile::new(

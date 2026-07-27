@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use support::corpus::{corpus_root, load, sha256_hex, shard_of, verify_lock, Case, Filters};
 use support::differential::{
-    canonical_form, first_difference, run_hir, run_mir, run_native, rustc_available, Observation,
+    canonical_form, first_difference, run_hir, run_mir, run_native, Observation,
 };
 
 /// §12.4. Generous enough that a slow machine is not a false failure, bounded enough that a hang is
@@ -396,7 +396,7 @@ fn evidence_dir() -> PathBuf {
 /// §12.1 / §21. The replay.
 #[test]
 fn the_corpus_replays_through_every_required_engine() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -631,7 +631,7 @@ fn commit_sha() -> String {
 /// whose output varied run to run (an address, a map order, a timestamp) changes it.
 #[test]
 fn replaying_a_shard_twice_produces_identical_observation_hashes() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }

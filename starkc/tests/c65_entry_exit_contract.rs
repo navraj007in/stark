@@ -34,9 +34,7 @@
 
 mod support;
 
-use support::differential::{
-    rustc_available, three_engine, CompletionObservation, Observation, TrapMessageClass,
-};
+use support::differential::{three_engine, CompletionObservation, Observation, TrapMessageClass};
 
 const UNIT_ENTRY: &str = include_str!("c6-corpus/cases/retained/entry_exit__01_unit_entry.stark");
 const INT32_STATUS: &str =
@@ -109,7 +107,7 @@ fn the_last_in_range_exit_status_is_not_a_trap() {
 /// exists (MIR amendment A7) and the trap is comparable.
 #[test]
 fn an_out_of_range_exit_status_traps_in_all_three_engines() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -137,7 +135,7 @@ fn an_out_of_range_exit_status_traps_in_all_three_engines() {
 /// contract to its result.
 #[test]
 fn every_admitted_entry_signature_builds_and_runs_natively() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -157,7 +155,7 @@ fn every_admitted_entry_signature_builds_and_runs_natively() {
 /// `Unit` could be written at all. Both spellings, in type and value position, on three engines.
 #[test]
 fn the_unit_value_literal_typechecks_as_unit() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }

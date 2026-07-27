@@ -750,6 +750,59 @@ pub fn matrix_row_ids() -> BTreeSet<String> {
     ids
 }
 
+/// Every `→T##` arrow in the matrix, as `(row id, template id)` (R-07).
+///
+/// The arrow means "a generator template covers this row too". It was never checked against the
+/// generator, and 36 of the 136 rows carried one that was not true: 16 named a template in
+/// `MISSING_TEMPLATES`, which generates nothing at all, and 20 named a real template whose cases
+/// never cite that row. That is the same failure as CD-154's fabricated rule citations — a
+/// forward-looking claim written into an evidence document and never revisited — so it gets the
+/// same treatment: a machine check, not a promise to be careful.
+///
+/// A `T## DEFERRED` marker is deliberately NOT an arrow. It records that the template is a known
+/// gap (`MISSING_TEMPLATES`) and that the row rests on its existing evidence meanwhile.
+pub fn matrix_template_arrows() -> Vec<(String, String)> {
+    let matrix = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo root")
+        .join("STARKLANG/docs/compiler/work-packages/C6-CORPUS-COVERAGE-MATRIX.md");
+    let text = std::fs::read_to_string(&matrix).expect("the coverage matrix");
+    let mut arrows = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with('|') {
+            continue;
+        }
+        let row = line
+            .trim_start_matches('|')
+            .split('|')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let is_row = row.len() == 3
+            && row.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && row.chars().skip(1).all(|c| c.is_ascii_digit());
+        if !is_row {
+            continue;
+        }
+        // `→T13`, tolerating an optional space after the arrow.
+        let mut rest = line;
+        while let Some(at) = rest.find('→') {
+            rest = &rest[at + '→'.len_utf8()..];
+            let candidate: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if candidate.starts_with('T') && candidate.len() >= 2 {
+                arrows.push((row.clone(), candidate));
+            }
+        }
+    }
+    arrows
+}
+
 /// The corpus root, as an absolute path — tests must not depend on the process working directory.
 pub fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/c6-corpus")

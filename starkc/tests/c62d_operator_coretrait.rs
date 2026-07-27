@@ -22,30 +22,31 @@
 //! target. The spec lists `From`/`Into` as independent traits and mandates only `fn default() ->
 //! Self`; `Fahrenheit::from(c)` and `P::default()` are the supported forms.
 
-use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
+mod support;
+
 use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::interp::run_program;
-use starkc::mir::lower::lower_program;
-use starkc::mir::verify::verify_program;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Delegates to the shared comparator (R-02).
+fn agree(tag: &str, source: &str) {
+    support::differential::agree_completing_available_engines(tag, source);
 }
 
+/// HIR + MIR only, through the same comparator. Native output/collection runtime was deferred to
+/// C6.3, so native is not exercised here -- the dispatch to the user impl is what is proven. Two
+/// engines is the whole truth available for these cases, not a lower bar chosen for convenience.
+fn agree_hir_mir(tag: &str, source: &str) {
+    support::differential::two_engine(tag, source);
+}
+
+/// Front-end diagnostics only. Since R-02 the execution engines are the shared comparator's, so
+/// what remains here is the REJECTION path -- `rejected` below -- which needs the error codes and
+/// nothing else.
 struct Front {
-    hir: starkc::hir::Hir,
-    tables: starkc::typecheck::TypeTables,
-    file: Arc<SourceFile>,
     errors: Vec<(Option<String>, String)>,
 }
 
@@ -65,69 +66,7 @@ fn front(tag: &str, source: &str) -> Front {
         .filter(|d| d.severity == Severity::Error)
         .map(|d| (d.code.clone(), d.message.clone()))
         .collect();
-    Front {
-        hir,
-        tables: checked.tables,
-        file,
-        errors,
-    }
-}
-
-/// HIR + MIR must exit 0; native too when rustc is present. The in-program `assert_eq` carries the
-/// value check that distinguishes the user impl from any Rust equivalent.
-fn agree(tag: &str, source: &str) {
-    let f = front(tag, source);
-    assert!(f.errors.is_empty(), "{tag} typecheck: {:?}", f.errors);
-
-    let hir_exec = interp::run_with_partial_output(&f.hir, f.file.clone(), &f.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-
-    let program = lower_program(&f.hir, &f.tables, f.file.clone())
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
-
-    if rustc_available() {
-        let verified = verify_program(&program).unwrap();
-        let dir = std::env::temp_dir().join(format!("stark_c62d_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run");
-        assert!(
-            run.status.success(),
-            "{tag}: native must exit 0; stderr: {}",
-            String::from_utf8_lossy(&run.stderr)
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-/// HIR + MIR must exit 0. Native output/collection runtime is deferred to C6.3, so native is not
-/// exercised — the dispatch to the user impl is what is proven here.
-fn agree_hir_mir(tag: &str, source: &str) {
-    let f = front(tag, source);
-    assert!(f.errors.is_empty(), "{tag} typecheck: {:?}", f.errors);
-
-    let hir_exec = interp::run_with_partial_output(&f.hir, f.file.clone(), &f.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-
-    let program = lower_program(&f.hir, &f.tables, f.file.clone())
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
+    Front { errors }
 }
 
 /// The program must be REJECTED at type-check with `code` — anti-substitution: no Rust-derive

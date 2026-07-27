@@ -16,28 +16,21 @@
 //! approved and does not touch Core v1's lexical borrow duration. The negative corpus in
 //! `c61f_reference_boundary.rs` pins that.
 
-use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
+mod support;
+
+use starkc::mir::MirProgram;
+
 use starkc::diag::Severity;
 use starkc::interp;
 use starkc::mir::interp::run_program;
 use starkc::mir::lower::lower_program;
 use starkc::mir::verify::verify_program;
-use starkc::mir::MirProgram;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Lower + verify + run under the MIR interpreter, asserting the HIR oracle agrees.
 fn lower_verify_run(tag: &str, src: &str) -> MirProgram {
     let file = Arc::new(SourceFile::new(
         format!("c61f_{tag}.stark"),
@@ -65,34 +58,13 @@ fn lower_verify_run(tag: &str, src: &str) -> MirProgram {
     program
 }
 
-/// All three engines complete with exit 0.
+/// Delegates to the shared comparator (R-02).
 fn agree(tag: &str, src: &str) {
-    let program = lower_verify_run(tag, src);
-    if !rustc_available() {
-        return;
-    }
-    let verified = verify_program(&program).unwrap();
-    let dir = std::env::temp_dir().join(format!("c61f_b1_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let artifact = emit_native_debug(
-        &verified,
-        &NativeBuildOptions {
-            target_dir: dir.clone(),
-            target_contract: "stark-64-v1".to_string(),
-        },
-    )
-    .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-    let run = std::process::Command::new(&artifact.binary_path)
-        .output()
-        .expect("run");
-    assert!(
-        run.status.success(),
-        "{tag}: native must exit 0; stderr: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+    support::differential::agree_completing_available_engines(tag, src);
 }
 
+/// Lower + verify + run under the MIR interpreter, asserting the HIR oracle agrees.
+/// All three engines complete with exit 0.
 const P: &str = "struct P { v: Int32 }\n\
                  impl P { fn get(&self) -> Int32 { self.v } \
                  fn bump(&mut self) { self.v = self.v + 1; } }\n";

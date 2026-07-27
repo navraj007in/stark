@@ -21,30 +21,15 @@
 //! true of floats and false of integers, and a fix that reads the headline instead of the rule
 //! would silently make integer division total too. Those cases must still trap, in every engine.
 
-use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
+mod support;
+
 use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::interp::run_program;
 use starkc::mir::lower::lower_program;
-use starkc::mir::verify::verify_program;
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
-
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-struct Compiled {
-    program: starkc::mir::MirProgram,
-    hir_output: Option<String>,
-}
 
 fn front_end(tag: &str, src: &str) -> Compiled {
     let file = Arc::new(SourceFile::new(
@@ -62,100 +47,29 @@ fn front_end(tag: &str, src: &str) -> Compiled {
         .filter(|d| d.severity == Severity::Error)
         .collect();
     assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let hir_output = interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .map(|e| e.output)
-        .ok();
     let program = lower_program(&hir, &checked.tables, file)
         .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    Compiled {
-        program,
-        hir_output,
-    }
+    Compiled { program }
+}
+
+/// Delegates to the shared comparator (R-02), keeping this suite's independent stdout pin.
+fn agree(tag: &str, src: &str, expect: &str) {
+    support::differential::agree_completing_with_stdout(tag, src, expect);
+}
+
+/// Every engine TRAPS -- and now on the same category at the same line, which the private version
+/// never checked (it asserted only "HIR produced no output" and "MIR returned Err"). Used for the
+/// integer cases NUM-INT-DIV-001 still governs; all three are one-liners, so line 1.
+fn traps(tag: &str, src: &str) {
+    support::differential::agree_trapping(tag, src, starkc::mir::TrapCategory::DivideByZero, 1);
+}
+
+struct Compiled {
+    program: starkc::mir::MirProgram,
 }
 
 /// All three engines run to completion and print exactly `expect`.
-fn agree(tag: &str, src: &str, expect: &str) {
-    let Compiled {
-        program,
-        hir_output,
-    } = front_end(tag, src);
-    assert_eq!(
-        hir_output.as_deref(),
-        Some(expect),
-        "{tag}: HIR output (the oracle)"
-    );
-
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir =
-        run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR must not trap: {:?}", f.error));
-    assert_eq!(mir.output, expect, "{tag}: MIR output");
-
-    if rustc_available() {
-        let verified = verify_program(&program).unwrap();
-        let dir = std::env::temp_dir().join(format!("stark_cd139_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run");
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(run.status.success(), "{tag}: native must exit 0, not trap");
-        assert_eq!(
-            String::from_utf8_lossy(&run.stdout),
-            expect,
-            "{tag}: native output"
-        );
-    }
-}
-
 /// Every engine TRAPS. Used for the integer cases NUM-INT-DIV-001 still governs.
-fn traps(tag: &str, src: &str) {
-    let Compiled {
-        program,
-        hir_output,
-    } = front_end(tag, src);
-    assert!(
-        hir_output.is_none(),
-        "{tag}: HIR must trap, got output {hir_output:?}"
-    );
-
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    assert!(run_program(verified).is_err(), "{tag}: MIR must trap");
-
-    if rustc_available() {
-        let verified = verify_program(&program).unwrap();
-        let dir = std::env::temp_dir().join(format!("stark_cd139t_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run");
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(run.status.code(), Some(101), "{tag}: native must abort");
-        let stderr = String::from_utf8_lossy(&run.stderr);
-        // `TrapCategory::DivideByZero` renders as this message (`mir_differential.rs`'s
-        // category table); the category NAME never reaches stderr.
-        assert!(
-            stderr.contains("division by zero"),
-            "{tag}: native must report a division-by-zero trap: {stderr}"
-        );
-    }
-}
-
 // ---- Floating division: TOTAL (NUM-FLOAT-OP-001) ----
 
 /// The case DEV-110 was found on. HIR yielded `inf`, MIR trapped.

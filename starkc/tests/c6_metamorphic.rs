@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 use support::corpus::{corpus_root, load, Case};
 use support::differential::{
-    first_difference, front_end, run_hir, run_mir, run_native, rustc_available, Observation,
+    first_difference, front_end, run_hir, run_mir, run_native, Observation,
 };
 
 /// §13.1's twelve families. M08/M09 are absent by construction — both transform a package graph and
@@ -100,7 +100,7 @@ fn observe(case: &Case) -> (Observation, Observation, Option<Observation>) {
 /// analysis starts from.
 #[test]
 fn every_metamorphic_pair_is_preserved_by_every_engine() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }

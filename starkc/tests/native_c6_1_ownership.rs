@@ -10,7 +10,10 @@
 //! Track-A-owned (no shared-file lease): the comparison is done here rather than by editing the
 //! shared `three_engine_differential.rs`.
 
-use starkc::backend::generated_rust::{emit_native_debug, emit_program, NativeBuildOptions};
+mod support;
+
+use starkc::backend::generated_rust::emit_program;
+use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
 use starkc::backend::version::build_versions;
 use starkc::diag::Severity;
 use starkc::interp;
@@ -23,6 +26,13 @@ use starkc::resolve::resolve;
 use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
+
+/// Delegates to the shared comparator (R-02), and still returns the generated Rust so the
+/// drop-glue assertions below can read it.
+fn agree_completes(tag: &str, source: &str) -> String {
+    support::differential::agree_completing_available_engines(tag, source);
+    compile(source, tag).generated
+}
 
 struct Compiled {
     program: starkc::mir::MirProgram,
@@ -63,54 +73,8 @@ fn compile(source: &str, tag: &str) -> Compiled {
     }
 }
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Run through HIR + MIR, require both complete with exit 0 and no output, then build+run native
 /// and require exit 0 (all three agree on successful completion). Returns the generated source.
-fn agree_completes(tag: &str, source: &str) -> String {
-    let c = compile(source, tag);
-
-    let hir = interp::run_with_partial_output(&c.hir, c.file.clone(), &c.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir.status, 0, "{tag}: HIR must exit 0");
-    assert!(hir.output.is_empty(), "{tag}: no output surface in C5/C6.1");
-
-    let verified = verify_program(&c.program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir.status, 0, "{tag}: MIR must exit 0");
-    assert_eq!(hir.output, mir.output, "{tag}: HIR/MIR output disagree");
-
-    if rustc_available() {
-        let verified = verify_program(&c.program).unwrap();
-        let dir = std::env::temp_dir().join(format!("stark_c6_1_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run");
-        assert!(
-            run.status.success(),
-            "{tag}: native must exit 0 (no double/missing drop → no slot_violation); stderr: {}",
-            String::from_utf8_lossy(&run.stderr)
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    c.generated
-}
-
 // --------------------------------------------------------------- G3: depth ≥2 --
 
 const NESTED: &str =
@@ -223,7 +187,7 @@ fn a_false_assertion_traps_in_all_three_engines() {
     let verified = verify_program(&c.program).unwrap();
     assert!(run_program(verified).is_err(), "MIR must trap");
 
-    if rustc_available() {
+    if support::differential::rustc_available() {
         let verified = verify_program(&c.program).unwrap();
         let dir = std::env::temp_dir().join(format!("stark_c6_1_false_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

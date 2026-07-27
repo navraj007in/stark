@@ -25,78 +25,14 @@
 //!
 //! So this file is entirely positive, and `refuse_borrow_carrying_nominals` no longer exists.
 
-use starkc::backend::generated_rust::{emit_native_debug, BackendDiagnostic, NativeBuildOptions};
-use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::interp::run_program;
-use starkc::mir::lower::lower_program;
-use starkc::mir::verify::verify_program;
-use starkc::parser::{parse, ParseMode};
-use starkc::resolve::resolve;
-use starkc::source::SourceFile;
-use starkc::typecheck;
-use std::sync::Arc;
+mod support;
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Delegates to the shared comparator (R-02).
+fn agree(tag: &str, src: &str) {
+    support::differential::agree_completing_available_engines(tag, src);
 }
 
 /// Drive a program to a native binary, asserting HIR and MIR agree on the way.
-fn build(tag: &str, src: &str) -> Result<std::process::Output, BackendDiagnostic> {
-    let file = Arc::new(SourceFile::new(format!("nom_{tag}.stark"), src.to_string()));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    let errs: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    let hir_exec = interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
-
-    let verified = verify_program(&program).unwrap();
-    let dir = std::env::temp_dir().join(format!("nomt_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let artifact = emit_native_debug(
-        &verified,
-        &NativeBuildOptions {
-            target_dir: dir.clone(),
-            target_contract: "stark-64-v1".to_string(),
-        },
-    )?;
-    let run = std::process::Command::new(&artifact.binary_path)
-        .output()
-        .expect("run");
-    let _ = std::fs::remove_dir_all(&dir);
-    Ok(run)
-}
-
-fn agree(tag: &str, src: &str) {
-    if !rustc_available() {
-        return;
-    }
-    let run = build(tag, src).unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-    assert!(
-        run.status.success(),
-        "{tag}: native must exit 0; stderr: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-}
-
 // CD-128: the `refused_before_rustc` helper is GONE with the last refusal it checked. Every
 // borrow-carrying shape this file covers now builds and runs, so the file is entirely positive.
 

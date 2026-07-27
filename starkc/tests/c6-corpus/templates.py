@@ -63,7 +63,7 @@ def t01_arithmetic(dims):
     return Case(
         source=source,
         category="expressions-statements",
-        subcategories=("E06",),
+        subcategories=("E06", "E01", "V01", "V02"),
         normative_rules=("NUM-INT-ARITH-001",),
         expected_stdout=(str(result),),
     )
@@ -86,7 +86,7 @@ def t02_comparison_branch(dims):
     return Case(
         source=source,
         category="control-transfer",
-        subcategories=("C01",),
+        subcategories=("C01", "E08"),
         normative_rules=("EXEC-EVAL-001", "PRIM-TRAIT-001"),
         expected_stdout=("yes" if taken else "no",),
     )
@@ -185,7 +185,7 @@ fn main() {{
     return Case(
         source=source,
         category="values-types",
-        subcategories=("V13", "O11"),
+        subcategories=("V13", "O11", "P05"),
         normative_rules=("OWN-PARTIAL-001", "OWN-MOVE-001"),
         expected_stdout=(payload if present else "empty",),
     )
@@ -242,7 +242,7 @@ fn main() {{
     return Case(
         source=source,
         category="calls-dispatch",
-        subcategories=("D06",),
+        subcategories=("D06", "D03"),
         normative_rules=("EXEC-DISPATCH-001", "TRAIT-DEF-001"),
         expected_stdout=(f"{first}{second}",),
     )
@@ -265,7 +265,7 @@ fn main() {{
     return Case(
         source=source,
         category="calls-dispatch",
-        subcategories=("D09", "E13"),
+        subcategories=("D09", "E13", "V21", "D11"),
         normative_rules=("TYPE-FN-001", "EXEC-DISPATCH-001"),
         expected_stdout=(str(result),),
     )
@@ -346,7 +346,7 @@ fn main() {{
     return Case(
         source=source,
         category="values-types",
-        subcategories=("V07", "V16"),
+        subcategories=("V07", "V16", "V08"),
         normative_rules=("TEXT-UTF8-001", "DROP-COLLECTION-001"),
         expected_stdout=(expected,),
     )
@@ -400,7 +400,7 @@ fn main() {{
     return Case(
         source=source,
         category="ownership-drop",
-        subcategories=("O15", "O16", "O17"),
+        subcategories=("O15", "O16", "O17", "C08"),
         normative_rules=("DROP-ORDER-001", "DROP-EXACT-001"),
         expected_stdout=("done",),
         loop_iterations=1,
@@ -453,7 +453,7 @@ def t16_trap(dims):
     return Case(
         source=source,
         category="traps",
-        subcategories=("X01", "X11"),
+        subcategories=("X01", "X11", "E17"),
         normative_rules=("TRAP-CATEGORY-001",),
         expected_stdout=("before",),
         expected_outcome="trap",
@@ -562,8 +562,8 @@ TEMPLATES = {
 
 # R-01: templates whose dimension space IS the coverage requirement. For these the per-template
 # budget is not applied, because sampling them DELETES coverage rather than bounding cost: T16's
-# tuples are the nine admitted trap categories, and a budget of five silently dropped two of them
-# (DivideByZero and AssertFailure) while the corpus reported "every admitted trap category".
+# tuples are the TEN admitted trap categories, and a budget of five silently dropped several of
+# them while the corpus reported "every admitted trap category".
 EXHAUSTIVE_TEMPLATES = {"T16"}
 
 MISSING_TEMPLATES = {

@@ -16,101 +16,21 @@
 //! back-edges (E0502) — the SAME dispatch-loop borrow-linearisation problem as WP-C6.1g-c, not a
 //! String-specific defect. `str`-value comparison (literals, `&str` params) works natively.
 
-use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
-use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::interp::run_program;
-use starkc::mir::lower::lower_program;
-use starkc::mir::verify::verify_program;
-use starkc::parser::{parse, ParseMode};
-use starkc::resolve::resolve;
-use starkc::source::SourceFile;
-use starkc::typecheck;
-use std::sync::Arc;
+mod support;
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-struct Front {
-    hir: starkc::hir::Hir,
-    tables: starkc::typecheck::TypeTables,
-    file: Arc<SourceFile>,
-}
-
-fn front(tag: &str, src: &str) -> Front {
-    let file = Arc::new(SourceFile::new(
-        format!("c63a_{tag}.stark"),
-        src.to_string(),
-    ));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    let errs: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    Front {
-        hir,
-        tables: checked.tables,
-        file,
-    }
-}
-
-/// HIR + MIR + native all exit 0; the native stdout must equal `expect_out`. In-program `assert_eq`
-/// carries value checks; `expect_out` carries the output-byte check.
+/// Delegates to the shared comparator (R-02), keeping this suite's independent stdout pin.
 fn agree_out(tag: &str, src: &str, expect_out: &str) {
-    let f = front(tag, src);
-
-    let hir_exec = interp::run_with_partial_output(&f.hir, f.file.clone(), &f.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "{tag}: HIR must exit 0");
-    assert_eq!(hir_exec.output, expect_out, "{tag}: HIR output");
-
-    let program = lower_program(&f.hir, &f.tables, f.file.clone())
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
-
-    if rustc_available() {
-        let verified = verify_program(&program).unwrap();
-        let dir = std::env::temp_dir().join(format!("stark_c63a_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run");
-        assert!(run.status.success(), "{tag}: native must exit 0");
-        assert_eq!(
-            String::from_utf8_lossy(&run.stdout),
-            expect_out,
-            "{tag}: native stdout"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    support::differential::agree_completing_with_stdout(tag, src, expect_out);
 }
 
-/// No output expected.
+/// No output expected -- and now that is CHECKED rather than assumed.
 fn agree(tag: &str, src: &str) {
     agree_out(tag, src, "");
 }
 
+/// HIR + MIR + native all exit 0; the native stdout must equal `expect_out`. In-program `assert_eq`
+/// carries value checks; `expect_out` carries the output-byte check.
+/// No output expected.
 #[test]
 fn from_and_len() {
     agree(

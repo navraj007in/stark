@@ -29,9 +29,8 @@ use std::path::PathBuf;
 
 use support::corpus::{corpus_root, load, Case};
 use support::differential::{
-    compare_observations, front_end, run_hir, run_mir, run_native, rustc_available,
-    CanonicalReturnedValue, CompletionObservation, DropEvent, Observation, TrapMessageClass,
-    TrapObservation,
+    compare_observations, front_end, run_hir, run_mir, run_native, CanonicalReturnedValue,
+    CompletionObservation, DropEvent, Observation, TrapMessageClass, TrapObservation,
 };
 
 /// §21.3's per-mutation record.
@@ -162,7 +161,7 @@ fn trap(observation: &mut Observation) -> &mut TrapObservation {
 /// All sixteen §14.3 mutations, each against a real witness.
 #[test]
 fn every_required_mutation_is_detected() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -395,7 +394,7 @@ fn every_required_mutation_is_detected() {
 /// program and show its observation differs.
 #[test]
 fn routing_controls_show_the_wrong_route_is_observable() {
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }
@@ -528,7 +527,7 @@ fn the_returned_observation_field_is_load_bearing() {
 #[test]
 fn the_trap_message_class_is_load_bearing() {
     let (cases, _) = load();
-    if !rustc_available() {
+    if !support::differential::rustc_available() {
         eprintln!("SKIP: no rustc in this environment.");
         return;
     }

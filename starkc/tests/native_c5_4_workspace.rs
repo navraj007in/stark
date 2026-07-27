@@ -15,10 +15,10 @@
 //! `tests/fixtures/c5-native-workspace/`; its canonical `Instance.symbol` set is frozen here, and
 //! the freeze is relocation- and traversal-order-independent (§11.4/§13.6).
 
+mod support;
+
 use starkc::backend::generated_rust::{emit_native_debug, linkage, NativeBuildOptions};
 use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::interp::run_program;
 use starkc::mir::lower::lower_program;
 use starkc::mir::verify::verify_program;
 use starkc::mir::MirProgram;
@@ -35,9 +35,6 @@ use std::sync::Arc;
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Front {
-    hir: starkc::hir::Hir,
-    tables: starkc::typecheck::TypeTables,
-    root_file: Arc<SourceFile>,
     program: MirProgram,
 }
 
@@ -87,12 +84,7 @@ fn compile_workspace(root: &Path) -> Front {
     assert!(errors.is_empty(), "typecheck: {errors:?}");
     let program = lower_program(&hir, &checked.tables, root_file.clone())
         .unwrap_or_else(|e| panic!("workspace must lower: {}", e.what));
-    Front {
-        hir,
-        tables: checked.tables,
-        root_file,
-        program,
-    }
+    Front { program }
 }
 
 fn symbols(program: &MirProgram) -> Vec<String> {
@@ -142,27 +134,40 @@ fn the_canonical_symbols_match_the_frozen_list() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// Migrated to the shared comparator (R-02). What it replaced ran two engines and compared
+/// `status` and `output` — the only two fields it had. It is now the full §39 observation, and it
+/// runs the **third** engine as well: the comment "Engine 1 / Engine 2" was itself the finding, in
+/// a file named `native_*`.
+///
+/// It also drops this suite's own front end, which built the root `SourceFile` from the ABSOLUTE
+/// checkout path. DEV-113 made that a provenance defect (PKG-IDENTITY-001: never an absolute
+/// checkout path), and `relocation_does_not_change_canonical_symbols` below is the test that would
+/// have to catch it — so going through `front_end_package` is a correctness change, not a tidy-up.
 #[test]
-fn hir_and_mir_agree_and_the_workspace_completes() {
+fn the_workspace_completes_identically_in_every_available_engine() {
     let root = isolated_fixture_root();
-    let front = compile_workspace(&root);
+    let (front, program) = support::differential::front_end_package(&root.join("app"));
 
-    // Engine 1: HIR oracle.
-    let hir_exec =
-        interp::run_with_partial_output(&front.hir, front.root_file.clone(), &front.tables)
-            .unwrap_or_else(|(e, _)| panic!("HIR run failed: {}", e.message));
-    assert_eq!(hir_exec.status, 0, "HIR must exit 0");
-    assert!(hir_exec.output.is_empty(), "C5 has no stdout surface");
-
-    // Engine 2: MIR interpreter (implies verification).
-    let verified = verify_program(&front.program).expect("MIR must verify");
-    let mir_exec =
-        run_program(verified).unwrap_or_else(|f| panic!("MIR run failed: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "MIR must exit 0");
-
-    // Agreement (both completed, same exit, no output).
-    assert_eq!(hir_exec.status, mir_exec.status);
-    assert_eq!(hir_exec.output, mir_exec.output);
+    let name = "c5_4_workspace";
+    let hir = support::differential::run_hir(name, &front);
+    let mir = support::differential::run_mir(name, &program);
+    if support::differential::rustc_available() {
+        let native = support::differential::run_native(name, "c5_4_ws", &program);
+        if let Err(disagreement) =
+            support::differential::compare_observations(name, &hir, &mir, &native)
+        {
+            panic!("{disagreement}");
+        }
+    } else if let Some(field) = support::differential::first_difference(&hir, &mir) {
+        panic!("{name}: HIR/MIR DISAGREEMENT on {field}\n{hir:#?}\n{mir:#?}");
+    }
+    match &hir {
+        support::differential::Observation::Completed(done) => {
+            assert_eq!(done.exit_status, 0, "the workspace must exit 0");
+            assert!(done.stdout_bytes.is_empty(), "C5 has no stdout surface");
+        }
+        other => panic!("the workspace must complete, got {other:#?}"),
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -262,38 +267,32 @@ fn a_broken_assertion_traps_in_all_three_engines() {
     assert_ne!(src, mutated, "the mutation must apply");
     std::fs::write(&app_main, mutated).unwrap();
 
-    let front = compile_workspace(&broken);
-
-    // HIR traps.
-    let hir = interp::run_with_partial_output(&front.hir, front.root_file.clone(), &front.tables);
-    assert!(hir.is_err(), "HIR must trap on the false assertion");
-
-    // MIR traps.
-    let verified = verify_program(&front.program).expect("verify");
-    assert!(
-        run_program(verified).is_err(),
-        "MIR must trap on the false assertion"
-    );
-
-    // Native traps (non-zero exit), if rustc is available.
-    if rustc_available() {
-        let verified = verify_program(&front.program).expect("verify");
-        let out = broken.join("out");
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: out,
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .expect("broken workspace still builds");
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run failed");
-        assert!(
-            !run.status.success(),
-            "native must trap (non-zero exit) on the false assertion"
-        );
+    // Through the shared comparator (R-02). The three engines must not merely each fail — they must
+    // fail the SAME way. "HIR returned Err, MIR returned Err, native exited non-zero" was satisfiable
+    // by three different failures, including a native build error, which is not a trap at all.
+    let (front, program) = support::differential::front_end_package(&broken.join("app"));
+    let name = "c5_4_workspace_broken";
+    let hir = support::differential::run_hir(name, &front);
+    let mir = support::differential::run_mir(name, &program);
+    if support::differential::rustc_available() {
+        let native = support::differential::run_native(name, "c5_4_ws_broken", &program);
+        if let Err(disagreement) =
+            support::differential::compare_observations(name, &hir, &mir, &native)
+        {
+            panic!("{disagreement}");
+        }
+    } else if let Some(field) = support::differential::first_difference(&hir, &mir) {
+        panic!("{name}: HIR/MIR DISAGREEMENT on {field}\n{hir:#?}\n{mir:#?}");
+    }
+    match &hir {
+        support::differential::Observation::Trapped(trap) => {
+            assert_eq!(
+                trap.category,
+                starkc::mir::TrapCategory::AssertFailure,
+                "the false assertion must raise assert-failure, not some other trap"
+            );
+        }
+        other => panic!("the false assertion must trap, got {other:#?}"),
     }
     let _ = std::fs::remove_dir_all(&broken);
 }

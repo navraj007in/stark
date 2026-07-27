@@ -11,7 +11,10 @@
 //! never consulted for map operations, so a `Hash` that violates its law cannot desynchronise the
 //! engines from one another.
 
+mod support;
+
 use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
+
 use starkc::diag::Severity;
 use starkc::interp;
 use starkc::mir::interp::run_program;
@@ -23,71 +26,13 @@ use starkc::source::SourceFile;
 use starkc::typecheck;
 use std::sync::Arc;
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Delegates to the shared comparator (R-02), keeping this suite's independent stdout pin: three
+/// engines agreeing on the wrong map contents still fails.
+fn agree(tag: &str, src: &str, expect: &str) {
+    support::differential::agree_completing_with_stdout(tag, src, &format!("{}\n", expect.trim()));
 }
 
 /// All three engines agree and print `expect`.
-fn agree(tag: &str, src: &str, expect: &str) {
-    let file = Arc::new(SourceFile::new(
-        format!("c63d_{tag}.stark"),
-        src.to_string(),
-    ));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    let errs: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-
-    let hir_exec = interp::run_with_partial_output(&hir, file.clone(), &checked.tables)
-        .unwrap_or_else(|(e, _)| panic!("{tag} HIR: {}", e.message));
-    assert_eq!(hir_exec.output.trim(), expect, "{tag}: HIR output");
-
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(
-        mir_exec.output.trim(),
-        expect,
-        "{tag}: MIR output must equal the HIR oracle"
-    );
-
-    if rustc_available() {
-        let verified = verify_program(&program).unwrap();
-        let dir = std::env::temp_dir().join(format!("stark_c63d_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let artifact = emit_native_debug(
-            &verified,
-            &NativeBuildOptions {
-                target_dir: dir.clone(),
-                target_contract: "stark-64-v1".to_string(),
-            },
-        )
-        .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-        let run = std::process::Command::new(&artifact.binary_path)
-            .output()
-            .expect("run");
-        assert!(run.status.success(), "{tag}: native must exit 0");
-        assert_eq!(
-            String::from_utf8_lossy(&run.stdout).trim(),
-            expect,
-            "{tag}: native output must equal the oracle"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
 /// A key whose `Eq` deliberately ignores field `b`, so `K{1,1}` and `K{1,2}` are the SAME key. The
 /// map must hold ONE entry. Structural comparison would say two — this is the case that caught the
 /// MIR divergence.
@@ -437,7 +382,7 @@ fn an_eq_that_panics_aborts_with_the_users_provenance() {
     );
     assert_eq!(mir_fail.output, "before\n", "MIR: output before the panic");
 
-    if rustc_available() {
+    if support::differential::rustc_available() {
         let verified = verify_program(&program).unwrap();
         let dir = std::env::temp_dir().join(format!("stark_c63d_eqpanic_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

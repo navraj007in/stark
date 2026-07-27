@@ -22,6 +22,11 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated
+# cases genuinely exercise are now CITED by the templates that exercise them, verified
+# against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`
+# arrows and a test that reads every remaining arrow. Metadata only -- no case source
+# changed -- but the coverage claim did, so: minor.
 # corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE
 # (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and
 # gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,
@@ -32,6 +37,11 @@
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
 # emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
 # the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated
+# cases genuinely exercise are now CITED by the templates that exercise them, verified
+# against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`
+# arrows and a test that reads every remaining arrow. Metadata only -- no case source
+# changed -- but the coverage claim did, so: minor.
 # corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE
 # (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and
 # gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,
@@ -45,14 +55,14 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 0.7.0
+corpus_version = 0.8.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
 manifest_sha256 = 8198396afc883fe1cedca33c7de42fa741fe650288bfc44ca2bb0630e1998c4a
-generated_manifest_sha256 = 7ed4b1e5c026dd1abf04934001c0da042bfda1b805ee285eb94e417813c8f0d0
-templates_sha256 = 316ae9f300b1850a6a5c80d819e71e5ff8eaed4f170726bfbf930e07c1b96f4b
+generated_manifest_sha256 = 385b7eb6aa742e073900c77b63e84604de14da2e3344db8119d04df8937929cb
+templates_sha256 = 1b81ed28c3f7aa388842f38be8b6c7a91776ff4e92f9f61d518b58c4b51fc83f
 metamorphic_sha256 = b47deac3293c4eec472785aadb461a21c5ebd7774a057e37783010e9531cb71f
-generator_sha256 = 89aca4ef65f73f738ac0281abed010eba02d49ba4c2a16a5649aad7802c46416
+generator_sha256 = 629b94c0c2e03fbcbafd97f9a80c2524e50ca309a733bf6eedca4889589a1e5f
 case_count = 137
 handwritten_count = 56
 generated_count = 74

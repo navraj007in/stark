@@ -13,124 +13,23 @@
 //! assert the trap CATEGORY and the exact SOURCE LINE on stderr, so a trap that fires with the wrong
 //! provenance fails here rather than being silently accepted.
 
-use starkc::backend::generated_rust::{emit_native_debug, NativeBuildOptions};
-use starkc::diag::Severity;
-use starkc::interp;
-use starkc::mir::interp::run_program;
-use starkc::mir::lower::lower_program;
-use starkc::mir::verify::verify_program;
-use starkc::parser::{parse, ParseMode};
-use starkc::resolve::resolve;
-use starkc::source::SourceFile;
-use starkc::typecheck;
-use std::sync::Arc;
+mod support;
 
-fn rustc_available() -> bool {
-    std::process::Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+/// Delegates to the shared comparator (R-02). See this file's header on what it does not pin.
+fn agree_out(tag: &str, src: &str) {
+    support::differential::agree_completing_available_engines(tag, src);
 }
 
-struct Compiled {
-    program: starkc::mir::MirProgram,
-    expect: String,
-}
-
-fn front_end(tag: &str, src: &str) -> Compiled {
-    let file = Arc::new(SourceFile::new(
-        format!("c63bt_{tag}.stark"),
-        src.to_string(),
-    ));
-    let (ast, pd) = parse(&file, ParseMode::Program);
-    assert!(pd.is_empty(), "{tag} parse: {pd:?}");
-    let (hir, rd) = resolve(&ast, file.clone());
-    assert!(rd.is_empty(), "{tag} resolve: {rd:?}");
-    let checked = typecheck::analyze(&hir, file.clone());
-    let errs: Vec<_> = checked
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
-    // On a trapping program the HIR interpreter fails; its partial output is still the oracle.
-    let expect = match interp::run_with_partial_output(&hir, file.clone(), &checked.tables) {
-        Ok(exec) => exec.output,
-        Err((_, partial)) => partial,
-    };
-    let program = lower_program(&hir, &checked.tables, file)
-        .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    Compiled { program, expect }
+/// All three engines trap with the same category at the same line. The private version checked the
+/// native stderr for a category SUBSTRING and never asked MIR or the oracle which category they
+/// raised -- so a MIR trap of the wrong category passed as long as it trapped at all.
+fn traps_at(tag: &str, src: &str, category: starkc::mir::TrapCategory, line: u32) {
+    support::differential::agree_trapping(tag, src, category, line);
 }
 
 /// HIR + MIR + native all complete, with MIR/native stdout equal to the HIR oracle.
-fn agree_out(tag: &str, src: &str) {
-    let Compiled { program, expect } = front_end(tag, src);
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir_exec = run_program(verified).unwrap_or_else(|f| panic!("{tag} MIR: {:?}", f.error));
-    assert_eq!(mir_exec.status, 0, "{tag}: MIR must exit 0");
-    assert_eq!(mir_exec.output, expect, "{tag}: MIR stdout vs HIR oracle");
-
-    if rustc_available() {
-        let (run, _) = build_and_run(tag, &program);
-        assert!(run.status.success(), "{tag}: native must exit 0");
-        assert_eq!(
-            String::from_utf8_lossy(&run.stdout),
-            expect,
-            "{tag}: native stdout vs oracle"
-        );
-    }
-}
-
-fn build_and_run(tag: &str, program: &starkc::mir::MirProgram) -> (std::process::Output, String) {
-    let verified = verify_program(program).unwrap();
-    let dir = std::env::temp_dir().join(format!("stark_c63bt_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let artifact = emit_native_debug(
-        &verified,
-        &NativeBuildOptions {
-            target_dir: dir.clone(),
-            target_contract: "stark-64-v1".to_string(),
-        },
-    )
-    .unwrap_or_else(|e| panic!("{tag} native build: {e:?}"));
-    let run = std::process::Command::new(&artifact.binary_path)
-        .output()
-        .expect("run");
-    let _ = std::fs::remove_dir_all(&dir);
-    (run, format!("c63bt_{tag}.stark"))
-}
-
 /// The program traps in every engine, and NATIVELY reports the given category at the given source
 /// line — the provenance check DEV-107 exists for.
-fn traps_at(tag: &str, src: &str, category: &str, line: u32) {
-    let Compiled { program, expect } = front_end(tag, src);
-    let verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let mir = run_program(verified);
-    assert!(mir.is_err(), "{tag}: MIR must trap");
-
-    if rustc_available() {
-        let (run, file_name) = build_and_run(tag, &program);
-        assert_eq!(run.status.code(), Some(101), "{tag}: trap exit code");
-        let stderr = String::from_utf8_lossy(&run.stderr);
-        assert!(
-            stderr.contains(category),
-            "{tag}: stderr missing category {category:?}: {stderr}"
-        );
-        assert!(
-            stderr.contains(&format!("{file_name}:{line}:")),
-            "{tag}: stderr must name the USER's location {file_name}:{line}: {stderr}"
-        );
-        // Output produced before the trap still reaches stdout (CD-120 Contract B).
-        assert_eq!(
-            String::from_utf8_lossy(&run.stdout),
-            expect,
-            "{tag}: pre-trap stdout vs oracle"
-        );
-    }
-}
-
 // ---- Indexed read: success and trap ----
 
 #[test]
@@ -148,7 +47,7 @@ fn vec_index_out_of_bounds_reports_user_location() {
     traps_at(
         "indexoob",
         "fn main() {\n    let mut v: Vec<Int32> = Vec::new();\n    v.push(1);\n    println(v[5u64]);\n}\n",
-        "index out of bounds",
+        starkc::mir::TrapCategory::IndexOutOfBounds,
         4,
     );
 }
@@ -189,7 +88,7 @@ fn vec_remove_out_of_bounds_traps() {
     traps_at(
         "removeoob",
         "fn main() {\n    let mut v: Vec<Int32> = Vec::new();\n    v.push(1);\n    let x = v.remove(4u64);\n}\n",
-        "index out of bounds",
+        starkc::mir::TrapCategory::IndexOutOfBounds,
         4,
     );
 }
@@ -210,7 +109,7 @@ fn slice_out_of_range_traps() {
     traps_at(
         "sliceoob",
         "fn main() {\n    let a: [Int32; 3] = [1, 2, 3];\n    let s = &a[1..9];\n    println(s.len());\n}\n",
-        "index out of bounds",
+        starkc::mir::TrapCategory::IndexOutOfBounds,
         3,
     );
 }
@@ -221,7 +120,7 @@ fn inverted_slice_bounds_trap() {
     traps_at(
         "sliceinv",
         "fn main() {\n    let a: [Int32; 3] = [1, 2, 3];\n    let s = &a[2..1];\n    println(s.len());\n}\n",
-        "index out of bounds",
+        starkc::mir::TrapCategory::IndexOutOfBounds,
         3,
     );
 }
@@ -233,7 +132,7 @@ fn negative_slice_bound_traps() {
     traps_at(
         "sliceneg",
         "fn main() {\n    let a: [Int32; 3] = [1, 2, 3];\n    let lo: Int32 = -1;\n    let s = &a[lo..2];\n    println(s.len());\n}\n",
-        "index out of bounds",
+        starkc::mir::TrapCategory::IndexOutOfBounds,
         4,
     );
 }

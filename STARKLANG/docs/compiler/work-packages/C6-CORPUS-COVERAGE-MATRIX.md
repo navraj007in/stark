@@ -62,7 +62,7 @@ Uniform: `package_shape = single-file` unless noted; `drop_observation = none` u
 | E02 | identifiers | 04-Semantic NAME-RESOLVE-001 | completion | `expr_stmt__01` | EXISTING-EVIDENCE |
 | E03 | blocks and block tails | 02-Syntax block-expr | completion | `expr_stmt__02_if_else_and_block_tail` | EXISTING-EVIDENCE →M02 |
 | E04 | let and mutable assignment | 03-Type AM-LOCAL-001 | completion | `expr_stmt__01`, `cross_block_non_copy_moves_agree` | EXISTING-EVIDENCE |
-| E05 | unary operations | NUM-INT-ARITH-001 | completion | `scalar_arithmetic_agrees` | EXISTING-EVIDENCE →T01 |
+| E05 | unary operations | NUM-INT-ARITH-001 | completion | `scalar_arithmetic_agrees` | EXISTING-EVIDENCE |
 | E06 | binary arithmetic | NUM-INT-ARITH-001 | both | `scalar_arithmetic_agrees`, `integer_overflow_trap_agrees` | EXISTING-EVIDENCE →T01 →MU01 |
 | E07 | bitwise operations | NUM-INT-ARITH-001 | both | `primitive__04_bitwise_shift_pow_and_ordering`, `invalid_shift_trap_agrees` | EXISTING-EVIDENCE |
 | E08 | comparisons | PRIM-TRAIT-001 | completion | `ordering_comparisons_agree` | EXISTING-EVIDENCE →T02 |
@@ -89,12 +89,12 @@ unified comparator in C6.5-5; E06/E13/E17 additionally carry mutation obligation
 | C02 | nested if | EXEC-EVAL-001 | completion | `expr_stmt__02` | EXISTING-EVIDENCE |
 | C03 | `loop` | TYPE-LOOP-001 | completion | `infinite_loop_with_mid_body_break_agrees` | EXISTING-EVIDENCE →M12 |
 | C04 | `while` | EXEC-CFLOW-001 | completion | `multi_iteration_loop_agrees` | EXISTING-EVIDENCE →M12 |
-| C05 | range `for` | EXEC-FOR-001 | completion | `expr_stmt__03_loops_break_continue` | EXISTING-EVIDENCE →T03 →M12 |
+| C05 | range `for` | EXEC-FOR-001 | completion | `expr_stmt__03_loops_break_continue` | EXISTING-EVIDENCE →M12 |
 | C06 | array `for` | EXEC-FOR-001 | completion | `collection_iter__03_slice_views_and_array_iteration` | EXISTING-EVIDENCE |
 | C07 | user iterator `for` | EXEC-FOR-001 | completion | `c63c_iterators` | EXISTING-EVIDENCE |
 | C08 | `break` | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_live_at_break_is_destroyed` | EXISTING-EVIDENCE →T15 |
-| C09 | `continue` | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_live_at_continue_is_destroyed` | EXISTING-EVIDENCE →T15 |
-| C10 | early return | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_is_destroyed_on_return` | EXISTING-EVIDENCE →T15 |
+| C09 | `continue` | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_live_at_continue_is_destroyed` | EXISTING-EVIDENCE |
+| C10 | early return | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_is_destroyed_on_return` | EXISTING-EVIDENCE |
 | C11 | `match` | PAT-OWN-001 | completion | `expr_stmt__04_match_and_patterns` | EXISTING-EVIDENCE →T04 →M07 |
 | C12 | `?` propagation | EXEC-CFLOW-001 | completion | `question_mark_propagation_agrees`, `option_result__02` | EXISTING-EVIDENCE →T10 |
 | C13 | trap termination | DROP-ABORT-001 | trap, drop-observing | `no_destructor_runs_after_a_trap` +4 `c61e_no_destructor_runs_after_*` | EXISTING-EVIDENCE |
@@ -112,7 +112,7 @@ collection.
 | --- | --- | --- | --- | --- | --- |
 | P01 | wildcard | SYN-PATTERN-001 | completion | `expr_stmt__04` | EXISTING-EVIDENCE |
 | P02 | binding | PAT-DROP-001 | completion | `c61e_a_match_arm_binding_is_destroyed_at_arm_end` | EXISTING-EVIDENCE |
-| P03 | tuple | SYN-PATTERN-001 | completion | `tuple_construction_and_projection_agree` | EXISTING-EVIDENCE →T04 |
+| P03 | tuple | SYN-PATTERN-001 | completion | `tuple_construction_and_projection_agree` | EXISTING-EVIDENCE |
 | P04 | struct | SYN-PATTERN-001 | completion | `struct_construction_and_field_projection_agree` | EXISTING-EVIDENCE →M05 |
 | P05 | enum variant | PAT-EXHAUST-001 | completion | `enum_construction_and_matching_agree` | EXISTING-EVIDENCE →T06 |
 | P06 | nested patterns | SYN-PATTERN-001 | completion | `ownership_drop__03`, `pattern_nested_match` | EXISTING-EVIDENCE →M06 |
@@ -120,7 +120,7 @@ collection.
 | P08 | range patterns | — | — | — | **NOT-APPLICABLE-NON-CORE** — 02-Syntax-Grammar declares no range-pattern form; the parser rejects it. Boundary to be pinned by a negative acceptance test (§4.3(4)) |
 | P09 | `ref`/`mut` bindings | PAT-OWN-001 | completion | `c61e_a_failed_pattern_test_leaves_the_scrutinee_for_the_matching_arm` | EXISTING-EVIDENCE |
 | P10 | ignored fields | SYN-PATTERN-001 | completion | `struct_enum_trait__02` | EXISTING-EVIDENCE |
-| P11 | partial-move patterns | OWN-PARTIAL-001 | completion, drop-observing | `a_partially_moved_value_destroys_only_the_surviving_field`, `consuming_match_of_a_non_copy_payload_agrees` | EXISTING-EVIDENCE →T14 |
+| P11 | partial-move patterns | OWN-PARTIAL-001 | completion, drop-observing | `a_partially_moved_value_destroys_only_the_surviving_field`, `consuming_match_of_a_non_copy_payload_agrees` | EXISTING-EVIDENCE T14 DEFERRED |
 | P12 | array patterns | SYN-PATTERN-001 | completion | `array_construction_and_indexing_agree` (A5/`ConstIndex`) | EXISTING-EVIDENCE |
 | P13 | match-arm guards | — | — | — | **NOT-APPLICABLE-NON-CORE** — no guard form in 02-Syntax-Grammar; parser rejects. Negative test to pin |
 
@@ -149,14 +149,14 @@ Recorded as `ADD-HANDWRITTEN` work under the non-Core classification, not as cov
 | V14 | `Option<T>` | STD-PROFILE-001 | `option_construction_and_matching_agree`, `option_result__01` | EXISTING-EVIDENCE →T10 |
 | V15 | `Result<T,E>` | STD-PROFILE-001 | `result_construction_and_matching_agree`, `option_result__02` | EXISTING-EVIDENCE →T10 |
 | V16 | `Vec<T>` | DROP-COLLECTION-001 | `c63b_vec_box`, `collection_iter__01` | EXISTING-EVIDENCE →T11 |
-| V17 | `Box<T>` | STD-PROFILE-001, DROP-ORDER-001 | `c63b_vec_box`, `option_result__03_box_and_layout_queries` | EXISTING-EVIDENCE →T11 |
+| V17 | `Box<T>` | STD-PROFILE-001, DROP-ORDER-001 | `c63b_vec_box`, `option_result__03_box_and_layout_queries` | EXISTING-EVIDENCE |
 | V18 | `HashMap<K,V>` | STD-HASH-001, CE4 insertion order | `c63d_map_key_identity`, `collection_iter__02` | EXISTING-EVIDENCE →T12 →MU11 |
 | V19 | `HashSet<T>` | 06-Standard-Library §`HashSet<T>`, `std-full` | `c63d_map_key_identity::hashset_is_hir_only` (pins the refusal, not the semantics) | **BLOCKED-BY-OTHER-C6-WP** (CD-148) — normative in `std-full`, runs in HIR, refused at lowering. A MIR gap, which §4.3 forbids as a non-Core reason |
 | V20 | files/resources | — | — | **NOT-APPLICABLE-NON-CORE** — `std-full` profile, absent from every engine; C6.3f EXCLUDED (CD-142) |
 | V21 | function types | TYPE-FN-001 | `function_value_stored_in_a_struct_field`, `…_in_a_tuple` | EXISTING-EVIDENCE →T09 |
-| V22 | references | REF-IDENTITY-001 | `native_c61f_*` (6 suites), `exclusive_references_cross_the_call_boundary_and_mutate` | EXISTING-EVIDENCE →T13 |
-| V23 | mutable references | OWN-BORROW-001 | `native_c61f_reborrow`, `native_c61f_b3_stored_refs` | EXISTING-EVIDENCE →T13 |
-| V24 | nested/generic combinations | TYPE-GENERIC-001 | `nested_and_repeated_instantiations_each_see_their_own_frame`, `recursive_generic_instance_agrees`, `c62c_associated_types` | EXISTING-EVIDENCE →T07 |
+| V22 | references | REF-IDENTITY-001 | `native_c61f_*` (6 suites), `exclusive_references_cross_the_call_boundary_and_mutate` | EXISTING-EVIDENCE T13 DEFERRED |
+| V23 | mutable references | OWN-BORROW-001 | `native_c61f_reborrow`, `native_c61f_b3_stored_refs` | EXISTING-EVIDENCE T13 DEFERRED |
+| V24 | nested/generic combinations | TYPE-GENERIC-001 | `nested_and_repeated_instantiations_each_see_their_own_frame`, `recursive_generic_instance_agrees`, `c62c_associated_types` | EXISTING-EVIDENCE |
 
 **Group gaps: V19 is the matrix's single `BLOCKED` row (CD-148).** It was carried in as
 `NOT-APPLICABLE-NON-CORE` on the reading that `HashSet` is absent from the `core-min` profile. That
@@ -180,16 +180,16 @@ engine, not merely from MIR.
 | D01 | free function | EXEC-DISPATCH-001 | `direct_calls_agree` | EXISTING-EVIDENCE |
 | D02 | inherent method | TYPE-METHOD-002 | `struct_enum_trait__01` | EXISTING-EVIDENCE |
 | D03 | user trait | TRAIT-DEF-001 | `c62d_operator_coretrait` | EXISTING-EVIDENCE →T08 →MU09 |
-| D04 | CoreTrait | PRIM-TRAIT-001 | `c62d_operator_coretrait` | EXISTING-EVIDENCE →T08 |
+| D04 | CoreTrait | PRIM-TRAIT-001 | `c62d_operator_coretrait` | EXISTING-EVIDENCE |
 | D05 | default trait method | TRAIT-DEF-001 | `struct_enum_trait__04_trait_default_and_override` | EXISTING-EVIDENCE |
 | D06 | fully qualified call | TRAIT-ASSOC-001 | `trait_call_qualified` | EXISTING-EVIDENCE →M04 |
-| D07 | generic parameter method | TRAIT-DEF-001 | `struct_enum_trait__03_generic_function_and_trait_bound` | EXISTING-EVIDENCE →T07 |
+| D07 | generic parameter method | TRAIT-DEF-001 | `struct_enum_trait__03_generic_function_and_trait_bound` | EXISTING-EVIDENCE |
 | D08 | associated function | TRAIT-ASSOC-001 | `struct_enum_trait__05` | EXISTING-EVIDENCE |
 | D09 | associated type result | TRAIT-ASSOC-001 | `c62c_associated_types` | EXISTING-EVIDENCE |
 | D10 | explicit/inferred type args | TYPE-INFER-001 | `generics_explicit` / `generics_inferred` | EXISTING-EVIDENCE →M03 |
 | D11 | function pointer | TYPE-FN-001 | `function_value_as_parameter`, `function_value_returned_from_a_function` | EXISTING-EVIDENCE →T09 →MU10 |
-| D12 | cross-package call | MOD-FILE-001 | `native_c5_4_linkage`, `native_c5_4_workspace` | EXISTING-EVIDENCE →T17 |
-| D13 | dependency-to-dependency call | PKG-RESOLVE-001 | `native_c5_4_workspace` (3-package) | EXISTING-EVIDENCE →T17 |
+| D12 | cross-package call | MOD-FILE-001 | `native_c5_4_linkage`, `native_c5_4_workspace` | EXISTING-EVIDENCE T17 DEFERRED |
+| D13 | dependency-to-dependency call | PKG-RESOLVE-001 | `native_c5_4_workspace` (3-package) | EXISTING-EVIDENCE T17 DEFERRED |
 | D14 | Drop-only reachability | DROP-EXACT-001 | `native_c6_1_ownership` | EXISTING-EVIDENCE |
 | D15 | trait-only reachability | TRAIT-DEF-001 | `c62b_f2_specific_instance` | EXISTING-EVIDENCE |
 
@@ -223,14 +223,14 @@ re-observes each category.
 | O04 | move return | OWN-MOVE-001 | `native_c61f_ret_refs` | EXISTING-EVIDENCE |
 | O05 | borrow | REF-IDENTITY-001 | `ownership_drop__02_shared_borrow_does_not_move` | EXISTING-EVIDENCE |
 | O06 | mutable borrow | OWN-BORROW-001 | `exclusive_references_cross_the_call_boundary_and_mutate` | EXISTING-EVIDENCE |
-| O07 | reborrow | REF-PROJECT-001 | `native_c61f_reborrow` | EXISTING-EVIDENCE →T13 |
-| O08 | stored reference | REF-CARRY-001 | `native_c61f_b3_stored_refs` | EXISTING-EVIDENCE →T13 |
-| O09 | returned reference | REF-RETURN-001 | `native_c61f_ret_refs` (CD-112) | EXISTING-EVIDENCE →T13 |
-| O10 | partial struct move | OWN-PARTIAL-001 | `a_non_copy_field_moved_out_of_a_struct_agrees` | EXISTING-EVIDENCE →T14 |
-| O11 | partial enum move | OWN-PARTIAL-001 | `a_partially_moved_value_destroys_only_the_surviving_field` | EXISTING-EVIDENCE →T14 |
+| O07 | reborrow | REF-PROJECT-001 | `native_c61f_reborrow` | EXISTING-EVIDENCE T13 DEFERRED |
+| O08 | stored reference | REF-CARRY-001 | `native_c61f_b3_stored_refs` | EXISTING-EVIDENCE T13 DEFERRED |
+| O09 | returned reference | REF-RETURN-001 | `native_c61f_ret_refs` (CD-112) | EXISTING-EVIDENCE T13 DEFERRED |
+| O10 | partial struct move | OWN-PARTIAL-001 | `a_non_copy_field_moved_out_of_a_struct_agrees` | EXISTING-EVIDENCE T14 DEFERRED |
+| O11 | partial enum move | OWN-PARTIAL-001 | `a_partially_moved_value_destroys_only_the_surviving_field` | EXISTING-EVIDENCE T14 DEFERRED |
 | O12 | array element consumption | A5 `ConstIndex` | `native_c5_3_aggregates_enums` | EXISTING-EVIDENCE |
-| O13 | non-Copy array iteration | OWN-MOVE-001, A5 `ConstIndex` | `o13_non_copy_array_by_value_iteration_agrees` | EXISTING-EVIDENCE →T14 — **was `BLOCKED`; the row was stale** (CD-148) |
-| O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | EXISTING-EVIDENCE →T14 |
+| O13 | non-Copy array iteration | OWN-MOVE-001, A5 `ConstIndex` | `o13_non_copy_array_by_value_iteration_agrees` | EXISTING-EVIDENCE T14 DEFERRED — **was `BLOCKED`; the row was stale** (CD-148) |
+| O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | EXISTING-EVIDENCE T14 DEFERRED |
 | O15 | normal scope Drop | DROP-EXACT-001 | `ownership_drop__01_move_and_drop_order` | EXISTING-EVIDENCE →T15 |
 | O16 | break/continue/return Drop | DROP-EXACT-001 | `c61e_a_local_live_at_break_is_destroyed` +2 | EXISTING-EVIDENCE →T15 |
 | O17 | exact reverse field order | DROP-ORDER-001 | `struct_fields_are_destroyed_in_reverse_declaration_order` | EXISTING-EVIDENCE →MU06 |
@@ -288,16 +288,16 @@ evidence and belongs to V04, not here. A trap row here would encode the supersed
 | ID | Sub-category | Normative rule | Package shape | Evidence | Disposition |
 | --- | --- | --- | --- | --- | --- |
 | K01 | single file | MOD-FILE-001 | single-file | most of the corpus | EXISTING-EVIDENCE |
-| K02 | multi-file package | MOD-FILE-001 | package | `multi_file__01_cross_file_execution_and_provenance` | EXISTING-EVIDENCE →T17 |
+| K02 | multi-file package | MOD-FILE-001 | package | `multi_file__01_cross_file_execution_and_provenance` | EXISTING-EVIDENCE T17 DEFERRED |
 | K03 | dependency | PKG-RESOLVE-001 | workspace | `native_c5_4_linkage` | EXISTING-EVIDENCE |
-| K04 | dependency-to-dependency | PKG-RESOLVE-001 | workspace | `native_c5_4_workspace` | EXISTING-EVIDENCE →T17 |
+| K04 | dependency-to-dependency | PKG-RESOLVE-001 | workspace | `native_c5_4_workspace` | EXISTING-EVIDENCE T17 DEFERRED |
 | K05 | re-export | MOD-USE-001 | workspace | `native_c5_4_linkage` | EXISTING-EVIDENCE |
 | K06 | package alias | — | — | — | **NOT-APPLICABLE-NON-CORE** unless 07-Modules declares an alias form — **to confirm during C6.5-3**; if it exists, this becomes `ADD-HANDWRITTEN` |
 | K07 | workspace relocation | PKG-IDENTITY-001, CD-108 | workspace | `native_build_cli::frozen_three_package_workspace_builds_through_cli_after_relocation`, `c62e_deterministic_identity` | EXISTING-EVIDENCE →M08 |
 | K08 | dependency declaration reorder | CD-108 | workspace | `c62e_deterministic_identity` | EXISTING-EVIDENCE →M09 |
 | K09 | source declaration reorder | NAME-RESOLVE-001 | package | — | **ADD-METAMORPHIC** →M09 sibling; no existing pair |
-| K10 | locked build | PKG-LOCK-001 | workspace | `c64_platform_matrix::portability_generated_crate_is_locked_and_network_free` | EXISTING-EVIDENCE →T19 |
-| K11 | offline build | §11.3 | workspace | `c63_closure_evidence` | EXISTING-EVIDENCE →T19 |
+| K10 | locked build | PKG-LOCK-001 | workspace | `c64_platform_matrix::portability_generated_crate_is_locked_and_network_free` | EXISTING-EVIDENCE T19 DEFERRED |
+| K11 | offline build | §11.3 | workspace | `c63_closure_evidence` | EXISTING-EVIDENCE T19 DEFERRED |
 | K12 | installed runtime | §9.2 | workspace | `c63_closure_evidence`, CI release smoke + negative step (CD-144 R1) | EXISTING-EVIDENCE |
 | K13 | Unicode path | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_unicode` | EXISTING-EVIDENCE |
 | K14 | path containing spaces | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_spaces` | EXISTING-EVIDENCE |

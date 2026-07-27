@@ -996,6 +996,49 @@ pub fn agree_completing(tag: &str, source: &str) -> CompletionObservation {
     }
 }
 
+/// `agree_completing` over whatever engines this environment actually has (R-02).
+///
+/// The migration entry point for the twenty-two suites that each carried a private `agree` helper.
+/// Those helpers ran three engines and asserted `status == 0` on each **separately**, which is not a
+/// comparison: three engines each exiting 0 while printing three different things all passed. They
+/// also returned early when `rustc` was missing, silently dropping to a one-engine smoke test.
+///
+/// Both are fixed in one place rather than twenty-two. The comparison is the shared comparator's, so
+/// stdout, Drop logs, return frames and trap fields are compared field by field; and a missing rustc
+/// removes the third ENGINE, not the comparison — the two interpreters are still compared against
+/// each other. Suites keep their own `agree` wrapper (one line, delegating here) because their case
+/// bodies name it, and their doc headers explain what each case is for.
+pub fn agree_completing_available_engines(tag: &str, source: &str) -> CompletionObservation {
+    let observation = if rustc_available() {
+        three_engine(tag, source)
+    } else {
+        eprintln!("SKIP-NATIVE: {tag}: no rustc; comparing the two interpreters only.");
+        two_engine(tag, source)
+    };
+    match observation {
+        Observation::Completed(done) if done.exit_status == 0 => done,
+        other => panic!("{tag}: expected normal completion with status 0, got {other:#?}"),
+    }
+}
+
+/// As above, and stdout is additionally pinned to `expected` — so unanimity on the WRONG output
+/// still fails.
+///
+/// The distinction matters and is not cosmetic. Several migrated suites took the HIR oracle's own
+/// output as the expectation (`let expect = hir_exec.output;`) and then checked the other engines
+/// against it. That is a real agreement check and it is worth having, but it can only ever prove the
+/// engines match each other; it cannot notice that all three render `Some(1)` where the spec says
+/// `Some(1)` should be something else. Where a suite states its expectation independently, it comes
+/// through here and keeps that strength. Where it does not, the suite's header now says so.
+pub fn agree_completing_with_stdout(tag: &str, source: &str, expected: &str) {
+    let done = agree_completing_available_engines(tag, source);
+    assert_eq!(
+        String::from_utf8_lossy(&done.stdout_bytes),
+        expected,
+        "{tag}: stdout"
+    );
+}
+
 /// §8.8. A drop-observing case: all three engines agreed, AND the Drop log is the one stated here —
 /// so three engines agreeing on a wrong Drop schedule still fails. `expected` is a list of
 /// identities in the order they must be destroyed; sequence numbers are checked implicitly by

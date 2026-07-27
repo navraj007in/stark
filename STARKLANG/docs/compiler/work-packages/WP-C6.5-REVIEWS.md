@@ -22,12 +22,12 @@ required capability unevidenced · **LOW** precision, hygiene or documentation.
 | # | Sev | Review | Finding | Closure condition affected |
 | --- | --- | --- | --- | --- |
 | R-01 | HIGH | D, F | The corpus covers **5 of 9 admitted trap categories** | §10.4, §22.1 |
-| R-02 | HIGH | B | **23 three-engine suites still use private comparators**; C65-F1 is not discharged | §22.3, the required claim (§2) |
+| R-02 | HIGH | B | **23 three-engine suites still use private comparators**; C65-F1 is not discharged — **CLOSED CD-165**: all 23 migrated | §22.3, the required claim (§2) |
 | R-03 | MEDIUM | F | Mutation controls cover **7 of 15 comparator fields** | §22.5 |
 | R-04 | MEDIUM | E | Metamorphic floor unmet: 20 groups / 40 members vs 24 / 48 | §22.4 |
 | R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor | §22.4 |
 | R-06 | MEDIUM | H | Shared-file **lease protocol not followed** for two leased files | §22.8 |
-| R-07 | MEDIUM | D | **36 of 136 matrix rows** have a corpus case; nothing validates row citations | §22.1, §10.2 |
+| R-07 | MEDIUM | D | **36 of 136 matrix rows** have a corpus case; nothing validates row citations — **PARTIALLY CLOSED CD-165**: citations and template arrows now validated; the coverage gap itself remains | §22.1, §10.2 |
 | R-08 | MEDIUM | C, E | Retention (§11.11) and divergence-retention (§13.7) **never exercised** | §22.2, §22.4 |
 | R-09 | MEDIUM | C | `MAX_LOOP_ITERATIONS` **declared but never enforced** | §11.8, §22.2 |
 | R-10 | LOW | A | `stderr_observation` equality is **tautological between HIR and MIR** | precision of §22.3 |
@@ -76,8 +76,34 @@ None observes the §39 shape (`grep '@@stark'` over them returns nothing).
 evidence produced by a comparator the C6.5 authority has never seen. That is most of the
 `EXISTING-EVIDENCE` rows. **No closure claim may cite them** until they are migrated.
 
-**Recommended disposition.** Migrate in matrix order as CD-148 directed; start with the suites the
-matrix cites most (`c63a_string`, `c63b_*`, `c63c_iterators`, `c63d_map_key_identity`,
+**RESOLUTION (CD-165, batch).** All 23 are migrated. Each kept its own `agree`-shaped wrapper — the
+case bodies name it, and the doc headers explain what each case is for — but the wrapper is now one
+line delegating to `support::differential`. What the migration changed, beyond provenance:
+
+- The private helpers asserted `status == 0` on each engine **separately**. That is not a comparison:
+  three engines each exiting 0 while printing three different things all passed. Agreement is now
+  field-by-field over the §39 observation — stdout, Drop log, return frame, trap category, line,
+  column, message class.
+- They returned early when `rustc` was missing, silently dropping to a one-engine smoke test.
+  `agree_completing_available_engines` compares the two interpreters instead: a missing toolchain
+  removes an ENGINE, not the comparison.
+- `c63b_trapping_ops::traps_at` checked the native stderr for a category **substring** and never
+  asked MIR or the oracle which category they raised. `cd139_float_division::traps` asserted only
+  "the oracle produced no output" and "MIR returned `Err`". Both now pin category *and* line
+  through `agree_trapping`.
+- `native_c5_4_workspace` ran **two** engines under comments reading "Engine 1 / Engine 2", in a
+  file named `native_*`, and built its root `SourceFile` from the absolute checkout path — the exact
+  provenance defect DEV-113 fixed. It now goes through `front_end_package` and runs all three.
+
+Where a suite pinned its expected stdout independently (`c63a_string`, `c63d_map_key_identity`,
+`c63e_float32`, `cd139_float_division`) the pin is preserved via `agree_completing_with_stdout`.
+Where it did not — `c63c_iterators` and `c63e_formatting` took the HIR oracle's own output as the
+expectation — the engine-agreement check is real but cannot notice all three rendering the same
+wrong thing; those headers now say so rather than implying a pin they do not have.
+
+**Original recommended disposition** (retained for the record). Migrate in matrix order as CD-148
+directed; start with the suites the matrix cites most (`c63a_string`, `c63b_*`, `c63c_iterators`,
+`c63d_map_key_identity`,
 `native_c61f_*`). `c65_entry_exit_contract` should be migrated first as a matter of consistency —
 C6.5 should not be the source of a new fork.
 
@@ -156,9 +182,32 @@ matrix row. The ten family IDs prove it: they passed validation while naming row
 A typo'd or invented row ID would claim coverage no case provides, which is the same failure mode as
 CD-154's fabricated rule citations — caught there, uncaught here.
 
-**Recommended disposition.** Extend the corpus validator to check every `subcategories` entry against
-the matrix's row IDs, exactly as `normative_rules` is checked against the spec (CD-154's guard). Then
-close the coverage gap row by row.
+**Third half, found while fixing the second (CD-165).** The matrix's `→T##` arrows — "a generator
+template covers this row too" — were never read by anything either. **36 of the 136 rows carried one
+that was false**: 16 named a template in `MISSING_TEMPLATES`, which generates nothing at all
+(T13, T14, T17, T19), and 20 named a real template whose cases never cited that row. Same shape as
+CD-154 again: a forward-looking claim written into an evidence document and never revisited.
+
+**RESOLUTION (CD-165, batch).**
+
+- The `subcategories` validator now rejects any entry that is not a real matrix row, with a negative
+  control (`a_manifest_citing_a_nonexistent_matrix_row_is_rejected`). This is what would have caught
+  the ten family IDs.
+- Every remaining `→T##` arrow is machine-checked by
+  `every_template_arrow_in_the_matrix_is_backed_by_generated_cases`.
+- The 36 false arrows were resolved **by checking the emitted sources**, not by assertion. Eleven
+  were genuinely earned — the template's cases really do exercise the row — and those rows are now
+  cited by the template that exercises them (E01, E08, E17, C08, P05, V01, V02, V08, V21, D03, D11).
+  Nine were not earned and the arrow was **removed**, leaving the row on its existing evidence
+  (E05, C05, C09, C10, P03, V17, V24, D04, D07). Sixteen point at deferred templates and now read
+  `T## DEFERRED` in prose instead of pointing at a template that will never run.
+- Real matrix-row coverage by corpus cases is now measurable and honest: **47 of 136** at 0.7.0,
+  rising with the citations above. The remainder rest on the R-02 suites, which are now migrated —
+  which is what makes citing them legitimate.
+
+**Still open.** The row-by-row coverage gap itself: a majority of rows have no hand-written corpus
+witness and rest on migrated suite evidence. §10.2's stronger reading — a corpus witness per row —
+is not met.
 
 ### R-08 — retention and divergence-retention have never been exercised · MEDIUM
 
@@ -236,13 +285,13 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 | 9 | Category-only traps not overfitted to prose? | **Yes** — prose matching is oracle-side only and an unknown message is a hard failure |
 | 10 | Can a non-Core exclusion hide an admitted feature? | **No** — §4.3 is enforced by the validator; V19 was reclassified when its reason failed that test |
 | 11 | Can a semantic quarantine let C6 close? | **No** — the three allowed reason classes cannot express one |
-| 12 | Can generated-Rust host behaviour substitute for STARK semantics? | **Largely no** — float rendering goes through `stark_runtime::format::canonical_float32/64` rather than bare host `Display`. Verified by `c63e_float32`, which is a **forked** suite (R-02) |
+| 12 | Can generated-Rust host behaviour substitute for STARK semantics? | **Largely no** — float rendering goes through `stark_runtime::format::canonical_float32/64` rather than bare host `Display`. Verified by `c63e_float32`, migrated to the shared comparator in CD-165 |
 
 ## Review B — comparator architecture
 
 | # | Question | Verdict |
 | --- | --- | --- |
-| 1 | One comparator implementation? | **No** — one *authority* exists; 23 suites still carry private logic (**R-02**) |
+| 1 | One comparator implementation? | **Yes, since CD-165** — one authority, and all 23 suites delegate to it (**R-02 closed**) |
 | 2 | Do existing and new suites call the same code? | **No** — 7 files use `mod support`; 23 do not |
 | 3 | Observation fields byte-precise? | **Yes** — `Vec<u8>` throughout; no lossy conversion in equality |
 | 4 | Trap categories exhaustive? | **Yes** — `runtime_category`'s match is exhaustive, so a tenth category fails to compile until mapped |
@@ -276,7 +325,7 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 | 2 | Meaningful subcategories per category? | **Yes** |
 | 3 | Completion and trap paths balanced? | **Weak** — 5 trap cases against 126 completions (**R-01**) |
 | 4 | All trap categories covered? | **No — 5 of 9** (**R-01**) |
-| 5 | Ownership/Drop edge paths covered? | **Partly** — reverse order, per-iteration, cross-package and pre-trap logs; partial moves and reinit only via forked suites (R-02) |
+| 5 | Ownership/Drop edge paths covered? | **Partly** — reverse order, per-iteration, cross-package and pre-trap logs; partial moves and reinit via suites migrated to the shared comparator in CD-165 (R-02) |
 | 6 | Trait/generic/function-value sentinels adversarial? | **Yes** — distinct sentinel values per instance, with routing controls proving the wrong route is observable |
 | 7 | Collection order and slice aliasing observable? | **Yes** — insertion order distinct from sorted order; view mutation visible in the owner |
 | 8 | Package and dependency shapes covered? | **Partly** — root+module and a 3-package chain; no cross-package trait impl, no dependency-trap provenance (DEV-113) |
