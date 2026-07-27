@@ -22,6 +22,10 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 0.10.0 (batch, 2026-07-28, CD-170): R-07. T16 now CITES every trap-
+# category row its emitted sources actually raise (X02-X09, X12), verified against the
+# bodies rather than asserted. X13 is deliberately excluded: T16 declares no `Drop` type,
+# so it cannot witness the ABSENCE of cleanup. Metadata only. Minor.
 # corpus_version 0.9.0 (batch, 2026-07-27, CD-167): R-04/R-05. M08 (workspace relocation)
 # and M09 (dependency declaration reorder) are BUILT, reaching §13.2's floor of 24 groups /
 # 48 members across all twelve families. Both were recorded as unbuildable -- 'every corpus
@@ -43,6 +47,10 @@
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
 # emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
 # the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 0.10.0 (batch, 2026-07-28, CD-170): R-07. T16 now CITES every trap-
+# category row its emitted sources actually raise (X02-X09, X12), verified against the
+# bodies rather than asserted. X13 is deliberately excluded: T16 declares no `Drop` type,
+# so it cannot witness the ABSENCE of cleanup. Metadata only. Minor.
 # corpus_version 0.9.0 (batch, 2026-07-27, CD-167): R-04/R-05. M08 (workspace relocation)
 # and M09 (dependency declaration reorder) are BUILT, reaching §13.2's floor of 24 groups /
 # 48 members across all twelve families. Both were recorded as unbuildable -- 'every corpus
@@ -67,14 +75,14 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 0.9.0
+corpus_version = 0.10.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
 manifest_sha256 = 8198396afc883fe1cedca33c7de42fa741fe650288bfc44ca2bb0630e1998c4a
-generated_manifest_sha256 = 6bb5b3081c3be18a1a36494e7664df5b798d8fdd84ea4bf8b49ce863c8ef5cbf
-templates_sha256 = 1b81ed28c3f7aa388842f38be8b6c7a91776ff4e92f9f61d518b58c4b51fc83f
+generated_manifest_sha256 = 5e3600c3ad8281decd1ffadb560f51bd921c1828f094ec641ed160429b862d6b
+templates_sha256 = e26edf31db0df55c7a9e9c12662eab8d8e8f1a2e38b3f6e1f8b7cee5e49c5eaf
 metamorphic_sha256 = c6e5980310e1b0fc22dc1ee59fdd3d523df383271dc8950d7f2f871f4c579f8d
-generator_sha256 = 96475ac7e368e5d8e597aafb0e9f809d216de9daff870499c9d5b2c03edcea84
+generator_sha256 = 4018827c55c791a2f0dee114b2fec686cbd4643add8c42428a7afdc54011b886
 case_count = 145
 handwritten_count = 64
 generated_count = 74

@@ -19,7 +19,7 @@ use support::corpus::{
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
 /// this assertion is what makes the second half unskippable.
-const EXPECTED_CORPUS_VERSION: &str = "0.9.0";
+const EXPECTED_CORPUS_VERSION: &str = "0.10.0";
 
 // ------------------------------------------------------------- the real corpus --
 
@@ -297,7 +297,7 @@ fn every_matrix_row_has_one_resolvable_disposition() {
     // deliberately does not trap, and `E14` (returns) against negative-zero infinity. Encoding
     // those would be a fourth fabrication class on top of the three this row set already had.
     // So the debt is declared, and may only ever shrink.
-    const UNATTRIBUTED_BUDGET: usize = 71;
+    const UNATTRIBUTED_BUDGET: usize = 30;
     assert!(
         unattributed <= UNATTRIBUTED_BUDGET,
         "{unattributed} rows are UNATTRIBUTED, above the declared budget of {UNATTRIBUTED_BUDGET}"

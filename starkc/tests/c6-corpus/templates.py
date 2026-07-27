@@ -453,7 +453,13 @@ def t16_trap(dims):
     return Case(
         source=source,
         category="traps",
-        subcategories=("X01", "X11", "E17"),
+        subcategories=(
+            # R-07: every trap-category row this template's emitted sources actually raise,
+            # verified against the bodies above rather than asserted. X13 ("no cleanup after a
+            # trap") is deliberately NOT here: these cases declare no `Drop` type, so they cannot
+            # witness the absence of cleanup.
+            "X01", "X02", "X03", "X04", "X05", "X06", "X07", "X08", "X09", "X11", "X12", "E17",
+        ),
         normative_rules=("TRAP-CATEGORY-001",),
         expected_stdout=("before",),
         expected_outcome="trap",
