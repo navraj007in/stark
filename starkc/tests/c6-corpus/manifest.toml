@@ -16,6 +16,20 @@
 # carry its expected category).
 
 [[case]]
+case_id = "dev117__reinit_after_move"
+kind = "retained"
+category = "ownership-drop"
+subcategories = ["O14"]
+sources = ["cases/retained/DEV-117/reduced/main.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["OWN-REINIT-001", "OWN-MOVE-001"]
+deviation = "DEV-117"
+expected_stdout = []
+
+[[case]]
 case_id = "entry_exit__01_unit_entry"
 kind = "retained"
 category = "packages-environment"

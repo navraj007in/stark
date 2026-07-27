@@ -8,7 +8,7 @@
 //! passing malformed MIR toward a backend.
 
 use starkc::diag::Severity;
-use starkc::mir::{self, lower::lower_program, verify::verify_program};
+use starkc::mir::{self, lower::lower_program, verify::verify_program, SyntheticKind};
 use starkc::parser::{parse, ParseMode};
 use starkc::resolve::resolve;
 use starkc::source::SourceFile;
@@ -1638,6 +1638,79 @@ fn rejects_const_index_on_non_array() {
         )],
     );
     expect_code(&program_with(vec![b]), "MIR-0010");
+}
+
+/// **DEV-117.** The MIR-0007 suppression is keyed on `Synthetic(DropElaboration)` and nothing else.
+///
+/// Reassigning a moved-from local must drop the old value first, and elaboration expresses that as
+/// `if flag { tmp = move local }` then `Drop(tmp)`. To a flag-blind dataflow the local is
+/// possibly-moved there, so the read was reported — but the branch is guarded by the very flag the
+/// move cleared, so it is unreachable exactly when the value is gone. OWN-REINIT-001 requires the
+/// reassignment to work, and it did not: the front end accepted the program and the HIR oracle ran
+/// it while MIR refused to build it.
+///
+/// Suppressing a diagnostic needs proof that it still fires, so this builds ONE body twice. The two
+/// differ only in the origin of the second move. Same statements, same shape, opposite verdicts.
+#[test]
+fn dev117_drop_elaboration_moves_are_exempt_but_user_moves_are_not() {
+    let statements = || {
+        vec![
+            Statement::Assign(
+                Place::local(LocalId(1)),
+                Rvalue::Use(Operand::Const(Constant::Int(1, MirTy::Int32))),
+            ),
+            Statement::Assign(
+                Place::local(LocalId(2)),
+                Rvalue::Use(Operand::Move(Place::local(LocalId(1)))),
+            ),
+            Statement::Assign(
+                Place::local(LocalId(3)),
+                Rvalue::Use(Operand::Move(Place::local(LocalId(1)))),
+            ),
+        ]
+    };
+    let with_origin = |origin: Origin| {
+        let mut pairs: Vec<(Statement, SourceInfo)> =
+            statements().into_iter().map(|s| (s, info())).collect();
+        // Only the SECOND move — the one that reads an already-moved local — changes origin.
+        pairs[2].1 = SourceInfo { origin, ..info() };
+        program_with(vec![body(
+            vec![
+                ret_local(),
+                local(MirTy::Int32),
+                local(MirTy::Int32),
+                local(MirTy::Int32),
+            ],
+            vec![BasicBlock {
+                statements: pairs,
+                terminator: (Terminator::Return, info()),
+            }],
+        )])
+    };
+
+    // User code: still rejected. This is the check DEV-117's fix must not have weakened.
+    expect_code(&with_origin(Origin::UserCode), "MIR-0007");
+
+    // Drop elaboration: accepted, because the compiler generated it under a drop flag.
+    assert!(
+        verify_program(&with_origin(Origin::Synthetic(
+            SyntheticKind::DropElaboration
+        )))
+        .is_ok(),
+        "a drop-elaboration move-out must not be reported as a use-after-move"
+    );
+
+    // And the exemption is not "any synthetic statement": every other synthetic kind is still
+    // subject to the check, so the suppression cannot spread by someone reusing a marker.
+    for kind in [
+        SyntheticKind::ForLoopDesugar,
+        SyntheticKind::MatchDesugar,
+        SyntheticKind::ShortCircuit,
+        SyntheticKind::ReturnSlot,
+        SyntheticKind::DropFlagInit,
+    ] {
+        expect_code(&with_origin(Origin::Synthetic(kind)), "MIR-0007");
+    }
 }
 
 #[test]

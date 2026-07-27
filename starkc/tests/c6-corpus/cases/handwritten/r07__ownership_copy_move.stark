@@ -1,4 +1,4 @@
-// R-07 (O01, O02, O03, O04). Copy assignment, move assignment, move into a call, move out by
+// R-07 (O01, O02, O03, O04, O14). Copy assignment, move assignment, move into a call, move out by
 // return, and reinitialisation after a move. Every one of these rows cited a name that does not
 // exist (`c61f_structural_copy`, `a_moved_value_is_destroyed_by_its_new_owner`,
 // `cross_block_non_copy_moves_agree`).

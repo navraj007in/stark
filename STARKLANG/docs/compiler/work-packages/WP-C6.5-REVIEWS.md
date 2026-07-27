@@ -319,7 +319,7 @@ The eight passes were re-run rather than assumed, and three findings only appear
 | ID | What | Disposition |
 | --- | --- | --- |
 | DEV-116 | `HashSet` is normative in `std-full`, runs in the oracle, refused at lowering | BLOCKED, owned by WP-C6.3; §4.3 forbids recording it as a non-Core exclusion |
-| DEV-117 | Reinitialising a moved-from local: front end accepts, oracle runs, MIR refuses (MIR-0007) | BLOCKED, retained under `cases/retained/DEV-117/` per §11.11 |
+| DEV-117 | Reinitialising a moved-from local: front end accepts, oracle runs, MIR refuses (MIR-0007) | **FIXED CD-175.** The move-out was drop elaboration under a drop flag, not a user read. Its reduced case is now a permanent regression (`dev117__reinit_after_move`), and O14 is covered. |
 
 ## Review A — semantic authority
 

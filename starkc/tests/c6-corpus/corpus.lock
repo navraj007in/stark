@@ -22,6 +22,9 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 1.1.0 (2026-07-28, CD-175): DEV-117 FIXED. Its reduced case is promoted
+# to a permanent regression per §11.11 step 6, and O14 (reinitialisation) moves from
+# BLOCKED to covered. Minor.
 # corpus_version 1.0.0 (WP-C6.5 closure, 2026-07-28, CD-173): the corpus the closure
 # packet cites. All thirteen §17 findings closed; 153 cases; 24 metamorphic groups across
 # twelve families; 10 of 10 admitted trap categories; every one of the 136 coverage-matrix
@@ -57,6 +60,9 @@
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
 # emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
 # the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 1.1.0 (2026-07-28, CD-175): DEV-117 FIXED. Its reduced case is promoted
+# to a permanent regression per §11.11 step 6, and O14 (reinitialisation) moves from
+# BLOCKED to covered. Minor.
 # corpus_version 1.0.0 (WP-C6.5 closure, 2026-07-28, CD-173): the corpus the closure
 # packet cites. All thirteen §17 findings closed; 153 cases; 24 metamorphic groups across
 # twelve families; 10 of 10 admitted trap categories; every one of the 136 coverage-matrix
@@ -95,18 +101,18 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 1.0.0
+corpus_version = 1.1.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
-manifest_sha256 = 008129f404c7d2fc19256dc12004e348eea3a65a4307a4f5cbdc515605cafc84
+manifest_sha256 = bc64293c9370c1e45fce8485bc59e5c27d56d69a0ed21381debc263a59701af2
 generated_manifest_sha256 = 5e3600c3ad8281decd1ffadb560f51bd921c1828f094ec641ed160429b862d6b
 templates_sha256 = e26edf31db0df55c7a9e9c12662eab8d8e8f1a2e38b3f6e1f8b7cee5e49c5eaf
 metamorphic_sha256 = c6e5980310e1b0fc22dc1ee59fdd3d523df383271dc8950d7f2f871f4c579f8d
-generator_sha256 = 4bc41fa2e0b1ecc256709c6e6f31524cf563a30219f6fd6ab63d0fd03c5fc463
-case_count = 153
+generator_sha256 = e5a2d01c45afbf191f2263af97b8990b3ecf063e0ed00b0998c60c52b43a3553
+case_count = 154
 handwritten_count = 72
 generated_count = 74
-retained_count = 7
+retained_count = 8
 metamorphic_group_count = 24
 cf324eff35bc355b6ffc6b06b3d87cb11fc064b7fada2e439c60fa19be79e511  cases/generated/gen__t01__0268b2da.stark
 71424b295f089f3073a6a0e8895d844b744af8dfe0cdd5f666649274b313494c  cases/generated/gen__t01__0a297325.stark
@@ -193,7 +199,7 @@ cb0c15089946aaeef4e6a2b8ba521c4c18d2b34565b96fa8bdc249bbc946038e  cases/handwrit
 8b253147a18617f6c9de4174cdcbb3992bd1a6c83352810991bd263c8ac13379  cases/handwritten/r07__drop_order_and_active_variant.stark
 ccbd491c38e542ef69df426ad43d83e3d99dad3f521bd2806c0bec9b49b10b21  cases/handwritten/r07__expr_unary_bitwise_casts.stark
 0311f8c8bbd851799ae4f9113d992291889de16b30b67553f039d2b8b54b0f97  cases/handwritten/r07__generics_explicit_and_inferred.stark
-c6aabf288d0c3ddfb9b6aaf575f9b062e524b5d0a02911adeafb5add328f4410  cases/handwritten/r07__ownership_copy_move.stark
+4ab5b978bdf271de8ac314728b58084113f1ff45336fe015cc11abbedefb1a66  cases/handwritten/r07__ownership_copy_move.stark
 b26e69cee0cd0edee1fd4bdb5e8becd3c334abba8bb9d882ff61b04dd93ad611  cases/handwritten/r07__patterns_binding_tuple_array.stark
 2253c270c92305a0afb90cd8284cdfd84881e437d8a5b02e4ecf7b78ca0c23c2  cases/handwritten/r07__stmt_return_and_control.stark
 054d709d43a3ea6a856c43225df14a10bb50ecfe21b9df2cc87fd1017fea49c9  cases/handwritten/r07__types_float64_and_array.stark

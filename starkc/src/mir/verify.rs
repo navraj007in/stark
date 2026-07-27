@@ -1030,9 +1030,28 @@ impl<'a> BodyCx<'a> {
     ) -> (BTreeSet<(u32, Vec<MovePathStep>)>, Vec<BlockId>) {
         // Collect the reads/writes/moves per statement in order.
         let block = self.body.blocks[bi as usize].clone();
-        for (stmt, _) in &block.statements {
+        for (stmt, info) in &block.statements {
             if let Statement::Assign(place, rvalue) = stmt {
-                self.flow_rvalue(rvalue, &mut moved, bi, report);
+                // DEV-117. A drop-elaboration move-out is the SAME designed state this pass already
+                // exempts for `Terminator::Drop`, expressed differently.
+                //
+                // Reassigning a moved-from local must drop the old value first, and elaboration
+                // does that by moving it into a temp under the local's drop flag and dropping the
+                // temp — `if flag { _8 = move _1 }` then `Drop(_8)`. To this flag-blind dataflow
+                // `_1` is possibly-moved there, so the read tripped MIR-0007; but the branch is
+                // guarded by the very flag the move cleared, so it is unreachable exactly when the
+                // value is gone. The header's existing exemption was written for the direct
+                // `Drop(place)` shape and did not cover the move-to-temp one.
+                //
+                // Suppressing only the REPORT, and only for `Synthetic(DropElaboration)`, keeps the
+                // check intact for user code: the move is still recorded, so a genuine use-after-
+                // move downstream still fails. OWN-REINIT-001 requires the reassignment to work.
+                let report_reads = report
+                    && !matches!(
+                        info.origin,
+                        Origin::Synthetic(SyntheticKind::DropElaboration)
+                    );
+                self.flow_rvalue(rvalue, &mut moved, bi, report_reads);
                 self.flow_reinit(place, &mut moved, bi, report);
             }
         }

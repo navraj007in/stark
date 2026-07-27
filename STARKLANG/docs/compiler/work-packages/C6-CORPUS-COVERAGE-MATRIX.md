@@ -230,7 +230,7 @@ re-observes each category.
 | O11 | partial enum move | OWN-PARTIAL-001 | `a_partially_moved_value_destroys_only_the_surviving_field` | CORPUS-GENERATED: gen__t06__155e6658 |
 | O12 | array element consumption | A5 `ConstIndex` | `native_c5_3_aggregates_enums` | CORPUS-HANDWRITTEN: r07__array_element_consumption |
 | O13 | non-Copy array iteration | OWN-MOVE-001, A5 `ConstIndex` | `o13_non_copy_array_by_value_iteration_agrees` | CORPUS-HANDWRITTEN: r07__array_element_consumption |
-| O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | BLOCKED: DEV-117 / WP-C6.5 / the front end accepts reinitialising a moved-from local and the HIR oracle runs it, but MIR verification refuses with MIR-0007 "move from possibly-moved place" — its move analysis never clears the moved flag on reassignment, which OWN-REINIT-001 requires |
+| O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | CORPUS-RETAINED: dev117__reinit_after_move |
 | O15 | normal scope Drop | DROP-EXACT-001 | `ownership_drop__01_move_and_drop_order` | CORPUS-GENERATED: gen__t15__24c6dd0c |
 | O16 | break/continue/return Drop | DROP-EXACT-001 | `c61e_a_local_live_at_break_is_destroyed` +2 | CORPUS-GENERATED: gen__t15__24c6dd0c |
 | O17 | exact reverse field order | DROP-ORDER-001 | `struct_fields_are_destroyed_in_reverse_declaration_order` | CORPUS-GENERATED: gen__t15__24c6dd0c |
