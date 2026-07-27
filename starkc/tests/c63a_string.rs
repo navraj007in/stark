@@ -93,6 +93,33 @@ fn str_to_string() {
 }
 
 #[test]
+fn str_bytes_index_and_len() {
+    agree(
+        "str_bytes",
+        "fn main() { let b = \"Az\".bytes(); assert_eq(b.len(), 2); \
+         assert_eq(b[0u64], 65u8); assert_eq(b[1u64], 122u8); }",
+    );
+}
+
+#[test]
+fn string_bytes_index_and_len() {
+    agree(
+        "string_bytes",
+        "fn main() { let s = String::from(\"Hi\"); let b = s.bytes(); assert_eq(b.len(), 2); \
+         assert_eq(b[0u64], 72u8); assert_eq(b[1u64], 105u8); }",
+    );
+}
+
+#[test]
+fn str_bytes_are_utf8_bytes() {
+    agree(
+        "str_bytes_utf8",
+        "fn main() { let b = \"é\".bytes(); assert_eq(b.len(), 2); \
+         assert_eq(b[0u64], 195u8); assert_eq(b[1u64], 169u8); }",
+    );
+}
+
+#[test]
 fn string_returned_across_function() {
     agree(
         "ret_string",

@@ -79,6 +79,10 @@ pub enum MirValue {
     /// `StringAsStr` (§5b — sound because the view is read-only and str identity is
     /// unobservable). `Rc` is an unobservable cheap-copy convenience.
     Str(std::rc::Rc<str>),
+    /// A read-only `&[UInt8]` snapshot produced by `str.bytes()`. General slices remain
+    /// place windows (`Ref` + `ConcreteProj::Slice`); string bytes have no UInt8 element place in
+    /// MIR, so they use a self-contained immutable value.
+    ByteSlice(std::rc::Rc<[u8]>),
     /// An owned `String` value (A1). Non-Copy; drop-elaborated (buffer reclaim is a no-op).
     String(String),
     /// An owned `Vec<T>` value (A1/C4.5e-2). Non-Copy; drop-elaborated (elements dropped in
@@ -876,6 +880,11 @@ impl<'a> Interp<'a> {
                             local = l;
                             path = p;
                         }
+                        MirValue::ByteSlice(_) => {
+                            // `str.bytes()` stores an immutable `&[UInt8]` snapshot directly in
+                            // the local. Dereferencing it keeps the same value; following index
+                            // projections are resolved by `read_resolved` on `ByteSlice`.
+                        }
                         other => return self.internal(format!("Deref of non-reference {other:?}")),
                     }
                 }
@@ -953,6 +962,17 @@ impl<'a> Interp<'a> {
                         return self.internal("proven index out of bounds (verifier/lowering bug)")
                     }
                 },
+                (ConcreteProj::Index(i), MirValue::ByteSlice(bytes)) => {
+                    return bytes
+                        .get(*i)
+                        .map(|b| MirValue::Int(*b as i128))
+                        .ok_or_else(|| {
+                            MirRunError::Internal(
+                                "proven byte-slice index out of bounds (verifier/lowering bug)"
+                                    .into(),
+                            )
+                        });
+                }
                 (step, value) => {
                     return self.internal(format!("projection {step:?} on value {value:?}"))
                 }
@@ -1330,6 +1350,7 @@ impl<'a> Interp<'a> {
                     // 0.1-A6: a slice-view base reads as a Vec sub-view; its len is the VIEW
                     // length, so the proof bounds i against the view, not the base container.
                     MirValue::Vec(elems) => elems.len() as i128,
+                    MirValue::ByteSlice(bytes) => bytes.len() as i128,
                     other => {
                         return Err(MirRunError::Internal(format!(
                             "CheckIndex base is not an aggregate: {other:?}"
@@ -1515,7 +1536,10 @@ impl<'a> Interp<'a> {
             StringNew => Ok(MirValue::String(String::new())),
             StringFromStr => Ok(MirValue::String(self.as_str(&first)?.to_string())),
             StrToString => Ok(MirValue::String(self.as_str(&first)?.to_string())),
-            StrBytes => self.internal("StrBytes is not represented in the MIR interpreter yet"),
+            StrBytes => {
+                let s = self.as_str(&first)?;
+                Ok(MirValue::ByteSlice(std::rc::Rc::from(s.as_bytes())))
+            }
             StringClone => {
                 let s = self.read_string_ref(&first)?;
                 Ok(MirValue::String(s))
@@ -2025,12 +2049,61 @@ impl<'a> Interp<'a> {
     ) -> Result<MirValue, MirRunError> {
         use RuntimeFn::*;
         let mut args = args.into_iter();
-        let Some(MirValue::Ref {
+        let Some(receiver) = args.next() else {
+            return self.internal("slice op expects a receiver");
+        };
+        if let MirValue::ByteSlice(bytes) = receiver {
+            return match rt {
+                SliceLen => Ok(MirValue::Int(bytes.len() as i128)),
+                SliceIsEmpty => Ok(MirValue::Bool(bytes.is_empty())),
+                SliceNew => {
+                    let oob = || MirRunError::Trap {
+                        category: TrapCategory::IndexOutOfBounds,
+                        source: call_info,
+                        message: None,
+                    };
+                    let int = |v: Option<MirValue>| -> Result<i128, MirRunError> {
+                        match v {
+                            Some(MirValue::Int(i)) => Ok(i),
+                            other => Err(MirRunError::Internal(format!(
+                                "SliceNew bound is not an integer: {other:?}"
+                            ))),
+                        }
+                    };
+                    let lo = int(args.next())?;
+                    let hi = int(args.next())?;
+                    let inclusive = match args.next() {
+                        Some(MirValue::Bool(b)) => b,
+                        other => {
+                            return self.internal(format!(
+                                "SliceNew inclusive flag is not Bool: {other:?}"
+                            ))
+                        }
+                    };
+                    if lo < 0 || hi < 0 {
+                        return Err(oob());
+                    }
+                    let start = lo as usize;
+                    let end = if inclusive {
+                        hi as usize + 1
+                    } else {
+                        hi as usize
+                    };
+                    if start > end || end > bytes.len() {
+                        return Err(oob());
+                    }
+                    Ok(MirValue::ByteSlice(std::rc::Rc::from(&bytes[start..end])))
+                }
+                SliceNewMut => self.internal("cannot take a mutable slice of str.bytes()"),
+                other => self.internal(format!("runtime {other:?} is not a slice op")),
+            };
+        };
+        let MirValue::Ref {
             frame,
             generation,
             local,
             path,
-        }) = args.next()
+        } = receiver
         else {
             return self.internal("slice op expects a reference receiver");
         };

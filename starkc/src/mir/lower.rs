@@ -4953,7 +4953,26 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<Instance, LowerError> {
         let ItemKind::Fn(def) = &self.hir.item(item).kind else {
-            return unsupported("use of a non-function item as a function", span);
+            let kind = match &self.hir.item(item).kind {
+                ItemKind::Struct { .. } => "struct",
+                ItemKind::Enum { .. } => "enum",
+                ItemKind::Trait { .. } => "trait",
+                ItemKind::Impl { .. } => "impl",
+                ItemKind::Mod { .. } => "module",
+                ItemKind::Use { .. } => "use",
+                ItemKind::Const { .. } => "const",
+                ItemKind::TypeAlias { .. } => "type alias",
+                ItemKind::Model(_) => "model",
+                ItemKind::Fn(_) => "function",
+            };
+            let item_name = item_name_text(self.hir, self.meta, item).unwrap_or("<unnamed>");
+            return unsupported(
+                format!(
+                    "use of a non-function item as a function: {kind} {item_name} at `{}`",
+                    self.text(span)
+                ),
+                span,
+            );
         };
         let type_args = if def.sig.generics.is_empty() {
             Vec::new()
@@ -5535,6 +5554,13 @@ impl<'a> FnLowerer<'a> {
             self.emit_runtime_call(RuntimeFn::CharsIterNew, vec![str_op], dest, span);
             return Ok(());
         }
+        // `bytes()` on `str`/`String` → immutable `&[UInt8]`; owned strings first snapshot to
+        // `&str`, matching `chars()` and comparison lowering.
+        if name == "bytes" {
+            let str_op = self.str_operand_for(base, span)?;
+            self.emit_runtime_call(RuntimeFn::StrBytes, vec![str_op], dest, span);
+            return Ok(());
+        }
         // (runtime fn, receiver mutability). str methods take the `&str` value directly.
         let (rt, recv_mut) = match (is_string, name.as_str()) {
             (true, "as_str") => (RuntimeFn::StringAsStr, Some(false)),
@@ -5549,14 +5575,6 @@ impl<'a> FnLowerer<'a> {
             (false, "len") => (RuntimeFn::StrLen, None),
             (false, "is_empty") => (RuntimeFn::StrIsEmpty, None),
             (false, "to_string") => (RuntimeFn::StrToString, None),
-            // `bytes` is deliberately NOT lowered (DEV-115). `RuntimeFn::StrBytes` exists, verifies
-            // as `&str -> &[UInt8]`, and the native backend emits `.as_bytes()` -- but the MIR
-            // interpreter cannot represent the result: its slices are windows into a PLACE, and a
-            // `MirValue::String` has no UInt8 element place to view. Lowering it anyway makes source
-            // that typechecks and lowers unable to run under MIR, which surfaces as
-            // "MIR internal error: StrBytes is not represented in the MIR interpreter yet" --
-            // §8.6's harness failure, not a language outcome. That is the DEV-111 shape exactly.
-            // Restore this arm together with a MIR byte-slice representation.
             _ => {
                 return unsupported(
                     format!("method {name} on {peeled_ty:?} (a later C4.5e sub-slice)"),
