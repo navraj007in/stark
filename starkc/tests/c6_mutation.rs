@@ -384,8 +384,177 @@ fn every_required_mutation_is_detected() {
         },
     ));
 
-    assert_eq!(results.len(), 16, "§14.3 requires sixteen mutations");
+    // --- R-03: the seven comparator fields that had no control at all ---
+    //
+    // §14.3's sixteen were chosen as DEFECT CLASSES, and between them they exercised eight of the
+    // comparator's fifteen fields. The other seven were never mutated, so the comparator's ability
+    // to notice them rested on nothing. These seven close that, and `every_comparator_field_has_a_
+    // mutation_control` keeps it closed.
+    //
+    // Four of them can only be INSERTION mutations, and that is a property of the language rather
+    // than a shortcut — stated here so the claim is not read as stronger than it is:
+    //
+    //   * `drop_log_before_trap` is empty in every conformant observation, because DROP-ABORT-001
+    //     makes a trap abort WITHOUT running destructors. There is no case whose pre-trap Drop log
+    //     is non-empty, and there must never be one. So the mutation adds an event: it models an
+    //     engine that ran a destructor while unwinding, which is precisely the violation.
+    //   * `stderr_bytes` on a COMPLETION is likewise always empty in the corpus — PROC-EXIT-001's
+    //     `Err` path is the only completion that writes stderr, and it lives in
+    //     `c65_entry_exit_contract`, not in a corpus case (the manifest has no `expected_stderr`
+    //     field). The mutation adds bytes: it models an engine emitting spurious diagnostics.
+    //   * `trap exit_status` is 101 for every trap by construction, so the mutation changes it to a
+    //     value a non-aborting engine would produce.
+    //   * `completion versus trap` has no single-observation witness by definition; it is the shape
+    //     mismatch itself.
+    //
+    // Each still proves the thing that matters — that the comparator READS the field and names it —
+    // which is what "the corpus can detect this defect class" means.
+
+    results.push(mutation(
+        "MU17",
+        arithmetic,
+        &arithmetic_observed,
+        "stderr_bytes",
+        |o| {
+            completion(o).stderr_bytes = b"warning: internal backend note\n".to_vec();
+        },
+    ));
+    results.push(mutation(
+        "MU18",
+        overflow_trap,
+        &trap_observed,
+        "trap column",
+        |o| {
+            // The line is right and the column is wrong: a location that looks correct in a summary
+            // and points at the wrong expression on the line.
+            trap(o).column += 3;
+        },
+    ));
+    results.push(mutation(
+        "MU19",
+        overflow_trap,
+        &trap_observed,
+        "stdout_before_trap",
+        |o| {
+            // Output produced BEFORE the trap must survive it. Losing it is the classic buffered-
+            // stdout defect: the program is correct, the trap is correct, and the evidence of what
+            // ran first is gone.
+            trap(o).stdout_before_trap.clear();
+        },
+    ));
+    results.push(mutation(
+        "MU20",
+        overflow_trap,
+        &trap_observed,
+        "stderr_observation",
+        |o| {
+            // Only the RENDERED text changes; `category` stays correct, so this cannot be caught by
+            // the earlier category check and must be caught by this field. Narrowed per R-10: the
+            // interpreters' stderr is CONSTRUCTED from the same runtime table, so between HIR and
+            // MIR this field is tautological. What it genuinely witnesses is the NATIVE engine's
+            // real stderr disagreeing with that construction.
+            trap(o).stderr_observation.category_text = "arithmetic problem".to_string();
+        },
+    ));
+    results.push(mutation(
+        "MU21",
+        overflow_trap,
+        &trap_observed,
+        "trap exit_status",
+        |o| {
+            // TRAP-CATEGORY-001 aborts; an engine that returned a normal failure status instead
+            // would be observationally different in exactly this field.
+            trap(o).exit_status = 1;
+        },
+    ));
+    results.push(mutation(
+        "MU22",
+        overflow_trap,
+        &trap_observed,
+        "drop_log_before_trap",
+        |o| {
+            // DROP-ABORT-001: destructors do NOT run when a trap aborts. A single fabricated event
+            // is what an engine that unwound instead of aborting would produce.
+            trap(o).drop_log_before_trap.push(DropEvent {
+                sequence: 1,
+                identity: "Loud#1".to_string(),
+            });
+        },
+    ));
+    results.push(mutation(
+        "MU23",
+        arithmetic,
+        &arithmetic_observed,
+        "completion versus trap",
+        |o| {
+            // The coarsest disagreement there is, and the one a per-field comparison could most
+            // easily skip: one engine finished, another aborted.
+            *o = clone_observation(&trap_observed);
+        },
+    ));
+
+    assert_eq!(
+        results.len(),
+        23,
+        "§14.3's sixteen mutations plus R-03's seven comparator-field controls"
+    );
     write_evidence(&results);
+}
+
+/// **R-03.** Every field the comparator can report has a mutation control behind it.
+///
+/// The review found controls for 8 of the 15 fields, and the reason the gap survived is that
+/// nothing enumerated the field set — coverage was counted by reading the list. This reads
+/// `COMPARATOR_FIELDS`, which lives beside `first_difference`, so a new field added to the
+/// comparator fails here until it has a control. That is the durable half of R-03; the seven new
+/// mutations are only the current answer.
+#[test]
+fn every_comparator_field_has_a_mutation_control() {
+    /// Fields whose control is a standalone constructed-pair test rather than a `mutation()` entry.
+    /// Both need a value no corpus case produces — a second distinct return frame, and a second
+    /// distinct trap message class — so they are built directly instead of mutated from a witness.
+    /// The test NAME is checked to exist below, so this table cannot cite a control that is gone.
+    const CONTROLLED_BY_STANDALONE_TEST: [(&str, &str); 2] = [
+        (
+            "returned_observation",
+            "the_returned_observation_field_is_load_bearing",
+        ),
+        (
+            "trap message_class",
+            "the_trap_message_class_is_load_bearing",
+        ),
+    ];
+
+    let source = std::fs::read_to_string(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/c6_mutation.rs"),
+    )
+    .expect("this file");
+
+    for (field, test_name) in CONTROLLED_BY_STANDALONE_TEST {
+        assert!(
+            source.contains(&format!("fn {test_name}(")),
+            "{field} cites `{test_name}` as its control, but no such test exists here — the same \
+             fabricated-citation failure as CD-154"
+        );
+    }
+
+    let missing: Vec<&str> = support::differential::COMPARATOR_FIELDS
+        .iter()
+        .copied()
+        .filter(|field| {
+            !source.contains(&format!("\"{field}\","))
+                && !CONTROLLED_BY_STANDALONE_TEST
+                    .iter()
+                    .any(|(f, _)| f == field)
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} comparator field(s) have no mutation control: {missing:?}\n\
+         Every field `first_difference` can name must have a control that provokes it, or the \
+         comparator's ability to notice that field rests on nothing.",
+        missing.len()
+    );
 }
 
 /// §14.5 also requires source-level controls for **routing-sensitive** mutations: proof that the

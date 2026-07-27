@@ -17,7 +17,7 @@
 //!   * `v.push(f(...))` where the pushed value is itself a runtime call (e.g. `Vec<String>`): the
 //!     `&mut Vec` receiver borrow is held across the argument-evaluation block — the WP-C6.1g-c
 //!     dispatch-loop borrow problem. HIR+MIR pass; native is deferred with the other C6.1g-c cases.
-//!   * Trapping index/replace/remove, interior-ref `get`/iteration, and slices — later slices.
+//!   * Trapping index/replace/remove and interior-ref `get`/iteration — later slices.
 
 mod support;
 
@@ -73,6 +73,14 @@ fn vec_returned_across_function() {
         "ret",
         "fn mk() -> Vec<Int32> { let mut v = Vec::new(); v.push(9); v }\n\
          fn main() { let v = mk(); assert_eq(v.len(), 1); }",
+    );
+}
+
+#[test]
+fn vec_as_slice_borrows_full_vector() {
+    agree(
+        "as_slice",
+        "fn main() { let mut v: Vec<UInt8> = Vec::new(); v.push(0u8); v.push(127u8); v.push(255u8); let s = v.as_slice(); assert_eq(s.len(), 3); assert_eq(s[0u64], 0u8); assert_eq(s[1u64], 127u8); assert_eq(s[2u64], 255u8); }",
     );
 }
 

@@ -854,6 +854,33 @@ pub fn canonical_form(observation: &Observation) -> String {
 /// The first field on which two observations differ, named. Field-by-field rather than a derived
 /// `!=` so a failure says WHICH normative dimension disagreed — with nine fields on a trap, "these
 /// two structs differ" is not a useful answer.
+/// Every field name [`first_difference`] can return, in its comparison order (R-03).
+///
+/// It lives beside the function so the two are edited together, and `c6_mutation.rs` asserts a
+/// witness-backed control exists for each. Counting coverage by hand is what produced "7 of 15":
+/// the gap was invisible because nothing enumerated the field set. A new comparator field that
+/// arrives without a mutation control now fails that test rather than silently lowering coverage.
+pub const COMPARATOR_FIELDS: [&str; 15] = [
+    // Completed
+    "stdout_bytes",
+    "stderr_bytes",
+    "exit_status",
+    "returned_observation",
+    "drop_log",
+    // Trapped
+    "trap category",
+    "trap source_file",
+    "trap line",
+    "trap column",
+    "trap message_class",
+    "stdout_before_trap",
+    "stderr_observation",
+    "trap exit_status",
+    "drop_log_before_trap",
+    // Cross-shape
+    "completion versus trap",
+];
+
 pub fn first_difference(a: &Observation, b: &Observation) -> Option<&'static str> {
     match (a, b) {
         (Observation::Completed(x), Observation::Completed(y)) => {

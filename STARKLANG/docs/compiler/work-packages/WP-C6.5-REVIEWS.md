@@ -23,7 +23,7 @@ required capability unevidenced · **LOW** precision, hygiene or documentation.
 | --- | --- | --- | --- | --- |
 | R-01 | HIGH | D, F | The corpus covers **5 of 9 admitted trap categories** | §10.4, §22.1 |
 | R-02 | HIGH | B | **23 three-engine suites still use private comparators**; C65-F1 is not discharged — **CLOSED CD-165**: all 23 migrated; 289 tests, 0 failed, 0 skipped | §22.3, the required claim (§2) |
-| R-03 | MEDIUM | F | Mutation controls cover **7 of 15 comparator fields** | §22.5 |
+| R-03 | MEDIUM | F | Mutation controls cover **7 of 15 comparator fields** — **CLOSED CD-166**: 23 mutations, all 15 fields, enumeration machine-checked | §22.5 |
 | R-04 | MEDIUM | E | Metamorphic floor unmet: 20 groups / 40 members vs 24 / 48 | §22.4 |
 | R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor | §22.4 |
 | R-06 | MEDIUM | H | Shared-file **lease protocol not followed** for two leased files — **CLOSED a690bd8**; leases for the batch taken in advance in 921a2f9 | §22.8 |
@@ -369,7 +369,7 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 | 8 | Float32 widening uses a discriminating value? | **Yes** — `0.1f32` vs its widened rendering; a naive literal comparison would have passed under the defect |
 | 9 | Source-path replacement detects generated-Rust leakage? | **Yes** — MU14 substitutes `src/main.rs` |
 | 10 | Can missing output or wrong exit normalisation survive? | **No** — MU15/MU16 |
-| — | *Coverage of the field set* | **7 of 15 fields** (**R-03**) |
+| — | *Coverage of the field set* | **15 of 15 fields** (R-03 closed, CD-166) — 23 mutations; `every_comparator_field_has_a_mutation_control` reads `COMPARATOR_FIELDS` beside `first_difference`, so a new field without a control fails |
 
 ## Review G — evidence and Tier-1
 
