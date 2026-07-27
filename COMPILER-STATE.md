@@ -168,9 +168,9 @@ WP-C6.5 status **`PARTIAL`**: the Tier-1 evidence is complete, the breadth (meta
 witnesses, §17's eight review passes) is not.
 **CD-154: the matrix's rule citations were 69/84 INVENTED and are now repaired and machine-checked** —
 a fabrication, not a misjudgement, and the third phase-0 exit condition to fail on inspection. Two
-tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest. The other **22 forked suites are
-not yet migrated** — owner chose incremental migration in coverage-matrix order — so until each is,
-its C6.2/C6.3 evidence still rests on its own local notion of agreement. Matrix roll-up: 127
+tests now refuse any citation that resolves to nothing, in the matrix and in the corpus manifest.
+**All 23 forked suites are now migrated (CD-165, R-02)**, so their C6.2/C6.3 evidence rests on the
+shared comparator rather than on twenty-three local notions of agreement. Matrix roll-up: 127
 EXISTING-EVIDENCE, 4 NOT-APPLICABLE-NON-CORE, 1 ADD-METAMORPHIC, **4 BLOCKED — V19 `HashSet`**
 (a lowering gap, which §4.3 forbids as a non-Core exclusion) **and K15–K17, the entry contract
 (DEV-111)**. O13 left the blocker list: the refusal it cited (CD-038) was superseded by C6.1d's

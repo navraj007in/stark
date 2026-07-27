@@ -26,13 +26,13 @@ required capability unevidenced · **LOW** precision, hygiene or documentation.
 | R-03 | MEDIUM | F | Mutation controls cover **7 of 15 comparator fields** | §22.5 |
 | R-04 | MEDIUM | E | Metamorphic floor unmet: 20 groups / 40 members vs 24 / 48 | §22.4 |
 | R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor | §22.4 |
-| R-06 | MEDIUM | H | Shared-file **lease protocol not followed** for two leased files | §22.8 |
+| R-06 | MEDIUM | H | Shared-file **lease protocol not followed** for two leased files — **CLOSED a690bd8**; leases for the batch taken in advance in 921a2f9 | §22.8 |
 | R-07 | MEDIUM | D | **36 of 136 matrix rows** have a corpus case; nothing validates row citations — **PARTIALLY CLOSED CD-165**: citations and template arrows now validated; the coverage gap itself remains | §22.1, §10.2 |
 | R-08 | MEDIUM | C, E | Retention (§11.11) and divergence-retention (§13.7) **never exercised** | §22.2, §22.4 |
 | R-09 | MEDIUM | C | `MAX_LOOP_ITERATIONS` **declared but never enforced** | §11.8, §22.2 |
-| R-10 | LOW | A | `stderr_observation` equality is **tautological between HIR and MIR** | precision of §22.3 |
+| R-10 | LOW | A | `stderr_observation` equality is **tautological between HIR and MIR** — **CLOSED a690bd8**: the claim is narrowed to what the field can actually witness | precision of §22.3 |
 | R-11 | LOW | C | No case-ID **collision check** in the generator | §22.2 |
-| R-12 | LOW | G | Summary records skip/ignore **counts, not identities** (§16.3) | §22.7 |
+| R-12 | LOW | G | Summary records skip/ignore **counts, not identities** (§16.3) — **OPEN**, deferred into the batch with cause in a690bd8 | §22.7 |
 | R-13 | LOW | D | Metamorphic family IDs are written into `subcategories`, a **matrix-row field** | §22.1 |
 
 ### R-01 — the corpus covers five of nine admitted trap categories · HIGH

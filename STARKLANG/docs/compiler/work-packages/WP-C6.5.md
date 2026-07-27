@@ -3,7 +3,7 @@
 **Track:** Gate C6 (all of C6 is Claude-owned)
 **Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, matrix) and **C6.5-2 (manifest, layout, lock)**
 complete; **C6.5-1 complete** (comparator extracted and extended to the full §39 observation shape,
-commits 2 and 3) except for migrating the 22 still-forked suites, which proceeds in matrix order.
+commits 2 and 3), and **all 23 forked suites are migrated** (CD-165, R-02).
 **C6.5-3 PARTIAL** (§10.3 sentinels done; per-row witnesses, trap balance and package breadth
 outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals);
 **C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
@@ -238,9 +238,11 @@ see: **Drop reversal** (same identities, same count, only the order differs), **
 observation), and **internal MIR error** — which runs a real `fn main() -> Int32 { 300 }`, DEV-111's
 escalated case, and requires the harness to fail loudly rather than report a completion.
 
-**Not yet done in this phase:** migration of the 22 remaining forked suites, which proceeds in
-coverage-matrix order under CD-148's option (1). Until each is migrated its C6.2/C6.3 evidence still
-rests on its own local notion of agreement.
+**Done in CD-165 (R-02).** All 23 suites are migrated. The finding was recorded here as "each has a
+private notion of agreement"; what the migration exposed is that the private helpers asserted
+`status == 0` on each engine SEPARATELY, which is not a comparison at all — three engines each
+exiting 0 while printing three different things passed every one of them. Their C6.2/C6.3 evidence
+now rests on the shared comparator's field-by-field equality over the §39 observation.
 
 ---
 
@@ -912,9 +914,8 @@ recommendation is that the owner close WP-C2.12 on this evidence.
 §17's eight review passes (A–H, ~90 questions) are the largest undone piece and the one most likely
 to move the status — the last three review-shaped passes each found something real (O13's stale
 disposition, the omitted entry contract, 69 fabricated citations). After that: the §16.2 breadth
-items, and the owner's dispositions on DEV-113, DEV-114 and the CE3. Migration of the 22 forked suites proceeds
-alongside it in matrix order under CD-148's option (1); each migrated suite is a step toward the
-required claim resting on one comparator rather than twenty-three.
+items, and the owner's dispositions on DEV-113, DEV-114 and the CE3. Migration of the forked suites
+is **complete** (CD-165): the required claim now rests on one comparator rather than twenty-three.
 
 Status remains `PARTIAL` until the comparator, matrix, manifest, generator, replay, metamorphic and
 mutation requirements are all complete (§23). C6.5 has **no** valid "candidate complete but corpus
