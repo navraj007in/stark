@@ -1,0 +1,6 @@
+use core::burst;
+
+fn main() {
+    print("before");
+    burst(2147483647);
+}

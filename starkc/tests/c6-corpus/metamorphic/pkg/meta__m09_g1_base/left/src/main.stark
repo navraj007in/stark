@@ -1,0 +1,3 @@
+use base::shared;
+
+pub fn via_left(v: Int32) -> Int32 { shared(v) + 1 }

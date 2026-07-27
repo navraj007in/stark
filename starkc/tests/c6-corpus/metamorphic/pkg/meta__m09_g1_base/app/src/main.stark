@@ -1,0 +1,8 @@
+use left::via_left;
+use right::via_right;
+
+fn main() {
+    print(via_left(4));
+    print("|");
+    print(via_right(4));
+}

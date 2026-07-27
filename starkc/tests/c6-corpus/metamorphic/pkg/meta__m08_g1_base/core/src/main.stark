@@ -1,0 +1,13 @@
+pub struct Marked { id: Int32 }
+
+impl Drop for Marked {
+    fn drop(&mut self) {
+        print("@@stark-drop:Marked#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+pub fn mark(id: Int32) -> Marked { Marked { id: id } }
+
+pub fn scaled(v: Int32) -> Int32 { v * 4 + 1 }

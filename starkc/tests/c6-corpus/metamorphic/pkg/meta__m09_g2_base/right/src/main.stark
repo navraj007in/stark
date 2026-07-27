@@ -1,0 +1,4 @@
+use base::Leaf;
+use base::leaf;
+
+pub fn leaf_from_right(id: Int32) -> Leaf { leaf(id) }

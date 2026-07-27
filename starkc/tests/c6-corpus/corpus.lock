@@ -22,6 +22,12 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 0.9.0 (batch, 2026-07-27, CD-167): R-04/R-05. M08 (workspace relocation)
+# and M09 (dependency declaration reorder) are BUILT, reaching §13.2's floor of 24 groups /
+# 48 members across all twelve families. Both were recorded as unbuildable -- 'every corpus
+# case is single-file until §15' -- which stopped being true when DEV-113/DEV-114 added
+# package cases, and DEV-114's fix is what made M09 comparable at all. Four new package
+# member trees. Minor.
 # corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated
 # cases genuinely exercise are now CITED by the templates that exercise them, verified
 # against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`
@@ -37,6 +43,12 @@
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
 # emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
 # the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 0.9.0 (batch, 2026-07-27, CD-167): R-04/R-05. M08 (workspace relocation)
+# and M09 (dependency declaration reorder) are BUILT, reaching §13.2's floor of 24 groups /
+# 48 members across all twelve families. Both were recorded as unbuildable -- 'every corpus
+# case is single-file until §15' -- which stopped being true when DEV-113/DEV-114 added
+# package cases, and DEV-114's fix is what made M09 comparable at all. Four new package
+# member trees. Minor.
 # corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated
 # cases genuinely exercise are now CITED by the templates that exercise them, verified
 # against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`
@@ -55,19 +67,19 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 0.8.0
+corpus_version = 0.9.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
 manifest_sha256 = 8198396afc883fe1cedca33c7de42fa741fe650288bfc44ca2bb0630e1998c4a
-generated_manifest_sha256 = 385b7eb6aa742e073900c77b63e84604de14da2e3344db8119d04df8937929cb
+generated_manifest_sha256 = 6bb5b3081c3be18a1a36494e7664df5b798d8fdd84ea4bf8b49ce863c8ef5cbf
 templates_sha256 = 1b81ed28c3f7aa388842f38be8b6c7a91776ff4e92f9f61d518b58c4b51fc83f
-metamorphic_sha256 = b47deac3293c4eec472785aadb461a21c5ebd7774a057e37783010e9531cb71f
-generator_sha256 = 629b94c0c2e03fbcbafd97f9a80c2524e50ca309a733bf6eedca4889589a1e5f
-case_count = 137
-handwritten_count = 56
+metamorphic_sha256 = c6e5980310e1b0fc22dc1ee59fdd3d523df383271dc8950d7f2f871f4c579f8d
+generator_sha256 = 96475ac7e368e5d8e597aafb0e9f809d216de9daff870499c9d5b2c03edcea84
+case_count = 145
+handwritten_count = 64
 generated_count = 74
 retained_count = 7
-metamorphic_group_count = 20
+metamorphic_group_count = 24
 cf324eff35bc355b6ffc6b06b3d87cb11fc064b7fada2e439c60fa19be79e511  cases/generated/gen__t01__0268b2da.stark
 71424b295f089f3073a6a0e8895d844b744af8dfe0cdd5f666649274b313494c  cases/generated/gen__t01__0a297325.stark
 e47a494b2142ef0082f7dee25a13313d45dd3c970dd6db837ca1ce034b41a206  cases/generated/gen__t01__0f972200.stark
@@ -209,3 +221,27 @@ cef0cb8c36d57736b144b012629646e759655b30d5657e79a3fcf6b05aa8ed06  metamorphic/me
 5b1ca66434ca4825ae1a789e8a7ad059ec481d971d5dc841a9c22cb86154c30b  metamorphic/meta__m12_g1_transformed.stark
 638c73f81a3905615a414f204361580a817a9ec038cd67e632fa991361899558  metamorphic/meta__m12_g2_base.stark
 0911908c9a7756444e0364e740075450bbd172d714d4de60e7fc1b54203d7bc2  metamorphic/meta__m12_g2_transformed.stark
+69aa4df2a041e7c4b6814678812404f842fd8618bc4ee1b921e882498f24646b  metamorphic/pkg/meta__m08_g1_base/app/src/main.stark
+2f7724ece393193d111763f35817b5e609d633782cf5815288340f7a0cf74b18  metamorphic/pkg/meta__m08_g1_base/core/src/main.stark
+69aa4df2a041e7c4b6814678812404f842fd8618bc4ee1b921e882498f24646b  metamorphic/pkg/meta__m08_g1_transformed/app/src/main.stark
+2f7724ece393193d111763f35817b5e609d633782cf5815288340f7a0cf74b18  metamorphic/pkg/meta__m08_g1_transformed/core/src/main.stark
+eed24bd0a47c44c7037b0e4fff4c28b99dfd25be2f823623230714c68868b3a9  metamorphic/pkg/meta__m08_g2_base/app/src/main.stark
+c269f6a2d3b720afc393b18b870a41ff98f5555fce225fbb5bd4d6f68df455d2  metamorphic/pkg/meta__m08_g2_base/core/src/main.stark
+eed24bd0a47c44c7037b0e4fff4c28b99dfd25be2f823623230714c68868b3a9  metamorphic/pkg/meta__m08_g2_transformed/app/src/main.stark
+c269f6a2d3b720afc393b18b870a41ff98f5555fce225fbb5bd4d6f68df455d2  metamorphic/pkg/meta__m08_g2_transformed/core/src/main.stark
+1cc3d133a947747c38915ed9c1503844b08825de6ddaed30490d8ccf5fcae1fe  metamorphic/pkg/meta__m09_g1_base/app/src/main.stark
+a61f557d6be83868d6033ddffb22c179ff2ee321bda5f6529427380d90113e4f  metamorphic/pkg/meta__m09_g1_base/base/src/main.stark
+e7c82f65d485e4b0b541eabf6e9f4d24dbe1cd995981ead06aa59a93faae5136  metamorphic/pkg/meta__m09_g1_base/left/src/main.stark
+36bc424d09a1f8b1d26e4a56cc28b01fda349672349e759fa761a959738f51fe  metamorphic/pkg/meta__m09_g1_base/right/src/main.stark
+1cc3d133a947747c38915ed9c1503844b08825de6ddaed30490d8ccf5fcae1fe  metamorphic/pkg/meta__m09_g1_transformed/app/src/main.stark
+a61f557d6be83868d6033ddffb22c179ff2ee321bda5f6529427380d90113e4f  metamorphic/pkg/meta__m09_g1_transformed/base/src/main.stark
+e7c82f65d485e4b0b541eabf6e9f4d24dbe1cd995981ead06aa59a93faae5136  metamorphic/pkg/meta__m09_g1_transformed/left/src/main.stark
+36bc424d09a1f8b1d26e4a56cc28b01fda349672349e759fa761a959738f51fe  metamorphic/pkg/meta__m09_g1_transformed/right/src/main.stark
+5c349eecdc43cf940a4eed7117eb4d8acc8d9c1463bddfa025b462bddecde062  metamorphic/pkg/meta__m09_g2_base/app/src/main.stark
+791b9ad8064691ef3359ffc7194added71f5f2facec82500c6c59494e20cf9f6  metamorphic/pkg/meta__m09_g2_base/base/src/main.stark
+7de763076600cc68fbaf26cf5b99c63920fe62689d585eb883f9413185086961  metamorphic/pkg/meta__m09_g2_base/left/src/main.stark
+f00d340cffe5d3223545c88a1c9a4710c38e3d7c8e9223b3b653e50f4344bee1  metamorphic/pkg/meta__m09_g2_base/right/src/main.stark
+5c349eecdc43cf940a4eed7117eb4d8acc8d9c1463bddfa025b462bddecde062  metamorphic/pkg/meta__m09_g2_transformed/app/src/main.stark
+791b9ad8064691ef3359ffc7194added71f5f2facec82500c6c59494e20cf9f6  metamorphic/pkg/meta__m09_g2_transformed/base/src/main.stark
+7de763076600cc68fbaf26cf5b99c63920fe62689d585eb883f9413185086961  metamorphic/pkg/meta__m09_g2_transformed/left/src/main.stark
+f00d340cffe5d3223545c88a1c9a4710c38e3d7c8e9223b3b653e50f4344bee1  metamorphic/pkg/meta__m09_g2_transformed/right/src/main.stark

@@ -307,11 +307,17 @@ fn the_generator_guards_refuse_what_they_claim_to() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("both refuse"),
-        "unexpected self-test output: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
+    // Each guard is named rather than matching one summary phrase. The phrase was "both refuse",
+    // and when R-04/R-05 added five more rules it still said "both" until this assertion failed —
+    // which is the right outcome, but a phrase match would equally have kept passing had the
+    // wording not changed while guards were REMOVED.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for guard in ["collision", "loop bound", "metamorphic package-pair"] {
+        assert!(
+            stdout.contains(guard),
+            "the self-test no longer reports the {guard} guard: {stdout}"
+        );
+    }
 }
 
 /// **R-01.** Every admitted trap category has a direct corpus case. The gap this closes was not a

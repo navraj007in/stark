@@ -1,0 +1,11 @@
+pub struct Leaf { id: Int32 }
+
+impl Drop for Leaf {
+    fn drop(&mut self) {
+        print("@@stark-drop:Leaf#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+pub fn leaf(id: Int32) -> Leaf { Leaf { id: id } }

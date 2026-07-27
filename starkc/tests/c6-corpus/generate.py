@@ -34,7 +34,7 @@ import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "0.8.0"
+CORPUS_VERSION = "0.9.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -246,9 +246,41 @@ def write_metamorphic(out_root: pathlib.Path) -> list:
 
     entries = []
     for group in metamorphic_registry.groups():
-        for role, source in (("base", group.base), ("transformed", group.transformed)):
+        members = (
+            (("base", group.base_files), ("transformed", group.transformed_files))
+            if group.kind != "source"
+            else (("base", group.base), ("transformed", group.transformed))
+        )
+        for role, payload in members:
             case_id = f"meta__{group.family_id.lower()}_{group.group_id}_{role}"
-            (pairs_dir / f"{case_id}.stark").write_text(source, encoding="utf-8", newline="\n")
+
+            if group.kind != "source":
+                # A package member is a TREE. Each role gets its own directory, which is also what
+                # makes M08 meaningful: the two members are separate physical roots on disk before
+                # the harness stages them to two more.
+                # Nested under `metamorphic/pkg/` rather than `metamorphic/` because
+                # `stage_package` takes the first THREE path components as the tree root to copy
+                # (matching `cases/<kind>/<case>`). At `metamorphic/<case>/app` that made `app`
+                # itself the root, so staging silently dropped its sibling packages and resolution
+                # then failed on a dependency path that "does not exist".
+                member_dir = pairs_dir / "pkg" / case_id
+                for relative, contents in sorted(payload.items()):
+                    target = member_dir / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(contents, encoding="utf-8", newline="\n")
+                sources = [
+                    f"metamorphic/pkg/{case_id}/{relative}"
+                    for relative in sorted(payload)
+                    if relative.endswith(".stark")
+                ]
+                package_root = f"metamorphic/pkg/{case_id}/{group.package_root}"
+            else:
+                (pairs_dir / f"{case_id}.stark").write_text(
+                    payload, encoding="utf-8", newline="\n"
+                )
+                sources = [f"metamorphic/{case_id}.stark"]
+                package_root = None
+
             body = [
                 "[[case]]",
                 f'case_id = "{case_id}"',
@@ -259,9 +291,9 @@ def write_metamorphic(out_root: pathlib.Path) -> list:
                 # R-07's coverage number was inflated — and nothing caught it, because nothing
                 # checked that a cited row exists.
                 f"subcategories = {lst(group.subcategories)}",
-                f'sources = ["metamorphic/{case_id}.stark"]',
-                'package_graph = "single-file"',
-                'expected_outcome = "completion"',
+                f"sources = {lst(sources)}",
+                f'package_graph = "{group.package_graph}"',
+                f'expected_outcome = "{"trap" if group.expected_trap else "completion"}"',
                 'required_engines = ["hir", "mir", "native-debug"]',
                 'required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]',
                 "normative_rules = ["
@@ -270,11 +302,23 @@ def write_metamorphic(out_root: pathlib.Path) -> list:
                 f'metamorphic_family = "{group.family_id}"',
                 f'metamorphic_group = "{group.family_id}-{group.group_id}"',
                 f'metamorphic_role = "{role}"',
+                f'metamorphic_kind = "{group.kind}"',
                 f'metamorphic_precondition = "{group.precondition}"',
                 "expected_stdout = ["
                 + ", ".join(f'"{line}"' for line in group.expected_stdout)
                 + "]",
             ]
+            if package_root:
+                body.append(f'package_root = "{package_root}"')
+            if group.expected_drop_log:
+                body.append("drop_protocol = true")
+                body.append(f"expected_drop_log = {lst(group.expected_drop_log)}")
+            if group.expected_trap:
+                body.append(f'expected_trap_category = "{group.expected_trap}"')
+            if group.pin_canonical_symbols:
+                body.append("metamorphic_pin_canonical_symbols = true")
+            if group.pin_logical_provenance:
+                body.append("metamorphic_pin_logical_provenance = true")
             entries.append((case_id, "\n".join(body) + "\n"))
     return entries
 
@@ -387,6 +431,12 @@ def build_lock() -> str:
         "# corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the",
         "# twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent",
         "# until §15 rather than approximated single-file. Minor.",
+        "# corpus_version 0.9.0 (batch, 2026-07-27, CD-167): R-04/R-05. M08 (workspace relocation)",
+        "# and M09 (dependency declaration reorder) are BUILT, reaching \u00a713.2's floor of 24 groups /",
+        "# 48 members across all twelve families. Both were recorded as unbuildable -- 'every corpus",
+        "# case is single-file until \u00a715' -- which stopped being true when DEV-113/DEV-114 added",
+        "# package cases, and DEV-114's fix is what made M09 comparable at all. Four new package",
+        "# member trees. Minor.",
         "# corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated",
         "# cases genuinely exercise are now CITED by the templates that exercise them, verified",
         "# against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`",
@@ -402,6 +452,12 @@ def build_lock() -> str:
         "# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native",
         "# emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and",
         "# the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.",
+        "# corpus_version 0.9.0 (batch, 2026-07-27, CD-167): R-04/R-05. M08 (workspace relocation)",
+        "# and M09 (dependency declaration reorder) are BUILT, reaching \u00a713.2's floor of 24 groups /",
+        "# 48 members across all twelve families. Both were recorded as unbuildable -- 'every corpus",
+        "# case is single-file until \u00a715' -- which stopped being true when DEV-113/DEV-114 added",
+        "# package cases, and DEV-114's fix is what made M09 comparable at all. Four new package",
+        "# member trees. Minor.",
         "# corpus_version 0.8.0 (batch, 2026-07-27, CD-165): R-07. Eleven matrix rows the generated",
         "# cases genuinely exercise are now CITED by the templates that exercise them, verified",
         "# against the emitted sources. Paired with the matrix correction of 36 unearned `->T##`",
@@ -475,11 +531,55 @@ def self_test_guards() -> int:
         if "loop iterations exceeds" not in str(refusal):
             failures.append(f"loop bound refused for the wrong reason: {refusal}")
 
+    # R-04/R-05: the kind-aware metamorphic guards. Driven through the REAL
+    # `validate_package_pair` rather than a copy of its rules — a self-test that reimplements the
+    # guard proves the copy works.
+    diamond = metamorphic_registry.DIAMOND_WORKSPACE
+    reordered = metamorphic_registry.reorder_dependencies(diamond, "app/starkpkg.json")
+    edited = dict(diamond)
+    edited["base/src/main.stark"] = edited["base/src/main.stark"].replace("v * 2", "v * 3")
+    narrowed = dict(diamond)
+    narrowed["app/starkpkg.json"] = metamorphic_registry._manifest("app", ["left"])
+    reordered_and_edited = dict(reordered)
+    reordered_and_edited["base/src/main.stark"] = edited["base/src/main.stark"]
+
+    for what, kind, base, transformed, wanted in [
+        (
+            "a relocation pair whose trees differ",
+            "relocation", diamond, edited, "must keep every logical file",
+        ),
+        (
+            "a reorder that also edits a source file",
+            "dependency-reorder", diamond, reordered_and_edited, "only MANIFESTS may differ",
+        ),
+        (
+            "a reorder that changes the dependency SET",
+            "dependency-reorder", diamond, narrowed, "changed the dependency SET",
+        ),
+        (
+            "a reorder that reordered nothing",
+            "dependency-reorder", diamond, dict(diamond), "reordered nothing",
+        ),
+        (
+            "an unknown transformation kind",
+            "teleportation", diamond, reordered, "unknown package transformation kind",
+        ),
+    ]:
+        try:
+            metamorphic_registry.validate_package_pair("MX", "probe", kind, base, transformed)
+            failures.append(f"{what} was ACCEPTED")
+        except AssertionError as refusal:
+            if wanted not in str(refusal):
+                failures.append(f"{what} refused for the wrong reason: {refusal}")
+
     if failures:
         for failure in failures:
             print(f"guard self-test FAILED: {failure}", file=sys.stderr)
         return 1
-    print("guard self-tests pass: collision and loop bound both refuse")
+    print(
+        "guard self-tests pass: collision, loop bound, and five metamorphic package-pair rules all "
+        "refuse"
+    )
     return 0
 
 

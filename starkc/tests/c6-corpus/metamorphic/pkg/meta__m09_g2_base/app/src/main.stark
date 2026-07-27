@@ -1,0 +1,10 @@
+use left::leaf_from_left;
+use right::leaf_from_right;
+
+fn main() {
+    println("ready");
+    {
+        let first = leaf_from_left(1);
+        let second = leaf_from_right(2);
+    }
+}

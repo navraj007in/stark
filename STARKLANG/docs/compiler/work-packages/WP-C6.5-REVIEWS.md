@@ -24,8 +24,8 @@ required capability unevidenced · **LOW** precision, hygiene or documentation.
 | R-01 | HIGH | D, F | The corpus covers **5 of 9 admitted trap categories** | §10.4, §22.1 |
 | R-02 | HIGH | B | **23 three-engine suites still use private comparators**; C65-F1 is not discharged — **CLOSED CD-165**: all 23 migrated; 289 tests, 0 failed, 0 skipped | §22.3, the required claim (§2) |
 | R-03 | MEDIUM | F | Mutation controls cover **7 of 15 comparator fields** — **CLOSED CD-166**: 23 mutations, all 15 fields, enumeration machine-checked | §22.5 |
-| R-04 | MEDIUM | E | Metamorphic floor unmet: 20 groups / 40 members vs 24 / 48 | §22.4 |
-| R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor | §22.4 |
+| R-04 | MEDIUM | E | Metamorphic floor unmet: 20 groups / 40 members vs 24 / 48 — **CLOSED CD-167**: 24/48, twelve families | §22.4 |
+| R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor — **CLOSED CD-167**: DEV-114's fix is what made M09 comparable; both families built | §22.4 |
 | R-06 | MEDIUM | H | Shared-file **lease protocol not followed** for two leased files — **CLOSED a690bd8**; leases for the batch taken in advance in 921a2f9 | §22.8 |
 | R-07 | MEDIUM | D | **36 of 136 matrix rows** have a corpus case; nothing validates row citations — **PARTIALLY CLOSED CD-165**: citations and template arrows now validated; the coverage gap itself remains | §22.1, §10.2 |
 | R-08 | MEDIUM | C, E | Retention (§11.11) and divergence-retention (§13.7) **never exercised** | §22.2, §22.4 |
@@ -344,7 +344,7 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 
 | # | Question | Verdict |
 | --- | --- | --- |
-| 1 | All 12 families present? | **No — 10** (R-04) |
+| 1 | All 12 families present? | **Yes — 12** (R-04 closed, CD-167): M08 relocation and M09 dependency reorder |
 | 2 | More than one non-trivial pair per family? | **Yes** — two independent groups each, differing in value or path, and an identity-transform guard rejects a pair that changed nothing |
 | 3 | Preconditions explicit? | **Yes** — recorded per group and *enforced* (scope insertion refuses a `Drop` base; reorder refuses a catch-all) |
 | 4 | Reordered arms genuinely non-overlapping? | **Yes** — distinct enum variants, asserted absence of a wildcard |
@@ -352,8 +352,8 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 | 6 | Pair equality checked inside every engine? | **Yes** — HIR, MIR and native separately |
 | 7 | Cross-engine equality for every member? | **Yes** — via the §12 replay, which runs members as ordinary cases |
 | 8 | Can a transformation avoid a defect? | **Guarded** — the identity assertion caught two of my own fake pairs (CD-157) |
-| 9 | Divergent pairs retained? | **Untested** (**R-08**) |
-| 10 | Package transformations deterministic? | **No — DEV-114** (**R-05**) |
+| 9 | Divergent pairs retained? | **Untested** (**R-08**) — still open |
+| 10 | Package transformations deterministic? | **Yes** — DEV-114 fixed in bac13f5; M09's pairs pin canonical symbols across a reorder, which is the regression check (R-05 closed) |
 
 ## Review F — mutation sensitivity
 

@@ -1,0 +1,1 @@
+pub fn shared(v: Int32) -> Int32 { v * 2 }

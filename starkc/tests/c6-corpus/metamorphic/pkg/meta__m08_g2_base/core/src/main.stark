@@ -1,0 +1,1 @@
+pub fn burst(v: Int32) -> Int32 { v + 1 }

@@ -1,0 +1,13 @@
+use core::scaled;
+use core::Marked;
+use core::mark;
+
+fn main() {
+    print(scaled(3));
+    print("|");
+    println(4);
+    {
+        let held: Marked = mark(1);
+    }
+    print("end");
+}

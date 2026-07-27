@@ -80,6 +80,18 @@ pub struct Case {
     /// is invalid over a `Drop` type, arm reordering is invalid past a catch-all — and a pair whose
     /// precondition is unstated cannot be reviewed.
     pub metamorphic_precondition: Option<String>,
+    /// `source`, `relocation` or `dependency-reorder` (R-04/R-05). Decides how a pair is validated:
+    /// an ordinary transformation must CHANGE the logical source, while the two package kinds must
+    /// not — their subject is something outside the source, so requiring a textual difference would
+    /// be the wrong check rather than a stricter one.
+    pub metamorphic_kind: Option<String>,
+    /// The pair's subject is canonical symbol identity, so the harness pins the symbol set in
+    /// addition to the observation — two members can print identical bytes while disagreeing about
+    /// what their symbols are called, which is exactly what DEV-114 did.
+    pub metamorphic_pin_canonical_symbols: bool,
+    /// The pair's subject is logical provenance (PKG-IDENTITY-001), so the harness pins the file
+    /// names the engines report as well as the observation.
+    pub metamorphic_pin_logical_provenance: bool,
     pub generator_seed: Option<String>,
     pub generator_version: Option<String>,
     pub template_id: Option<String>,
@@ -240,6 +252,13 @@ fn assign(case: &mut Case, key: &str, value: Value) -> Result<(), String> {
         "metamorphic_group" => case.metamorphic_group = Some(want_str(key, value)?),
         "metamorphic_role" => case.metamorphic_role = Some(want_str(key, value)?),
         "metamorphic_precondition" => case.metamorphic_precondition = Some(want_str(key, value)?),
+        "metamorphic_kind" => case.metamorphic_kind = Some(want_str(key, value)?),
+        "metamorphic_pin_canonical_symbols" => {
+            case.metamorphic_pin_canonical_symbols = want_bool(key, value)?
+        }
+        "metamorphic_pin_logical_provenance" => {
+            case.metamorphic_pin_logical_provenance = want_bool(key, value)?
+        }
         "generator_seed" => case.generator_seed = Some(want_str(key, value)?),
         "generator_version" => case.generator_version = Some(want_str(key, value)?),
         "template_id" => case.template_id = Some(want_str(key, value)?),

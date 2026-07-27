@@ -22,7 +22,20 @@ field names and arm order are known exactly — a mechanised rename or reorder o
 control is how a transformation silently becomes a no-op.
 """
 
+import json
+import re
 from dataclasses import dataclass
+
+
+def _key_order(manifest_text: str) -> list:
+    """The order dependency names are DECLARED in, as text.
+
+    `json.loads` preserves insertion order, but two manifests can parse to equal dicts and still be
+    written in a different order — which is exactly the thing M09 varies. Comparing parsed dicts
+    proves the graph is unchanged; comparing this proves the declaration really was reordered.
+    """
+    block = re.search(r'"dependencies"\s*:\s*\{(.*?)\}\s*\}', manifest_text, re.S)
+    return re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:', block.group(1)) if block else []
 
 
 @dataclass(frozen=True)
@@ -38,6 +51,26 @@ class Group:
     #: Matrix ROW ids this pair exercises (R-13). The FAMILY id is `family_id` and belongs in
     #: `metamorphic_family`; conflating the two inflated the coverage count by ten.
     subcategories: tuple = ()
+    #: What KIND of transformation this is, which decides how the pair is validated (R-04/R-05).
+    #: `source` transformations must change the source text. The two PACKAGE kinds must not — their
+    #: whole point is that something outside the logical source changed — so they are validated
+    #: against different, stricter invariants rather than by exempting them from validation.
+    kind: str = "source"
+    #: `{path relative to the member's tree root: contents}` for package kinds; `None` for `source`.
+    base_files: dict = None
+    transformed_files: dict = None
+    #: The root package within the tree, e.g. `app`. Relative to the member's staged root.
+    package_root: str = ""
+    package_graph: str = "single-file"
+    expected_drop_log: tuple = ()
+    #: Non-empty when the pair TRAPS rather than completes — M08's second group relocates a trapping
+    #: workspace, which is the half a completing pair cannot witness.
+    expected_trap: str = ""
+    #: For package pairs whose SUBJECT is provenance or symbol identity, the harness additionally
+    #: pins those beyond the shared observation — the observation alone would not notice a symbol
+    #: set that changed shape while still printing the same bytes.
+    pin_canonical_symbols: bool = False
+    pin_logical_provenance: bool = False
 
 
 # --------------------------------------------------------------------- bases --
@@ -308,15 +341,223 @@ def shorthand_fields(source: str) -> str:
     return source.replace("Point { x: x, y: y }", "Point { x, y }")
 
 
+def validate_package_pair(family, group, kind, base_files, transformed_files):
+    """The kind-aware half of the identity-transform protection (R-04/R-05).
+
+    The global `transformed != base` rule is NOT weakened for package pairs — it is *replaced by a
+    stricter obligation*, because for a package transformation "the source changed" would be the
+    wrong assertion: a relocation that edited a file would no longer be a relocation. So each kind
+    states what must stay identical AND what must differ, and both are checked.
+
+    A module-level function rather than a closure inside `groups()` so `generate.py
+    --self-test-guards` can drive the REAL rule with deliberately invalid pairs. A guard nobody has
+    watched refuse is not evidence, and a guard the self-test only *reimplements* is worse — it
+    proves the copy works.
+    """
+    assert base_files and transformed_files, f"{family}/{group}: empty package tree"
+
+    if kind == "relocation":
+        # M08. Logical files and contents IDENTICAL; the only difference is the physical root each
+        # member is staged at, which is a property of the run rather than of the tree. The harness
+        # separately proves the two roots really differ — two references to one staged workspace
+        # would agree trivially, which is the relocation-shaped version of an identity transform.
+        assert base_files == transformed_files, (
+            f"{family}/{group}: a relocation pair must keep every logical file and its contents "
+            f"identical — a differing tree is some other transformation wearing its name"
+        )
+    elif kind == "dependency-reorder":
+        # M09. Same graph, same sources, different declaration order.
+        assert set(base_files) == set(transformed_files), (
+            f"{family}/{group}: a dependency reorder must not add or remove files"
+        )
+        manifests = [p for p in base_files if p.endswith("starkpkg.json")]
+        changed = [p for p in base_files if base_files[p] != transformed_files[p]]
+        assert changed, (
+            f"{family}/{group}: nothing changed — a reorder that reordered nothing is a fake pair"
+        )
+        outside = [p for p in changed if p not in manifests]
+        assert not outside, (
+            f"{family}/{group}: only MANIFESTS may differ in a dependency reorder; these also "
+            f"differ: {outside}"
+        )
+        for path in changed:
+            before = json.loads(base_files[path]).get("dependencies", {})
+            after = json.loads(transformed_files[path]).get("dependencies", {})
+            assert before == after, (
+                f"{family}/{group}: {path} changed the dependency SET, not just its order — that "
+                f"is an edit to the graph, not a reorder of its declaration"
+            )
+            assert _key_order(base_files[path]) != _key_order(transformed_files[path]), (
+                f"{family}/{group}: {path} differs but its dependency declaration order does not"
+            )
+    else:
+        raise AssertionError(f"{family}/{group}: unknown package transformation kind {kind!r}")
+
+
+# ----------------------------------------------------------- package fixtures --
+#
+# Authored here for the same reason the single-file bases are: a reorder or relocation applied to a
+# tree this module does not control is how a transformation silently becomes a no-op.
+
+
+def _manifest(name, deps=(), entry="src/main.stark"):
+    """A `starkpkg.json` with dependencies written in the order given — the order IS the variable."""
+    body = {"name": name, "version": "0.1.0", "entry": entry}
+    if deps:
+        body["dependencies"] = {dep: {"path": f"../{dep}"} for dep in deps}
+    return json.dumps(body, indent=4) + "\n"
+
+
+def reorder_dependencies(tree, manifest_path):
+    """Reverse the DECLARATION order of one manifest's dependencies, changing nothing else."""
+    manifest = json.loads(tree[manifest_path])
+    deps = manifest.get("dependencies", {})
+    assert len(deps) >= 2, f"{manifest_path}: a reorder needs at least two dependencies"
+    manifest["dependencies"] = {k: deps[k] for k in reversed(list(deps))}
+    out = dict(tree)
+    out[manifest_path] = json.dumps(manifest, indent=4) + "\n"
+    return out
+
+
+#: M08 g1 — a two-package workspace that completes, with a `Drop` type destroyed in the root so the
+#: pair witnesses the Drop log across relocation as well as the printed bytes.
+RELOCATABLE_WORKSPACE = {
+    "app/starkpkg.json": _manifest("app", ["core"]),
+    "app/src/main.stark": """use core::scaled;
+use core::Marked;
+use core::mark;
+
+fn main() {
+    print(scaled(3));
+    print("|");
+    println(4);
+    {
+        let held: Marked = mark(1);
+    }
+    print("end");
+}
+""",
+    "core/starkpkg.json": _manifest("core"),
+    "core/src/main.stark": """pub struct Marked { id: Int32 }
+
+impl Drop for Marked {
+    fn drop(&mut self) {
+        print("@@stark-drop:Marked#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+pub fn mark(id: Int32) -> Marked { Marked { id: id } }
+
+pub fn scaled(v: Int32) -> Int32 { v * 4 + 1 }
+""",
+}
+
+#: M08 g2 — the trapping half. A completing pair cannot witness trap provenance, which is precisely
+#: what DEV-113 got wrong: the trap named an absolute checkout path, so the same workspace in two
+#: directories reported two different source files.
+RELOCATABLE_TRAP_WORKSPACE = {
+    "app/starkpkg.json": _manifest("app", ["core"]),
+    "app/src/main.stark": """use core::burst;
+
+fn main() {
+    print("before");
+    burst(2147483647);
+}
+""",
+    "core/starkpkg.json": _manifest("core"),
+    "core/src/main.stark": """pub fn burst(v: Int32) -> Int32 { v + 1 }
+""",
+}
+
+#: M09 g1 — a diamond: `app` declares BOTH `left` and `right`, which share `base`. Two declared
+#: dependencies are what makes an order exist to reorder, and the shared leaf is what made DEV-114's
+#: nondeterminism observable — whichever path reached `base` first named its items.
+DIAMOND_WORKSPACE = {
+    "app/starkpkg.json": _manifest("app", ["left", "right"]),
+    "app/src/main.stark": """use left::via_left;
+use right::via_right;
+
+fn main() {
+    print(via_left(4));
+    print("|");
+    print(via_right(4));
+}
+""",
+    "left/starkpkg.json": _manifest("left", ["base"]),
+    "left/src/main.stark": """use base::shared;
+
+pub fn via_left(v: Int32) -> Int32 { shared(v) + 1 }
+""",
+    "right/starkpkg.json": _manifest("right", ["base"]),
+    "right/src/main.stark": """use base::shared;
+
+pub fn via_right(v: Int32) -> Int32 { shared(v) + 1 }
+""",
+    "base/starkpkg.json": _manifest("base"),
+    "base/src/main.stark": """pub fn shared(v: Int32) -> Int32 { v * 2 }
+""",
+}
+
+#: M09 g2 — the same diamond whose shared leaf carries a `Drop` type, so the pair witnesses
+#: destruction ORDER against declaration order, not only the printed bytes.
+DIAMOND_DROP_WORKSPACE = {
+    "app/starkpkg.json": _manifest("app", ["left", "right"]),
+    # `app` does NOT import `base` — it declares only `left` and `right`, and PKG-RESOLVE-001 makes
+    # a package's dependencies exactly what it declares. Naming `Leaf` here would have required a
+    # third edge and turned the diamond into a different graph; the bindings are inferred instead.
+    "app/src/main.stark": """use left::leaf_from_left;
+use right::leaf_from_right;
+
+fn main() {
+    println("ready");
+    {
+        let first = leaf_from_left(1);
+        let second = leaf_from_right(2);
+    }
+}
+""",
+    "left/starkpkg.json": _manifest("left", ["base"]),
+    "left/src/main.stark": """use base::Leaf;
+use base::leaf;
+
+pub fn leaf_from_left(id: Int32) -> Leaf { leaf(id) }
+""",
+    "right/starkpkg.json": _manifest("right", ["base"]),
+    "right/src/main.stark": """use base::Leaf;
+use base::leaf;
+
+pub fn leaf_from_right(id: Int32) -> Leaf { leaf(id) }
+""",
+    "base/starkpkg.json": _manifest("base"),
+    "base/src/main.stark": """pub struct Leaf { id: Int32 }
+
+impl Drop for Leaf {
+    fn drop(&mut self) {
+        print("@@stark-drop:Leaf#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+pub fn leaf(id: Int32) -> Leaf { Leaf { id: id } }
+""",
+}
+
+
 # ------------------------------------------------------------------ registry --
 
 def groups() -> list:
-    """The 20 groups this phase delivers: two per family for ten families.
+    """All 24 groups: two per family for twelve families (§13.2's floor, R-04).
 
-    **M08 (workspace relocation) and M09 (dependency declaration reorder) are absent**, and cannot be
-    built here: both transform a PACKAGE GRAPH, and every corpus case is single-file until §15. They
-    are recorded rather than approximated — a single-file "relocation" would be a pair that proves
-    nothing about relocation."""
+    M08 (workspace relocation) and M09 (dependency declaration reorder) were previously recorded as
+    unbuildable — "both transform a PACKAGE GRAPH, and every corpus case is single-file until §15".
+    That stopped being true when DEV-113/DEV-114 added package cases to the corpus, and DEV-114's fix
+    is what makes M09 comparable at all: before it, a diamond graph produced different canonical
+    symbols run to run, so a reorder pair would have disagreed for a reason that had nothing to do
+    with the reorder.
+    """
     out = []
 
     #: Which matrix rows each family's pairs actually exercise. Stated per family rather than per
@@ -329,6 +570,8 @@ def groups() -> list:
         "M05": ("V12", "E04"),
         "M06": ("P07", "C11"),
         "M07": ("C11", "P05"),
+        "M08": ("K06", "K07"),
+        "M09": ("K08", "K09"),
         "M10": ("E10", "D01"),
         "M11": ("E13", "D09"),
         "M12": ("C04", "C05"),
@@ -350,6 +593,28 @@ def groups() -> list:
                 category,
                 stdout,
                 rows.get(family, ()),
+            )
+        )
+
+    def add_package(family, group, kind, base_files, transformed_files, package_root,
+                    package_graph, precondition, rules, category, stdout, drop_log=(),
+                    trap="", pin_symbols=False, pin_provenance=False):
+        """A package-graph pair, validated by rules specific to its KIND (R-04/R-05).
+
+        The global `transformed != base` protection is NOT weakened for these. It is replaced by a
+        stricter obligation, because for a package transformation "the source changed" would be the
+        WRONG assertion — a relocation that edited a file would no longer be a relocation. So each
+        kind states what must stay identical and what must differ, and both are checked."""
+        validate_package_pair(family, group, kind, base_files, transformed_files)
+        out.append(
+            Group(
+                family_id=family, group_id=group, base="", transformed="",
+                precondition=precondition, normative_rules=rules, category=category,
+                expected_stdout=stdout, subcategories=rows.get(family, ()), kind=kind,
+                base_files=base_files, transformed_files=transformed_files,
+                package_root=package_root, package_graph=package_graph,
+                expected_drop_log=drop_log, expected_trap=trap,
+                pin_canonical_symbols=pin_symbols, pin_logical_provenance=pin_provenance,
             )
         )
 
@@ -455,10 +720,52 @@ def groups() -> list:
         "same precondition, different accumulation",
         ("EXEC-FOR-001", "DROP-LOOP-001"), "control-transfer", ("12",))
 
+    # ---------------------------------------------------------- package pairs --
+
+    # M08 workspace relocation. PKG-IDENTITY-001: a package token is "never an absolute checkout
+    # path", so the same workspace compiled in two directories must observe identically — same
+    # bytes, same trap provenance, same canonical symbols. This is the property DEV-113 broke and
+    # fixed; the pair is what keeps it fixed.
+    add_package(
+        "M08", "g1", "relocation", RELOCATABLE_WORKSPACE, RELOCATABLE_WORKSPACE, "app", "workspace",
+        "identical logical files and contents, staged at two independent physical roots; the "
+        "harness proves the roots differ (PKG-IDENTITY-001, §15.2)",
+        ("PKG-IDENTITY-001", "TYPE-NOMINAL-001"), "packages-environment", ("13|4", "end"),
+        drop_log=("Marked#1",), pin_symbols=True, pin_provenance=True)
+    add_package(
+        "M08", "g2", "relocation", RELOCATABLE_TRAP_WORKSPACE, RELOCATABLE_TRAP_WORKSPACE, "app",
+        "workspace",
+        "same, for a TRAPPING workspace: relocation must not move the reported trap location either, "
+        "which is the half a completing pair cannot witness (DEV-113)",
+        ("PKG-IDENTITY-001", "TRAP-CATEGORY-001"), "packages-environment", ("before",),
+        trap="IntegerOverflow", pin_symbols=True, pin_provenance=True)
+
+    # M09 dependency declaration reorder. TYPE-NOMINAL-001 makes identity "canonical package
+    # instance + module path + item name", so a dependency EDGE is not part of it and the order the
+    # edges are written in cannot be either. DEV-114 is why this needs a pair: the graph walk
+    # followed a per-process-seeded HashMap, so a diamond produced different symbols run to run.
+    add_package(
+        "M09", "g1", "dependency-reorder", DIAMOND_WORKSPACE,
+        reorder_dependencies(DIAMOND_WORKSPACE, "app/starkpkg.json"), "app", "workspace",
+        "same package graph and identical sources; only the ORDER of the root's two dependency "
+        "declarations differs (TYPE-NOMINAL-001, PKG-RESOLVE-001)",
+        ("TYPE-NOMINAL-001", "PKG-RESOLVE-001"), "packages-environment", ("9|9",),
+        pin_symbols=True)
+    add_package(
+        "M09", "g2", "dependency-reorder", DIAMOND_DROP_WORKSPACE,
+        reorder_dependencies(DIAMOND_DROP_WORKSPACE, "app/starkpkg.json"), "app", "workspace",
+        "same, for a graph whose shared leaf carries a `Drop` type: declaration order must not "
+        "change destruction order either (DROP-ORDER-001)",
+        # `expected_stdout` is LINES joined by "\n", and the body's last output op is `println`, so
+        # the trailing newline makes a final empty line. The Drop frames that follow are stripped by
+        # the §8.8 protocol scan and compared as `expected_drop_log`, not as stdout.
+        ("TYPE-NOMINAL-001", "DROP-ORDER-001"), "packages-environment", ("ready", ""),
+        drop_log=("Leaf#2", "Leaf#1"), pin_symbols=True)
+
     return out
 
 
-MISSING_FAMILIES = {
-    "M08": "workspace relocation — transforms a package graph; every case is single-file until §15",
-    "M09": "dependency declaration reorder — same, and needs at least two declared dependencies",
-}
+#: Every family is now built. Kept as an empty registry rather than deleted: `the_metamorphic_floor_
+#: is_reported_honestly` reads it, and a silently absent structure is how an unmet floor stops being
+#: reported at all.
+MISSING_FAMILIES = {}
