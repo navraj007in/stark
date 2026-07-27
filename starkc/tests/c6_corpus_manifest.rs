@@ -144,7 +144,7 @@ fn every_template_arrow_in_the_matrix_is_backed_by_generated_cases() {
     );
     let broken: Vec<String> = arrows
         .iter()
-        .filter(|(row, template)| !covered.get(*template).is_some_and(|rows| rows.contains(*row)))
+        .filter(|(row, template)| !covered.get(template).is_some_and(|rows| rows.contains(row)))
         .map(|(row, template)| {
             let what = match covered.get(template) {
                 None => "that template generates no cases at all".to_string(),

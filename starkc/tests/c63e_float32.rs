@@ -28,7 +28,6 @@ fn agree(tag: &str, src: &str, expect: &str) {
     support::differential::agree_completing_with_stdout(tag, src, expect);
 }
 
-/// All three engines print exactly `expect`.
 // ---- The scalar case DEV-105 was named for ----
 
 #[test]

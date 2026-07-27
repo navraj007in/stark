@@ -32,7 +32,6 @@ fn agree(tag: &str, src: &str) {
     support::differential::agree_completing_available_engines(tag, src);
 }
 
-/// Drive a program to a native binary, asserting HIR and MIR agree on the way.
 // CD-128: the `refused_before_rustc` helper is GONE with the last refusal it checked. Every
 // borrow-carrying shape this file covers now builds and runs, so the file is entirely positive.
 

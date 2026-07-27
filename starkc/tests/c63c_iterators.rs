@@ -41,7 +41,6 @@ fn agree_out(tag: &str, src: &str) {
     support::differential::agree_completing_available_engines(tag, src);
 }
 
-/// HIR + MIR + native all exit 0, and MIR/native stdout equal the HIR oracle's output.
 // ---- Counting-loop family: no runtime iterator object (already native before C6.3c) ----
 
 #[test]

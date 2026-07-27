@@ -385,22 +385,39 @@ fn load_submodules_recursive(
             continue;
         }
 
-        // The child's logical name mirrors the parent's, so a package's files all read
-        // `<package>/src/...` whatever directory the workspace lives in.
-        let logical_child = match std::path::Path::new(&current_file.name).parent() {
-            Some(dir) if !dir.as_os_str().is_empty() => format!(
-                "{}/{}",
-                dir.to_string_lossy().replace('\\', "/"),
-                path.file_name()
+        // The child's name mirrors the parent's NAMING SCHEME, which is not always the logical one.
+        //
+        // In a package build the parent is named `<package>/src/...` (DEV-113), and the child must
+        // join with `/` so the pair is identical on every platform. In a single-file compile there
+        // is no package, so — per `SourceFile::name` — the parent is named by whatever the caller
+        // passed, which is normally the real OS path. Rewriting THAT to `/` produced a name matching
+        // no file on Windows: `analysis.rs`'s cross-file provenance test looked the child up by its
+        // `PathBuf` (`…\dir\child.stark`) and got `None` from a map keyed `…/dir/child.stark`. The
+        // separator normalisation belongs to logical names only; a path-named parent keeps the
+        // platform's own separators, which is what makes the name still resolve to a file.
+        let parent_is_path_named = current_file
+            .disk_path
+            .as_ref()
+            .map(|disk| disk.to_string_lossy() == current_file.name.as_str())
+            .unwrap_or(true);
+        let child_name = if parent_is_path_named {
+            path.to_string_lossy().into_owned()
+        } else {
+            match std::path::Path::new(&current_file.name).parent() {
+                Some(dir) if !dir.as_os_str().is_empty() => format!(
+                    "{}/{}",
+                    dir.to_string_lossy().replace('\\', "/"),
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "<unknown>".to_string())
+                ),
+                _ => path
+                    .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "<unknown>".to_string())
-            ),
-            _ => path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "<unknown>".to_string()),
+                    .unwrap_or_else(|| "<unknown>".to_string()),
+            }
         };
-        let child_file = SourceFile::new(logical_child, src).with_disk_path(path.clone());
+        let child_file = SourceFile::new(child_name, src).with_disk_path(path.clone());
         let (child_root, mut child_diags) =
             parse_with_options_into(&child_file, ParseMode::Program, options, ast);
         diags.append(&mut child_diags);

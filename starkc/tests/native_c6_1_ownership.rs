@@ -73,8 +73,6 @@ fn compile(source: &str, tag: &str) -> Compiled {
     }
 }
 
-/// Run through HIR + MIR, require both complete with exit 0 and no output, then build+run native
-/// and require exit 0 (all three agree on successful completion). Returns the generated source.
 // --------------------------------------------------------------- G3: depth ≥2 --
 
 const NESTED: &str =

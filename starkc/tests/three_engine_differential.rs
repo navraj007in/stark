@@ -2531,16 +2531,27 @@ mod comparator_rules {
         }
     }
 
-    /// §8.6: "internal compiler or MIR errors are harness failures, never language traps". Uses a
-    /// real MIR run rather than a hand-built value, because the claim is about the runner's
-    /// classification, not about a struct. `fn main() -> Int32 { 300 }` is DEV-111's escalated case:
-    /// PROC-EXIT-001 requires an `invalid-exit-status` trap that has no `TrapCategory` yet, so MIR
-    /// raises `Internal` — and the harness must fail loudly instead of reporting a completion.
+    /// §8.6: "internal compiler or MIR errors are harness failures, never language traps".
+    ///
+    /// **The vehicle changed in CD-165, the rule did not.** This test used to reach an internal
+    /// error through `fn main() -> Int32 { 300 }`, because PROC-EXIT-001's `invalid-exit-status` had
+    /// no `TrapCategory` and MIR fell back to `Internal`. MIR amendment A7 (CD-164) gave it one, so
+    /// that program is now a genuine `InvalidExitStatus` **trap** — correctly reported as an
+    /// observation, and pinned as such by `c65_entry_exit_contract`. Closing DEV-111 therefore
+    /// deleted this test's only source of an internal error, and it began failing by asserting
+    /// successfully: the same shape as the Windows negative check in `4844702`.
+    ///
+    /// The replacement keeps what matters — a real MIR run, so the claim stays about the runner's
+    /// classification rather than about a struct — and induces the error the only honest way left.
+    /// No well-formed source program can produce an internal error; that is what makes it internal.
+    /// So a valid program is lowered and then its entry body is removed, which is a state a correct
+    /// compiler never emits and the interpreter must therefore report as a harness failure
+    /// (`no main@[] instance`), never as a trap or a completion.
     #[test]
     fn internal_mir_error_fails() {
         let name = "internal.stark";
-        let front = front_end(name, "fn main() -> Int32 {\n    300\n}\n");
-        let program = match starkc::mir::lower::lower_program(
+        let front = front_end(name, "fn main() {\n    let x: Int32 = 1;\n}\n");
+        let mut program = match starkc::mir::lower::lower_program(
             &front.hir,
             &front.tables,
             front.file.clone(),
@@ -2548,6 +2559,14 @@ mod comparator_rules {
             Ok(program) => program,
             Err(e) => panic!("lowering should accept it: {} @ {:?}", e.what, e.span),
         };
+        let before = program.bodies.len();
+        program
+            .bodies
+            .retain(|b| !b.instance.symbol.starts_with("main"));
+        assert!(
+            program.bodies.len() < before,
+            "the entry body was not found, so this control would prove nothing"
+        );
         let ran = std::panic::catch_unwind(|| run_mir(name, &program));
         let payload = ran.expect_err("a MIR internal error must not be reported as an observation");
         let message = payload

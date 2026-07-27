@@ -27,9 +27,6 @@ fn traps_at(tag: &str, src: &str, category: starkc::mir::TrapCategory, line: u32
     support::differential::agree_trapping(tag, src, category, line);
 }
 
-/// HIR + MIR + native all complete, with MIR/native stdout equal to the HIR oracle.
-/// The program traps in every engine, and NATIVELY reports the given category at the given source
-/// line — the provenance check DEV-107 exists for.
 // ---- Indexed read: success and trap ----
 
 #[test]

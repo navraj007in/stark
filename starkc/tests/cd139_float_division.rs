@@ -68,8 +68,6 @@ struct Compiled {
     program: starkc::mir::MirProgram,
 }
 
-/// All three engines run to completion and print exactly `expect`.
-/// Every engine TRAPS. Used for the integer cases NUM-INT-DIV-001 still governs.
 // ---- Floating division: TOTAL (NUM-FLOAT-OP-001) ----
 
 /// The case DEV-110 was found on. HIR yielded `inf`, MIR trapped.
