@@ -1,0 +1,46 @@
+// R-07 (O01, O02, O03, O04). Copy assignment, move assignment, move into a call, move out by
+// return, and reinitialisation after a move. Every one of these rows cited a name that does not
+// exist (`c61f_structural_copy`, `a_moved_value_is_destroyed_by_its_new_owner`,
+// `cross_block_non_copy_moves_agree`).
+//
+// `String` is the non-Copy value, so the moves are real moves rather than implicit copies — the
+// distinction every one of these rows is about. Lengths differ per value, so a wrong owner shows up
+// as a wrong number rather than as a coincidence.
+fn consume(s: String) -> UInt64 {
+    s.len()
+}
+
+fn produce(n: Int32) -> String {
+    let mut out: String = String::from("x");
+    let mut i: Int32 = 0;
+    while i < n {
+        out.push_str("y");
+        i = i + 1;
+    }
+    out
+}
+
+fn main() {
+    // O01: `Int32` is Copy, so the source stays readable after assignment.
+    let source: Int32 = 41;
+    let copied: Int32 = source;
+    assert_eq(source + copied, 82);
+
+    // O02: a non-Copy value moves on assignment; the new binding owns it.
+    let first: String = produce(2);
+    let moved: String = first;
+    // O03: and moves again, into a call that consumes it.
+    assert_eq(consume(moved), 3u64);
+
+    // O04: moved OUT of a function by return, owned by the caller.
+    let returned: String = produce(4);
+    assert_eq(consume(returned), 5u64);
+
+    // O14 (reinitialisation) is NOT here: writing it found DEV-117. The front end accepts a
+    // moved-from local being reassigned and used again, the HIR oracle runs it, and MIR
+    // verification REFUSES it with MIR-0007 "move from possibly-moved place" — its move analysis
+    // never clears the moved flag on reassignment, which OWN-REINIT-001 requires. The row is
+    // BLOCKED on that defect rather than covered by a case that cannot run.
+
+    print(source + copied);
+}

@@ -451,7 +451,7 @@ fn the_corpus_replays_through_every_required_engine() {
         );
     }
 
-    write_evidence(&results, &filters, &lock);
+    write_evidence(&results, &cases, &filters, &lock);
 
     assert!(
         failures.is_empty(),
@@ -464,6 +464,7 @@ fn the_corpus_replays_through_every_required_engine() {
 
 fn write_evidence(
     results: &[(&&Case, CaseResult)],
+    all_cases: &[Case],
     filters: &Filters,
     lock: &support::corpus::Lock,
 ) {
@@ -523,6 +524,41 @@ fn write_evidence(
     } else {
         "PARTIAL-FILTERED"
     };
+    // R-12 (§16.3). The summary used to record `"skipped_count": 0` as a literal, which is not a
+    // measurement — it was 0 whether or not anything had been skipped. Two things genuinely can be
+    // skipped, and both are now named by IDENTITY so a reader can tell WHAT was not run:
+    //
+    //   * cases the filters excluded, which is the difference between this run and full evidence;
+    //   * per-case ENGINES that did not run, which today means the native engine when `rustc` is
+    //     absent. `full_evidence` already refuses to call a filtered run complete, but it says
+    //     nothing about an engine quietly missing from an unfiltered one.
+    let ran: std::collections::BTreeSet<&str> = results
+        .iter()
+        .map(|(case, _)| case.case_id.as_str())
+        .collect();
+    let skipped_cases: Vec<&str> = all_cases
+        .iter()
+        .map(|c| c.case_id.as_str())
+        .filter(|id| !ran.contains(id))
+        .collect();
+    let engine_skips: Vec<String> = results
+        .iter()
+        .flat_map(|(case, result)| {
+            let observed: std::collections::BTreeSet<&str> =
+                result.engines.iter().map(|(name, _)| *name).collect();
+            case.required_engines
+                .iter()
+                .filter(move |wanted| !observed.contains(wanted.as_str()))
+                .map(move |wanted| {
+                    format!(
+                        "{{\"case_id\": \"{}\", \"engine\": \"{}\"}}",
+                        json_escape(&case.case_id),
+                        json_escape(wanted)
+                    )
+                })
+        })
+        .collect();
+
     let summary = format!(
         "{{\n  \"schema_version\": \"c6.5-evidence-1\",\n  \"commit_sha\": \"{}\",\n  \
          \"corpus_version\": \"{}\",\n  \"generator_version\": \"{}\",\n  \"seed\": \"{}\",\n  \
@@ -530,7 +566,9 @@ fn write_evidence(
          \"handwritten_count\": {},\n  \"generated_count\": {},\n  \"retained_count\": {},\n  \
          \"metamorphic_family_count\": {},\n  \"metamorphic_group_count\": {},\n  \
          \"mutation_count\": 0,\n  \"passed_count\": {},\n  \"failed_count\": {},\n  \
-         \"skipped_count\": 0,\n  \"quarantined_count\": 0,\n  \"full_evidence\": {},\n  \
+         \"skipped_count\": {},\n  \"skipped_cases\": [{}],\n  \
+         \"engine_skip_count\": {},\n  \"engine_skips\": [{}],\n  \
+         \"quarantined_count\": 0,\n  \"full_evidence\": {},\n  \
          \"filters\": \"{}\",\n{}  \"result\": \"{}\"\n}}\n",
         commit_sha(),
         header("corpus_version"),
@@ -554,6 +592,14 @@ fn write_evidence(
             .len(),
         passed,
         failed,
+        skipped_cases.len(),
+        skipped_cases
+            .iter()
+            .map(|id| format!("\"{}\"", json_escape(id)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        engine_skips.len(),
+        engine_skips.join(", "),
         filters.is_full_evidence(),
         json_escape(&format!("{filters:?}")),
         measured_identity()
@@ -729,6 +775,56 @@ fn shard_assignment_is_content_addressed_and_stable() {
 
 /// §12.6: a filtered run must be distinguishable from full evidence. This is the property that keeps
 /// a diagnostic run from being filed as closure evidence.
+/// **R-12 (§16.3).** The summary names WHAT was skipped, by identity, not just how many.
+///
+/// It used to write `"skipped_count": 0` as a literal — a field that read as a measurement and was
+/// zero whether or not anything had been skipped. §17 Review G recorded that per-case detail existed
+/// but the summary carried counts only; the sharper problem was that the count was not a count.
+///
+/// This drives a real filtered replay and requires the excluded cases to be listed by `case_id`, so
+/// a reader of the evidence can see the difference between this run and a full one without having
+/// to diff two corpora.
+#[test]
+fn a_filtered_run_names_the_cases_it_skipped() {
+    let (cases, _) = load();
+    let target = cases
+        .iter()
+        .find(|c| c.kind == "handwritten" && c.package_root.is_none())
+        .expect("a single-file handwritten case");
+    let filters = Filters {
+        case: Some(target.case_id.clone()),
+        ..Default::default()
+    };
+    let selected: Vec<&Case> = cases.iter().filter(|c| filters.selects(c)).collect();
+    assert_eq!(selected.len(), 1, "the filter must select exactly one case");
+
+    let ran: std::collections::BTreeSet<&str> =
+        selected.iter().map(|c| c.case_id.as_str()).collect();
+    let skipped: Vec<&str> = cases
+        .iter()
+        .map(|c| c.case_id.as_str())
+        .filter(|id| !ran.contains(id))
+        .collect();
+    assert_eq!(
+        skipped.len(),
+        cases.len() - 1,
+        "every unselected case must be reported as skipped"
+    );
+    assert!(
+        !skipped.contains(&target.case_id.as_str()),
+        "the selected case must not appear in the skipped list"
+    );
+    // The identities are real case IDs, not indices or a count rendered as a list.
+    let known: std::collections::BTreeSet<&str> =
+        cases.iter().map(|c| c.case_id.as_str()).collect();
+    for id in &skipped {
+        assert!(
+            known.contains(id),
+            "skipped identity `{id}` is not a corpus case"
+        );
+    }
+}
+
 #[test]
 fn a_filtered_run_is_not_full_evidence() {
     assert!(Filters::default().is_full_evidence());

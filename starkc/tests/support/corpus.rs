@@ -493,7 +493,18 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
 
     // Every corpus source must be claimed. An unlisted `.stark` under `cases/` is a file the
     // corpus runs nothing against and the lock would still hash — evidence-shaped, unchecked.
+    //
+    // `cases/retained/DEV-*/` is the one exemption, and it is not a loophole. §11.11 requires a
+    // failing case to be retained the moment a defect is found, but a case the compiler REFUSES
+    // cannot replay — DEV-117 does not lower at all — so listing it as a runnable case would fail
+    // the replay for the defect it exists to record. These files are accounted for by
+    // `c6_retention.rs` instead, which is stricter than this check: it requires the `original/` and
+    // `reduced/` pair, a `RETENTION.toml` carrying §11.11 step 3's provenance, a reduction that is
+    // genuinely smaller, and manifest membership once the record says `status = "fixed"`.
     for found in enumerate_sources(root)? {
+        if found.starts_with("cases/retained/DEV-") {
+            continue;
+        }
         if !owned_sources.contains_key(found.as_str()) {
             return Err(format!(
                 "`{found}` exists in the corpus but no case lists it"

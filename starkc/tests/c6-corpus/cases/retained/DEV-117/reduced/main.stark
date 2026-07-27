@@ -1,0 +1,14 @@
+// DEV-117, reduced. §11.12's reduction path applied to the original: independent statements removed
+// (the Copy/move/return assertions), values shrunk, and the helper reduced to the one call that
+// forces the move. What survives is the single property that reproduces the defect — a moved-from
+// local, reassigned, then used again.
+fn take(s: String) -> UInt64 {
+    s.len()
+}
+
+fn main() {
+    let mut slot: String = String::from("ab");
+    assert_eq(take(slot), 2u64);
+    slot = String::from("cde");
+    assert_eq(take(slot), 3u64);
+}

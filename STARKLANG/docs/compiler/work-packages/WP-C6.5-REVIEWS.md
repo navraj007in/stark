@@ -28,11 +28,11 @@ required capability unevidenced · **LOW** precision, hygiene or documentation.
 | R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor — **CLOSED CD-167**: DEV-114's fix is what made M09 comparable; both families built | §22.4 |
 | R-06 | MEDIUM | H | Shared-file **lease protocol not followed** for two leased files — **CLOSED a690bd8**; leases for the batch taken in advance in 921a2f9 | §22.8 |
 | R-07 | MEDIUM | D | **36 of 136 matrix rows** have a corpus case; nothing validates row citations — **CLOSED CD-171**: all 136 rows carry one machine-checked disposition; 0 UNATTRIBUTED | §22.1, §10.2 |
-| R-08 | MEDIUM | C, E | Retention (§11.11) and divergence-retention (§13.7) **never exercised** | §22.2, §22.4 |
+| R-08 | MEDIUM | C, E | Retention (§11.11) and divergence-retention (§13.7) **never exercised** — **CLOSED CD-172**: both driven, §11.11 by the real DEV-117 retention and §13.7 by a synthetic controlled divergence | §22.2, §22.4 |
 | R-09 | MEDIUM | C | `MAX_LOOP_ITERATIONS` **declared but never enforced** | §11.8, §22.2 |
 | R-10 | LOW | A | `stderr_observation` equality is **tautological between HIR and MIR** — **CLOSED a690bd8**: the claim is narrowed to what the field can actually witness | precision of §22.3 |
 | R-11 | LOW | C | No case-ID **collision check** in the generator | §22.2 |
-| R-12 | LOW | G | Summary records skip/ignore **counts, not identities** (§16.3) — **OPEN**, deferred into the batch with cause in a690bd8 | §22.7 |
+| R-12 | LOW | G | Summary records skip/ignore **counts, not identities** (§16.3) — **CLOSED CD-172**: `skipped_cases` and `engine_skips` name identities; the old count was a literal `0` | §22.7 |
 | R-13 | LOW | D | Metamorphic family IDs are written into `subcategories`, a **matrix-row field** | §22.1 |
 
 ### R-01 — the corpus covers five of nine admitted trap categories · HIGH
@@ -352,7 +352,7 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 | 6 | Pair equality checked inside every engine? | **Yes** — HIR, MIR and native separately |
 | 7 | Cross-engine equality for every member? | **Yes** — via the §12 replay, which runs members as ordinary cases |
 | 8 | Can a transformation avoid a defect? | **Guarded** — the identity assertion caught two of my own fake pairs (CD-157) |
-| 9 | Divergent pairs retained? | **Untested** (**R-08**) — still open |
+| 9 | Divergent pairs retained? | **Exercised** (R-08 closed, CD-172) — §13.7's first-differing-field identification is driven by a constructed divergence, and the retention layout by DEV-117 |
 | 10 | Package transformations deterministic? | **Yes** — DEV-114 fixed in bac13f5; M09's pairs pin canonical symbols across a reorder, which is the regression check (R-05 closed) |
 
 ## Review F — mutation sensitivity
@@ -379,7 +379,7 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 | 2 | Two different Tier-1 targets? | **Yes** — and a same-triple pair is rejected by test |
 | 3 | Corpus, generator, seed and hashes identical? | **Yes** |
 | 4 | Every required case and shard present? | **Yes** — 131 both sides, no duplicates, none one-sided; unsharded |
-| 5 | Skips, ignores, timeouts visible by identity? | **In `per-case.json` yes; in the summary, counts only** (**R-12**) |
+| 5 | Skips, ignores, timeouts visible by identity? | **Yes** (R-12 closed, CD-172) — `skipped_cases` and `engine_skips` carry identities; a filtered run reports 152 named cases where the field used to read a literal `0` |
 | 6 | Artifacts preserved on failure? | **Yes** — `if: always()` on every upload |
 | 7 | Can a filtered run be mistaken for full qualification? | **No** — `full_evidence` plus `PARTIAL-FILTERED`, both tested |
 | 8 | Per-case observations compared, not only totals? | **Yes** — identical observation hashes for all 131, and a differing-hash pair is rejected by test |
