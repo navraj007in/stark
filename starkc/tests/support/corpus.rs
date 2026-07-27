@@ -352,6 +352,16 @@ pub fn validate(cases: &[Case], root: &Path) -> Result<(), String> {
                 "{id}: a Core case must cite at least one normative rule"
             ));
         }
+        // R-07: every cited matrix row must exist, for the same reason every cited rule must.
+        let rows = matrix_row_ids();
+        for row in &case.subcategories {
+            if !rows.contains(row) {
+                return Err(format!(
+                    "{id}: `{row}` is not a row in C6-CORPUS-COVERAGE-MATRIX.md — `subcategories` \
+                     cites matrix ROWS; a metamorphic family id belongs in `metamorphic_family`"
+                ));
+            }
+        }
         // ...and the rule must EXIST. See `spec_rule_ids`: the coverage matrix was built with 69
         // invented identifiers out of 84, so "cites a rule" is only meaningful once the citation is
         // checked against the specification.
@@ -695,6 +705,48 @@ pub fn rule_ids_in(text: &str) -> BTreeSet<String> {
             ids.insert(token.to_string());
         }
     }
+    ids
+}
+
+/// Every matrix ROW id the coverage matrix defines, parsed from its tables.
+///
+/// R-07/R-13: nothing used to check that a case's `subcategories` named a real row, and ten
+/// metamorphic FAMILY ids (`M01`…`M12`) passed validation while naming rows that do not exist —
+/// inflating the coverage count by ten. This is the same failure shape as CD-154's fabricated rule
+/// citations: a citation nobody verifies is worse than none, because it reads as grounding.
+pub fn matrix_row_ids() -> BTreeSet<String> {
+    let matrix = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo root")
+        .join("STARKLANG/docs/compiler/work-packages/C6-CORPUS-COVERAGE-MATRIX.md");
+    let text = std::fs::read_to_string(&matrix).expect("the coverage matrix");
+    let mut ids = BTreeSet::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with('|') {
+            continue;
+        }
+        let first = line
+            .trim_start_matches('|')
+            .split('|')
+            .next()
+            .unwrap_or("")
+            .trim();
+        // A row id is a letter group followed by two digits: `E06`, `V18`, `K17`.
+        let is_row = first.len() >= 3
+            && first.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && first.chars().skip(1).all(|c| c.is_ascii_digit())
+            && first.len() <= 4;
+        if is_row {
+            ids.insert(first.to_string());
+        }
+    }
+    assert!(
+        ids.len() > 100,
+        "only {} matrix rows parsed — the matrix format or this parser is wrong, and a silently \
+         empty authority set would make every citation check vacuous",
+        ids.len()
+    );
     ids
 }
 

@@ -35,6 +35,10 @@ class Case:
     expected_trap_category: str = ""
     drop_protocol: bool = False
     expected_drop_log: tuple = ()
+    # R-09: the template's own maximum loop trip count, declared so `MAX_LOOP_ITERATIONS` can be
+    # CHECKED rather than merely written down. A bound nothing reads is not a bound; this one was
+    # declared and never read until §17 Review C found it.
+    loop_iterations: int = 0
 
 
 # Signed types whose arithmetic the templates keep well inside range, and unsigned ones used only
@@ -109,6 +113,7 @@ def t03_bounded_loop(dims):
         subcategories=("C04",),
         normative_rules=("EXEC-CFLOW-001", "NUM-INT-ARITH-001"),
         expected_stdout=(str(total),),
+        loop_iterations=iterations,
     )
 
 
@@ -398,6 +403,7 @@ fn main() {{
         subcategories=("O15", "O16", "O17"),
         normative_rules=("DROP-ORDER-001", "DROP-EXACT-001"),
         expected_stdout=("done",),
+        loop_iterations=1,
         drop_protocol=True,
         expected_drop_log=tuple(f"Loud#{i}" for i in range(count, 0, -1)),
     )
@@ -429,6 +435,17 @@ def t16_trap(dims):
         "shift": (
             "    let a: Int32 = 1;\n    let s: Int32 = 64;\n    let b: Int32 = a << s;\n    print(b);\n",
             "InvalidShift",
+        ),
+        # R-01: the last two admitted categories. They were never in this space, so no budget could
+        # have selected them — the coverage gap was in the dimensions, not only in the sampling.
+        "unwrap_none": (
+            "    let empty: Option<Int32> = None;\n    print(empty.unwrap());\n",
+            "UnwrapNone",
+        ),
+        "unwrap_err": (
+            "    let failed: Result<Int32, String> = Err(String::from(\"nope\"));\n"
+            "    print(failed.unwrap());\n",
+            "UnwrapErr",
         ),
     }
     body, category = bodies[kind]
@@ -538,10 +555,16 @@ TEMPLATES = {
     "T15": (t15_drop_order, [(count, early) for count in (1, 2, 3) for early in (False, True)]),
     "T16": (t16_trap, [
         ("overflow",), ("divide_by_zero",), ("index",), ("cast",), ("assert",), ("panic",),
-        ("shift",),
+        ("shift",), ("unwrap_none",), ("unwrap_err",),
     ]),
     "T20": (t20_composite_format, [("tuple",), ("array",), ("option",)]),
 }
+
+# R-01: templates whose dimension space IS the coverage requirement. For these the per-template
+# budget is not applied, because sampling them DELETES coverage rather than bounding cost: T16's
+# tuples are the nine admitted trap categories, and a budget of five silently dropped two of them
+# (DivideByZero and AssertFailure) while the corpus reported "every admitted trap category".
+EXHAUSTIVE_TEMPLATES = {"T16"}
 
 MISSING_TEMPLATES = {
     "T13": "borrow/reborrow/reference return — needs provenance dimensions; handwritten today",

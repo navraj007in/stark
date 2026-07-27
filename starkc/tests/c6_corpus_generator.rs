@@ -286,6 +286,58 @@ fn the_checked_in_generated_corpus_is_current() {
     );
 }
 
+/// **R-09 and R-11's negative controls.** The generator gained two guards — a case-ID collision
+/// check and an enforced loop bound — and a guard that has never refused anything is a guard nobody
+/// has watched work. `--self-test-guards` forces each failure deliberately and requires the
+/// generator to reject it for the right reason.
+#[test]
+fn the_generator_guards_refuse_what_they_claim_to() {
+    if !python_available() {
+        eprintln!("SKIP: no python3 in this environment.");
+        return;
+    }
+    let out = Command::new("python3")
+        .arg(corpus_dir().join("generate.py"))
+        .arg("--self-test-guards")
+        .output()
+        .expect("running the guard self-test");
+    assert!(
+        out.status.success(),
+        "a generator guard did not refuse:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("both refuse"),
+        "unexpected self-test output: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// **R-01.** Every admitted trap category has a direct corpus case. The gap this closes was not a
+/// missing case but a mechanism: T16's dimension space IS the coverage claim, and a per-template
+/// sampling budget deleted two categories from it while the corpus still reported them covered.
+#[test]
+fn every_admitted_trap_category_has_a_corpus_case() {
+    let (cases, _) = support::corpus::load();
+    let covered: std::collections::BTreeSet<&str> = cases
+        .iter()
+        .filter_map(|c| c.expected_trap_category.as_deref())
+        .collect();
+    let admitted: Vec<String> = support::differential::ALL_CATEGORIES
+        .iter()
+        .map(|c| format!("{c:?}"))
+        .collect();
+    let missing: Vec<&String> = admitted
+        .iter()
+        .filter(|name| !covered.contains(name.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "§10.4 requires a direct case per admitted trap category; missing: {missing:?}"
+    );
+}
+
 /// §11.4's floor, and the template breadth behind it. Asserted against the manifest rather than the
 /// generator's own report, so a generator that claimed 64 while writing 12 would fail.
 #[test]

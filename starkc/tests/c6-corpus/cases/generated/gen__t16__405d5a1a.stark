@@ -1,0 +1,5 @@
+fn main() {
+    print("before");
+    let failed: Result<Int32, String> = Err(String::from("nope"));
+    print(failed.unwrap());
+}

@@ -34,7 +34,7 @@ import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "0.6.0"
+CORPUS_VERSION = "0.7.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -135,14 +135,37 @@ def select(seed: str):
                 f"{template_id}: only {len(ranked)} dimension tuples — a template with fewer than "
                 f"three instances is not a family, it is a case"
             )
-        # Up to the budget: a template whose whole dimension space is smaller contributes all of it
-        # rather than being padded with repeats. The §11.4 floor is checked globally, so a shortfall
-        # surfaces as "too few cases" and not as a silently thin template.
-        for digest, dims in ranked[: min(PER_TEMPLATE_BUDGET, len(ranked))]:
+        # R-01: a template whose dimension space IS the coverage claim is taken WHOLE. The budget
+        # exists to bound cost where dimensions are interchangeable samples; for T16 each tuple is a
+        # distinct normative trap category, so sampling deleted two of them while the corpus still
+        # reported full coverage. Cost-bounding must never be able to remove a required observation.
+        #
+        # Otherwise: up to the budget, and a smaller space contributes all of it rather than being
+        # padded with repeats. The §11.4 floor is checked globally, so a shortfall surfaces as "too
+        # few cases" rather than as a silently thin template.
+        take = (
+            len(ranked)
+            if template_id in template_registry.EXHAUSTIVE_TEMPLATES
+            else min(PER_TEMPLATE_BUDGET, len(ranked))
+        )
+        for digest, dims in ranked[:take]:
             case = build(dims)
             case_id = f"gen__{template_id.lower()}__{digest[:8]}"
             chosen.append((case_id, template_id, digest, dims, case))
     chosen.sort(key=lambda entry: entry[0])
+    # R-11: case IDs are a digest PREFIX, so a collision is improbable rather than impossible. Left
+    # undetected it would be silent in the worst way: the second case overwrites the first's file and
+    # the manifest carries two entries under one ID, so the corpus quietly loses a case and the
+    # validator reports a duplicate long after the cause.
+    seen: dict[str, str] = {}
+    for case_id, template_id, digest, dims, _case in chosen:
+        if case_id in seen:
+            raise SystemExit(
+                f"case ID collision: {case_id} produced by {seen[case_id]} and by "
+                f"{template_id}/{canonical_dimensions(dims)} (digest {digest}). Widen the ID prefix "
+                f"or change the dimension; do not let one case overwrite the other."
+            )
+        seen[case_id] = f"{template_id}/{canonical_dimensions(dims)}"
     return chosen
 
 
@@ -154,6 +177,13 @@ def enforce_bounds(case_id: str, case) -> None:
     functions = case.source.count("\nfn ") + case.source.startswith("fn ")
     if functions > MAX_FUNCTIONS_PER_CASE:
         raise SystemExit(f"{case_id}: {functions} functions exceeds the {MAX_FUNCTIONS_PER_CASE} bound")
+    # R-09: the loop bound is now READ. It was declared and never checked, which is the same as not
+    # having one — §11.8 requires bounds to be set AND tested.
+    if case.loop_iterations > MAX_LOOP_ITERATIONS:
+        raise SystemExit(
+            f"{case_id}: {case.loop_iterations} loop iterations exceeds the "
+            f"{MAX_LOOP_ITERATIONS} bound"
+        )
     if "/" in case_id or "\\" in case_id:
         raise SystemExit(f"{case_id}: a case ID must not contain a path separator")
 
@@ -211,6 +241,9 @@ def write_metamorphic(out_root: pathlib.Path) -> list:
     if pairs_dir.exists():
         shutil.rmtree(pairs_dir)
     pairs_dir.mkdir(parents=True)
+    def lst(items):
+        return "[" + ", ".join(f'"{item}"' for item in items) + "]"
+
     entries = []
     for group in metamorphic_registry.groups():
         for role, source in (("base", group.base), ("transformed", group.transformed)):
@@ -221,7 +254,11 @@ def write_metamorphic(out_root: pathlib.Path) -> list:
                 f'case_id = "{case_id}"',
                 'kind = "handwritten"',
                 f'category = "{group.category}"',
-                f'subcategories = ["{group.family_id}"]',
+                # R-13: the FAMILY lives in `metamorphic_family`; `subcategories` is for matrix ROW
+                # ids. Writing `M01` here made ten family ids count as covered rows, which is how
+                # R-07's coverage number was inflated — and nothing caught it, because nothing
+                # checked that a cited row exists.
+                f"subcategories = {lst(group.subcategories)}",
                 f'sources = ["metamorphic/{case_id}.stark"]',
                 'package_graph = "single-file"',
                 'expected_outcome = "completion"',
@@ -350,11 +387,21 @@ def build_lock() -> str:
         "# corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the",
         "# twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent",
         "# until §15 rather than approximated single-file. Minor.",
+        "# corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE",
+        "# (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and",
+        "# gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,",
+        "# case-ID collisions are detected, and metamorphic members no longer cite family ids as if",
+        "# they were matrix rows. Minor.",
         "# corpus_version 0.6.0 (batch, 2026-07-27, CD-164): the three approved decision packets.",
         "# DEV-113 makes package trap provenance logical, which admits the dependency-trap case §15.1",
         "# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native",
         "# emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and",
         "# the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.",
+        "# corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE",
+        "# (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and",
+        "# gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,",
+        "# case-ID collisions are detected, and metamorphic members no longer cite family ids as if",
+        "# they were matrix rows. Minor.",
         "# corpus_version 0.6.0 (batch, 2026-07-27, CD-164): the three approved decision packets.",
         "# DEV-113 makes package trap provenance logical, which admits the dependency-trap case §15.1",
         "# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native",
@@ -382,8 +429,54 @@ def build_lock() -> str:
     return "\n".join(lines) + "\n"
 
 
+def self_test_guards() -> int:
+    """Negative controls for the two guards §17 added (R-09, R-11).
+
+    A guard that has never refused anything is a guard nobody has watched work. This mode forces
+    each failure deliberately and requires the generator to reject it; `c6_corpus_generator.rs` runs
+    it and asserts a non-zero exit with the expected reason.
+    """
+    failures = []
+
+    # R-11: two dimension tuples forced to the same case ID.
+    original_digest = globals()["digest_for"]
+    globals()["digest_for"] = lambda template_id, dims, seed: "c0111de" + "d" * 57
+    try:
+        select(DEFAULT_SEED)
+        failures.append("collision was NOT detected")
+    except SystemExit as refusal:
+        if "case ID collision" not in str(refusal):
+            failures.append(f"collision refused for the wrong reason: {refusal}")
+    finally:
+        globals()["digest_for"] = original_digest
+
+    # R-09: a case declaring more loop iterations than the bound allows.
+    over = template_registry.Case(
+        source="fn main() {}\n",
+        category="control-transfer",
+        subcategories=(),
+        normative_rules=("EXEC-CFLOW-001",),
+        loop_iterations=MAX_LOOP_ITERATIONS + 1,
+    )
+    try:
+        enforce_bounds("probe", over)
+        failures.append("the loop bound was NOT enforced")
+    except SystemExit as refusal:
+        if "loop iterations exceeds" not in str(refusal):
+            failures.append(f"loop bound refused for the wrong reason: {refusal}")
+
+    if failures:
+        for failure in failures:
+            print(f"guard self-test FAILED: {failure}", file=sys.stderr)
+        return 1
+    print("guard self-tests pass: collision and loop bound both refuse")
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
+    if argv[:1] == ["--self-test-guards"]:
+        return self_test_guards()
     if argv[:1] == ["--list-templates"]:
         return list_templates()
     if argv[:1] == ["--write"]:

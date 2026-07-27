@@ -4352,10 +4352,17 @@ impl<'a> Interpreter<'a> {
             Value::Option(option) => match name {
                 "is_some" => Ok(Value::Bool(option.is_some())),
                 "is_none" => Ok(Value::Bool(option.is_none())),
-                "unwrap" => option
-                    .take()
-                    .map(|value| *value)
-                    .ok_or_else(|| RuntimeError::new("called unwrap on None", span)),
+                "unwrap" => option.take().map(|value| *value).ok_or_else(|| {
+                    // R-01/CD-141 shape: STATE the category rather than leaving it to prose
+                    // matching. `oracle_category` refused these outright with a stale "Option/Result
+                    // are WP-C5.3c" message, so a corpus case for OPT-UNWRAP could not be compared
+                    // at all until the raise site said what it was raising.
+                    RuntimeError::with_category(
+                        "called unwrap on None",
+                        span,
+                        crate::mir::TrapCategory::UnwrapNone,
+                    )
+                }),
                 "unwrap_or" => Ok(option
                     .take()
                     .map_or_else(|| values.next().unwrap_or(Value::Unit), |value| *value)),
@@ -4369,9 +4376,10 @@ impl<'a> Interpreter<'a> {
                 "is_err" => Ok(Value::Bool(result.is_err())),
                 "unwrap" => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {
                     Ok(value) => Ok(*value),
-                    Err(error) => Err(RuntimeError::new(
+                    Err(error) => Err(RuntimeError::with_category(
                         format!("called unwrap on Err({error})"),
                         span,
+                        crate::mir::TrapCategory::UnwrapErr,
                     )),
                 },
                 "unwrap_or" => match std::mem::replace(result, Ok(Box::new(Value::Unit))) {

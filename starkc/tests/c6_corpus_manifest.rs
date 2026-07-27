@@ -19,7 +19,7 @@ use support::corpus::{
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
 /// this assertion is what makes the second half unskippable.
-const EXPECTED_CORPUS_VERSION: &str = "0.6.0";
+const EXPECTED_CORPUS_VERSION: &str = "0.7.0";
 
 // ------------------------------------------------------------- the real corpus --
 
@@ -114,6 +114,16 @@ fn every_rule_id_the_matrix_cites_exists_in_the_spec() {
 
 /// The manifest's citations are checked by `validate`; this proves that check REJECTS, rather than
 /// trusting that it runs.
+/// **R-07's negative control.** The rule that would have caught ten family ids masquerading as
+/// matrix rows — proven to refuse, not merely present.
+#[test]
+fn a_manifest_citing_a_nonexistent_matrix_row_is_rejected() {
+    rejected(
+        &valid_case().replace("\"E06\"", "\"M01\""),
+        "is not a row in",
+    );
+}
+
 #[test]
 fn a_manifest_citing_an_invented_rule_is_rejected() {
     rejected(
@@ -138,6 +148,7 @@ fn valid_case() -> String {
         "required_engines = [\"hir\", \"mir\", \"native-debug\"]",
         "required_targets = [\"aarch64-apple-darwin\"]",
         "normative_rules = [\"PROC-EXIT-001\"]",
+        "subcategories = [\"E06\"]",
     ]
     .join("\n")
 }

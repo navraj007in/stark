@@ -22,11 +22,21 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE
+# (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and
+# gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,
+# case-ID collisions are detected, and metamorphic members no longer cite family ids as if
+# they were matrix rows. Minor.
 # corpus_version 0.6.0 (batch, 2026-07-27, CD-164): the three approved decision packets.
 # DEV-113 makes package trap provenance logical, which admits the dependency-trap case §15.1
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
 # emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
 # the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 0.7.0 (batch, 2026-07-27, CD-165): R-01/R-09/R-11/R-13. T16 is EXHAUSTIVE
+# (its dimension space IS the coverage claim, so a sampling budget must not truncate it) and
+# gains UnwrapNone/UnwrapErr -- 10 of 10 admitted trap categories. The loop bound is enforced,
+# case-ID collisions are detected, and metamorphic members no longer cite family ids as if
+# they were matrix rows. Minor.
 # corpus_version 0.6.0 (batch, 2026-07-27, CD-164): the three approved decision packets.
 # DEV-113 makes package trap provenance logical, which admits the dependency-trap case §15.1
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
@@ -35,17 +45,17 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 0.6.0
+corpus_version = 0.7.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
 manifest_sha256 = 8198396afc883fe1cedca33c7de42fa741fe650288bfc44ca2bb0630e1998c4a
-generated_manifest_sha256 = 84610938f93a7365375117de317faf90405c5fc171c009539cf7117026b0e45a
-templates_sha256 = 87b75db3399d792ba13e4b9ca849c4e88a37733f24456be8aaf9ff048faa6e70
-metamorphic_sha256 = 81e98cfb3bfd41f69c513ecbcc99a68c56e2a3647adf649499b088303716fce7
-generator_sha256 = 17b209f049a339e6176e4a3dd90f38b3f36210af6be981cee56b494f1de9e78e
-case_count = 133
+generated_manifest_sha256 = 7ed4b1e5c026dd1abf04934001c0da042bfda1b805ee285eb94e417813c8f0d0
+templates_sha256 = 316ae9f300b1850a6a5c80d819e71e5ff8eaed4f170726bfbf930e07c1b96f4b
+metamorphic_sha256 = b47deac3293c4eec472785aadb461a21c5ebd7774a057e37783010e9531cb71f
+generator_sha256 = 89aca4ef65f73f738ac0281abed010eba02d49ba4c2a16a5649aad7802c46416
+case_count = 137
 handwritten_count = 56
-generated_count = 70
+generated_count = 74
 retained_count = 7
 metamorphic_group_count = 20
 cf324eff35bc355b6ffc6b06b3d87cb11fc064b7fada2e439c60fa19be79e511  cases/generated/gen__t01__0268b2da.stark
@@ -111,10 +121,14 @@ c900ba4293ea9e718860a937e608aab3748c1e94fd6eb0cda00274b36d1735fd  cases/generate
 5c013a37fd9a57594299078089601fa46fe8537241d023e87542680e8d3e7d10  cases/generated/gen__t15__731aa624.stark
 6d85d52649d8a0e34cd3462f72eaab7382e318e1926d69755aa2c2723520edd2  cases/generated/gen__t15__79e429f0.stark
 9c936f8573ed2c55a00462c62ad1208ed9d96b3912e8634457fb6d38941d408a  cases/generated/gen__t16__1aefa931.stark
+ee0d3a5b9d927a60e48c14245fd6ae38f439a83bc78feb03cbbfa9b7508503c9  cases/generated/gen__t16__405d5a1a.stark
 be0fbede830bcc209057b10bc64f159efe0754032d7fc636c6dd96423f508be1  cases/generated/gen__t16__4b1e5b55.stark
 2c2a259fb51094cb919a7a9b475b8ab867df1dc7a19294bc0b316fcfb9ea5987  cases/generated/gen__t16__5f66a61b.stark
+3afb2b886c8a10cbf518f495e8b8c57128cb036d306ef5c9d21e74121c042d10  cases/generated/gen__t16__6e84b6d8.stark
 bb3f12738b14ca19f37e7f04329869def4adc14003807bca128ce5f9be349da5  cases/generated/gen__t16__91e36f19.stark
 60210b2ff34aa14d6868781dcf7cc1bc3f64105d24a40e664eb334039a9a022c  cases/generated/gen__t16__bb1f33cf.stark
+51fec0f60658fb3368adb5f7871aa4a7d6539a5037414f1eba2bb19bb2c96802  cases/generated/gen__t16__ca829fca.stark
+3706bc46aa44b047b23a1f27c65eaec5bcf730da384b12c35cd0430b595ccd23  cases/generated/gen__t16__fde90333.stark
 11f91885b4a3b74b727cbbed854f4a26c9c1af267c56677dde4db566be84cdd6  cases/generated/gen__t20__b6feee0e.stark
 b409dd8cdd1aaf1ecf4771223c889f2f78b462c708c2b47d8a76a91e8ddf6abc  cases/generated/gen__t20__cd54c97b.stark
 7e157825dd09670f08ee0e6dc4d921185108ad834690aed50ed6c560c7e52415  cases/generated/gen__t20__e7b48a55.stark

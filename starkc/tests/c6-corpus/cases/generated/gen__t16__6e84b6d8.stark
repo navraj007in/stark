@@ -1,0 +1,5 @@
+fn main() {
+    print("before");
+    let empty: Option<Int32> = None;
+    print(empty.unwrap());
+}

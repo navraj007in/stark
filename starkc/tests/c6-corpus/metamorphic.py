@@ -35,6 +35,9 @@ class Group:
     normative_rules: tuple
     category: str
     expected_stdout: tuple
+    #: Matrix ROW ids this pair exercises (R-13). The FAMILY id is `family_id` and belongs in
+    #: `metamorphic_family`; conflating the two inflated the coverage count by ten.
+    subcategories: tuple = ()
 
 
 # --------------------------------------------------------------------- bases --
@@ -316,13 +319,38 @@ def groups() -> list:
     nothing about relocation."""
     out = []
 
+    #: Which matrix rows each family's pairs actually exercise. Stated per family rather than per
+    #: group because both groups of a family transform the same construct.
+    rows = {
+        "M01": ("E02", "E04"),
+        "M02": ("E03", "O15"),
+        "M03": ("D05", "E12"),
+        "M04": ("D06", "E11"),
+        "M05": ("V12", "E04"),
+        "M06": ("P07", "C11"),
+        "M07": ("C11", "P05"),
+        "M10": ("E10", "D01"),
+        "M11": ("E13", "D09"),
+        "M12": ("C04", "C05"),
+    }
+
     def add(family, group, base, transformed, precondition, rules, category, stdout):
         assert transformed != base, (
             f"{family}/{group}: the transformation changed nothing — an identity transform is a "
             f"fake pair that agrees trivially"
         )
         out.append(
-            Group(family, group, base, transformed, precondition, rules, category, stdout)
+            Group(
+                family,
+                group,
+                base,
+                transformed,
+                precondition,
+                rules,
+                category,
+                stdout,
+                rows.get(family, ()),
+            )
         )
 
     # M01 alpha-renaming

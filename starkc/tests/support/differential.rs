@@ -310,8 +310,10 @@ pub fn front_end(name: &str, source: &str) -> Front {
 /// failure: a silent fallback would let a wrong-category trap normalise to whatever the other
 /// engines said.
 ///
-/// `UnwrapNone`, `UnwrapErr` and message-carrying `Panic` traps state their category outright
-/// (DEV-106's `RuntimeError::trap_category`), so they never reach the prose path.
+/// `UnwrapNone`, `UnwrapErr`, `InvalidExitStatus` and message-carrying `Panic` traps state their
+/// category outright (`RuntimeError::with_category`), so they never reach this prose path. The
+/// `unwrap` arm used to REFUSE outright — "Option/Result are WP-C5.3c" — a refusal that outlived its
+/// reason by three work packages and blocked the corpus's `UnwrapNone`/`UnwrapErr` cases (R-01).
 pub fn oracle_category(message: &str) -> TrapCategory {
     if message.contains("integer overflow") {
         TrapCategory::IntegerOverflow
@@ -331,11 +333,6 @@ pub fn oracle_category(message: &str) -> TrapCategory {
         // engine use one category for both -- normalised here rather than by loosening the
         // match, so a genuinely unknown message still fails loudly.
         TrapCategory::IndexOutOfBounds
-    } else if message.contains("unwrap") {
-        panic!(
-            "oracle raised a trap category outside the admitted surface: {message:?} \
-             (Option/Result are WP-C5.3c)"
-        )
     } else {
         panic!(
             "unrecognised oracle trap message {message:?} — normalise it here rather than \

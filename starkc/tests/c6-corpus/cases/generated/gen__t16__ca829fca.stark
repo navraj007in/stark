@@ -1,0 +1,7 @@
+fn main() {
+    print("before");
+    let a: Int32 = 1;
+    let z: Int32 = 0;
+    let b: Int32 = a / z;
+    print(b);
+}
