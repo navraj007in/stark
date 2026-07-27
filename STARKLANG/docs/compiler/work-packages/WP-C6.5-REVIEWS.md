@@ -276,6 +276,51 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 
 ---
 
+## §17 rerun — every finding's final disposition
+
+Run after the batch, against the tree at CD-172. Each of the thirteen findings is marked exactly
+once, and the mark is the disposition the closure packet cites.
+
+| # | Severity | Disposition | Where it was closed, and what the fix actually was |
+| --- | --- | --- | --- |
+| R-01 | HIGH | **CLOSED** | CD-165. The gap was the MECHANISM, not the two cases: a per-template sampling budget was deleting coverage the corpus still reported. Templates can now be declared `EXHAUSTIVE`. 5 of 9 → 10 of 10, asserted from `ALL_CATEGORIES`. |
+| R-02 | HIGH | **CLOSED** | CD-165. All 23 suites migrated; 289 tests, 0 failed, 0 skipped. The real finding was that the private helpers asserted `status == 0` per engine *separately*, which is not a comparison. |
+| R-03 | MEDIUM | **CLOSED** | CD-166. 7 of 15 → 15 of 15 comparator fields, with `COMPARATOR_FIELDS` enumerated beside `first_difference` so a new field without a control fails. |
+| R-04 | MEDIUM | **CLOSED** | CD-167. 24 groups / 48 members across twelve families. |
+| R-05 | MEDIUM | **CLOSED** | CD-167. DEV-114's fix is what made M09 comparable; M08/M09 built with kind-aware validation. |
+| R-06 | MEDIUM | **CLOSED** | a690bd8; leases for the batch taken in advance in 921a2f9. |
+| R-07 | MEDIUM | **CLOSED** | CD-169/170/171. All 136 rows carry one machine-checked disposition, 0 UNATTRIBUTED. Found a third fabrication class (13 cited tests that exist nowhere) and DEV-117. |
+| R-08 | MEDIUM | **CLOSED** | CD-172. §11.11 driven by the real DEV-117 retention, §13.7 by a synthetic controlled divergence. |
+| R-09 | MEDIUM | **CLOSED** | CD-165. `MAX_LOOP_ITERATIONS` is read and enforced, with a negative control. |
+| R-10 | LOW | **CLOSED** | a690bd8. The claim is narrowed to what the field can witness; MU20 records the same narrowing. |
+| R-11 | LOW | **CLOSED** | CD-165. Case-ID collision detection plus a `--self-test-guards` negative control. |
+| R-12 | LOW | **CLOSED** | CD-172. `skipped_cases` / `engine_skips` carry identities; the old count was a literal `0`. |
+| R-13 | LOW | **CLOSED** | CD-165. Family IDs removed from the matrix-row field, with a validator and a negative control. |
+
+**Nothing is SUPERSEDED.** Every finding was closed on its own terms rather than dissolved by a
+later change — worth stating, because "superseded" is the disposition that hides work not done.
+
+### What the reruns found that the first pass did not
+
+The eight passes were re-run rather than assumed, and three findings only appeared the second time:
+
+1. **Two more fabrication classes.** The first pass found CD-154's 69 invented rule IDs. The rerun
+   found 36 false `→T##` template arrows (R-07, CD-165) and 13 cited test functions that exist
+   nowhere in the harness (R-07, CD-169). All three are the same failure: a claim written into an
+   evidence document that nothing ever read back.
+2. **Single-backend evidence presented as three-engine evidence.** Seven matrix rows rested on
+   `exec_snapshots`, whose own header says cross-backend replay is future work.
+3. **Two compiler defects that the coverage gaps were hiding.** DEV-116 (`HashSet` refused at
+   lowering) and DEV-117 (MIR refuses reinitialisation, which the HIR oracle runs). Both are open,
+   both are recorded with an owner, and neither is a test problem.
+
+### Open blockers carried out of C6.5
+
+| ID | What | Disposition |
+| --- | --- | --- |
+| DEV-116 | `HashSet` is normative in `std-full`, runs in the oracle, refused at lowering | BLOCKED, owned by WP-C6.3; §4.3 forbids recording it as a non-Core exclusion |
+| DEV-117 | Reinitialising a moved-from local: front end accepts, oracle runs, MIR refuses (MIR-0007) | BLOCKED, retained under `cases/retained/DEV-117/` per §11.11 |
+
 ## Review A — semantic authority
 
 | # | Question | Verdict |

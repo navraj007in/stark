@@ -22,6 +22,11 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 1.0.0 (WP-C6.5 closure, 2026-07-28, CD-173): the corpus the closure
+# packet cites. All thirteen §17 findings closed; 153 cases; 24 metamorphic groups across
+# twelve families; 10 of 10 admitted trap categories; every one of the 136 coverage-matrix
+# rows carrying one machine-checked disposition. 1.0.0 is a FREEZE marker, not a claim of
+# completeness -- DEV-116 and DEV-117 are open blockers recorded against it.
 # corpus_version 0.11.0 (batch, 2026-07-28, CD-171): R-07 closed. Eight handwritten cases
 # for the rows that had no comparator-backed evidence at all -- unary/bitwise/casts,
 # statements and `loop`, tuple and array patterns, Float64, Copy/move, Drop order and the
@@ -52,6 +57,11 @@
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
 # emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
 # the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 1.0.0 (WP-C6.5 closure, 2026-07-28, CD-173): the corpus the closure
+# packet cites. All thirteen §17 findings closed; 153 cases; 24 metamorphic groups across
+# twelve families; 10 of 10 admitted trap categories; every one of the 136 coverage-matrix
+# rows carrying one machine-checked disposition. 1.0.0 is a FREEZE marker, not a claim of
+# completeness -- DEV-116 and DEV-117 are open blockers recorded against it.
 # corpus_version 0.11.0 (batch, 2026-07-28, CD-171): R-07 closed. Eight handwritten cases
 # for the rows that had no comparator-backed evidence at all -- unary/bitwise/casts,
 # statements and `loop`, tuple and array patterns, Float64, Copy/move, Drop order and the
@@ -85,14 +95,14 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 0.11.0
+corpus_version = 1.0.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
 manifest_sha256 = 008129f404c7d2fc19256dc12004e348eea3a65a4307a4f5cbdc515605cafc84
 generated_manifest_sha256 = 5e3600c3ad8281decd1ffadb560f51bd921c1828f094ec641ed160429b862d6b
 templates_sha256 = e26edf31db0df55c7a9e9c12662eab8d8e8f1a2e38b3f6e1f8b7cee5e49c5eaf
 metamorphic_sha256 = c6e5980310e1b0fc22dc1ee59fdd3d523df383271dc8950d7f2f871f4c579f8d
-generator_sha256 = 1a56dbcadcd8edc5f46721811319b838bfdf49cecb0420ca95d3e855e03dbd4c
+generator_sha256 = 4bc41fa2e0b1ecc256709c6e6f31524cf563a30219f6fd6ab63d0fd03c5fc463
 case_count = 153
 handwritten_count = 72
 generated_count = 74
