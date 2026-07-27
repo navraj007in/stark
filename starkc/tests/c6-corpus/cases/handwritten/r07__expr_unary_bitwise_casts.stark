@@ -1,0 +1,28 @@
+// R-07 (E05, E07, E09). No comparator-backed case exercised unary operators, bitwise operators or
+// `as` casts at all — the rows cited `scalar_arithmetic_agrees`, a name that exists nowhere. Values
+// are chosen so a wrong answer is a different printed byte rather than a coincidence: `-a` and `!f`
+// invert, the shift/mask results are not reachable by the neighbouring operator, and the casts are
+// in-range so this case COMPLETES (NUM-CAST-001's failing casts are T16's `cast` dimension).
+fn main() {
+    let a: Int32 = 7;
+    let negated: Int32 = -a;
+    assert_eq(negated, -7);
+    let f: Bool = false;
+    assert_eq(!f, true);
+
+    let bits: Int32 = 12;
+    assert_eq(bits & 10, 8);
+    assert_eq(bits | 3, 15);
+    assert_eq(bits ^ 5, 9);
+    assert_eq(bits << 2, 48);
+    assert_eq(bits >> 2, 3);
+
+    let wide: Int64 = 300;
+    let narrowed: Int32 = wide as Int32;
+    assert_eq(narrowed, 300);
+    let asfloat: Float64 = narrowed as Float64;
+    assert_eq(asfloat, 300.0);
+    print(negated);
+    print("|");
+    print(bits & 10);
+}

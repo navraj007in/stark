@@ -27,7 +27,7 @@ required capability unevidenced · **LOW** precision, hygiene or documentation.
 | R-04 | MEDIUM | E | Metamorphic floor unmet: 20 groups / 40 members vs 24 / 48 — **CLOSED CD-167**: 24/48, twelve families | §22.4 |
 | R-05 | MEDIUM | E | **DEV-114 blocks M08/M09 outright**, not merely the floor — **CLOSED CD-167**: DEV-114's fix is what made M09 comparable; both families built | §22.4 |
 | R-06 | MEDIUM | H | Shared-file **lease protocol not followed** for two leased files — **CLOSED a690bd8**; leases for the batch taken in advance in 921a2f9 | §22.8 |
-| R-07 | MEDIUM | D | **36 of 136 matrix rows** have a corpus case; nothing validates row citations — **PARTIALLY CLOSED CD-165**: citations and template arrows now validated; the coverage gap itself remains | §22.1, §10.2 |
+| R-07 | MEDIUM | D | **36 of 136 matrix rows** have a corpus case; nothing validates row citations — **CLOSED CD-171**: all 136 rows carry one machine-checked disposition; 0 UNATTRIBUTED | §22.1, §10.2 |
 | R-08 | MEDIUM | C, E | Retention (§11.11) and divergence-retention (§13.7) **never exercised** | §22.2, §22.4 |
 | R-09 | MEDIUM | C | `MAX_LOOP_ITERATIONS` **declared but never enforced** | §11.8, §22.2 |
 | R-10 | LOW | A | `stderr_observation` equality is **tautological between HIR and MIR** — **CLOSED a690bd8**: the claim is narrowed to what the field can actually witness | precision of §22.3 |
@@ -337,7 +337,7 @@ as "matrix row IDs this case is evidence for". The family already has its own fi
 | 8 | Package and dependency shapes covered? | **Partly** — root+module and a 3-package chain; no cross-package trait impl, no dependency-trap provenance (DEV-113) |
 | 9 | Relocation and dependency reorder covered? | **As harness checks, not corpus groups** (R-04, R-05) |
 | 10 | Files/sets/resources covered or normatively non-Core? | **Files** non-Core (V20); **HashSet** is a recorded blocker (V19), not an exclusion |
-| 11 | Every required row has hand-written evidence? | **No — 36 of 136** (**R-07**) |
+| 11 | Every required row has hand-written evidence? | **Every row has a checked disposition** (R-07 closed, CD-171): corpus case, exact comparator-backed test identity, environment test, NOT-APPLICABLE with a reason, or BLOCKED with a DEV and owner |
 | 12 | Every generatable row has generated evidence? | **No** — 15 templates map to a subset of rows; no row-to-template map exists |
 
 ## Review E — metamorphic adequacy

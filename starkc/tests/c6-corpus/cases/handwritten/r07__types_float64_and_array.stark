@@ -1,0 +1,23 @@
+// R-07 (V04, V10). `Float64` arithmetic and array values. V04 cited
+// `primitive__03_float_arithmetic_and_casts`, an exec_snapshots fixture — single-backend evidence,
+// which cannot support a three-engine claim. The Float64 values are exact in binary so the
+// comparison is not a rounding accident.
+fn main() {
+    let a: Float64 = 2.5;
+    let b: Float64 = 0.25;
+    assert_eq(a + b, 2.75);
+    assert_eq(a - b, 2.25);
+    assert_eq(a * b, 0.625);
+    assert_eq(a / b, 10.0);
+
+    let xs: [Float64; 3] = [1.5, 2.5, 3.5];
+    let mut sum: Float64 = 0.0;
+    let mut i: UInt64 = 0u64;
+    while i < 3u64 {
+        sum = sum + xs[i];
+        i = i + 1u64;
+    }
+    assert_eq(sum, 7.5);
+    println(sum);
+    print(xs[0u64]);
+}

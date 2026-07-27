@@ -1,0 +1,30 @@
+// R-07 (O12, O13). Consuming a non-Copy element out of an array by constant index (A5 `ConstIndex`)
+// and iterating a non-Copy array by value. O13's disposition had gone stale — it read
+// "EXISTING-EVIDENCE →T14 DEFERRED — was BLOCKED; the row was stale", which is a note about the
+// row's history rather than a claim anyone could check.
+//
+// The Drop identities are what make consumption observable: each element is destroyed exactly once,
+// in index order, by whoever ended up owning it.
+struct Item { id: Int32 }
+impl Drop for Item {
+    fn drop(&mut self) {
+        print("@@stark-drop:Item#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+fn weigh(item: Item) -> Int32 {
+    item.id * 10
+}
+
+fn main() {
+    let pair: [Item; 2] = [Item { id: 1 }, Item { id: 2 }];
+    // O13: by-value iteration consumes each element in index order.
+    let mut total: Int32 = 0;
+    for element in pair {
+        total = total + weigh(element);
+    }
+    assert_eq(total, 30);
+    println(total);
+}

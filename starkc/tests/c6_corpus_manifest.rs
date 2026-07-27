@@ -19,7 +19,7 @@ use support::corpus::{
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
 /// this assertion is what makes the second half unskippable.
-const EXPECTED_CORPUS_VERSION: &str = "0.10.0";
+const EXPECTED_CORPUS_VERSION: &str = "0.11.0";
 
 // ------------------------------------------------------------- the real corpus --
 
@@ -182,6 +182,7 @@ fn every_template_arrow_in_the_matrix_is_backed_by_generated_cases() {
 /// | `CORPUS-RETAINED: <case_id>` | a §18.3 retained divergence case that CITES this row |
 /// | `MIGRATED-TEST: <suite>::<test>` | an exact test identity in a comparator-backed suite |
 /// | `NEGATIVE-EVIDENCE: <suite>::<test>` | a machine-checked rejection control |
+/// | `ENVIRONMENT-TEST: <suite>::<test>` | a machine-checked BUILD or ENVIRONMENT property |
 /// | `NOT-APPLICABLE: <reason>` | out of Core v1, with the reason stated |
 /// | `BLOCKED: <DEV-ID> / <work package> / <reason>` | a capability gap with an owner |
 /// | `UNATTRIBUTED` | debt: no disposition yet. Ratcheted below, never allowed to grow. |
@@ -238,6 +239,19 @@ fn every_matrix_row_has_one_resolvable_disposition() {
                     }
                 }
             }
+            // Build and environment rows (K10-K14: locked build, offline build, installed
+            // runtime, Unicode paths, paths with spaces). The identity must exist, but it is NOT
+            // required to be comparator-backed, and that exemption is principled rather than
+            // convenient: "the generated crate is locked and network-free" has nothing to compare
+            // ACROSS ENGINES. Demanding a three-engine citation there would force a false one.
+            "ENVIRONMENT-TEST" => {
+                if !identities.contains(argument) {
+                    problems.push(format!(
+                        "{}: cites test `{argument}`, which does not exist",
+                        row.id
+                    ));
+                }
+            }
             "MIGRATED-TEST" | "NEGATIVE-EVIDENCE" => {
                 if !identities.contains(argument) {
                     problems.push(format!(
@@ -292,20 +306,16 @@ fn every_matrix_row_has_one_resolvable_disposition() {
         problems.join("\n  ")
     );
 
-    // The ratchet. Attribution is per-row reading work and cannot be mass-produced — automated
-    // matching proposed `X02` (integer divide-by-zero) against a FLOAT division test that
-    // deliberately does not trap, and `E14` (returns) against negative-zero infinity. Encoding
-    // those would be a fourth fabrication class on top of the three this row set already had.
-    // So the debt is declared, and may only ever shrink.
-    const UNATTRIBUTED_BUDGET: usize = 30;
-    assert!(
-        unattributed <= UNATTRIBUTED_BUDGET,
-        "{unattributed} rows are UNATTRIBUTED, above the declared budget of {UNATTRIBUTED_BUDGET}"
-    );
+    // Every row is now attributed (CD-171). This began as a ratchet over declared debt, because
+    // attribution is per-row reading and automated matching produced answers that were wrong in
+    // ways that become invisible once written down -- it proposed X02 (INTEGER divide-by-zero)
+    // against a FLOAT division test that deliberately does not trap. The budget is zero now, and
+    // stays an assertion rather than being deleted: a row added without a disposition must fail
+    // here rather than quietly rejoining the 44 that once said nothing at all.
     assert_eq!(
-        unattributed, UNATTRIBUTED_BUDGET,
-        "the unattributed count moved — lower UNATTRIBUTED_BUDGET to {unattributed} in the same \
-         change, so the ratchet keeps holding"
+        unattributed, 0,
+        "{unattributed} matrix row(s) are UNATTRIBUTED — every row needs one of the dispositions \
+         above, and `UNATTRIBUTED` is debt rather than an answer"
     );
 }
 

@@ -1,0 +1,35 @@
+// R-07 (E14, E15, C02, C03, C10). Expression statements, explicit `return`, early return, a nested
+// `if`, and the `loop` form — none of which any comparator-backed suite exercised. `loop` in
+// particular had no case anywhere, which is why the row could not be attributed rather than merely
+// mis-cited.
+fn classify(v: Int32) -> Int32 {
+    if v > 10 {
+        if v > 100 {
+            return 3;
+        }
+        return 2;
+    }
+    1
+}
+
+fn first_multiple_over(limit: Int32, step: Int32) -> Int32 {
+    let mut n: Int32 = step;
+    loop {
+        if n > limit {
+            return n;
+        }
+        n = n + step;
+    }
+}
+
+fn main() {
+    assert_eq(classify(5), 1);
+    assert_eq(classify(50), 2);
+    assert_eq(classify(500), 3);
+    assert_eq(first_multiple_over(10, 3), 12);
+    let unused: Int32 = 9;
+    assert_eq(unused, 9);
+    print(classify(500));
+    print("|");
+    print(first_multiple_over(10, 3));
+}

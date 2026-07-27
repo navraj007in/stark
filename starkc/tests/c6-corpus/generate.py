@@ -34,7 +34,7 @@ import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "0.10.0"
+CORPUS_VERSION = "0.11.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -431,6 +431,11 @@ def build_lock() -> str:
         "# corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the",
         "# twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent",
         "# until §15 rather than approximated single-file. Minor.",
+        "# corpus_version 0.11.0 (batch, 2026-07-28, CD-171): R-07 closed. Eight handwritten cases",
+        "# for the rows that had no comparator-backed evidence at all -- unary/bitwise/casts,",
+        "# statements and `loop`, tuple and array patterns, Float64, Copy/move, Drop order and the",
+        "# active enum payload, explicit-vs-inferred type args, and array element consumption.",
+        "# Writing them found DEV-117 (MIR refuses reinitialisation). Minor.",
         "# corpus_version 0.10.0 (batch, 2026-07-28, CD-170): R-07. T16 now CITES every trap-",
         "# category row its emitted sources actually raise (X02-X09, X12), verified against the",
         "# bodies rather than asserted. X13 is deliberately excluded: T16 declares no `Drop` type,",
@@ -456,6 +461,11 @@ def build_lock() -> str:
         "# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native",
         "# emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and",
         "# the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.",
+        "# corpus_version 0.11.0 (batch, 2026-07-28, CD-171): R-07 closed. Eight handwritten cases",
+        "# for the rows that had no comparator-backed evidence at all -- unary/bitwise/casts,",
+        "# statements and `loop`, tuple and array patterns, Float64, Copy/move, Drop order and the",
+        "# active enum payload, explicit-vs-inferred type args, and array element consumption.",
+        "# Writing them found DEV-117 (MIR refuses reinitialisation). Minor.",
         "# corpus_version 0.10.0 (batch, 2026-07-28, CD-170): R-07. T16 now CITES every trap-",
         "# category row its emitted sources actually raise (X02-X09, X12), verified against the",
         "# bodies rather than asserted. X13 is deliberately excluded: T16 declares no `Drop` type,",

@@ -1,0 +1,19 @@
+// R-07 (D10). Explicit versus inferred type arguments (TYPE-INFER-001). The row cited
+// `generics_explicit` / `generics_inferred`, neither of which exists. Both spellings must select the
+// same instance and produce the same value — the turbofish is the only uninferable-case escape
+// hatch in Core v1, so an engine that resolved them differently would be observably wrong here.
+fn identity<T>(value: T) -> T {
+    value
+}
+
+fn main() {
+    let inferred: Int32 = identity(21);
+    let explicit: Int32 = identity::<Int32>(21);
+    assert_eq(inferred, explicit);
+
+    let wide_inferred: Int64 = identity(4294967296);
+    let wide_explicit: Int64 = identity::<Int64>(4294967296);
+    assert_eq(wide_inferred, wide_explicit);
+
+    print(inferred + explicit);
+}

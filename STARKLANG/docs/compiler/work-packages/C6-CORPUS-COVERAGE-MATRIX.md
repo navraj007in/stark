@@ -62,17 +62,17 @@ Uniform: `package_shape = single-file` unless noted; `drop_observation = none` u
 | E02 | identifiers | 04-Semantic NAME-RESOLVE-001 | completion | `expr_stmt__01` | CORPUS-HANDWRITTEN: meta__m01_g1_base |
 | E03 | blocks and block tails | 02-Syntax block-expr | completion | `expr_stmt__02_if_else_and_block_tail` | CORPUS-HANDWRITTEN: meta__m02_g1_base |
 | E04 | let and mutable assignment | 03-Type AM-LOCAL-001 | completion | `expr_stmt__01`, `cross_block_non_copy_moves_agree` | CORPUS-HANDWRITTEN: meta__m01_g1_base |
-| E05 | unary operations | NUM-INT-ARITH-001 | completion | `scalar_arithmetic_agrees` | UNATTRIBUTED |
+| E05 | unary operations | NUM-INT-ARITH-001 | completion | `scalar_arithmetic_agrees` | CORPUS-HANDWRITTEN: r07__expr_unary_bitwise_casts |
 | E06 | binary arithmetic | NUM-INT-ARITH-001 | both | `scalar_arithmetic_agrees`, `integer_overflow_trap_agrees` | CORPUS-GENERATED: gen__t01__0268b2da |
-| E07 | bitwise operations | NUM-INT-ARITH-001 | both | `primitive__04_bitwise_shift_pow_and_ordering`, `invalid_shift_trap_agrees` | UNATTRIBUTED |
+| E07 | bitwise operations | NUM-INT-ARITH-001 | both | `primitive__04_bitwise_shift_pow_and_ordering`, `invalid_shift_trap_agrees` | CORPUS-HANDWRITTEN: r07__expr_unary_bitwise_casts |
 | E08 | comparisons | PRIM-TRAIT-001 | completion | `ordering_comparisons_agree` | CORPUS-GENERATED: gen__t02__19a95d0c |
-| E09 | casts | NUM-CAST-001 | both | `float_to_int_boundary_conversions_agree`, `cast_failure_trap_agrees` | UNATTRIBUTED |
+| E09 | casts | NUM-CAST-001 | both | `float_to_int_boundary_conversions_agree`, `cast_failure_trap_agrees` | CORPUS-HANDWRITTEN: r07__expr_unary_bitwise_casts |
 | E10 | direct calls | EXEC-DISPATCH-001 | completion | `direct_calls_agree` | CORPUS-HANDWRITTEN: meta__m10_g1_base |
 | E11 | method calls | TYPE-METHOD-002 | completion | `struct_enum_trait__01` | CORPUS-HANDWRITTEN: meta__m04_g1_base |
 | E12 | associated functions | TRAIT-ASSOC-001 | completion | `struct_enum_trait__05` | CORPUS-HANDWRITTEN: meta__m03_g1_base |
 | E13 | function values and indirect calls | TYPE-FN-001 | completion | `function_value_in_local_and_indirect_call` +6 siblings | CORPUS-GENERATED: gen__t09__25661533 |
-| E14 | returns | EXEC-CFLOW-001 | completion | `c61e_a_local_is_destroyed_on_return` | UNATTRIBUTED |
-| E15 | expression statements | 02-Syntax stmt | completion | `expr_stmt__01` | UNATTRIBUTED |
+| E14 | returns | EXEC-CFLOW-001 | completion | `c61e_a_local_is_destroyed_on_return` | CORPUS-HANDWRITTEN: r07__stmt_return_and_control |
+| E15 | expression statements | 02-Syntax stmt | completion | `expr_stmt__01` | CORPUS-HANDWRITTEN: r07__stmt_return_and_control |
 | E16 | discarded values | DROP-ORDER-001 | completion, drop-observing | `ownership_drop__03_discarded_values_and_nested_patterns` | MIGRATED-TEST: native_c6_1_ownership::c61c_three_fields_middle_discarded_drop |
 | E17 | assertions and panic | TRAP-CATEGORY-001 | trap | `a_false_assertion_traps_in_all_three_engines`, `a_false_bare_assertion_traps…`, `panic_message_agrees_across_engines` | CORPUS-GENERATED: gen__t16__1aefa931 |
 
@@ -86,15 +86,15 @@ unified comparator in C6.5-5; E06/E13/E17 additionally carry mutation obligation
 | ID | Sub-category | Normative rule | Outcome | Evidence | Disposition |
 | --- | --- | --- | --- | --- | --- |
 | C01 | if/else | EXEC-EVAL-001 | completion | `branches_both_directions_agree` | CORPUS-GENERATED: gen__t02__19a95d0c |
-| C02 | nested if | EXEC-EVAL-001 | completion | `expr_stmt__02` | UNATTRIBUTED |
-| C03 | `loop` | TYPE-LOOP-001 | completion | `infinite_loop_with_mid_body_break_agrees` | UNATTRIBUTED |
+| C02 | nested if | EXEC-EVAL-001 | completion | `expr_stmt__02` | CORPUS-HANDWRITTEN: r07__stmt_return_and_control |
+| C03 | `loop` | TYPE-LOOP-001 | completion | `infinite_loop_with_mid_body_break_agrees` | CORPUS-HANDWRITTEN: r07__stmt_return_and_control |
 | C04 | `while` | EXEC-CFLOW-001 | completion | `multi_iteration_loop_agrees` | CORPUS-GENERATED: gen__t03__07e7d3f2 |
 | C05 | range `for` | EXEC-FOR-001 | completion | `expr_stmt__03_loops_break_continue` | CORPUS-HANDWRITTEN: meta__m12_g1_base |
 | C06 | array `for` | EXEC-FOR-001 | completion | `collection_iter__03_slice_views_and_array_iteration` | MIGRATED-TEST: c63c_iterators::array_for_loop_order |
 | C07 | user iterator `for` | EXEC-FOR-001 | completion | `c63c_iterators` | MIGRATED-TEST: c63c_iterators::user_iterator_impl |
 | C08 | `break` | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_live_at_break_is_destroyed` | CORPUS-GENERATED: gen__t15__24c6dd0c |
 | C09 | `continue` | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_live_at_continue_is_destroyed` | MIGRATED-TEST: native_c6_1_ownership::c61d_continue_drops_binding_keeps_remaining |
-| C10 | early return | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_is_destroyed_on_return` | UNATTRIBUTED |
+| C10 | early return | EXEC-CFLOW-001 | completion, drop-observing | `c61e_a_local_is_destroyed_on_return` | CORPUS-HANDWRITTEN: r07__stmt_return_and_control |
 | C11 | `match` | PAT-OWN-001 | completion | `expr_stmt__04_match_and_patterns` | CORPUS-GENERATED: gen__t04__301bbe6e |
 | C12 | `?` propagation | EXEC-CFLOW-001 | completion | `question_mark_propagation_agrees`, `option_result__02` | CORPUS-GENERATED: gen__t10__407709ff |
 | C13 | trap termination | DROP-ABORT-001 | trap, drop-observing | `no_destructor_runs_after_a_trap` +4 `c61e_no_destructor_runs_after_*` | MIGRATED-TEST: three_engine_differential::the_drop_log_before_a_trap_agrees_across_engines |
@@ -111,17 +111,17 @@ collection.
 | ID | Sub-category | Normative rule | Outcome | Evidence | Disposition |
 | --- | --- | --- | --- | --- | --- |
 | P01 | wildcard | SYN-PATTERN-001 | completion | `expr_stmt__04` | MIGRATED-TEST: native_c6_1_ownership::c61c_first_bound_second_wildcard_drop |
-| P02 | binding | PAT-DROP-001 | completion | `c61e_a_match_arm_binding_is_destroyed_at_arm_end` | UNATTRIBUTED |
-| P03 | tuple | SYN-PATTERN-001 | completion | `tuple_construction_and_projection_agree` | UNATTRIBUTED |
+| P02 | binding | PAT-DROP-001 | completion | `c61e_a_match_arm_binding_is_destroyed_at_arm_end` | CORPUS-HANDWRITTEN: r07__patterns_binding_tuple_array |
+| P03 | tuple | SYN-PATTERN-001 | completion | `tuple_construction_and_projection_agree` | CORPUS-HANDWRITTEN: r07__patterns_binding_tuple_array |
 | P04 | struct | SYN-PATTERN-001 | completion | `struct_construction_and_field_projection_agree` | MIGRATED-TEST: c63e_formatting::user_display_copy_struct |
 | P05 | enum variant | PAT-EXHAUST-001 | completion | `enum_construction_and_matching_agree` | CORPUS-GENERATED: gen__t06__155e6658 |
 | P06 | nested patterns | SYN-PATTERN-001 | completion | `ownership_drop__03`, `pattern_nested_match` | CORPUS-GENERATED: gen__t04__301bbe6e |
 | P07 | literal patterns | SYN-PATTERN-001 | completion | `match_order_ascending` | CORPUS-HANDWRITTEN: meta__m06_g1_base |
 | P08 | range patterns | — | — | — | NOT-APPLICABLE: **NOT-APPLICABLE-NON-CORE** — 02-Syntax-Grammar declares no range-pattern form; the parser rejects it. Boundary to be pinned by a negative acceptance test (§4.3(4)) |
-| P09 | `ref`/`mut` bindings | PAT-OWN-001 | completion | `c61e_a_failed_pattern_test_leaves_the_scrutinee_for_the_matching_arm` | UNATTRIBUTED |
+| P09 | `ref`/`mut` bindings | PAT-OWN-001 | completion | `c61e_a_failed_pattern_test_leaves_the_scrutinee_for_the_matching_arm` | NOT-APPLICABLE: Core v1 has no `ref` and no `mut` pattern form — 02-Syntax-Grammar's `Pattern` rule admits literal, `_`, identifier, path, tuple-variant, struct-variant, tuple and array only |
 | P10 | ignored fields | SYN-PATTERN-001 | completion | `struct_enum_trait__02` | MIGRATED-TEST: c63e_formatting::user_display_reads_field |
 | P11 | partial-move patterns | OWN-PARTIAL-001 | completion, drop-observing | `a_partially_moved_value_destroys_only_the_surviving_field`, `consuming_match_of_a_non_copy_payload_agrees` | MIGRATED-TEST: native_c6_1_ownership::multi_level_partial_move_agrees_across_engines |
-| P12 | array patterns | SYN-PATTERN-001 | completion | `array_construction_and_indexing_agree` (A5/`ConstIndex`) | UNATTRIBUTED |
+| P12 | array patterns | SYN-PATTERN-001 | completion | `array_construction_and_indexing_agree` (A5/`ConstIndex`) | CORPUS-HANDWRITTEN: r07__patterns_binding_tuple_array |
 | P13 | match-arm guards | — | — | — | NOT-APPLICABLE: **NOT-APPLICABLE-NON-CORE** — no guard form in 02-Syntax-Grammar; parser rejects. Negative test to pin |
 
 **Group gaps:** P08 and P13 need the §4.3(4) negative acceptance tests that pin their absence.
@@ -136,13 +136,13 @@ Recorded as `ADD-HANDWRITTEN` work under the non-Core classification, not as cov
 | V01 | Int8/16/32/64 | NUM-INT-ARITH-001 | `primitive__01_integer_widths_and_overflow_traps` | CORPUS-GENERATED: gen__t01__0268b2da |
 | V02 | UInt8/16/32/64 | NUM-INT-ARITH-001 | `primitive__01` | CORPUS-GENERATED: gen__t01__0268b2da |
 | V03 | Float32 | NUM-FLOAT-OP-001, CD-140 | `c63e_float32`, `layout_primitives_agree_exactly` | CORPUS-HANDWRITTEN: sentinel__13_float32_rendering |
-| V04 | Float64 | NUM-FLOAT-OP-001 | `primitive__03_float_arithmetic_and_casts` | UNATTRIBUTED |
+| V04 | Float64 | NUM-FLOAT-OP-001 | `primitive__03_float_arithmetic_and_casts` | CORPUS-HANDWRITTEN: r07__types_float64_and_array |
 | V05 | Bool | PRIM-TRAIT-001 | `branches_both_directions_agree` | MIGRATED-TEST: c63e_formatting::println_bools |
 | V06 | Char | TEXT-ITER-001 | `c63a_string` (char push/pop, Unicode) | MIGRATED-TEST: c63a_string::println_char_value |
 | V07 | String | TEXT-UTF8-001 | `c63a_string` | CORPUS-GENERATED: gen__t11__07c330c7 |
 | V08 | `str` | TEXT-UTF8-001 | `c63a_string` (stored interior `&str`) | CORPUS-GENERATED: gen__t11__07c330c7 |
 | V09 | tuple | TYPE-PRIM-001 | `tuple_construction_and_projection_agree`, `layout_tuples_agree_exactly` | CORPUS-RETAINED: entry_exit__06_unit_literal |
-| V10 | array | TYPE-PRIM-001 | `array_construction_and_indexing_agree`, `layout_arrays_agree_exactly` | UNATTRIBUTED |
+| V10 | array | TYPE-PRIM-001 | `array_construction_and_indexing_agree`, `layout_arrays_agree_exactly` | CORPUS-HANDWRITTEN: r07__types_float64_and_array |
 | V11 | slice | REF-SLICE-001 | `collection_iter__03`, `c63b_trapping_ops` | CORPUS-HANDWRITTEN: sentinel__10_slice_mutation_through_view |
 | V12 | struct | TYPE-NOMINAL-001 | `struct_enum_trait__01`, `layout_structs_agree_exactly` | CORPUS-GENERATED: gen__t05__0e522a8c |
 | V13 | enum | TYPE-NOMINAL-001 | `enum_discriminant_selection_agrees`, `enum_payload_field_order_agrees` | CORPUS-GENERATED: gen__t06__155e6658 |
@@ -186,7 +186,7 @@ engine, not merely from MIR.
 | D07 | generic parameter method | TRAIT-DEF-001 | `struct_enum_trait__03_generic_function_and_trait_bound` | MIGRATED-TEST: c62b_f5_impl_bounds::c62b_f5_method_and_impl_generics_both_in_scope |
 | D08 | associated function | TRAIT-ASSOC-001 | `struct_enum_trait__05` | CORPUS-GENERATED: gen__t20__b6feee0e |
 | D09 | associated type result | TRAIT-ASSOC-001 | `c62c_associated_types` | CORPUS-GENERATED: gen__t09__25661533 |
-| D10 | explicit/inferred type args | TYPE-INFER-001 | `generics_explicit` / `generics_inferred` | UNATTRIBUTED |
+| D10 | explicit/inferred type args | TYPE-INFER-001 | `generics_explicit` / `generics_inferred` | CORPUS-HANDWRITTEN: r07__generics_explicit_and_inferred |
 | D11 | function pointer | TYPE-FN-001 | `function_value_as_parameter`, `function_value_returned_from_a_function` | CORPUS-GENERATED: gen__t09__25661533 |
 | D12 | cross-package call | MOD-FILE-001 | `native_c5_4_linkage`, `native_c5_4_workspace` | MIGRATED-TEST: c62c_associated_types::cross_package_projection |
 | D13 | dependency-to-dependency call | PKG-RESOLVE-001 | `native_c5_4_workspace` (3-package) | MIGRATED-TEST: native_c5_4_workspace::the_workspace_completes_identically_in_every_available_engine |
@@ -217,10 +217,10 @@ re-observes each category.
 
 | ID | Sub-category | Normative rule | Evidence | Disposition |
 | --- | --- | --- | --- | --- |
-| O01 | Copy assignment | OWN-COPY-001 | `c61f_structural_copy` | UNATTRIBUTED |
-| O02 | Move assignment | OWN-MOVE-001 | `a_moved_value_is_destroyed_by_its_new_owner` | UNATTRIBUTED |
-| O03 | move into call | OWN-MOVE-001 | `cross_block_non_copy_moves_agree` | UNATTRIBUTED |
-| O04 | move return | OWN-MOVE-001 | `native_c61f_ret_refs` | UNATTRIBUTED |
+| O01 | Copy assignment | OWN-COPY-001 | `c61f_structural_copy` | CORPUS-HANDWRITTEN: r07__ownership_copy_move |
+| O02 | Move assignment | OWN-MOVE-001 | `a_moved_value_is_destroyed_by_its_new_owner` | CORPUS-HANDWRITTEN: r07__ownership_copy_move |
+| O03 | move into call | OWN-MOVE-001 | `cross_block_non_copy_moves_agree` | CORPUS-HANDWRITTEN: r07__ownership_copy_move |
+| O04 | move return | OWN-MOVE-001 | `native_c61f_ret_refs` | CORPUS-HANDWRITTEN: r07__ownership_copy_move |
 | O05 | borrow | REF-IDENTITY-001 | `ownership_drop__02_shared_borrow_does_not_move` | MIGRATED-TEST: c63b_vec_box::vec_as_slice_borrows_full_vector |
 | O06 | mutable borrow | OWN-BORROW-001 | `exclusive_references_cross_the_call_boundary_and_mutate` | MIGRATED-TEST: c63b_trapping_ops::vec_get_mut_writes_through |
 | O07 | reborrow | REF-PROJECT-001 | `native_c61f_reborrow` | MIGRATED-TEST: native_c61f_reborrow::c61f_b1_mut_receiver_used_twice_is_reborrowed_not_moved |
@@ -228,14 +228,14 @@ re-observes each category.
 | O09 | returned reference | REF-RETURN-001 | `native_c61f_ret_refs` (CD-112) | MIGRATED-TEST: native_c61f_ret_refs::c61f_return_a_reference_from_an_if_expression |
 | O10 | partial struct move | OWN-PARTIAL-001 | `a_non_copy_field_moved_out_of_a_struct_agrees` | MIGRATED-TEST: native_c6_1_ownership::multi_level_partial_move_agrees_across_engines |
 | O11 | partial enum move | OWN-PARTIAL-001 | `a_partially_moved_value_destroys_only_the_surviving_field` | CORPUS-GENERATED: gen__t06__155e6658 |
-| O12 | array element consumption | A5 `ConstIndex` | `native_c5_3_aggregates_enums` | UNATTRIBUTED |
-| O13 | non-Copy array iteration | OWN-MOVE-001, A5 `ConstIndex` | `o13_non_copy_array_by_value_iteration_agrees` | UNATTRIBUTED |
-| O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | UNATTRIBUTED |
+| O12 | array element consumption | A5 `ConstIndex` | `native_c5_3_aggregates_enums` | CORPUS-HANDWRITTEN: r07__array_element_consumption |
+| O13 | non-Copy array iteration | OWN-MOVE-001, A5 `ConstIndex` | `o13_non_copy_array_by_value_iteration_agrees` | CORPUS-HANDWRITTEN: r07__array_element_consumption |
+| O14 | reinitialisation | OWN-REINIT-001 | `native_c6_1_ownership` | BLOCKED: DEV-117 / WP-C6.5 / the front end accepts reinitialising a moved-from local and the HIR oracle runs it, but MIR verification refuses with MIR-0007 "move from possibly-moved place" — its move analysis never clears the moved flag on reassignment, which OWN-REINIT-001 requires |
 | O15 | normal scope Drop | DROP-EXACT-001 | `ownership_drop__01_move_and_drop_order` | CORPUS-GENERATED: gen__t15__24c6dd0c |
 | O16 | break/continue/return Drop | DROP-EXACT-001 | `c61e_a_local_live_at_break_is_destroyed` +2 | CORPUS-GENERATED: gen__t15__24c6dd0c |
 | O17 | exact reverse field order | DROP-ORDER-001 | `struct_fields_are_destroyed_in_reverse_declaration_order` | CORPUS-GENERATED: gen__t15__24c6dd0c |
-| O18 | own destructor before fields | DROP-ORDER-001 | `own_destructor_runs_before_fields` | UNATTRIBUTED |
-| O19 | active enum payload only | DROP-EXACT-001 | `enum_destroys_the_active_variant_payload_a`/`_b` | UNATTRIBUTED |
+| O18 | own destructor before fields | DROP-ORDER-001 | `own_destructor_runs_before_fields` | CORPUS-HANDWRITTEN: r07__drop_order_and_active_variant |
+| O19 | active enum payload only | DROP-EXACT-001 | `enum_destroys_the_active_variant_payload_a`/`_b` | CORPUS-HANDWRITTEN: r07__drop_order_and_active_variant |
 | O20 | no duplicate Drop | DROP-EXACT-001 | `a_moved_value_is_destroyed_exactly_once` | CORPUS-HANDWRITTEN: sentinel__12_drop_identities |
 | O21 | no skipped Drop | DROP-EXACT-001 | `c61e_a_loop_body_local_is_destroyed_each_iteration` | CORPUS-HANDWRITTEN: sentinel__12_drop_identities |
 | O22 | no Drop after trap | DROP-ABORT-001 | `no_destructor_runs_after_a_trap` +4 `c61e_*` | MIGRATED-TEST: three_engine_differential::the_drop_log_before_a_trap_agrees_across_engines |
@@ -287,7 +287,7 @@ evidence and belongs to V04, not here. A trap row here would encode the supersed
 
 | ID | Sub-category | Normative rule | Package shape | Evidence | Disposition |
 | --- | --- | --- | --- | --- | --- |
-| K01 | single file | MOD-FILE-001 | single-file | most of the corpus | UNATTRIBUTED |
+| K01 | single file | MOD-FILE-001 | single-file | most of the corpus | CORPUS-HANDWRITTEN: r07__expr_unary_bitwise_casts |
 | K02 | multi-file package | MOD-FILE-001 | package | `multi_file__01_cross_file_execution_and_provenance` | CORPUS-HANDWRITTEN: pkg__dep_trap_provenance |
 | K03 | dependency | PKG-RESOLVE-001 | workspace | `native_c5_4_linkage` | CORPUS-HANDWRITTEN: pkg__workspace_three_packages |
 | K04 | dependency-to-dependency | PKG-RESOLVE-001 | workspace | `native_c5_4_workspace` | CORPUS-HANDWRITTEN: pkg__workspace_three_packages |
@@ -296,11 +296,11 @@ evidence and belongs to V04, not here. A trap row here would encode the supersed
 | K07 | workspace relocation | PKG-IDENTITY-001, CD-108 | workspace | `native_build_cli::frozen_three_package_workspace_builds_through_cli_after_relocation`, `c62e_deterministic_identity` | CORPUS-HANDWRITTEN: meta__m08_g1_base |
 | K08 | dependency declaration reorder | CD-108 | workspace | `c62e_deterministic_identity` | CORPUS-HANDWRITTEN: meta__m09_g1_base |
 | K09 | source declaration reorder | NAME-RESOLVE-001 | package | — | CORPUS-HANDWRITTEN: meta__m09_g1_base |
-| K10 | locked build | PKG-LOCK-001 | workspace | `c64_platform_matrix::portability_generated_crate_is_locked_and_network_free` | UNATTRIBUTED |
-| K11 | offline build | §11.3 | workspace | `c63_closure_evidence` | UNATTRIBUTED |
-| K12 | installed runtime | §9.2 | workspace | `c63_closure_evidence`, CI release smoke + negative step (CD-144 R1) | UNATTRIBUTED |
-| K13 | Unicode path | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_unicode` | UNATTRIBUTED |
-| K14 | path containing spaces | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_spaces` | UNATTRIBUTED |
+| K10 | locked build | PKG-LOCK-001 | workspace | `c64_platform_matrix::portability_generated_crate_is_locked_and_network_free` | ENVIRONMENT-TEST: c64_platform_matrix::portability_generated_crate_is_locked_and_network_free |
+| K11 | offline build | §11.3 | workspace | `c63_closure_evidence` | ENVIRONMENT-TEST: c6_package::the_corpus_workspace_resolves_offline_from_relative_paths |
+| K12 | installed runtime | §9.2 | workspace | `c63_closure_evidence`, CI release smoke + negative step (CD-144 R1) | ENVIRONMENT-TEST: c63_closure_evidence::generated_crate_builds_against_an_installed_runtime_offline |
+| K13 | Unicode path | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_unicode` | ENVIRONMENT-TEST: c64_platform_matrix::portability_builds_and_runs_under_paths_containing_unicode |
+| K14 | path containing spaces | §9.7 | workspace | `c64_platform_matrix::portability_builds_and_runs_under_paths_containing_spaces` | ENVIRONMENT-TEST: c64_platform_matrix::portability_builds_and_runs_under_paths_containing_spaces |
 | K15 | entry signature set | PROC-MAIN-001 | single-file | `c65_entry_exit_contract` | CORPUS-RETAINED: entry_exit__01_unit_entry |
 | K16 | normal exit status (`Int32`, `Ok(Int32)`) | PROC-EXIT-001 | single-file | `c65_entry_exit_contract` | CORPUS-RETAINED: entry_exit__01_unit_entry |
 | K17 | `Err(message)` → stderr + status 1 | PROC-EXIT-001, PROC-STREAM-001 | single-file | `c65_entry_exit_contract` | CORPUS-RETAINED: entry_exit__03_err_stderr |

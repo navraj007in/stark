@@ -1,0 +1,50 @@
+// R-07 (O18, O19). A value's OWN destructor runs before its fields' (DROP-ORDER-001), and an enum
+// destroys only the payload of its ACTIVE variant (DROP-EXACT-001). Both rows cited names that do
+// not exist (`own_destructor_runs_before_fields`, `enum_destroys_the_active_variant_payload_a`).
+//
+// The identities make the two claims separable: `Outer#1` must precede `Inner#2` (own before
+// field), and only `Payload#3` may appear for the enum — an engine that dropped the inactive
+// variant's payload, or dropped fields before the owner, produces a different log.
+struct Inner { id: Int32 }
+impl Drop for Inner {
+    fn drop(&mut self) {
+        print("@@stark-drop:Inner#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+struct Outer { id: Int32, inner: Inner }
+impl Drop for Outer {
+    fn drop(&mut self) {
+        print("@@stark-drop:Outer#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+struct Payload { id: Int32 }
+impl Drop for Payload {
+    fn drop(&mut self) {
+        print("@@stark-drop:Payload#");
+        print(self.id);
+        println("@@");
+    }
+}
+
+enum Slot { Empty, Full(Payload) }
+
+fn main() {
+    {
+        let held: Slot = Slot::Full(Payload { id: 3 });
+        let vacant: Slot = Slot::Empty;
+        match vacant {
+            Slot::Empty => { println("empty"); }
+            Slot::Full(p) => { println(p.id); }
+        }
+    }
+    {
+        let o: Outer = Outer { id: 1, inner: Inner { id: 2 } };
+        assert_eq(o.id + o.inner.id, 3);
+    }
+}

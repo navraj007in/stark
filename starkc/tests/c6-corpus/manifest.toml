@@ -146,6 +146,114 @@ expected_stdout = ["20|7|", "end"]
 expected_drop_log = ["Tagged#2", "Tagged#1"]
 
 [[case]]
+case_id = "r07__array_element_consumption"
+kind = "handwritten"
+category = "ownership-drop"
+subcategories = ["O12", "O13"]
+sources = ["cases/handwritten/r07__array_element_consumption.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["OWN-MOVE-001", "DROP-ORDER-001"]
+drop_protocol = true
+expected_drop_log = ["Item#1", "Item#2"]
+expected_stdout = ["30", ""]
+
+[[case]]
+case_id = "r07__drop_order_and_active_variant"
+kind = "handwritten"
+category = "ownership-drop"
+subcategories = ["O18", "O19"]
+sources = ["cases/handwritten/r07__drop_order_and_active_variant.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["DROP-ORDER-001", "DROP-EXACT-001"]
+drop_protocol = true
+expected_drop_log = ["Payload#3", "Outer#1", "Inner#2"]
+expected_stdout = ["empty", ""]
+
+[[case]]
+case_id = "r07__expr_unary_bitwise_casts"
+kind = "handwritten"
+category = "expressions-statements"
+subcategories = ["E05", "E07", "E09", "K01"]
+sources = ["cases/handwritten/r07__expr_unary_bitwise_casts.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-INT-ARITH-001", "NUM-CAST-001", "MOD-FILE-001"]
+expected_stdout = ["-7|8"]
+
+[[case]]
+case_id = "r07__generics_explicit_and_inferred"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["D10"]
+sources = ["cases/handwritten/r07__generics_explicit_and_inferred.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["TYPE-INFER-001"]
+expected_stdout = ["42"]
+
+[[case]]
+case_id = "r07__ownership_copy_move"
+kind = "handwritten"
+category = "ownership-drop"
+subcategories = ["O01", "O02", "O03", "O04"]
+sources = ["cases/handwritten/r07__ownership_copy_move.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["OWN-COPY-001", "OWN-MOVE-001"]
+expected_stdout = ["82"]
+
+[[case]]
+case_id = "r07__patterns_binding_tuple_array"
+kind = "handwritten"
+category = "patterns"
+subcategories = ["P02", "P03", "P12"]
+sources = ["cases/handwritten/r07__patterns_binding_tuple_array.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["SYN-PATTERN-001", "PAT-DROP-001"]
+expected_stdout = ["24|24"]
+
+[[case]]
+case_id = "r07__stmt_return_and_control"
+kind = "handwritten"
+category = "control-transfer"
+subcategories = ["E14", "E15", "C02", "C03", "C10"]
+sources = ["cases/handwritten/r07__stmt_return_and_control.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["EXEC-CFLOW-001", "EXEC-EVAL-001", "TYPE-LOOP-001"]
+expected_stdout = ["3|12"]
+
+[[case]]
+case_id = "r07__types_float64_and_array"
+kind = "handwritten"
+category = "values-types"
+subcategories = ["V04", "V10"]
+sources = ["cases/handwritten/r07__types_float64_and_array.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["NUM-FLOAT-OP-001", "TYPE-PRIM-001"]
+expected_stdout = ["7.5", "1.5"]
+
+[[case]]
 case_id = "sentinel__01_eq_always_true"
 kind = "handwritten"
 category = "values-types"

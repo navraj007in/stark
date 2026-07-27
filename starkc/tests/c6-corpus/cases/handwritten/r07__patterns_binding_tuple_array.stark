@@ -1,0 +1,42 @@
+// R-07 (P02, P03, P12). Pattern binding, tuple patterns and array patterns.
+// The rows cited `tuple_construction_and_projection_agree` and
+// `array_construction_and_indexing_agree` — two more names that exist nowhere in the harness.
+//
+// Destructuring lives in `match`, not in `let`: Core v1's `let` takes a binding NAME (02-Syntax,
+// `let` statement), so a tuple or array pattern is written as a match arm.
+//
+// P09 (`ref`/`mut` bindings) is NOT here and is not a gap: Core v1's `Pattern` grammar
+// (02-Syntax-Grammar) has no `ref` and no `mut` form at all, so the row describes a construct the
+// language does not have.
+enum Shape { Point(Int32, Int32), Line(Int32) }
+
+fn describe(s: Shape) -> Int32 {
+    match s {
+        Shape::Point(x, y) => x * 10 + y,
+        Shape::Line(len) => len,
+    }
+}
+
+fn main() {
+    // P03: a tuple pattern binds both components.
+    let pair: (Int32, Int32) = (4, 6);
+    let product: Int32 = match pair {
+        (left, right) => left * right,
+    };
+    assert_eq(product, 24);
+
+    // P02: an arm binding, used inside its arm.
+    assert_eq(describe(Shape::Point(3, 5)), 35);
+    assert_eq(describe(Shape::Line(11)), 11);
+
+    // P12: an array pattern binds every element positionally.
+    let xs: [Int32; 3] = [7, 8, 9];
+    let summed: Int32 = match xs {
+        [a, b, c] => a + b + c,
+    };
+    assert_eq(summed, 24);
+
+    print(product);
+    print("|");
+    print(summed);
+}
