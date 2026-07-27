@@ -13,8 +13,8 @@
 mod support;
 
 use support::corpus::{
-    corpus_root, load, matrix_template_arrows, parse_lock, parse_manifest, rule_ids_in, sha256_hex,
-    spec_rule_ids, validate, verify_lock,
+    corpus_root, load, matrix_rows, matrix_template_arrows, parse_lock, parse_manifest,
+    rule_ids_in, sha256_hex, spec_rule_ids, test_identities, validate, verify_lock,
 };
 
 /// §9.6 governance. Changing the corpus means regenerating `corpus.lock` AND bumping the version;
@@ -137,11 +137,12 @@ fn every_template_arrow_in_the_matrix_is_backed_by_generated_cases() {
         }
     }
 
+    // Arrows are SUPERSEDED, not deleted. They lived in the Disposition column, which R-07 turned
+    // into a closed vocabulary; the eleven genuinely-earned ones are now recorded where they belong,
+    // as the templates' own `subcategories`, and checked by the `CORPUS-GENERATED` rule above. An
+    // empty set is therefore the expected steady state — but any arrow that survives anywhere still
+    // has to be true, which is what this keeps checking.
     let arrows = matrix_template_arrows();
-    assert!(
-        !arrows.is_empty(),
-        "no `→T##` arrows parsed from the matrix — a silently empty set makes this check vacuous"
-    );
     let broken: Vec<String> = arrows
         .iter()
         .filter(|(row, template)| !covered.get(template).is_some_and(|rows| rows.contains(row)))
@@ -159,6 +160,152 @@ fn every_template_arrow_in_the_matrix_is_backed_by_generated_cases() {
          Either the template must cite the row, or the arrow must go.",
         broken.len(),
         broken.join("\n  ")
+    );
+}
+
+/// **R-07.** Every matrix row carries exactly one machine-checkable disposition, and every identity
+/// it cites resolves.
+///
+/// The Disposition column used to be prose, and prose is where three separate fabrications lived:
+/// 44 rows said only `EXISTING-EVIDENCE` and named nothing at all; 13 cited test functions that
+/// exist nowhere in the harness (`scalar_arithmetic_agrees`,
+/// `tuple_construction_and_projection_agree`, `no_destructor_runs_after_a_trap`, …); and 7 rested on
+/// `exec_snapshots`, a SINGLE-BACKEND golden-file harness whose own header says cross-backend replay
+/// is future work — so it cannot be evidence for the three-engine claim under any reading.
+///
+/// The vocabulary is closed. Each row is exactly one of:
+///
+/// | form | meaning |
+/// | --- | --- |
+/// | `CORPUS-GENERATED: <case_id>` | a generated corpus case that CITES this row |
+/// | `CORPUS-HANDWRITTEN: <case_id>` | a hand-authored corpus case that CITES this row |
+/// | `CORPUS-RETAINED: <case_id>` | a §18.3 retained divergence case that CITES this row |
+/// | `MIGRATED-TEST: <suite>::<test>` | an exact test identity in a comparator-backed suite |
+/// | `NEGATIVE-EVIDENCE: <suite>::<test>` | a machine-checked rejection control |
+/// | `NOT-APPLICABLE: <reason>` | out of Core v1, with the reason stated |
+/// | `BLOCKED: <DEV-ID> / <work package> / <reason>` | a capability gap with an owner |
+/// | `UNATTRIBUTED` | debt: no disposition yet. Ratcheted below, never allowed to grow. |
+#[test]
+fn every_matrix_row_has_one_resolvable_disposition() {
+    let rows = matrix_rows();
+    let (cases, _) = load();
+    let by_id: std::collections::BTreeMap<&str, &support::corpus::Case> =
+        cases.iter().map(|c| (c.case_id.as_str(), c)).collect();
+    let (identities, comparator_backed) = test_identities();
+    assert!(
+        identities.len() > 500 && !comparator_backed.is_empty(),
+        "the test index looks empty ({} identities, {} comparator-backed suites) — that would make \
+         every citation check below vacuous",
+        identities.len(),
+        comparator_backed.len()
+    );
+
+    let mut problems: Vec<String> = Vec::new();
+    let mut unattributed = 0usize;
+    for row in &rows {
+        let d = row.disposition.as_str();
+        let (kind, argument) = match d.split_once(':') {
+            Some((k, rest)) => (k.trim(), rest.trim()),
+            None => (d, ""),
+        };
+        match kind {
+            "UNATTRIBUTED" => unattributed += 1,
+            "CORPUS-GENERATED" | "CORPUS-HANDWRITTEN" | "CORPUS-RETAINED" => {
+                match by_id.get(argument) {
+                    None => problems.push(format!(
+                        "{}: cites case `{argument}`, which does not exist",
+                        row.id
+                    )),
+                    Some(case) => {
+                        // The case must NAME the row. A citation that merely exists is not coverage.
+                        if !case.subcategories.iter().any(|s| s == &row.id) {
+                            problems.push(format!(
+                            "{}: cites case `{argument}`, which does not name that row (it names {:?})",
+                            row.id, case.subcategories
+                        ));
+                        }
+                        let wanted = match kind {
+                            "CORPUS-GENERATED" => "generated",
+                            "CORPUS-RETAINED" => "retained",
+                            _ => "handwritten",
+                        };
+                        if case.kind != wanted {
+                            problems.push(format!(
+                                "{}: cites `{argument}` as {wanted}, but the manifest says `{}`",
+                                row.id, case.kind
+                            ));
+                        }
+                    }
+                }
+            }
+            "MIGRATED-TEST" | "NEGATIVE-EVIDENCE" => {
+                if !identities.contains(argument) {
+                    problems.push(format!(
+                        "{}: cites test `{argument}`, which does not exist",
+                        row.id
+                    ));
+                } else {
+                    let suite = argument.split("::").next().unwrap_or("");
+                    if !comparator_backed.contains(suite) {
+                        problems.push(format!(
+                            "{}: cites `{argument}`, but suite `{suite}` does not use the shared \
+                             comparator — that is private comparison, not three-engine evidence",
+                            row.id
+                        ));
+                    }
+                }
+            }
+            "NOT-APPLICABLE" => {
+                if argument.len() < 8 {
+                    problems.push(format!(
+                        "{}: NOT-APPLICABLE without a stated reason",
+                        row.id
+                    ));
+                }
+            }
+            "BLOCKED" => {
+                // owner + reason: a DEV id, an owning work package, and prose.
+                let parts: Vec<&str> = argument.split('/').map(str::trim).collect();
+                if parts.len() < 3 || !parts[0].starts_with("DEV-") || parts[2].len() < 8 {
+                    problems.push(format!(
+                        "{}: BLOCKED must read `DEV-ID / work package / reason`, got `{argument}`",
+                        row.id
+                    ));
+                }
+            }
+            other => problems.push(format!("{}: unknown disposition kind `{other}`", row.id)),
+        }
+    }
+
+    // Duplicate rows would let one row carry two contradictory dispositions.
+    let mut seen = std::collections::BTreeSet::new();
+    for row in &rows {
+        if !seen.insert(row.id.clone()) {
+            problems.push(format!("{}: appears more than once in the matrix", row.id));
+        }
+    }
+
+    assert!(
+        problems.is_empty(),
+        "{} disposition problem(s):\n  {}",
+        problems.len(),
+        problems.join("\n  ")
+    );
+
+    // The ratchet. Attribution is per-row reading work and cannot be mass-produced — automated
+    // matching proposed `X02` (integer divide-by-zero) against a FLOAT division test that
+    // deliberately does not trap, and `E14` (returns) against negative-zero infinity. Encoding
+    // those would be a fourth fabrication class on top of the three this row set already had.
+    // So the debt is declared, and may only ever shrink.
+    const UNATTRIBUTED_BUDGET: usize = 71;
+    assert!(
+        unattributed <= UNATTRIBUTED_BUDGET,
+        "{unattributed} rows are UNATTRIBUTED, above the declared budget of {UNATTRIBUTED_BUDGET}"
+    );
+    assert_eq!(
+        unattributed, UNATTRIBUTED_BUDGET,
+        "the unattributed count moved — lower UNATTRIBUTED_BUDGET to {unattributed} in the same \
+         change, so the ratchet keeps holding"
     );
 }
 

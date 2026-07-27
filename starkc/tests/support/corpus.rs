@@ -822,6 +822,103 @@ pub fn matrix_template_arrows() -> Vec<(String, String)> {
     arrows
 }
 
+/// One row of the coverage matrix, reduced to its machine-checkable disposition (R-07).
+pub struct MatrixRow {
+    pub id: String,
+    pub disposition: String,
+}
+
+/// Every matrix row and the disposition it claims.
+///
+/// The Evidence column is prose and stays prose; the Disposition column is the CLAIM, and it is
+/// parsed. Before R-07 it held free text — 44 rows said only `EXISTING-EVIDENCE`, 13 named test
+/// functions that exist nowhere in the suite (`scalar_arithmetic_agrees`,
+/// `tuple_construction_and_projection_agree`, …), and 7 rested on `exec_snapshots`, which is a
+/// SINGLE-BACKEND golden-file harness and cannot be evidence for a three-engine claim at all.
+pub fn matrix_rows() -> Vec<MatrixRow> {
+    let matrix = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("repo root")
+        .join("STARKLANG/docs/compiler/work-packages/C6-CORPUS-COVERAGE-MATRIX.md");
+    let text = std::fs::read_to_string(&matrix).expect("the coverage matrix");
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_start();
+        if !line.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = line
+            .trim_start_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+        let id = cells.first().copied().unwrap_or("");
+        let is_row = id.len() == 3
+            && id.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            && id.chars().skip(1).all(|c| c.is_ascii_digit());
+        if !is_row {
+            continue;
+        }
+        // The trailing cell is empty because the row ends with `|`.
+        let disposition = cells
+            .iter()
+            .rev()
+            .find(|c| !c.is_empty())
+            .copied()
+            .unwrap_or("")
+            .to_string();
+        rows.push(MatrixRow {
+            id: id.to_string(),
+            disposition,
+        });
+    }
+    assert!(
+        rows.len() > 100,
+        "only {} matrix rows parsed — a silently empty authority set makes every check vacuous",
+        rows.len()
+    );
+    rows
+}
+
+/// Every `#[test] fn` in the harness, as `suite::name`, and the set of suites that go through the
+/// shared comparator. A disposition citing a test identity is checked against this, so a row cannot
+/// cite a test that does not exist — the failure that produced 13 fabricated citations.
+pub fn test_identities() -> (BTreeSet<String>, BTreeSet<String>) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut identities = BTreeSet::new();
+    let mut comparator_backed = BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).expect("tests dir") {
+        let path = entry.expect("entry").path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let suite = path
+            .file_stem()
+            .expect("stem")
+            .to_string_lossy()
+            .to_string();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("support::differential") {
+            comparator_backed.insert(suite.clone());
+        }
+        // `#[test]` then the next `fn <name>(`, skipping doc comments and attributes between them.
+        for (index, _) in text.match_indices("#[test]") {
+            if let Some(rest) = text.get(index..) {
+                if let Some(at) = rest.find("fn ") {
+                    let name: String = rest[at + 3..]
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    if !name.is_empty() {
+                        identities.insert(format!("{suite}::{name}"));
+                    }
+                }
+            }
+        }
+    }
+    (identities, comparator_backed)
+}
+
 /// The corpus root, as an absolute path — tests must not depend on the process working directory.
 pub fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/c6-corpus")
