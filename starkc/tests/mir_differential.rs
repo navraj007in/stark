@@ -68,6 +68,8 @@ fn oracle_fragment(category: TrapCategory) -> &'static str {
         TrapCategory::UnwrapErr => "unwrap",
         TrapCategory::AssertFailure => "assert",
         TrapCategory::InvalidShift => "invalid shift",
+        // CD-150 CE3: the oracle words this one exactly, because PROC-EXIT-001 names it.
+        TrapCategory::InvalidExitStatus => "invalid-exit-status",
     }
 }
 

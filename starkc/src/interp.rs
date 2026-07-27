@@ -30,6 +30,17 @@ pub struct RuntimeError {
     /// than risk defaulting it to whatever category the other engines reported. Every other trap
     /// leaves this `None` and keeps its existing prose-matched classification.
     pub trap_category: Option<crate::mir::TrapCategory>,
+    /// DEV-113-B: the file the error was raised in.
+    ///
+    /// The span alone is not enough for a multi-file program: `call_callable` swaps `self.file` so a
+    /// body executes against its OWN file (DEV-069), and without carrying that here every trap was
+    /// attributed to the ENTRY file — so a trap inside a dependency was reported at the caller, and
+    /// the oracle disagreed with MIR about which file trapped. The interpreter always knew; it threw
+    /// the answer away at the raise site.
+    ///
+    /// `None` only for errors constructed before execution begins (entrypoint selection), where
+    /// there is no executing file yet.
+    pub file: Option<std::sync::Arc<SourceFile>>,
 }
 
 impl RuntimeError {
@@ -40,6 +51,7 @@ impl RuntimeError {
             span,
             is_trap: true,
             trap_category: None,
+            file: None,
         }
     }
 
@@ -54,6 +66,7 @@ impl RuntimeError {
             span,
             is_trap: true,
             trap_category: Some(category),
+            file: None,
         }
     }
 
@@ -63,6 +76,7 @@ impl RuntimeError {
             span,
             is_trap: false,
             trap_category: None,
+            file: None,
         }
     }
 }
@@ -847,7 +861,17 @@ fn main_result_to_status(value: Value, span: Span) -> Result<(u8, String), Runti
         match value {
             Value::Unit => Ok(0),
             Value::Int(value) => {
-                u8::try_from(value).map_err(|_| RuntimeError::new("invalid-exit-status", span))
+                // CD-150 CE3: a STATED category, and provenance defined as the entry file at 1:1.
+                // PROC-EXIT-001 is violated by the entry's RESULT, not by an expression, so there is
+                // no sub-expression the three engines could agree to blame; `Span::point(0)` is the
+                // one location all three can report identically.
+                u8::try_from(value).map_err(|_| {
+                    RuntimeError::with_category(
+                        "invalid-exit-status",
+                        Span::point(0),
+                        crate::mir::TrapCategory::InvalidExitStatus,
+                    )
+                })
             }
             _ => Err(RuntimeError::new(
                 "entrypoint returned a value inconsistent with its checked signature",
@@ -1256,7 +1280,17 @@ impl<'a> Interpreter<'a> {
         // cross-file call returns the caller's file — this is the interpreter's analogue of
         // typecheck's per-item file swap, and it must be restored on the error path too.
         let caller_file = std::mem::replace(&mut self.file, callable.file);
-        let result = self.eval_block(callable.body);
+        let mut result = self.eval_block(callable.body);
+        if let Err(error) = &mut result {
+            // DEV-113-B: stamp the file the error was raised in, at the innermost frame that has not
+            // already been stamped. One choke point rather than sixty raise sites, and it is the
+            // right one: `self.file` is still the callee's here — the line below restores the
+            // caller's — and the `is_none` guard means the innermost stamp survives as the error
+            // propagates outward.
+            if error.file.is_none() {
+                error.file = Some(self.file.clone());
+            }
+        }
         if result.is_err() {
             self.file = caller_file;
             self.frames.pop();

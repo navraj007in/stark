@@ -1,0 +1,9 @@
+// Output before the trap is observable (CD-120 Contract B), and the trap's provenance must name the
+// DEPENDENCY's file with a package-relative path that survives relocation (DEV-113, PKG-IDENTITY-001).
+use dep::divide;
+
+fn main() {
+    print("before");
+    let zero: Int32 = 0;
+    print(divide(7, zero));
+}

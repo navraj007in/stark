@@ -14,9 +14,31 @@ change requires a version bump" reading. Amendments approved under this policy t
 the prelude `Ordering` as a logical MIR enum — `mir-amendment-A2-ordering.md`), **A3**
 (bitwise/shift/exponentiation arithmetic — recorded in full below), and **A4**
 (`Rvalue::LayoutQuery`, type-preserving `size_of`/`align_of` — `mir-amendment-A4-layout.md`,
-CD-036), **A5** (`Projection::ConstIndex` — recorded below, CD-038), and **A6**
+CD-036), **A5** (`Projection::ConstIndex` — recorded below, CD-038), **A6**
 (`MirBinOp::FloatDiv`/`FloatRem` — recorded below, CD-139). All are additive and
 remain MIR v0.1.
+
+**A7 trap-identity amendment (WP-C6.5, CD-150/CD-164, owner-approved under CE3, 2026-07-27).**
+Adds one `TrapCategory`: **`InvalidExitStatus`**.
+
+PROC-EXIT-001 requires an out-of-range exit status to trap — "`Int32` and `Ok(Int32)` must be in
+`0..=255` and return that status; an out-of-range value traps as `invalid-exit-status`" — and no
+existing category covered it. Trap identity is one of the contracts WP-C6.0 froze, which is what
+makes this a CE3 rather than an implementation detail.
+
+- **Provenance is the ENTRY FILE at 1:1**, defined by this amendment rather than discovered. The
+  contract is violated by the entry's RESULT, not by an expression: there is no sub-expression the
+  three engines could agree to blame, and `MirBody` carries no signature span. One defined location
+  beats three plausible ones, and the comparator compares line and column.
+- **Message class is `CategoryOnly`.** The offending value is not part of the normative text, so it
+  is not compared across engines.
+- **Exit status 101**, as every language trap (TRAP-ABORT-001); destructors do not run.
+- **No MIR shape change**: no new statement, terminator, projection or `RuntimeFn`. `MIR_VERSION`
+  stays `0.1` and the runtime surface is unchanged — `stark_runtime::trap::abort` already takes a
+  category. The runtime gains the matching variant and its message text, `invalid exit status`.
+- **Bundled with the native entry signatures** (CD-150's intent): the backend increment that emits a
+  non-`Unit` `main` is the one that must raise this trap, so the amendment and its only producer land
+  together rather than leaving a category no engine can exercise.
 
 **A6 shape amendment (WP-C6.3e, CD-139, owner-approved under CE3, 2026-07-26).** Adds two
 `MirBinOp` variants, `FloatDiv` and `FloatRem`.

@@ -1,0 +1,6 @@
+// PROC-EXIT-001: an entry status outside 0..=255 traps as `invalid-exit-status`. Retained from
+// DEV-111, where MIR completed with status 0 instead; the trap had no category until the CD-150 CE3
+// (MIR amendment A7), which is why this case could not join the corpus before.
+fn main() -> Int32 {
+    300
+}

@@ -1,0 +1,6 @@
+// §15.1's last shape: source provenance in a DEPENDENCY trap. The division traps here, in the
+// dependency, not at the call site in the root package — so this case is only meaningful because
+// DEV-113-B taught the oracle to attribute a trap to the file it was raised in.
+pub fn divide(numerator: Int32, denominator: Int32) -> Int32 {
+    numerator / denominator
+}

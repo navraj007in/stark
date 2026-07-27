@@ -170,10 +170,23 @@ fn parse_package_rec(
             e
         )
     })?;
-    let entry_file = std::sync::Arc::new(SourceFile::new(
-        pkg.entry.to_string_lossy().into_owned(),
-        entry_src,
-    ));
+    // DEV-113-A: the entry file is named LOGICALLY, `<package>/<path within the package>`, with the
+    // real location kept only for resolving `mod` declarations and for pointing a human at a file.
+    // Naming it by its absolute path made trap provenance move with the checkout, so the same
+    // workspace observed differently in two directories — against PKG-IDENTITY-001 ("never an
+    // absolute checkout path") and §15.2.
+    let package_root = pkg
+        .manifest_path
+        .parent()
+        .map(|dir| dir.to_path_buf())
+        .unwrap_or_default();
+    let entry_file = std::sync::Arc::new(
+        SourceFile::new(
+            logical_package_path(&pkg.name, &package_root, &pkg.entry),
+            entry_src,
+        )
+        .with_disk_path(pkg.entry.clone()),
+    );
 
     let (root, mut entry_diags) =
         parse_with_options_into(&entry_file, ParseMode::Program, options, ast);
@@ -197,7 +210,18 @@ fn parse_package_rec(
         diags.append(&mut sub_diags);
     }
 
-    for dep_name in pkg.dependencies.keys() {
+    // DEV-114: SORTED, not `HashMap::keys()`. `Package::dependencies` is a `HashMap`, and Rust
+    // seeds each process's hasher randomly, so the previous iteration order varied run to run. Since
+    // the first path to reach a package fixes the module nesting its items are seen under (the
+    // `parsed_packages` memo below), that randomness reached CANONICAL SYMBOLS: the same function was
+    // `model::leaf@[]` in one process and `logic::model::leaf@[]` in the next. Sorting by alias makes
+    // the walk deterministic AND independent of the order the manifest happens to list dependencies
+    // in, which is what §15.3 means by "no package-order leak".
+    //
+    // Determinism alone does not satisfy TYPE-NOMINAL-001 — see the canonical-name handling below.
+    let mut dependency_aliases: Vec<&String> = pkg.dependencies.keys().collect();
+    dependency_aliases.sort();
+    for dep_name in dependency_aliases {
         let dep_items = parse_package_rec(dep_name, graph, options, ast, diags, parsed_packages)?;
 
         let synthetic_lo = 0x8000_0000 + ast.synthetic_spans.len() as u32;
@@ -225,6 +249,31 @@ fn parse_package_rec(
     Ok(root_items)
 }
 
+/// `<package>/<path relative to the package root>`, always with `/` separators so the name is
+/// identical on every platform. Falls back to the file name alone if the path somehow escapes the
+/// package root — a logical name is never allowed to become an absolute one.
+fn logical_package_path(
+    package: &str,
+    package_root: &std::path::Path,
+    file: &std::path::Path,
+) -> String {
+    let relative = file
+        .strip_prefix(package_root)
+        .ok()
+        .map(|rel| {
+            rel.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_else(|| {
+            file.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "<unknown>".to_string())
+        });
+    format!("{package}/{relative}")
+}
+
 fn load_submodules_recursive(
     current_file: &SourceFile,
     items: &[ItemId],
@@ -234,10 +283,9 @@ fn load_submodules_recursive(
     allow_missing_modules: bool,
 ) -> Result<(), Vec<Diagnostic>> {
     let mut diags = Vec::new();
-    let parent_dir = std::path::Path::new(&current_file.name)
-        .parent()
-        .unwrap_or(std::path::Path::new(""))
-        .to_path_buf();
+    // Resolution follows the file's REAL directory (DEV-113-A): once names are logical they can no
+    // longer be used to find sibling modules on disk.
+    let parent_dir = current_file.resolution_dir();
 
     // Collect all mod items that need to be loaded
     let mut mods_to_load = Vec::new();
@@ -337,7 +385,22 @@ fn load_submodules_recursive(
             continue;
         }
 
-        let child_file = SourceFile::new(path_str, src);
+        // The child's logical name mirrors the parent's, so a package's files all read
+        // `<package>/src/...` whatever directory the workspace lives in.
+        let logical_child = match std::path::Path::new(&current_file.name).parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => format!(
+                "{}/{}",
+                dir.to_string_lossy().replace('\\', "/"),
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "<unknown>".to_string())
+            ),
+            _ => path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "<unknown>".to_string()),
+        };
+        let child_file = SourceFile::new(logical_child, src).with_disk_path(path.clone());
         let (child_root, mut child_diags) =
             parse_with_options_into(&child_file, ParseMode::Program, options, ast);
         diags.append(&mut child_diags);

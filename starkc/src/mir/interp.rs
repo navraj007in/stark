@@ -204,17 +204,19 @@ fn entry_termination(value: MirValue) -> Result<(u8, String), MirRunError> {
         match value {
             MirValue::Unit => Ok(0),
             MirValue::Int(status) => u8::try_from(status).map_err(|_| {
-                // PROC-EXIT-001 makes this a language TRAP (`invalid-exit-status`), and a trap
-                // needs a `TrapCategory` to be comparable across engines. None of the nine
-                // categories covers it, the HIR oracle raises it as an uncategorised
-                // `RuntimeError`, and adding a category is a CE3 — trap identity is one of the
-                // contracts WP-C6.0 froze. So this fails LOUDLY and deterministically here rather
-                // than completing with a wrong status, and the real fix waits on that decision.
-                MirRunError::Internal(format!(
-                    "entry returned out-of-range exit status {status}: PROC-EXIT-001 requires a \
-                     language trap (`invalid-exit-status`), which has no `TrapCategory` — \
-                     DEV-111, escalated as a CE3"
-                ))
+                // CD-150 CE3, MIR amendment A7: PROC-EXIT-001 makes this a language TRAP, and the
+                // category now exists. Provenance is the entry file at 1:1 — the contract is
+                // violated by the entry's RESULT, not by an expression, so this is the one location
+                // all three engines can report identically. DEV-111's `Internal` stopgap is gone.
+                MirRunError::Trap {
+                    category: TrapCategory::InvalidExitStatus,
+                    source: SourceInfo {
+                        file: FileId(0),
+                        span: crate::source::Span::point(0),
+                        origin: Origin::UserCode,
+                    },
+                    message: None,
+                }
             }),
             other => Err(MirRunError::Internal(format!(
                 "entry returned {other:?}, which PROC-MAIN-001 does not admit as an entry type"

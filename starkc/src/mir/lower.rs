@@ -145,7 +145,23 @@ impl ProgramMeta {
                         .unwrap_or("?")
                         .to_string()
                 };
-                let mut child_path = path;
+                // DEV-114 (packet 2, option B): crossing a PACKAGE boundary restarts identity.
+                //
+                // TYPE-NOMINAL-001 defines identity as "canonical package instance + module path +
+                // item name": the package instance is the ROOT of identity, so a dependency edge is
+                // not a module-path segment. Before this, a package's prefix was whatever chain of
+                // modules happened to reach it first — `model::leaf` when reached from the root,
+                // `logic::model::leaf` when reached through `logic`, and (because dependency
+                // iteration walked a `HashMap`) which one you got varied per process.
+                //
+                // A synthetic span marks a dependency-package wrapper; a plain `mod` has a real span
+                // in its declaring file. So the reset is exact rather than heuristic.
+                let crosses_package_boundary = hir.synthetic_spans.contains_key(name);
+                let mut child_path = if crosses_package_boundary {
+                    Vec::new()
+                } else {
+                    path
+                };
                 child_path.push(mod_name);
                 for &child in children.iter().rev() {
                     stack.push((child, child_path.clone()));

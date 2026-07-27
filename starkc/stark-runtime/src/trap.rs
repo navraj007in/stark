@@ -29,6 +29,8 @@ pub enum TrapCategory {
     UnwrapErr,
     AssertFailure,
     InvalidShift,
+    /// PROC-EXIT-001's out-of-range exit status (CD-150 CE3, MIR amendment A6).
+    InvalidExitStatus,
 }
 
 impl TrapCategory {
@@ -53,6 +55,7 @@ impl TrapCategory {
             TrapCategory::UnwrapErr => "called unwrap on an `Err` value",
             TrapCategory::AssertFailure => "assertion failed",
             TrapCategory::InvalidShift => "invalid shift amount",
+            TrapCategory::InvalidExitStatus => "invalid exit status",
         }
     }
 }

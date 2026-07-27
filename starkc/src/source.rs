@@ -32,13 +32,44 @@ impl Span {
 /// A loaded source file with precomputed line starts for position mapping.
 #[derive(Debug)]
 pub struct SourceFile {
+    /// The file's LOGICAL name — what every diagnostic, trap and evidence record shows.
+    ///
+    /// For a package build this is `<package>/<path within the package>`, never an absolute path
+    /// (DEV-113). PKG-IDENTITY-001 requires a package token to be "never an absolute checkout path",
+    /// and §15.2 requires trap source names to survive relocation: the same workspace compiled in two
+    /// directories must observe identically, which it cannot if the checkout path is baked into
+    /// provenance. For a single-file compile the name is whatever the caller passed, which is
+    /// usually the path — that path is not identity-bearing there because there is no package.
     pub name: String,
+    /// Where the file actually is, when that is known. Used to resolve `mod` declarations and to
+    /// point a human at a file; **never** used in identity, provenance or comparison.
+    pub disk_path: Option<std::path::PathBuf>,
     pub src: String,
     /// Byte offset of the first character of each line. Always starts with 0.
     line_starts: Vec<u32>,
 }
 
 impl SourceFile {
+    /// Attaches the on-disk location. Separate from `new` so that all 60-plus existing call sites,
+    /// which have no package context, keep compiling unchanged.
+    pub fn with_disk_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.disk_path = Some(path.into());
+        self
+    }
+
+    /// The directory to resolve `mod` declarations against: the real one when known, else the
+    /// directory of the name, which is what a single-file compile has.
+    pub fn resolution_dir(&self) -> std::path::PathBuf {
+        let basis = self
+            .disk_path
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(&self.name));
+        basis
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from(""))
+    }
+
     pub fn new(name: impl Into<String>, src: impl Into<String>) -> Self {
         let src = src.into();
         assert!(
@@ -53,6 +84,7 @@ impl SourceFile {
         }
         SourceFile {
             name: name.into(),
+            disk_path: None,
             src,
             line_starts,
         }

@@ -1,5 +1,14 @@
 //! WP-C5.4d — the frozen three-package reference workspace (§12/§14.4).
 //!
+//! **`EXPECTED-SYMBOLS.txt` was RE-PINNED on 2026-07-27 (CD-164, DEV-114): every `logic::model::*`
+//! symbol became `model::*`.** TYPE-NOMINAL-001 defines identity as "canonical package instance +
+//! module path + item name", so a dependency EDGE is not a module-path segment — reaching `model`
+//! through `logic` must not rename its items, which is also what PKG-IDENTITY-001 means by "aliases
+//! and re-exports preserve it". The previous nesting additionally made the prefix depend on which
+//! path reached a package FIRST, and that walk followed a per-process-seeded `HashMap`, so a diamond
+//! graph produced different symbols run to run. The fixture stays pure data (no comment lines)
+//! because this test reads every line as a symbol.
+//!
 //! One verified multi-package `MirProgram` (`app` → `logic` → `model`) is driven through all three
 //! engines and must agree, then built into ONE standalone native executable that exits normally
 //! because every in-program `assert`/`assert_eq` held. The fixture is checked in under

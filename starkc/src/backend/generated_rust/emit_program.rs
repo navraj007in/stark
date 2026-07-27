@@ -41,11 +41,6 @@ pub fn emit(
     // Rust's `fn main()` takes no parameters and returns `()`; this is an entry-specific
     // constraint on the wrapper below, not a general property of `emit_bodies`, which stays
     // reusable for an arbitrary-signature ordinary function.
-    if !matches!(entry.ret, MirTy::Unit) {
-        return Err(BackendDiagnostic::Unsupported(
-            "the entry instance must return Unit to become Rust's `fn main()`".to_string(),
-        ));
-    }
     if !entry.params.is_empty() {
         return Err(BackendDiagnostic::Unsupported(
             "the entry instance must take no parameters to become Rust's `fn main()`".to_string(),
@@ -111,20 +106,95 @@ fn emit_entry_fn(
     types: &crate::mir::TypeContext,
     layout: &crate::layout::TargetLayout,
 ) -> Result<String, BackendDiagnostic> {
-    let block = emit_bodies::emit_block_body(entry, files, types, layout)?;
     let mut out = String::new();
-    out.push_str("fn main() {\n");
-    out.push_str("    let __stark_build_versions = ");
-    out.push_str(&emit_build_versions_literal(versions));
-    out.push_str(";\n");
-    out.push_str(
+    let mut prologue = String::new();
+    prologue.push_str("    let __stark_build_versions = ");
+    prologue.push_str(&emit_build_versions_literal(versions));
+    prologue.push_str(";\n");
+    prologue.push_str(
         "    if let Err(mismatch) = stark_runtime::version::check(&__stark_build_versions) {\n",
     );
-    out.push_str("        eprintln!(\"stark-runtime version mismatch: generated for runtime {}, linked against {}\", mismatch.expected_runtime_version, mismatch.actual_runtime_version);\n");
-    out.push_str("        std::process::exit(1);\n");
-    out.push_str("    }\n");
-    out.push_str("    ");
-    out.push_str(&block);
+    prologue.push_str("        eprintln!(\"stark-runtime version mismatch: generated for runtime {}, linked against {}\", mismatch.expected_runtime_version, mismatch.actual_runtime_version);\n");
+    prologue.push_str("        std::process::exit(1);\n");
+    prologue.push_str("    }\n");
+
+    if matches!(entry.ret, MirTy::Unit) {
+        // The common case is unchanged: a `Unit` entry IS Rust's `fn main()`.
+        let block = emit_bodies::emit_block_body(entry, files, types, layout)?;
+        out.push_str("fn main() {\n");
+        out.push_str(&prologue);
+        out.push_str("    ");
+        out.push_str(&block);
+        out.push_str("}\n");
+        return Ok(out);
+    }
+
+    // CD-150 CE3: PROC-MAIN-001 admits `Int32`, `Result<Unit, String>` and `Result<Int32, String>`
+    // as well, and PROC-EXIT-001 says what each means. The entry is emitted as an ORDINARY function
+    // with its real return type, and `fn main()` applies the exit contract to its result — which
+    // keeps the mapping in one readable place instead of threading a status through the body.
+    out.push_str(&emit_bodies::emit_function(
+        entry,
+        "__stark_entry",
+        files,
+        types,
+        layout,
+    )?);
+    let entry_file = files
+        .first()
+        .map(|f| f.name.clone())
+        .unwrap_or_else(|| "<entry>".to_string());
+    // Provenance for the range trap is the ENTRY FILE at 1:1 (MIR amendment A7): the contract is
+    // violated by the entry's result, not by an expression, and all three engines report this same
+    // location rather than three plausible ones.
+    let range_trap = format!(
+        "stark_runtime::trap::abort(stark_runtime::trap::TrapCategory::InvalidExitStatus, {}, 1, 1)",
+        rust_str_lit(&entry_file)
+    );
+    let exit_with_status = format!(
+        "            if __stark_status < 0 || __stark_status > 255 {{\n                {range_trap};\n            }}\n            std::process::exit(__stark_status);\n"
+    );
+
+    out.push_str("fn main() {\n");
+    out.push_str(&prologue);
+    match &entry.ret {
+        MirTy::Int32 => {
+            out.push_str("    let __stark_status: i32 = __stark_entry() as i32;\n");
+            out.push_str(&exit_with_status.replace("            ", "    "));
+        }
+        MirTy::Enum(crate::mir::EnumRef::CoreResult, args) => {
+            let result_ty = emit_types::nominal_type_name(&entry.ret).ok_or_else(|| {
+                BackendDiagnostic::Unsupported(
+                    "entry returns a Result whose generated type has no name".to_string(),
+                )
+            })?;
+            let ok_is_unit = matches!(args.first(), Some(MirTy::Unit));
+            out.push_str("    match __stark_entry() {\n");
+            if ok_is_unit {
+                // `Ok(Unit)` returns status 0 (PROC-EXIT-001).
+                out.push_str(&format!(
+                    "        {result_ty}::{}(_) => {{}}\n",
+                    emit_types::variant_name(0)
+                ));
+            } else {
+                out.push_str(&format!(
+                    "        {result_ty}::{}(__stark_ok) => {{\n            let __stark_status: i32 = __stark_ok as i32;\n{exit_with_status}        }}\n",
+                    emit_types::variant_name(0)
+                ));
+            }
+            // `Err(message)` writes the message plus LF to stderr and returns status 1.
+            out.push_str(&format!(
+                "        {result_ty}::{}(__stark_error) => {{\n            stark_runtime::output::flush_stdout();\n            eprint!(\"{{}}\\n\", __stark_error);\n            std::process::exit(1);\n        }}\n",
+                emit_types::variant_name(1)
+            ));
+            out.push_str("    }\n");
+        }
+        other => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "entry returns {other:?}, which PROC-MAIN-001 does not admit"
+            )));
+        }
+    }
     out.push_str("}\n");
     Ok(out)
 }

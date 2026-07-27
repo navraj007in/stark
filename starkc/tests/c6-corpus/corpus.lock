@@ -22,21 +22,31 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 0.6.0 (batch, 2026-07-27, CD-164): the three approved decision packets.
+# DEV-113 makes package trap provenance logical, which admits the dependency-trap case §15.1
+# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
+# emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
+# the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 0.6.0 (batch, 2026-07-27, CD-164): the three approved decision packets.
+# DEV-113 makes package trap provenance logical, which admits the dependency-trap case §15.1
+# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
+# emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
+# the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 0.5.0
+corpus_version = 0.6.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
-manifest_sha256 = d2694ce7a537aa2cdc78d9eff37f1847406156178960ec9fa2832de46e67c2a8
+manifest_sha256 = 8198396afc883fe1cedca33c7de42fa741fe650288bfc44ca2bb0630e1998c4a
 generated_manifest_sha256 = 84610938f93a7365375117de317faf90405c5fc171c009539cf7117026b0e45a
 templates_sha256 = 87b75db3399d792ba13e4b9ca849c4e88a37733f24456be8aaf9ff048faa6e70
 metamorphic_sha256 = 81e98cfb3bfd41f69c513ecbcc99a68c56e2a3647adf649499b088303716fce7
-generator_sha256 = df9cc4d82b3e29fac6e965c60d6d1c95df20ab5c6eb13b79b2b6ad9df4a2482a
-case_count = 131
-handwritten_count = 55
+generator_sha256 = 17b209f049a339e6176e4a3dd90f38b3f36210af6be981cee56b494f1de9e78e
+case_count = 133
+handwritten_count = 56
 generated_count = 70
-retained_count = 6
+retained_count = 7
 metamorphic_group_count = 20
 cf324eff35bc355b6ffc6b06b3d87cb11fc064b7fada2e439c60fa19be79e511  cases/generated/gen__t01__0268b2da.stark
 71424b295f089f3073a6a0e8895d844b744af8dfe0cdd5f666649274b313494c  cases/generated/gen__t01__0a297325.stark
@@ -108,6 +118,8 @@ bb3f12738b14ca19f37e7f04329869def4adc14003807bca128ce5f9be349da5  cases/generate
 11f91885b4a3b74b727cbbed854f4a26c9c1af267c56677dde4db566be84cdd6  cases/generated/gen__t20__b6feee0e.stark
 b409dd8cdd1aaf1ecf4771223c889f2f78b462c708c2b47d8a76a91e8ddf6abc  cases/generated/gen__t20__cd54c97b.stark
 7e157825dd09670f08ee0e6dc4d921185108ad834690aed50ed6c560c7e52415  cases/generated/gen__t20__e7b48a55.stark
+7ff6701d2889f7d5888fc7d6098429f3ed559f379541099c0d51f42de705f5d7  cases/handwritten/pkg__dep_trap/app/src/main.stark
+d467b468b81a336d56c6e7ea2f5e24e66a036633625a10560d019b57636db0ef  cases/handwritten/pkg__dep_trap/dep/src/main.stark
 bff2fce7ab3a2f25bd031cae426d9b08015e9c4776d06d526093e2f6b11d04ff  cases/handwritten/pkg__module/src/helper.stark
 ae10f2aa556a1aeeac63addfcab85a6dd2f3bb8f3aae8ff8f0a59a4a71aa6880  cases/handwritten/pkg__module/src/main.stark
 d28ab80c7a7ebed20fd230478d465411e3feb95e89d3a4cf95c931568b3d8870  cases/handwritten/pkg__workspace/app/src/main.stark
@@ -132,6 +144,7 @@ f6441e116ccf387ab837781ac0fb056730c8f1341233bcf46051c2060989ebcf  cases/retained
 9fdc5e27e3cfabc7e6c11caba80f40f0bf40988f2ef944b4f199064b20f27ef1  cases/retained/entry_exit__04_max_status.stark
 8b257b7ec5a5b498b37d4ff5ced9e4851d81529b993d8777f84463a67d9745ca  cases/retained/entry_exit__05_ok_unit_entry.stark
 6ad6c9150b980edcc6712097075d6e4a8d4551f15b3f68f4cfa9d651a94511c0  cases/retained/entry_exit__06_unit_literal.stark
+1158a11c54c9c347714020d80c11799b780bab8fb07f368fb1107d6a52eab61c  cases/retained/entry_exit__07_out_of_range_status.stark
 fc9668be52777c9564df80581c421e9108eef0e91f53362839dc5ef4b2f99b25  metamorphic/meta__m01_g1_base.stark
 55f6bfb913dec1bb1c8523d8f2c35f741549b0ccea8a5d3d85c4c8a1428a01fc  metamorphic/meta__m01_g1_transformed.stark
 0e1b63dfc3176f3ca38baaceb8eb303dcaa9547b853a4a9bc90a39dc8b992873  metamorphic/meta__m01_g2_base.stark

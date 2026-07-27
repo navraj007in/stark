@@ -336,6 +336,12 @@ pub enum TrapCategory {
     /// A5 / NUM-SHIFT-001: a shift count that is negative or ≥ the operand width. Distinct from
     /// `IntegerOverflow` (which a left shift still raises when its *result* is not representable).
     InvalidShift,
+    /// A7 / PROC-EXIT-001 (CD-150 CE3): `main` returned an `Int32`/`Ok(Int32)` outside `0..=255`.
+    ///
+    /// Provenance for this category is the ENTRY FILE at 1:1. The entry contract is violated by the
+    /// signature's RESULT, not by an expression, so there is no sub-expression the three engines
+    /// could agree to blame; one defined location beats three plausible ones.
+    InvalidExitStatus,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -178,38 +178,32 @@ fn dependency_declaration_order_does_not_leak() {
         first_difference(&observed_a, &observed_b).is_none(),
         "reordering dependency declarations changed the observation"
     );
-    // The symbol sets are NOT compared here: they are unstable for this graph shape for a reason
-    // that has nothing to do with ordering — see `diamond_package_symbols_are_nondeterministic_dev_114`.
+    // Restored at CD-164: with DEV-114 fixed, symbols are order-independent, so §15.3's real claim
+    // can be asserted rather than weakened to a count.
     assert_eq!(
-        logic_first.len(),
-        model_first.len(),
-        "reordering changed the number of monomorphised instances"
+        logic_first, model_first,
+        "canonical symbols depend on dependency declaration ORDER — a package-order leak (§15.3)"
     );
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// **DEV-114 — canonical package symbols are NONDETERMINISTIC for a diamond dependency graph.**
+/// **DEV-114 — FIXED (CD-164).** Canonical package symbols are deterministic and path-independent.
 ///
-/// Found by §15.3. In a graph where a package is reachable both directly from the root and through
-/// another dependency (`app → {logic, model}`, `logic → model`), the same function is named
-/// `model::leaf@[]` in one process and `logic::model::leaf@[]` in the next — same sources, same
-/// manifests, same declaration order. Six consecutive runs produced both forms.
+/// The defect: with `app → {logic, model}` and `logic → model`, the same function was
+/// `model::leaf@[]` in one process and `logic::model::leaf@[]` in the next, because dependency
+/// iteration walked a per-process-seeded `HashMap` and whichever path reached a package first fixed
+/// the module nesting its items were seen under.
 ///
-/// The cause is that a package's symbol prefix is assigned by whichever traversal path reaches it
-/// first, and the traversal follows a hash map whose iteration order is seeded per process.
+/// The fix is two parts, and the second is the one that matters: dependency iteration is **sorted**
+/// (removing the nondeterminism), and crossing a **package boundary restarts identity** in
+/// `ProgramMeta::build` (removing the path-dependence). TYPE-NOMINAL-001 defines identity as
+/// "canonical package instance + module path + item name" — a dependency edge is not a module-path
+/// segment — and PKG-IDENTITY-001 adds that aliases and re-exports preserve identity.
 ///
-/// **Why it matters.** Canonical symbols are the identity that reaches the backend, so two builds of
-/// one workspace can produce differently-named generated code. PKG-IDENTITY-001 requires a resolved
-/// package token to be relocation-stable and CD-108 made identity deterministic; neither holds here.
-/// The corpus's own workspace case is a CHAIN, not a diamond, so it is unaffected — which is why no
-/// corpus case is flaky and why this needed a purpose-built graph to surface.
-///
-/// **Escalated, not fixed** (§18.5): choosing the canonical name for a package reachable by several
-/// paths is a compiler decision — shortest path, declaration path, or package-name-only — not a
-/// corpus edit. This test pins the defect as an admitted set and retires when one form is produced
-/// consistently.
+/// Sorting alone would have made a specification violation merely reproducible, which is why this
+/// asserts the canonical FORM and not just stability.
 #[test]
-fn diamond_package_symbols_are_nondeterministic_dev_114() {
+fn diamond_package_symbols_are_canonical_and_deterministic_dev_114() {
     let home = scratch("dev114");
     for pkg in ["app", "logic", "model"] {
         std::fs::create_dir_all(home.join(pkg).join("src")).expect("package dir");
@@ -247,6 +241,10 @@ fn diamond_package_symbols_are_nondeterministic_dev_114() {
     )
     .expect("app source");
 
+    // Compiled repeatedly IN THIS PROCESS the answer would be stable even under the defect (one hash
+    // seed per process), so the cross-process claim rests on CI running this on two platforms and on
+    // the six-run probe recorded at CD-159. What this asserts is the part a single process can prove:
+    // the canonical FORM, which the defect got wrong half the time.
     let (_front, program) = front_end_package(&home.join("app"));
     let leaf: Vec<String> = program
         .bodies
@@ -254,32 +252,23 @@ fn diamond_package_symbols_are_nondeterministic_dev_114() {
         .map(|b| b.instance.symbol.clone())
         .filter(|s| s.contains("leaf"))
         .collect();
-    assert_eq!(leaf.len(), 1, "expected one `leaf` instance, got {leaf:?}");
-    // Both forms are observed across processes. A fixed implementation produces ONE of them every
-    // time — at which point this test should be replaced by an equality assertion on that form.
-    assert!(
-        leaf[0] == "model::leaf@[]" || leaf[0] == "logic::model::leaf@[]",
-        "unexpected symbol {:?} — DEV-114 may have changed shape",
-        leaf[0]
+    assert_eq!(
+        leaf,
+        vec!["model::leaf@[]".to_string()],
+        "a package reachable both directly and through a dependency must carry ONE canonical name"
     );
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// **DEV-113, pinned.** §15.2 requires that "no absolute path enters semantic identity" and that
-/// "trap source names remain logical source paths". For a PACKAGE build, they do not: the file names
-/// in a package graph are filesystem paths, so a trap raised inside a relocated workspace reports the
-/// staging directory. The two stagings below differ only in location and produce different trap
-/// provenance.
+/// **DEV-113-A — FIXED (CD-164).** Package trap provenance is logical and relocation-stable.
 ///
-/// Recorded rather than worked around, because the fix is a compiler decision — package file
-/// identity would have to become logical (package-relative) rather than filesystem-absolute — and
-/// because it has a live consequence: a **trapping package case cannot be added to the corpus**
-/// until it lands, since its observation would depend on where the corpus was checked out.
-///
-/// This test retires when the assertion below starts failing: that will mean provenance became
-/// relocation-stable.
+/// The defect: a package build named every `SourceFile` by its filesystem path, so the same
+/// workspace staged in two directories reported different trap provenance — against
+/// PKG-IDENTITY-001 ("never an absolute checkout path") and §15.2 ("trap source names remain logical
+/// source paths"). The fix names package files `<package>/<path within the package>` and keeps the
+/// real location in a separate field used only to resolve `mod` declarations.
 #[test]
-fn a_package_trap_reports_an_absolute_path_dev_113() {
+fn package_trap_provenance_is_logical_and_relocation_stable_dev_113() {
     let home = scratch("dev113");
     let build = |leaf: &str| -> Observation {
         let root = home.join(leaf);
@@ -318,25 +307,30 @@ fn a_package_trap_reports_an_absolute_path_dev_113() {
         }
         other => panic!("expected both stagings to trap, got {other:#?}"),
     };
-    assert!(
-        first_file.starts_with('/') || first_file.contains(':'),
-        "DEV-113 appears to be FIXED — package trap provenance is now {first_file:?}, not an \
-         absolute path. Delete this test, add a trapping package case to the corpus, and close the \
-         §15.2 deviation."
+    assert_eq!(
+        first_file, "dep/src/main.stark",
+        "provenance must be the logical package path"
     );
-    assert_ne!(
+    assert_eq!(
         first_file, second_file,
-        "DEV-113 appears to be FIXED — the two stagings now report the same provenance"
+        "relocation changed trap provenance — the checkout path is leaking into identity"
+    );
+    assert!(
+        first_difference(&first, &second).is_none(),
+        "the relocated workspace observed differently"
     );
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The second half of DEV-113: the HIR oracle attributes every trap to the ROOT file, whatever file
-/// actually trapped, because `RuntimeError` carries a span but not a file. MIR attributes it
-/// correctly through `SourceInfo`. So a trap inside a DEPENDENCY would be reported by the two engines
-/// at different files — which is why no such case is in the corpus yet.
+/// **DEV-113-B — FIXED (CD-164).** The oracle attributes a trap to the file it was raised in.
+///
+/// The defect: `RuntimeError` carried a span and no file, so `run_hir` blamed the entry file for
+/// every trap — even though `call_callable` swaps `self.file` per callee (DEV-069) and therefore
+/// always knew. The fix stamps the raising file onto the error at the innermost frame. Without it a
+/// dependency-trap case makes the two engines disagree about WHICH FILE trapped, which is why no such
+/// case could exist in the corpus before now.
 #[test]
-fn the_oracle_attributes_a_dependency_trap_to_the_root_file_dev_113() {
+fn the_oracle_and_mir_agree_on_which_file_trapped_dev_113() {
     let home = scratch("dev113b");
     let root = home.join("ws");
     std::fs::create_dir_all(root.join("app/src")).expect("app");
@@ -366,29 +360,18 @@ fn the_oracle_attributes_a_dependency_trap_to_the_root_file_dev_113() {
     let (front, program) = front_end_package(&root.join("app"));
     let hir = run_hir("dev113b", &front);
     let mir = run_mir("dev113b", &program);
-    let field = first_difference(&hir, &mir);
-    assert_eq!(
-        field,
-        Some("trap source_file"),
-        "expected the oracle and MIR to disagree about WHICH FILE trapped (DEV-113). If this now \
-         agrees, the oracle has learned per-file trap attribution: delete this test and add a \
-         dependency-trap case to the corpus (§15.1's last shape)."
+    assert!(
+        first_difference(&hir, &mir).is_none(),
+        "the oracle and MIR disagree about the dependency trap:\n{hir:#?}\n{mir:#?}"
     );
-    if let (Observation::Trapped(h), Observation::Trapped(m)) = (&hir, &mir) {
-        // Separators are normalised before comparing. On Windows these paths come back MIXED —
-        // `…\ws\app\src/main.stark` — because the OS builds the directory part with `\` while the
-        // entry suffix is composed with a literal `/` in the compiler. That inconsistency belongs to
-        // DEV-113's record; here it must not be mistaken for the attribution claim under test.
-        let oracle_file = h.source_file.replace('\\', "/");
-        let mir_file = m.source_file.replace('\\', "/");
-        assert!(
-            oracle_file.ends_with("app/src/main.stark"),
-            "the oracle reported {oracle_file:?}"
+    if let Observation::Trapped(trap) = &hir {
+        assert_eq!(
+            trap.source_file, "dep/src/main.stark",
+            "the trap must be attributed to the DEPENDENCY, not the entry file"
         );
-        assert!(
-            mir_file.ends_with("dep/src/main.stark"),
-            "MIR reported {mir_file:?}, which was expected to be the dependency"
-        );
+        assert_eq!(trap.line, 3, "the division is on line 3 of the dependency");
+    } else {
+        panic!("expected a trap, got {hir:#?}");
     }
     let _ = std::fs::remove_dir_all(&home);
 }

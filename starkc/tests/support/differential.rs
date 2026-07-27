@@ -361,10 +361,11 @@ pub fn runtime_category(category: TrapCategory) -> stark_runtime::trap::TrapCate
         TrapCategory::UnwrapErr => Rt::UnwrapErr,
         TrapCategory::AssertFailure => Rt::AssertFailure,
         TrapCategory::InvalidShift => Rt::InvalidShift,
+        TrapCategory::InvalidExitStatus => Rt::InvalidExitStatus,
     }
 }
 
-pub const ALL_CATEGORIES: [TrapCategory; 9] = [
+pub const ALL_CATEGORIES: [TrapCategory; 10] = [
     TrapCategory::IntegerOverflow,
     TrapCategory::DivideByZero,
     TrapCategory::IndexOutOfBounds,
@@ -374,6 +375,7 @@ pub const ALL_CATEGORIES: [TrapCategory; 9] = [
     TrapCategory::UnwrapErr,
     TrapCategory::AssertFailure,
     TrapCategory::InvalidShift,
+    TrapCategory::InvalidExitStatus,
 ];
 
 pub fn rustc_available() -> bool {
@@ -548,7 +550,11 @@ pub fn run_hir(name: &str, front: &Front) -> Observation {
                  is a compiler error, not a language outcome the other engines can match",
                 err.message
             );
-            let (line, column) = front.file.line_col(err.span.lo);
+            // DEV-113-B: the trap's OWN file when the oracle supplies one — for a multi-file or
+            // package program the raising file is not the entry file, and using the entry file made
+            // the oracle disagree with MIR about which file trapped.
+            let raised_in = err.file.clone().unwrap_or_else(|| front.file.clone());
+            let (line, column) = raised_in.line_col(err.span.lo);
             // CD-141: the STATED category wins when the oracle supplies one. `panic(msg)`
             // raises arbitrary USER text, so prose matching cannot classify it — that is the
             // whole reason DEV-106 added `RuntimeError::trap_category`. Prose matching remains the
@@ -564,14 +570,14 @@ pub fn run_hir(name: &str, front: &Front) -> Observation {
             let (line, column) = (line as u32, column as u32);
             Observation::Trapped(TrapObservation {
                 category,
-                source_file: front.file.name.clone(),
+                source_file: raised_in.name.clone(),
                 line,
                 column,
                 message_class: message_class(message.as_ref()),
                 stdout_before_trap: scan.stdout,
                 stderr_observation: constructed_trap_stderr(
                     category,
-                    &front.file.name,
+                    &raised_in.name,
                     line,
                     column,
                     message,
