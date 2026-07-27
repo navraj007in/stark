@@ -1,0 +1,8 @@
+{
+  "name": "stark-url-consumer",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "dependencies": {
+    "stark_url": { "package": "stark-url", "path": "../stark-url", "version": "0.1.0" }
+  }
+}

@@ -9,6 +9,12 @@ v0.1 source and tests are present, with the API frozen in
 browser URL standard and supports only authority-free request targets such as `/health`,
 `/users/123`, and `/search?q=stark&page=2`.
 
+Local ASCII interpreter qualification passes: `stark check` and `stark test` pass with 13 package
+tests covering component encoding, strict malformed `%HH`, ASCII control decoding, request-target
+path/query splitting, ordered repeated query parameters, canonical query encoding, and exact error
+offsets. The cross-package consumer checks and runs under `stark run`; native build is currently
+blocked by native lowering for `str.bytes()`.
+
 Known compiler/runtime blocker: percent-decoded non-ASCII UTF-8 is validated but currently returns
 `PercentDecodedNonAsciiBlocked`, because package source cannot yet construct a `String` from a
 validated runtime UTF-8 byte vector.
@@ -43,3 +49,7 @@ Primary entry points are:
 
 The query model is `Vec<QueryParameter>` rather than a map so repeated keys and input order are
 preserved.
+
+## Evidence
+
+See `EVIDENCE.md` and `TEST-MATRIX.md`.

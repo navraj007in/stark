@@ -5,6 +5,7 @@ use super::parse_request_target_with_limits;
 use super::percent_decode;
 use super::percent_encode_component;
 use super::QueryParameter;
+use super::UrlErrorKind;
 use super::UrlLimits;
 
 fn assert_decode(input: &str, expected: &str) {
@@ -30,6 +31,50 @@ fn assert_decode_error(input: &str, offset: UInt64) {
                 panic("percent decode error offset mismatch");
             }
         }
+    }
+}
+
+fn assert_decode_error_kind(input: &str, kind: UrlErrorKind, offset: UInt64) {
+    match percent_decode(input) {
+        Ok(_) => {
+            panic("expected percent decode error");
+        }
+        Err(err) => {
+            if err.offset != offset {
+                panic("percent decode error offset mismatch");
+            }
+            if kind_code(err.kind) != kind_code(kind) {
+                panic("percent decode error kind mismatch");
+            }
+        }
+    }
+}
+
+fn assert_target_error(input: &str, kind: UrlErrorKind, offset: UInt64) {
+    match parse_request_target(input) {
+        Ok(_) => {
+            panic("expected request target error");
+        }
+        Err(err) => {
+            if err.offset != offset {
+                panic("request target error offset mismatch");
+            }
+            if kind_code(err.kind) != kind_code(kind) {
+                panic("request target error kind mismatch");
+            }
+        }
+    }
+}
+
+fn kind_code(kind: UrlErrorKind) -> UInt8 {
+    match kind {
+        UrlErrorKind::InvalidPercentEscape => 1u8,
+        UrlErrorKind::InvalidUtf8 => 2u8,
+        UrlErrorKind::PercentDecodedNonAsciiBlocked => 3u8,
+        UrlErrorKind::InvalidQueryPair => 4u8,
+        UrlErrorKind::TooManyQueryParameters => 5u8,
+        UrlErrorKind::InputTooLarge => 6u8,
+        UrlErrorKind::PositionOverflow => 7u8,
     }
 }
 
@@ -59,6 +104,12 @@ fn test_percent_encode_component() {
     if percent_encode_component("%").as_str() != "%25" {
         panic("percent should be encoded");
     }
+    if percent_encode_component("!*'();:@,/?#[]&=+$").as_str() != "%21%2A%27%28%29%3B%3A%40%2C%2F%3F%23%5B%5D%26%3D%2B%24" {
+        panic("reserved character encoding mismatch");
+    }
+    if percent_encode_component("\n\t").as_str() != "%0A%09" {
+        panic("control character encoding mismatch");
+    }
 }
 
 fn test_percent_decode_strict_escapes() {
@@ -69,14 +120,27 @@ fn test_percent_decode_strict_escapes() {
     assert_decode_error("%A", 0u64);
     assert_decode_error("%GG", 0u64);
     assert_decode_error("a%0X", 1u64);
+    assert_decode_error_kind("%G0", UrlErrorKind::InvalidPercentEscape, 0u64);
+    assert_decode_error_kind("%0G", UrlErrorKind::InvalidPercentEscape, 0u64);
+    assert_decode_error_kind("abc%", UrlErrorKind::InvalidPercentEscape, 3u64);
+    assert_decode_error_kind("abc%A", UrlErrorKind::InvalidPercentEscape, 3u64);
 }
 
 fn test_percent_decode_utf8() {
-    assert_decode_error("caf%C3%A9", 3u64);
-    assert_decode_error("%C0%AF", 0u64);
-    assert_decode_error("%E0%80%80", 0u64);
-    assert_decode_error("%ED%A0%80", 0u64);
-    assert_decode_error("%F4%90%80%80", 0u64);
+    assert_decode_error_kind("caf%C3%A9", UrlErrorKind::PercentDecodedNonAsciiBlocked, 3u64);
+    assert_decode_error_kind("%C0%AF", UrlErrorKind::InvalidUtf8, 0u64);
+    assert_decode_error_kind("%E0%80%80", UrlErrorKind::InvalidUtf8, 0u64);
+    assert_decode_error_kind("%ED%A0%80", UrlErrorKind::InvalidUtf8, 0u64);
+    assert_decode_error_kind("%F4%90%80%80", UrlErrorKind::InvalidUtf8, 0u64);
+}
+
+fn test_percent_decode_ascii_controls() {
+    assert_decode("%00", "\0");
+    assert_decode("%09", "\t");
+    assert_decode("%0A", "\n");
+    assert_decode("%0D", "\r");
+    assert_decode("%1F", "\u{1f}");
+    assert_decode("%7F", "\u{7f}");
 }
 
 fn test_parse_request_target_examples() {
@@ -135,6 +199,37 @@ fn test_encoded_separators_are_data_after_splitting() {
     }
 }
 
+fn test_query_splits_only_on_structural_separators() {
+    match parse_request_target("/path?name=a%3Db%26c&next=x%3Fy") {
+        Ok(target) => {
+            if target.path.as_str() != "/path" {
+                panic("path mismatch");
+            }
+            if target.query.len() != 2u64 {
+                panic("query length mismatch");
+            }
+            if target.query[0u64].name.as_str() != "name" || target.query[0u64].value.as_str() != "a=b&c" {
+                panic("encoded query separator mismatch");
+            }
+            if target.query[1u64].name.as_str() != "next" || target.query[1u64].value.as_str() != "x?y" {
+                panic("encoded query question mismatch");
+            }
+        }
+        Err(_) => {
+            panic("expected query separator parse success");
+        }
+    }
+}
+
+fn test_request_target_error_offsets() {
+    assert_target_error("/a/%", UrlErrorKind::InvalidPercentEscape, 3u64);
+    assert_target_error("/?a%G=1", UrlErrorKind::InvalidPercentEscape, 3u64);
+    assert_target_error("/?a=x%G", UrlErrorKind::InvalidPercentEscape, 5u64);
+    assert_target_error("/?missing", UrlErrorKind::InvalidQueryPair, 2u64);
+    assert_target_error("/?a=%C0%AF", UrlErrorKind::InvalidUtf8, 4u64);
+    assert_target_error("/?a=%C3%A9", UrlErrorKind::PercentDecodedNonAsciiBlocked, 4u64);
+}
+
 fn test_invalid_query_pair_and_limits() {
     match parse_request_target("/search?q") {
         Err(err) => {
@@ -177,6 +272,17 @@ fn test_encode_query() {
 
     if encode_query(&parameters).as_str() != "q=stark%20lang&tag=compiler&tag=ml%2Fruntime&empty=" {
         panic("encoded query mismatch");
+    }
+}
+
+fn test_encode_query_canonicality_and_order() {
+    let mut parameters: Vec<QueryParameter> = Vec::new();
+    parameters.push(QueryParameter { name: String::from(""), value: String::from("blank") });
+    parameters.push(QueryParameter { name: String::from("a b"), value: String::from("x/y") });
+    parameters.push(QueryParameter { name: String::from("a b"), value: String::from("x&y=z") });
+
+    if encode_query(&parameters).as_str() != "=blank&a%20b=x%2Fy&a%20b=x%26y%3Dz" {
+        panic("canonical query encoding mismatch");
     }
 }
 

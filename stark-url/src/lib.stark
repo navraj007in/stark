@@ -8,25 +8,13 @@ pub enum UrlErrorKind {
     PositionOverflow,
 }
 
-pub struct UrlError {
-    pub kind: UrlErrorKind,
-    pub offset: UInt64,
-}
+pub struct UrlError { pub kind: UrlErrorKind, pub offset: UInt64 }
 
-pub struct UrlLimits {
-    pub max_input_bytes: UInt64,
-    pub max_query_parameters: UInt64,
-}
+pub struct UrlLimits { pub max_input_bytes: UInt64, pub max_query_parameters: UInt64 }
 
-pub struct QueryParameter {
-    pub name: String,
-    pub value: String,
-}
+pub struct QueryParameter { pub name: String, pub value: String }
 
-pub struct RequestTarget {
-    pub path: String,
-    pub query: Vec<QueryParameter>,
-}
+pub struct RequestTarget { pub path: String, pub query: Vec<QueryParameter> }
 
 const PERCENT: UInt8 = 37u8;
 const AMPERSAND: UInt8 = 38u8;
@@ -48,10 +36,7 @@ const TILDE: UInt8 = 126u8;
 const U64_MAX: UInt64 = 18446744073709551615u64;
 
 pub fn default_limits() -> UrlLimits {
-    UrlLimits {
-        max_input_bytes: 8192u64,
-        max_query_parameters: 1024u64,
-    }
+    UrlLimits { max_input_bytes: 8192u64, max_query_parameters: 1024u64 }
 }
 
 pub fn percent_encode_component(input: &str) -> String {
@@ -65,7 +50,7 @@ pub fn percent_encode_component(input: &str) -> String {
             out.push(char_from_ascii(b));
         } else {
             out.push('%');
-            out.push(hex_char((b >> 4u8) & 0x0Fu8));
+            out.push(hex_char(b >> 4u8 & 0x0Fu8));
             out.push(hex_char(b & 0x0Fu8));
         }
         i = i + 1u64;
@@ -204,21 +189,30 @@ fn decode_component_at(input: &str, base_offset: UInt64) -> Result<String, UrlEr
         let b = bytes[i];
         if b == PERCENT {
             if i + 2u64 >= bytes.len() {
-                return Err(error_at(UrlErrorKind::InvalidPercentEscape, checked_add(base_offset, i)?));
+                return Err(
+                    error_at(UrlErrorKind::InvalidPercentEscape, checked_add(base_offset, i)?),
+                );
             }
             let hi = hex_value(bytes[i + 1u64]);
             let lo = hex_value(bytes[i + 2u64]);
             match hi {
                 None => {
-                    return Err(error_at(UrlErrorKind::InvalidPercentEscape, checked_add(base_offset, i)?));
+                    return Err(
+                        error_at(UrlErrorKind::InvalidPercentEscape, checked_add(base_offset, i)?),
+                    );
                 }
                 Some(hi_value) => {
                     match lo {
                         None => {
-                            return Err(error_at(UrlErrorKind::InvalidPercentEscape, checked_add(base_offset, i)?));
+                            return Err(
+                                error_at(
+                                    UrlErrorKind::InvalidPercentEscape,
+                                    checked_add(base_offset, i)?,
+                                ),
+                            );
                         }
                         Some(lo_value) => {
-                            let decoded_byte = (hi_value << 4u8) | lo_value;
+                            let decoded_byte = hi_value << 4u8 | lo_value;
                             decoded.push(decoded_byte);
                         }
                     }
@@ -235,7 +229,9 @@ fn decode_component_at(input: &str, base_offset: UInt64) -> Result<String, UrlEr
     let mut j: UInt64 = 0u64;
     while j < decoded.len() {
         if decoded[j] > 0x7Fu8 {
-            return Err(error_at(UrlErrorKind::PercentDecodedNonAsciiBlocked, checked_add(base_offset, j)?));
+            return Err(
+                error_at(UrlErrorKind::PercentDecodedNonAsciiBlocked, checked_add(base_offset, j)?),
+            );
         }
         out.push(char_from_ascii(decoded[j]));
         j = j + 1u64;
@@ -256,32 +252,44 @@ fn validate_utf8(bytes: &Vec<UInt8>, base_offset: UInt64) -> Result<(), UrlError
             }
             i = i + 2u64;
         } else if b0 == 0xE0u8 {
-            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0xA0u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(bytes[i + 2u64]) {
+            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0xA0u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
             i = i + 3u64;
         } else if b0 >= 0xE1u8 && b0 <= 0xECu8 || b0 >= 0xEEu8 && b0 <= 0xEFu8 {
-            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) {
+            if i + 2u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
             i = i + 3u64;
         } else if b0 == 0xEDu8 {
-            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x9Fu8 || !is_continuation(bytes[i + 2u64]) {
+            if i + 2u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x9Fu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
             i = i + 3u64;
         } else if b0 == 0xF0u8 {
-            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x90u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x90u8 || bytes[i + 1u64] > 0xBFu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
             i = i + 4u64;
         } else if b0 >= 0xF1u8 && b0 <= 0xF3u8 {
-            if i + 3u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+            if i + 3u64 >= bytes.len() || !is_continuation(bytes[i + 1u64]) || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
             i = i + 4u64;
         } else if b0 == 0xF4u8 {
-            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x8Fu8 || !is_continuation(bytes[i + 2u64]) || !is_continuation(bytes[i + 3u64]) {
+            if i + 3u64 >= bytes.len() || bytes[i + 1u64] < 0x80u8 || bytes[i + 1u64] > 0x8Fu8 || !is_continuation(
+                bytes[i + 2u64],
+            ) || !is_continuation(bytes[i + 3u64]) {
                 return Err(error_at(UrlErrorKind::InvalidUtf8, checked_add(base_offset, i)?));
             }
             i = i + 4u64;
@@ -306,13 +314,7 @@ fn error_at(kind: UrlErrorKind, offset: UInt64) -> UrlError {
 }
 
 fn is_unreserved(b: UInt8) -> Bool {
-    b >= A_UPPER && b <= Z_UPPER ||
-        b >= A_LOWER && b <= Z_LOWER ||
-        b >= ZERO && b <= NINE ||
-        b == HYPHEN ||
-        b == DOT ||
-        b == UNDERSCORE ||
-        b == TILDE
+    b >= A_UPPER && b <= Z_UPPER || b >= A_LOWER && b <= Z_LOWER || b >= ZERO && b <= NINE || b == HYPHEN || b == DOT || b == UNDERSCORE || b == TILDE
 }
 
 fn is_continuation(b: UInt8) -> Bool {
@@ -342,12 +344,68 @@ fn hex_char(value: UInt8) -> Char {
 fn char_from_ascii(byte: UInt8) -> Char {
     if byte == 0u8 {
         '\0'
+    } else if byte == 1u8 {
+        '\u{1}'
+    } else if byte == 2u8 {
+        '\u{2}'
+    } else if byte == 3u8 {
+        '\u{3}'
+    } else if byte == 4u8 {
+        '\u{4}'
+    } else if byte == 5u8 {
+        '\u{5}'
+    } else if byte == 6u8 {
+        '\u{6}'
+    } else if byte == 7u8 {
+        '\u{7}'
+    } else if byte == 8u8 {
+        '\u{8}'
     } else if byte == 9u8 {
         '\t'
     } else if byte == 10u8 {
         '\n'
+    } else if byte == 11u8 {
+        '\u{b}'
+    } else if byte == 12u8 {
+        '\u{c}'
     } else if byte == 13u8 {
         '\r'
+    } else if byte == 14u8 {
+        '\u{e}'
+    } else if byte == 15u8 {
+        '\u{f}'
+    } else if byte == 16u8 {
+        '\u{10}'
+    } else if byte == 17u8 {
+        '\u{11}'
+    } else if byte == 18u8 {
+        '\u{12}'
+    } else if byte == 19u8 {
+        '\u{13}'
+    } else if byte == 20u8 {
+        '\u{14}'
+    } else if byte == 21u8 {
+        '\u{15}'
+    } else if byte == 22u8 {
+        '\u{16}'
+    } else if byte == 23u8 {
+        '\u{17}'
+    } else if byte == 24u8 {
+        '\u{18}'
+    } else if byte == 25u8 {
+        '\u{19}'
+    } else if byte == 26u8 {
+        '\u{1a}'
+    } else if byte == 27u8 {
+        '\u{1b}'
+    } else if byte == 28u8 {
+        '\u{1c}'
+    } else if byte == 29u8 {
+        '\u{1d}'
+    } else if byte == 30u8 {
+        '\u{1e}'
+    } else if byte == 31u8 {
+        '\u{1f}'
     } else if byte == 32u8 {
         ' '
     } else if byte == 33u8 {
@@ -544,6 +602,8 @@ fn char_from_ascii(byte: UInt8) -> Char {
         '}'
     } else if byte == 126u8 {
         '~'
+    } else if byte == 127u8 {
+        '\u{7f}'
     } else {
         '\0'
     }

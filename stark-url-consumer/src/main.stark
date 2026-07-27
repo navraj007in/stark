@@ -1,0 +1,28 @@
+use stark_url::encode_query;
+use stark_url::parse_request_target;
+
+fn main() {
+    match parse_request_target("/search?q=stark%20url&tag=compiler&tag=language") {
+        Ok(target) => {
+            if target.path.as_str() != "/search" {
+                panic("path mismatch");
+            }
+            if target.query.len() != 3u64 {
+                panic("query length mismatch");
+            }
+            if target.query[0u64].name.as_str() != "q" || target.query[0u64].value.as_str() != "stark url" {
+                panic("first query mismatch");
+            }
+            if target.query[1u64].name.as_str() != "tag" || target.query[1u64].value.as_str() != "compiler" {
+                panic("first tag mismatch");
+            }
+            if target.query[2u64].name.as_str() != "tag" || target.query[2u64].value.as_str() != "language" {
+                panic("second tag mismatch");
+            }
+            println(encode_query(&target.query).as_str());
+        }
+        Err(_) => {
+            panic("parse failed");
+        }
+    }
+}
