@@ -85,6 +85,7 @@ pub fn emit_runtime_call(
         // --- String / str queries ---
         StringLen | StrLen => format!("stark_runtime::string::len({})", arg(0)),
         StringIsEmpty | StrIsEmpty => format!("stark_runtime::string::is_empty({})", arg(0)),
+        StrBytes => format!("{}.as_bytes()", arg(0)),
         StringContains => format!("stark_runtime::string::contains({}, {})", arg(0), arg(1)),
         StrEq => format!("stark_runtime::string::eq({}, {})", arg(0), arg(1)),
         StrCmp => format!("stark_runtime::string::cmp({}, {})", arg(0), arg(1)),

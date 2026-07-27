@@ -5549,6 +5549,14 @@ impl<'a> FnLowerer<'a> {
             (false, "len") => (RuntimeFn::StrLen, None),
             (false, "is_empty") => (RuntimeFn::StrIsEmpty, None),
             (false, "to_string") => (RuntimeFn::StrToString, None),
+            // `bytes` is deliberately NOT lowered (DEV-115). `RuntimeFn::StrBytes` exists, verifies
+            // as `&str -> &[UInt8]`, and the native backend emits `.as_bytes()` -- but the MIR
+            // interpreter cannot represent the result: its slices are windows into a PLACE, and a
+            // `MirValue::String` has no UInt8 element place to view. Lowering it anyway makes source
+            // that typechecks and lowers unable to run under MIR, which surfaces as
+            // "MIR internal error: StrBytes is not represented in the MIR interpreter yet" --
+            // §8.6's harness failure, not a language outcome. That is the DEV-111 shape exactly.
+            // Restore this arm together with a MIR byte-slice representation.
             _ => {
                 return unsupported(
                     format!("method {name} on {peeled_ty:?} (a later C4.5e sub-slice)"),
@@ -6204,6 +6212,31 @@ impl<'a> FnLowerer<'a> {
         span: Span,
     ) -> Result<(), LowerError> {
         let name = self.text(name_span).to_string();
+        if name == "as_slice" {
+            if !args.is_empty() {
+                return unsupported("Vec::as_slice with arguments", span);
+            }
+            let recv = self.borrow_vec_receiver(base, false, elem, span)?;
+            let len_temp = self.new_temp(MirTy::UInt64);
+            self.emit_runtime_call(
+                RuntimeFn::VecLen,
+                vec![recv.clone()],
+                Place::local(len_temp),
+                span,
+            );
+            self.emit_runtime_call(
+                RuntimeFn::SliceNew,
+                vec![
+                    recv,
+                    Operand::Const(Constant::Int(0, MirTy::UInt64)),
+                    Operand::Copy(Place::local(len_temp)),
+                    Operand::Const(Constant::Bool(false)),
+                ],
+                dest,
+                span,
+            );
+            return Ok(());
+        }
         // (runtime fn, receiver mutability).
         let (rt, recv_mut) = match name.as_str() {
             "push" => (RuntimeFn::VecPush, true),

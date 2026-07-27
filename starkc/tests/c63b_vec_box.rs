@@ -76,6 +76,16 @@ fn vec_returned_across_function() {
     );
 }
 
+/// Codex's `Vec::as_slice` lowering, verified across all three engines before this test was
+/// restored — it was backed out in 2e517bf when it reached CI ahead of the implementation.
+#[test]
+fn vec_as_slice_borrows_full_vector() {
+    agree(
+        "as_slice",
+        "fn main() { let mut v: Vec<UInt8> = Vec::new(); v.push(0u8); v.push(127u8); v.push(255u8); let s = v.as_slice(); assert_eq(s.len(), 3); assert_eq(s[0u64], 0u8); assert_eq(s[1u64], 127u8); assert_eq(s[2u64], 255u8); }",
+    );
+}
+
 #[test]
 fn box_new_and_into_inner() {
     agree(

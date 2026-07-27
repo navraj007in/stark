@@ -1515,6 +1515,7 @@ impl<'a> Interp<'a> {
             StringNew => Ok(MirValue::String(String::new())),
             StringFromStr => Ok(MirValue::String(self.as_str(&first)?.to_string())),
             StrToString => Ok(MirValue::String(self.as_str(&first)?.to_string())),
+            StrBytes => self.internal("StrBytes is not represented in the MIR interpreter yet"),
             StringClone => {
                 let s = self.read_string_ref(&first)?;
                 Ok(MirValue::String(s))

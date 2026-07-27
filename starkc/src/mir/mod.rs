@@ -413,6 +413,7 @@ pub enum RuntimeFn {
     StrLen,
     StrIsEmpty,
     StrToString,
+    StrBytes,
     StrEq,
     StrCmp,
     // --- A1 (CD-031), C4.5e-2: Vec data surface. Iteration (VecIterNew/VecIterNext) is NOT

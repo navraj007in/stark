@@ -2199,6 +2199,13 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         StrLen => (vec![str_ref()], MirTy::UInt64),
         StrIsEmpty => (vec![str_ref()], MirTy::Bool),
         StrToString => (vec![str_ref()], MirTy::String),
+        StrBytes => (
+            vec![str_ref()],
+            MirTy::Ref {
+                mutable: false,
+                inner: Box::new(MirTy::Slice(Box::new(MirTy::UInt8))),
+            },
+        ),
         StrEq => (vec![str_ref(), str_ref()], MirTy::Bool),
         StrCmp => (vec![str_ref(), str_ref()], MirTy::Int64),
         // 0.1-A3 (f-3b): Char ops.
