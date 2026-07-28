@@ -8,7 +8,9 @@
 //! `emit_bodies::emit_function` with its symbol's sanitized name. Indirect calls through a
 //! function value remain WP-C5.4c.
 
-use super::{emit_bodies, emit_projections, emit_types, linkage, mangle, BackendDiagnostic};
+use super::{
+    emit_bodies, emit_projections, emit_provider, emit_types, linkage, mangle, BackendDiagnostic,
+};
 use crate::mir::{MirBody, MirProgram, MirTy};
 use stark_runtime::version::BuildVersions;
 
@@ -73,6 +75,11 @@ pub fn emit(
     // a valid Rust default that aborts rather than silently calling a real function.
     main_rs.push_str(&emit_types::emit_fn_sentinels(program)?);
 
+    // A10 (CD-200): one `extern "C"` block for every provider function the program calls, emitted
+    // before the bodies that call them and deduplicated by symbol, so the declaration set does not
+    // depend on body iteration order.
+    main_rs.push_str(&emit_provider::emit_extern_declarations(program)?);
+
     for body in &program.bodies {
         main_rs.push_str(&format!("// STARK instance: {}\n", body.instance.symbol));
         if body.instance.symbol == mangle::ENTRY_SYMBOL {
@@ -82,6 +89,7 @@ pub fn emit(
                 &program.files,
                 &program.types,
                 layout,
+                &program.provider_calls,
             )?);
         } else {
             let name = mangle::function_name_for_symbol(&body.instance.symbol);
@@ -91,6 +99,7 @@ pub fn emit(
                 &program.files,
                 &program.types,
                 layout,
+                &program.provider_calls,
             )?);
         }
         main_rs.push('\n');
@@ -105,6 +114,7 @@ fn emit_entry_fn(
     files: &[std::sync::Arc<crate::source::SourceFile>],
     types: &crate::mir::TypeContext,
     layout: &crate::layout::TargetLayout,
+    provider_calls: &[crate::mir::ValidatedProviderCall],
 ) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
     let mut prologue = String::new();
@@ -120,7 +130,7 @@ fn emit_entry_fn(
 
     if matches!(entry.ret, MirTy::Unit) {
         // The common case is unchanged: a `Unit` entry IS Rust's `fn main()`.
-        let block = emit_bodies::emit_block_body(entry, files, types, layout)?;
+        let block = emit_bodies::emit_block_body(entry, files, types, layout, provider_calls)?;
         out.push_str("fn main() {\n");
         out.push_str(&prologue);
         out.push_str("    ");
@@ -139,6 +149,7 @@ fn emit_entry_fn(
         files,
         types,
         layout,
+        provider_calls,
     )?);
     let entry_file = files
         .first()

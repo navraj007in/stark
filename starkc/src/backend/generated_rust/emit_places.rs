@@ -30,6 +30,13 @@ pub struct TyEnv<'a> {
     /// rather than defaulted at the use site, so a build cannot silently answer from a contract
     /// it was not given (CD-067).
     pub layout: &'a crate::layout::TargetLayout,
+    /// A10 (CD-200): the program's validated provider-call records, so a `Callee::Provider` can be
+    /// resolved where it is emitted.
+    ///
+    /// Empty by default rather than a required constructor argument: every existing `TyEnv::new`
+    /// call site predates providers, and a program that calls none is the overwhelmingly common
+    /// case. `with_provider_calls` is the opt-in.
+    pub provider_calls: &'a [crate::mir::ValidatedProviderCall],
 }
 
 impl<'a> TyEnv<'a> {
@@ -42,7 +49,29 @@ impl<'a> TyEnv<'a> {
             body,
             types,
             layout,
+            provider_calls: &[],
         }
+    }
+
+    /// Attaches the program's validated provider-call records (A10).
+    pub fn with_provider_calls(
+        mut self,
+        provider_calls: &'a [crate::mir::ValidatedProviderCall],
+    ) -> Self {
+        self.provider_calls = provider_calls;
+        self
+    }
+
+    /// The validated record behind a `ProviderCallId`, or `None` if it is absent.
+    ///
+    /// Absence is a compiler defect rather than a rejectable program: MIR verification already
+    /// rejects a dangling id (V-PROV-1), so reaching emission without a record means the record
+    /// set was not threaded, not that the program was bad.
+    pub fn provider_call(
+        &self,
+        id: crate::mir::ProviderCallId,
+    ) -> Option<&'a crate::mir::ValidatedProviderCall> {
+        self.provider_calls.get(id.0 as usize)
     }
 
     pub(super) fn local_ty(&self, local: u32) -> Result<MirTy, BackendDiagnostic> {

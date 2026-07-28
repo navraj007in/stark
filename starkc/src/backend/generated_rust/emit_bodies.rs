@@ -40,6 +40,7 @@ pub fn emit_function(
     files: &[Arc<SourceFile>],
     types: &TypeContext,
     layout: &crate::layout::TargetLayout,
+    provider_calls: &[crate::mir::ValidatedProviderCall],
 ) -> Result<String, BackendDiagnostic> {
     // WP-C6.1f "returning a reference" — OWN-RETURN-001 native encoding. When a function returns a
     // reference, Rust needs to know which input it borrows from. STARK's rule is the *shortest* of
@@ -68,7 +69,7 @@ pub fn emit_function(
     } else {
         emit_types::emit_ty(&body.ret)?
     };
-    let block = emit_block_body(body, files, types, layout)?;
+    let block = emit_block_body(body, files, types, layout, provider_calls)?;
     Ok(format!("fn {name}{generics}({params}) -> {ret_ty} {block}"))
 }
 
@@ -150,8 +151,9 @@ pub fn emit_block_body(
     files: &[Arc<SourceFile>],
     types: &TypeContext,
     layout: &crate::layout::TargetLayout,
+    provider_calls: &[crate::mir::ValidatedProviderCall],
 ) -> Result<String, BackendDiagnostic> {
-    let env = &TyEnv::new(body, types, layout);
+    let env = &TyEnv::new(body, types, layout).with_provider_calls(provider_calls);
     validate_ephemeral_references(body)?;
     let mut out = String::from("{\n");
 
@@ -914,6 +916,28 @@ fn emit_terminator(
             dest,
             target,
         } => {
+            // A10 (CD-200): a provider call is a statement SEQUENCE, not an expression -- named
+            // borrow temporaries, the `extern "C"` call, then the status assignment. That shape is
+            // what invariants 6, 8 and 9 are checked against, and it is why provider emission is
+            // separated from `emit_call` rather than folded into it.
+            if let Callee::Provider(id) = callee {
+                let call = env.provider_call(*id).ok_or_else(|| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "provider call #{} has no validated record (MIR verification should have \
+                         rejected this program)",
+                        id.0
+                    ))
+                })?;
+                out.push_str(&super::emit_provider::emit_provider_call(
+                    call,
+                    args,
+                    dest,
+                    env,
+                    "                ",
+                )?);
+                out.push_str(&format!("                {}\n", mode.jump(target.0)));
+                return Ok(());
+            }
             let dest_ty = &body.locals[dest.local.0 as usize].ty;
             let (file, line, col) = resolve_source_location(files, info);
             let call_expr = emit_call(
@@ -1283,7 +1307,7 @@ fn component_access(base: &MirTy, index: u32, value: &str) -> Result<String, Bac
 /// is not a Rust place. MIR lowering never produces such a destination — `VariantField` appears
 /// only under `read_place` and pattern tests, and STARK has no syntax for assigning into a
 /// payload — so this is a guard against a silently wrong splice, not a limitation.
-fn emit_assignment(
+pub(super) fn emit_assignment(
     place: &crate::mir::Place,
     value: &str,
     env: &TyEnv,
@@ -1554,7 +1578,7 @@ fn emit_binop(op: MirBinOp, l: String, r: String) -> Result<String, BackendDiagn
 /// operand kinds emit the same bare place reference here. Real non-`Copy` move/liveness tracking
 /// (`WP-C5-ENTRY.md` §7.2's `MaybeUninit<ManuallyDrop<T>>` strategy) is deferred to whichever WP
 /// first admits a non-`Copy` `MirTy` (WP-C5.3+).
-fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, BackendDiagnostic> {
+pub(super) fn emit_operand(operand: &Operand, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     match operand {
         Operand::Const(c) => emit_types::emit_constant(c),
         // DEV-098 (CD-070): `Operand::Copy` means "read WITHOUT consuming". For an exclusive

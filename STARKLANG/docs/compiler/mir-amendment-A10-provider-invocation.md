@@ -230,8 +230,8 @@ A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing
 | C7.8.2b — provider resolution and validated call records | **LANDED** |
 | C7.8.2c — verifier invariants and negative fixtures | **LANDED** (1–5 of 9; 6–9 deferred, see below) |
 | C7.8.2d-1 — provider binding plan | **LANDED** |
-| C7.8.2d-2 — scalar and buffer emission (closes invariant 6) | next |
-| C7.8.2d-3 — output and status control flow (closes invariants 8, 9) | pending |
+| C7.8.2d-2 — scalar and buffer emission (closes invariant 6) | **LANDED** |
+| C7.8.2d-3 — output and status control flow (closes invariants 8, 9) | next |
 | C7.8.2d-4 — resource framework, no `File` admission (structures invariant 7) | framework LANDED with d-1; evidence pending |
 | C7.8.2e — `stark-time` end-to-end execution | pending |
 | C7.8.2f — full A10 regression evidence | pending |
@@ -311,6 +311,34 @@ provider `resource_type` to a `MirTy`, and `HandleConsumed`/`HandleOut` planning
 proven with a synthetic resource type, so landing `File` in C7.8.4 is a *registration* rather than
 new machinery. `ResourceRegistry::builtin()` is empty in C7.8.2d.
 
+**What C7.8.2d-2 landed.** `starkc/src/backend/generated_rust/emit_provider.rs`: one `extern "C"`
+block per program, deduplicated by symbol and **sorted**, plus call-site emission for every
+non-resource parameter form. Symbols are emitted verbatim — never through `mangle::sanitize_symbol`,
+since a provider symbol is not a MIR instance and the same name must resolve under a future
+`dlsym`. Evidence: `starkc/tests/a10_provider_emit.rs` (12 cases).
+
+**Invariant 6 is closed for the admitted forms, and closed by construction.** Every argument is
+bound to a *named* local before the call, and pointers are taken from that binding:
+
+```rust
+let __prov_a0 = <operand>;                       // named, live across the call
+let __prov_status: u32 = unsafe { f(__prov_a0 as *mut u64) }.code;
+```
+
+The shape this rules out — `f(make_bytes(v).as_ptr(), …)` — compiles, links, and is undefined
+behaviour at runtime, so no later stage would catch it. A provider call is therefore emitted as a
+**statement sequence**, not an expression, which is why it is separated from `emit_call` rather
+than folded into it.
+
+`ValidatedProviderCall` records reach emission through `TyEnv`, which was already threaded to every
+emitter. The field defaults to empty rather than becoming a required constructor argument, so the
+many existing `TyEnv::new` call sites — all of which predate providers — are untouched.
+
+**d-2 does not interpret the status.** The raw `ProviderStatus.code` reaches the MIR destination
+as `UInt32`, matching what `provider_sig` types it as, and a test asserts no branch on it exists
+yet. Dispatch is d-3's, because channel policy belongs in the binding plan d-1 built for it rather
+than in the emitter.
+
 **A provider call is representable but not yet admitted.** That is the intended C7.8.2a state:
 §4's invariants land in C7.8.2c, and until they do, verification refuses rather than accepting an
 unchecked contract. A dangling `ProviderCallId` reports separately (MIR-0019) so an
@@ -376,6 +404,10 @@ pre-verification binding sequence; backend emission prohibitions; `MIR_RUNTIME_S
 **Rev. 2 (2026-07-28) — C7.8.2a landed.** §10 records implementation state, the
 representable-but-not-admitted position, the `provider_abi` layering move and its shim, and the
 interpreter's permanent exclusion. No contract change.
+
+**Rev. 7 (2026-07-29) — C7.8.2d-2 landed.** §10 records `extern "C"` declaration and call
+emission, invariant 6 closed by named borrow bindings for non-resource forms, and the deliberate
+absence of status interpretation. No contract change.
 
 **Rev. 6 (2026-07-29) — C7.8.2d-1 landed.** §10 records the provider binding plan, the
 input/output classification rules, the status-channel dispatch, and the resource registry.
