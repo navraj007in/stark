@@ -110,9 +110,51 @@ pub fn build_and_link(
                 .map(|arg| arg.to_string_lossy().into_owned()),
         )
         .collect();
+    // WP-C7.2: path remapping, so the linked executable does not embed where it was built.
+    //
+    // C7.0 measured the problem precisely: two clean builds of one source from different absolute
+    // paths produced DIFFERENT binaries, and each embedded 40 strings naming its own build
+    // directory plus 22 naming the runtime crate's source. Both are rustc putting real paths into
+    // debug info and `panic!` locations. Rust's own std is already remapped to `/rustc/<hash>/`,
+    // which is the same remedy applied upstream.
+    //
+    // Two prefixes are remapped, and the second matters as much as the first: the build directory
+    // varies per BUILD, and the runtime source path varies per INSTALLATION, so leaving it would
+    // keep binaries machine-dependent even after the build dir was handled.
+    //
+    // This deliberately does not remap to the empty string. `/stark/crate` and `/stark/runtime` keep
+    // a diagnostic readable — a panic location still says which file and line — while removing the
+    // part that is nobody's business and is not reproducible.
+    // Each prefix is remapped in BOTH its literal and its canonicalised form. On macOS `/var` is a
+    // symlink to `/private/var`, so a build under `/var/folders/...` has rustc recording
+    // `/private/var/folders/...` — and a remap written with the literal path silently matches
+    // nothing. That is exactly what happened here: the first attempt removed the source-span paths
+    // and left every linker artefact untouched, because those carry the resolved form.
+    let mut rustflags = std::ffi::OsString::new();
+    let mut remap = |path: &Path, label: &str, flags: &mut std::ffi::OsString| {
+        let mut forms = vec![path.to_path_buf()];
+        if let Ok(canonical) = path.canonicalize() {
+            if canonical != path {
+                forms.push(canonical);
+            }
+        }
+        for form in forms {
+            if !flags.is_empty() {
+                flags.push(" ");
+            }
+            flags.push("--remap-path-prefix=");
+            flags.push(form.as_os_str());
+            flags.push("=");
+            flags.push(label);
+        }
+    };
+    remap(&crate_dir, "/stark/crate", &mut rustflags);
+    remap(&toolchain.runtime_crate, "/stark/runtime", &mut rustflags);
+
     let output = Command::new(&toolchain.cargo)
         .args(&cargo_args)
         .env("RUSTC", &toolchain.rustc)
+        .env("RUSTFLAGS", &rustflags)
         .output()
         .map_err(|e| {
             BackendDiagnostic::BuildFailed(Box::new(BackendBuildFailure {
