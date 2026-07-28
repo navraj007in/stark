@@ -105,9 +105,23 @@ CLOSED (CD-142)** on a full `cargo test --workspace --all-targets --all-features
 macos-arm64 and windows-x64 — the confirming run CD-138 item 7 required. Escalations named above
 (`Box`/`HashMap` Display semantics) are excluded by decision, not blocking.**
 **WP-C6.4 is CLOSED (CD-162, owner directive) and WP-C2.12 is CLOSED (CD-162)**, both on the
-`8a23772` Tier-1 evidence. **WP-C6.5 remains `PARTIAL`**: §17's reviews are complete and found 13
-issues, three of them blocking — the corpus covers 5 of 9 trap categories, 23 suites still use private
-comparators, and 36 of 136 matrix rows have corpus evidence. See `WP-C6.5-REVIEWS.md`.
+`e3ef603` Tier-1 evidence. **WP-C6.5 is `CLOSED` at `e3ef603`** (CD-178) — see
+`WP-C6.5-CLOSURE-PACKET.md`. All thirteen §17 findings closed, none superseded; all 136 matrix rows
+carry one machine-checked disposition; all 23 forked suites migrated to the shared comparator.
+Corpus `1.3.0`, 160 cases, 24 metamorphic groups over twelve families, 10 of 10 trap categories,
+23 mutation controls over 15 of 15 comparator fields.
+
+**Claim boundary, stated because it is narrower than "conformant":** the admitted EXECUTABLE surface
+agrees across HIR, MIR and native on both Tier-1 targets. NOT every specified limit is enforced —
+**DEV-118** (the `T: Hash + Eq` bound is unenforced for `HashMap` and `HashSet`) is carried open,
+non-blocking, owned by WP-C6.3. It is an enforcement omission, not a differential defect: all three
+engines accept the same programs, so it cannot threaten the agreement claim.
+
+**Seven defects found and fixed**, each by closing a coverage gap rather than by inspection:
+DEV-111, DEV-112, DEV-113, DEV-114, DEV-115, DEV-116 (incl. `HashSet::iter`), DEV-117. Three
+FABRICATION classes were also found and machine-checked shut: 69 invented rule IDs (CD-154), 36
+false template arrows (CD-165), and 13 cited test functions that exist nowhere (CD-169).
+
 **Row 24 is CLOSED as of CD-161 (`8a23772`)** — the C6.5 corpus replayed on both Tier-1
 targets with identical per-case observations, both records carrying `generated_corpus_status: PASS`.
 Row 24 was the only bar to `CLOSED`; the closure decision is the owner's. The historical record

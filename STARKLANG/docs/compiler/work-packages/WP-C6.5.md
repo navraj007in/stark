@@ -1,20 +1,27 @@
 # WP-C6.5 — Full Differential and Generated Corpus
 
 **Track:** Gate C6 (all of C6 is Claude-owned)
-**Status:** `PARTIAL` — C6.5-0 (re-pin, inventory, matrix) and **C6.5-2 (manifest, layout, lock)**
-complete; **C6.5-1 complete** (comparator extracted and extended to the full §39 observation shape,
-commits 2 and 3), and **all 23 forked suites are migrated** (CD-165, R-02).
-**C6.5-3 PARTIAL** (§10.3 sentinels done; per-row witnesses, trap balance and package breadth
-outstanding — §8.1); **C6.5-4 complete** (deterministic generator, §10.1 lists its two residuals);
-**C6.5-5 complete** (full replay with evidence, classifications, timeouts, sharding — §11.1 lists its
-residuals); **C6.5-6 PARTIAL** (20 metamorphic groups over ten families; M08/M09 blocked on package
-graphs — §12.1); **C6.5-7 complete** (all 16 mutations detected); **C6.5-8 PARTIAL** (package cases, staged package
-replay, relocation and reorder measured; **DEV-113** and **DEV-114** found — §14.1); **C6.5-9 COMPLETE** — Tier-1
-evidence imported from CI at `8a23772`: **131/131 AGREEMENT on both targets with identical per-case
-observation hashes**, and **C6.4 row 24 flipped to PASS**. Corpus `0.5.0`, 131 cases. Recommended
-status **`PARTIAL`** (§16.2). Two findings raised and
-dispositioned by the owner: **C65-F1** (the comparator was forked 23 ways — CD-148) and **C65-F2 /
-DEV-111** (the entry contract diverged in all three engines; MIR fixed, native escalated — CD-149).
+**Status:** `CLOSED` at `e3ef603` — see `WP-C6.5-CLOSURE-PACKET.md`.
+
+All thirteen §17 review findings are closed, none superseded. All 136 coverage-matrix rows carry one
+machine-checked disposition. Corpus `1.3.0`: 160 cases (77 handwritten, 74 generated, 9 retained),
+24 metamorphic groups across twelve families, 10 of 10 admitted trap categories, 23 mutation controls
+over 15 of 15 comparator fields.
+
+**Tier-1 at `e3ef603`:** 160/160 on macOS-arm64 and Linux-x64, same commit, identical manifest and
+generator hashes, **every per-case observation hash byte-identical between targets**, no skips or
+quarantines. All 15 CI jobs green.
+
+**Claim boundary.** The admitted **executable** surface agrees across all three engines. This is NOT
+a claim that every specified limit is enforced: **DEV-118** (the `T: Hash + Eq` bound is unenforced
+for `HashMap` and `HashSet`) is carried open and non-blocking, owned by WP-C6.3. It is an
+enforcement omission rather than a differential defect — all three engines accept the same programs.
+
+**Five defects found and fixed by this work package:** DEV-111 (MIR entry termination), DEV-112
+(`()` as `Unit`), DEV-113 (package trap provenance), DEV-114 (diamond-graph symbol nondeterminism),
+DEV-115 (`str::bytes` half-landed), DEV-116 (`HashSet` unlowerable, incl. `iter`), DEV-117 (MIR
+refused reinitialisation). Each was found by closing a coverage gap rather than by inspection.
+
 **Authority:** `starkc/docs/WP-C6-ENTRY.md` §§38–45 (tracked, normative); inherited scope from
 `WP-C2.12`.
 **Execution plan:** `WP-C6.5-Full-Differential-Generated-Corpus-Execution-Plan.md` (repo root,

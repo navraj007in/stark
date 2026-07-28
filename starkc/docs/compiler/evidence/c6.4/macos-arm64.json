@@ -1,10 +1,10 @@
 {
   "schema_version": "c6.4-evidence-1",
   "work_package": "WP-C6.4",
-  "commit_sha": "8a23772eeafa1a3605e6776b0b4bf50402b7d20d",
+  "commit_sha": "e3ef603f0f4cfe33175db365778883c5f76e0d8a",
   "dirty_worktree": false,
-  "timestamp_utc": "2026-07-26T21:50:28.169386+00:00",
-  "runner_provider": "GitHub Actions 1000001523",
+  "timestamp_utc": "2026-07-28T02:04:20.260555+00:00",
+  "runner_provider": "GitHub Actions 1000001888",
   "os_name": "Darwin",
   "os_version": "23.6.0",
   "architecture": "arm64",
@@ -52,7 +52,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.83,
+      "duration_s": 1.17,
       "ok": true,
       "note": ""
     },
@@ -75,7 +75,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 8.64,
+      "duration_s": 10.25,
       "ok": true,
       "note": ""
     },
@@ -96,7 +96,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 11.06,
+      "duration_s": 11.25,
       "ok": true,
       "note": ""
     },
@@ -117,7 +117,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 13.75,
+      "duration_s": 14.7,
       "ok": true,
       "note": ""
     },
@@ -136,7 +136,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.37,
+      "duration_s": 0.42,
       "ok": true,
       "note": ""
     },
@@ -152,12 +152,12 @@
         "--nocapture"
       ],
       "exit_code": 0,
-      "passed": 6,
+      "passed": 7,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 45.76,
+      "duration_s": 61.65,
       "ok": true,
       "note": ""
     },
@@ -171,12 +171,12 @@
         "c6_metamorphic"
       ],
       "exit_code": 0,
-      "passed": 3,
+      "passed": 4,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 15.55,
+      "duration_s": 19.06,
       "ok": true,
       "note": ""
     },
@@ -190,12 +190,12 @@
         "c6_mutation"
       ],
       "exit_code": 0,
-      "passed": 4,
+      "passed": 5,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 6.0,
+      "duration_s": 6.53,
       "ok": true,
       "note": ""
     },
@@ -214,7 +214,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 3.06,
+      "duration_s": 3.76,
       "ok": true,
       "note": ""
     },
@@ -230,12 +230,12 @@
         "c6_corpus_generator"
       ],
       "exit_code": 0,
-      "passed": 38,
+      "passed": 43,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 10.74,
+      "duration_s": 16.79,
       "ok": true,
       "note": ""
     },
@@ -254,7 +254,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.29,
+      "duration_s": 0.28,
       "ok": true,
       "note": ""
     },
@@ -311,7 +311,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.19,
+      "duration_s": 0.17,
       "ok": true,
       "note": ""
     },
@@ -327,7 +327,7 @@
         "--no-fail-fast"
       ],
       "exit_code": 0,
-      "passed": 1560,
+      "passed": 1588,
       "failed": 0,
       "ignored": 2,
       "ignored_names": [
@@ -335,7 +335,7 @@
         "real_inference_agrees_with_reference"
       ],
       "skipped": 0,
-      "duration_s": 170.5,
+      "duration_s": 202.26,
       "ok": true,
       "note": ""
     }
@@ -356,7 +356,7 @@
     "release_package",
     "workspace"
   ],
-  "passed_count": 1882,
+  "passed_count": 1918,
   "failed_count": 0,
   "ignored_count": 2,
   "classified_ignores": {
@@ -365,8 +365,8 @@
   },
   "unclassified_ignores": [],
   "skipped_count": 0,
-  "generated_corpus_version": "0.5.0",
-  "generated_corpus_case_count": 131,
+  "generated_corpus_version": "1.3.0",
+  "generated_corpus_case_count": 160,
   "generated_corpus_status": "PASS",
   "determinism_first_hash": "key=b0196f932d9e2de063cb314e6dfded40 source=d8ef1ba49e745d3e",
   "determinism_second_hash": "key=b0196f932d9e2de063cb314e6dfded40 source=d8ef1ba49e745d3e",

@@ -1,10 +1,10 @@
 {
   "schema_version": "c6.4-evidence-1",
   "work_package": "WP-C6.4",
-  "commit_sha": "8a23772eeafa1a3605e6776b0b4bf50402b7d20d",
+  "commit_sha": "e3ef603f0f4cfe33175db365778883c5f76e0d8a",
   "dirty_worktree": false,
-  "timestamp_utc": "2026-07-26T21:50:41.697239+00:00",
-  "runner_provider": "GitHub Actions 1000001520",
+  "timestamp_utc": "2026-07-28T02:04:40.337012+00:00",
+  "runner_provider": "GitHub Actions 1000001879",
   "os_name": "Linux",
   "os_version": "6.17.0-1020-azure",
   "architecture": "x86_64",
@@ -52,7 +52,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 2.72,
+      "duration_s": 3.67,
       "ok": true,
       "note": ""
     },
@@ -75,7 +75,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 16.59,
+      "duration_s": 20.21,
       "ok": true,
       "note": ""
     },
@@ -96,7 +96,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 12.21,
+      "duration_s": 12.18,
       "ok": true,
       "note": ""
     },
@@ -117,7 +117,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 12.71,
+      "duration_s": 12.58,
       "ok": true,
       "note": ""
     },
@@ -152,12 +152,12 @@
         "--nocapture"
       ],
       "exit_code": 0,
-      "passed": 6,
+      "passed": 7,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 47.15,
+      "duration_s": 60.05,
       "ok": true,
       "note": ""
     },
@@ -171,12 +171,12 @@
         "c6_metamorphic"
       ],
       "exit_code": 0,
-      "passed": 3,
+      "passed": 4,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 16.44,
+      "duration_s": 21.19,
       "ok": true,
       "note": ""
     },
@@ -190,12 +190,12 @@
         "c6_mutation"
       ],
       "exit_code": 0,
-      "passed": 4,
+      "passed": 5,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 7.55,
+      "duration_s": 8.41,
       "ok": true,
       "note": ""
     },
@@ -214,7 +214,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 5.08,
+      "duration_s": 6.12,
       "ok": true,
       "note": ""
     },
@@ -230,12 +230,12 @@
         "c6_corpus_generator"
       ],
       "exit_code": 0,
-      "passed": 38,
+      "passed": 43,
       "failed": 0,
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 16.9,
+      "duration_s": 22.66,
       "ok": true,
       "note": ""
     },
@@ -254,7 +254,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.37,
+      "duration_s": 0.36,
       "ok": true,
       "note": ""
     },
@@ -311,7 +311,7 @@
       "ignored": 0,
       "ignored_names": [],
       "skipped": 0,
-      "duration_s": 0.15,
+      "duration_s": 0.12,
       "ok": true,
       "note": ""
     },
@@ -327,7 +327,7 @@
         "--no-fail-fast"
       ],
       "exit_code": 0,
-      "passed": 1560,
+      "passed": 1588,
       "failed": 0,
       "ignored": 2,
       "ignored_names": [
@@ -335,7 +335,7 @@
         "real_inference_agrees_with_reference"
       ],
       "skipped": 0,
-      "duration_s": 173.57,
+      "duration_s": 206.41,
       "ok": true,
       "note": ""
     }
@@ -356,7 +356,7 @@
     "release_package",
     "workspace"
   ],
-  "passed_count": 1882,
+  "passed_count": 1918,
   "failed_count": 0,
   "ignored_count": 2,
   "classified_ignores": {
@@ -365,8 +365,8 @@
   },
   "unclassified_ignores": [],
   "skipped_count": 0,
-  "generated_corpus_version": "0.5.0",
-  "generated_corpus_case_count": 131,
+  "generated_corpus_version": "1.3.0",
+  "generated_corpus_case_count": 160,
   "generated_corpus_status": "PASS",
   "determinism_first_hash": "key=46495c4a7f2951dca6c06f8722c3b37e source=a4bcc0d28de22d82",
   "determinism_second_hash": "key=46495c4a7f2951dca6c06f8722c3b37e source=a4bcc0d28de22d82",

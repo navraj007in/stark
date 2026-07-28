@@ -381,3 +381,26 @@ leases are entered before the work starts, which is the correction R-06 demanded
 `starkc/tests/exec_snapshots.rs` is **not** leased: the frozen corpus is single-file and names its own
 cases, so DEV-113's logical-path change should not reach it. If that proves wrong the lease is taken
 before the file is edited, not after.
+
+## WP-C6.5 closure (2026-07-28, CD-178)
+
+**Qualified commit `e3ef603`.** All 15 CI jobs green, including both `C6.4 tier-1 qualification`
+targets, `C6.4 tier-1 agreement` and `C6.5 corpus tier-1 agreement`.
+
+| Item | Result |
+| --- | --- |
+| Tier-1, both targets, same commit | 160/160, `full_evidence: true`, `skipped_count: 0` |
+| Per-case observation hashes | **0 differing** across 160 cases; verified independently of CI's verdict |
+| Engines per case | all three on every case; no non-PASS engine anywhere |
+| Corpus | `1.3.0` — 77 handwritten, 74 generated, 9 retained |
+| Matrix | 136/136 rows with one machine-checked disposition, 0 UNATTRIBUTED |
+| §17 findings | 13 of 13 CLOSED, 0 SUPERSEDED |
+
+**Evidence records refreshed** at `starkc/docs/compiler/evidence/c6.{4,5}/`. The `8a23772` records
+are superseded, not false: the qualified path changed underneath them, so they are replaced rather
+than amended.
+
+**Carried out of C6.5:** DEV-118 — the `T: Hash + Eq` bound is unenforced for both `HashMap` and
+`HashSet`. Open, non-blocking, **owned by WP-C6.3**. An enforcement omission rather than a
+differential defect; all three engines accept the same programs. Pinned by
+`dev116_hashset::dev118_the_hash_bound_is_not_enforced_for_either_collection`.

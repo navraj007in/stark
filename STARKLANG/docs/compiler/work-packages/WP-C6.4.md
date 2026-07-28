@@ -4,9 +4,9 @@
 **Status:** COMPLETE for everything C6.4 can reach, including the owner's second review round
 (R1–R5, §2). **Both Tier-1 records exist and agree at `4844702`** (CI run 30192449131, all 11 jobs
 green), taken under the strengthened comparator. Matrix rows 1–23 MET, row 25 REPORT-ONLY with G1
-and G3 closed. **Row 24 is now PASS** (CD-161, `8a23772`).
+and G3 closed. **Row 24 is now PASS** — re-qualified at `e3ef603` (CD-178); the `8a23772` record is superseded, not false, because the qualified path changed underneath it.
 Closure status: **`CLOSED` — owner directive, 2026-07-27 (CD-162)**, on the refreshed same-commit
-Tier-1 evidence at `8a23772`: 131/131 corpus agreement on macOS-arm64 and Linux-x64 with identical
+Tier-1 evidence at `e3ef603`: 160/160 corpus agreement on macOS-arm64 and Linux-x64 with identical
 per-case observation hashes, and row 24 `PASS`. The prior ceiling was
 **`CANDIDATE-COMPLETE-BLOCKED-BY-C6.5-CORPUS`**, **accepted by the owner
 2026-07-26 (CD-146)**. Not `CLOSED`, and no decision could have made it so — row 24 needs an
@@ -61,7 +61,7 @@ opens on an admitted runtime rather than a provisional one, and the concern reco
 first opened (that Tier-1 evidence would describe a runtime whose loop emission was unconfirmed) no
 longer applies.
 
-### 1.2 Generated corpus (§7.3) — **row 24 CLOSED at `8a23772` (CD-161)**
+### 1.2 Generated corpus (§7.3) — **row 24 CLOSED, re-qualified at `e3ef603` (CD-178)**
 
 **The blocker is discharged.** WP-C6.5 built the corpus (`starkc/tests/c6-corpus/`, `corpus_version`
 0.5.0, 131 cases) and CI replayed it on both Tier-1 targets at one commit; `compare-c65-evidence.py`
