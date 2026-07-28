@@ -130,6 +130,15 @@ pub fn build_and_link(
     // `/private/var/folders/...` — and a remap written with the literal path silently matches
     // nothing. That is exactly what happened here: the first attempt removed the source-span paths
     // and left every linker artefact untouched, because those carry the resolved form.
+    //
+    // The flags go through `CARGO_ENCODED_RUSTFLAGS`, not `RUSTFLAGS`, and that is a correctness
+    // requirement rather than a preference. `RUSTFLAGS` is SPACE-SEPARATED, so a build directory
+    // containing a space — `/tmp/build dir/...` — splits one `--remap-path-prefix=FROM=TO` into two
+    // arguments, and rustc rejects the fragment with "must contain '=' between FROM and TO". The
+    // build then fails for every project under such a path, which is how this was found: the
+    // spaces-in-paths portability test broke on all three platforms the moment remapping landed.
+    // `CARGO_ENCODED_RUSTFLAGS` separates on `\x1f`, a byte no path contains, so each flag survives
+    // as one argument whatever the path holds.
     let mut rustflags = std::ffi::OsString::new();
     let remap = |path: &Path, label: &str, flags: &mut std::ffi::OsString| {
         let mut forms = vec![path.to_path_buf()];
@@ -140,7 +149,7 @@ pub fn build_and_link(
         }
         for form in forms {
             if !flags.is_empty() {
-                flags.push(" ");
+                flags.push("\u{1f}");
             }
             flags.push("--remap-path-prefix=");
             flags.push(form.as_os_str());
@@ -154,7 +163,11 @@ pub fn build_and_link(
     let output = Command::new(&toolchain.cargo)
         .args(&cargo_args)
         .env("RUSTC", &toolchain.rustc)
-        .env("RUSTFLAGS", &rustflags)
+        .env("CARGO_ENCODED_RUSTFLAGS", &rustflags)
+        // Cargo ignores `RUSTFLAGS` whenever the encoded form is set, so removing it changes
+        // nothing about this build — it is removed so the child environment has exactly one place
+        // rustflags come from, and an inherited `RUSTFLAGS` cannot look like it is in effect.
+        .env_remove("RUSTFLAGS")
         .output()
         .map_err(|e| {
             BackendDiagnostic::BuildFailed(Box::new(BackendBuildFailure {

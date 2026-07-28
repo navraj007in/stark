@@ -239,3 +239,61 @@ fn debug_executables_are_not_yet_reproducible_and_that_is_recorded() {
     let _ = std::fs::remove_dir_all(&ra);
     let _ = std::fs::remove_dir_all(&rb);
 }
+
+/// **Regression, WP-C7.4 (CD-190).** Remapping must survive a build directory containing a SPACE.
+///
+/// The first implementation passed the flags through `RUSTFLAGS`, which Cargo splits on spaces. A
+/// path like `/tmp/build dir/...` therefore tore one `--remap-path-prefix=FROM=TO` into two
+/// arguments and rustc rejected the fragment — so every build under such a path failed outright,
+/// not merely un-remapped. `CARGO_ENCODED_RUSTFLAGS` separates on `\x1f` instead.
+///
+/// This asserts both halves, because either alone would let the defect back in: the build must
+/// SUCCEED (the flags reached rustc intact) and the release binary must NOT embed the path (the
+/// flags were actually applied, rather than dropped in a way that happens to build fine).
+#[test]
+fn remapping_survives_a_build_path_containing_spaces() {
+    if !stark_binary().is_file() {
+        eprintln!("SKIP: `stark` is not built in this target directory.");
+        return;
+    }
+    let root = std::env::temp_dir().join(format!(
+        "c72 spaced root {}_{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    copy_tree(&workload("w01_minimal"), &root);
+
+    let out = Command::new(stark_binary())
+        .args(["build", "--release"])
+        .current_dir(&root)
+        .output()
+        .expect("stark build");
+    assert!(
+        out.status.success(),
+        "a build under a path containing spaces failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let binary = std::fs::read_dir(root.join("target/stark/release"))
+        .expect("output dir")
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.is_file()
+                && if cfg!(windows) {
+                    p.extension().is_some_and(|e| e == "exe")
+                } else {
+                    p.extension().is_none()
+                }
+        })
+        .expect("an executable");
+    let bytes = std::fs::read(&binary).expect("read binary");
+    let needle_owned = root.to_string_lossy().to_string();
+    let needle = needle_owned.as_bytes();
+    assert!(
+        !bytes.windows(needle.len()).any(|w| w == needle),
+        "the release binary embeds its spaced build path, so remapping did not apply"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

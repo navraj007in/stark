@@ -20,11 +20,19 @@ artefacts in three different classes, and the executable's class depends on the 
 
 ## 2. What was changed, and what it did not achieve
 
-`RUSTFLAGS=--remap-path-prefix=…` is now set for the generated crate's build, mapping the crate
-directory to `/stark/crate` and the runtime crate to `/stark/runtime`. Each prefix is remapped in
-**both** its literal and canonicalised form, because on macOS `/var` resolves to `/private/var` and
-a remap written with the unresolved path matches nothing — which is precisely what the first attempt
-did.
+`--remap-path-prefix=…` is now set for the generated crate's build, mapping the crate directory to
+`/stark/crate` and the runtime crate to `/stark/runtime`. Each prefix is remapped in **both** its
+literal and canonicalised form, because on macOS `/var` resolves to `/private/var` and a remap
+written with the unresolved path matches nothing — which is precisely what the first attempt did.
+
+The flags are passed through **`CARGO_ENCODED_RUSTFLAGS`**, not `RUSTFLAGS`, and the distinction is
+load-bearing. `RUSTFLAGS` is space-separated, so a build directory containing a space splits one
+`--remap-path-prefix=FROM=TO` into two arguments and rustc rejects the fragment outright — every
+build under such a path fails, rather than merely going un-remapped. `CARGO_ENCODED_RUSTFLAGS`
+separates on `\x1f`, which no path contains. This was shipped as `RUSTFLAGS` first and broke the
+spaces-in-paths portability test on all three platforms; corrected in CD-190, with a dedicated
+regression test in `c72_reproducibility.rs` that asserts both that such a build succeeds and that
+the remap actually applied.
 
 It removes 31 of the 62 embedded strings from a debug binary, including **every reference to the
 compiler's own installation directory**. That is worth having on its own: a debug binary should not
