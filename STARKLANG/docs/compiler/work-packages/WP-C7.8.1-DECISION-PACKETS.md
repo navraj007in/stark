@@ -4,12 +4,12 @@ Five dispositions required before any WP-C7.8 implementation begins (2026-07-28)
 cause, normative requirement, choices, recommendation (replaced by a disposition once ruled),
 compatibility impact, implementation surface and required regression evidence.
 
-**Status: 2 of 5 dispositioned.**
+**Status: 3 of 5 dispositioned.**
 
 | Packet | Class | Subject | Status |
 | --- | --- | --- | --- |
 | 1 | CE4 | First-party provider invocation model | **DISPOSITIONED 2026-07-28, FULLY** — B (statically linked, ABI-semantic); all four sub-decisions confirmed with two clarifications |
-| 2 | CE3 | MIR runtime surface `0.1-A9` → `0.1-A10` | OPEN — direction indicated; declaration and nine verifier invariants enumerated, formal disposition pending |
+| 2 | CE3 | MIR runtime surface `0.1-A9` → `0.1-A10` | **DISPOSITIONED 2026-07-28** — distinct `Callee::Provider` form; amendment at `mir-amendment-A10-provider-invocation.md` |
 | 3 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | **DISPOSITIONED 2026-07-28** — option A, both texts unchanged, seven binding conditions |
 | 4 | CE1 | Normative surface placement for the five capabilities | OPEN — recommends the option requiring no Core change |
 | 5 | CE9 | File, environment and network trust boundaries | OPEN |
@@ -356,11 +356,28 @@ path, and C forfeits the drop guarantee entirely.
 Bump `MIR_RUNTIME_SURFACE` to `0.1-A10`. Enumerate every added operation with signature and
 ownership form in the amendment, as `mir-amendment-A1-strings-runtime.md` did for its surface.
 
-### Enumeration prepared for the CE3 decision (owner direction, 2026-07-28)
+## DISPOSITION — owner ruling, 2026-07-28: **A. Approved under CE3.**
 
-The owner has indicated approval of this direction and required the declaration and verifier
-invariants to be enumerated **before** implementation. That enumeration follows; the formal CE3
-disposition is still to be recorded.
+> Add `Callee::Provider(ProviderCallId)` as a distinct MIR call form and advance
+> `MIR_RUNTIME_SURFACE` from `0.1-A9` to `0.1-A10`. Provider calls must resolve through a validated
+> `FunctionDecl`; they must not be represented as `RuntimeFn` values or bare symbols.
+
+The full amendment is `STARKLANG/docs/compiler/mir-amendment-A10-provider-invocation.md`. It is a
+**separate document** rather than a rev. 14 of `mir-amendment-A1-strings-runtime.md`, because
+surfaces `0.1-A1`…`0.1-A9` are all `RuntimeFn` table growth in that document's subject area and
+A10 is not: it adds no `RuntimeFn` member at all. A1's header and revision log record the counter
+advancing, so the surface version stays traceable from where readers look for it.
+
+**One correction to the approving sketch, applied without changing its substance.** The disposition
+illustrated `Callee` as `Function(FunctionId)` / `Runtime` / `Provider`, which renames the
+direct-call form and omits `FnValue`. This repository's enum is `Instance(Instance)` /
+`FnValue(Operand)` / `Runtime(RuntimeFn)`; `FnValue` carries function values closed under
+CD-021/CD-027 and WP-C5.4. A10 is purely additive — it renames and removes nothing. The owner's
+"exact field names may follow repository conventions" governs.
+
+**C7.8.2 may start** now that this disposition and the A10 amendment are committed.
+
+### Enumeration (binding under this disposition)
 
 **Why a separate form, stated as the contract difference rather than as style.** `RuntimeFn`
 represents compiler- and runtime-owned operations with compiler-known semantics. A provider call

@@ -11,6 +11,11 @@ activated Vec iteration as `0.1-A2`; rev. 6 activated the HashMap group and Char
 chars iteration as `0.1-A5`; rev. 10 activated shared slice views as `0.1-A6`, completing the
 A4 `core-min` MIR runtime surface; rev. 11 activated the `Box<T>` group as `0.1-A7`; rev. 12 activated the EXCLUSIVE slice view as
 `0.1-A8`; rev. 13 activated the `Float32` print pair as `0.1-A9`).
+**The surface has since advanced to `0.1-A10` under a SEPARATE amendment**
+(`mir-amendment-A10-provider-invocation.md`, approved under CE3 2026-07-28) — see §11's final
+entry. A10 adds no `RuntimeFn` member and belongs to no table in this document; it introduces a
+distinct invocation category (`Callee::Provider`). The counter is noted here because this header
+is where readers look for it.
 
 Scope class: **narrow additive amendment to MIR v0.1** (`mir.md`, APPROVED CD-028, amended
 CD-029). It adds one `Constant` form, one optional `Terminator::Trap` field, **one** additive
@@ -438,6 +443,20 @@ instance selected for it. STD-HASH-001 decides key identity "exclusively with la
 execution engines read this ONE table rather than each resolving the impl itself — the divergence
 CD-133 found was precisely the MIR interpreter deciding independently (structurally) and silently
 disagreeing with the HIR oracle.
+
+**Surface `0.1-A10` — RECORDED HERE, SPECIFIED ELSEWHERE (2026-07-28, CE3).** The runtime surface
+advanced to `0.1-A10` under `mir-amendment-A10-provider-invocation.md`, not under a revision of
+this document, and this entry exists only so the counter remains traceable from the header above.
+
+A10 adds **no `RuntimeFn` member** — nothing in any appendix table here changes. It adds one
+`Callee` variant, `Provider(ProviderCallId)`, resolving to a validated provider `FunctionDecl`, and
+with it nine binding verifier invariants covering ABI ownership, borrow validity, output-slot
+discipline, `resource_type` validation and failure-channel separation. `RuntimeFn` remains reserved
+for compiler-owned runtime operations; provider calls are deliberately not expressible through it.
+
+A separate document was used because A1's subject is the string/collection runtime surface and its
+revisions enumerate table growth. A new invocation category is a different kind of change, and
+filing it as rev. 14 here would have buried it.
 
 **V-MAP-1:** every `Core(HashMap, [K, V])` reachable from a body's locals, parameters, or return
 type with a NOMINAL `K` must have an `eq_impls` entry for `K`. Violation is **MIR-0018**, an

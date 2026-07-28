@@ -185,7 +185,8 @@ provider metadata means the integration model has drifted from ABI v0.1.
 
 ## 5.2 WP-C7.8.2 — MIR runtime surface amendment and ABI bindings
 
-The CE3 decision. Full packet in `WP-C7.8.1-DECISION-PACKETS.md` Packet 2.
+The CE3 decision, **dispositioned 2026-07-28**. Packet 2 in `WP-C7.8.1-DECISION-PACKETS.md`; the
+full amendment is `STARKLANG/docs/compiler/mir-amendment-A10-provider-invocation.md`.
 
 `RuntimeFn` is a closed, versioned enum of 72 value operations (`starkc/src/mir/mod.rs:384`) whose
 own contract states that "every extension of this enum is an extension of the MIR version's
@@ -197,11 +198,13 @@ they are a different shape and get a distinct `Callee::Provider` form rather tha
 this is an admission and lowering gap in `emit_types.rs`, not a type-system gap. No new `MirTy`
 variant is required.
 
-The declaration and nine verifier invariants are **enumerated in Packet 2** ahead of the formal CE3
-disposition, per the owner's requirement that they be settled before implementation. `Callee` gains
-a fourth variant, `Provider(ProviderCallId)`, resolving to a validated `FunctionDecl` carrying the
-full ABI contract — not a bare symbol, because every invariant is checked against the declaration
-rather than reconstructed at the call site.
+The declaration and nine verifier invariants were enumerated before the disposition, per the
+owner's requirement that they be settled before implementation, and are **binding** under it.
+`Callee` gains a fourth variant, `Provider(ProviderCallId)`, resolving to a validated
+`FunctionDecl` carrying the full ABI contract — not a bare symbol, because every invariant is
+checked against the declaration rather than reconstructed at the call site. Provider calls are
+target-resolved **before** MIR verification; the backend never performs first-time provider
+selection or interprets unvalidated metadata.
 
 Required:
 
@@ -209,7 +212,7 @@ Required:
 - update verifier admission rules (`AbiParam` conformance, consumed-handle liveness, out-slot
   discipline, close reachability);
 - bump `MIR_RUNTIME_SURFACE` from `0.1-A9` to `0.1-A10`;
-- publish the amendment as `mir-amendment-A10-provider-invocation.md`;
+- the amendment is published at `mir-amendment-A10-provider-invocation.md` (rev. 1, approved);
 - positive and negative fixtures per operation;
 - record the CE3 disposition.
 
@@ -435,7 +438,7 @@ Ownership boundaries, written down rather than assumed:
 | Class | Subject | Packet |
 | --- | --- | --- |
 | CE4 | First-party provider invocation model and ABI application | 1 — **DISPOSITIONED 2026-07-28** |
-| CE3 | New MIR runtime surface (`0.1-A9` → `0.1-A10`) | 2 — OPEN |
+| CE3 | New MIR runtime surface (`0.1-A9` → `0.1-A10`) | 2 — **DISPOSITIONED 2026-07-28** |
 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | 3 — **DISPOSITIONED 2026-07-28** |
 | CE1 | Normative surface placement for the five capabilities | 4 — OPEN |
 | CE9 | File, environment and network trust boundaries; provider linking | 5 — OPEN |
@@ -449,8 +452,8 @@ recorded — the alternative options are CE1, and choosing not to take them is i
 
 - [ ] C7.8 present in `COMPILER-ROADMAP.md` and `COMPILER-STATE.md`.
 - [ ] The `WP-C7.7-GATE-EXIT.md:113` open question is answered by a recorded owner decision.
-- [ ] All five packets dispositioned; CE3, CE1 and CE9 each recorded.
-      (CE4 — Packet 1 — and CE2 — Packet 3 — **done 2026-07-28**.)
+- [ ] All five packets dispositioned; CE1 and CE9 each recorded.
+      (CE4, CE3 and CE2 — Packets 1, 2 and 3 — **done 2026-07-28**.)
 - [ ] C8 concurrency boundary written down.
 
 **Architecture**
