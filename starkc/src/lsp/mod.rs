@@ -3,6 +3,7 @@
 //! Provides a stdio-based LSP server supporting Core v1 diagnostics,
 //! type information, navigation, and other IDE features.
 
+pub mod position;
 pub mod protocol;
 pub mod server;
 pub mod state;

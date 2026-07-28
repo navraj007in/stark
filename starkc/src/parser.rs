@@ -24,6 +24,8 @@ use crate::diag::Diagnostic;
 use crate::lexer::{tokenize, Kw, Token, TokenKind};
 use crate::options::LanguageOptions;
 use crate::source::{SourceFile, Span};
+use std::collections::HashMap;
+use std::path::{Path as StdPath, PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ParseMode {
@@ -57,7 +59,15 @@ pub fn parse_with_options(
 }
 
 pub fn parse_project(root_file: &SourceFile, options: LanguageOptions) -> (Ast, Vec<Diagnostic>) {
-    parse_project_inner(root_file, options, false)
+    parse_project_inner(root_file, options, false, &HashMap::new())
+}
+
+pub fn parse_project_with_overlays(
+    root_file: &SourceFile,
+    options: LanguageOptions,
+    overlays: &HashMap<PathBuf, String>,
+) -> (Ast, Vec<Diagnostic>) {
+    parse_project_inner(root_file, options, false, overlays)
 }
 
 /// DEV-036: a test-harness-only entry point, identical to [`parse_project`] except that a
@@ -75,13 +85,14 @@ pub fn parse_project_allowing_missing_modules(
     root_file: &SourceFile,
     options: LanguageOptions,
 ) -> (Ast, Vec<Diagnostic>) {
-    parse_project_inner(root_file, options, true)
+    parse_project_inner(root_file, options, true, &HashMap::new())
 }
 
 fn parse_project_inner(
     root_file: &SourceFile,
     options: LanguageOptions,
     allow_missing_modules: bool,
+    overlays: &HashMap<PathBuf, String>,
 ) -> (Ast, Vec<Diagnostic>) {
     let mut ast = Ast::default();
     let mut diags = Vec::new();
@@ -108,6 +119,7 @@ fn parse_project_inner(
         &mut ast,
         &mut loaded_modules,
         allow_missing_modules,
+        overlays,
     ) {
         diags.append(&mut loader_diags);
     }
@@ -118,6 +130,14 @@ fn parse_project_inner(
 pub fn parse_package_graph(
     graph: &crate::package::PackageGraph,
     options: LanguageOptions,
+) -> (Ast, Vec<Diagnostic>) {
+    parse_package_graph_with_overlays(graph, options, &HashMap::new())
+}
+
+pub fn parse_package_graph_with_overlays(
+    graph: &crate::package::PackageGraph,
+    options: LanguageOptions,
+    overlays: &HashMap<PathBuf, String>,
 ) -> (Ast, Vec<Diagnostic>) {
     let mut ast = Ast::default();
     let mut diags = Vec::new();
@@ -130,6 +150,7 @@ pub fn parse_package_graph(
         &mut ast,
         &mut diags,
         &mut parsed_packages,
+        overlays,
     );
 
     match root_items_res {
@@ -152,6 +173,7 @@ fn parse_package_rec(
     ast: &mut Ast,
     diags: &mut Vec<Diagnostic>,
     parsed_packages: &mut std::collections::HashMap<String, Vec<ItemId>>,
+    overlays: &HashMap<PathBuf, String>,
 ) -> Result<Vec<ItemId>, String> {
     if let Some(items) = parsed_packages.get(pkg_name) {
         return Ok(items.clone());
@@ -162,7 +184,7 @@ fn parse_package_rec(
         .get(pkg_name)
         .ok_or_else(|| format!("Package '{}' not found in graph", pkg_name))?;
 
-    let entry_src = std::fs::read_to_string(&pkg.entry).map_err(|e| {
+    let entry_src = read_source_with_overlay(&pkg.entry, overlays).map_err(|e| {
         format!(
             "failed to read entry file '{}' for package '{}': {}",
             pkg.entry.display(),
@@ -206,6 +228,7 @@ fn parse_package_rec(
         ast,
         &mut loaded_modules,
         false,
+        overlays,
     ) {
         diags.append(&mut sub_diags);
     }
@@ -222,7 +245,15 @@ fn parse_package_rec(
     let mut dependency_aliases: Vec<&String> = pkg.dependencies.keys().collect();
     dependency_aliases.sort();
     for dep_name in dependency_aliases {
-        let dep_items = parse_package_rec(dep_name, graph, options, ast, diags, parsed_packages)?;
+        let dep_items = parse_package_rec(
+            dep_name,
+            graph,
+            options,
+            ast,
+            diags,
+            parsed_packages,
+            overlays,
+        )?;
 
         let synthetic_lo = 0x8000_0000 + ast.synthetic_spans.len() as u32;
         let synthetic_hi = synthetic_lo + dep_name.len() as u32;
@@ -281,6 +312,7 @@ fn load_submodules_recursive(
     ast: &mut Ast,
     loaded_modules: &mut std::collections::HashSet<String>,
     allow_missing_modules: bool,
+    overlays: &HashMap<PathBuf, String>,
 ) -> Result<(), Vec<Diagnostic>> {
     let mut diags = Vec::new();
     // Resolution follows the file's REAL directory (DEV-113-A): once names are logical they can no
@@ -330,7 +362,7 @@ fn load_submodules_recursive(
         }
 
         let (path, src) = if let Some(path) = existing.first() {
-            if let Ok(src) = std::fs::read_to_string(path) {
+            if let Ok(src) = read_source_with_overlay(path, overlays) {
                 ((*path).clone(), src)
             } else {
                 diags.push(
@@ -438,6 +470,7 @@ fn load_submodules_recursive(
             ast,
             loaded_modules,
             allow_missing_modules,
+            overlays,
         ) {
             diags.append(&mut sub_diags);
         }
@@ -448,6 +481,18 @@ fn load_submodules_recursive(
     } else {
         Err(diags)
     }
+}
+
+fn read_source_with_overlay(
+    path: &StdPath,
+    overlays: &HashMap<PathBuf, String>,
+) -> std::io::Result<String> {
+    if let Ok(canonical) = path.canonicalize() {
+        if let Some(src) = overlays.get(&canonical) {
+            return Ok(src.clone());
+        }
+    }
+    std::fs::read_to_string(path)
 }
 
 pub fn parse_with_options_into(
@@ -2614,10 +2659,11 @@ impl Parser<'_> {
             }
         };
         let item_id = self.ast.alloc_item(kind, vis, self.span_from(lo));
-        let file_arc = std::sync::Arc::new(SourceFile::new(
-            self.file.name.clone(),
-            self.file.src.clone(),
-        ));
+        let mut file = SourceFile::new(self.file.name.clone(), self.file.src.clone());
+        if let Some(path) = &self.file.disk_path {
+            file = file.with_disk_path(path.clone());
+        }
+        let file_arc = std::sync::Arc::new(file);
         self.ast.item_files.insert(item_id, file_arc);
         Some(item_id)
     }

@@ -125,6 +125,50 @@ impl QueryIndex {
         self.references.get(&symbol).cloned().unwrap_or_default()
     }
 
+    pub(crate) fn semantic_tokens(
+        &self,
+        analysis: &ProjectAnalysis,
+        source: SourceId,
+    ) -> Vec<SemanticToken> {
+        let mut tokens = Vec::new();
+        for symbol in analysis.symbols.symbols() {
+            if symbol.source == source {
+                tokens.push(SemanticToken {
+                    source,
+                    span: symbol.span,
+                    kind: semantic_kind_for_symbol(symbol.kind),
+                    declaration: true,
+                });
+            }
+        }
+        for occurrence in &self.occurrences {
+            if occurrence.location.source != source {
+                continue;
+            }
+            let Some(kind) = semantic_kind_for_handle(analysis, occurrence.symbol) else {
+                continue;
+            };
+            let declaration = self
+                .definitions
+                .get(&occurrence.symbol)
+                .is_some_and(|definition| *definition == occurrence.location);
+            tokens.push(SemanticToken {
+                source,
+                span: occurrence.location.span,
+                kind,
+                declaration,
+            });
+        }
+        tokens.sort_by_key(|token| (token.source, token.span.lo, token.span.hi));
+        tokens.dedup_by(|left, right| {
+            left.source == right.source
+                && left.span == right.span
+                && left.kind == right.kind
+                && left.declaration == right.declaration
+        });
+        tokens
+    }
+
     pub(crate) fn type_of(
         &self,
         analysis: &ProjectAnalysis,
@@ -168,6 +212,79 @@ impl QueryIndex {
             },
         )?;
         Some(trim_item_signature(&text).to_string())
+    }
+
+    pub(crate) fn signature_help_at(
+        &self,
+        analysis: &ProjectAnalysis,
+        source: SourceId,
+        offset: u32,
+    ) -> Option<SignatureHelp> {
+        let hir = analysis.hir.as_ref()?;
+        let call = self
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.handle.domain == QueryDomain::Hir
+                    && node.handle.kind == QueryKind::Expression
+                    && node.location.source == source
+                    && contains(node.location.span, offset)
+                    && matches!(
+                        hir.expr(hir::ExprId(node.handle.slot)).kind,
+                        hir::ExprKind::Call { .. }
+                    )
+            })
+            .min_by_key(|node| node.location.span.hi.saturating_sub(node.location.span.lo))?;
+        let hir::ExprKind::Call { callee, args } = &hir.expr(hir::ExprId(call.handle.slot)).kind
+        else {
+            return None;
+        };
+        let callee_expr = hir.expr(*callee);
+        let symbol = self.symbol_at(source, callee_expr.span.lo)?;
+        let signature = self.signature(analysis, symbol)?;
+        let parameters = self.signature_parameters(analysis, symbol)?;
+        let active_parameter = active_parameter(hir, args, offset, parameters.len());
+        Some(SignatureHelp {
+            signature,
+            parameters,
+            active_parameter,
+        })
+    }
+
+    fn signature_parameters(
+        &self,
+        analysis: &ProjectAnalysis,
+        handle: QueryHandle,
+    ) -> Option<Vec<String>> {
+        if handle.domain != QueryDomain::Hir || handle.kind != QueryKind::Item {
+            return None;
+        }
+        let hir = analysis.hir.as_ref()?;
+        let item = hir.items.get(handle.slot as usize)?;
+        let sig = fn_sig_for_item(item)?;
+        Some(
+            sig.params
+                .iter()
+                .map(|param| {
+                    let name = source_text(
+                        analysis,
+                        SourceLocation {
+                            source: item_source(analysis, handle)?,
+                            span: param.name,
+                        },
+                    )?;
+                    let ty = hir.ty(param.ty);
+                    let ty = source_text(
+                        analysis,
+                        SourceLocation {
+                            source: item_source(analysis, handle)?,
+                            span: ty.span,
+                        },
+                    )?;
+                    Some(format!("{name}: {ty}"))
+                })
+                .collect::<Option<Vec<_>>>()?,
+        )
     }
 
     pub(crate) fn enclosing(
@@ -233,6 +350,31 @@ fn query_handle(analysis: u64, domain: QueryDomain, kind: QueryKind, slot: u32) 
     }
 }
 
+fn semantic_kind_for_symbol(kind: SymbolKind) -> SemanticTokenKind {
+    match kind {
+        SymbolKind::Function => SemanticTokenKind::Function,
+        SymbolKind::Struct => SemanticTokenKind::Struct,
+        SymbolKind::Enum => SemanticTokenKind::Enum,
+        SymbolKind::Trait => SemanticTokenKind::Trait,
+        SymbolKind::Constant => SemanticTokenKind::Constant,
+        SymbolKind::TypeAlias | SymbolKind::Model => SemanticTokenKind::Type,
+        SymbolKind::Module => SemanticTokenKind::Namespace,
+    }
+}
+
+fn semantic_kind_for_handle(
+    analysis: &ProjectAnalysis,
+    handle: QueryHandle,
+) -> Option<SemanticTokenKind> {
+    if handle.kind == QueryKind::Local {
+        return Some(SemanticTokenKind::Local);
+    }
+    analysis
+        .symbols
+        .by_definition(handle)
+        .map(|symbol| semantic_kind_for_symbol(symbol.kind))
+}
+
 fn contains(span: Span, offset: u32) -> bool {
     if span.lo == span.hi {
         offset == span.lo
@@ -268,6 +410,36 @@ fn trim_item_signature(text: &str) -> &str {
         .find_map(|(index, ch)| matches!(ch, '{' | ';').then_some(index))
         .unwrap_or(text.len());
     text[..boundary].trim()
+}
+
+fn fn_sig_for_item(item: &hir::ItemNode) -> Option<&hir::FnSig> {
+    match &item.kind {
+        hir::ItemKind::Fn(def) => Some(&def.sig),
+        _ => None,
+    }
+}
+
+fn item_source(analysis: &ProjectAnalysis, handle: QueryHandle) -> Option<SourceId> {
+    analysis
+        .symbols
+        .by_definition(handle)
+        .map(|symbol| symbol.source)
+}
+
+fn active_parameter(hir: &Hir, args: &[hir::ExprId], offset: u32, parameter_count: usize) -> usize {
+    if parameter_count == 0 {
+        return 0;
+    }
+    let mut active = 0;
+    for (index, arg) in args.iter().enumerate() {
+        let span = hir.expr(*arg).span;
+        if offset >= span.lo {
+            active = index.min(parameter_count - 1);
+        } else {
+            break;
+        }
+    }
+    active
 }
 
 fn render_ty(analysis: &ProjectAnalysis, ty: &Ty) -> String {

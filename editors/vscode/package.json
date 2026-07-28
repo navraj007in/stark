@@ -177,6 +177,11 @@
           "default": 500,
           "description": "Debounce time in milliseconds before triggering check-on-type."
         },
+        "stark.diagnostics.subprocess": {
+          "type": "boolean",
+          "default": false,
+          "description": "Publish diagnostics from the legacy starkc subprocess checker in addition to the language server. Disabled by default so LSP diagnostics are the automatic authority."
+        },
         "stark.extensionEnabled": {
           "type": "boolean",
           "default": true,

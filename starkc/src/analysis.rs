@@ -9,10 +9,13 @@ use crate::diag::{Diagnostic, DiagnosticBatch, Severity};
 use crate::hir::{Hir, ItemKind, Res};
 use crate::options::{ExtensionSet, LanguageOptions};
 use crate::package::PackageGraph;
-use crate::parser::{parse_package_graph, parse_with_options, ParseMode};
+use crate::parser::{
+    parse_package_graph, parse_package_graph_with_overlays, parse_with_options, ParseMode,
+};
 use crate::source::{SourceFile, Span};
 use crate::typecheck::{analyze_with_options, TypeTables};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -29,6 +32,10 @@ pub enum ProjectInput {
         mode: ParseMode,
     },
     Package(Arc<PackageGraph>),
+    PackageWithOverlays {
+        graph: Arc<PackageGraph>,
+        overlays: Arc<HashMap<PathBuf, String>>,
+    },
 }
 
 impl ProjectInput {
@@ -46,6 +53,13 @@ impl ProjectInput {
 
     pub fn package(graph: PackageGraph) -> Self {
         Self::Package(Arc::new(graph))
+    }
+
+    pub fn package_with_overlays(graph: PackageGraph, overlays: HashMap<PathBuf, String>) -> Self {
+        Self::PackageWithOverlays {
+            graph: Arc::new(graph),
+            overlays: Arc::new(overlays),
+        }
     }
 }
 
@@ -151,6 +165,52 @@ pub struct Symbol {
     pub span: Span,
 }
 
+pub struct CompletionCandidate {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub signature: Option<String>,
+    pub source: SourceId,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignatureHelp {
+    pub signature: String,
+    pub parameters: Vec<String>,
+    pub active_parameter: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RenameEdit {
+    pub source: SourceId,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SemanticTokenKind {
+    Namespace,
+    Type,
+    Struct,
+    Enum,
+    Trait,
+    Function,
+    Method,
+    Field,
+    Parameter,
+    Local,
+    Constant,
+    Builtin,
+    Extension,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SemanticToken {
+    pub source: SourceId,
+    pub span: Span,
+    pub kind: SemanticTokenKind,
+    pub declaration: bool,
+}
+
 #[derive(Default)]
 pub struct SymbolIndex {
     symbols: Vec<Symbol>,
@@ -168,6 +228,12 @@ impl SymbolIndex {
             .into_iter()
             .flatten()
             .filter_map(|index| self.symbols.get(*index))
+    }
+
+    pub fn by_definition(&self, definition: QueryHandle) -> Option<&Symbol> {
+        self.symbols
+            .iter()
+            .find(|symbol| symbol.definition == definition)
     }
 }
 
@@ -244,6 +310,10 @@ impl ProjectAnalysis {
             .flatten()
     }
 
+    pub fn signature_help_at(&self, source: SourceId, offset: u32) -> Option<SignatureHelp> {
+        self.queries.signature_help_at(self, source, offset)
+    }
+
     pub fn enclosing(&self, handle: QueryHandle) -> Option<EnclosingContext> {
         self.owns_handle(handle)
             .then(|| self.queries.enclosing(self, handle))
@@ -283,6 +353,67 @@ impl ProjectAnalysis {
             .iter()
             .filter(|symbol| symbol.name.to_ascii_lowercase().contains(&query))
             .collect()
+    }
+
+    pub fn completion_candidates(&self, query: &str) -> Vec<CompletionCandidate> {
+        let mut candidates = self
+            .workspace_symbols(query)
+            .into_iter()
+            .map(|symbol| CompletionCandidate {
+                name: symbol.name.clone(),
+                kind: symbol.kind,
+                signature: self.signature(symbol.definition),
+                source: symbol.source,
+                span: symbol.span,
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.source.cmp(&right.source))
+                .then_with(|| left.span.lo.cmp(&right.span.lo))
+        });
+        candidates.dedup_by(|left, right| {
+            left.name == right.name && left.source == right.source && left.span == right.span
+        });
+        candidates
+    }
+
+    pub fn rename_edits(&self, symbol: QueryHandle, new_name: &str) -> Option<Vec<RenameEdit>> {
+        if !self.owns_handle(symbol) || !is_identifier(new_name) {
+            return None;
+        }
+        let renamed = self.symbols.by_definition(symbol)?;
+        if self
+            .symbols
+            .named(new_name)
+            .any(|existing| existing.definition != symbol)
+        {
+            return None;
+        }
+        if renamed.name == new_name {
+            return Some(Vec::new());
+        }
+        let mut edits = Vec::new();
+        edits.push(RenameEdit {
+            source: renamed.source,
+            span: renamed.span,
+        });
+        edits.extend(
+            self.references(symbol)
+                .into_iter()
+                .map(|location| RenameEdit {
+                    source: location.source,
+                    span: location.span,
+                }),
+        );
+        edits.sort_by_key(|edit| (edit.source, edit.span.lo, edit.span.hi));
+        edits.dedup();
+        Some(edits)
+    }
+
+    pub fn semantic_tokens(&self, source: SourceId) -> Vec<SemanticToken> {
+        self.queries.semantic_tokens(self, source)
     }
 
     pub fn diagnostic_batch(&self, source_versions: &HashMap<SourceId, i64>) -> DiagnosticBatch {
@@ -337,6 +468,40 @@ pub fn analyze_project(input: ProjectInput, options: LanguageOptions) -> Project
                 }
             }
         }
+        ProjectInput::PackageWithOverlays { graph, overlays } => {
+            let entry = graph.packages[&graph.root_package_name].entry.clone();
+            let source = overlays
+                .get(&entry)
+                .cloned()
+                .or_else(|| std::fs::read_to_string(&entry).ok());
+            match source {
+                Some(source) => {
+                    let file = Arc::new(SourceFile::new(
+                        entry.to_string_lossy().into_owned(),
+                        source,
+                    ));
+                    let (ast, diagnostics) =
+                        parse_package_graph_with_overlays(&graph, options, &overlays);
+                    (file, Some(graph), ast, diagnostics)
+                }
+                None => {
+                    let file = Arc::new(SourceFile::new(
+                        entry.to_string_lossy().into_owned(),
+                        String::new(),
+                    ));
+                    (
+                        file,
+                        Some(graph),
+                        Ast::default(),
+                        vec![Diagnostic::error(
+                            format!("cannot read package entry '{}'", entry.display()),
+                            Span { lo: 0, hi: 0 },
+                        )
+                        .with_code("E0208")],
+                    )
+                }
+            }
+        }
     };
 
     let mut hir = None;
@@ -385,6 +550,15 @@ fn has_errors(diagnostics: &[Diagnostic]) -> bool {
     diagnostics
         .iter()
         .any(|diag| diag.severity == Severity::Error)
+}
+
+fn is_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn build_source_map(

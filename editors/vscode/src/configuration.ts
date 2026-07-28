@@ -9,6 +9,7 @@ export interface StarkConfiguration {
   checkOnSave: boolean;
   checkOnType: boolean;
   checkOnTypeDebounceMs: number;
+  subprocessDiagnostics: boolean;
   extensionEnabled: boolean;
   lspLogLevel: string;
   formatOnSave: boolean;
@@ -37,6 +38,7 @@ export function getConfiguration(): StarkConfiguration {
     checkOnSave: config.get<boolean>('check.onSave', true),
     checkOnType: config.get<boolean>('check.onType', false),
     checkOnTypeDebounceMs: config.get<number>('check.onTypeDebounceMs', 500),
+    subprocessDiagnostics: config.get<boolean>('diagnostics.subprocess', false),
     extensionEnabled: config.get<boolean>('extensionEnabled', true),
     lspLogLevel: config.get<string>('lspLogLevel', 'info'),
     formatOnSave: config.get<boolean>('formatOnSave', false),

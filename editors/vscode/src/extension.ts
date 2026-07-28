@@ -47,6 +47,9 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!config.extensionEnabled) {
       return;
     }
+    if (!config.subprocessDiagnostics) {
+      return;
+    }
     if (!force && !config.checkOnSave && !config.checkOnType) {
       return;
     }
