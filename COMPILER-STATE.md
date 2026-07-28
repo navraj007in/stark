@@ -400,6 +400,60 @@ closed with a real per-unit operation: `HelperOp::Drop` wrappers over
 **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
+## Gate C7 — EXIT ASSESSMENT (CD-195): CANDIDATE-COMPLETE, BLOCKED BY P1
+
+**Gate C7 does NOT close.** Of its four exit conditions, two are met, one is partial, and one is not
+met. Full assessment in `STARKLANG/docs/compiler/work-packages/WP-C7.7-GATE-EXIT.md`.
+
+| condition | verdict |
+| --- | --- |
+| native builds usable | **PARTIAL** — usable for Core-v1 compute; native I/O does not exist |
+| reproducible to the documented degree | **MET** — per artefact, profile AND platform |
+| performance claims bounded by measured evidence | **MET** — six of eight dimensions measured, two declared unmeasurable |
+| P1 complete | **NOT MET** |
+
+### The blocking fact, stated so it is not mistaken for a scheduling problem
+
+`stark build` refuses any program touching `File`:
+
+```
+error: native build does not yet support this program: type Core(File, []) (C4.5)
+```
+
+`File` was already recorded EXCLUDED at Gate C6 closure ("deferred to the I/O gate", above). What
+Gate C7 adds is the consequence: **that exclusion is what blocks C7.** P1's exit criteria —
+arguments and environment, file read/write, monotonic time and sleep, TCP listener and stream — are
+made almost entirely of surface that does not exist natively. `stark-runtime/src` has no file,
+network, time or environment module at all. So P1 is not waiting to be scheduled; it is waiting on
+native capability, and C7.5's remaining measurements are waiting on P1.
+
+"C7 is done except P1" would be the wrong summary. The native path C7 delivered cannot yet run the
+class of program P1 requires.
+
+### What C7 delivered
+
+| WP | outcome |
+| --- | --- |
+| C7.0 (CD-185) | baseline: host Cargo/rustc is 65-68 % of a cold build |
+| C7.1 | `--release`, `--target`, profile-aware layout, target preflight |
+| C7.2 (CD-187, 190, 191) | path remapping; reproducibility classified per artefact, profile and platform |
+| C7.3 (CD-188, 189) | bounded build cache, size-capped LRU, 2.0x median rebuild |
+| C7.4 (CD-192) | baseline MIR optimisations — measured to fire ZERO times on real workloads |
+| C7.5 (CD-193) | performance report; two of eight dimensions declared unmeasurable |
+| C7.6 (CD-194) | DEFER LLVM, **CE6 unopened** |
+
+Two of those produced findings that CONSTRAIN what may be claimed rather than expanding it — C7.4's
+inertness and C7.5's unmeasurable dimensions — and both are recorded as findings rather than
+failures. Three over-generalised reproducibility claims were caught by CI during C7.2 and corrected;
+the per-platform table is what replaced the habit that produced them.
+
+### Re-opens when P1 exists
+
+1. **WP-C7.5** — steady-state runtime, the debug/release runtime ratio, and a defensible
+   interpreter/native ratio become measurable for the first time.
+2. **WP-C7.4** — whether the folding passes ever fire on realistic code.
+3. **WP-C7.6** — whether a generated-code deficit appears that would justify opening CE6.
+
 ## Position
 **Gate C5 and WP-C5.6 CLOSED 2026-07-23 by owner directive CD-077.** Verdict:
 **NATIVE-CORE-MVP-WITH-LISTED-DEVIATIONS.** The production `stark build` pipeline, relocated

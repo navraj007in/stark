@@ -498,3 +498,13 @@ from the C8 track, and `cargo clippy` currently fails on it (`.enumerate()` with
 `analysis.rs:334`). That is C8's work in progress, not C7's, so it was left alone; it is uncommitted
 and therefore not visible to CI. Flagged here rather than fixed, because fixing another track's
 in-flight file is exactly what the lease protocol exists to prevent.
+
+## Shared-file lease — WP-C7.7 (2026-07-28, CD-195)
+
+| file | reason | change | released |
+| --- | --- | --- | --- |
+| `COMPILER-STATE.md` | it is the live position source, and Gate C7's exit assessment is a change of position | one new `## Gate C7` section inserted above `## Position`; nothing existing edited or reordered | yes, same commit |
+
+Bounded deliberately: the C6 closure section, the decision log, and every C8-owned line are
+untouched. The C7 section is additive so a concurrent C8 state update cannot conflict with it
+textually.
