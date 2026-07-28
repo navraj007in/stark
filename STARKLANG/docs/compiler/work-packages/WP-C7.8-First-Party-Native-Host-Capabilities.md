@@ -114,18 +114,38 @@ Required:
 
 ## 5.1 WP-C7.8.1 — First-party provider invocation model
 
-The CE4 decision. Full packet in `WP-C7.8.1-DECISION-PACKETS.md` Packet 1. In summary: does a
-first-party capability cross the full dynamic provider boundary now (A), link statically while
-conforming exactly to ABI v0.1 semantics (B), or become a runtime intrinsic with no provider
-concept (C)?
+The CE4 decision, **dispositioned 2026-07-28 as option B**. Full packet in
+`WP-C7.8.1-DECISION-PACKETS.md` Packet 1.
 
-**Recommended: B.** It unblocks P1 without reopening CE4's semantics and without building dynamic
-loading, provider discovery and per-platform loader behaviour first. Migration toward A later is a
-change of linkage, not of contract.
+**B — statically linked, ABI-semantic.** First-party capabilities are ordinary Rust crates linked
+into the produced binary, reached by direct `extern "C"` symbol reference, conforming exactly to
+ABI v0.1 semantics and constructed only through §6.1's boundary helpers. Dynamic loading is a
+separate later work package. This unblocks P1 without reopening CE4's semantics; migration toward
+A later is a change of linkage, not of contract.
 
-B's drift risk is answered structurally, not by intention: **one conformance suite runs against
-both mechanisms**, so a statically linked provider that violates §8's consumed-handle rule or
-§11.1's output-initialisation rule fails the same test a dynamic one would.
+**Panic containment is already structural under B and needs no new work.** The generated workspace
+sets `panic = "abort"` in both profiles (`starkc/src/backend/generated_rust/build.rs:298`, `:314`)
+as defence-in-depth for DROP-ABORT-001, and B compiles the provider into that same workspace under
+that same profile — so a provider panic aborts rather than unwinding into generated STARK code. The
+superseded document's §4.5 requirement is therefore satisfied by construction, not implemented.
+**This does not survive Option A**: a dynamically loaded provider may be built `panic = "unwind"`,
+so the future dynamic WP must supply boundary `catch_unwind` explicitly, inheriting none from the
+build profile.
+
+Five sub-decisions are proposed in the packet and await confirmation before C7.8.2: status binding
+(the provider code space encodes ABI channel one **only** — contract violations are detected
+caller-side and host failures are terminations, so neither ever travels as a code, and the
+code→error mapping lives in the package's binding layer rather than in provider metadata, requiring
+no ABI change); symbol representation (`FunctionDecl.name` verbatim, never through `mangle.rs`,
+with provider-identity prefixes and a validator uniqueness check — no STARK↔provider collision is
+possible since the backend emits no `#[no_mangle]`); platform selection (capability plus target
+triple, per-platform variation internal to the provider crate, ambiguity a hard error before
+backend invocation); and conformance testing.
+
+B's drift risk is answered structurally, not by intention: **one mechanism-agnostic conformance
+suite**, so a statically linked provider that violates §8's consumed-handle rule or §11.1's
+output-initialisation rule fails the same test a dynamic one would, and the dynamic WP inherits the
+suite unchanged.
 
 This sub-WP explicitly inherits, without restatement or variation:
 
@@ -393,7 +413,7 @@ Ownership boundaries, written down rather than assumed:
 
 | Class | Subject | Packet |
 | --- | --- | --- |
-| CE4 | First-party provider invocation model and ABI application | 1 — OPEN |
+| CE4 | First-party provider invocation model and ABI application | 1 — **DISPOSITIONED 2026-07-28** |
 | CE3 | New MIR runtime surface (`0.1-A9` → `0.1-A10`) | 2 — OPEN |
 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | 3 — **DISPOSITIONED 2026-07-28** |
 | CE1 | Normative surface placement for the five capabilities | 4 — OPEN |
@@ -408,8 +428,8 @@ recorded — the alternative options are CE1, and choosing not to take them is i
 
 - [ ] C7.8 present in `COMPILER-ROADMAP.md` and `COMPILER-STATE.md`.
 - [ ] The `WP-C7.7-GATE-EXIT.md:113` open question is answered by a recorded owner decision.
-- [ ] All five packets dispositioned; CE4, CE3, CE1 and CE9 each recorded.
-      (CE2 — Packet 3 — **done 2026-07-28**.)
+- [ ] All five packets dispositioned; CE3, CE1 and CE9 each recorded.
+      (CE4 — Packet 1 — and CE2 — Packet 3 — **done 2026-07-28**.)
 - [ ] C8 concurrency boundary written down.
 
 **Architecture**

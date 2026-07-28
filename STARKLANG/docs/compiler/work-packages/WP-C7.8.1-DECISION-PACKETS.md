@@ -4,11 +4,11 @@ Five dispositions required before any WP-C7.8 implementation begins (2026-07-28)
 cause, normative requirement, choices, recommendation (replaced by a disposition once ruled),
 compatibility impact, implementation surface and required regression evidence.
 
-**Status: 1 of 5 dispositioned.**
+**Status: 2 of 5 dispositioned.**
 
 | Packet | Class | Subject | Status |
 | --- | --- | --- | --- |
-| 1 | CE4 | First-party provider invocation model | OPEN — recommends B (statically linked, ABI-semantic) |
+| 1 | CE4 | First-party provider invocation model | **DISPOSITIONED 2026-07-28** — B (statically linked, ABI-semantic); five sub-decisions proposed, awaiting confirmation |
 | 2 | CE3 | MIR runtime surface `0.1-A9` → `0.1-A10` | OPEN — recommends a distinct `Callee::Provider` form |
 | 3 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | **DISPOSITIONED 2026-07-28** — option A, both texts unchanged, seven binding conditions |
 | 4 | CE1 | Normative surface placement for the five capabilities | OPEN — recommends the option requiring no Core change |
@@ -99,6 +99,95 @@ The drift risk B carries is real and must be answered structurally, not by inten
 conformance test suite must run against both mechanisms**, so a statically linked provider that
 violates §8's consumed-handle rule or §11.1's output-initialisation rule fails the same test a
 dynamic one would.
+
+## DISPOSITION — owner ruling, 2026-07-28: **B. Statically linked, ABI-semantic. Dynamic loading is a separate later work package.**
+
+CE4 is hereby answered for invocation placement: first-party host capabilities are ordinary Rust
+crates linked into the produced binary, reached by direct `extern "C"` symbol reference, conforming
+exactly to ABI v0.1's §7/§8/§9/§11/§12/§13 semantics and constructed only through §6.1's boundary
+helpers. Nothing in ABI v0.1 or CE4 Amendment 1 is reopened.
+
+**Provenance of this disposition.** Option B is the owner's stated position. The five sub-decisions
+below are the drafter's proposals and require confirmation before C7.8.2 begins; they are recorded
+here so that confirmation is a review of specifics rather than of a direction.
+
+### 1.1 Static versus dynamic — **B, owner-stated**
+
+One argument for B was not available when the options were drafted and is now decisive rather than
+merely economical. The generated workspace already sets `panic = "abort"` in **both** profiles
+(`starkc/src/backend/generated_rust/build.rs:298` and `:314`), deliberately, as defence-in-depth
+for DROP-ABORT-001:
+
+> the guarantee should rest on the build, not only on that audit staying true as the runtime grows.
+
+Under B the provider is compiled **into that same workspace under that same profile**. A Rust panic
+inside a provider therefore cannot unwind into generated STARK code — the process aborts. Panic
+containment, which the superseded document listed as new work in its §4.5, is **already structural
+under B and requires no `catch_unwind` wrapper**.
+
+That property does not survive Option A. A dynamically loaded provider is a separate compilation
+unit that may be built `panic = "unwind"`, so unwinding across the boundary becomes a live hazard
+and boundary `catch_unwind` becomes mandatory. **Carry-forward requirement for the future dynamic
+loading WP:** it must supply panic containment explicitly, because it inherits none from the build
+profile.
+
+### 1.2 How first-party calls bind to `ProviderStatus` — **proposed**
+
+ABI §11 fixes the physical shape (status return plus explicit output channels) but leaves nonzero
+code meaning "defined per-provider". The binding rule:
+
+- **The code space encodes ABI channel one only.** Channel two (contract violation) is detected
+  *caller-side* by §6.1's boundary helpers and §11.1's `resource_type` validation, never signalled
+  by a code. Channel three (host failure) is a termination — a failed close under §13.2, or the
+  provider's own abort — and likewise never travels as a code. So a provider's nonzero code is
+  *always and only* a recoverable error.
+- **Code→STARK-error mapping lives in the package's own binding layer**, not in the compiler and
+  not in provider metadata. A first-party provider crate and its STARK package ship as one
+  deliverable, so the code vocabulary is internal to that pair. This requires **no ABI change**,
+  which is the point: extending `ProviderMetadata` with an error-category table would be an
+  amendment to a document this WP is forbidden to reopen.
+- Convention, not contract: first-party providers should share a common base numbering to avoid
+  gratuitous divergence. Recorded as guidance so a future consolidation is cheap.
+
+### 1.3 How provider symbols are represented — **proposed**
+
+Direct `extern "C"` declaration against the symbol named in `FunctionDecl.name`, verbatim.
+
+- **Provider symbols are never mangled.** `mangle.rs`'s `sanitize_symbol` exists to encode MIR
+  canonical symbols into legal Rust identifiers; provider symbols are not MIR instances and must
+  not pass through it, because the *same* name has to resolve under a future `dlsym`. Driving both
+  linkage modes from one metadata field is what keeps B migratable to A.
+- **No STARK↔provider collision is possible.** Generated STARK functions are ordinary Rust items
+  subject to Rust's own mangling — the backend emits no `#[no_mangle]` — so they never occupy the C
+  symbol namespace that `extern "C"` providers use.
+- **Provider↔provider collision is possible and must be excluded.** Every exported symbol must
+  carry a prefix derived from the provider's §2 identity (`stark_time_monotonic_now_ns` already
+  does). The §17 validator gains a uniqueness check across the selected provider set.
+
+### 1.4 How platform implementations are selected — **proposed**
+
+- Selection is by **capability plus target triple**, using §4's `target_triples` and §16's second
+  check. One provider crate per capability.
+- Per-platform variation is **internal to the provider crate** (`#[cfg(target_os = …)]`) and
+  invisible to STARK. The compiler selects a provider, never a platform implementation.
+- **Two providers claiming the same capability for the same target is a hard error**, reported
+  before backend invocation per `WP-C5-ENTRY.md` §3.2. Silent first-match selection is rejected:
+  it would make the produced binary depend on declaration order.
+- No provider for the target: §16's existing check fails, with the diagnostic kept distinct from
+  `stark_runtime::version::check`'s per §16's independence requirement.
+
+### 1.5 How ABI conformance is tested — **proposed**
+
+Three layers, and the first is the one that makes B safe:
+
+1. **One mechanism-agnostic conformance suite**, parameterised over the invocation mechanism, so
+   the dynamic WP inherits it unchanged rather than writing a parallel one.
+2. **Runtime-violation fixtures** — new, and distinct from §17's existing metadata-violation
+   fixtures: a mock provider that reuses a consumed handle, one that writes a `HandleOut` slot on a
+   failure status, one that returns a wrong `resource_type`, one whose close returns nonzero. Each
+   must produce the channel the ABI specifies, not merely fail.
+3. **`stark-time` as the real-provider case**, under the exit condition in this packet's evidence
+   section.
 
 ## Compatibility impact
 
