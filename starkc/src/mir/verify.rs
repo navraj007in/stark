@@ -779,8 +779,13 @@ impl<'a> BodyCx<'a> {
                     // unresolvable ProviderCallId is a different defect from an unadmitted call,
                     // and collapsing them would hide arena-construction bugs behind the blanket
                     // refusal that C7.8.2c is about to remove.
-                    Callee::Provider(id) => {
-                        if self.program.provider_call(*id).is_none() {
+                    // A10 §4 (CD-200): the provider-call invariants. Each is checked against the
+                    // VALIDATED DECLARATION carried by the record -- never reconstructed from a
+                    // symbol, and never taken on faith from the fact that resolution ran.
+                    Callee::Provider(id) => match self.program.provider_call(*id) {
+                        // V-PROV-1: a dangling id is an arena-construction defect, reported
+                        // distinctly so it cannot be mistaken for a contract failure.
+                        None => {
                             self.err(
                                 "MIR-0019",
                                 bi,
@@ -791,17 +796,93 @@ impl<'a> BodyCx<'a> {
                                     self.program.provider_calls.len()
                                 ),
                             );
-                        } else {
-                            self.err(
-                                "MIR-0020",
-                                bi,
-                                "provider calls are not yet admitted by MIR verification \
-                                 (WP-C7.8.2c); runtime surface 0.1-A10 represents them, \
-                                 verification does not yet check their ABI contract",
-                            );
+                            None
                         }
-                        None
-                    }
+                        Some(call) => {
+                            // V-PROV-2 (invariant 2): the provider must admit the target this call
+                            // was resolved for. Self-verifying: the record carries the declared
+                            // list precisely so this is a check rather than an assumption.
+                            if !call.provider_target_triples.contains(&call.target_triple) {
+                                self.err(
+                                    "MIR-0021",
+                                    bi,
+                                    format!(
+                                        "provider `{}` does not declare target `{}` (declares: {})",
+                                        call.provider.name,
+                                        call.target_triple,
+                                        call.provider_target_triples.join(", ")
+                                    ),
+                                );
+                            }
+                            // §16 check 1, re-asserted in MIR: an artifact must not carry a call
+                            // validated against a different ABI revision.
+                            if call.provider.abi_version != crate::provider_abi::ABI_VERSION {
+                                self.err(
+                                    "MIR-0025",
+                                    bi,
+                                    format!(
+                                        "provider `{}` declares ABI version {}, this build \
+                                         supports {}",
+                                        call.provider.name,
+                                        call.provider.abi_version,
+                                        crate::provider_abi::ABI_VERSION
+                                    ),
+                                );
+                            }
+                            // V-PROV-3 (invariant 3): the function must belong to the capability
+                            // the call claims. A function reachable from the right provider can
+                            // still belong to a different capability, and that must not silently
+                            // widen what the capability admits.
+                            if call.function.capability != call.capability {
+                                self.err(
+                                    "MIR-0022",
+                                    bi,
+                                    format!(
+                                        "provider function `{}` belongs to capability `{}`, called \
+                                         as `{}`",
+                                        call.symbol(),
+                                        call.function.capability,
+                                        call.capability
+                                    ),
+                                );
+                            }
+                            // V-PROV-4 (invariant 4): the symbol is emitted verbatim, so it must
+                            // BE a legal C identifier here -- not repaired into one. Re-checked in
+                            // MIR rather than trusted from resolution because emission reads this
+                            // record, not the resolver's transient state.
+                            if let Err(problem) =
+                                crate::provider_resolve::check_symbol(call.symbol())
+                            {
+                                self.err(
+                                    "MIR-0023",
+                                    bi,
+                                    format!(
+                                        "provider symbol `{}` is not a valid C identifier: \
+                                         {problem:?}",
+                                        call.symbol()
+                                    ),
+                                );
+                            }
+                            // V-PROV-5 (invariant 5): the ABI parameter shapes become the expected
+                            // MIR signature, and the shared arity/type check below enforces them.
+                            match provider_sig::signature(&call.function.params) {
+                                Ok(sig) => Some(sig),
+                                Err(unmapped) => {
+                                    self.err(
+                                        "MIR-0024",
+                                        bi,
+                                        format!(
+                                            "provider function `{}` has a parameter MIR cannot yet \
+                                             type: {unmapped:?} (resource-typed parameters arrive \
+                                             with C7.8.4)",
+                                            call.symbol()
+                                        ),
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    },
                     Callee::FnValue(op) => match self.operand_ty(op, bi) {
                         Some(MirTy::FnPtr { params, ret }) => Some((params, *ret)),
                         Some(other) => {

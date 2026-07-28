@@ -19,6 +19,7 @@ pub mod drop_plan;
 pub mod interp;
 pub mod lower;
 pub mod opt;
+pub mod provider_sig;
 pub mod verify;
 
 use crate::source::{SourceFile, Span};
@@ -565,6 +566,13 @@ pub struct ValidatedProviderCall {
     /// §4 target this call was resolved for. Verification re-checks it rather than trusting that
     /// resolution ran (V-PROV-2).
     pub target_triple: String,
+    /// §4 target list the provider declares, copied so the record is **self-verifying**.
+    ///
+    /// Without it, verification could only take `target_triple` on faith: there would be nothing
+    /// to check it against, and "re-checks rather than trusts" would be a comment rather than a
+    /// rule. With it, a record whose selected target is not one the provider admits is rejected in
+    /// MIR, even if resolution produced it.
+    pub provider_target_triples: Vec<String>,
 }
 
 impl ValidatedProviderCall {

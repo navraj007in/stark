@@ -228,8 +228,8 @@ A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing
 | --- | --- |
 | C7.8.2a — MIR representation and versioning | **LANDED** |
 | C7.8.2b — provider resolution and validated call records | **LANDED** |
-| C7.8.2c — verifier invariants and negative fixtures | next |
-| C7.8.2d — generated-Rust static extern bindings | pending |
+| C7.8.2c — verifier invariants and negative fixtures | **LANDED** (1–5 of 9; 6–9 deferred, see below) |
+| C7.8.2d — generated-Rust static extern bindings | next |
 | C7.8.2e — `stark-time` end-to-end execution | pending |
 | C7.8.2f — full A10 regression evidence | pending |
 
@@ -252,6 +252,35 @@ verbatim.
 
 One finding from building it needs an owner decision — recorded in §11.
 
+**What C7.8.2c landed.** Invariants **1–5** are enforced, replacing C7.8.2a's blanket refusal
+(MIR-0020, retired and not reused). New codes: MIR-0021 target applicability, MIR-0022 capability
+membership, MIR-0023 symbol validity, MIR-0024 an ABI parameter MIR cannot yet type, MIR-0025 ABI
+version. Invariant 5 is enforced by *derivation* rather than a separate rule —
+`mir::provider_sig` turns the declared `AbiParam` list into the expected MIR signature, and the
+verifier's existing arity and per-argument checks do the rest.
+
+The MIR signature mirrors the physical ABI one-for-one rather than inventing a STARK-shaped one:
+`dest` receives `ProviderStatus.code` as `UInt32`, and every declared parameter — output slots
+included — is an argument, following §6.1's mapping (`ScalarOut(T)`/`ScalarInOut(T)` → `&mut T`,
+`BufferIn` → `&[UInt8]`, `BufferInOut` → `&mut [UInt8]`). Converting a status into a STARK
+`Result` is the binding layer's job; doing it here would collapse §12's three channels at exactly
+the layer that must keep them apart.
+
+`ValidatedProviderCall` gained `provider_target_triples` so invariant 2 is a *check* rather than an
+assumption — without the declared list there would be nothing to verify `target_triple` against,
+and "re-checks rather than trusts" would have been a comment rather than a rule.
+
+**Invariants 6–9 are deferred to C7.8.2d/e, and cannot be pulled forward.** Borrow validity,
+consumed-resource invalidation, output-slot discipline and channel discipline all constrain the
+*binding layer's* generated control flow — reads on failure paths, handle liveness after a
+consuming call — and no lowering produces that structure yet. **Resource-typed parameters are
+refused outright (MIR-0024)** rather than guessed at: typing one requires binding a provider
+`resource_type` to a `MirTy`, which arrives with C7.8.4's `File`, and a guessed type would leave
+ABI §11.1's `resource_type` validation nothing to check against.
+
+Evidence: `starkc/tests/a10_provider_verify.rs` (10 cases, each breaking exactly one thing in a
+verified baseline) plus the positive case in `a10_provider_call.rs`.
+
 **A provider call is representable but not yet admitted.** That is the intended C7.8.2a state:
 §4's invariants land in C7.8.2c, and until they do, verification refuses rather than accepting an
 unchecked contract. A dangling `ProviderCallId` reports separately (MIR-0019) so an
@@ -269,7 +298,7 @@ provider linked into it, so a host call has no meaning it could reproduce. Provi
 the native path, which makes differential comparison for provider-backed programs native-only by
 construction rather than by omission.
 
-## 11. Open question raised by C7.8.2b — the symbol prefix rule
+## 11. The symbol prefix rule — RESOLVED (dropped, 2026-07-29)
 
 Packet 1 §1.3 requires the validator to reject "any symbol lacking an approved provider-identity
 prefix". **That rule as literally derived rejects the only real provider we have.**
@@ -300,10 +329,11 @@ Options for the owner:
 | C | **Compiler-side approved-prefix registry** for first-party providers | Matches §1.3's word "approved" exactly, needs no metadata change and no provider change. Cost: a registry the compiler carries, and a policy question for third-party providers later |
 | D | **Rename `stark-time`'s symbols** to match a derived prefix | Keeps the rule as drafted, at the cost of an ABI-facing change to the reference provider — the thing Packet 1 named as the drift signal |
 
-**Recommended: A**, with C if the readability convention is judged worth a registry. D should be
-rejected: it changes the evidence to fit the rule.
+**RESOLVED — owner decision, 2026-07-29: option A. The prefix requirement is dropped.**
 
-This does not block C7.8.2c. Grammar and uniqueness are enforced today; only the prefix check is
+Packet 1 §1.3 is amended accordingly. Grammar and the two duplicate checks (cross-provider and
+intra-provider, kept distinct because their remediations differ) are the binding symbol rules.
+`stark-time` needs no change, which was the point. Grammar and uniqueness are enforced today; only the prefix check is
 absent.
 
 ## 12. Revision log
@@ -316,6 +346,14 @@ pre-verification binding sequence; backend emission prohibitions; `MIR_RUNTIME_S
 **Rev. 2 (2026-07-28) — C7.8.2a landed.** §10 records implementation state, the
 representable-but-not-admitted position, the `provider_abi` layering move and its shim, and the
 interpreter's permanent exclusion. No contract change.
+
+**Rev. 5 (2026-07-29) — C7.8.2c landed.** §10 records invariants 1–5 enforced, the derived MIR
+signature, `provider_target_triples`, and why 6–9 cannot precede a binding layer. MIR-0020 retired.
+No contract change.
+
+**Rev. 4 (2026-07-29) — prefix requirement dropped (owner, option A).** §11 resolved; Packet 1
+§1.3 amended. Grammar plus cross- and intra-provider uniqueness are the binding symbol rules. No
+contract change.
 
 **Rev. 3 (2026-07-29) — C7.8.2b landed.** §10 records provider selection, resolution and the
 call arena. §11 raises the symbol-prefix conflict: Packet 1 §1.3's prefix rule, derived

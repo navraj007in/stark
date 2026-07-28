@@ -13,8 +13,9 @@
 //! unhandled would emit a binary whose host side effect simply never happens.
 
 use starkc::mir::{
-    self, BasicBlock, Callee, LocalDecl, LocalKind, MirBody, MirProgram, MirTy, Place,
-    ProviderCallId, SourceInfo, Terminator, TypeContext, ValidatedProviderCall,
+    self, BasicBlock, Callee, Constant, LocalDecl, LocalKind, MirBody, MirProgram, MirTy, Operand,
+    Place, ProviderCallId, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
+    ValidatedProviderCall,
 };
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity, ScalarTy};
 use starkc::source::{SourceFile, Span};
@@ -47,6 +48,10 @@ fn validated_call() -> ValidatedProviderCall {
         capability: "clock".to_string(),
         function: monotonic_now_decl(),
         target_triple: "x86_64-unknown-linux-gnu".to_string(),
+        provider_target_triples: vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "aarch64-apple-darwin".to_string(),
+        ],
     }
 }
 
@@ -58,7 +63,12 @@ fn info() -> SourceInfo {
     }
 }
 
-/// A one-block body whose terminator is a provider call.
+/// A body presenting the ABI signature `stark_time_monotonic_now_ns` declares: one `&mut UInt64`
+/// argument for its `ScalarOut(U64)` slot, and a `UInt32` destination for `ProviderStatus.code`.
+///
+/// Built to match rather than simplified, because A10 §4 invariant 5 is exactly the claim that
+/// MIR argument types match the declaration — a fixture that sidestepped the parameter would
+/// verify nothing.
 fn provider_call_body(id: ProviderCallId) -> MirBody {
     MirBody {
         instance: mir::Instance {
@@ -68,21 +78,56 @@ fn provider_call_body(id: ProviderCallId) -> MirBody {
         },
         params: Vec::new(),
         ret: MirTy::Unit,
-        locals: vec![LocalDecl {
-            ty: MirTy::Unit,
-            kind: LocalKind::Return,
-        }],
+        locals: vec![
+            LocalDecl {
+                ty: MirTy::Unit,
+                kind: LocalKind::Return,
+            },
+            // The out-slot storage.
+            LocalDecl {
+                ty: MirTy::UInt64,
+                kind: LocalKind::Temp,
+            },
+            // `&mut` to it -- ABI §6.1 maps `ScalarOut(T)` to `*mut T`.
+            LocalDecl {
+                ty: MirTy::Ref {
+                    mutable: true,
+                    inner: Box::new(MirTy::UInt64),
+                },
+                kind: LocalKind::Temp,
+            },
+            // ProviderStatus.code.
+            LocalDecl {
+                ty: MirTy::UInt32,
+                kind: LocalKind::Temp,
+            },
+        ],
         blocks: vec![
             BasicBlock {
-                statements: Vec::new(),
+                statements: vec![
+                    (
+                        Statement::Assign(
+                            local_place(1),
+                            Rvalue::Use(Operand::Const(Constant::Int(0, MirTy::UInt64))),
+                        ),
+                        info(),
+                    ),
+                    (
+                        Statement::Assign(
+                            local_place(2),
+                            Rvalue::RefOf {
+                                mutable: true,
+                                place: local_place(1),
+                            },
+                        ),
+                        info(),
+                    ),
+                ],
                 terminator: (
                     Terminator::Call {
                         callee: Callee::Provider(id),
-                        args: Vec::new(),
-                        dest: Place {
-                            local: mir::LocalId(0),
-                            projection: Vec::new(),
-                        },
+                        args: vec![Operand::Move(local_place(2))],
+                        dest: local_place(3),
                         target: mir::BlockId(1),
                     },
                     info(),
@@ -94,6 +139,13 @@ fn provider_call_body(id: ProviderCallId) -> MirBody {
             },
         ],
         entry: mir::BlockId(0),
+    }
+}
+
+fn local_place(index: u32) -> Place {
+    Place {
+        local: mir::LocalId(index),
+        projection: Vec::new(),
     }
 }
 
@@ -196,30 +248,24 @@ fn dump_renders_unresolved_id_visibly() {
 
 // ----------------------------------------------------------------- refusals --
 
-/// C7.8.2a admits no provider call. Verification refuses deterministically (MIR-0020) until
-/// C7.8.2c enumerates the nine invariants, so no provider call reaches a backend by default.
+/// C7.8.2c admits a well-formed provider call. This is the positive case the blanket C7.8.2a
+/// refusal (MIR-0020, now retired) stood in for: a record whose target, ABI version, capability
+/// membership, symbol and parameter shapes all check out, called with matching MIR argument types
+/// and a `UInt32` status destination.
 #[test]
-fn verification_refuses_provider_calls_pending_2c() {
+fn a_well_formed_provider_call_verifies() {
     let program = program_with_provider_call(vec![validated_call()], ProviderCallId(0));
-    expect_code(&program, "MIR-0020");
+    if let Err(errors) = mir::verify::verify_program(&program) {
+        panic!("a well-formed provider call must verify, got: {errors:#?}");
+    }
 }
 
-/// A dangling id is a **different** defect from an unadmitted call and is reported separately
-/// (MIR-0019). Collapsing the two would hide arena-construction bugs behind the blanket refusal
-/// that C7.8.2c is about to remove — at which point the arena bug would surface as a crash.
+/// A dangling id is an arena-construction defect and is reported as its own error (MIR-0019),
+/// never folded into a contract failure — the two have different causes and different fixes.
 #[test]
 fn dangling_provider_call_id_is_its_own_error() {
     let program = program_with_provider_call(Vec::new(), ProviderCallId(3));
     expect_code(&program, "MIR-0019");
-
-    // And specifically NOT the "not yet admitted" code, which is the regression this guards.
-    match mir::verify::verify_program(&program) {
-        Ok(_) => panic!("expected rejection"),
-        Err(errors) => assert!(
-            !errors.iter().any(|e| e.code == "MIR-0020"),
-            "a dangling id must not be reported as an unadmitted call: {errors:#?}"
-        ),
-    }
 }
 
 // ------------------------------------------------------- A9 consumer rejection --

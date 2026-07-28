@@ -131,10 +131,13 @@ pub enum ResolveError {
 
 /// Validates a declared symbol against Packet 1 §1.3's admitted grammar `[A-Za-z_][A-Za-z0-9_]*`.
 ///
+/// Public because MIR verification re-runs it (V-PROV-4): emission reads the *record*, not the
+/// resolver's transient state, so the record itself must be checkable.
+///
 /// Byte-oriented rather than char-oriented on purpose: a C symbol is bytes, and a multi-byte
 /// UTF-8 sequence must be rejected by its first offending byte rather than silently accepted as
 /// "one character".
-fn check_symbol(symbol: &str) -> Result<(), SymbolProblem> {
+pub fn check_symbol(symbol: &str) -> Result<(), SymbolProblem> {
     let bytes = symbol.as_bytes();
     let Some(&first) = bytes.first() else {
         return Err(SymbolProblem::Empty);
@@ -377,6 +380,7 @@ impl ProviderSet {
             capability: capability.to_string(),
             function: decl.clone(),
             target_triple: self.target.clone(),
+            provider_target_triples: provider.metadata.target_triples.clone(),
         })
     }
 }

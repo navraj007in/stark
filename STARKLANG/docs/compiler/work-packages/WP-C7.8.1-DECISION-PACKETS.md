@@ -212,8 +212,28 @@ Admitted grammar:
 ```
 
 The §17 validator rejects: empty names; embedded NUL; whitespace; punctuation requiring platform
-decoration; duplicate exported symbols across the selected provider set; and any symbol lacking an
-approved provider-identity prefix. This keeps dynamic lookup deterministic across platforms later.
+decoration; and duplicate exported symbols across the selected provider set. This keeps dynamic
+lookup deterministic across platforms later.
+
+**Amendment (owner, 2026-07-29): the provider-identity prefix requirement is DROPPED.**
+
+It was found unimplementable against the only real provider. `stark-time` declares identity
+`stark-std-time` and exports `stark_time_monotonic_now_ns` / `stark_time_unix_now`; a prefix
+derived from the identity would be `stark_std_time_`, which neither symbol carries. Enforcing it
+would have required changing that crate's declared function names — ABI-facing, and exactly what
+this packet's own exit condition forbids.
+
+Dropping it costs nothing structural. **Uniqueness is the actual anti-collision guarantee**: a
+prefix convention only makes collision unlikely, while the duplicate-symbol check makes it
+impossible. The prefix rule's residual value was readability, not safety.
+
+Two duplicate checks are therefore binding, and they are deliberately distinct:
+
+- **cross-provider** — two selected providers export one symbol. A *configuration* defect; the fix
+  is removing a provider or narrowing its target declarations.
+- **intra-provider** — one provider exports the same symbol twice. A *provider* defect; the fix is
+  in that provider's own declaration. Reporting it as a cross-provider conflict would name one
+  provider twice and send the reader hunting for a second that does not exist.
 
 ### 1.4 How platform implementations are selected — **confirmed**
 
