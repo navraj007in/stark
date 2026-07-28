@@ -1356,6 +1356,11 @@ fn source_uri(file: &SourceFile) -> String {
 
 /// Absolutises `path` (relative names come from single-file compiles, where they are relative
 /// to the server's working directory) and renders it as a `file://` URI.
+///
+/// A URI path is always slash-separated and always rooted, which a Windows path is neither:
+/// `C:\dir\file.stark` has to become `file:///C:/dir/file.stark`. Emitting the native form
+/// leaves backslashes in a JSON string, where they are escape characters, so the message the
+/// client receives is not even parseable.
 fn path_to_file_uri(path: &Path) -> String {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -1364,10 +1369,16 @@ fn path_to_file_uri(path: &Path) -> String {
             .map(|dir| dir.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
     };
-    format!(
-        "file://{}",
-        percent_encode_uri_path(&absolute.to_string_lossy())
-    )
+    let text = absolute.to_string_lossy().into_owned();
+    // Only on Windows: a backslash is a legal character in a Unix file name.
+    #[cfg(windows)]
+    let text = text.replace('\\', "/");
+    let rooted = if text.starts_with('/') {
+        text
+    } else {
+        format!("/{text}")
+    };
+    format!("file://{}", percent_encode_uri_path(&rooted))
 }
 
 /// Percent-encodes the characters that are not legal unescaped in a URI path. The inverse of
@@ -1405,7 +1416,21 @@ fn percent_encode_uri_path(path: &str) -> String {
 
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
     let path = uri.strip_prefix("file://")?;
-    Some(PathBuf::from(percent_decode_uri_path(path)))
+    let decoded = percent_decode_uri_path(path);
+    // `file:///C:/dir/file.stark` — the leading slash roots the URI path, it is not part of the
+    // Windows path underneath it.
+    let native = decoded
+        .strip_prefix('/')
+        .filter(|rest| starts_with_drive_letter(rest))
+        .unwrap_or(&decoded);
+    Some(PathBuf::from(native))
+}
+
+/// Whether `path` opens with a `C:`-style Windows drive prefix.
+fn starts_with_drive_letter(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!(chars.next(), Some(letter) if letter.is_ascii_alphabetic())
+        && chars.next() == Some(':')
 }
 
 fn source_id_for_uri(
@@ -1507,7 +1532,7 @@ mod tests {
         let child_path = src_dir.join("child.stark");
         std::fs::write(&child_path, "pub fn value() -> Int32 { 1 }\n").unwrap();
 
-        let child_uri = format!("file://{}", child_path.to_string_lossy());
+        let child_uri = path_to_file_uri(&child_path);
         let mut server = Server::new();
         server.state.open_document(
             child_uri.clone(),
@@ -1556,7 +1581,7 @@ mod tests {
         std::fs::write(src_dir.join("main.stark"), "mod child;\nfn main() { }\n").unwrap();
         let child_path = src_dir.join("child.stark");
         std::fs::write(&child_path, "pub fn value() -> Int32 { 1 }\n").unwrap();
-        let child_uri = format!("file://{}", child_path.to_string_lossy());
+        let child_uri = path_to_file_uri(&child_path);
         let input = format!(
             "{}{}{}",
             frame(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#),
@@ -1608,7 +1633,7 @@ mod tests {
         let main_path = src_dir.join("main.stark");
         let source = "fn helper() -> Int32 { 1 }\nfn main() { helper(); }\n";
         std::fs::write(&main_path, source).unwrap();
-        let uri = format!("file://{}", main_path.to_string_lossy());
+        let uri = path_to_file_uri(&main_path);
 
         let mut server = Server::new();
         let mut output = Vec::new();
@@ -1714,11 +1739,31 @@ mod tests {
             .expect("definition must resolve inside a package");
         assert!(
             definition_uri.starts_with("file:///")
-                && std::path::Path::new(&percent_decode_uri_path(
-                    definition_uri.strip_prefix("file://").unwrap()
-                ))
-                .exists(),
+                && file_uri_to_path(definition_uri).is_some_and(|path| path.exists()),
             "definition URI must name a file that exists on disk, got {definition_uri}"
+        );
+    }
+
+    /// The URI a client receives is interpolated into a JSON frame, so a native Windows path
+    /// handed over verbatim makes the message unparseable — every backslash reads as an escape.
+    #[test]
+    fn file_uris_are_rooted_slash_separated_and_round_trip_to_native_paths() {
+        let native = if cfg!(windows) {
+            r"C:\dir\a b\file.stark"
+        } else {
+            "/dir/a b/file.stark"
+        };
+        let uri = path_to_file_uri(Path::new(native));
+
+        assert!(uri.starts_with("file:///"), "URI must be rooted, got {uri}");
+        assert!(!uri.contains('\\'), "URI must not carry backslashes: {uri}");
+        assert!(
+            uri.contains("a%20b"),
+            "URI must percent-encode spaces, got {uri}"
+        );
+        assert_eq!(
+            file_uri_to_path(&uri).expect("file URI must convert back to a path"),
+            PathBuf::from(native)
         );
     }
 
