@@ -262,29 +262,27 @@ impl QueryIndex {
         let hir = analysis.hir.as_ref()?;
         let item = hir.items.get(handle.slot as usize)?;
         let sig = fn_sig_for_item(item)?;
-        Some(
-            sig.params
-                .iter()
-                .map(|param| {
-                    let name = source_text(
-                        analysis,
-                        SourceLocation {
-                            source: item_source(analysis, handle)?,
-                            span: param.name,
-                        },
-                    )?;
-                    let ty = hir.ty(param.ty);
-                    let ty = source_text(
-                        analysis,
-                        SourceLocation {
-                            source: item_source(analysis, handle)?,
-                            span: ty.span,
-                        },
-                    )?;
-                    Some(format!("{name}: {ty}"))
-                })
-                .collect::<Option<Vec<_>>>()?,
-        )
+        sig.params
+            .iter()
+            .map(|param| {
+                let name = source_text(
+                    analysis,
+                    SourceLocation {
+                        source: item_source(analysis, handle)?,
+                        span: param.name,
+                    },
+                )?;
+                let ty = hir.ty(param.ty);
+                let ty = source_text(
+                    analysis,
+                    SourceLocation {
+                        source: item_source(analysis, handle)?,
+                        span: ty.span,
+                    },
+                )?;
+                Some(format!("{name}: {ty}"))
+            })
+            .collect::<Option<Vec<_>>>()
     }
 
     pub(crate) fn enclosing(
