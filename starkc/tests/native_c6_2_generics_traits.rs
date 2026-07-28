@@ -231,6 +231,7 @@ fn c62a_cross_package_trait_method_call() {
             &NativeBuildOptions {
                 target_dir: out,
                 target_contract: "stark-64-v1".to_string(),
+                ..NativeBuildOptions::default()
             },
         )
         .expect("cross-package trait call must build");

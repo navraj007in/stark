@@ -95,6 +95,8 @@ fn build_native(source: &str, name: &str, target_dir: &Path, runtime: &Path) -> 
     emit_native_debug_with_toolchain(
         &verified,
         &NativeBuildOptions {
+            profile: starkc::backend::generated_rust::Profile::Debug,
+            target_triple: None,
             target_dir: target_dir.to_path_buf(),
             target_contract: "stark-64-v1".to_string(),
         },

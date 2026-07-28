@@ -100,6 +100,7 @@ fn native_exits_zero(root: &Path, program: &starkc::mir::MirProgram) -> bool {
         &NativeBuildOptions {
             target_dir: out,
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
     )
     .expect("native build");

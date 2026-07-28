@@ -17,8 +17,13 @@ stark — package manager and builder for the STARK Core v1 language
 
 Usage:
   stark check                   Check the current package and dependencies.
-  stark build [--locked] [--offline] [--keep-generated] [--emit-rust] [--verbose]
-                                 Compile a native debug executable.
+  stark build [--release] [--target <triple>] [--locked] [--offline]
+              [--keep-generated] [--emit-rust] [--verbose]
+                                 Compile a native executable. Debug by default;
+                                 --release builds the optimised profile with the
+                                 same STARK-observable semantics. --target names
+                                 a triple; cross-compilation is validated but not
+                                 yet supported, and is refused with its reason.
   stark run                     Compile and execute the package main entry point.
   stark test [name] [--ignored] [--show-output]
                                  Run `fn test_*()` functions in the package,
@@ -162,8 +167,20 @@ fn main() -> ExitCode {
 
 fn cmd_build(args: &[String]) -> ExitCode {
     let mut options = starkc::native_build::BuildCommandOptions::default();
+    let mut pending_target = false;
     for arg in args {
+        // `--target` takes a value, so the previous iteration may have claimed this argument.
+        if pending_target {
+            options.target = Some(arg.clone());
+            pending_target = false;
+            continue;
+        }
         match arg.as_str() {
+            "--release" => options.release = true,
+            "--target" => pending_target = true,
+            a if a.starts_with("--target=") => {
+                options.target = Some(a["--target=".len()..].to_string());
+            }
             "--locked" => options.locked = true,
             "--offline" => options.offline = true,
             "--keep-generated" => options.keep_generated = true,
@@ -181,6 +198,10 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+    }
+    if pending_target {
+        eprintln!("error: `--target` requires a target triple");
+        return ExitCode::from(2);
     }
     let current_dir = match std::env::current_dir() {
         Ok(dir) => dir,
@@ -233,8 +254,9 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 println!("Generated Rust -> {}", path.display());
             }
             println!(
-                "Built {} [debug] -> {}",
+                "Built {} [{}] -> {}",
                 result.package_name,
+                result.profile.as_str(),
                 result.artifact_path.display()
             );
             ExitCode::SUCCESS
@@ -251,6 +273,7 @@ fn render_build_error(error: &starkc::native_build::BuildCommandError, verbose: 
     use starkc::native_toolchain::ToolchainError;
     match error {
         BuildCommandError::Package(message) => eprintln!("error: {message}"),
+        BuildCommandError::Target(message) => eprintln!("error: {message}"),
         BuildCommandError::Analysis {
             rendered,
             package_name,

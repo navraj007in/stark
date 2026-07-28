@@ -216,6 +216,7 @@ fn cross_package_projection() {
             &NativeBuildOptions {
                 target_dir: out,
                 target_contract: "stark-64-v1".to_string(),
+                ..NativeBuildOptions::default()
             },
         )
         .unwrap_or_else(|e| panic!("xpkg native build: {e:?}"));

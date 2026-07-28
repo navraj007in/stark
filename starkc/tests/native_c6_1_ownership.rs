@@ -60,7 +60,11 @@ fn compile(source: &str, tag: &str) -> Compiled {
     assert!(errs.is_empty(), "{tag} typecheck: {errs:?}");
     let program = lower_program(&hir, &checked.tables, file.clone())
         .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
-    let versions = build_versions("0.0.0-test".to_string(), "test-triple".to_string());
+    let versions = build_versions(
+        "0.0.0-test".to_string(),
+        "test-triple".to_string(),
+        starkc::backend::generated_rust::Profile::Debug,
+    );
     let generated = emit_program::emit(&program, &versions, &TargetLayout::default())
         .unwrap_or_else(|e| panic!("{tag} emit: {e:?}"))
         .main_rs;
@@ -194,6 +198,7 @@ fn a_false_assertion_traps_in_all_three_engines() {
             &NativeBuildOptions {
                 target_dir: dir.clone(),
                 target_contract: "stark-64-v1".to_string(),
+                ..NativeBuildOptions::default()
             },
         )
         .unwrap();

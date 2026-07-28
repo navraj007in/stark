@@ -45,6 +45,7 @@ fn build(source: &str, tag: &str) -> Result<(String, std::process::Output), Back
         &NativeBuildOptions {
             target_dir: target_dir.clone(),
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
     )?;
     let generated = std::fs::read_to_string(artifact.build_dir.join("src/main.rs")).unwrap();
@@ -819,6 +820,7 @@ fn the_build_report_records_the_layout_contract_identity() {
         &NativeBuildOptions {
             target_dir: target_dir.clone(),
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
     )
     .expect("must build");
@@ -855,6 +857,7 @@ fn an_unknown_target_contract_is_rejected_before_emission() {
         &NativeBuildOptions {
             target_dir: std::env::temp_dir().join("stark_c5_3_badtarget"),
             target_contract: "stark-128-v9".to_string(),
+            ..NativeBuildOptions::default()
         },
     );
     let Err(err) = result else {

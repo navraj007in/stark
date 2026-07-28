@@ -653,12 +653,32 @@ pub fn run_mir(name: &str, program: &starkc::mir::MirProgram) -> Observation {
 // ------------------------------------------------------------------ engine 3 --
 
 pub fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> Observation {
+    run_native_with_profile(
+        name,
+        tag,
+        program,
+        starkc::backend::generated_rust::Profile::Debug,
+    )
+}
+
+/// WP-C7.1 §3.6: the same engine, built under a chosen PROFILE.
+///
+/// Release is a fourth execution mode, not a faster third one. Cargo's release defaults would have
+/// given `panic = "unwind"`, and the generated manifest overrides that — but an override is a claim
+/// until something compares the two profiles' observations, which is what this exists for.
+pub fn run_native_with_profile(
+    name: &str,
+    tag: &str,
+    program: &starkc::mir::MirProgram,
+    profile: starkc::backend::generated_rust::Profile,
+) -> Observation {
     let verified = match verify_program(program) {
         Ok(v) => v,
         Err(errors) => panic!("{name}: verifier rejected lowered MIR:\n{errors:#?}"),
     };
     let target_dir = std::env::temp_dir().join(format!(
-        "stark_3eng_{tag}_{}_{:?}",
+        "stark_3eng_{tag}_{}_{}_{:?}",
+        profile.as_str(),
         std::process::id(),
         std::thread::current().id()
     ));
@@ -666,6 +686,8 @@ pub fn run_native(name: &str, tag: &str, program: &starkc::mir::MirProgram) -> O
     let options = NativeBuildOptions {
         target_dir: target_dir.clone(),
         target_contract: "stark-64-v1".to_string(),
+        profile,
+        target_triple: None,
     };
     let artifact = emit_native_debug(&verified, &options)
         .unwrap_or_else(|e| panic!("{name}: native build failed: {e:?}"));

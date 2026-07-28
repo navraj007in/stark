@@ -65,6 +65,7 @@ fn empty_main_compiles_and_runs_natively() {
     let options = NativeBuildOptions {
         target_dir: target_dir.clone(),
         target_contract: "stark-64-v1".to_string(),
+        ..NativeBuildOptions::default()
     };
 
     let artifact = emit_native_debug(&verified, &options).unwrap_or_else(|e| {

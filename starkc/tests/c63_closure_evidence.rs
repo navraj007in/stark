@@ -113,6 +113,7 @@ fn generated_crate_builds_against_an_installed_runtime_offline() {
         &NativeBuildOptions {
             target_dir: root.join("build"),
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
         &toolchain,
     )

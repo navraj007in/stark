@@ -45,7 +45,11 @@ fn compile(source: &str, tag: &str) -> (MirProgram, String) {
     // Verify for well-formedness (and to keep the structural test on the same precondition as a
     // real build), then emit source directly — no cargo/rustc needed for a structural claim.
     let _verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let versions = build_versions("0.0.0-test".to_string(), "test-triple".to_string());
+    let versions = build_versions(
+        "0.0.0-test".to_string(),
+        "test-triple".to_string(),
+        starkc::backend::generated_rust::Profile::Debug,
+    );
     let layout = TargetLayout::default();
     let generated = emit_program::emit(&program, &versions, &layout)
         .unwrap_or_else(|e| panic!("{tag} emit: {e:?}"))

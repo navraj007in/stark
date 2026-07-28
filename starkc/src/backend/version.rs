@@ -15,7 +15,11 @@ pub fn compiler_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-pub fn build_versions(rustc_version: String, target_triple: String) -> BuildVersions {
+pub fn build_versions(
+    rustc_version: String,
+    target_triple: String,
+    profile: crate::backend::generated_rust::Profile,
+) -> BuildVersions {
     BuildVersions {
         compiler_version: compiler_version().to_string(),
         mir_version: MIR_VERSION.to_string(),
@@ -24,7 +28,9 @@ pub fn build_versions(rustc_version: String, target_triple: String) -> BuildVers
         backend_version: BACKEND_VERSION.to_string(),
         rustc_version,
         target_triple,
-        // WP-C5.1b only ever builds the debug profile (§12.1: release stays C7).
-        profile: "debug".to_string(),
+        // WP-C7.1: the profile is an INPUT now. C5.1b hard-coded "debug" because release did not
+        // exist; leaving it hard-coded once `--release` shipped would have made the build key blind
+        // to the profile, so a debug and a release build of one source would collide on it.
+        profile: profile.as_str().to_string(),
     }
 }

@@ -352,6 +352,7 @@ fn a_cross_package_program_links_and_runs_natively() {
         &NativeBuildOptions {
             target_dir,
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
     )
     .expect("cross-package program must emit and build");

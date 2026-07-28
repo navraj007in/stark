@@ -409,6 +409,7 @@ fn an_eq_that_panics_aborts_with_the_users_provenance() {
             &NativeBuildOptions {
                 target_dir: dir.clone(),
                 target_contract: "stark-64-v1".to_string(),
+                ..NativeBuildOptions::default()
             },
         )
         .unwrap_or_else(|e| panic!("native build: {e:?}"));

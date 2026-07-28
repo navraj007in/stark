@@ -426,6 +426,7 @@ fn refused_natively(tag: &str, src: &str, expect: &str) {
         &NativeBuildOptions {
             target_dir: dir.clone(),
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
     );
     let _ = std::fs::remove_dir_all(&dir);

@@ -27,8 +27,12 @@ pub fn build_and_link(
     // WP-C6.4a (§8.4): target preflight, from the rustc probe alone -- before any source is
     // emitted, before the generated crate exists, and before Cargo or the linker runs. An
     // unsupported target must not be discovered by a later rustc error.
-    let selection = preflight_from_rustc_verbose(&rustc_verbose)?;
-    let versions = version::build_versions(rustc_version, selection.selected_triple().to_string());
+    let selection = preflight_from_rustc_verbose(&rustc_verbose, options.target_triple.as_deref())?;
+    let versions = version::build_versions(
+        rustc_version,
+        selection.selected_triple().to_string(),
+        options.profile,
+    );
 
     // WP-C5.3e (CD-067): resolve the requested named contract BEFORE emitting. An unknown name
     // is rejected here rather than defaulted, because a layout answer is observable and
@@ -49,7 +53,10 @@ pub fn build_and_link(
     }
     let source = emit_program::emit(program, &versions, &layout)?;
     let build_key = compute_build_key(program, &versions, &layout);
-    let crate_dir = options.target_dir.join("debug").join(&build_key);
+    let crate_dir = options
+        .target_dir
+        .join(options.profile.as_str())
+        .join(&build_key);
     let src_dir = crate_dir.join("src");
     std::fs::create_dir_all(&src_dir)
         .map_err(|e| BackendDiagnostic::Io(format!("creating {}: {e}", src_dir.display())))?;
@@ -79,13 +86,22 @@ pub fn build_and_link(
     // dependency appearing in the generated graph fails the build instead of being resolved
     // silently.
     let manifest_path = crate_dir.join("Cargo.toml");
-    let cargo_args = vec![
+    let mut cargo_args = vec![
         OsString::from("build"),
         OsString::from("--locked"),
         OsString::from("--offline"),
         OsString::from("--manifest-path"),
         manifest_path.into_os_string(),
     ];
+    if options.profile.is_release() {
+        cargo_args.push(OsString::from("--release"));
+    }
+    if let Some(triple) = &options.target_triple {
+        // Passed as SEPARATE argv entries, never concatenated into one string (§12): a target name
+        // reaching a shell would be an injection surface, and `Command::args` never involves one.
+        cargo_args.push(OsString::from("--target"));
+        cargo_args.push(OsString::from(triple));
+    }
     let command: Vec<String> = std::iter::once(format!("RUSTC={}", toolchain.rustc.display()))
         .chain(std::iter::once(toolchain.cargo.display().to_string()))
         .chain(
@@ -124,9 +140,15 @@ pub fn build_and_link(
     // WP-C6.4a: the suffix comes from the SELECTED TARGET, not from `std::env::consts::EXE_SUFFIX`
     // (the compiler's own host). Identical today, since preflight admits only host builds; the
     // point is that the value is now derived from the thing it describes.
-    let binary_path = crate_dir
-        .join("target")
-        .join("debug")
+    // Cargo puts a `--release` build under `target/release/`, and a `--target`ed build under
+    // `target/<triple>/<profile>/`. Reading the wrong one would find a STALE binary from an earlier
+    // profile rather than failing, so the path is derived from the same options the command was.
+    let mut binary_dir = crate_dir.join("target");
+    if let Some(triple) = &options.target_triple {
+        binary_dir = binary_dir.join(triple);
+    }
+    let binary_path = binary_dir
+        .join(options.profile.as_str())
         .join(generated_binary_filename(
             selection.selected.executable_suffix,
         ));
@@ -180,11 +202,22 @@ fn parse_rustc_field<'a>(verbose: &'a str, field: &str) -> Option<&'a str> {
 /// crate emitted and no Cargo invoked, without requiring an unsupported machine to run the test on.
 fn preflight_from_rustc_verbose(
     rustc_verbose: &str,
+    requested_triple: Option<&str>,
 ) -> Result<crate::target::TargetSelection, BackendDiagnostic> {
     let host_triple = parse_rustc_field(rustc_verbose, "host: ")
         .ok_or_else(|| BackendDiagnostic::Io("could not parse `host:` from rustc -vV".into()))?;
-    crate::target::preflight(host_triple, None, &crate::target::HostOnlyAvailability)
-        .map_err(BackendDiagnostic::TargetRejected)
+    // WP-C7.1: the REQUESTED triple is passed through rather than hard-coded `None`.
+    //
+    // This is what makes `--target` honest. `preflight` refuses a non-native selection with
+    // `HostOrTargetMetadataMismatch`, so a cross-target request is REJECTED with its own reason
+    // instead of silently producing a host binary — which §3.3 forbids outright. An unknown triple
+    // is rejected earlier still, by `select`, as `UnsupportedByStark`.
+    crate::target::preflight(
+        host_triple,
+        requested_triple,
+        &crate::target::HostOnlyAvailability,
+    )
+    .map_err(BackendDiagnostic::TargetRejected)
 }
 
 fn generated_cargo_toml(runtime_path: &Path) -> String {
@@ -208,7 +241,28 @@ fn generated_cargo_toml(runtime_path: &Path) -> String {
          stark-runtime = {{ path = {} }}\n\
          \n\
          [profile.dev]\n\
-         panic = \"abort\"\n",
+         panic = \"abort\"\n\
+         \n\
+         # WP-C7.1 (§6.6): every release setting is written EXPLICITLY rather than inherited.\n\
+         #\n\
+         # `panic` is the one that matters. Cargo's release default is \"unwind\", and unwinding\n\
+         # runs destructors -- which DROP-ABORT-001 forbids after a trap. STARK's own traps exit\n\
+         # through `process::exit` and so are safe either way, and the C7.0 panic-site audit found\n\
+         # no user-reachable Rust panic in the runtime today. This is set anyway, as\n\
+         # defence-in-depth: the guarantee should rest on the build, not only on that audit\n\
+         # staying true as the runtime grows.\n\
+         #\n\
+         # `overflow-checks` is recorded rather than relied upon. STARK arithmetic lowers to\n\
+         # explicit `checked_*` calls, so trapping does not depend on this -- but leaving it\n\
+         # unstated would invite the reader to assume it does.\n\
+         [profile.release]\n\
+         panic = \"abort\"\n\
+         opt-level = 3\n\
+         overflow-checks = true\n\
+         debug-assertions = false\n\
+         lto = false\n\
+         codegen-units = 16\n\
+         strip = false\n",
         toml_basic_string(runtime_path),
     )
 }
@@ -537,7 +591,7 @@ mod tests {
     #[test]
     fn preflight_accepts_a_tier1_host_and_reports_it_as_the_selected_target() {
         for host in crate::target::tier1_triples() {
-            let selection = preflight_from_rustc_verbose(&rustc_verbose_for(host)).unwrap();
+            let selection = preflight_from_rustc_verbose(&rustc_verbose_for(host), None).unwrap();
             assert_eq!(selection.host_triple, host);
             assert_eq!(selection.selected_triple(), host);
             assert_eq!(selection.selected.tier, crate::target::Tier::One);
@@ -549,8 +603,9 @@ mod tests {
     /// later rustc or linker error.
     #[test]
     fn preflight_rejects_an_unsupported_host_before_anything_is_generated() {
-        let error = preflight_from_rustc_verbose(&rustc_verbose_for("riscv64gc-unknown-linux-gnu"))
-            .unwrap_err();
+        let error =
+            preflight_from_rustc_verbose(&rustc_verbose_for("riscv64gc-unknown-linux-gnu"), None)
+                .unwrap_err();
         match error {
             BackendDiagnostic::TargetRejected(crate::target::TargetError::UnsupportedByStark {
                 ref requested,
@@ -560,7 +615,7 @@ mod tests {
         }
         // And it is not the "backend cannot lower this" class, which means something else.
         assert!(!matches!(
-            preflight_from_rustc_verbose(&rustc_verbose_for("riscv64gc-unknown-linux-gnu")),
+            preflight_from_rustc_verbose(&rustc_verbose_for("riscv64gc-unknown-linux-gnu"), None),
             Err(BackendDiagnostic::Unsupported(_))
         ));
     }
@@ -568,7 +623,7 @@ mod tests {
     #[test]
     fn a_rustc_transcript_without_a_host_field_is_an_io_error_not_a_target_rejection() {
         assert!(matches!(
-            preflight_from_rustc_verbose("release: 1.93.0\n"),
+            preflight_from_rustc_verbose("release: 1.93.0\n", None),
             Err(BackendDiagnostic::Io(_))
         ));
     }
@@ -656,7 +711,11 @@ mod tests {
     type VersionMutation = (&'static str, Box<dyn Fn(&mut BuildVersions)>);
 
     fn versions() -> BuildVersions {
-        version::build_versions("1.99.0".to_string(), "aarch64-apple-darwin".to_string())
+        version::build_versions(
+            "1.99.0".to_string(),
+            "aarch64-apple-darwin".to_string(),
+            crate::backend::generated_rust::Profile::Debug,
+        )
     }
 
     fn program(name: &str, source: &str) -> MirProgram {

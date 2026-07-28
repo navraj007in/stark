@@ -217,6 +217,7 @@ fn the_workspace_builds_one_native_executable_that_exits_normally() {
         &NativeBuildOptions {
             target_dir: out.clone(),
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
     )
     .expect("workspace must build one native executable");

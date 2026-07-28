@@ -46,7 +46,11 @@ fn compile(source: &str, tag: &str) -> (MirProgram, String) {
     let program = lower_program(&hir, &checked.tables, file)
         .unwrap_or_else(|e| panic!("{tag} lower: {}", e.what));
     let _verified = verify_program(&program).unwrap_or_else(|e| panic!("{tag} verify: {e:?}"));
-    let versions = build_versions("0.0.0-test".to_string(), "test-triple".to_string());
+    let versions = build_versions(
+        "0.0.0-test".to_string(),
+        "test-triple".to_string(),
+        starkc::backend::generated_rust::Profile::Debug,
+    );
     let generated = emit_program::emit(&program, &versions, &TargetLayout::default())
         .unwrap_or_else(|e| panic!("{tag} emit: {e:?}"))
         .main_rs;
@@ -293,6 +297,7 @@ fn the_entry_main_used_as_a_function_value_builds_natively() {
         &NativeBuildOptions {
             target_dir: dir.clone(),
             target_contract: "stark-64-v1".to_string(),
+            ..NativeBuildOptions::default()
         },
     )
     .expect("entry-as-value must build natively (§8.3 coherence, §15.5)");

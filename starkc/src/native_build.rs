@@ -2,7 +2,8 @@
 
 use crate::analysis::{analyze_project, ProjectInput};
 use crate::backend::generated_rust::{
-    emit_native_debug_with_toolchain, BackendDiagnostic, NativeBuildOptions, NativeToolchainOptions,
+    emit_native_debug_with_toolchain, BackendDiagnostic, NativeBuildOptions,
+    NativeToolchainOptions, Profile,
 };
 use crate::mir::{lower::lower_program, verify::verify_program};
 use crate::native_toolchain::{self, ToolchainError, ToolchainInfo};
@@ -19,11 +20,29 @@ pub struct BuildCommandOptions {
     pub keep_generated: bool,
     pub emit_rust: bool,
     pub verbose: bool,
+    /// WP-C7.1 `--release`.
+    pub release: bool,
+    /// WP-C7.1 `--target <triple>`. `None` builds for the host.
+    pub target: Option<String>,
+}
+
+impl BuildCommandOptions {
+    pub fn profile(&self) -> Profile {
+        if self.release {
+            Profile::Release
+        } else {
+            Profile::Debug
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct BuildCommandResult {
     pub package_name: String,
+    /// WP-C7.1: the profile this build actually used. Reported rather than re-derived: the CLI
+    /// printed a hard-coded "[debug]" for a `--release` build until this field existed, so the
+    /// message and the artefact path disagreed about the same build.
+    pub profile: Profile,
     pub package_root: PathBuf,
     pub artifact_path: PathBuf,
     pub generated_dir: Option<PathBuf>,
@@ -36,6 +55,9 @@ pub struct BuildCommandResult {
 #[derive(Clone, Debug)]
 pub enum BuildCommandError {
     Package(String),
+    /// WP-C7.1: a target this compiler does not name. Distinct from a target it names but whose
+    /// toolchain is missing locally, which `target::preflight` reports separately.
+    Target(String),
     Analysis {
         rendered: String,
         package_name: String,
@@ -73,6 +95,20 @@ pub fn build_current_package(
     current_dir: &Path,
     options: &BuildCommandOptions,
 ) -> Result<BuildCommandResult, BuildCommandError> {
+    // WP-C7.1 (§3.3): the target is validated BEFORE any expensive work — before the package graph
+    // is loaded, before analysis, before a crate is emitted. A bad triple must cost nothing.
+    if let Some(requested) = &options.target {
+        if crate::target::classify(requested).is_none() {
+            return Err(BuildCommandError::Target(format!(
+                "unsupported target `{requested}`\n  STARK names these targets: {}",
+                crate::target::known_targets()
+                    .iter()
+                    .map(|t| format!("{} ({})", t.triple, t.tier))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    }
     let manifest = find_package_root(current_dir).map_err(BuildCommandError::Package)?;
     let package_root = manifest
         .parent()
@@ -120,12 +156,21 @@ pub fn build_current_package(
     // Source diagnostics deliberately precede all external tool probes.
     let toolchain = native_toolchain::discover(std::env::current_exe().ok().as_deref())
         .map_err(BuildCommandError::Toolchain)?;
+    // WP-C7.1 (§3.4): the layout is parameterised by TARGET and PROFILE, so a debug build, a
+    // release build and a cross-target build of one package cannot overwrite each other. The old
+    // layout was `target/stark/debug/` with both components fixed.
+    let profile = options.profile();
     let target_root = package_root.join("target/stark");
-    let final_dir = target_root.join("debug");
+    let final_dir = match &options.target {
+        Some(triple) => target_root.join(triple).join(profile.as_str()),
+        None => target_root.join(profile.as_str()),
+    };
     let artifact = emit_native_debug_with_toolchain(
         &verified,
         &NativeBuildOptions {
             target_dir: target_root.clone(),
+            profile,
+            target_triple: options.target.clone(),
             ..NativeBuildOptions::default()
         },
         &NativeToolchainOptions {
@@ -158,6 +203,7 @@ pub fn build_current_package(
     }
     Ok(BuildCommandResult {
         package_name,
+        profile,
         package_root,
         artifact_path: final_path,
         generated_dir,
