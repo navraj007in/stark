@@ -1,0 +1,207 @@
+{
+  "stark_binary_sha256": "e47c02d0b91fd5f28a0f69d2adb0f762b428e50d0d9b1f008124511c5a49fd75",
+  "c75_report": {
+    "workloads": {
+      "w01_minimal": {
+        "debug": {
+          "compile_seconds_cold": 1.0395,
+          "peak_compiler_rss_bytes": 156336128,
+          "executable_bytes": 482608,
+          "runtime_seconds_best": 0.0023,
+          "runtime_error": null
+        },
+        "release": {
+          "compile_seconds_cold": 0.4174,
+          "peak_compiler_rss_bytes": 159301632,
+          "executable_bytes": 443328,
+          "runtime_seconds_best": 0.00231,
+          "runtime_error": null
+        },
+        "interpreter_seconds_best": 0.00272,
+        "interpreter_error": null,
+        "interpreter_over_native_release": 1.18,
+        "debug_over_release_runtime": 1.0,
+        "debug_over_release_size": 1.09
+      },
+      "w02_arith_control": {
+        "debug": {
+          "compile_seconds_cold": 0.393,
+          "peak_compiler_rss_bytes": 149536768,
+          "executable_bytes": 490848,
+          "runtime_seconds_best": 0.00248,
+          "runtime_error": null
+        },
+        "release": {
+          "compile_seconds_cold": 0.4049,
+          "peak_compiler_rss_bytes": 156860416,
+          "executable_bytes": 445408,
+          "runtime_seconds_best": 0.00266,
+          "runtime_error": null
+        },
+        "interpreter_seconds_best": 0.08776,
+        "interpreter_error": null,
+        "interpreter_over_native_release": 32.99,
+        "debug_over_release_runtime": 0.93,
+        "debug_over_release_size": 1.1
+      },
+      "w03_generic_trait": {
+        "debug": {
+          "compile_seconds_cold": 0.3957,
+          "peak_compiler_rss_bytes": 148652032,
+          "executable_bytes": 489296,
+          "runtime_seconds_best": 0.00259,
+          "runtime_error": null
+        },
+        "release": {
+          "compile_seconds_cold": 0.4061,
+          "peak_compiler_rss_bytes": 156876800,
+          "executable_bytes": 444160,
+          "runtime_seconds_best": 0.00234,
+          "runtime_error": null
+        },
+        "interpreter_seconds_best": 0.00484,
+        "interpreter_error": null,
+        "interpreter_over_native_release": 2.07,
+        "debug_over_release_runtime": 1.11,
+        "debug_over_release_size": 1.1
+      },
+      "w04_string_vec": {
+        "debug": {
+          "compile_seconds_cold": 0.4323,
+          "peak_compiler_rss_bytes": 149225472,
+          "executable_bytes": 505952,
+          "runtime_seconds_best": 0.00263,
+          "runtime_error": null
+        },
+        "release": {
+          "compile_seconds_cold": 0.4266,
+          "peak_compiler_rss_bytes": 156336128,
+          "executable_bytes": 447280,
+          "runtime_seconds_best": 0.00267,
+          "runtime_error": null
+        },
+        "interpreter_seconds_best": 0.00637,
+        "interpreter_error": null,
+        "interpreter_over_native_release": 2.38,
+        "debug_over_release_runtime": 0.99,
+        "debug_over_release_size": 1.13
+      },
+      "w05_hash": {
+        "debug": {
+          "compile_seconds_cold": 0.434,
+          "peak_compiler_rss_bytes": 148881408,
+          "executable_bytes": 531584,
+          "runtime_seconds_best": 0.0037,
+          "runtime_error": null
+        },
+        "release": {
+          "compile_seconds_cold": 0.4395,
+          "peak_compiler_rss_bytes": 156401664,
+          "executable_bytes": 447456,
+          "runtime_seconds_best": 0.00211,
+          "runtime_error": null
+        },
+        "interpreter_seconds_best": 0.0079,
+        "interpreter_error": null,
+        "interpreter_over_native_release": 3.75,
+        "debug_over_release_runtime": 1.75,
+        "debug_over_release_size": 1.19
+      },
+      "w06_multi_package": {
+        "debug": {
+          "compile_seconds_cold": 0.3932,
+          "peak_compiler_rss_bytes": 149749760,
+          "executable_bytes": 489120,
+          "runtime_seconds_best": 0.00216,
+          "runtime_error": null
+        },
+        "release": {
+          "compile_seconds_cold": 0.4114,
+          "peak_compiler_rss_bytes": 153157632,
+          "executable_bytes": 445408,
+          "runtime_seconds_best": 0.00227,
+          "runtime_error": null
+        },
+        "interpreter_seconds_best": 0.00402,
+        "interpreter_error": null,
+        "interpreter_over_native_release": 1.77,
+        "debug_over_release_runtime": 0.95,
+        "debug_over_release_size": 1.1
+      },
+      "w07_drop_ownership": {
+        "debug": {
+          "compile_seconds_cold": 0.4144,
+          "peak_compiler_rss_bytes": 148635648,
+          "executable_bytes": 498928,
+          "runtime_seconds_best": 0.00228,
+          "runtime_error": null
+        },
+        "release": {
+          "compile_seconds_cold": 0.414,
+          "peak_compiler_rss_bytes": 155222016,
+          "executable_bytes": 445408,
+          "runtime_seconds_best": 0.00186,
+          "runtime_error": null
+        },
+        "interpreter_seconds_best": 0.00413,
+        "interpreter_error": null,
+        "interpreter_over_native_release": 2.22,
+        "debug_over_release_runtime": 1.23,
+        "debug_over_release_size": 1.12
+      }
+    },
+    "backend_complexity": {
+      "backend_generated_rust": {
+        "files": 11,
+        "lines": 6608,
+        "by_file": {
+          "build.rs": 1070,
+          "emit_bodies.rs": 2256,
+          "emit_places.rs": 651,
+          "emit_program.rs": 229,
+          "emit_projections.rs": 532,
+          "emit_runtime.rs": 280,
+          "emit_types.rs": 922,
+          "linkage.rs": 269,
+          "mangle.rs": 242,
+          "mod.rs": 154,
+          "source_map.rs": 3
+        }
+      },
+      "mir": {
+        "files": 6,
+        "lines": 16872,
+        "by_file": {
+          "drop_plan.rs": 520,
+          "interp.rs": 2579,
+          "lower.rs": 9765,
+          "mod.rs": 905,
+          "opt.rs": 697,
+          "verify.rs": 2406
+        }
+      },
+      "runtime_crate": {
+        "files": 12,
+        "lines": 1833,
+        "by_file": {
+          "boxed.rs": 19,
+          "format.rs": 171,
+          "lib.rs": 26,
+          "map.rs": 145,
+          "output.rs": 38,
+          "provider_abi.rs": 215,
+          "slot.rs": 692,
+          "string.rs": 121,
+          "trap.rs": 102,
+          "value.rs": 4,
+          "vec.rs": 216,
+          "version.rs": 84
+        }
+      }
+    },
+    "platform": {
+      "sys": "darwin",
+      "machine": "arm64"
+    }
+  }
+}

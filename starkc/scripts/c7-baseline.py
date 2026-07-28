@@ -19,7 +19,7 @@ The split is measured instead: build once with `--keep-generated`, then `cargo c
 crate and time `cargo build` on its own. That is the host cost cold, and total minus host is the
 STARK compiler's own work.
 """
-import argparse, hashlib, json, os, pathlib, shutil, subprocess, statistics, sys, tempfile, time
+import argparse, hashlib, json, os, pathlib, resource, shutil, subprocess, statistics, sys, tempfile, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORKLOADS = ROOT / "benchmarks" / "c7-workloads"
@@ -156,10 +156,130 @@ def reproduce() -> dict:
             results[w.name] = cls
     return results
 
+# ---------------------------------------------------------------- WP-C7.5 report --
+
+def run_measuring_rss(cmd, cwd):
+    """Wall time and PEAK RSS for one child process.
+
+    `getrusage(RUSAGE_CHILDREN)` in this process would be useless: it reports a high-water mark
+    across every child ever reaped, so after the first build every later workload would inherit the
+    largest number seen so far. Forking first gives each measurement its own accounting domain, so
+    the figure belongs to the build it names. POSIX only; the report records the platform.
+    """
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(read_fd)
+        started = time.perf_counter()
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        elapsed = time.perf_counter() - started
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        # macOS reports ru_maxrss in BYTES, Linux in KILOBYTES.
+        peak = usage.ru_maxrss if sys.platform == "darwin" else usage.ru_maxrss * 1024
+        os.write(write_fd, json.dumps(
+            {"seconds": elapsed, "peak_rss_bytes": peak, "returncode": proc.returncode,
+             "stderr": proc.stderr[-300:]}).encode())
+        os._exit(0)
+    os.close(write_fd)
+    chunks = []
+    with os.fdopen(read_fd, "rb") as handle:
+        while True:
+            chunk = handle.read(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    os.waitpid(pid, 0)
+    return json.loads(b"".join(chunks).decode())
+
+def best_of(cmd, cwd, reps):
+    """MINIMUM wall time over `reps` runs, not the mean.
+
+    For a short-running process the distribution is one true cost plus scheduler and page-cache
+    noise that can only ADD. The minimum is the least contaminated estimate; a mean on this corpus
+    mostly reports how busy the machine was.
+    """
+    times = []
+    for _ in range(reps):
+        started = time.perf_counter()
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+        times.append(time.perf_counter() - started)
+        if proc.returncode != 0:
+            return None, proc.stderr[-300:]
+    return min(times), None
+
+def backend_complexity() -> dict:
+    """Backend maintenance complexity, as counts rather than adjectives.
+
+    Lines of code is a crude proxy and is labelled as one. It is reported because C7.6's DEFER
+    decision needs *some* quantified basis for "the current backend is maintainable", and an
+    unquantified assertion is exactly what that decision must not rest on.
+    """
+    def lines(path: pathlib.Path) -> int:
+        return sum(1 for _ in path.open(errors="replace"))
+    groups = {
+        "backend_generated_rust": sorted((ROOT / "src" / "backend" / "generated_rust").rglob("*.rs")),
+        "mir": sorted((ROOT / "src" / "mir").glob("*.rs")),
+        "runtime_crate": sorted((ROOT / "stark-runtime" / "src").rglob("*.rs")),
+    }
+    out = {}
+    for name, files in groups.items():
+        out[name] = {"files": len(files), "lines": sum(lines(f) for f in files),
+                     "by_file": {f.name: lines(f) for f in files}}
+    return out
+
+def report(reps: int) -> dict:
+    """The eight C7.5 dimensions, per workload, for both profiles."""
+    results = {}
+    for w in sorted(WORKLOADS.glob("w0*")):
+        pkg = package_dir(w)
+        entry = {}
+        binaries = {}
+        for profile, args in (("debug", []), ("release", ["--release"])):
+            clean(w)
+            build = run_measuring_rss(
+                [str(STARK), "build", "--no-build-cache", *args], pkg)
+            if build["returncode"] != 0:
+                entry[profile] = {"error": build["stderr"]}
+                continue
+            out_dir = pkg / "target" / "stark" / profile
+            binary = next((p for p in out_dir.iterdir()
+                           if p.is_file() and p.suffix in ("", ".exe")), None)
+            if binary is None:
+                entry[profile] = {"error": "no executable"}
+                continue
+            binaries[profile] = binary
+            runtime, err = best_of([str(binary)], pkg, reps)
+            entry[profile] = {
+                "compile_seconds_cold": round(build["seconds"], 4),
+                "peak_compiler_rss_bytes": build["peak_rss_bytes"],
+                "executable_bytes": binary.stat().st_size,
+                "runtime_seconds_best": round(runtime, 5) if runtime else None,
+                "runtime_error": err,
+            }
+        # Interpreter/native ratio: the HIR interpreter is the semantic authority, so this is the
+        # cost of the reference implementation against the compiled one.
+        interp, interp_err = best_of([str(STARK), "run"], pkg, reps)
+        entry["interpreter_seconds_best"] = round(interp, 5) if interp else None
+        entry["interpreter_error"] = interp_err
+        def ratio(a, b):
+            return round(a / b, 2) if (a and b and b > 0) else None
+        rel = entry.get("release", {}).get("runtime_seconds_best")
+        dbg = entry.get("debug", {}).get("runtime_seconds_best")
+        entry["interpreter_over_native_release"] = ratio(interp, rel)
+        entry["debug_over_release_runtime"] = ratio(dbg, rel)
+        entry["debug_over_release_size"] = ratio(
+            entry.get("debug", {}).get("executable_bytes"),
+            entry.get("release", {}).get("executable_bytes"))
+        results[w.name] = entry
+    return {"workloads": results,
+            "backend_complexity": backend_complexity(),
+            "platform": {"sys": sys.platform, "machine": os.uname().machine}}
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--measure", action="store_true")
     ap.add_argument("--reproduce", action="store_true")
+    ap.add_argument("--report", action="store_true", help="WP-C7.5 performance and complexity report")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--out", type=pathlib.Path)
     a = ap.parse_args()
@@ -170,6 +290,8 @@ def main():
         payload["measurements"] = measure(a.reps)
     if a.reproduce:
         payload["reproducibility"] = reproduce()
+    if a.report:
+        payload["c75_report"] = report(a.reps)
     text = json.dumps(payload, indent=2)
     print(text)
     if a.out:
