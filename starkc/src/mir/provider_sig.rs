@@ -13,6 +13,7 @@
 
 use super::MirTy;
 use crate::provider_abi::{AbiParam, ScalarTy};
+use crate::provider_bind::ResourceRegistry;
 
 /// The MIR type of a provider call's destination: ABI §11's `ProviderStatus.code`.
 ///
@@ -21,15 +22,21 @@ use crate::provider_abi::{AbiParam, ScalarTy};
 /// collapse the three failure channels into one at exactly the layer that must keep them apart.
 pub const PROVIDER_STATUS_TY: MirTy = MirTy::UInt32;
 
-/// An `AbiParam` form MIR cannot yet type.
+/// An `AbiParam` whose resource type is not bound to a MIR type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnmappedParam {
-    /// A handle-carrying parameter. Typing one requires binding a provider `resource_type` string
-    /// to a `MirTy`, which arrives with the first resource-bearing capability (C7.8.4's `File`).
-    /// Until then a resource-typed provider call is refused rather than guessed at — guessing
-    /// would mean inventing a MIR type for a resource whose identity the compiler does not yet
-    /// know, and ABI §11.1's `resource_type` validation would have nothing to check against.
-    ResourceHandle { index: usize, resource_type: String },
+    /// A handle-carrying parameter whose `resource_type` **no registry entry binds** to a MIR
+    /// type.
+    ///
+    /// The narrow reading is the correct one: resource-bearing provider calls are structurally
+    /// defined, but a specific resource type is inadmissible until it is bound. C7.8.4 registers
+    /// `"file"`; a call carrying `"custom-db-session"` stays inadmissible afterwards, so this
+    /// diagnostic outlives the empty registry rather than being deleted with it.
+    ///
+    /// Refused rather than guessed at, because inventing a MIR type for a resource whose identity
+    /// the compiler does not know would leave ABI §11.1's `resource_type` validation nothing to
+    /// check against.
+    UnboundResourceType { index: usize, resource_type: String },
 }
 
 fn scalar_ty(t: ScalarTy) -> MirTy {
@@ -61,7 +68,11 @@ fn byte_slice(mutable: bool) -> MirTy {
 /// distinguished here — §6.1 says the same of their C forms, both `*mut T`, and records that the
 /// difference is an initialisation contract (§11.1) rather than a type. That contract is a
 /// verifier rule about *reads on failure paths*, not something a signature can express.
-pub fn param_ty(index: usize, param: &AbiParam) -> Result<MirTy, UnmappedParam> {
+pub fn param_ty(
+    index: usize,
+    param: &AbiParam,
+    registry: &ResourceRegistry,
+) -> Result<MirTy, UnmappedParam> {
     Ok(match param {
         AbiParam::ScalarIn(t) => scalar_ty(*t),
         AbiParam::ScalarOut(t) | AbiParam::ScalarInOut(t) => MirTy::Ref {
@@ -70,22 +81,37 @@ pub fn param_ty(index: usize, param: &AbiParam) -> Result<MirTy, UnmappedParam> 
         },
         AbiParam::BufferIn => byte_slice(false),
         AbiParam::BufferInOut => byte_slice(true),
-        AbiParam::HandleBorrowed { resource_type }
-        | AbiParam::HandleConsumed { resource_type }
-        | AbiParam::HandleOut { resource_type } => {
-            return Err(UnmappedParam::ResourceHandle {
-                index,
-                resource_type: resource_type.clone(),
-            });
+        // A bound resource type maps to its registered MIR type; `HandleOut` is `&mut` to it,
+        // matching §6.1's `*mut RawResourceHandle`, while borrowed and consumed handles cross by
+        // value.
+        AbiParam::HandleBorrowed { resource_type } | AbiParam::HandleConsumed { resource_type } => {
+            registry.lookup(resource_type).cloned().ok_or_else(|| {
+                UnmappedParam::UnboundResourceType {
+                    index,
+                    resource_type: resource_type.clone(),
+                }
+            })?
         }
+        AbiParam::HandleOut { resource_type } => MirTy::Ref {
+            mutable: true,
+            inner: Box::new(registry.lookup(resource_type).cloned().ok_or_else(|| {
+                UnmappedParam::UnboundResourceType {
+                    index,
+                    resource_type: resource_type.clone(),
+                }
+            })?),
+        },
     })
 }
 
 /// The full `(params, ret)` signature for a validated provider call.
-pub fn signature(params: &[AbiParam]) -> Result<(Vec<MirTy>, MirTy), UnmappedParam> {
+pub fn signature(
+    params: &[AbiParam],
+    registry: &ResourceRegistry,
+) -> Result<(Vec<MirTy>, MirTy), UnmappedParam> {
     let mut tys = Vec::with_capacity(params.len());
     for (index, p) in params.iter().enumerate() {
-        tys.push(param_ty(index, p)?);
+        tys.push(param_ty(index, p, registry)?);
     }
     Ok((tys, PROVIDER_STATUS_TY))
 }

@@ -865,16 +865,19 @@ impl<'a> BodyCx<'a> {
                             }
                             // V-PROV-5 (invariant 5): the ABI parameter shapes become the expected
                             // MIR signature, and the shared arity/type check below enforces them.
-                            match provider_sig::signature(&call.function.params) {
+                            match provider_sig::signature(
+                                &call.function.params,
+                                &crate::provider_bind::ResourceRegistry::builtin(),
+                            ) {
                                 Ok(sig) => Some(sig),
                                 Err(unmapped) => {
                                     self.err(
                                         "MIR-0024",
                                         bi,
                                         format!(
-                                            "provider function `{}` has a parameter MIR cannot yet \
-                                             type: {unmapped:?} (resource-typed parameters arrive \
-                                             with C7.8.4)",
+                                            "provider function `{}` carries a resource type not \
+                                             bound to a MIR type: {unmapped:?} (the `file` \
+                                             binding arrives with C7.8.4)",
                                             call.symbol()
                                         ),
                                     );

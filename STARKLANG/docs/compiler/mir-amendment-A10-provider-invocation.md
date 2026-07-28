@@ -229,7 +229,10 @@ A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing
 | C7.8.2a — MIR representation and versioning | **LANDED** |
 | C7.8.2b — provider resolution and validated call records | **LANDED** |
 | C7.8.2c — verifier invariants and negative fixtures | **LANDED** (1–5 of 9; 6–9 deferred, see below) |
-| C7.8.2d — generated-Rust static extern bindings | next |
+| C7.8.2d-1 — provider binding plan | **LANDED** |
+| C7.8.2d-2 — scalar and buffer emission (closes invariant 6) | next |
+| C7.8.2d-3 — output and status control flow (closes invariants 8, 9) | pending |
+| C7.8.2d-4 — resource framework, no `File` admission (structures invariant 7) | framework LANDED with d-1; evidence pending |
 | C7.8.2e — `stark-time` end-to-end execution | pending |
 | C7.8.2f — full A10 regression evidence | pending |
 
@@ -254,7 +257,7 @@ One finding from building it needs an owner decision — recorded in §11.
 
 **What C7.8.2c landed.** Invariants **1–5** are enforced, replacing C7.8.2a's blanket refusal
 (MIR-0020, retired and not reused). New codes: MIR-0021 target applicability, MIR-0022 capability
-membership, MIR-0023 symbol validity, MIR-0024 an ABI parameter MIR cannot yet type, MIR-0025 ABI
+membership, MIR-0023 symbol validity, MIR-0024 a resource type not bound to a MIR type, MIR-0025 ABI
 version. Invariant 5 is enforced by *derivation* rather than a separate rule —
 `mir::provider_sig` turns the declared `AbiParam` list into the expected MIR signature, and the
 verifier's existing arity and per-argument checks do the rest.
@@ -273,13 +276,40 @@ and "re-checks rather than trusts" would have been a comment rather than a rule.
 **Invariants 6–9 are deferred to C7.8.2d/e, and cannot be pulled forward.** Borrow validity,
 consumed-resource invalidation, output-slot discipline and channel discipline all constrain the
 *binding layer's* generated control flow — reads on failure paths, handle liveness after a
-consuming call — and no lowering produces that structure yet. **Resource-typed parameters are
-refused outright (MIR-0024)** rather than guessed at: typing one requires binding a provider
-`resource_type` to a `MirTy`, which arrives with C7.8.4's `File`, and a guessed type would leave
-ABI §11.1's `resource_type` validation nothing to check against.
+consuming call — and no lowering produces that structure yet. C7.8.2d-1 builds the structure they
+will be checked against.
+
+**MIR-0024, stated narrowly.** Resource-bearing provider calls are structurally defined but remain
+inadmissible until a provider resource type is **bound to a concrete MIR type**. It does not say
+MIR cannot support resources. The diagnostic therefore **outlives the empty registry**: once
+C7.8.4 registers `"file" → Core(File, [])`, that call is admitted while an unknown
+`"custom-db-session"` still reports MIR-0024. Do not delete it when `File` lands.
 
 Evidence: `starkc/tests/a10_provider_verify.rs` (10 cases, each breaking exactly one thing in a
 verified baseline) plus the positive case in `a10_provider_call.rs`.
+
+**What C7.8.2d-1 landed.** `starkc/src/provider_bind.rs`: `ProviderBindingPlan`,
+`ProviderInputPlan`, `ProviderOutputPlan`, `StatusBinding`, `StatusOutcome`, and
+`ResourceRegistry`. Provider emission stops being a single raw call expression, because that shape
+has nowhere to put invariants 6, 8 and 9. Evidence: `starkc/tests/a10_provider_bind.rs`.
+
+Three classification rules are load-bearing and were easy to get wrong:
+
+- **`ScalarInOut` and `BufferInOut` are inputs, never output slots.** ABI §11.1 makes them
+  caller-initialised and caller-owned, so applying `MaybeUninit` semantics would be wrong in both
+  directions — forbidding a legitimate read after failure, and implying the provider allocates
+  storage it does not. Only `ScalarOut` and `HandleOut` are uninitialised-until-success.
+- **Every declared parameter produces exactly one plan item, carrying its declared index**, so
+  interleaved inputs and outputs cannot be reordered by an emitter that walks inputs then outputs.
+  `ProviderBindingPlan::covers` holds this as a checkable property rather than a construction
+  comment.
+- **An empty status vocabulary is legal and precise**: every nonzero status is then a contract
+  violation. `stark-time` is exactly this case.
+
+**The resource framework is complete; only the bindings are absent.** `ResourceRegistry` maps a
+provider `resource_type` to a `MirTy`, and `HandleConsumed`/`HandleOut` planning works today —
+proven with a synthetic resource type, so landing `File` in C7.8.4 is a *registration* rather than
+new machinery. `ResourceRegistry::builtin()` is empty in C7.8.2d.
 
 **A provider call is representable but not yet admitted.** That is the intended C7.8.2a state:
 §4's invariants land in C7.8.2c, and until they do, verification refuses rather than accepting an
@@ -346,6 +376,11 @@ pre-verification binding sequence; backend emission prohibitions; `MIR_RUNTIME_S
 **Rev. 2 (2026-07-28) — C7.8.2a landed.** §10 records implementation state, the
 representable-but-not-admitted position, the `provider_abi` layering move and its shim, and the
 interpreter's permanent exclusion. No contract change.
+
+**Rev. 6 (2026-07-29) — C7.8.2d-1 landed.** §10 records the provider binding plan, the
+input/output classification rules, the status-channel dispatch, and the resource registry.
+MIR-0024's meaning narrowed to "resource type not bound", which outlives the empty registry. No
+contract change.
 
 **Rev. 5 (2026-07-29) — C7.8.2c landed.** §10 records invariants 1–5 enforced, the derived MIR
 signature, `provider_target_triples`, and why 6–9 cannot precede a binding layer. MIR-0020 retired.

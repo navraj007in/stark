@@ -227,6 +227,19 @@ Dropping it costs nothing structural. **Uniqueness is the actual anti-collision 
 prefix convention only makes collision unlikely, while the duplicate-symbol check makes it
 impossible. The prefix rule's residual value was readability, not safety.
 
+**The final symbol contract**, which is what closure conditions and verifier acceptance criteria
+refer to:
+
+```text
+valid portable C identifier
++ emitted verbatim
++ unique within provider
++ unique across selected providers
+```
+
+A provider-related prefix may remain a style convention. It must not appear in verifier acceptance
+criteria, metadata validation, or C7.8 closure conditions.
+
 Two duplicate checks are therefore binding, and they are deliberately distinct:
 
 - **cross-provider** — two selected providers export one symbol. A *configuration* defect; the fix
