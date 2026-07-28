@@ -32,6 +32,7 @@ fn call_with(params: Vec<AbiParam>) -> ValidatedProviderCall {
             may_block: false,
         },
         target_triple: LINUX.to_string(),
+        status_binding: starkc::provider_bind::StatusBinding::new(),
         provider_target_triples: vec![LINUX.to_string()],
     }
 }

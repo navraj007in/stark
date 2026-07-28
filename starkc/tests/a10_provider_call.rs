@@ -48,6 +48,7 @@ fn validated_call() -> ValidatedProviderCall {
         capability: "clock".to_string(),
         function: monotonic_now_decl(),
         target_triple: "x86_64-unknown-linux-gnu".to_string(),
+        status_binding: starkc::provider_bind::StatusBinding::new(),
         provider_target_triples: vec![
             "x86_64-unknown-linux-gnu".to_string(),
             "aarch64-apple-darwin".to_string(),

@@ -231,7 +231,7 @@ A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing
 | C7.8.2c — verifier invariants and negative fixtures | **LANDED** (1–5 of 9; 6–9 deferred, see below) |
 | C7.8.2d-1 — provider binding plan | **LANDED** |
 | C7.8.2d-2 — scalar and buffer emission (closes invariant 6) | **LANDED** |
-| C7.8.2d-3 — output and status control flow (closes invariants 8, 9) | next |
+| C7.8.2d-3 — output and status control flow (closes invariants 8, 9) | **LANDED** |
 | C7.8.2d-4 — resource framework, no `File` admission (structures invariant 7) | framework LANDED with d-1; evidence pending |
 | C7.8.2e — `stark-time` end-to-end execution | pending |
 | C7.8.2f — full A10 regression evidence | pending |
@@ -339,6 +339,42 @@ as `UInt32`, matching what `provider_sig` types it as, and a test asserts no bra
 yet. Dispatch is d-3's, because channel policy belongs in the binding plan d-1 built for it rather
 than in the emitter.
 
+**What C7.8.2d-3 landed.** Output-slot discipline and status dispatch, closing invariants 8 and 9
+for non-resource calls. `ValidatedProviderCall` gained `status_binding`, matching §2's sketch.
+
+**Invariant 8 is stronger than "do not read on failure".** A `ScalarOut` is emitter-owned
+`MaybeUninit` storage; the provider writes *there*, and the value reaches the MIR-visible local
+only inside the success arm:
+
+```rust
+let mut __prov_o0 = std::mem::MaybeUninit::<u64>::uninit();
+let __prov_status: u32 = unsafe { f(__prov_o0.as_mut_ptr()) }.code;
+match __prov_status {
+    0u32 => { *__prov_a0 = unsafe { __prov_o0.assume_init() }; }
+    unknown => stark_runtime::provider_abi::contract_violation_unknown_status(..., unknown),
+}
+```
+
+There is no failure path on which a read could occur, because the only write to the MIR local is in
+`0u32 =>`. A provider that writes its slot and *then* reports failure still has its output ignored.
+`ScalarInOut` and `BufferInOut` keep taking their pointer from the argument binding — §11.1 makes
+them caller-owned, so `MaybeUninit` would be wrong for them.
+
+**Invariant 9: the wildcard is the contract-violation channel, not a fallback.** An undeclared
+status calls `contract_violation_unknown_status`, which aborts — so **it never becomes a STARK
+value at all**, and the MIR destination is only ever written with success or a declared code. There
+is no `_ => SomeError::Other` arm, which is the collapse Packet 1 §1.2 forbids. Declared arms are
+emitted in ascending code order, so generated source does not depend on declaration order.
+
+**What invariant 8 cannot enforce, stated rather than implied.** A provider that returns success
+*without* writing its output slot is undetectable for scalar outputs: `MaybeUninit` has no
+queryable initialised bit, and a sentinel value would be indistinguishable from a legitimate
+result. That case is the provider's §11.1 obligation, not something generated code can check. The
+analogous check *is* possible for `HandleOut` — `resource_type` validation — and lands with the
+resource work.
+
+Evidence: `starkc/tests/a10_provider_emit.rs` (21 cases).
+
 **A provider call is representable but not yet admitted.** That is the intended C7.8.2a state:
 §4's invariants land in C7.8.2c, and until they do, verification refuses rather than accepting an
 unchecked contract. A dangling `ProviderCallId` reports separately (MIR-0019) so an
@@ -404,6 +440,10 @@ pre-verification binding sequence; backend emission prohibitions; `MIR_RUNTIME_S
 **Rev. 2 (2026-07-28) — C7.8.2a landed.** §10 records implementation state, the
 representable-but-not-admitted position, the `provider_abi` layering move and its shim, and the
 interpreter's permanent exclusion. No contract change.
+
+**Rev. 8 (2026-07-29) — C7.8.2d-3 landed.** §10 records `MaybeUninit` output slots, success-only
+reads, the three-channel status dispatch, and the one case invariant 8 cannot enforce.
+`ValidatedProviderCall` gained `status_binding` per §2's sketch. No contract change.
 
 **Rev. 7 (2026-07-29) — C7.8.2d-2 landed.** §10 records `extern "C"` declaration and call
 emission, invariant 6 closed by named borrow bindings for non-resource forms, and the deliberate

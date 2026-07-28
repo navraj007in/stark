@@ -8,8 +8,8 @@
 //! Status *dispatch* is C7.8.2d-3; these tests assert the raw status reaches the MIR destination
 //! and is not interpreted here.
 
-use starkc::backend::version::build_versions;
 use starkc::backend::generated_rust::{emit_program, emit_provider};
+use starkc::backend::version::build_versions;
 use starkc::layout::TargetLayout;
 use starkc::mir::{
     self, BasicBlock, Callee, Constant, LocalDecl, LocalKind, MirBody, MirProgram, MirTy, Operand,
@@ -17,6 +17,7 @@ use starkc::mir::{
     ValidatedProviderCall,
 };
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity, ScalarTy};
+use starkc::provider_bind::StatusBinding;
 use starkc::source::{SourceFile, Span};
 use std::sync::Arc;
 
@@ -39,6 +40,7 @@ fn call_named(symbol: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
         },
         target_triple: LINUX.to_string(),
         provider_target_triples: vec![LINUX.to_string()],
+        status_binding: StatusBinding::new(),
     }
 }
 
@@ -302,10 +304,16 @@ fn entry_calling_provider() -> MirBody {
 }
 
 fn generate_call_site() -> String {
-    let mut program = program_with(vec![call_named(
+    generate_with_status(StatusBinding::new())
+}
+
+fn generate_with_status(status: StatusBinding) -> String {
+    let mut call = call_named(
         "stark_time_monotonic_now_ns",
         vec![AbiParam::ScalarOut(ScalarTy::U64)],
-    )]);
+    );
+    call.status_binding = status;
+    let mut program = program_with(vec![call]);
     program.bodies = vec![entry_calling_provider()];
 
     let versions = build_versions(
@@ -342,10 +350,34 @@ fn borrows_are_materialised_from_named_bindings() {
         binding < call,
         "the named binding must precede the call:\n{src}"
     );
+    // Every pointer the provider receives comes from a NAMED binding. For a `ScalarOut` that is
+    // the emitter-owned `MaybeUninit` slot (C7.8.2d-3 moved it there so the MIR local is written
+    // only on success); for an in/out form it is the argument binding itself. Neither is ever an
+    // unnamed temporary, which is the property invariant 6 actually asserts.
     assert!(
-        src.contains("__prov_a0 as *mut u64"),
-        "the pointer must be taken from the named binding:\n{src}"
+        src.contains("let mut __prov_o0 = std::mem::MaybeUninit::"),
+        "the output slot must itself be a named binding:\n{src}"
     );
+    assert!(
+        src.contains("__prov_o0.as_mut_ptr()"),
+        "the pointer must be taken from the named slot:\n{src}"
+    );
+    // No pointer is ever taken from an inline expression.
+    assert!(
+        !src.contains(").as_mut_ptr()") && !src.contains(").as_ptr()"),
+        "a pointer must never be taken from a temporary:\n{src}"
+    );
+}
+
+/// The in/out forms keep taking their pointer from the argument binding, because §11.1 makes them
+/// caller-owned — the `MaybeUninit` treatment would be wrong for them.
+#[test]
+fn in_out_forms_point_at_the_argument_binding() {
+    let src = externs(vec![call_named(
+        "p",
+        vec![AbiParam::ScalarInOut(ScalarTy::I16)],
+    )]);
+    assert!(src.contains("a0: *mut i16"), "{src}");
 }
 
 /// The `unsafe` block wraps **only** the FFI call, so a reviewer sees exactly what is unchecked.
@@ -391,5 +423,165 @@ fn the_called_symbol_is_declared_in_the_same_program() {
     assert!(
         src.matches("stark_time_monotonic_now_ns").count() >= 2,
         "expected a declaration and a call:\n{src}"
+    );
+}
+
+// -------------------------- invariant 8: output-slot discipline (C7.8.2d-3) --
+
+/// A `ScalarOut` slot is emitter-owned `MaybeUninit` storage. The provider writes *there*, not into
+/// the MIR-visible local.
+#[test]
+fn output_slots_are_maybeuninit() {
+    let src = generate_call_site();
+    assert!(
+        src.contains("let mut __prov_o0 = std::mem::MaybeUninit::<u64>::uninit();"),
+        "the output slot must be uninitialised storage:\n{src}"
+    );
+    assert!(
+        src.contains("__prov_o0.as_mut_ptr()"),
+        "the provider must receive the slot pointer:\n{src}"
+    );
+}
+
+/// **The core of invariant 8.** `assume_init` appears exactly once, inside the success arm, and the
+/// MIR-visible local is written only there.
+///
+/// This is stronger than "do not read on failure": there is no failure path on which a read could
+/// occur, because the only write to the MIR local is inside `0u32 =>`.
+#[test]
+fn outputs_are_read_only_on_success() {
+    let src = generate_call_site();
+
+    assert_eq!(
+        src.matches("assume_init()").count(),
+        1,
+        "exactly one read of the output slot:\n{src}"
+    );
+
+    let success_arm = src.find("0u32 => {").expect("success arm");
+    let read = src.find("assume_init()").expect("read");
+    let match_end = src[success_arm..]
+        .find("unknown =>")
+        .map(|o| success_arm + o)
+        .expect("contract-violation arm");
+
+    assert!(
+        success_arm < read && read < match_end,
+        "the output read must be inside the success arm:\n{src}"
+    );
+    assert!(
+        src.contains("*__prov_a0 = unsafe { __prov_o0.assume_init() };"),
+        "the MIR local must be written only from the success arm:\n{src}"
+    );
+}
+
+/// A provider that writes its slot and *then* returns failure must still not have its output read.
+/// Guaranteed structurally: the write-back lives in the success arm, so no failure path reaches it.
+#[test]
+fn a_written_slot_is_still_unread_on_failure() {
+    let src = generate_call_site();
+    let unknown_arm = src.find("unknown =>").expect("contract-violation arm");
+    assert!(
+        !src[unknown_arm..].contains("assume_init"),
+        "no failure arm may read the output slot:\n{src}"
+    );
+}
+
+// ------------------------------ invariant 9: channel discipline (C7.8.2d-3) --
+
+/// The three ABI §12 channels are structurally distinct, and the wildcard is the
+/// **contract-violation** channel — never a generic package error.
+#[test]
+fn the_wildcard_arm_is_a_contract_violation_not_a_generic_error() {
+    let src = generate_call_site();
+    assert!(
+        src.contains("stark_runtime::provider_abi::contract_violation_unknown_status("),
+        "an undeclared status must route to the contract-violation channel:\n{src}"
+    );
+    for forbidden in ["Other", "IOError", "unwrap_or"] {
+        assert!(
+            !src[src.find("unknown =>").expect("arm")..].contains(forbidden),
+            "the wildcard must not fall back to `{forbidden}`:\n{src}"
+        );
+    }
+}
+
+/// The contract-violation call names the provider and function, so a diagnostic can identify the
+/// exact declaration that drifted.
+#[test]
+fn the_contract_violation_names_provider_and_function() {
+    let src = generate_call_site();
+    assert!(src.contains("\"stark-std-time\""), "{src}");
+    assert!(src.contains("\"stark_time_monotonic_now_ns\""), "{src}");
+}
+
+/// With an empty status vocabulary — `stark-time`'s real case — **every** nonzero status is a
+/// contract violation, so the match has exactly two arms.
+#[test]
+fn an_empty_vocabulary_gives_success_and_violation_only() {
+    let src = generate_call_site();
+    let m = src.find("match __prov_status {").expect("dispatch");
+    let arm_region = &src[m..];
+    assert_eq!(
+        arm_region.matches("u32 => ").count(),
+        1,
+        "only the success arm is a literal code:\n{src}"
+    );
+}
+
+/// A declared code becomes its own arm, distinct from both success and the wildcard, and it does
+/// **not** read the output slot — a recoverable error means the provider reported failure, so
+/// §11.1 leaves the slot invalid.
+#[test]
+fn a_declared_code_gets_its_own_arm_and_reads_no_output() {
+    let mut status = StatusBinding::new();
+    status.declare(1, "IOError::NotFound");
+    status.declare(2, "IOError::PermissionDenied");
+    let src = generate_with_status(status);
+
+    assert!(
+        src.contains("1u32 => {"),
+        "declared code 1 needs an arm:\n{src}"
+    );
+    assert!(
+        src.contains("2u32 => {"),
+        "declared code 2 needs an arm:\n{src}"
+    );
+    assert!(
+        src.contains("IOError::NotFound"),
+        "the package error should be recorded in the generated comment:\n{src}"
+    );
+
+    // Still exactly one read, still in the success arm.
+    assert_eq!(src.matches("assume_init()").count(), 1, "{src}");
+    let arm1 = src.find("1u32 => {").expect("arm");
+    let unknown = src.find("unknown =>").expect("arm");
+    assert!(
+        !src[arm1..unknown].contains("assume_init"),
+        "a declared-error arm must not read the output slot:\n{src}"
+    );
+
+    // The wildcard is still a contract violation, not widened by the declarations.
+    assert!(src.contains("contract_violation_unknown_status("), "{src}");
+}
+
+/// Declared arms are emitted in ascending code order regardless of declaration order, so generated
+/// source — and the produced binary — do not depend on the order a package declared its errors.
+#[test]
+fn declared_arms_are_emitted_in_deterministic_order() {
+    let mut a = StatusBinding::new();
+    a.declare(7, "E7");
+    a.declare(1, "E1");
+    a.declare(3, "E3");
+
+    let mut b = StatusBinding::new();
+    b.declare(3, "E3");
+    b.declare(1, "E1");
+    b.declare(7, "E7");
+
+    assert_eq!(
+        generate_with_status(a),
+        generate_with_status(b),
+        "declaration order must not reach generated source"
     );
 }

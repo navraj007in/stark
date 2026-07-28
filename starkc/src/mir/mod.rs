@@ -566,6 +566,13 @@ pub struct ValidatedProviderCall {
     /// §4 target this call was resolved for. Verification re-checks it rather than trusting that
     /// resolution ran (V-PROV-2).
     pub target_triple: String,
+    /// The package's declared recoverable status vocabulary (Packet 1 §1.2, A10 §2's
+    /// `status_binding`).
+    ///
+    /// Carried on the record because emission needs it where the call is emitted, and because an
+    /// empty vocabulary is a *meaningful* value rather than missing data: it says every nonzero
+    /// status from this provider is a contract violation.
+    pub status_binding: crate::provider_bind::StatusBinding,
     /// §4 target list the provider declares, copied so the record is **self-verifying**.
     ///
     /// Without it, verification could only take `target_triple` on faith: there would be nothing
