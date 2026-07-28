@@ -246,6 +246,10 @@ fn visit_callee<F: FnMut(&Instance, RefKind)>(callee: &Callee, f: &mut F) {
         // instance (validated as a function value below), otherwise it is a local read.
         Callee::FnValue(op) => visit_operand(op, f),
         Callee::Runtime(_) => {}
+        // A10: a provider call links against a C symbol from validated metadata, not a MIR
+        // instance, so it contributes nothing to instance reachability. Its symbol is emitted as
+        // an `extern "C"` declaration by C7.8.2d.
+        Callee::Provider(_) => {}
     }
 }
 

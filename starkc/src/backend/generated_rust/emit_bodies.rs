@@ -1016,6 +1016,18 @@ fn emit_call(
             let f = emit_operand(operand, env)?;
             Ok(format!("({f})({})", arg_exprs.join(", ")))
         }
+        // A10 (CD-200): static `extern "C"` provider emission lands in WP-C7.8.2d. Until then the
+        // backend refuses DETERMINISTICALLY rather than silently omitting the call -- the failure
+        // mode a missing arm would produce is a binary whose host side effect never happens.
+        //
+        // Verification already rejects provider calls (MIR-0020), so this arm is unreachable for
+        // any verified program; it is defence in depth for the one path where being wrong is
+        // invisible. The id rather than the symbol appears in the message because the arena lives
+        // on `MirProgram`, which this expression-level emitter deliberately does not carry.
+        Callee::Provider(id) => Err(BackendDiagnostic::Unsupported(format!(
+            "native build does not yet emit provider calls (provider call #{}, WP-C7.8.2d)",
+            id.0
+        ))),
         // WP-C6.3a: a runtime call is rendered from the same already-emitted argument expressions;
         // the dest type lets an `Option`-returning runtime fn wrap into the generated Option enum.
         Callee::Runtime(rt) => super::emit_runtime::emit_runtime_call(

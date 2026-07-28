@@ -377,6 +377,23 @@ impl<'a> Interp<'a> {
                         values.push(self.eval_operand(here, arg)?);
                     }
                     let result = match callee {
+                        // A10 (CD-200): provider calls do not execute here, and this is a
+                        // permanent property rather than a C7.8.2a gap. The MIR interpreter is a
+                        // pure semantic oracle with no provider linked into it; a host call has no
+                        // meaning it could reproduce. Native execution is where providers run
+                        // (Packet 1's statically linked path), so differential comparison for
+                        // provider-backed programs is native-only by construction.
+                        Callee::Provider(id) => {
+                            let name = self
+                                .program
+                                .provider_call(*id)
+                                .map(|c| c.symbol().to_string())
+                                .unwrap_or_else(|| format!("<unresolved #{}>", id.0));
+                            return self.internal(format!(
+                                "provider call `{name}` cannot execute in the MIR interpreter: no \
+                                 provider is linked into it (A10)"
+                            ));
+                        }
                         Callee::Instance(instance) => {
                             let Some(&idx) = self.by_symbol.get(instance.symbol.as_str()) else {
                                 return self.internal(format!(

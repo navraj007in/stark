@@ -49,6 +49,7 @@ fn program(bodies: Vec<MirBody>) -> MirProgram {
         types: TypeContext::default(),
         mir_version: "test".to_string(),
         runtime_surface: "test".to_string(),
+        provider_calls: Vec::new(),
     }
 }
 

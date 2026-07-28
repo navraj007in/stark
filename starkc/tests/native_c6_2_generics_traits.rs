@@ -312,6 +312,7 @@ fn a_mismatched_item_is_still_rejected() {
         types: TypeContext::default(),
         mir_version: "test".to_string(),
         runtime_surface: "test".to_string(),
+        provider_calls: Vec::new(),
     };
     let msg = match linkage::build(&program) {
         Ok(_) => panic!("a mismatched item must still be refused by the linkage check"),

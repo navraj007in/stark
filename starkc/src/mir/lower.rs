@@ -267,6 +267,9 @@ pub fn lower_program(
         types: TypeContext::default(),
         mir_version: MIR_VERSION.to_string(),
         runtime_surface: MIR_RUNTIME_SURFACE.to_string(),
+        // A10: populated by provider resolution (WP-C7.8.2b). No lowering emits a provider call
+        // yet, so an empty arena is the correct state rather than a placeholder.
+        provider_calls: Vec::new(),
     };
 
     // Populate the nominal type context (struct fields, user-enum variant payloads) for every

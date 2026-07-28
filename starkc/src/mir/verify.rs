@@ -770,6 +770,38 @@ impl<'a> BodyCx<'a> {
                         }
                         sig
                     }
+                    // A10 (CD-200): a provider call is REPRESENTABLE in MIR from C7.8.2a but not
+                    // yet ADMITTED by verification -- the nine invariants land in C7.8.2c. The
+                    // refusal is deterministic and stated here rather than left to a
+                    // non-exhaustive match, so no provider call can reach a backend by default.
+                    //
+                    // The dangling-id check runs FIRST and reports separately (V-PROV-1): an
+                    // unresolvable ProviderCallId is a different defect from an unadmitted call,
+                    // and collapsing them would hide arena-construction bugs behind the blanket
+                    // refusal that C7.8.2c is about to remove.
+                    Callee::Provider(id) => {
+                        if self.program.provider_call(*id).is_none() {
+                            self.err(
+                                "MIR-0019",
+                                bi,
+                                format!(
+                                    "provider call id #{} is out of range ({} validated provider \
+                                     call(s) in this program)",
+                                    id.0,
+                                    self.program.provider_calls.len()
+                                ),
+                            );
+                        } else {
+                            self.err(
+                                "MIR-0020",
+                                bi,
+                                "provider calls are not yet admitted by MIR verification \
+                                 (WP-C7.8.2c); runtime surface 0.1-A10 represents them, \
+                                 verification does not yet check their ABI contract",
+                            );
+                        }
+                        None
+                    }
                     Callee::FnValue(op) => match self.operand_ty(op, bi) {
                         Some(MirTy::FnPtr { params, ret }) => Some((params, *ret)),
                         Some(other) => {

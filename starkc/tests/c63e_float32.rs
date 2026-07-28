@@ -224,12 +224,19 @@ fn substituting_the_float64_print_is_rejected_by_verification() {
     );
 }
 
-/// **Surface-revision enforcement.** `PrintFloat32`/`PrintlnFloat32` are additive, so they are a
-/// RUNTIME SURFACE revision (0.1-A8 → 0.1-A9), not a MIR shape version change. An A9 build must
-/// accept an A9 program and reject an A8 one — and reject it at the §A1 gate, BEFORE consuming any
-/// body, because an A8 consumer given an A9 program would meet a `RuntimeFn` it cannot lower.
+/// **Surface-revision enforcement.** `PrintFloat32`/`PrintlnFloat32` are additive, so they were a
+/// RUNTIME SURFACE revision (0.1-A8 → 0.1-A9), not a MIR shape version change. This build must
+/// accept a program it stamped and reject an A8 one — and reject it at the §A1 gate, BEFORE
+/// consuming any body, because an A8 consumer given a later program would meet a `RuntimeFn` it
+/// cannot lower.
+///
+/// The current surface is deliberately NOT pinned to a literal here. This test is about the
+/// Float32 pair and the gate's behaviour, and a literal made every later surface revision edit a
+/// Float32 test for no reason — which is exactly what A10 (CD-200) then did. The constant's own
+/// value is pinned once, in `tests/a10_provider_call.rs`, where it is the subject rather than a
+/// bystander.
 #[test]
-fn the_a9_surface_is_accepted_and_a8_is_rejected() {
+fn the_current_surface_is_accepted_and_a8_is_rejected() {
     let mut program = lower_only(
         "version",
         "fn main() { let x: Float32 = 0.1f32; println(x); }",
@@ -239,20 +246,15 @@ fn the_a9_surface_is_accepted_and_a8_is_rejected() {
         starkc::mir::MIR_RUNTIME_SURFACE,
         "lowering must stamp the surface this build produces"
     );
-    assert_eq!(
-        starkc::mir::MIR_RUNTIME_SURFACE,
-        "0.1-A9",
-        "CE3 set the surface to 0.1-A9"
-    );
     assert!(
         verify_program(&program).is_ok(),
-        "an A9 program must verify"
+        "a program stamped by this build must verify"
     );
 
     program.runtime_surface = "0.1-A8".to_string();
     let errors = match verify_program(&program) {
         Err(e) => e,
-        Ok(_) => panic!("an A8 program must be rejected by an A9 build"),
+        Ok(_) => panic!("an A8 program must be rejected by a later build"),
     };
     assert_eq!(
         errors.len(),
@@ -261,7 +263,8 @@ fn the_a9_surface_is_accepted_and_a8_is_rejected() {
     );
     assert_eq!(errors[0].code, "MIR-0017", "expected the surface gate");
     assert!(
-        errors[0].message.contains("0.1-A8") && errors[0].message.contains("0.1-A9"),
+        errors[0].message.contains("0.1-A8")
+            && errors[0].message.contains(starkc::mir::MIR_RUNTIME_SURFACE),
         "the mismatch must name both surfaces: {}",
         errors[0].message
     );

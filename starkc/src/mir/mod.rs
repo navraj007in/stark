@@ -41,7 +41,13 @@ pub const MIR_VERSION: &str = "0.1";
 /// user-`Drop` key/value types excluded so no runtime op ever runs a user destructor), plus
 /// the A1-approved-but-deferred Char ops (`StringPushChar`/`StringPopChar`,
 /// `PrintlnChar`/`PrintChar`).
-pub const MIR_RUNTIME_SURFACE: &str = "0.1-A9";
+/// `0.1-A10` (WP-C7.8.2, CD-200, CE3 — `mir-amendment-A10-provider-invocation.md`): adds
+/// [`Callee::Provider`] and [`ValidatedProviderCall`]. **Adds no `RuntimeFn` member.** A10 is a
+/// new *invocation category*, not more runtime surface in the A1 sense, which is why it has its
+/// own amendment document rather than a rev. 14 of the A1 string/collection surface. The constant
+/// still advances because a consumer that cannot represent provider calls must reject an A10
+/// program before consuming any body (V-SURFACE-1).
+pub const MIR_RUNTIME_SURFACE: &str = "0.1-A10";
 
 // ------------------------------------------------------------------ identity --
 
@@ -511,6 +517,67 @@ pub enum Callee {
     /// Indirect call through a `FnPtr`-typed operand (CD-021/CD-027).
     FnValue(Operand),
     Runtime(RuntimeFn),
+    /// **A10 (CD-200, CE3): a Native Provider ABI v0.1 call.** Indexes
+    /// [`MirProgram::provider_calls`], resolving to a [`ValidatedProviderCall`] that carries the
+    /// full declared contract.
+    ///
+    /// This is a distinct call form rather than more [`RuntimeFn`] members because the two have
+    /// different trust models, not merely different callees. A `RuntimeFn` is compiler-owned: its
+    /// identity is closed, its semantics are the compiler/runtime contract, it needs no provider
+    /// selection, no external metadata, and its target compatibility is implicit. A provider call
+    /// is externally *declared*, and carries provider identity, capability identity, a validated
+    /// function declaration, target applicability, ABI parameter and output-slot shape, ownership
+    /// transfer mode, borrowed-buffer constraints, resource-type identity, a declared recoverable
+    /// status vocabulary, and failure-channel rules. Encoding that as `RuntimeFn` would either
+    /// erase those distinctions or push provider metadata into `RuntimeFn` indirectly, leaving the
+    /// distinction implicit and unverifiable.
+    ///
+    /// `RuntimeFn` therefore stays reserved for compiler-owned runtime operations, and a provider
+    /// call encoded as one is a verification failure (V-PROV-10), not a style preference.
+    Provider(ProviderCallId),
+}
+
+/// A10: index into [`MirProgram::provider_calls`].
+///
+/// Deliberately **not** a symbol string. Every A10 verifier invariant is checked *against the
+/// declaration*; a call site carrying only a name would force the verifier to reconstruct the
+/// contract it exists to check, and would let an unvalidated symbol reach the backend.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub struct ProviderCallId(pub u32);
+
+/// A10: one provider call site's fully resolved, already-validated contract.
+///
+/// **Resolution happens before MIR verification** (A10 §3): capability requirement → provider
+/// selection for the target → metadata validation → `FunctionDecl` resolution → this record →
+/// `Callee::Provider`. By the time verification runs, selection has happened and the metadata has
+/// passed [`crate::provider_abi::validate`]. The backend never performs first-time provider
+/// selection and never interprets unvalidated metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatedProviderCall {
+    /// §2 identity of the selected provider.
+    pub provider: crate::provider_abi::ProviderIdentity,
+    /// §5 capability this call belongs to. Must be one the provider declares, and must be the
+    /// declaring function's own capability (V-PROV-3).
+    pub capability: String,
+    /// §6 declaration, copied from validated metadata rather than referenced, so a MIR program is
+    /// self-contained: dumping, re-verifying, or replaying it needs no provider lookup.
+    pub function: crate::provider_abi::FunctionDecl,
+    /// §4 target this call was resolved for. Verification re-checks it rather than trusting that
+    /// resolution ran (V-PROV-2).
+    pub target_triple: String,
+}
+
+impl ValidatedProviderCall {
+    /// The C symbol this call links against — [`crate::provider_abi::FunctionDecl::name`]
+    /// **verbatim**.
+    ///
+    /// Never routed through `mangle::sanitize_symbol`: that encodes MIR canonical symbols into
+    /// legal Rust identifiers, and a provider symbol is not a MIR instance. The same name has to
+    /// resolve under a future `dlsym`, so a repaired name would make the metadata name differ from
+    /// the linkage name — the one thing that must never be true (Packet 1 §1.3).
+    pub fn symbol(&self) -> &str {
+        &self.function.name
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -636,6 +703,22 @@ pub struct MirProgram {
     /// A1 (CD-031): the runtime-surface revision (`MIR_RUNTIME_SURFACE`). A consumer rejects a
     /// program whose surface it does not support before consuming any body (V-SURFACE-1).
     pub runtime_surface: String,
+    /// A10 (CD-200): validated provider-call records, indexed by [`ProviderCallId`].
+    ///
+    /// Program-level rather than per-body because one provider function is typically called from
+    /// several bodies, and the *contract* is a property of the program's resolved provider set,
+    /// not of any one call site. Empty for every program that makes no provider call, which is
+    /// every program produced before A10.
+    pub provider_calls: Vec<ValidatedProviderCall>,
+}
+
+impl MirProgram {
+    /// A10: the validated contract behind a [`ProviderCallId`], or `None` if the id is out of
+    /// range. Verification rejects a dangling id (V-PROV-1) rather than panicking, so this
+    /// returns an `Option` instead of indexing.
+    pub fn provider_call(&self, id: ProviderCallId) -> Option<&ValidatedProviderCall> {
+        self.provider_calls.get(id.0 as usize)
+    }
 }
 
 // ---------------------------------------------------------------------- dump --
@@ -728,6 +811,16 @@ impl MirProgram {
                     Callee::Instance(instance) => instance.symbol.clone(),
                     Callee::FnValue(op) => format!("fnvalue({})", dump_operand(op)),
                     Callee::Runtime(rt) => format!("runtime:{rt:?}"),
+                    // A10: the dump names the PROVIDER and the verbatim symbol, not the id --
+                    // a bare index would make a dump unreadable without the arena beside it.
+                    Callee::Provider(id) => match self.provider_call(*id) {
+                        Some(call) => {
+                            format!("provider:{}:{}", call.provider.name, call.symbol())
+                        }
+                        // Unresolvable ids are a verification failure (V-PROV-1); the dump still
+                        // has to render something, and it renders the defect rather than hiding it.
+                        None => format!("provider:<unresolved #{}>", id.0),
+                    },
                 };
                 format!(
                     "{} = call {callee_text}({}) -> bb{}",

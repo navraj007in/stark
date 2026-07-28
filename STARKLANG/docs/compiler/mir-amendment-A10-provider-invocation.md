@@ -222,9 +222,48 @@ This amendment does not disposition, and implementation must not prejudge:
 
 A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing beyond it.
 
-## 10. Revision log
+## 10. Implementation status
+
+| Slice | State |
+| --- | --- |
+| C7.8.2a — MIR representation and versioning | **LANDED** |
+| C7.8.2b — provider resolution and validated call records | next |
+| C7.8.2c — verifier invariants and negative fixtures | pending |
+| C7.8.2d — generated-Rust static extern bindings | pending |
+| C7.8.2e — `stark-time` end-to-end execution | pending |
+| C7.8.2f — full A10 regression evidence | pending |
+
+**What C7.8.2a landed.** `Callee::Provider(ProviderCallId)`, `ProviderCallId`,
+`ValidatedProviderCall`, and the program-level `MirProgram::provider_calls` arena;
+`MIR_RUNTIME_SURFACE` at `0.1-A10`; the dump form `provider:<provider>:<symbol>`; and a defined
+refusal at every consumer that cannot yet honour a provider call — verification (MIR-0020), the
+MIR interpreter, and generated-Rust emission. Evidence: `starkc/tests/a10_provider_call.rs`
+(9 cases).
+
+**A provider call is representable but not yet admitted.** That is the intended C7.8.2a state:
+§4's invariants land in C7.8.2c, and until they do, verification refuses rather than accepting an
+unchecked contract. A dangling `ProviderCallId` reports separately (MIR-0019) so an
+arena-construction defect cannot hide behind the blanket refusal that C7.8.2c removes.
+
+**One layering change was required.** The ABI declaration types moved from
+`starkc/src/backend/provider_abi.rs` to the crate root (`starkc/src/provider_abi.rs`), because
+`ValidatedProviderCall` puts a `FunctionDecl` inside MIR and `crate::mir` is deliberately
+backend-independent. `backend::provider_abi` remains as a re-export shim, so
+`stark-time/native/src/lib.rs` — which compiles against `starkc::backend::provider_abi::*` — needs
+**no edit at all**, which is the stronger form of Packet 1's exit condition.
+
+**The MIR interpreter will never execute provider calls.** It is a pure semantic oracle with no
+provider linked into it, so a host call has no meaning it could reproduce. Providers run only on
+the native path, which makes differential comparison for provider-backed programs native-only by
+construction rather than by omission.
+
+## 11. Revision log
 
 **Rev. 1 (2026-07-28) — A10 approved under CE3.** Adds `Callee::Provider(ProviderCallId)` and
 `ValidatedProviderCall`; nine binding verifier invariants plus the `resource_type` rule; the
 pre-verification binding sequence; backend emission prohibitions; `MIR_RUNTIME_SURFACE` →
 `0.1-A10`. No `RuntimeFn` additions. No MIR shape version change.
+
+**Rev. 2 (2026-07-28) — C7.8.2a landed.** §10 records implementation state, the
+representable-but-not-admitted position, the `provider_abi` layering move and its shim, and the
+interpreter's permanent exclusion. No contract change.
