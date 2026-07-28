@@ -435,8 +435,14 @@ capable than the type built from it. Three-engine agreement, corpus 1.4.0.
 `WP-C7-HashMap-Completion` (4 — `with_capacity`, `get_mut`, `values`, `iter`),
 `WP-C7-Vec-Completion` (3), `WP-IO-File` (5), `WP-Random` (4).
 
-**DEV-119 — iterating a `HashMap`'s keys then mutating it fails the NATIVE build (E0502).**
-Pre-existing and confirmed so: the same failure reproduces using only operations that predate
-CD-180. The generated iterator's slot drop outlives its loop, holding the shared borrow past the
-mutation — the WP-C6.1g-c dispatch-loop borrow-linearisation family. HIR and MIR both accept the
-program. Open, carried, not introduced by this work.
+**DEV-119 — iterating a `HashMap`'s keys then mutating it fails the NATIVE build (E0502)
+(RESOLVED).** Pre-existing and confirmed so: the same failure reproduced using only operations that
+predate CD-180. Runtime-iterator desugaring registered the cursor in the surrounding source scope,
+so generated Rust kept its source borrow alive past the loop even though HIR and MIR accepted the
+following mutation. The shared lowering now gives every runtime cursor its own loop-lifetime scope:
+normal exhaustion and `break` converge on cursor cleanup, `continue` preserves it, structured exits
+run ordinary scope cleanup, and traps retain abort-without-cleanup semantics. Three-engine
+regressions cover `HashMap::keys` followed by insert/remove/clear, early break followed by mutation,
+and the corresponding `HashSet::iter`, `Vec::iter`, and `String::chars` paths. A reference actually
+yielded from an iterator and retained after the loop still keeps the source borrowed and mutation is
+rejected with E0101.

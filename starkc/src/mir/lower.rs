@@ -7001,6 +7001,14 @@ impl<'a> FnLowerer<'a> {
         // `&T` for Vec/HashMap iteration, `Char` (by value) for `chars()`.
         let opt_ty = MirTy::Enum(EnumRef::CoreOption, vec![elem_ref.clone()]);
 
+        // The cursor owns a borrow of the iterable, so give it a scope that ends at the loop exit
+        // rather than registering it in the surrounding source block. Normal exhaustion and
+        // `break` converge on `exit`, where this scope is cleaned up; `continue` keeps the cursor
+        // live. This is semantically significant for generated Rust: dropping the cursor here ends
+        // its shared borrow before a following mutation of the source collection.
+        let iterator_scope_depth = self.scopes.len();
+        self.scopes.push(Vec::new());
+
         // Materialize the iterator into a registered droppable local.
         let it_op = self.lower_expr_to_operand(iter)?;
         self.locals.push(LocalDecl {
@@ -7092,6 +7100,8 @@ impl<'a> FnLowerer<'a> {
             self.synthetic(span, SyntheticKind::ForLoopDesugar),
             exit,
         );
+        self.emit_scope_drops_from(iterator_scope_depth, span);
+        self.scopes.pop();
         Ok(())
     }
 
