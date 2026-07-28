@@ -143,7 +143,10 @@ This sub-WP explicitly inherits, without restatement or variation:
 | Three pre-call compatibility checks | ABI §16 |
 
 **Exit:** CE4 recorded; `stark-time`'s two provider functions execute from a native STARK program
-observing `ProviderStatus` and output slots, with `stark-time/native/` unmodified.
+observing `ProviderStatus` and output slots, **with no semantic or ABI-facing source change to
+`stark-time/native/`**. Permissible edits are limited to integration metadata, build plumbing and
+symbol registration; an alteration to its signatures, ownership contract, status protocol or
+provider metadata means the integration model has drifted from ABI v0.1.
 
 ## 5.2 WP-C7.8.2 — MIR runtime surface amendment and ABI bindings
 
@@ -201,7 +204,7 @@ normal variable; Unicode value where supported; invalid variable name.
 
 ## 5.4 WP-C7.8.4 — File I/O
 
-Gated on Packet 3 (STD-IO-001 versus ABI §13.2) and constrained by Packet 4.
+Governed by Packet 3, **dispositioned 2026-07-28 under CE2**, and constrained by Packet 4.
 
 **Implement the spec surface as written** (`06-Standard-Library.md:553–559`) — this is normative
 Core, not new API:
@@ -222,16 +225,26 @@ Three consequences, each a correction to the superseded proposal:
 - **`write`, not `write_all`.** STD-IO-001's contract is bytes-accepted with "callers must handle
   a short write". A `write_all` loop is a package-level convenience over this primitive, not a
   replacement for it. `read_to_end` and `flush` are likewise absent from Core and may not be added
-  here (Packet 4).
+  here (Packet 4). The package `write_all` treats a **successful zero-byte write with bytes
+  remaining as an error**, never a retry — the alternative is an unbounded loop.
 - **`close(self) -> Result<Unit, IOError>` is already normative**, so it is implemented, not
-  omitted. Its lowering is the recoverable-completion form: any fallible completion work runs as a
-  separate provider operation *before* the consuming drop, per ABI §13.1's rule that "any flush
-  option, completion mode, or other fallible operation needing arguments must be a separate,
-  explicitly invoked provider function, called before Drop." The resource is then consumed, MIR's
-  `Drop` terminator invokes the ABI close, and a nonzero status there is fatal per §13.2 — not a
-  second `Result`.
+  omitted. Per the Packet 3 disposition it **consumes `self` at call entry, unconditionally**: the
+  recoverable completion operation runs first (ABI §13.1 — "any flush option, completion mode, or
+  other fallible operation needing arguments must be a separate, explicitly invoked provider
+  function, called before Drop"), its failure returns `Err(IOError)`, and the consumed resource
+  passes through MIR's `Drop` terminator on **both** arms so the ABI close is attempted exactly
+  once. A nonzero status there is a fatal host failure per §13.2, not a second `Result`.
+  Consume-on-success-only is rejected: it would leak the resource precisely when completion failed.
 - **No Rust `Drop`.** Destruction stays MIR-owned. This is the CE4 property the superseded
   document would have discarded.
+- **Two documented consequences of the close model.** `close()` returning `Err(IOError)` is a
+  report, not a recovery point — the resource is already gone, and no retry or reclaim is possible.
+  And if completion fails *and* the mandatory ABI close then also fails, execution terminates
+  before the `Err` reaches the caller, so `close()` has one path that returns no value at all.
+- **Open question to decide in this sub-WP, not during it.** Core exposes no byte-oriented read —
+  `read_to_string` is UTF-8-validating and whole-file — so a package `read_to_end` cannot be built
+  over Core's `File` alone. Either the package binds the provider read directly (Core unchanged) or
+  Core gains a byte read (CE1).
 
 `File` is non-`Copy`, movable, not cloneable — already normative under STD-IO-001 and exactly what
 the ABI handle model provides. Path strings pass through as opaque bytes; the runtime performs no
@@ -305,8 +318,9 @@ Core's `IOError` is not extended (Packet 4).
 
 Semantics: `127.0.0.1:8080`-style addresses suffice for this slice; hostname support only if it
 comes naturally from the provider; reads return zero bytes on orderly peer closure; writes handle
-partial OS writes; no listener is ever created implicitly — a program must call `bind` (Packet 5);
-no raw descriptor is exposed; blocking I/O is acceptable.
+partial OS writes; no listener is ever created implicitly — a program must call `bind`, with a
+deliberate address and **no hidden default such as `0.0.0.0`** (Packet 5); no raw descriptor is
+exposed; blocking I/O is acceptable.
 
 Tests, against a controlled local server, loopback only — positive: bind; accept; connect; send;
 receive; payload containing zero bytes; payload larger than one likely OS chunk; orderly close from
@@ -379,11 +393,11 @@ Ownership boundaries, written down rather than assumed:
 
 | Class | Subject | Packet |
 | --- | --- | --- |
-| CE4 | First-party provider invocation model and ABI application | 1 |
-| CE3 | New MIR runtime surface (`0.1-A9` → `0.1-A10`) | 2 |
-| CE2 | STD-IO-001 drop-close versus ABI §13.2 | 3 |
-| CE1 | Normative surface placement for the five capabilities | 4 |
-| CE9 | File, environment and network trust boundaries; provider linking | 5 |
+| CE4 | First-party provider invocation model and ABI application | 1 — OPEN |
+| CE3 | New MIR runtime surface (`0.1-A9` → `0.1-A10`) | 2 — OPEN |
+| CE2 | STD-IO-001 drop-close versus ABI §13.2 | 3 — **DISPOSITIONED 2026-07-28** |
+| CE1 | Normative surface placement for the five capabilities | 4 — OPEN |
+| CE9 | File, environment and network trust boundaries; provider linking | 5 — OPEN |
 
 Packet 4 recommends the option that requires **no** CE1 change, but the disposition must still be
 recorded — the alternative options are CE1, and choosing not to take them is itself the decision.
@@ -394,7 +408,8 @@ recorded — the alternative options are CE1, and choosing not to take them is i
 
 - [ ] C7.8 present in `COMPILER-ROADMAP.md` and `COMPILER-STATE.md`.
 - [ ] The `WP-C7.7-GATE-EXIT.md:113` open question is answered by a recorded owner decision.
-- [ ] All five packets dispositioned; CE4, CE3, CE2, CE1 and CE9 each recorded.
+- [ ] All five packets dispositioned; CE4, CE3, CE1 and CE9 each recorded.
+      (CE2 — Packet 3 — **done 2026-07-28**.)
 - [ ] C8 concurrency boundary written down.
 
 **Architecture**

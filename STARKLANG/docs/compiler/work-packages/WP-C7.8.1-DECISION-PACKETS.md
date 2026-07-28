@@ -1,8 +1,18 @@
 # WP-C7.8.1 — decision packets for the first-party native host capability model
 
-Five dispositions the owner must record before any WP-C7.8 implementation begins (2026-07-28).
-Each states root cause, normative requirement, choices, recommendation, compatibility impact,
-implementation surface and required regression evidence.
+Five dispositions required before any WP-C7.8 implementation begins (2026-07-28). Each states root
+cause, normative requirement, choices, recommendation (replaced by a disposition once ruled),
+compatibility impact, implementation surface and required regression evidence.
+
+**Status: 1 of 5 dispositioned.**
+
+| Packet | Class | Subject | Status |
+| --- | --- | --- | --- |
+| 1 | CE4 | First-party provider invocation model | OPEN — recommends B (statically linked, ABI-semantic) |
+| 2 | CE3 | MIR runtime surface `0.1-A9` → `0.1-A10` | OPEN — recommends a distinct `Callee::Provider` form |
+| 3 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | **DISPOSITIONED 2026-07-28** — option A, both texts unchanged, seven binding conditions |
+| 4 | CE1 | Normative surface placement for the five capabilities | OPEN — recommends the option requiring no Core change |
+| 5 | CE9 | File, environment and network trust boundaries | OPEN |
 
 These packets replace §5 ("Required design decisions") of the superseded root-level
 `WP-C7.8-Native-Host-Capability-Foundation.md`. That document's §5.1 presented the native
@@ -121,7 +131,11 @@ stark-time/native/                           unchanged; becomes the first execut
 ## Required regression evidence
 
 - `stark-time`'s existing provider metadata validates **and** its two functions execute from a
-  native STARK program, observing `ProviderStatus` and output slots.
+  native STARK program, observing `ProviderStatus` and output slots — **with no semantic or
+  ABI-facing source change to `stark-time/native/`.** Permissible edits are limited to integration
+  metadata, build plumbing, and symbol registration. If its function signatures, ownership
+  contract, status protocol, or provider metadata require alteration, the integration model has
+  drifted from Native Provider ABI v0.1 and the drift is the finding, not the edit.
 - A conformance suite over §8/§11.1/§13.1 that is mechanism-agnostic by construction.
 - Negative: a provider whose declared target triples exclude the build target is rejected **before
   backend invocation** (§3.2), with a diagnostic distinct from `stark_runtime::version::check`'s
@@ -247,42 +261,171 @@ channels and classifies them separately —
 
 | | Option | Consequence |
 | --- | --- | --- |
-| A | **Reconcile by classification** — a failed drop-close is a §12 **host failure**, not a language trap. STD-IO-001 forbids a *language trap*; it does not speak to host failure, which §12 already holds distinct | No document changes; both texts hold as written. Requires the implementation and the diagnostic to actually classify it as host failure — if it renders as a trap, the reconciliation is fiction. This is a CE2 ambiguity resolution, the cheapest honest outcome |
+| A | **Reconcile by classification** — a failed drop-close is a §12 **host failure**, not a language trap. STD-IO-001 forbids a *language trap*; it does not speak to host failure, which §12 already holds distinct | No document changes; both texts hold as written. Requires the implementation and the diagnostic to actually classify it as host failure — if it renders as a trap, the reconciliation is fiction |
 | B | **Amend STD-IO-001** (CE1) to state explicitly that a failed close on the drop path is a host failure and aborts | Removes all doubt at the cost of a normative Core edit and a spec regeneration. Strictly clearer than A; strictly more expensive |
 | C | **Swallow close failure on the drop path** for `File` specifically, honouring STD-IO-001 literally | Contradicts §13.2's actual reasoning — that once a close has failed the runtime's resource invariants are untrustworthy, so continuing is guesswork. Trades a loud, rare failure for silent data loss on exactly the operation where data loss is the risk |
 
-## Recommendation
+## DISPOSITION — owner ruling, 2026-07-28: **A, as CE2. Both normative texts stand unchanged.**
 
-**A, with B as the fallback if the owner reads STD-IO-001's "cannot surface a new language trap"
-as forbidding any abort whatsoever.** A costs nothing and both texts survive intact; the burden it
-creates is a real one and belongs in the test suite — the failure must be *observably* classified
-as host failure, in the diagnostic and in the evidence, not merely asserted to be one.
+STD-IO-001's "cannot surface a new language trap" is satisfied because a failed provider close is
+not surfaced as a STARK trap or any exception-like language value. It is a distinct host-runtime
+termination channel, already defined by ABI §12's third row.
 
-C should be rejected explicitly. It is the option that looks most compliant and is least safe.
+**Scope note on the escalation class, recorded because the ruling was conditioned on it.** CHARTER
+§2.3 defines CE2 as "resolution of a spec-versus-implementation ambiguity with multiple plausible
+behaviours". The ambiguity here is in STD-IO-001's own wording — what "language trap" encompasses —
+with multiple plausible behaviours, resolved by owner judgment rather than implementation
+convenience. That is CE2's substance. It is recorded here explicitly that the second document
+involved is an approved architecture document (ABI v0.1) rather than an implementation, so the fit
+is by substance rather than by literal reading of the class description.
+
+### The three cases, normatively
+
+**Case 1 — explicit close.**
+
+```stark
+let result = file.close();
+```
+
+```text
+consume File at call entry
+→ recoverable completion operation      → Result<Unit, IOError>
+→ MIR Drop (mandatory, exactly once)
+→ provider close
+```
+
+- completion failure: `Result::Err(IOError)`;
+- provider close success: normal completion;
+- provider close host failure: fatal host-runtime termination.
+
+**Case 2 — implicit drop.**
+
+```stark
+{
+    let file = File::open(path)?;
+}
+```
+
+```text
+MIR Drop → provider close
+```
+
+- success: normal scope exit;
+- failure: fatal host-runtime termination;
+- no `IOError` can be produced;
+- no STARK trap is introduced;
+- no unwinding, no retry, no additional drop glue.
+
+**Case 3 — contract violation.** Invalid handle, double close, ownership violation, or any ABI
+violation routes to the §12 contract-failure channel and must remain distinct from **both**
+`IOError` and host close failure.
+
+### The seven binding conditions
+
+1. Host close failure is normatively distinct from a STARK trap.
+2. It terminates without unwinding.
+3. It is never converted to `IOError`.
+4. It is never swallowed.
+5. Resource drop is attempted exactly once.
+6. Explicit `close(self)` preserves the completion-versus-drop distinction.
+7. Diagnostics identify the host-failure channel accurately.
+
+### `close(self)` ownership invariant
+
+**`close(self)` consumes `self` at call entry, unconditionally.** A recoverable completion error is
+returned, the consumed resource still passes through MIR `Drop`, and the ABI close is still
+attempted exactly once. If that close also fails, host failure takes precedence because execution
+terminates.
+
+This is the only formulation consistent with **ABI §8's consumed-handle error rule** — "there is no
+'the call failed, so you still own it' path", because ownership returning on failure would make a
+handle's liveness a runtime property and exactly-once close would stop being statically verifiable.
+It is also what the normative signature already says: the receiver is `self`, not `&mut self`.
+
+Consume-on-success-only is therefore **rejected**: it would leak a resource whenever the completion
+step failed, which is exactly the case where releasing it matters most. There must be no attempt to
+restore the STARK value after a fatal provider-close failure, and no second close path.
+
+Two consequences that must be documented rather than left to be discovered:
+
+- **`close()` returning `Err(IOError)` is a report, not a recovery point.** The resource is already
+  consumed. The program cannot retry, re-flush, or reclaim the handle. A programmer reading
+  `Result<Unit, IOError>` will assume otherwise unless told.
+- **Case 1 has a path that returns no value at all.** If completion fails *and* the mandatory ABI
+  close then also fails, execution terminates before the `Err(IOError)` reaches the caller. This
+  follows from condition 2 (no unwinding) and is the one case where a `Result`-returning function
+  produces nothing.
+
+### Swallowing is rejected on the record
+
+> A provider close failure must not be silently ignored. Silent suppression would preserve control
+> flow while potentially losing buffered data or concealing resource-integrity failure. It would
+> also contradict ABI §13.2's defined host-failure behaviour.
+
+Recorded explicitly because without it an implementation could claim compliance with the
+standard-library wording while violating the ABI and weakening durability guarantees.
+
+### Diagnostic requirement
+
+The runtime diagnostic must identify the channel, for example:
+
+```text
+fatal host failure: failed to release File resource during MIR Drop
+```
+
+It must not use `STARK trap`, `IOError`, `panic`, or `uncaught exception` unless that channel
+genuinely occurred. Fields:
+
+```text
+resource=File
+operation=close
+phase=drop
+channel=host-failure
+provider=<provider identity>
+platform_code=<optional>
+```
+
+Path data is **not** exposed by default.
+
+### Remaining CE1 trigger
+
+Option B is required only if a closer reading establishes that STD-IO-001's "cannot surface a new
+language trap" was intended to prohibit **all** drop-time termination rather than STARK-trap
+semantics specifically. On the wording as it stands, it was not.
 
 ## Compatibility impact
 
-- Under A: none to any document. One new required property in the diagnostic contract.
-- Under B: `06-Standard-Library.md` edit plus `python3 STARKLANG/tools/build-core-spec.py`
-  regeneration of `STARK-Core-v1.md` (+ HTML/PDF), per the repo's spec-editing convention.
-- Either way, `stark-hex`-style package evidence recording IO failure text is unaffected; this is
-  a drop-path-only rule.
+- **No document changes.** Both normative texts stand. No `build-core-spec.py` regeneration.
+- One new required property in the diagnostic contract (channel accuracy), and one new operational
+  note for `close()`'s non-recoverability.
+- `stark-hex`-style package evidence recording IO failure text is unaffected; this is a
+  drop-path-only rule.
 
 ## Implementation surface
 
 ```text
 starkc/src/backend/generated_rust/            drop-path close: status check, host-failure
                                               classification, no retry, no subsequent drop glue
-starkc/src/diagnostics.rs (or equivalent)     host-failure rendering distinct from trap rendering
-STARKLANG/docs/spec/06-Standard-Library.md    ONLY under option B
+starkc/src/mir/lower.rs                       close(self): consume at entry, completion call,
+                                              then the mandatory Drop terminator on both arms
+starkc/src/diagnostics.rs (or equivalent)     host-failure rendering distinct from trap rendering,
+                                              with the field set above and no path by default
 ```
 
 ## Required regression evidence
 
-- A provider whose close returns nonzero, dropped implicitly: process aborts, the observation is
-  classified host failure, no further drop glue runs (assert a second resource's close does *not*
-  execute).
-- The same case does not render as a language trap in diagnostics or in trap-provenance evidence.
+- A provider whose close returns nonzero, dropped implicitly: process terminates, the observation
+  is classified host failure, no further drop glue runs (assert a second resource's close does
+  *not* execute).
+- The same case renders as neither a language trap nor an `IOError`, in diagnostics and in
+  trap-provenance evidence.
+- Explicit `close()` whose completion step fails and whose provider close succeeds: caller receives
+  `Err(IOError)`, and the resource is released exactly once (assert the close ran).
+- Explicit `close()` whose completion step fails and whose provider close also fails: execution
+  terminates as host failure, and no `Result` is observed by the caller.
+- Use of the receiver after `close()` is rejected in MIR verification on **both** arms, not only
+  the success arm.
+- Diagnostic field assertions: `channel=host-failure`, and no path substring present by default.
 
 ---
 
@@ -352,12 +495,48 @@ So the established pattern is already decided by precedent: **host capabilities 
 the codebase already votes for — `stark-time` is a package, `CoreType::File` is in the front end,
 and `STARK-Standard-Package-Roadmap.md` was written to hold exactly this class of work.
 
-Two conditions attach:
+### The split, spec-faithful
 
-- **C7.8.4 implements `write`, not `write_all`.** The short-write contract is the normative one.
-  A `write_all` loop belongs in a package or in the STARK-level prelude over it.
-- **`NetworkError`, `ProcessError` and `TimeError` are package types**, never additions to Core's
-  `IOError`. Packet 5 governs what may appear inside them.
+**Core / native capability** — exactly the normative members, nothing added, nothing moved out:
+
+```stark
+File::open
+File::create
+File::read_to_string
+File::write          // short-write contract: returns UInt64 bytes accepted
+File::write_str
+File::close
+IOError              // NotFound, PermissionDenied, AlreadyExists, InvalidInput, Other(String)
+```
+
+**Package-level convenience**, built over the Core primitives:
+
+```stark
+read_to_end
+write_all
+copy
+buffered I/O
+```
+
+Two corrections to an earlier formulation of this split, recorded so the reasoning is not lost:
+`File::read` is **not** in Core (adding it would be CE1), `read_to_string` **is** in Core (moving
+it out would be a CE1 removal), and `write_str` is normative and must not be dropped from the list.
+
+**`write_all` short-write rule.** It loops over `write`'s bytes-accepted result until the buffer is
+exhausted. A **successful write of zero bytes with bytes still remaining is an error**, not a retry
+— the alternative is an unbounded loop. Recommended: a package-level `WriteZero` category, or
+`InvalidInput` if the package reuses `IOError`. One defined outcome, not a choice left open.
+
+**Open question for C7.8.4, flagged rather than decided here.** Core exposes no byte-oriented read:
+`read_to_string` is UTF-8-validating and whole-file. A package `read_to_end` therefore cannot be
+built over Core's `File` alone. Either the package binds the provider read operation directly
+(keeping Core unchanged), or Core gains a byte read (CE1). Decide in C7.8.4; do not discover it
+during implementation.
+
+**`NetworkError`, `ProcessError` and `TimeError` are package types**, never additions to Core's
+`IOError`. `NetworkError` may model connection refused, timeout, address unavailable, connection
+reset, invalid address, and unsupported operation — but its values occupy **ABI channel one only**,
+and must never absorb a contract violation (channel two) or a host failure (channel three).
 
 `args()`'s fallibility follows from the recorded invalid-text policy: if the ABI's string-transfer
 rule can reject non-UTF-8 platform arguments, `args()` is fallible; if the policy is lossy
@@ -421,7 +600,8 @@ Not an either/or. The disposition records the boundary; the question is where ea
 | --- | --- |
 | Environment mutation | **Excluded.** Read-only `env` in C7.8; no `set_env` at any point in this WP |
 | Process/shell execution | **Excluded** from C7.8 entirely. It is the CE9 clause's own example and deserves its own disposition |
-| Inbound network | **Admitted, explicitly** — `TcpListener::bind`/`accept` is required by P1 (Packet 4, C7.8.6). The superseded §11's "no implicit network listener" is retained in its correct form: no listener is ever created implicitly; a program must call `bind` |
+| Inbound network | **Admitted, explicitly** — `TcpListener::bind`/`accept` is required by P1 (Packet 4, C7.8.6). The superseded §11's "no implicit network listener" is retained in its correct form: no listener is ever created implicitly; a program must call `bind`, and `bind` is an intentional program action |
+| Bind address | **No hidden default.** Binding an external interface requires a deliberate address in the program's own source. There is no implicit `0.0.0.0`, no "default to all interfaces", and no address inferred from the environment |
 | Path handling | No path concatenation, normalisation or resolution inside the runtime. Paths pass through as opaque byte strings to the host call |
 | Provider linking | Only crates named in the build's own workspace; no discovery from environment variables or ambient search paths |
 | `unsafe` | Confined to §6.1's named boundary helpers, which already exist and are already reviewed |
