@@ -1396,8 +1396,28 @@ impl<'a> BodyCx<'a> {
                     None
                 }
             },
+            // `iter`'s NEXT resolves its element from the cursor, not from a set receiver.
+            HashSetIterNext => match arg_tys.first().and_then(|o| o.as_ref()) {
+                Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                    MirTy::Core(crate::hir::CoreType::Iter, args) if args.len() == 1 => {
+                        Some((args[0].clone(), MirTy::Unit))
+                    }
+                    other => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("HashSetIterNext operand is &{other:?}, not &mut Iter"),
+                        );
+                        None
+                    }
+                },
+                _ => {
+                    self.err("MIR-0012", bi, "HashSetIterNext operand is not a &mut Iter");
+                    None
+                }
+            },
             HashSetInsert | HashSetRemove | HashSetContains | HashSetLen | HashSetIsEmpty
-            | HashSetClear => match arg_tys.first().and_then(|o| o.as_ref()) {
+            | HashSetClear | HashSetIterNew => match arg_tys.first().and_then(|o| o.as_ref()) {
                 Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
                     MirTy::Core(crate::hir::CoreType::HashSet, args) if args.len() == 1 => {
                         Some((args[0].clone(), MirTy::Unit))
@@ -1484,6 +1504,17 @@ impl<'a> BodyCx<'a> {
                 vec![map_ref(&k, &v, false)],
                 MirTy::Core(crate::hir::CoreType::KeysIter, vec![k.clone()]),
             ),
+            HashSetIterNew => (
+                vec![set_ref(&k, false)],
+                MirTy::Core(crate::hir::CoreType::Iter, vec![k.clone()]),
+            ),
+            HashSetIterNext => {
+                let iter_ref = MirTy::Ref {
+                    mutable: true,
+                    inner: Box::new(MirTy::Core(crate::hir::CoreType::Iter, vec![k.clone()])),
+                };
+                (vec![iter_ref], opt(sref(&k)))
+            }
             HashMapKeysIterNext => {
                 let iter_ref = MirTy::Ref {
                     mutable: true,
@@ -2222,6 +2253,8 @@ fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
             | HashSetLen
             | HashSetIsEmpty
             | HashSetClear
+            | HashSetIterNew
+            | HashSetIterNext
             | HashMapInsert
             | HashMapGet
             | HashMapLen
@@ -2315,7 +2348,7 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
         HashMapNew | HashMapInsert | HashMapGet | HashMapLen | HashMapIsEmpty
         | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext | HashSetNew
         | HashSetInsert | HashSetRemove | HashSetContains | HashSetLen | HashSetIsEmpty
-        | HashSetClear => {
+        | HashSetClear | HashSetIterNew | HashSetIterNext => {
             unreachable!("HashMap/HashSet ops resolve through map_runtime_sig, not runtime_sig")
         }
         SliceNew | SliceNewMut | SliceLen | SliceIsEmpty => {

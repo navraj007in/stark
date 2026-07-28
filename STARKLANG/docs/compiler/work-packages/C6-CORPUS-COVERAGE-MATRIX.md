@@ -151,7 +151,7 @@ Recorded as `ADD-HANDWRITTEN` work under the non-Core classification, not as cov
 | V16 | `Vec<T>` | DROP-COLLECTION-001 | `c63b_vec_box`, `collection_iter__01` | CORPUS-GENERATED: gen__t11__07c330c7 |
 | V17 | `Box<T>` | STD-PROFILE-001, DROP-ORDER-001 | `c63b_vec_box`, `option_result__03_box_and_layout_queries` | MIGRATED-TEST: c63b_vec_box::box_new_and_into_inner |
 | V18 | `HashMap<K,V>` | STD-HASH-001, CE4 insertion order | `c63d_map_key_identity`, `collection_iter__02` | CORPUS-GENERATED: gen__t12__7248da6d |
-| V19 | `HashSet<T>` | 06-Standard-Library §`HashSet<T>`, `std-full` | `c63d_map_key_identity::hashset_is_hir_only` (pins the refusal, not the semantics) | CORPUS-HANDWRITTEN: dev116__hashset_core_api |
+| V19 | `HashSet<T>` — data operations AND iteration | STD-HASH-001 | `dev116__hashset_core_api` (new/insert/remove/contains/len/is_empty/clear), `dev116__hashset_iteration` (`iter`, first-insertion order), `dev116__hashset_user_eq_identity` + `dev116__hashset_iteration_user_eq` (user `Eq`/`Hash` authority), `dev116__hashset_non_copy_elements`; per-method audit in `dev116_hashset::every_admitted_hashset_method_lowers` | CORPUS-HANDWRITTEN: dev116__hashset_core_api |
 | V20 | files/resources | — | — | NOT-APPLICABLE: **NOT-APPLICABLE-NON-CORE** — `std-full` profile, absent from every engine; C6.3f EXCLUDED (CD-142) |
 | V21 | function types | TYPE-FN-001 | `function_value_stored_in_a_struct_field`, `…_in_a_tuple` | CORPUS-GENERATED: gen__t09__25661533 |
 | V22 | references | REF-IDENTITY-001 | `native_c61f_*` (6 suites), `exclusive_references_cross_the_call_boundary_and_mutate` | MIGRATED-TEST: native_c61f_aggregates::c61f_tuple_of_references |

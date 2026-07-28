@@ -232,6 +232,12 @@ pub fn emit_runtime_call(
         HashSetLen => format!("stark_runtime::map::len({})", arg(0)),
         HashSetIsEmpty => format!("stark_runtime::map::is_empty({})", arg(0)),
         HashSetClear => format!("stark_runtime::map::clear({})", arg(0)),
+        // DEV-116-B: the SAME cursor. A set is `StarkMap<T, ()>`, so its keys are its elements.
+        HashSetIterNew => format!("stark_runtime::map::keys_iter_new({})", arg(0)),
+        HashSetIterNext => wrap_option(
+            &format!("stark_runtime::map::keys_iter_next({})", arg(0)),
+            dest_ty,
+        )?,
         HashMapKeysIterNew => format!("stark_runtime::map::keys_iter_new({})", arg(0)),
         HashMapKeysIterNext => wrap_option(
             &format!("stark_runtime::map::keys_iter_next({})", arg(0)),

@@ -1,0 +1,58 @@
+// DEV-116-B (V19, iteration). `HashSet::iter(&self) -> Iter<T>` yielding `&T`.
+//
+// Iteration order IS normative here and is NOT left to the backend: 06-Standard-Library states that
+// `HashSet::iter` and any `for` loop over a set "MUST visit entries in first-insertion order", and
+// calls that requirement deterministic across conforming implementations. So this case pins the
+// order directly — comparing only order-independent aggregates would assert less than the
+// specification guarantees.
+//
+// It also carries the order-INDEPENDENT observations, because they fail differently: a cursor that
+// yielded a duplicate, skipped an element, or ran past the end would keep the printed order intact
+// while breaking the count or the sum.
+fn main() {
+    // Empty: the loop body never runs, and the cursor is exhausted immediately.
+    let empty: HashSet<Int32> = HashSet::new();
+    let mut empty_count: Int32 = 0;
+    for value in empty.iter() {
+        empty_count = empty_count + 1;
+    }
+    assert_eq(empty_count, 0);
+
+    let mut s: HashSet<Int32> = HashSet::new();
+    // Deliberately NOT ascending, so first-insertion order is distinguishable from sorted order.
+    assert(s.insert(30));
+    assert(s.insert(10));
+    assert(s.insert(20));
+    // A duplicate must not add a second entry and must not appear twice in the traversal.
+    assert(!s.insert(10));
+
+    let mut count: Int32 = 0;
+    let mut sum: Int32 = 0;
+    for value in s.iter() {
+        count = count + 1;
+        sum = sum + *value;
+        print(*value);
+        print(",");
+    }
+    println("");
+
+    // Order-independent: exactly three elements, each seen once.
+    assert_eq(count, 3);
+    assert_eq(sum, 60);
+    assert_eq(s.len(), 3u64);
+
+    // Every expected member is present, and a non-member is not.
+    assert(s.contains(&10));
+    assert(s.contains(&20));
+    assert(s.contains(&30));
+    assert(!s.contains(&40));
+
+    // Iterating does not consume: the set is fully usable afterwards, and a second traversal
+    // yields the same sequence.
+    let mut again: Int32 = 0;
+    for value in s.iter() {
+        again = again + 1;
+    }
+    assert_eq(again, 3);
+    assert_eq(s.len(), 3u64);
+}

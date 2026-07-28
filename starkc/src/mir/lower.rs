@@ -1056,6 +1056,16 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::HashSet, inner)
             }
+            // DEV-116-B: `Iter<T>` is `HashSet::iter`'s cursor. The TWO-argument form is
+            // `HashMap::iter`, which is a different (unimplemented) surface, so only the
+            // single-argument form is admitted and the other keeps its refusal.
+            Ty::Core(crate::hir::CoreType::Iter, args) if args.len() == 1 => {
+                let inner = args
+                    .iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                MirTy::Core(crate::hir::CoreType::Iter, inner)
+            }
             Ty::Core(crate::hir::CoreType::KeysIter, args) => {
                 let inner = args
                     .iter()
@@ -1215,6 +1225,7 @@ impl<'a> FnLowerer<'a> {
                         | crate::hir::CoreType::HashSet
                         | crate::hir::CoreType::VecIter
                         | crate::hir::CoreType::KeysIter
+                        | crate::hir::CoreType::Iter
                         | crate::hir::CoreType::CharsIter => Ok(MirTy::Core(*core, inner)),
                         _ => unsupported("core field type (C4.5)", span),
                     }
@@ -1411,7 +1422,8 @@ impl<'a> FnLowerer<'a> {
             | MirTy::Core(crate::hir::CoreType::VecIter, _)
             | MirTy::Core(crate::hir::CoreType::HashMap, _)
             | MirTy::Core(crate::hir::CoreType::HashSet, _)
-            | MirTy::Core(crate::hir::CoreType::KeysIter, _) => true,
+            | MirTy::Core(crate::hir::CoreType::KeysIter, _)
+            | MirTy::Core(crate::hir::CoreType::Iter, _) => true,
             _ => false,
         })
     }
@@ -2804,7 +2816,9 @@ impl<'a> FnLowerer<'a> {
                         // 0.1-A3 (f-3a): `for k in m.keys()` — borrowing key iteration.
                         let iter_ty = self.expr_mir_ty(*iter)?;
                         if let MirTy::Core(
-                            core @ (crate::hir::CoreType::VecIter | crate::hir::CoreType::KeysIter),
+                            core @ (crate::hir::CoreType::VecIter
+                            | crate::hir::CoreType::KeysIter
+                            | crate::hir::CoreType::Iter),
                             args,
                         ) = &iter_ty
                         {
@@ -2815,6 +2829,7 @@ impl<'a> FnLowerer<'a> {
                             };
                             let next_rt = match core {
                                 crate::hir::CoreType::VecIter => RuntimeFn::VecIterNext,
+                                crate::hir::CoreType::Iter => RuntimeFn::HashSetIterNext,
                                 _ => RuntimeFn::HashMapKeysIterNext,
                             };
                             return self.lower_for_over_iter(
@@ -7242,11 +7257,9 @@ impl<'a> FnLowerer<'a> {
             "len" => (RuntimeFn::HashSetLen, false),
             "is_empty" => (RuntimeFn::HashSetIsEmpty, false),
             "clear" => (RuntimeFn::HashSetClear, true),
-            // `iter` is in the admitted API but out of this change: iteration is its own surface
-            // (a `SetIter` core type, cursor ops, and `for` desugaring), and DEV-116 is scoped to
-            // the data operations. Refused by name so the gap is explicit rather than a confusing
-            // "method not found".
-            "iter" => return unsupported("HashSet::iter (iteration is not part of DEV-116)", span),
+            // DEV-116-B. A BORROWING cursor: `iter(&self) -> Iter<T>` yielding `&T`, so the
+            // receiver is a shared borrow and elements are never moved out of the set.
+            "iter" => (RuntimeFn::HashSetIterNew, false),
             _ => return unsupported(format!("HashSet::{name} (reserved — std-full)"), span),
         };
         self.discover_eq_impl(&elem)?;

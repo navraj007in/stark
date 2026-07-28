@@ -487,6 +487,11 @@ pub enum RuntimeFn {
     HashSetLen,
     HashSetIsEmpty,
     HashSetClear,
+    /// `HashSet::iter` (DEV-116-B). Deliberately SHARES the map's cursor implementation in every
+    /// engine: a set is `StarkMap<T, ()>`, so its keys ARE its elements and `KeysIter` already
+    /// traverses exactly the right sequence in exactly the right order.
+    HashSetIterNew,
+    HashSetIterNext,
     // --- 0.1-A3 (C4.5f-3b): the A1-approved Char ops, deferred from e-1 until Char lowered. ---
     PrintlnChar,
     PrintChar,

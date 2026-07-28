@@ -1,0 +1,41 @@
+// DEV-116-B, adversarial (STD-HASH-001). Iteration must expose the set's members according to
+// STARK semantics, not according to whatever the backend happens to store.
+//
+// `Tag` is equal on `id` alone. Inserting `{1, 100}` and then `{1, 999}` inserts ONE element, and
+// the spec says the ORIGINALLY STORED value is retained. So iteration must yield `note = 100` — the
+// first value — and never `999`. A backend that overwrote the stored element on a duplicate insert,
+// or that compared structurally and kept both, is caught here and nowhere else: `len` alone is 1 in
+// the overwrite case too, so only looking THROUGH the iterator distinguishes them.
+struct Tag { id: Int32, note: Int32 }
+
+impl Eq for Tag {
+    fn eq(&self, other: &Tag) -> Bool { self.id == other.id }
+}
+
+impl Hash for Tag {
+    fn hash(&self) -> UInt64 { 7u64 }
+}
+
+fn main() {
+    let mut s: HashSet<Tag> = HashSet::new();
+    assert(s.insert(Tag { id: 1, note: 100 }));
+    // Equal by the user's `Eq`, structurally different: not added, and does NOT replace.
+    assert(!s.insert(Tag { id: 1, note: 999 }));
+    assert(s.insert(Tag { id: 2, note: 200 }));
+    assert_eq(s.len(), 2u64);
+
+    let mut count: Int32 = 0;
+    let mut notes: Int32 = 0;
+    for tag in s.iter() {
+        count = count + 1;
+        notes = notes + tag.note;
+        print(tag.id);
+        print(":");
+        print(tag.note);
+        print(",");
+    }
+    println("");
+    assert_eq(count, 2);
+    // 100 + 200. Had the duplicate insert replaced the stored element this would be 999 + 200.
+    assert_eq(notes, 300);
+}

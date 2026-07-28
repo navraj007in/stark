@@ -271,6 +271,13 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
                 emit_ty_at(single_arg(args, "HashSet")?, at)?
             )
         }
+        // DEV-116-B: `Iter<T>` is the set's cursor, which IS the map's keys cursor.
+        MirTy::Core(crate::hir::CoreType::Iter, args) if args.len() == 1 => {
+            format!(
+                "stark_runtime::map::KeysIter{}",
+                iter_lifetime_args(at, Some(emit_ty_at(single_arg(args, "Iter")?, at)?))
+            )
+        }
         MirTy::Core(crate::hir::CoreType::KeysIter, args) => {
             format!(
                 "stark_runtime::map::KeysIter{}",

@@ -2027,14 +2027,14 @@ impl<'a> Interp<'a> {
                     MirValue::Unit
                 })
             }
-            HashMapKeysIterNew => {
+            HashMapKeysIterNew | HashSetIterNew => {
                 // A TRUE borrowed cursor: [map-ref, cursor] — Next indexes the live map.
                 let map_ref = args
                     .next()
                     .ok_or_else(|| MirRunError::Internal("KeysIterNew missing receiver".into()))?;
                 Ok(MirValue::Aggregate(vec![map_ref, MirValue::Int(0)]))
             }
-            HashMapKeysIterNext => {
+            HashMapKeysIterNext | HashSetIterNext => {
                 let Some(MirValue::Ref {
                     frame,
                     generation,
@@ -2458,6 +2458,8 @@ fn is_map_runtime(rt: RuntimeFn) -> bool {
             | HashSetLen
             | HashSetIsEmpty
             | HashSetClear
+            | HashSetIterNew
+            | HashSetIterNext
     )
 }
 

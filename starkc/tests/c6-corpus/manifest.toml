@@ -29,6 +29,32 @@ normative_rules = ["STD-HASH-001", "STD-PROFILE-001"]
 expected_stdout = ["0", ""]
 
 [[case]]
+case_id = "dev116__hashset_iteration"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["V19"]
+sources = ["cases/handwritten/dev116__hashset_iteration.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001", "EXEC-FOR-001"]
+expected_stdout = ["30,10,20,", ""]
+
+[[case]]
+case_id = "dev116__hashset_iteration_user_eq"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["V19"]
+sources = ["cases/handwritten/dev116__hashset_iteration_user_eq.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001"]
+expected_stdout = ["1:100,2:200,", ""]
+
+[[case]]
 case_id = "dev116__hashset_non_copy_elements"
 kind = "handwritten"
 category = "calls-dispatch"
