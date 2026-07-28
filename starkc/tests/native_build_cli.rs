@@ -86,20 +86,35 @@ fn build_places_and_runs_stable_artifact_then_replaces_it() {
         final_path.canonicalize().unwrap()
     );
     assert!(Command::new(&final_path).status().unwrap().success());
-    let generated: Vec<_> = std::fs::read_dir(package.root.join("target/stark/debug"))
-        .unwrap()
-        .flatten()
-        .filter(|entry| entry.path().is_dir())
-        .collect();
-    assert!(
-        generated.is_empty(),
-        "default build leaked generated crates"
+    // WP-C7.3 (CD-189) reversed what this used to assert. A default build formerly DELETED the
+    // generated crate, and this test demanded zero directories; retention makes the crate the build
+    // cache, so exactly one is now correct. The property being protected is unchanged — a build
+    // must not accumulate crates without bound — so the assertion is re-pointed rather than
+    // dropped: one entry after one build, and still one after a second identical build, which is
+    // what distinguishes a cache from a leak.
+    let generated = |package: &Package| -> Vec<PathBuf> {
+        std::fs::read_dir(package.root.join("target/stark/debug"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect()
+    };
+    assert_eq!(
+        generated(&package).len(),
+        1,
+        "a default build should retain exactly one cache entry"
     );
 
     let before = std::fs::metadata(&final_path).unwrap().modified().unwrap();
     let second = package.run(&["build", "--offline"]);
     assert!(second.status.success(), "{}", stderr(&second));
     assert!(std::fs::metadata(&final_path).unwrap().modified().unwrap() >= before);
+    assert_eq!(
+        generated(&package).len(),
+        1,
+        "an unchanged rebuild must REUSE the entry, not add a second one"
+    );
 }
 
 #[test]
@@ -119,12 +134,16 @@ fn verbose_default_build_reports_only_the_retained_final_artifact() {
         .find_map(|line| line.strip_prefix("[stark build] final artifact: "))
         .expect("verbose output must report the stable final artifact");
     assert!(Path::new(final_path).is_file());
-    assert!(
+    // Post-CD-189: the crate is retained as the cache entry, so the check is that verbose output
+    // does not ADVERTISE it as a user-facing artefact (asserted above) — not that it is absent.
+    assert_eq!(
         std::fs::read_dir(package.root.join("target/stark/debug"))
             .unwrap()
             .flatten()
-            .all(|entry| !entry.path().is_dir()),
-        "default verbose build leaked a generated crate"
+            .filter(|entry| entry.path().is_dir())
+            .count(),
+        1,
+        "a default verbose build should retain exactly one cache entry"
     );
 }
 

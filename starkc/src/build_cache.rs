@@ -150,7 +150,9 @@ pub fn status(root: &Path) -> CacheStatus {
         .filter(|p| p.is_dir())
         .filter_map(|p| read_entry(&p))
         .collect();
-    entries.sort_by(|a, b| b.last_used.cmp(&a.last_used));
+    // Newest first: `status` is a human-facing listing, and the entry a user is most likely asking
+    // about is the one they just built.
+    entries.sort_by_key(|e| std::cmp::Reverse(e.last_used));
     CacheStatus {
         root: root.to_path_buf(),
         entries,
@@ -236,7 +238,7 @@ pub fn evict(
 
     // Oldest first for eviction.
     let mut ordered: Vec<&CacheEntry> = candidates.entries.iter().collect();
-    ordered.sort_by(|a, b| a.last_used.cmp(&b.last_used));
+    ordered.sort_by_key(|e| e.last_used);
 
     let mut total = candidates.total_bytes();
     let now = SystemTime::now();

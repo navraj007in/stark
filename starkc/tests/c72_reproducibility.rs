@@ -223,19 +223,37 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Debug is recorded as NOT-YET-REPRODUCIBLE, and that is pinned rather than left as prose: if a
-/// future toolchain or flag makes debug reproduce, this fails and the classification gets updated
-/// deliberately instead of the document quietly going stale.
+/// Debug reproducibility is **per platform**, and this test was wrong to assert it globally.
+///
+/// It originally asserted `a != b` everywhere, on the strength of a measurement taken only on
+/// macOS — where the linker writes object-file paths into the debug map and no rustc flag reaches
+/// them. CI then failed on **linux-x64 only**, which is the evidence that the mechanism is
+/// platform-specific rather than a property of STARK's output: a platform whose linker does not
+/// embed those paths reproduces once `--remap-path-prefix` has handled the source spans.
+///
+/// So the assertion now runs only where the mechanism has been measured, and every platform prints
+/// its observation as `C72-DEBUG-REPRO` for the record. Asserting an unmeasured platform's outcome
+/// is what produced the failure in the first place; a printed observation cannot make that mistake,
+/// and gives the next reader real data to pin.
 #[test]
-fn debug_executables_are_not_yet_reproducible_and_that_is_recorded() {
+fn debug_reproducibility_is_recorded_per_platform() {
     let Some((ra, a, rb, b)) = build_twice("w01_minimal", &["build"]) else {
         return;
     };
-    assert_ne!(
-        a, b,
-        "debug executables now reproduce across build paths — that is an IMPROVEMENT, so update \
-         the WP-C7.2 classification from NOT-YET-REPRODUCIBLE and change this test to require it"
+    let identical = a == b;
+    println!(
+        "C72-DEBUG-REPRO platform={} identical={identical} sizes={}/{}",
+        std::env::consts::OS,
+        a.len(),
+        b.len()
     );
+    if cfg!(target_os = "macos") {
+        assert!(
+            !identical,
+            "macOS debug executables now reproduce across build paths — that is an IMPROVEMENT, so \
+             update the WP-C7.2 classification and make this a requirement rather than a record"
+        );
+    }
     let _ = std::fs::remove_dir_all(&ra);
     let _ = std::fs::remove_dir_all(&rb);
 }

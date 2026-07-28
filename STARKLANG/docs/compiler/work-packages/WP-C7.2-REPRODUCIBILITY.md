@@ -15,7 +15,8 @@ artefacts in three different classes, and the executable's class depends on the 
 | generated `Cargo.toml` | `SEMANTICALLY-REPRODUCIBLE` | byte-identical per machine; embeds the compiler's own runtime path, so it varies across installations |
 | `stark.lock` | `BYTE-REPRODUCIBLE` | two paths, 7 workloads |
 | executable — **release** | `BYTE-REPRODUCIBLE` | two paths, byte-identical, zero embedded build paths |
-| executable — **debug** | `NOT-YET-REPRODUCIBLE` | 31 embedded build-directory strings; sizes differ by the path-length delta |
+| executable — **debug**, macOS | `NOT-YET-REPRODUCIBLE` | 31 embedded build-directory strings; sizes differ by the path-length delta |
+| executable — **debug**, other platforms | `UNMEASURED` | see the note below — this was wrongly generalised from the macOS measurement |
 | debug symbols | `PLATFORM-METADATA-EXCLUDED` | not produced as a separate artefact today |
 
 ## 2. What was changed, and what it did not achieve
@@ -71,3 +72,16 @@ that PID and thread-ID temporary paths do not reach any artefact.
 3. **Debug reproducibility** — would need linker-level path control (`-oso_prefix` on macOS, and the
    equivalent elsewhere). Recorded rather than attempted, because it is platform-specific work whose
    benefit is smaller than release reproducibility, which already holds.
+
+## Correction (CD-190): debug non-reproducibility is a macOS finding, not a STARK property
+
+The table above originally carried one global `NOT-YET-REPRODUCIBLE` row for debug executables, and
+the conformance test asserted it on every platform. That was a measurement taken on macOS and stated
+as if it were universal. CI refuted it: `c72_reproducibility` failed on **linux-x64 only**, which is
+what you would expect if the residual paths come from the macOS linker's debug map rather than from
+anything rustc or STARK emits — remove that mechanism and remapping is sufficient.
+
+The test now asserts only on macOS, where the mechanism has been measured, and prints a
+`C72-DEBUG-REPRO platform=… identical=…` line on every platform so the remaining rows can be filled
+in from evidence rather than inference. Generalising one platform's measurement is exactly the error
+that produced the failure; the fix is not a looser assertion but a narrower claim.
