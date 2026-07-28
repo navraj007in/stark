@@ -1,10 +1,11 @@
 # WP-C7.8 — First-Party Native Host Capabilities
 
-**Status:** PROPOSED — awaiting C7.8.0 scope approval
+**Status:** APPROVED — PRE-IMPLEMENTATION (CD-201). C7.8.0 and C7.8.1 closed; C7.8.2 authorised.
 **Parent gate:** C7
 **Supersedes:** `WP-C7.8-Native-Host-Capability-Foundation.md` (repo root), dispositioned
 **REVISE — conflicts with approved CE4 Native Provider ABI v0.1 and does not fully unblock P1.**
-**Decisions:** `WP-C7.8.1-DECISION-PACKETS.md` (five packets — CE4, CE3, CE2, CE1, CE9)
+**Decisions:** `WP-C7.8.1-DECISION-PACKETS.md` (five packets — CE4, CE3, CE2 dispositioned; CE1, CE9 open)
+**MIR amendment:** `mir-amendment-A10-provider-invocation.md` (rev. 1, surface `0.1-A10`)
 **Primary targets:** macOS, Linux, Windows
 
 ---
@@ -40,7 +41,7 @@ them.
 ## 2. What was also missing
 
 **The previous scope did not unblock P1.** Its TCP surface was `TcpStream::connect` — client only
-— while P1's exit criteria (`COMPILER-ROADMAP.md:1688`) require "TCP listener and stream", pure-STARK
+— while P1's exit criteria (`COMPILER-ROADMAP.md` §4.2) require "TCP listener and stream", pure-STARK
 HTTP/1.1 routing, and three working REST endpoints. Three REST endpoints cannot be served over an
 outbound socket. `TcpListener::bind`/`accept` is mandatory; HTTP correctly stays out, because P1
 intends to write it in pure STARK.
@@ -87,7 +88,7 @@ C7.8.6  TCP listener and stream
 C7.8.7  Cross-platform verification and P1 unblock assessment
 ```
 
-C7.8.0 and C7.8.1 gate everything. C7.8.2 gates C7.8.3 onward. Within C7.8.3–C7.8.6, file
+C7.8.0 and C7.8.1 gate everything, and both are **closed**. C7.8.2 gates C7.8.3 onward. Within C7.8.3–C7.8.6, file
 ownership and destruction must be proven before TCP — file I/O is the simpler resource-lifecycle
 test bed, and a listener adds an accepted-resource lifetime on top of it.
 
@@ -95,22 +96,25 @@ test bed, and a listener adds an accepted-resource lifetime on top of it.
 
 ## 5.0 WP-C7.8.0 — Governance and scope
 
-Nothing below starts until this is recorded. WP-C7.8 does not currently exist in
-`COMPILER-ROADMAP.md` or `COMPILER-STATE.md`; under `COMPILER-CHARTER.md` §1.6/§6 it is an
-unapproved scope addition.
+**CLOSED 2026-07-28 (CD-201).** WP-C7.8 is admitted to the roadmap and recorded in compiler state;
+the C7.7 open question is resolved; the C8 concurrency boundary is written down. **C7.8.2 is
+authorised to begin.** C7.8.3 onward remains gated by Packets 4 and 5.
 
-Required:
+Required (all discharged):
 
-1. Add C7.8 to `COMPILER-ROADMAP.md` between C7.1–C7.4 and P1 in §4.1's mandatory path, and to
-   §4.2's practical systems checkpoint as P1's precondition.
-2. Add approved status to `COMPILER-STATE.md`.
-3. Record the owner decision resolving `WP-C7.7-GATE-EXIT.md:113`'s open question — "whether that
-   is scoped as P1 itself or as a preceding native-capability work package" — as: a preceding
-   work package.
-4. Record the five dispositions in `WP-C7.8.1-DECISION-PACKETS.md` (CE4, CE3, CE2, CE1, CE9).
-5. Define concurrency boundaries with active C8 work (§7).
+1. ✅ C7.8 added to `COMPILER-ROADMAP.md` — §4.1's mandatory path between C7.1–C7.4 and P1, a
+   `### WP-C7.8` entry after WP-C7.7, and §4.2's checkpoint gains P1's precondition.
+2. ✅ `COMPILER-STATE.md` records **APPROVED — PRE-IMPLEMENTATION**, deliberately *not*
+   `IN PROGRESS`: no implementation has started.
+3. ✅ `WP-C7.7-GATE-EXIT.md` §6 records the owner decision resolving its open question — a
+   preceding work package — **without changing the C7 exit verdict**.
+4. ◻ Three of five dispositions recorded in `WP-C7.8.1-DECISION-PACKETS.md`: CE4 (CD-198/199),
+   CE3 (CD-200), CE2 (CD-197). CE1 and CE9 remain open and gate C7.8.3 onward, not C7.8.2.
+5. ✅ C8 concurrency boundary written down (§7, and `COMPILER-STATE.md`).
 
-**Exit:** roadmap and state updated; five packets dispositioned; C8 boundary written down.
+**Exit:** met for admission. **C7.8.2 is authorised to begin.** The remaining two dispositions are
+tracked as gates on C7.8.3–C7.8.6 rather than on admission, since neither bears on the MIR
+provider-call surface.
 
 ## 5.1 WP-C7.8.1 — First-party provider invocation model
 
@@ -427,11 +431,18 @@ Ownership boundaries, written down rather than assumed:
 | C8 | LSP server, editor-facing compiler work, `starkc/src/lsp/`, `starkc/src/analysis*`, `editors/vscode/` |
 | C7.8 | MIR runtime surface, provider ABI application, host capability lowering, backend emission, `stark-runtime`, host packages |
 
-- Shared files require leases or explicit sequencing.
-- `COMPILER-STATE.md` updates must remain additive or coordinated — the two tracks append to
-  different sections, never rewrite a shared one.
-- **No C8 change may silently expand the native runtime surface.** `MIR_RUNTIME_SURFACE` belongs
-  to C7.8 for the duration.
+- **C8 must not add or modify provider ABI or MIR runtime-surface entries.** `MIR_RUNTIME_SURFACE`
+  belongs to C7.8 for the duration.
+- **C7.8 must not alter LSP protocol or editor-facing behaviour**, except where exposing
+  already-approved diagnostics.
+- **Changes to common MIR enums require coordination.** C8 compiles against `Callee` and `MirTy`
+  even though it does not semantically use provider calls, so A10's added variant is a cross-track
+  change even where it is not a cross-track *semantic* one.
+- **Shared roadmap/state files.** No lease mechanism exists in `COMPILER-CHARTER.md` or
+  `COMPILER-ROADMAP.md` today, so the operative rule is the weaker one already in use: updates to
+  `COMPILER-STATE.md` are **additive to distinct sections**, never rewrites of a shared one, with
+  each track appending under its own heading. A lease mechanism must be specified before it can be
+  cited.
 
 ## 8. Escalations
 
@@ -450,11 +461,11 @@ recorded — the alternative options are CE1, and choosing not to take them is i
 
 **Governance**
 
-- [ ] C7.8 present in `COMPILER-ROADMAP.md` and `COMPILER-STATE.md`.
-- [ ] The `WP-C7.7-GATE-EXIT.md:113` open question is answered by a recorded owner decision.
+- [x] C7.8 present in `COMPILER-ROADMAP.md` and `COMPILER-STATE.md` (CD-201).
+- [x] The `WP-C7.7-GATE-EXIT.md` §6 open question is answered by a recorded owner decision (CD-201).
 - [ ] All five packets dispositioned; CE1 and CE9 each recorded.
       (CE4, CE3 and CE2 — Packets 1, 2 and 3 — **done 2026-07-28**.)
-- [ ] C8 concurrency boundary written down.
+- [x] C8 concurrency boundary written down (CD-201).
 
 **Architecture**
 

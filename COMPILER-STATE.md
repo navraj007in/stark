@@ -400,6 +400,75 @@ closed with a real per-unit operation: `HelperOp::Drop` wrappers over
 **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
+## WP-C7.8 — APPROVED, PRE-IMPLEMENTATION (CD-201)
+
+**Owner resolved the C7.7 scope question in favour of a preceding native-capability work package.
+Packets 1/CE4, 2/CE3 and 3/CE2 are dispositioned. Packets 4/CE1 and 5/CE9 remain open. C7.8.2 may
+begin now that C7.8.0 admission is committed; C7.8.3 onward remains gated by the open packets.**
+
+Not `IN PROGRESS` — no implementation has started.
+
+| | |
+| --- | --- |
+| Plan | `STARKLANG/docs/compiler/work-packages/WP-C7.8-First-Party-Native-Host-Capabilities.md` |
+| Decisions | `WP-C7.8.1-DECISION-PACKETS.md` — 3 of 5 dispositioned |
+| MIR amendment | `mir-amendment-A10-provider-invocation.md` (rev. 1, CE3, `0.1-A10`) |
+| Superseded | `WP-C7.8-Native-Host-Capability-Foundation.md` (repo root) — REVISE, CD-196 |
+
+**Packet 1 / CE4 (CD-198, CD-199)** — first-party providers are **statically linked, ABI-semantic**:
+ordinary Rust crates linked into the produced binary, direct `extern "C"` symbol reference,
+conforming exactly to ABI v0.1 §7/§8/§9/§11/§12/§13 and constructed only through §6.1's boundary
+helpers. Dynamic loading is a separate later WP. Panic containment is **already structural** — the
+generated workspace sets `panic = "abort"` in both profiles, so a provider panic aborts rather than
+unwinding into generated code, and no `catch_unwind` may be added to the static path. An
+**undeclared provider status code is a contract violation**, never a generic `Other`. Provider
+symbols are validated **verbatim, never sanitised** (`[A-Za-z_][A-Za-z0-9_]*`, identity-prefixed,
+unique across the selected set). Provider selection is by capability + target triple; ambiguity is
+a hard error with no priority mechanism.
+
+**Packet 2 / CE3 (CD-200)** — `Callee` gains `Provider(ProviderCallId)` resolving to a validated
+`FunctionDecl`; `MIR_RUNTIME_SURFACE` advances `0.1-A9` → `0.1-A10`. Provider calls may **not** be
+`RuntimeFn` values or bare symbols — `RuntimeFn` stays reserved for compiler-owned operations. Nine
+verifier invariants bind, plus `resource_type` validation before an owned resource is constructed.
+Provider calls are target-resolved **before** MIR verification; the backend never performs
+first-time selection nor interprets unvalidated metadata. `Instance` and `FnValue` are untouched —
+A10 is purely additive.
+
+**Packet 3 / CE2 (CD-197)** — STD-IO-001's "cannot surface a new language trap" and ABI §13.2's
+fatal close are reconciled **without amending either text**: a failed provider close is a §12 **host
+failure**, a channel already held distinct from a STARK trap. `close(self)` **consumes `self` at
+call entry unconditionally**; a completion failure returns `Err(IOError)` and the resource still
+passes through MIR `Drop`. Swallowing close failure is rejected on the record. Seven binding
+conditions.
+
+**Open:** Packet 4 / CE1 (Core-versus-package API placement — recommends the option needing no Core
+change) and Packet 5 / CE9 (trust boundaries). Both gate C7.8.3 onward, neither gates C7.8.2.
+
+**C7.8 does not close Gate C7.** It removes P1's native-capability precondition. C7 stays
+`CANDIDATE-COMPLETE-BLOCKED-BY-P1` until P1's own exit criteria are met.
+
+### C8 concurrency boundary (CD-201)
+
+C8 (semantic language services) runs in parallel per `COMPILER-ROADMAP.md` §4.3 and is currently
+active. Authority is split by surface, not by file proximity:
+
+| Owner | Surface |
+| --- | --- |
+| C8 | LSP, editor integration, protocol behaviour, related front-end diagnostics; `starkc/src/lsp/`, `starkc/src/analysis*`, `editors/vscode/` |
+| C7.8 | Provider metadata consumption, MIR provider calls, generated-Rust provider bindings, native host capabilities, runtime/provider conformance |
+
+- **C8 must not add or modify provider ABI or MIR runtime-surface entries.**
+- **C7.8 must not alter LSP protocol or editor-facing behaviour**, except where exposing
+  already-approved diagnostics.
+- **Changes to common MIR enums require coordination** — C8 compiles against `Callee` and `MirTy`
+  even though it does not semantically use provider calls, so A10's added variant is a
+  cross-track change even where it is not a cross-track *semantic* change.
+- **Shared roadmap/state files.** No lease mechanism exists in the charter or roadmap today, so
+  the operative rule is the weaker one already in use: updates to `COMPILER-STATE.md` are
+  **additive to distinct sections**, never rewrites of a shared one, and the two tracks append
+  under their own headings. If a lease mechanism is wanted, it needs to be specified before it can
+  be cited.
+
 ## Gate C7 — EXIT ASSESSMENT (CD-195): CANDIDATE-COMPLETE, BLOCKED BY P1
 
 **Gate C7 does NOT close.** Of its four exit conditions, two are met, one is partial, and one is not

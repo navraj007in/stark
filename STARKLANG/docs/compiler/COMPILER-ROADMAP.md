@@ -1239,6 +1239,40 @@ C7 closes when native builds are usable, reproducible to the documented degree, 
 claims are bounded by measured evidence, and P1 has completed so the performance report includes
 the practical systems baseline.
 
+**C7.7 outcome (CD-195): `CANDIDATE-COMPLETE — BLOCKED BY P1`.** Two exit conditions met, one
+partial, one not met. The blocker is native host capability, not scheduling — see WP-C7.8 below,
+which the owner admitted as the preceding work package resolving that question (CD-201).
+
+### WP-C7.8 — First-Party Native Host Capabilities
+
+**Establish the statically linked, ABI-semantic provider path required for P1 native execution.
+Apply Native Provider ABI v0.1 without reopening its resource, ownership, buffer, failure-channel,
+or MIR-owned destruction decisions. Add a distinct MIR provider-call category, then implement
+arguments/environment, normative Core file I/O, package time integration, and blocking TCP
+listener/stream capabilities.**
+
+Plan: `STARKLANG/docs/compiler/work-packages/WP-C7.8-First-Party-Native-Host-Capabilities.md`.
+Decisions: `WP-C7.8.1-DECISION-PACKETS.md` (five packets). MIR amendment:
+`mir-amendment-A10-provider-invocation.md`.
+
+```text
+C7.8.0 governance admission
+    ↓
+C7.8.1 CE4 provider model           DISPOSITIONED
+C7.8.2 CE3 MIR provider surface     DISPOSITIONED / implementation next
+C7.8.3 arguments and environment    gated by Packets 4 and 5
+C7.8.4 file I/O                     gated by Packets 3, 4 and 5
+C7.8.5 stark-time integration       gated by Packets 1, 2 and 5
+C7.8.6 TCP listener and stream      gated by Packets 2, 4 and 5
+C7.8.7 cross-platform verification
+    ↓
+P1
+```
+
+WP-C7.8 does not close Gate C7. It removes P1's native-capability precondition; C7 remains
+`CANDIDATE-COMPLETE-BLOCKED-BY-P1` until P1's own exit criteria (§4.2) are met, at which point
+WP-C7.4, WP-C7.5 and WP-C7.6 re-open per WP-C7.7 §6.
+
 ---
 
 ## GATE C8 — Semantic Language Services
@@ -1668,10 +1702,15 @@ C0 Current-state truth
  -> C5 Native MVP
  -> C6 Native semantic parity
  -> C7.1-C7.4 Build profiles, reproducibility, and baseline optimisation setup
+ -> C7.8 First-party native host capabilities
  -> P1 Native Systems Baseline
  -> C7.5 Performance and complexity report
  -> C7.7 C7 gate exit
 ```
+
+C7.8 was inserted by owner decision (CD-201) after C7.7 recorded `CANDIDATE-COMPLETE — BLOCKED BY
+P1`: P1's exit criteria are made almost entirely of host-facing surface with no native path, so P1
+was not waiting to be scheduled but waiting on capability.
 
 This entire path is mandatory.
 C3 may reject a backend candidate or require a bounded revision, but it may not close by
@@ -1704,6 +1743,13 @@ Exit:
 
 P1 does not redefine Core conformance. It proves practical capability.
 C7.1-C7.4 may proceed before P1 is complete, but C7.5 and C7.7 may not close before P1 exists.
+
+**P1's precondition (CD-201).** P1 may not start before WP-C7.8 closes. Arguments, environment,
+file read/write, monotonic time and sleep, and TCP listener and stream are native host
+capabilities, not package work — `stark build` refuses them today. What remains P1's own
+responsibility after C7.8 is the package-level work: pure-STARK JSON, pure-STARK HTTP/1.1 routing,
+three working REST endpoints, no host-language business logic, and the trap-abort operational
+report.
 
 ## 4.3 Language-service path
 

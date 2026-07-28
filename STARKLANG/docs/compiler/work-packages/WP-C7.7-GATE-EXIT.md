@@ -113,6 +113,15 @@ environment, time, sockets — which P1 requires and which C7's measurements can
 Whether that is scoped as P1 itself or as a preceding native-capability work package is an owner
 decision; this document does not assume one.
 
+> **RESOLVED — owner decision, 2026-07-28 (CD-201).** Native host capability work is scoped as a
+> preceding work package, **WP-C7.8**, rather than being absorbed implicitly into P1. P1 remains
+> responsible for package-level JSON, HTTP/1.1 routing, and three REST endpoints after the native
+> provider foundation is available.
+>
+> This resolves the open question **without changing the C7 exit verdict**: Gate C7 remains
+> `CANDIDATE-COMPLETE-BLOCKED-BY-P1`, and WP-C7.8 does not close it. See
+> `work-packages/WP-C7.8-First-Party-Native-Host-Capabilities.md` and `COMPILER-ROADMAP.md` §4.1.
+
 When P1 exists, three things re-open here rather than being taken as settled:
 
 1. **WP-C7.5** — steady-state runtime, the debug/release runtime ratio, and a defensible
