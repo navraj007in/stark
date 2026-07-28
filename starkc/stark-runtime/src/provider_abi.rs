@@ -174,6 +174,26 @@ pub fn contract_violation_unknown_status(provider: &str, function: &str, status:
     std::process::exit(101);
 }
 
+/// ABI §11.1: a provider wrote a handle whose `resource_type` is not the one its declaration
+/// promised.
+///
+/// §12's middle row again — a **contract violation**, not a provider error. It aborts rather than
+/// returning, because wrapping a mistyped handle would hand generated code an owning value for a
+/// resource of unknown kind, and every later operation on it (including its close) would be
+/// operating on the wrong thing.
+pub fn contract_violation_resource_type(
+    provider: &str,
+    function: &str,
+    expected: u32,
+    found: u32,
+) -> ! {
+    crate::output::flush_stdout();
+    eprintln!("error: provider contract violation: wrong resource type");
+    eprintln!("  channel=contract-violation");
+    eprintln!("  provider={provider} function={function} expected={expected} found={found}");
+    std::process::exit(101);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

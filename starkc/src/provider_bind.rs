@@ -85,6 +85,8 @@ pub enum ProviderInputPlan {
     HandleBorrowed {
         index: usize,
         resource_type: String,
+        /// §7's compiler-assigned index into the provider's declared resource-type list.
+        type_id: u32,
         mir_type: MirTy,
     },
     /// Ownership transfers **at call entry**, and the source place is dead from that point
@@ -95,6 +97,8 @@ pub enum ProviderInputPlan {
     HandleConsumed {
         index: usize,
         resource_type: String,
+        /// §7's compiler-assigned index into the provider's declared resource-type list.
+        type_id: u32,
         mir_type: MirTy,
     },
 }
@@ -115,6 +119,9 @@ pub enum ProviderOutputPlan {
     Handle {
         index: usize,
         resource_type: String,
+        /// The id a returned handle must carry. Validated **before** the owning STARK value is
+        /// constructed (ABI §11.1); a mismatch is a contract violation, not a recoverable error.
+        type_id: u32,
         mir_type: MirTy,
     },
 }
@@ -212,6 +219,12 @@ pub enum PlanError {
     /// MIR-0024. **Not** "MIR cannot support resources" — the structure is defined; this specific
     /// resource type is not yet bound.
     UnboundResourceType { index: usize, resource_type: String },
+    /// A parameter names a resource type the provider never declared in its §13 list.
+    ///
+    /// Distinct from [`PlanError::UnboundResourceType`]: that is the *compiler* lacking a binding,
+    /// this is the *provider's own metadata* being internally inconsistent — and it has no §7 id
+    /// to assign, so there would be nothing to validate a returned handle against.
+    UndeclaredResourceType { index: usize, resource_type: String },
 }
 
 /// The full binding plan for one provider call site.
@@ -283,14 +296,25 @@ pub fn plan(
     let mut outputs = Vec::new();
 
     for (index, param) in call.function.params.iter().enumerate() {
-        let resolve = |resource_type: &String| -> Result<MirTy, PlanError> {
-            registry
-                .lookup(resource_type)
-                .cloned()
-                .ok_or_else(|| PlanError::UnboundResourceType {
+        let resolve = |resource_type: &String| -> Result<(MirTy, u32), PlanError> {
+            let mir_type = registry.lookup(resource_type).cloned().ok_or_else(|| {
+                PlanError::UnboundResourceType {
                     index,
                     resource_type: resource_type.clone(),
-                })
+                }
+            })?;
+            // §7: the id is the index into the provider's OWN declared resource-type list, not a
+            // global registry index and not a provider-chosen tag. Deriving it here means emission
+            // never invents one.
+            let type_id = call
+                .provider_resource_types
+                .iter()
+                .position(|d| d == resource_type)
+                .ok_or_else(|| PlanError::UndeclaredResourceType {
+                    index,
+                    resource_type: resource_type.clone(),
+                })? as u32;
+            Ok((mir_type, type_id))
         };
 
         match param {
@@ -309,24 +333,32 @@ pub fn plan(
                 ty: scalar_ty(*t),
             }),
             AbiParam::HandleBorrowed { resource_type } => {
+                let (mir_type, type_id) = resolve(resource_type)?;
                 inputs.push(ProviderInputPlan::HandleBorrowed {
                     index,
                     resource_type: resource_type.clone(),
-                    mir_type: resolve(resource_type)?,
+                    type_id,
+                    mir_type,
                 })
             }
             AbiParam::HandleConsumed { resource_type } => {
+                let (mir_type, type_id) = resolve(resource_type)?;
                 inputs.push(ProviderInputPlan::HandleConsumed {
                     index,
                     resource_type: resource_type.clone(),
-                    mir_type: resolve(resource_type)?,
+                    type_id,
+                    mir_type,
                 })
             }
-            AbiParam::HandleOut { resource_type } => outputs.push(ProviderOutputPlan::Handle {
-                index,
-                resource_type: resource_type.clone(),
-                mir_type: resolve(resource_type)?,
-            }),
+            AbiParam::HandleOut { resource_type } => {
+                let (mir_type, type_id) = resolve(resource_type)?;
+                outputs.push(ProviderOutputPlan::Handle {
+                    index,
+                    resource_type: resource_type.clone(),
+                    type_id,
+                    mir_type,
+                })
+            }
         }
     }
 

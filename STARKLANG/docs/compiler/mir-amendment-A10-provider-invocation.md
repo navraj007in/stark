@@ -232,8 +232,8 @@ A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing
 | C7.8.2d-1 — provider binding plan | **LANDED** |
 | C7.8.2d-2 — scalar and buffer emission (closes invariant 6) | **LANDED** |
 | C7.8.2d-3 — output and status control flow (closes invariants 8, 9) | **LANDED** |
-| C7.8.2d-4 — resource framework, no `File` admission (structures invariant 7) | framework LANDED with d-1; evidence pending |
-| C7.8.2e — `stark-time` end-to-end execution | pending |
+| C7.8.2d-4 — resource framework, no `File` admission (structures invariant 7) | **LANDED** |
+| C7.8.2e — `stark-time` end-to-end execution | next |
 | C7.8.2f — full A10 regression evidence | pending |
 
 **What C7.8.2a landed.** `Callee::Provider(ProviderCallId)`, `ProviderCallId`,
@@ -375,6 +375,39 @@ resource work.
 
 Evidence: `starkc/tests/a10_provider_emit.rs` (21 cases).
 
+**What C7.8.2d-4 landed.** The resource framework, structured for invariant 7 and proven with a
+**synthetic** resource type — `File` is not admitted and nothing here should be read as saying it
+is. Evidence: `starkc/tests/a10_provider_resource.rs`.
+
+**Emission now consumes the binding plan** rather than re-walking `AbiParam`s. That was d-1's
+purpose: classification, resource-type resolution and the status vocabulary are decided once, so
+the emitter cannot quietly disagree with the verifier about which parameters are outputs.
+
+**Invariant 7's lowering contract.** A `HandleConsumed` argument is converted with `into_raw()`
+*before* the call, consuming the owning handle at call entry. The value is moved, so there is no
+restore path on any arm — success, declared error, or contract violation. The shape ABI §8 rules
+out (`call; if success { mark moved } else { restore }`) is not merely avoided but unrepresentable
+in the emitted sequence.
+
+**`HandleOut` validates before constructing.** The raw handle is read from `MaybeUninit` on the
+success arm only, then passed to `OwnedResourceHandle::from_raw_checked` with the expected §7 id; a
+mismatch calls `contract_violation_resource_type`, which aborts. Wrapping a mistyped handle would
+hand generated code an owning value for a resource of unknown kind, and every later operation on it
+— including its close — would act on the wrong thing.
+
+**The §7 type id is the index into the provider's own declared list**, not a global id and not a
+registry index. `ValidatedProviderCall` gained `provider_resource_types` so the id is derivable and
+a returned handle is checkable; the test fixture declares an unrelated type *first*, so an
+implementation that returned 0 or a registry index fails.
+
+Two refusals are now distinct: `UnboundResourceType` is the *compiler* lacking a binding
+(MIR-0024), `UndeclaredResourceType` is the *provider's own metadata* being internally inconsistent
+— a type with no id to assign, so nothing could validate a handle against it.
+
+**`extern "C"` declarations are shape-only.** A handle crosses as `RawResourceHandle` whatever type
+it carries, so declarations need no registry and the resource type never appears in the C
+signature. The refusal therefore lives at planning, and `ResourceRegistry::builtin()` remains empty.
+
 **A provider call is representable but not yet admitted.** That is the intended C7.8.2a state:
 §4's invariants land in C7.8.2c, and until they do, verification refuses rather than accepting an
 unchecked contract. A dangling `ProviderCallId` reports separately (MIR-0019) so an
@@ -440,6 +473,11 @@ pre-verification binding sequence; backend emission prohibitions; `MIR_RUNTIME_S
 **Rev. 2 (2026-07-28) — C7.8.2a landed.** §10 records implementation state, the
 representable-but-not-admitted position, the `provider_abi` layering move and its shim, and the
 interpreter's permanent exclusion. No contract change.
+
+**Rev. 9 (2026-07-29) — C7.8.2d-4 landed.** §10 records emission moving onto the binding plan,
+invariant 7's consumed-handle contract, `HandleOut` type validation before construction, the §7 id
+derivation, and the two distinct resource refusals. `ValidatedProviderCall` gained
+`provider_resource_types`. No contract change; `File` remains unadmitted.
 
 **Rev. 8 (2026-07-29) — C7.8.2d-3 landed.** §10 records `MaybeUninit` output slots, success-only
 reads, the three-channel status dispatch, and the one case invariant 8 cannot enforce.

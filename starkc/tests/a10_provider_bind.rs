@@ -33,6 +33,9 @@ fn call_with(params: Vec<AbiParam>) -> ValidatedProviderCall {
         },
         target_triple: LINUX.to_string(),
         status_binding: starkc::provider_bind::StatusBinding::new(),
+        // §7 handle ids are indices into THIS list, so a resource-carrying fixture must declare
+        // the types it uses — an undeclared one has no id to assign.
+        provider_resource_types: vec!["synthetic-session".to_string()],
         provider_target_triples: vec![LINUX.to_string()],
     }
 }
@@ -199,6 +202,7 @@ fn a_registered_resource_type_plans() {
         vec![ProviderInputPlan::HandleConsumed {
             index: 0,
             resource_type: "synthetic-session".to_string(),
+            type_id: 0,
             mir_type: MirTy::UInt64,
         }]
     );
@@ -207,6 +211,7 @@ fn a_registered_resource_type_plans() {
         vec![ProviderOutputPlan::Handle {
             index: 1,
             resource_type: "synthetic-session".to_string(),
+            type_id: 0,
             mir_type: MirTy::UInt64,
         }]
     );

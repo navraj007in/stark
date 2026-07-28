@@ -928,8 +928,24 @@ fn emit_terminator(
                         id.0
                     ))
                 })?;
+                // The plan is built HERE, from the compiler's registry, so emission and
+                // verification agree on parameter classification by construction rather than by
+                // two matches staying in sync.
+                let plan = crate::provider_bind::plan(
+                    *id,
+                    call,
+                    &crate::provider_bind::ResourceRegistry::builtin(),
+                    call.status_binding.clone(),
+                )
+                .map_err(|e| {
+                    BackendDiagnostic::Unsupported(format!(
+                        "provider call `{}` cannot be planned: {e:?}",
+                        call.symbol()
+                    ))
+                })?;
                 out.push_str(&super::emit_provider::emit_provider_call(
                     call,
+                    &plan,
                     args,
                     dest,
                     env,

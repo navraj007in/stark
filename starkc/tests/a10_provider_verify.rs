@@ -43,6 +43,7 @@ fn valid_call() -> ValidatedProviderCall {
         },
         target_triple: LINUX.to_string(),
         status_binding: starkc::provider_bind::StatusBinding::new(),
+        provider_resource_types: Vec::new(),
         provider_target_triples: vec![LINUX.to_string(), "aarch64-apple-darwin".to_string()],
     }
 }

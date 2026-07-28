@@ -20,6 +20,7 @@ use super::emit_places::TyEnv;
 use super::BackendDiagnostic;
 use crate::mir::{MirProgram, Operand, Place, ValidatedProviderCall};
 use crate::provider_abi::{AbiParam, ScalarTy};
+use crate::provider_bind::{ProviderBindingPlan, ProviderInputPlan, ProviderOutputPlan};
 use std::collections::BTreeMap;
 
 /// The runtime path every ABI boundary type is named through. Written once so a rename cannot
@@ -55,14 +56,13 @@ fn extern_param_ty(param: &AbiParam) -> Result<String, BackendDiagnostic> {
         }
         AbiParam::BufferIn => format!("{ABI}::BorrowedBuffer"),
         AbiParam::BufferInOut => format!("{ABI}::BorrowedBufferMut"),
-        AbiParam::HandleBorrowed { resource_type }
-        | AbiParam::HandleConsumed { resource_type }
-        | AbiParam::HandleOut { resource_type } => {
-            return Err(BackendDiagnostic::Unsupported(format!(
-                "provider resource type `{resource_type}` is not admitted by this build \
-                 (WP-C7.8.2d-4 / C7.8.4)"
-            )));
+        // §6.1: borrowed and consumed handles cross by value as `RawResourceHandle`; an out
+        // handle is a pointer to one. The resource TYPE does not appear in the C signature at all
+        // -- it is carried in the handle's own `resource_type` field and validated on return.
+        AbiParam::HandleBorrowed { .. } | AbiParam::HandleConsumed { .. } => {
+            format!("{ABI}::RawResourceHandle")
         }
+        AbiParam::HandleOut { .. } => format!("*mut {ABI}::RawResourceHandle"),
     })
 }
 
@@ -108,49 +108,32 @@ pub fn emit_extern_declarations(program: &MirProgram) -> Result<String, BackendD
     Ok(out)
 }
 
-/// Emits the statement sequence for one provider call.
+/// Emits the statement sequence for one provider call, driven by its **binding plan**.
 ///
-/// **Invariant 6 is enforced by construction here.** Every borrowed argument is bound to a *named*
-/// local before the call, and the pointer is taken from that named local. The shape a naive
-/// emitter would produce —
+/// Emission walks the plan rather than re-reading `AbiParam`s. That is what C7.8.2d-1 built the
+/// plan for: parameter classification, resource-type resolution and the status vocabulary are
+/// decided once, in one place, and the emitter cannot quietly disagree with the verifier about
+/// which parameters are outputs.
 ///
-/// ```text
-/// stark_provider_fn(make_bytes(value).as_ptr(), ...)
-/// ```
+/// **Invariant 6 (borrow validity)**: every argument is bound to a *named* local before the call,
+/// and pointers are taken from that binding — never from a temporary that could die during the
+/// call expression.
 ///
-/// — creates a pointer into a temporary that may die before or during the call expression. Naming
-/// the binding makes its storage live for the whole statement sequence, which is exactly the
-/// "materialised from a named live place, lifetime covering the complete call" rule.
+/// **Invariant 7 (consumed-resource invalidation)**: a `HandleConsumed` argument is taken from its
+/// MIR place and converted with `into_raw`, which consumes the owning handle **before** the call.
+/// There is no restore-on-failure path, because ABI §8 has none: ownership returning on failure
+/// would make a handle's liveness a runtime property, and exactly-once close would stop being
+/// statically verifiable.
 ///
-/// The MIR operand for each argument is already a place-derived reference (`provider_sig` maps
-/// `ScalarOut(T)` to `&mut T`, `BufferIn` to `&[UInt8]`, and so on), so the named binding preserves
-/// a property MIR established rather than inventing one.
-/// Emits the statement sequence for one provider call.
+/// **Invariant 8 (output-slot discipline)**: `ScalarOut` and `HandleOut` are emitter-owned
+/// `MaybeUninit` storage, read only on the success arm. `ScalarInOut`/`BufferInOut` keep the
+/// argument binding — §11.1 makes them caller-owned, so `MaybeUninit` would be wrong for them.
 ///
-/// **Invariant 6 (borrow validity)** is enforced by construction: every argument is bound to a
-/// *named* local before the call, and pointers are taken from that binding. The shape this rules
-/// out —
-///
-/// ```text
-/// stark_provider_fn(make_bytes(value).as_ptr(), ...)
-/// ```
-///
-/// — creates a pointer into a temporary that may die before or during the call expression, which
-/// compiles, links, and is undefined behaviour at runtime.
-///
-/// **Invariant 8 (output-slot discipline)**: a `ScalarOut` slot is emitter-owned `MaybeUninit`
-/// storage, and its value reaches the MIR-visible location **only** on the success arm. That is
-/// stronger than a rule saying "do not read on failure": the MIR local is never written at all
-/// unless the provider reported success, so there is no failure path on which a read could occur.
-/// `ScalarInOut` and `BufferInOut` deliberately keep d-2's direct pointer — ABI §11.1 makes them
-/// caller-initialised and caller-owned, so `MaybeUninit` semantics would be wrong for them.
-///
-/// **Invariant 9 (channel discipline)**: the status is dispatched into ABI §12's three channels,
-/// which stay structurally distinct. There is no `_ => SomeError::Other` arm; the wildcard is the
-/// contract-violation channel, so an undeclared status **never becomes a STARK value at all** —
-/// it aborts before the destination is written.
+/// **Invariant 9 (channel discipline)**: the wildcard arm is the contract-violation channel, so an
+/// undeclared status never becomes a STARK value.
 pub fn emit_provider_call(
     call: &ValidatedProviderCall,
+    plan: &ProviderBindingPlan,
     args: &[Operand],
     dest: &Place,
     env: &TyEnv,
@@ -164,61 +147,116 @@ pub fn emit_provider_call(
             call.function.params.len()
         )));
     }
+    if !plan.covers(call.function.params.len()) {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "provider call `{}`: binding plan does not cover every declared parameter",
+            call.symbol()
+        )));
+    }
+
+    let provider_lit = rust_str_lit(&call.provider.name);
+    let symbol_lit = rust_str_lit(call.symbol());
 
     let mut out = String::new();
-    let mut call_args = Vec::with_capacity(args.len());
-    // (named `&mut T` binding, MaybeUninit slot, Rust scalar type) per ScalarOut, for the
-    // success-arm copy-back.
-    let mut out_slots: Vec<(String, String, &'static str)> = Vec::new();
+    // Argument expressions by declared index, so inputs and outputs can be emitted in plan order
+    // while the call still receives them in DECLARATION order.
+    let mut call_args: Vec<Option<String>> = vec![None; args.len()];
+    // Success-arm writebacks, in declared order.
+    let mut writebacks: Vec<String> = Vec::new();
 
-    for (i, (param, arg)) in call.function.params.iter().zip(args).enumerate() {
+    // Named bindings for every argument, first, so every borrow outlives the call statement.
+    for (i, arg) in args.iter().enumerate() {
         let value = emit_operand(arg, env)?;
-        let binding = format!("__prov_a{i}");
-        out.push_str(&format!("{indent}let {binding} = {value};\n"));
+        out.push_str(&format!("{indent}let __prov_a{i} = {value};\n"));
+    }
 
-        match param {
-            AbiParam::ScalarIn(_) => call_args.push(binding),
-            AbiParam::ScalarOut(t) => {
-                // Emitter-owned uninitialised storage. The provider writes HERE, not into the MIR
-                // local, so a failure status leaves the MIR local untouched by construction.
-                let slot = format!("__prov_o{i}");
-                let ty = scalar_rust_ty(*t);
-                out.push_str(&format!(
-                    "{indent}let mut {slot} = std::mem::MaybeUninit::<{ty}>::uninit();\n"
-                ));
-                call_args.push(format!("{slot}.as_mut_ptr()"));
-                out_slots.push((binding, slot, ty));
+    for input in &plan.inputs {
+        let i = input.index();
+        let binding = format!("__prov_a{i}");
+        match input {
+            ProviderInputPlan::Scalar { .. } => call_args[i] = Some(binding),
+            ProviderInputPlan::ScalarInOut { ty, .. } => {
+                call_args[i] = Some(format!("{binding} as *mut {}", mir_scalar_rust_ty(ty)?));
             }
-            AbiParam::ScalarInOut(t) => {
-                // §11.1: caller-initialised and caller-owned across the call. Its validity does
-                // not depend on the status, so it is NOT MaybeUninit and needs no copy-back.
-                call_args.push(format!("{binding} as *mut {}", scalar_rust_ty(*t)));
-            }
-            AbiParam::BufferIn => {
-                let buf = format!("__prov_b{i}");
+            ProviderInputPlan::BufferIn { .. } => {
                 out.push_str(&format!(
-                    "{indent}let {buf} = {ABI}::BorrowedBuffer {{ ptr: {binding}.as_ptr(), \
+                    "{indent}let __prov_b{i} = {ABI}::BorrowedBuffer {{ ptr: {binding}.as_ptr(), \
                      len: {binding}.len() }};\n"
                 ));
-                call_args.push(buf);
+                call_args[i] = Some(format!("__prov_b{i}"));
             }
-            AbiParam::BufferInOut => {
-                let buf = format!("__prov_b{i}");
+            ProviderInputPlan::BufferInOut { .. } => {
                 out.push_str(&format!(
-                    "{indent}let mut {buf} = {ABI}::BorrowedBufferMut {{ \
+                    "{indent}let mut __prov_b{i} = {ABI}::BorrowedBufferMut {{ \
                      ptr: {binding}.as_mut_ptr(), len: {binding}.len() }};\n"
                 ));
-                call_args.push(buf);
+                call_args[i] = Some(format!("__prov_b{i}"));
             }
-            AbiParam::HandleBorrowed { resource_type }
-            | AbiParam::HandleConsumed { resource_type }
-            | AbiParam::HandleOut { resource_type } => {
-                return Err(BackendDiagnostic::Unsupported(format!(
-                    "provider resource type `{resource_type}` is not admitted by this build \
-                     (WP-C7.8.2d-4 / C7.8.4)"
-                )));
+            // §8: the caller retains ownership, so the raw form is BORROWED for the call only.
+            ProviderInputPlan::HandleBorrowed { .. } => {
+                call_args[i] = Some(format!("{binding}.as_raw()"));
+            }
+            // §8: ownership transfers AT CALL ENTRY. `into_raw` consumes the owning handle here,
+            // before the call, so the source is dead on every path out -- success, declared error
+            // and contract violation alike. Nothing below restores it, and nothing can: the value
+            // was moved.
+            ProviderInputPlan::HandleConsumed { .. } => {
+                out.push_str(&format!(
+                    "{indent}// §8: ownership transfers at call entry, regardless of status.\n\
+                     {indent}let __prov_c{i} = {binding}.into_raw();\n"
+                ));
+                call_args[i] = Some(format!("__prov_c{i}"));
             }
         }
+    }
+
+    for output in &plan.outputs {
+        let i = output.index();
+        match output {
+            ProviderOutputPlan::Scalar { ty, .. } => {
+                let rust_ty = mir_scalar_rust_ty(ty)?;
+                out.push_str(&format!(
+                    "{indent}let mut __prov_o{i} = std::mem::MaybeUninit::<{rust_ty}>::uninit();\n"
+                ));
+                call_args[i] = Some(format!("__prov_o{i}.as_mut_ptr()"));
+                writebacks.push(format!(
+                    "{indent}        // §11.1: valid ONLY because the status reported success.\n\
+                     {indent}        *__prov_a{i} = unsafe {{ __prov_o{i}.assume_init() }};\n"
+                ));
+            }
+            ProviderOutputPlan::Handle { type_id, .. } => {
+                out.push_str(&format!(
+                    "{indent}let mut __prov_o{i} = \
+                     std::mem::MaybeUninit::<{ABI}::RawResourceHandle>::uninit();\n"
+                ));
+                call_args[i] = Some(format!("__prov_o{i}.as_mut_ptr()"));
+                // §11.1: validate the resource type BEFORE constructing the owning value. The
+                // check lives in `from_raw_checked` so it cannot be skipped, and a mismatch is a
+                // contract violation rather than a recoverable error -- wrapping a mistyped handle
+                // would hand generated code an owning value for a resource of unknown kind.
+                writebacks.push(format!(
+                    "{indent}        let __prov_raw{i} = unsafe {{ __prov_o{i}.assume_init() }};\n\
+                     {indent}        *__prov_a{i} = match {ABI}::OwnedResourceHandle::\
+                     from_raw_checked(__prov_raw{i}, {type_id}u32) {{\n\
+                     {indent}            Ok(handle) => handle,\n\
+                     {indent}            Err(mismatch) => {ABI}::contract_violation_resource_type(\n\
+                     {indent}                {provider_lit},\n{indent}                \
+                     {symbol_lit},\n{indent}                mismatch.expected,\n\
+                     {indent}                mismatch.found,\n{indent}            ),\n\
+                     {indent}        }};\n"
+                ));
+            }
+        }
+    }
+
+    let mut ordered = Vec::with_capacity(call_args.len());
+    for (i, a) in call_args.into_iter().enumerate() {
+        ordered.push(a.ok_or_else(|| {
+            BackendDiagnostic::Unsupported(format!(
+                "provider call `{}`: parameter {i} produced no argument",
+                call.symbol()
+            ))
+        })?);
     }
 
     // The one `unsafe` in a provider call, and it is exactly the FFI call -- no wider block, so a
@@ -229,28 +267,20 @@ pub fn emit_provider_call(
     out.push_str(&format!(
         "{indent}let __prov_status: u32 = unsafe {{ {}({}) }}.code;\n",
         call.symbol(),
-        call_args.join(", ")
+        ordered.join(", ")
     ));
 
     // ABI §12's three channels, structurally distinct.
     out.push_str(&format!("{indent}match __prov_status {{\n"));
-
-    // Channel 0 -- success. Every declared output is read here and nowhere else, so a STARK value
-    // can only be built from outputs the provider reported as valid.
     out.push_str(&format!("{indent}    0u32 => {{\n"));
-    if out_slots.is_empty() {
+    if writebacks.is_empty() {
         out.push_str(&format!("{indent}        // no declared output slots\n"));
     }
-    for (binding, slot, ty) in &out_slots {
-        out.push_str(&format!(
-            "{indent}        // §11.1: valid ONLY because the status reported success.\n\
-             {indent}        *{binding} = unsafe {{ {slot}.assume_init() }};\n"
-        ));
-        let _ = ty;
+    for w in &writebacks {
+        out.push_str(w);
     }
     out.push_str(&format!("{indent}    }}\n"));
 
-    // Channel 1 -- a code the package declared recoverable. Outputs are NOT read.
     for (code, package_error) in call.status_binding.declared_codes() {
         out.push_str(&format!(
             "{indent}    {code}u32 => {{\n\
@@ -259,18 +289,13 @@ pub fn emit_provider_call(
         ));
     }
 
-    // Channel 2 -- contract violation. The wildcard is deliberately NOT a generic package error:
-    // an undeclared status aborts rather than becoming a STARK value, so it never reaches the
-    // destination below.
     out.push_str(&format!(
         "{indent}    unknown => {ABI}::contract_violation_unknown_status(\n\
-         {indent}        {},\n{indent}        {},\n{indent}        unknown,\n{indent}    ),\n",
-        rust_str_lit(&call.provider.name),
-        rust_str_lit(call.symbol())
+         {indent}        {provider_lit},\n{indent}        {symbol_lit},\n\
+         {indent}        unknown,\n{indent}    ),\n"
     ));
     out.push_str(&format!("{indent}}}\n"));
 
-    // Only success or a declared code can reach this point; the contract-violation arm diverges.
     out.push_str(&format!(
         "{indent}{}\n",
         emit_assignment(dest, "__prov_status", env)?
@@ -278,8 +303,32 @@ pub fn emit_provider_call(
     Ok(out)
 }
 
-/// A Rust string literal with the escaping a provider name or symbol could conceivably need.
-/// Symbols are already validated C identifiers, but provider *names* are free text.
+/// The Rust scalar name for a plan's `MirTy`. The plan resolved these from `ScalarTy`, so anything
+/// else here is a compiler defect rather than a rejectable program.
+fn mir_scalar_rust_ty(ty: &crate::mir::MirTy) -> Result<&'static str, BackendDiagnostic> {
+    use crate::mir::MirTy as T;
+    Ok(match ty {
+        T::UInt8 => "u8",
+        T::UInt16 => "u16",
+        T::UInt32 => "u32",
+        T::UInt64 => "u64",
+        T::Int8 => "i8",
+        T::Int16 => "i16",
+        T::Int32 => "i32",
+        T::Int64 => "i64",
+        T::Bool => "bool",
+        T::Float32 => "f32",
+        T::Float64 => "f64",
+        other => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "provider scalar parameter has non-scalar MIR type {other:?}"
+            )))
+        }
+    })
+}
+
+/// A Rust string literal with the escaping a provider name could need. Symbols are already
+/// validated C identifiers; provider *names* are free text.
 fn rust_str_lit(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');

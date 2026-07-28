@@ -380,6 +380,7 @@ impl ProviderSet {
             capability: capability.to_string(),
             function: decl.clone(),
             target_triple: self.target.clone(),
+            provider_resource_types: provider.metadata.resource_types.clone(),
             provider_target_triples: provider.metadata.target_triples.clone(),
             // Empty until a package declares its status vocabulary (C7.8.3+). Empty is not
             // "unknown": it means every nonzero status is a contract violation.

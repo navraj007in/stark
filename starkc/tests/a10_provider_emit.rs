@@ -39,6 +39,7 @@ fn call_named(symbol: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
             may_block: false,
         },
         target_triple: LINUX.to_string(),
+        provider_resource_types: Vec::new(),
         provider_target_triples: vec![LINUX.to_string()],
         status_binding: StatusBinding::new(),
     }
@@ -151,22 +152,45 @@ fn declarations_are_deduplicated_and_order_independent() {
     );
 }
 
-/// A resource-carrying declaration is refused at emission too, not only at verification. MIR-0024
-/// already rejects such a program, so this is defence in depth on the path where being wrong is
-/// invisible — a binary whose host effect silently never happens.
+/// Resource refusal moved when C7.8.2d-4 landed, and this test moved with it.
+///
+/// An `extern "C"` declaration is **shape-only**: a handle crosses as `RawResourceHandle`
+/// regardless of which resource type it carries, so the declaration needs no registry and is not
+/// where a resource can be refused. The refusal lives at *planning*, which is where a
+/// `resource_type` must be bound to a MIR type — and it is still absolute, because the compiler's
+/// builtin registry binds nothing.
 #[test]
-fn resource_parameters_are_refused_at_emission() {
-    let err = emit_provider::emit_extern_declarations(&program_with(vec![call_named(
+fn resource_declarations_are_shape_only_and_refusal_lives_in_planning() {
+    let call = call_named(
         "p",
         vec![AbiParam::HandleConsumed {
             resource_type: "file".to_string(),
         }],
-    )]))
-    .expect_err("a resource parameter must not emit");
-    let text = format!("{err:?}");
+    );
+
+    // Declaration: admitted, and the resource type never appears in the C signature.
+    let src = emit_provider::emit_extern_declarations(&program_with(vec![call.clone()]))
+        .expect("a handle declaration is shape-only");
     assert!(
-        text.contains("file"),
-        "the resource type must be named: {text}"
+        src.contains("a0: stark_runtime::provider_abi::RawResourceHandle"),
+        "{src}"
+    );
+    assert!(!src.contains("\"file\""), "{src}");
+
+    // Planning: refused, because the builtin registry binds no resource type.
+    let mut declared = call;
+    declared.provider_resource_types = vec!["file".to_string()];
+    assert!(
+        matches!(
+            starkc::provider_bind::plan(
+                ProviderCallId(0),
+                &declared,
+                &starkc::provider_bind::ResourceRegistry::builtin(),
+                StatusBinding::new(),
+            ),
+            Err(starkc::provider_bind::PlanError::UnboundResourceType { .. })
+        ),
+        "the builtin registry must bind no resource type"
     );
 }
 

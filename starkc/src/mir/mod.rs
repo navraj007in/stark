@@ -573,6 +573,13 @@ pub struct ValidatedProviderCall {
     /// empty vocabulary is a *meaningful* value rather than missing data: it says every nonzero
     /// status from this provider is a contract violation.
     pub status_binding: crate::provider_bind::StatusBinding,
+    /// §13 resource-type list the provider declares.
+    ///
+    /// Carried because `RawResourceHandle::resource_type` is "a compiler-assigned index into the
+    /// provider's declared resource-type list" (§7) — so validating a returned handle requires
+    /// knowing that list, and a record that could not validate its own handles would not be
+    /// self-verifying in the sense §4 invariant 2 already established for targets.
+    pub provider_resource_types: Vec<String>,
     /// §4 target list the provider declares, copied so the record is **self-verifying**.
     ///
     /// Without it, verification could only take `target_triple` on faith: there would be nothing
