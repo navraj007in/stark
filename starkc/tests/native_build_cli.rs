@@ -275,7 +275,10 @@ fn backend_failure_reports_and_retains_exact_generated_directory() {
 #[test]
 fn invalid_build_arguments_exit_two() {
     let package = Package::new("usage", SCALAR);
-    for args in [["build", "--release"], ["build", "somewhere"]] {
+    // `--release` used to be here, and exited 2 because it was not a recognised flag. WP-C7.1
+    // made it a real profile, so its premise is gone; `--fast` stands in as a flag that is still
+    // genuinely unrecognised, which is what this test is actually about.
+    for args in [["build", "--fast"], ["build", "somewhere"]] {
         let output = package.run(&args);
         assert_eq!(output.status.code(), Some(2));
     }

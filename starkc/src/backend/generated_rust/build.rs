@@ -131,7 +131,7 @@ pub fn build_and_link(
     // nothing. That is exactly what happened here: the first attempt removed the source-span paths
     // and left every linker artefact untouched, because those carry the resolved form.
     let mut rustflags = std::ffi::OsString::new();
-    let mut remap = |path: &Path, label: &str, flags: &mut std::ffi::OsString| {
+    let remap = |path: &Path, label: &str, flags: &mut std::ffi::OsString| {
         let mut forms = vec![path.to_path_buf()];
         if let Ok(canonical) = path.canonicalize() {
             if canonical != path {

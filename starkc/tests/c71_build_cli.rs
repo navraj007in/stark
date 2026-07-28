@@ -107,8 +107,16 @@ fn release_and_debug_coexist_in_separate_paths() {
         stdout.contains("[release]"),
         "a release build must not report itself as debug: {stdout}"
     );
-    let debug = dir.join("target/stark/debug/w01_minimal");
-    let release = dir.join("target/stark/release/w01_minimal");
+    // The executable carries the platform's suffix — `.exe` on Windows. Hard-coding the Unix name
+    // made this pass on two of three CI platforms, which is the least useful way for a
+    // cross-platform assumption to be wrong.
+    let binary = if cfg!(windows) {
+        "w01_minimal.exe"
+    } else {
+        "w01_minimal"
+    };
+    let debug = dir.join("target/stark/debug").join(binary);
+    let release = dir.join("target/stark/release").join(binary);
     assert!(debug.is_file(), "debug artefact missing");
     assert!(release.is_file(), "release artefact missing");
     assert_ne!(debug, release, "the two profiles must not share a path");
@@ -261,9 +269,12 @@ fn a_release_build_after_a_source_change_reflects_it() {
     let main = dir.join("src/main.stark");
     std::fs::write(&main, "fn main() {\n    print(\"changed\");\n}\n").expect("rewrite");
     assert!(run(&dir, &["build", "--release"]).0, "rebuild failed");
-    let out = Command::new(dir.join("target/stark/release/w01_minimal"))
-        .output()
-        .expect("run rebuilt binary");
+    let rebuilt = dir.join("target/stark/release").join(if cfg!(windows) {
+        "w01_minimal.exe"
+    } else {
+        "w01_minimal"
+    });
+    let out = Command::new(rebuilt).output().expect("run rebuilt binary");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
         "changed",

@@ -102,7 +102,16 @@ fn build_twice(workload_name: &str, args: &[&str]) -> Option<(PathBuf, Vec<u8>, 
             .expect("output dir")
             .flatten()
             .map(|e| e.path())
-            .find(|p| p.is_file() && p.extension().is_none())
+            // On Windows the executable is `<name>.exe`, so "has no extension" would find
+            // nothing. Matching the platform's suffix keeps one predicate honest on all three.
+            .find(|p| {
+                p.is_file()
+                    && if cfg!(windows) {
+                        p.extension().is_some_and(|e| e == "exe")
+                    } else {
+                        p.extension().is_none()
+                    }
+            })
             .expect("an executable");
         built.push((root, std::fs::read(&binary).expect("read binary")));
     }
