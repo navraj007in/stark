@@ -14,6 +14,7 @@ pub mod ast;
 pub mod ast_dump;
 pub mod backend;
 pub mod borrowck;
+pub mod build_cache;
 pub mod deploy;
 pub mod diag;
 pub mod doc_gen;

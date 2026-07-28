@@ -24,6 +24,10 @@ pub struct BuildCommandOptions {
     pub release: bool,
     /// WP-C7.1 `--target <triple>`. `None` builds for the host.
     pub target: Option<String>,
+    /// WP-C7.3 `--no-build-cache`: delete the generated crate after the build, as every build did
+    /// before the cache existed. This is the qualification path — a run that must not benefit from,
+    /// or be influenced by, anything a previous build left behind.
+    pub no_build_cache: bool,
 }
 
 impl BuildCommandOptions {
@@ -50,6 +54,8 @@ pub struct BuildCommandResult {
     pub backend_artifact: Option<PathBuf>,
     pub mir_bodies: usize,
     pub toolchain: ToolchainInfo,
+    /// WP-C7.3: what the post-build LRU sweep removed, or `None` when the cache was disabled.
+    pub cache_eviction: Option<crate::build_cache::EvictionReport>,
 }
 
 #[derive(Clone, Debug)]
@@ -165,6 +171,10 @@ pub fn build_current_package(
         Some(triple) => target_root.join(triple).join(profile.as_str()),
         None => target_root.join(profile.as_str()),
     };
+    // WP-C7.3: the cache root is where the backend puts content-addressed crate directories —
+    // `target/stark/<profile>/`. Per-profile by construction, so a debug entry can never be reused
+    // for a release build; TARGET separation comes from the build key, which carries the triple.
+    let cache_root = target_root.join(profile.as_str());
     let artifact = emit_native_debug_with_toolchain(
         &verified,
         &NativeBuildOptions {
@@ -190,16 +200,34 @@ pub fn build_current_package(
     if options.emit_rust && !generated_rust_path.is_file() {
         return Err(BuildCommandError::ArtifactMissing(generated_rust_path));
     }
-    let keep = options.keep_generated || options.emit_rust;
-    let generated_dir = keep.then(|| artifact.build_dir.clone());
+    // WP-C7.3. The generated crate is RETAINED by default — it is content-addressed, so keeping it
+    // makes the next build of the same source a cache hit rather than a rebuild. Before this, it was
+    // deleted immediately and every rebuild paid the full cost including recompiling the runtime.
+    //
+    // `--keep-generated`/`--emit-rust` still mean something distinct from "cached": they PIN the
+    // entry, so eviction never removes something the user explicitly asked to keep. An ordinary
+    // cached entry is evictable; a requested one is not.
+    let pinned = options.keep_generated || options.emit_rust;
+    let generated_dir = pinned.then(|| artifact.build_dir.clone());
     let generated_rust = options.emit_rust.then_some(generated_rust_path);
-    let backend_artifact = keep.then(|| artifact.binary_path.clone());
-    if !keep {
+    let backend_artifact = pinned.then(|| artifact.binary_path.clone());
+    let mut cache_eviction = None;
+    if options.no_build_cache {
         std::fs::remove_dir_all(&artifact.build_dir).map_err(|error| BuildCommandError::Io {
             action: "removing generated crate".into(),
             path: Some(artifact.build_dir.clone()),
             detail: error.to_string(),
         })?;
+    } else {
+        crate::build_cache::touch(&artifact.build_dir, pinned);
+        // Sweep AFTER a successful build, never before: an eviction that ran first could remove the
+        // very entry this build was about to reuse.
+        cache_eviction = Some(crate::build_cache::evict(
+            &cache_root,
+            Some(&artifact.build_dir),
+            crate::build_cache::DEFAULT_MAX_BYTES,
+            crate::build_cache::DEFAULT_MAX_AGE,
+        ));
     }
     Ok(BuildCommandResult {
         package_name,
@@ -211,6 +239,7 @@ pub fn build_current_package(
         backend_artifact,
         mir_bodies,
         toolchain,
+        cache_eviction,
     })
 }
 

@@ -17,13 +17,19 @@ stark — package manager and builder for the STARK Core v1 language
 
 Usage:
   stark check                   Check the current package and dependencies.
-  stark build [--release] [--target <triple>] [--locked] [--offline]
-              [--keep-generated] [--emit-rust] [--verbose]
+  stark build [--release] [--target <triple>] [--no-build-cache] [--locked]
+              [--offline] [--keep-generated] [--emit-rust] [--verbose]
                                  Compile a native executable. Debug by default;
                                  --release builds the optimised profile with the
                                  same STARK-observable semantics. --target names
                                  a triple; cross-compilation is validated but not
                                  yet supported, and is refused with its reason.
+                                 --no-build-cache deletes the generated crate
+                                 afterwards, which is the qualification path.
+  stark cache status | clean     Report or clear the bounded build cache. It
+                                 reuses whole content-addressed generated crates
+                                 and their Cargo artefacts; it is NOT fine-grained
+                                 incremental compilation.
   stark run                     Compile and execute the package main entry point.
   stark test [name] [--ignored] [--show-output]
                                  Run `fn test_*()` functions in the package,
@@ -73,6 +79,10 @@ fn main() -> ExitCode {
 
     if cmd == "build" {
         return cmd_build(&args[1..]);
+    }
+
+    if cmd == "cache" {
+        return cmd_cache(&args[1..]);
     }
 
     if cmd != "check" && cmd != "run" {
@@ -165,6 +175,82 @@ fn main() -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// WP-C7.3. One `cache` command with two verbs rather than two top-level commands — the smallest
+/// routing that covers §5.5's "provide a cache clear command" without widening the CLI surface.
+fn cmd_cache(args: &[String]) -> ExitCode {
+    let current_dir = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("error: failed to get current working directory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let manifest = match starkc::package::find_package_root(&current_dir) {
+        Ok(path) => path,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(package_root) = manifest.parent() else {
+        eprintln!("error: package manifest has no parent directory");
+        return ExitCode::FAILURE;
+    };
+    let roots = [
+        package_root.join("target/stark/debug"),
+        package_root.join("target/stark/release"),
+    ];
+    match args.first().map(String::as_str) {
+        Some("status") | None => {
+            let mut total = 0u64;
+            for root in &roots {
+                let status = starkc::build_cache::status(root);
+                if status.entries.is_empty() {
+                    continue;
+                }
+                println!("{}", root.display());
+                for entry in &status.entries {
+                    let name = entry
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    println!(
+                        "  {name}  {:.1} MB{}",
+                        entry.bytes as f64 / 1e6,
+                        if entry.pinned { "  (pinned)" } else { "" }
+                    );
+                }
+                total += status.total_bytes();
+            }
+            println!(
+                "{:.1} MB cached, cap {:.0} MB",
+                total as f64 / 1e6,
+                starkc::build_cache::DEFAULT_MAX_BYTES as f64 / 1e6
+            );
+            ExitCode::SUCCESS
+        }
+        Some("clean") => {
+            let mut freed = 0u64;
+            let mut removed = 0usize;
+            for root in &roots {
+                let report = starkc::build_cache::clean(root);
+                freed += report.freed_bytes;
+                removed += report.removed.len();
+            }
+            println!(
+                "removed {removed} cache entries, freed {:.1} MB",
+                freed as f64 / 1e6
+            );
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("error: unknown `stark cache` verb `{other}` (expected `status` or `clean`)");
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn cmd_build(args: &[String]) -> ExitCode {
     let mut options = starkc::native_build::BuildCommandOptions::default();
     let mut pending_target = false;
@@ -177,6 +263,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
         }
         match arg.as_str() {
             "--release" => options.release = true,
+            "--no-build-cache" => options.no_build_cache = true,
             "--target" => pending_target = true,
             a if a.starts_with("--target=") => {
                 options.target = Some(a["--target=".len()..].to_string());

@@ -483,3 +483,18 @@ native debug, on two Tier-1 targets, at one commit, with identical per-case obse
 rather than merely running scalar examples. Seven defects were found and fixed in the process
 (DEV-111 … DEV-117, DEV-119), every one by closing a coverage gap rather than by inspection.
 
+## Shared-file lease — WP-C7.3 (2026-07-28, CD-189)
+
+| file | reason | change | released |
+| --- | --- | --- | --- |
+| `starkc/src/lib.rs` | a new module cannot exist without a declaration in the crate root | one line: `pub mod build_cache;` | yes, same commit |
+
+Bounded deliberately: no reordering, no formatting, no other edit to the file. Taken because §1.2
+lists compiler entry points as shared with Gate C8, and a one-line addition is still an edit to a
+shared file — the protocol is not waived by the change being small.
+
+**Not touched, and worth recording:** `starkc/src/analysis.rs` carries 83 uncommitted insertions
+from the C8 track, and `cargo clippy` currently fails on it (`.enumerate()` with a discarded index,
+`analysis.rs:334`). That is C8's work in progress, not C7's, so it was left alone; it is uncommitted
+and therefore not visible to CI. Flagged here rather than fixed, because fixing another track's
+in-flight file is exactly what the lease protocol exists to prevent.
