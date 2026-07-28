@@ -191,16 +191,34 @@ fn hir_only(tag: &str, src: &str) {
     );
 }
 
-/// `HashSet` has NO MIR representation at all (`Core(HashSet, …)` is refused at lowering), so it is
-/// HIR-only. Implementing it — even as "HashMap to Unit" — is a LOWERING feature, not a backend one:
-/// neither MIR nor native can represent it, so there is no native divergence for this gate to close.
-/// Same category, and the same precedent, as C6.3c's adapter iterators.
+/// **DEV-116 is FIXED (CD-176), so this no longer asserts "HIR only".**
+///
+/// It asserted that `HashSet` ran in the oracle and was refused by MIR — which was true, and was a
+/// MIR/native lowering gap rather than a Core exclusion, so §4.3 forbade recording it as one. V19
+/// is now covered by the `dev116__hashset_*` corpus cases, replayed through all three engines.
+///
+/// What survives here is the part that would otherwise be lost: proof the set agrees with the MAP
+/// on identity, in the suite that owns key-identity semantics. Same element type, same user `Eq`,
+/// same expectation.
 #[test]
-fn hashset_is_hir_only() {
-    hir_only(
-        "hashset",
-        "fn main() { let mut s: HashSet<Int32> = HashSet::new(); s.insert(1); s.insert(1); \
-         println(s.len()); }",
+fn hashset_agrees_with_hashmap_on_user_defined_identity() {
+    agree(
+        "hashset_identity",
+        "struct K { v: Int32 }\n\
+         impl Eq for K { fn eq(&self, other: &K) -> Bool { self.v == other.v } }\n\
+         impl Hash for K { fn hash(&self) -> UInt64 { 1u64 } }\n\
+         fn main() {\n\
+             let mut s: HashSet<K> = HashSet::new();\n\
+             s.insert(K { v: 1 });\n\
+             s.insert(K { v: 1 });\n\
+             let mut m: HashMap<K, Int32> = HashMap::new();\n\
+             m.insert(K { v: 1 }, 10);\n\
+             m.insert(K { v: 1 }, 20);\n\
+             print(s.len());\n\
+             print(\"|\");\n\
+             println(m.len());\n\
+         }\n",
+        "1|1",
     );
 }
 

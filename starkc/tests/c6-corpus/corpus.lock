@@ -22,6 +22,9 @@
 # corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the
 # twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent
 # until §15 rather than approximated single-file. Minor.
+# corpus_version 1.2.0 (2026-07-28, CD-176): DEV-116 FIXED -- `HashSet` lowers, verifies,
+# runs in the MIR interpreter and builds natively, as `StarkMap<T, ()>` in every engine so
+# STD-HASH-001 holds by construction. V19 moves from BLOCKED to covered. Four cases.
 # corpus_version 1.1.0 (2026-07-28, CD-175): DEV-117 FIXED. Its reduced case is promoted
 # to a permanent regression per §11.11 step 6, and O14 (reinitialisation) moves from
 # BLOCKED to covered. Minor.
@@ -60,6 +63,9 @@
 # requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native
 # emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and
 # the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.
+# corpus_version 1.2.0 (2026-07-28, CD-176): DEV-116 FIXED -- `HashSet` lowers, verifies,
+# runs in the MIR interpreter and builds natively, as `StarkMap<T, ()>` in every engine so
+# STD-HASH-001 holds by construction. V19 moves from BLOCKED to covered. Four cases.
 # corpus_version 1.1.0 (2026-07-28, CD-175): DEV-117 FIXED. Its reduced case is promoted
 # to a permanent regression per §11.11 step 6, and O14 (reinitialisation) moves from
 # BLOCKED to covered. Minor.
@@ -101,18 +107,18 @@
 # corpus_version 0.5.0 (WP-C6.5-8, 2026-07-27, CD-159): the first PACKAGE cases -- a root
 # package with a module, and a three-package workspace exercising a dependency-to-dependency
 # call, a re-export, a cross-package generic and a cross-package Drop. Minor.
-corpus_version = 1.1.0
+corpus_version = 1.2.0
 generator_version = 0.1.0
 generator_seed = c6.5-default
-manifest_sha256 = bc64293c9370c1e45fce8485bc59e5c27d56d69a0ed21381debc263a59701af2
+manifest_sha256 = f988733e4c66424488dee45d19fc5315aa283f6a9fed6cfa76960a1f032164df
 generated_manifest_sha256 = 5e3600c3ad8281decd1ffadb560f51bd921c1828f094ec641ed160429b862d6b
 templates_sha256 = e26edf31db0df55c7a9e9c12662eab8d8e8f1a2e38b3f6e1f8b7cee5e49c5eaf
 metamorphic_sha256 = c6e5980310e1b0fc22dc1ee59fdd3d523df383271dc8950d7f2f871f4c579f8d
-generator_sha256 = e5a2d01c45afbf191f2263af97b8990b3ecf063e0ed00b0998c60c52b43a3553
-case_count = 154
-handwritten_count = 72
+generator_sha256 = 2fb14ede55a864bceaf08e98f95f838b19df814707e06c27efa63647e11e327b
+case_count = 158
+handwritten_count = 75
 generated_count = 74
-retained_count = 8
+retained_count = 9
 metamorphic_group_count = 24
 cf324eff35bc355b6ffc6b06b3d87cb11fc064b7fada2e439c60fa19be79e511  cases/generated/gen__t01__0268b2da.stark
 71424b295f089f3073a6a0e8895d844b744af8dfe0cdd5f666649274b313494c  cases/generated/gen__t01__0a297325.stark
@@ -188,6 +194,9 @@ bb3f12738b14ca19f37e7f04329869def4adc14003807bca128ce5f9be349da5  cases/generate
 11f91885b4a3b74b727cbbed854f4a26c9c1af267c56677dde4db566be84cdd6  cases/generated/gen__t20__b6feee0e.stark
 b409dd8cdd1aaf1ecf4771223c889f2f78b462c708c2b47d8a76a91e8ddf6abc  cases/generated/gen__t20__cd54c97b.stark
 7e157825dd09670f08ee0e6dc4d921185108ad834690aed50ed6c560c7e52415  cases/generated/gen__t20__e7b48a55.stark
+f1de9333ad93236faa4578d840ad3230ac1320e3f2cbf86bebb0dffdbe06142e  cases/handwritten/dev116__hashset_core_api.stark
+151da54c83a647c59d5a3be7ab423c70bae2a6584b9e02723173ce4ce83731dc  cases/handwritten/dev116__hashset_non_copy_elements.stark
+7983db6d479f52863b6ae7f47517594dd874e2d36e6093ffb7d9c01f1b407901  cases/handwritten/dev116__hashset_user_eq_identity.stark
 7ff6701d2889f7d5888fc7d6098429f3ed559f379541099c0d51f42de705f5d7  cases/handwritten/pkg__dep_trap/app/src/main.stark
 d467b468b81a336d56c6e7ea2f5e24e66a036633625a10560d019b57636db0ef  cases/handwritten/pkg__dep_trap/dep/src/main.stark
 bff2fce7ab3a2f25bd031cae426d9b08015e9c4776d06d526093e2f6b11d04ff  cases/handwritten/pkg__module/src/helper.stark
@@ -216,6 +225,8 @@ cd1b569a059380309cb5a8096aeaea63ee42d0765c3ddf9de597e65a313211b3  cases/handwrit
 da744bb48a7b4d985bfc1fb7af91bcb8ecc1d1100bde518bf17b24d9863c7355  cases/handwritten/sentinel__11_insertion_order_not_sorted.stark
 5bb44a53542fe9389dd952f5f1b1af7d17d10a692fecb120974088f1454e8b4c  cases/handwritten/sentinel__12_drop_identities.stark
 0c6f41ad73895d29d21319d42193a751ab6622f2d4afcef9adc4394ed7ef3f3b  cases/handwritten/sentinel__13_float32_rendering.stark
+f1de9333ad93236faa4578d840ad3230ac1320e3f2cbf86bebb0dffdbe06142e  cases/retained/DEV-116/original/main.stark
+beac258bf83cacad3a3a5427933bf733526d97f4d4476874ea03e0e3ab954307  cases/retained/DEV-116/reduced/main.stark
 c6aabf288d0c3ddfb9b6aaf575f9b062e524b5d0a02911adeafb5add328f4410  cases/retained/DEV-117/original/main.stark
 95d6ebd4ae8eb9925f5eb783165e04ebb0d850032ff5d77ea556d12544620b64  cases/retained/DEV-117/reduced/main.stark
 35d47bdb8e195fa4364859685eba982f8199696f66104cb9010510ae39d7ce7a  cases/retained/entry_exit__01_unit_entry.stark

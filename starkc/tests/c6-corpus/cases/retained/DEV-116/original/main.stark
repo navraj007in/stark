@@ -1,0 +1,44 @@
+// DEV-116 (V19). The admitted Core v1 `HashSet<T>` API over a primitive element, exercising every
+// operation this change implements: construction, distinct insertion, duplicate insertion,
+// membership present and absent, removal present and absent, `len` and `is_empty`.
+//
+// `insert` returns whether the value was NEWLY added and `remove` whether it was present, so each
+// call's Bool is asserted rather than discarded — an implementation that always reported `true`
+// would pass a test that only checked `len`.
+fn main() {
+    let mut s: HashSet<Int32> = HashSet::new();
+    assert(s.is_empty());
+    assert_eq(s.len(), 0u64);
+
+    // Distinct insertions.
+    assert(s.insert(10));
+    assert(s.insert(20));
+    assert(s.insert(30));
+    assert_eq(s.len(), 3u64);
+    assert(!s.is_empty());
+
+    // Duplicate: not newly added, and the length does not move.
+    assert(!s.insert(20));
+    assert_eq(s.len(), 3u64);
+
+    // Membership, present and absent.
+    assert(s.contains(&10));
+    assert(s.contains(&20));
+    assert(!s.contains(&99));
+
+    // Removal, present and absent.
+    assert(s.remove(&20));
+    assert(!s.contains(&20));
+    assert_eq(s.len(), 2u64);
+    assert(!s.remove(&20));
+    assert_eq(s.len(), 2u64);
+
+    // Re-insertion after removal is a NEW insertion.
+    assert(s.insert(20));
+    assert_eq(s.len(), 3u64);
+
+    s.clear();
+    assert(s.is_empty());
+    assert_eq(s.len(), 0u64);
+    println(s.len());
+}

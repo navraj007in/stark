@@ -1,0 +1,37 @@
+// DEV-116 (V19), STD-HASH-001. Uniqueness is decided by the ELEMENT TYPE'S lawful `Eq`, never by
+// structural comparison standing in for it.
+//
+// `Tag` is equal on `id` ALONE and carries a `note` that differs, so two structurally different
+// values are equal by the user's implementation. A set that compared structurally would hold two
+// entries here; one that dispatches through `Eq` holds one. `Hash` is deliberately constant — it is
+// lawful (equal values hash equally) and it forces every comparison through `Eq`.
+struct Tag { id: Int32, note: Int32 }
+
+impl Eq for Tag {
+    fn eq(&self, other: &Tag) -> Bool { self.id == other.id }
+}
+
+impl Hash for Tag {
+    fn hash(&self) -> UInt64 { 7u64 }
+}
+
+fn main() {
+    let mut s: HashSet<Tag> = HashSet::new();
+    assert(s.insert(Tag { id: 1, note: 100 }));
+    // Same id, DIFFERENT note: equal by the user's `Eq`, so not newly added.
+    assert(!s.insert(Tag { id: 1, note: 999 }));
+    assert_eq(s.len(), 1u64);
+
+    // A different id is a distinct element even though its hash is identical.
+    assert(s.insert(Tag { id: 2, note: 100 }));
+    assert_eq(s.len(), 2u64);
+
+    // Membership is decided by `Eq` too: a probe that differs only in `note` still matches.
+    assert(s.contains(&Tag { id: 1, note: 555 }));
+    assert(!s.contains(&Tag { id: 3, note: 100 }));
+
+    // And so is removal.
+    assert(s.remove(&Tag { id: 1, note: 42 }));
+    assert_eq(s.len(), 1u64);
+    println(s.len());
+}

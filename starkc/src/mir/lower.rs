@@ -1047,6 +1047,15 @@ impl<'a> FnLowerer<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 MirTy::Core(crate::hir::CoreType::HashMap, inner)
             }
+            // DEV-116: `HashSet<T>`. V19 is normative in `std-full` and the HIR oracle runs it;
+            // the refusal here was a MIR gap, which §4.3 forbids recording as a non-Core exclusion.
+            Ty::Core(crate::hir::CoreType::HashSet, args) => {
+                let inner = args
+                    .iter()
+                    .map(|a| self.mir_ty(a, span))
+                    .collect::<Result<Vec<_>, _>>()?;
+                MirTy::Core(crate::hir::CoreType::HashSet, inner)
+            }
             Ty::Core(crate::hir::CoreType::KeysIter, args) => {
                 let inner = args
                     .iter()
@@ -1203,6 +1212,7 @@ impl<'a> FnLowerer<'a> {
                         crate::hir::CoreType::Box
                         | crate::hir::CoreType::Vec
                         | crate::hir::CoreType::HashMap
+                        | crate::hir::CoreType::HashSet
                         | crate::hir::CoreType::VecIter
                         | crate::hir::CoreType::KeysIter
                         | crate::hir::CoreType::CharsIter => Ok(MirTy::Core(*core, inner)),
@@ -1400,6 +1410,7 @@ impl<'a> FnLowerer<'a> {
             | MirTy::Core(crate::hir::CoreType::Vec, _)
             | MirTy::Core(crate::hir::CoreType::VecIter, _)
             | MirTy::Core(crate::hir::CoreType::HashMap, _)
+            | MirTy::Core(crate::hir::CoreType::HashSet, _)
             | MirTy::Core(crate::hir::CoreType::KeysIter, _) => true,
             _ => false,
         })
@@ -4449,6 +4460,12 @@ impl<'a> FnLowerer<'a> {
                     self.emit_runtime_call(RuntimeFn::HashMapNew, vec![], dest, span);
                     Ok(())
                 }
+                // DEV-116: the same for `HashSet::new`. Element restrictions are enforced at method
+                // dispatch, where the element type is known from the receiver.
+                Res::Builtin(Builtin::HashSetNew) => {
+                    self.emit_runtime_call(RuntimeFn::HashSetNew, vec![], dest, span);
+                    Ok(())
+                }
                 // A1 (CD-031): `panic(msg)` → an unconditional Trap carrying the message.
                 Res::Builtin(Builtin::Panic) => {
                     let message = match args.first() {
@@ -5371,6 +5388,10 @@ impl<'a> FnLowerer<'a> {
         if let MirTy::Core(crate::hir::CoreType::HashMap, kv_args) = &peeled_ty {
             let kv = kv_args.clone();
             return self.lower_map_method_call(base, kv, name_span, args, dest, span);
+        }
+        if let MirTy::Core(crate::hir::CoreType::HashSet, elem_args) = &peeled_ty {
+            let elem = elem_args.first().cloned().unwrap_or(MirTy::Unit);
+            return self.lower_set_method_call(base, elem, name_span, args, dest, span);
         }
         // 0.1-A6 (A4 slicing): slice methods — `len`/`is_empty` on a `&[T]` receiver.
         if matches!(peeled_ty, MirTy::Slice(_)) {
@@ -7192,6 +7213,77 @@ impl<'a> FnLowerer<'a> {
     }
 
     /// Build a `&HashMap`/`&mut HashMap` receiver operand.
+    /// DEV-116: `HashSet<T>` methods. The element IS the key, so this mirrors
+    /// `lower_map_method_call` exactly — including `discover_eq_impl`, which is what makes
+    /// STD-HASH-001 true here: uniqueness is decided by the element type's lawful `Eq`, dispatched
+    /// through the recorded instance, never by structural comparison standing in for it.
+    fn lower_set_method_call(
+        &mut self,
+        base: ExprId,
+        elem: MirTy,
+        name_span: Span,
+        args: &[ExprId],
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let name = self.text(name_span).to_string();
+        // CE4 (CD-132), unchanged for sets: a user `Drop` element would make set internals run
+        // destructors invisibly, and entry Drop order is deliberately unspecified.
+        if self.ty_has_user_drop(&elem) {
+            return unsupported(
+                "HashSet over user-Drop element types (reserved — std-full)",
+                span,
+            );
+        }
+        let (rt, recv_mut) = match name.as_str() {
+            "insert" => (RuntimeFn::HashSetInsert, true),
+            "remove" => (RuntimeFn::HashSetRemove, true),
+            "contains" => (RuntimeFn::HashSetContains, false),
+            "len" => (RuntimeFn::HashSetLen, false),
+            "is_empty" => (RuntimeFn::HashSetIsEmpty, false),
+            "clear" => (RuntimeFn::HashSetClear, true),
+            // `iter` is in the admitted API but out of this change: iteration is its own surface
+            // (a `SetIter` core type, cursor ops, and `for` desugaring), and DEV-116 is scoped to
+            // the data operations. Refused by name so the gap is explicit rather than a confusing
+            // "method not found".
+            "iter" => return unsupported("HashSet::iter (iteration is not part of DEV-116)", span),
+            _ => return unsupported(format!("HashSet::{name} (reserved — std-full)"), span),
+        };
+        self.discover_eq_impl(&elem)?;
+        let recv = self.borrow_set_receiver(base, recv_mut, &elem, span)?;
+        let mut ops = vec![recv];
+        for &arg in args {
+            ops.push(self.lower_expr_to_operand(arg)?);
+        }
+        self.emit_runtime_call(rt, ops, dest, span);
+        Ok(())
+    }
+
+    fn borrow_set_receiver(
+        &mut self,
+        base: ExprId,
+        mutable: bool,
+        elem: &MirTy,
+        span: Span,
+    ) -> Result<Operand, LowerError> {
+        let (_, layers) = Self::peel_refs(self.expr_mir_ty(base)?);
+        if layers > 0 {
+            return self.lower_expr_to_operand(base);
+        }
+        let set_ty = MirTy::Core(crate::hir::CoreType::HashSet, vec![elem.clone()]);
+        let place = self.place_or_temp(base, &set_ty, span)?;
+        let ref_ty = MirTy::Ref {
+            mutable,
+            inner: Box::new(set_ty),
+        };
+        let temp = self.new_temp(ref_ty);
+        self.emit(
+            Statement::Assign(Place::local(temp), Rvalue::RefOf { mutable, place }),
+            self.info(span),
+        );
+        Ok(Operand::Move(Place::local(temp)))
+    }
+
     fn borrow_map_receiver(
         &mut self,
         base: ExprId,

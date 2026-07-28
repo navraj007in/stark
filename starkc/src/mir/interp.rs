@@ -1967,6 +1967,66 @@ impl<'a> Interp<'a> {
                     self.find_entry(key_eq, &recv, &key)?.is_some(),
                 ))
             }
+            // --- DEV-116: HashSet. Stored EXACTLY as a map is — a `Vec` of `Aggregate([elem,
+            // Unit])` — so `find_entry` decides membership through the same lawful-`Eq` dispatch
+            // and first-insertion order is inherited rather than reimplemented. A second
+            // representation would be a second place for STD-HASH-001 to drift.
+            HashSetNew => Ok(MirValue::Vec(Vec::new())),
+            HashSetInsert => {
+                let recv = args.next();
+                let value = args
+                    .next()
+                    .ok_or_else(|| MirRunError::Internal("HashSetInsert missing value".into()))?;
+                // Found FIRST, because a user `Eq` runs arbitrary code and cannot execute inside a
+                // `&mut` borrow of the entries.
+                let existing = self.find_entry(key_eq, &recv, &value)?;
+                self.mutate_vec_ref(&recv, |entries| match existing {
+                    // Already present: the ORIGINALLY STORED element and its position are kept
+                    // (STD-HASH-001), which is observable when two elements are equal by a user
+                    // `Eq` but structurally different. `insert` reports "not newly added".
+                    Some(_) => MirValue::Bool(false),
+                    None => {
+                        entries.push(MirValue::Aggregate(vec![value, MirValue::Unit]));
+                        MirValue::Bool(true)
+                    }
+                })
+            }
+            HashSetRemove => {
+                let recv = args.next();
+                let value = self.deref_key_arg(args.next())?;
+                let existing = self.find_entry(key_eq, &recv, &value)?;
+                self.mutate_vec_ref(&recv, |entries| match existing {
+                    Some(index) => {
+                        // `remove`, not `swap_remove`: the surviving entries keep their relative
+                        // order, which the normative iteration rule requires.
+                        entries.remove(index);
+                        MirValue::Bool(true)
+                    }
+                    None => MirValue::Bool(false),
+                })
+            }
+            HashSetContains => {
+                let recv = args.next();
+                let value = self.deref_key_arg(args.next())?;
+                Ok(MirValue::Bool(
+                    self.find_entry(key_eq, &recv, &value)?.is_some(),
+                ))
+            }
+            HashSetLen => {
+                let recv = args.next();
+                Ok(MirValue::Int(self.read_vec_ref(&recv)?.len() as i128))
+            }
+            HashSetIsEmpty => {
+                let recv = args.next();
+                Ok(MirValue::Bool(self.read_vec_ref(&recv)?.is_empty()))
+            }
+            HashSetClear => {
+                let recv = args.next();
+                self.mutate_vec_ref(&recv, |entries| {
+                    entries.clear();
+                    MirValue::Unit
+                })
+            }
             HashMapKeysIterNew => {
                 // A TRUE borrowed cursor: [map-ref, cursor] — Next indexes the live map.
                 let map_ref = args
@@ -2389,6 +2449,15 @@ fn is_map_runtime(rt: RuntimeFn) -> bool {
             | HashMapContainsKey
             | HashMapKeysIterNew
             | HashMapKeysIterNext
+            // DEV-116: the set family shares the map group because it shares the representation
+            // and, crucially, the `key_eq` dispatch this group threads through every operation.
+            | HashSetNew
+            | HashSetInsert
+            | HashSetRemove
+            | HashSetContains
+            | HashSetLen
+            | HashSetIsEmpty
+            | HashSetClear
     )
 }
 

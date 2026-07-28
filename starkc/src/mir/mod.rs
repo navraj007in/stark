@@ -476,6 +476,17 @@ pub enum RuntimeFn {
     HashMapContainsKey,
     HashMapKeysIterNew,
     HashMapKeysIterNext,
+    // --- DEV-116: HashSet. `HashSet<T>` is the map at `V = Unit`, so uniqueness is decided by the
+    // SAME `Eq` comparator dispatch and first-insertion iteration order is inherited rather than
+    // reimplemented. `iter` is deliberately absent — the admitted API includes it, but iteration is
+    // out of this change's scope and `for` over a set stays refused at lowering with its own reason.
+    HashSetNew,
+    HashSetInsert,
+    HashSetRemove,
+    HashSetContains,
+    HashSetLen,
+    HashSetIsEmpty,
+    HashSetClear,
     // --- 0.1-A3 (C4.5f-3b): the A1-approved Char ops, deferred from e-1 until Char lowered. ---
     PrintlnChar,
     PrintChar,

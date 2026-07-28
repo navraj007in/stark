@@ -262,6 +262,15 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
                 emit_ty_at(v, at)?
             )
         }
+        // DEV-116: `HashSet<T>` IS the map at `V = ()`. Emitting it as a distinct Rust container
+        // would give the native engine its own uniqueness rule; sharing `StarkMap` is what makes
+        // STD-HASH-001 hold in all three engines by construction.
+        MirTy::Core(crate::hir::CoreType::HashSet, args) => {
+            format!(
+                "stark_runtime::map::StarkMap<{}, ()>",
+                emit_ty_at(single_arg(args, "HashSet")?, at)?
+            )
+        }
         MirTy::Core(crate::hir::CoreType::KeysIter, args) => {
             format!(
                 "stark_runtime::map::KeysIter{}",

@@ -119,7 +119,12 @@ pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Ve
 fn verify_map_key_eq(program: &MirProgram, body: &MirBody, errors: &mut Vec<MirError>) {
     fn walk(ty: &MirTy, program: &MirProgram, body: &MirBody, errors: &mut Vec<MirError>) {
         match ty {
-            MirTy::Core(crate::hir::CoreType::HashMap, args) => {
+            // DEV-116: a set's ELEMENT is its key, so it needs the same guard. Without it a
+            // nominal element with no recorded `Eq` reaches execution and the MIR interpreter
+            // decides membership structurally while the native backend refuses the same program —
+            // the exact divergence this check exists to prevent, and the worse half because the
+            // interpreter produces an ANSWER.
+            MirTy::Core(crate::hir::CoreType::HashMap | crate::hir::CoreType::HashSet, args) => {
                 if let Some(
                     key @ (MirTy::Struct(item, key_args)
                     | MirTy::Enum(crate::mir::EnumRef::User(item), key_args)),
@@ -133,8 +138,8 @@ fn verify_map_key_eq(program: &MirProgram, body: &MirBody, errors: &mut Vec<MirE
                         errors.push(MirError {
                             code: "MIR-0018",
                             message: format!(
-                                "internal: HashMap key type {key:?} has no recorded `Eq` instance; \
-                                 key identity cannot be decided"
+                                "internal: HashMap/HashSet key type {key:?} has no recorded \
+                                 `Eq` instance; key identity cannot be decided"
                             ),
                             symbol: body.instance.symbol.clone(),
                             block: 0,
@@ -1363,6 +1368,12 @@ impl<'a> BodyCx<'a> {
             mutable: false,
             inner: Box::new(t.clone()),
         };
+        // DEV-116: the set's own type and receiver reference. `k` carries the ELEMENT type.
+        let set_ty = |t: &MirTy| MirTy::Core(crate::hir::CoreType::HashSet, vec![t.clone()]);
+        let set_ref = |t: &MirTy, mutable| MirTy::Ref {
+            mutable,
+            inner: Box::new(set_ty(t)),
+        };
         let opt = |t: MirTy| MirTy::Enum(EnumRef::CoreOption, vec![t]);
 
         // Resolve (K, V).
@@ -1373,6 +1384,35 @@ impl<'a> BodyCx<'a> {
                 }
                 _ => {
                     self.err("MIR-0012", bi, "HashMap constructor dest is not a HashMap");
+                    None
+                }
+            },
+            HashSetNew => match dest_ty {
+                Some(MirTy::Core(crate::hir::CoreType::HashSet, args)) if args.len() == 1 => {
+                    Some((args[0].clone(), MirTy::Unit))
+                }
+                _ => {
+                    self.err("MIR-0012", bi, "HashSet constructor dest is not a HashSet");
+                    None
+                }
+            },
+            HashSetInsert | HashSetRemove | HashSetContains | HashSetLen | HashSetIsEmpty
+            | HashSetClear => match arg_tys.first().and_then(|o| o.as_ref()) {
+                Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                    MirTy::Core(crate::hir::CoreType::HashSet, args) if args.len() == 1 => {
+                        Some((args[0].clone(), MirTy::Unit))
+                    }
+                    other => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("HashSet op receiver is &{other:?}, not &HashSet"),
+                        );
+                        None
+                    }
+                },
+                _ => {
+                    self.err("MIR-0012", bi, "HashSet op receiver is not a reference");
                     None
                 }
             },
@@ -1429,6 +1469,15 @@ impl<'a> BodyCx<'a> {
             ),
             HashMapGet => (vec![map_ref(&k, &v, false), sref(&k)], opt(sref(&v))),
             HashMapLen => (vec![map_ref(&k, &v, false)], MirTy::UInt64),
+            // DEV-116. `k` is the ELEMENT type for a set; `set_ref` names the receiver so the two
+            // families cannot be confused by a mis-typed argument.
+            HashSetNew => (Vec::new(), set_ty(&k)),
+            HashSetInsert => (vec![set_ref(&k, true), k.clone()], MirTy::Bool),
+            HashSetRemove => (vec![set_ref(&k, true), sref(&k)], MirTy::Bool),
+            HashSetContains => (vec![set_ref(&k, false), sref(&k)], MirTy::Bool),
+            HashSetLen => (vec![set_ref(&k, false)], MirTy::UInt64),
+            HashSetIsEmpty => (vec![set_ref(&k, false)], MirTy::Bool),
+            HashSetClear => (vec![set_ref(&k, true)], MirTy::Unit),
             HashMapIsEmpty => (vec![map_ref(&k, &v, false)], MirTy::Bool),
             HashMapContainsKey => (vec![map_ref(&k, &v, false), sref(&k)], MirTy::Bool),
             HashMapKeysIterNew => (
@@ -2166,6 +2215,13 @@ fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
     matches!(
         rt,
         HashMapNew
+            | HashSetNew
+            | HashSetInsert
+            | HashSetRemove
+            | HashSetContains
+            | HashSetLen
+            | HashSetIsEmpty
+            | HashSetClear
             | HashMapInsert
             | HashMapGet
             | HashMapLen
@@ -2257,8 +2313,10 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
             unreachable!("Vec ops resolve through vec_runtime_sig, not runtime_sig")
         }
         HashMapNew | HashMapInsert | HashMapGet | HashMapLen | HashMapIsEmpty
-        | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext => {
-            unreachable!("HashMap ops resolve through map_runtime_sig, not runtime_sig")
+        | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext | HashSetNew
+        | HashSetInsert | HashSetRemove | HashSetContains | HashSetLen | HashSetIsEmpty
+        | HashSetClear => {
+            unreachable!("HashMap/HashSet ops resolve through map_runtime_sig, not runtime_sig")
         }
         SliceNew | SliceNewMut | SliceLen | SliceIsEmpty => {
             unreachable!("slice ops resolve through slice_runtime_sig, not runtime_sig")

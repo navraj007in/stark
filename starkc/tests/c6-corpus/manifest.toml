@@ -16,6 +16,59 @@
 # carry its expected category).
 
 [[case]]
+case_id = "dev116__hashset_core_api"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["V19"]
+sources = ["cases/handwritten/dev116__hashset_core_api.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001", "STD-PROFILE-001"]
+expected_stdout = ["0", ""]
+
+[[case]]
+case_id = "dev116__hashset_non_copy_elements"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["V19"]
+sources = ["cases/handwritten/dev116__hashset_non_copy_elements.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001", "OWN-MOVE-001"]
+expected_stdout = ["1", ""]
+
+[[case]]
+case_id = "dev116__hashset_user_eq_identity"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["V19"]
+sources = ["cases/handwritten/dev116__hashset_user_eq_identity.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001"]
+expected_stdout = ["1", ""]
+
+[[case]]
+case_id = "dev116__reinstated_hashset"
+kind = "retained"
+category = "calls-dispatch"
+subcategories = ["V19"]
+sources = ["cases/retained/DEV-116/reduced/main.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001"]
+deviation = "DEV-116"
+expected_stdout = ["1", ""]
+
+[[case]]
 case_id = "dev117__reinit_after_move"
 kind = "retained"
 category = "ownership-drop"

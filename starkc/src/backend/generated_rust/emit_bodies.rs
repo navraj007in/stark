@@ -1073,7 +1073,12 @@ fn map_key_eq(args: &[Operand], env: &TyEnv) -> BackendKeyEq {
     while let MirTy::Ref { inner, .. } = ty {
         ty = *inner;
     }
-    let MirTy::Core(crate::hir::CoreType::HashMap, type_args) = ty else {
+    // DEV-116: a set resolves its comparator exactly as a map resolves its key's. Both carry the
+    // identity-bearing type FIRST, so the same lookup serves — and a nominal element with no
+    // recorded `Eq` still yields `MissingForNominal`, which is what refuses the program rather than
+    // letting Rust's structural `==` stand in for a user implementation (CD-138).
+    let MirTy::Core(crate::hir::CoreType::HashMap | crate::hir::CoreType::HashSet, type_args) = ty
+    else {
         return BackendKeyEq::NotAMap;
     };
     match type_args.first() {

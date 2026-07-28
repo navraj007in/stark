@@ -1,0 +1,20 @@
+// DEV-116 (V19). A non-Copy element: `String` owns a buffer, so insertion MOVES it and the set owns
+// it thereafter. Drop-bearing elements stay refused (CE4/CD-132) because entry destruction order is
+// deliberately unspecified; non-Copy without a user `Drop` is what the admitted API permits.
+fn main() {
+    let mut s: HashSet<String> = HashSet::new();
+    let first: String = String::from("alpha");
+    let second: String = String::from("beta");
+    assert(s.insert(first));
+    assert(s.insert(second));
+    assert_eq(s.len(), 2u64);
+
+    // An equal String value is the same element, even though it is a different allocation.
+    assert(!s.insert(String::from("alpha")));
+    assert_eq(s.len(), 2u64);
+
+    assert(s.contains(&String::from("beta")));
+    assert(s.remove(&String::from("beta")));
+    assert_eq(s.len(), 1u64);
+    println(s.len());
+}

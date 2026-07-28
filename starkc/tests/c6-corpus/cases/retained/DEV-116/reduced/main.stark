@@ -1,0 +1,9 @@
+// DEV-116, reduced. The V19 reproducer exactly as `hashset_is_hir_only` carried it: construct,
+// insert the same value twice, print the length. Two inserts of one value is the smallest program
+// that distinguishes a working set from a list.
+fn main() {
+    let mut s: HashSet<Int32> = HashSet::new();
+    s.insert(1);
+    s.insert(1);
+    println(s.len());
+}

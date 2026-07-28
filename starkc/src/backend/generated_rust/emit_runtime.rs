@@ -206,6 +206,32 @@ pub fn emit_runtime_call(
         ),
         HashMapLen => format!("stark_runtime::map::len({})", arg(0)),
         HashMapIsEmpty => format!("stark_runtime::map::is_empty({})", arg(0)),
+        // DEV-116: HashSet. The runtime models it as `StarkMap<T, ()>`, so `eq()` is the SAME
+        // comparator the map uses — the user's selected `Eq::eq` for a nominal element, and
+        // `structural_eq` only where that IS the lawful `Eq` (primitives, `String`). No structural
+        // host fallback substitutes for a user implementation.
+        HashSetNew => "stark_runtime::map::new()".to_string(),
+        HashSetInsert => format!(
+            "stark_runtime::map::set_insert({}, {}, {})",
+            arg(0),
+            arg(1),
+            eq()?
+        ),
+        HashSetRemove => format!(
+            "stark_runtime::map::set_remove({}, {}, {})",
+            arg(0),
+            arg(1),
+            eq()?
+        ),
+        HashSetContains => format!(
+            "stark_runtime::map::contains_key({}, {}, {})",
+            arg(0),
+            arg(1),
+            eq()?
+        ),
+        HashSetLen => format!("stark_runtime::map::len({})", arg(0)),
+        HashSetIsEmpty => format!("stark_runtime::map::is_empty({})", arg(0)),
+        HashSetClear => format!("stark_runtime::map::clear({})", arg(0)),
         HashMapKeysIterNew => format!("stark_runtime::map::keys_iter_new({})", arg(0)),
         HashMapKeysIterNext => wrap_option(
             &format!("stark_runtime::map::keys_iter_next({})", arg(0)),
