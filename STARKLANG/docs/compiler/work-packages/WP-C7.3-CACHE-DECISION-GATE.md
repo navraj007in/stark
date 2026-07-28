@@ -1,7 +1,7 @@
 # WP-C7.3 — cache decision gate
 
-**Status:** `GATE DATA COMPLETE — implementation not started`, per §5.1's requirement that profiling
-precede any cache.
+**Status:** `IMPLEMENTED — CD-189`. The gate data in §1–§4 was gathered first, per §5.1's requirement
+that profiling precede any cache; §7 records what was then built and how it differed from §5.
 **Measured at:** `95dd492`, macOS arm64, seven frozen workloads, median of three runs.
 
 ---
@@ -57,6 +57,11 @@ The safety properties §5.5 requires are mostly already met by the existing desi
 content-addressed rather than mtime-based; an incompatible compiler/MIR/runtime version produces a
 different key rather than a stale hit; and `--keep-generated` already exists as the disable switch
 for qualification. What is missing is eviction and an explicit cache-clear command.
+
+> Superseded by §7 on one point: once retention became the default, `--keep-generated` could no
+> longer be the disable switch — it now *pins* an entry, which is the opposite. `--no-build-cache`
+> is the qualification path. Left in place rather than rewritten, because the sentence records what
+> was true when the gate data was taken.
 
 ## 5. Recommendation
 
