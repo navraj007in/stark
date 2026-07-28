@@ -74,7 +74,8 @@ Implement the smallest cache that the evidence supports:
 **Open for owner decision before implementation:** the eviction policy is user-visible — a size cap,
 a version count, or an age bound — and it trades disk against rebuild latency for older versions.
 The measurements above support any of the three; the choice is a product decision rather than one
-the profiling settles.
+the profiling settles. **Resolved — see §7.** The owner chose a size cap with an age bound as
+secondary hygiene, and the implementation landed as CD-189.
 
 ## 6. Not yet measured
 
@@ -83,3 +84,53 @@ the profiling settles.
 - Public-interface versus private-implementation change: whether a private edit in `lib` should
   rebuild `app` at all. The current key is whole-source, so it does.
 - Peak memory (§5.7).
+
+## 7. Implementation outcome (CD-189)
+
+**Owner decision:** size-capped LRU. 2 GB per cache root, 30-day age bound as secondary hygiene,
+retained by default, eviction after a successful build, current and pinned entries never evicted.
+
+**The closure claim, as scoped by the owner and not to be restated more strongly:**
+
+> the implementation reuses complete content-addressed generated crates and Cargo artefacts; it is
+> a bounded build cache, not fine-grained incremental compilation.
+
+Nothing in it models functions, packages or interfaces. A one-character source edit changes the key
+and produces a cold build. That is the intended ceiling, not a defect to be fixed later without a
+measurement first — §5.4 still stands.
+
+**Measured:** 2.0× median cold→cached across the seven frozen workloads (0.36–0.50 s cold,
+0.18–0.26 s cached); `w07` 0.44 s → 0.20 s. End-to-end on a fresh package: 1.07 s → 0.19 s, with
+`stark cache status` reporting 8.2 MB against the 2147 MB cap.
+
+**Two deliberate divergences from §5's wording, recorded so the trail does not read as drift:**
+
+1. §5.3 proposed `stark clean` "(or equivalent)". It landed as `stark cache status|clean` — one
+   command with two verbs, because the status view is what makes a size cap legible to a user, and
+   two top-level commands would widen the CLI further than the requirement needs.
+2. The 2 GB cap applies **per cache root** — per package and per profile — because that is where
+   the content-addressed entries already live. A machine-wide cap would have meant relocating the
+   cache, which is a larger change than the evidence asks for. Recorded as an interpretation rather
+   than left implicit, since "2 GB" reads as global until you ask.
+
+**Disable path for qualification:** `stark build --no-build-cache`, which also removes the entry
+afterwards, so a qualification run leaves no residue. `--keep-generated` and `--emit-rust` instead
+**pin** an entry, which is what keeps user-requested generated source separate from ordinary
+evictable cache.
+
+**Robustness properties, each with a test:** metadata is written through a temporary and renamed, so
+an interrupted build leaves the old file or the new one and never a truncated one; missing or
+corrupt metadata makes an entry oldest, so it becomes the first eviction candidate rather than
+breaking the sweep; the sweep takes an advisory whole-root lock and **skips** rather than fails if
+it cannot acquire it, because no build should fail because a cache could not be tidied.
+
+**Tests:** `starkc/tests/c73_build_cache.rs`, ten cases. Two are worth naming because they pin
+absences rather than behaviour — an edit must produce a *new* entry (a future change that quietly
+introduced interface-level reuse would have to update that test deliberately), and returning to an
+earlier source version must *reuse* its entry rather than create a fresh one, which is the property
+that distinguishes content-addressing from "keep the last build".
+
+**Limitations carried forward as explicitly unmeasured, per §6 and unchanged by this
+implementation:** multi-package dependency invalidation (whether a private edit in a dependency
+should rebuild its dependents — the key is whole-source, so it does) and peak memory. Neither is
+claimed to be bounded; both are stated as untested.
