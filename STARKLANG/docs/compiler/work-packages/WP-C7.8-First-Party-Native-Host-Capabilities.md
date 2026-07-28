@@ -132,15 +132,30 @@ superseded document's §4.5 requirement is therefore satisfied by construction, 
 so the future dynamic WP must supply boundary `catch_unwind` explicitly, inheriting none from the
 build profile.
 
-Five sub-decisions are proposed in the packet and await confirmation before C7.8.2: status binding
-(the provider code space encodes ABI channel one **only** — contract violations are detected
-caller-side and host failures are terminations, so neither ever travels as a code, and the
-code→error mapping lives in the package's binding layer rather than in provider metadata, requiring
-no ABI change); symbol representation (`FunctionDecl.name` verbatim, never through `mangle.rs`,
-with provider-identity prefixes and a validator uniqueness check — no STARK↔provider collision is
-possible since the backend emits no `#[no_mangle]`); platform selection (capability plus target
-triple, per-platform variation internal to the provider crate, ambiguity a hard error before
-backend invocation); and conformance testing.
+**No `catch_unwind` wrapper may be added to the static path** — it would misclassify a provider
+defect as a recoverable result, give provider calls different panic semantics from the rest of the
+generated workspace, and obscure the abort guarantee that already exists.
+
+The four sub-decisions are **confirmed**, with two clarifications:
+
+- **Status binding.** The provider code space encodes ABI channel one **only** — contract
+  violations are detected caller-side, host failures are terminations, so neither ever travels as a
+  code. Numeric ranges are deliberately *not* reserved for channels two and three. The code→error
+  mapping lives in the package's binding layer rather than in provider metadata, requiring no ABI
+  change. **Clarification: an undeclared status code is a contract violation**, never a generic
+  recoverable `Other`, unless the package specification explicitly defines that fallback.
+- **Symbol representation.** `FunctionDecl.name` verbatim, never through `mangle.rs`, with
+  provider-identity prefixes and cross-selected-set uniqueness validation. No STARK↔provider
+  collision is possible since the backend emits no `#[no_mangle]`. **Clarification: names are
+  validated verbatim and never sanitised** — repairing one would make the metadata name differ from
+  the linkage name, which must never be true when the same field drives a future `dlsym`. Admitted
+  grammar `[A-Za-z_][A-Za-z0-9_]*`.
+- **Platform selection.** Capability plus target triple; per-platform variation internal to the
+  provider crate; ambiguity a hard error before backend invocation, naming both providers and their
+  metadata locations. No priority mechanism — it would reintroduce implicit selection.
+- **Conformance testing.** One mechanism-agnostic suite, runtime-violation fixtures, and
+  `stark-time` as the real-provider case. **Each fixture asserts the exact channel**, not merely
+  that the process failed.
 
 B's drift risk is answered structurally, not by intention: **one mechanism-agnostic conformance
 suite**, so a statically linked provider that violates §8's consumed-handle rule or §11.1's
@@ -181,6 +196,12 @@ they are a different shape and get a distinct `Callee::Provider` form rather tha
 `MirTy::Core(CoreType, Vec<MirTy>)` and `CoreType::File` (`starkc/src/hir.rs:153`) already exist —
 this is an admission and lowering gap in `emit_types.rs`, not a type-system gap. No new `MirTy`
 variant is required.
+
+The declaration and nine verifier invariants are **enumerated in Packet 2** ahead of the formal CE3
+disposition, per the owner's requirement that they be settled before implementation. `Callee` gains
+a fourth variant, `Provider(ProviderCallId)`, resolving to a validated `FunctionDecl` carrying the
+full ABI contract — not a bare symbol, because every invariant is checked against the declaration
+rather than reconstructed at the call site.
 
 Required:
 

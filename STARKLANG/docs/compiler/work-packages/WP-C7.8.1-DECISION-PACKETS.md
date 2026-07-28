@@ -8,8 +8,8 @@ compatibility impact, implementation surface and required regression evidence.
 
 | Packet | Class | Subject | Status |
 | --- | --- | --- | --- |
-| 1 | CE4 | First-party provider invocation model | **DISPOSITIONED 2026-07-28** — B (statically linked, ABI-semantic); five sub-decisions proposed, awaiting confirmation |
-| 2 | CE3 | MIR runtime surface `0.1-A9` → `0.1-A10` | OPEN — recommends a distinct `Callee::Provider` form |
+| 1 | CE4 | First-party provider invocation model | **DISPOSITIONED 2026-07-28, FULLY** — B (statically linked, ABI-semantic); all four sub-decisions confirmed with two clarifications |
+| 2 | CE3 | MIR runtime surface `0.1-A9` → `0.1-A10` | OPEN — direction indicated; declaration and nine verifier invariants enumerated, formal disposition pending |
 | 3 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | **DISPOSITIONED 2026-07-28** — option A, both texts unchanged, seven binding conditions |
 | 4 | CE1 | Normative surface placement for the five capabilities | OPEN — recommends the option requiring no Core change |
 | 5 | CE9 | File, environment and network trust boundaries | OPEN |
@@ -107,9 +107,15 @@ crates linked into the produced binary, reached by direct `extern "C"` symbol re
 exactly to ABI v0.1's §7/§8/§9/§11/§12/§13 semantics and constructed only through §6.1's boundary
 helpers. Nothing in ABI v0.1 or CE4 Amendment 1 is reopened.
 
-**Provenance of this disposition.** Option B is the owner's stated position. The five sub-decisions
-below are the drafter's proposals and require confirmation before C7.8.2 begins; they are recorded
-here so that confirmation is a review of specifics rather than of a direction.
+**Provenance of this disposition.** Option B is the owner's stated position. The four proposed
+sub-decisions (1.2–1.5) were **confirmed 2026-07-28** subject to two clarifications, both folded in
+below. Packet 1 is fully dispositioned; nothing in it is pending.
+
+The two clarifications, stated once here because each changes a rule rather than adding detail:
+
+1. **An undeclared provider status code is a contract violation, not a generic recoverable error**
+   (§1.2).
+2. **Provider symbol names are validated verbatim and never sanitised** (§1.3).
 
 ### 1.1 Static versus dynamic — **B, owner-stated**
 
@@ -125,13 +131,18 @@ inside a provider therefore cannot unwind into generated STARK code — the proc
 containment, which the superseded document listed as new work in its §4.5, is **already structural
 under B and requires no `catch_unwind` wrapper**.
 
-That property does not survive Option A. A dynamically loaded provider is a separate compilation
-unit that may be built `panic = "unwind"`, so unwinding across the boundary becomes a live hazard
-and boundary `catch_unwind` becomes mandatory. **Carry-forward requirement for the future dynamic
-loading WP:** it must supply panic containment explicitly, because it inherits none from the build
-profile.
+**No `catch_unwind` wrapper may be added to the static path.** It would misclassify a provider
+defect as a recoverable result, give provider calls different panic semantics from the rest of the
+generated workspace, and obscure the abort guarantee that already exists.
 
-### 1.2 How first-party calls bind to `ProviderStatus` — **proposed**
+That property does not survive Option A. A dynamically loaded provider is a separate compilation
+unit that may be built `panic = "unwind"`. **Carry-forward requirement for the future dynamic
+loading WP:** it inherits no containment from the build profile and must supply it explicitly, by
+**either** requiring provider binaries to prove `panic = "abort"` through a trustworthy build or
+metadata mechanism, **or** placing an unwind-catching boundary inside the provider binary or a
+compatible Rust shim. It must never permit a Rust unwind across an `extern "C"` boundary.
+
+### 1.2 How first-party calls bind to `ProviderStatus` — **confirmed, with clarification**
 
 ABI §11 fixes the physical shape (status return plus explicit output channels) but leaves nonzero
 code meaning "defined per-provider". The binding rule:
@@ -149,7 +160,31 @@ code meaning "defined per-provider". The binding rule:
 - Convention, not contract: first-party providers should share a common base numbering to avoid
   gratuitous divergence. Recorded as guidance so a future consolidation is cheap.
 
-### 1.3 How provider symbols are represented — **proposed**
+**Clarification (owner, 2026-07-28): an undeclared status code is a contract violation.** The
+binding must reject any status code the package-provider pair has not declared. It must **not**
+map unknown nonzero values to a generic recoverable `Other` unless the package specification
+explicitly defines that fallback. The rule:
+
+```text
+status == 0
+    → success; validate all required output invariants
+
+status in the declared package status vocabulary
+    → channel-one STARK error
+
+any other status value
+    → provider contract violation
+```
+
+This defends against a provider and its package drifting apart while remaining *physically*
+ABI-compatible — the failure mode where nothing crashes and the meaning quietly changes.
+
+Numeric ranges are **not** reserved for channels two and three, deliberately. Making those
+conditions representable as ordinary provider returns would let a binding layer convert a violated
+invariant into `Result::Err` by accident, which is precisely what the three-channel separation
+exists to prevent.
+
+### 1.3 How provider symbols are represented — **confirmed, with clarification**
 
 Direct `extern "C"` declaration against the symbol named in `FunctionDecl.name`, verbatim.
 
@@ -164,7 +199,23 @@ Direct `extern "C"` declaration against the symbol named in `FunctionDecl.name`,
   carry a prefix derived from the provider's §2 identity (`stark_time_monotonic_now_ns` already
   does). The §17 validator gains a uniqueness check across the selected provider set.
 
-### 1.4 How platform implementations are selected — **proposed**
+**Clarification (owner, 2026-07-28): validate the name verbatim; never sanitise it.** Uniqueness is
+not sufficient. A declared symbol must already be a valid portable C identifier, and an invalid one
+is **rejected** rather than repaired — sanitising would make the metadata name differ from the
+actual linkage name, which is the one thing that must never be true when the same field has to
+drive a future `dlsym`.
+
+Admitted grammar:
+
+```text
+[A-Za-z_][A-Za-z0-9_]*
+```
+
+The §17 validator rejects: empty names; embedded NUL; whitespace; punctuation requiring platform
+decoration; duplicate exported symbols across the selected provider set; and any symbol lacking an
+approved provider-identity prefix. This keeps dynamic lookup deterministic across platforms later.
+
+### 1.4 How platform implementations are selected — **confirmed**
 
 - Selection is by **capability plus target triple**, using §4's `target_triples` and §16's second
   check. One provider crate per capability.
@@ -172,11 +223,17 @@ Direct `extern "C"` declaration against the symbol named in `FunctionDecl.name`,
   invisible to STARK. The compiler selects a provider, never a platform implementation.
 - **Two providers claiming the same capability for the same target is a hard error**, reported
   before backend invocation per `WP-C5-ENTRY.md` §3.2. Silent first-match selection is rejected:
-  it would make the produced binary depend on declaration order.
+  it would make the produced binary depend on declaration order. Package order, dependency order
+  and lexical precedence are rejected for the same reason.
+- **No priority mechanism in C7.8.** A priority field would convert an invalid configuration into
+  another implicit selection mechanism, which is the thing the hard error exists to prevent.
+- The ambiguity diagnostic must identify: the requested capability; the compilation target; **both**
+  conflicting provider identities; their metadata locations; and the remediation — remove one
+  provider or narrow its target declarations.
 - No provider for the target: §16's existing check fails, with the diagnostic kept distinct from
   `stark_runtime::version::check`'s per §16's independence requirement.
 
-### 1.5 How ABI conformance is tested — **proposed**
+### 1.5 How ABI conformance is tested — **confirmed**
 
 Three layers, and the first is the one that makes B safe:
 
@@ -184,8 +241,25 @@ Three layers, and the first is the one that makes B safe:
    the dynamic WP inherits it unchanged rather than writing a parallel one.
 2. **Runtime-violation fixtures** — new, and distinct from §17's existing metadata-violation
    fixtures: a mock provider that reuses a consumed handle, one that writes a `HandleOut` slot on a
-   failure status, one that returns a wrong `resource_type`, one whose close returns nonzero. Each
-   must produce the channel the ABI specifies, not merely fail.
+   failure status, one that returns a wrong `resource_type`, one whose close returns nonzero, and
+   one returning an undeclared status code (§1.2's clarification).
+
+   **Each fixture asserts the exact channel, not merely that the process failed.** That distinction
+   is load-bearing — a test satisfied by "it aborted" cannot tell a contract violation from a host
+   failure, which is the whole property being defended:
+
+   ```text
+   wrong resource_type
+   → contract violation
+   → NOT Result::Err
+   → NOT a host-failure diagnostic
+
+   close returns nonzero
+   → host failure
+   → termination without unwinding
+   → NOT a contract violation
+   → NOT IOError
+   ```
 3. **`stark-time` as the real-provider case**, under the exit condition in this packet's evidence
    section.
 
@@ -281,6 +355,52 @@ path, and C forfeits the drop guarantee entirely.
 
 Bump `MIR_RUNTIME_SURFACE` to `0.1-A10`. Enumerate every added operation with signature and
 ownership form in the amendment, as `mir-amendment-A1-strings-runtime.md` did for its surface.
+
+### Enumeration prepared for the CE3 decision (owner direction, 2026-07-28)
+
+The owner has indicated approval of this direction and required the declaration and verifier
+invariants to be enumerated **before** implementation. That enumeration follows; the formal CE3
+disposition is still to be recorded.
+
+**Why a separate form, stated as the contract difference rather than as style.** `RuntimeFn`
+represents compiler- and runtime-owned operations with compiler-known semantics. A provider call
+additionally carries provider identity, capability identity, declared function identity, ABI status
+and output-slot rules, ownership-transfer mode, borrowed-buffer lifetime requirements, resource-type
+constraints, target compatibility, and failure-channel behaviour. Folding that into `RuntimeFn`
+would either weaken verification by treating provider calls as ordinary runtime functions, or
+overload `RuntimeFn` with provider-specific metadata until the distinction exists implicitly and
+less safely.
+
+**Declaration.** The current enum (`starkc/src/mir/mod.rs`) is `Instance` / `FnValue` / `Runtime`;
+it gains one variant:
+
+```rust
+pub enum Callee {
+    Instance(Instance),
+    /// Indirect call through a `FnPtr`-typed operand (CD-021/CD-027).
+    FnValue(Operand),
+    Runtime(RuntimeFn),
+    /// Resolves to a validated provider `FunctionDecl` carrying the full ABI contract.
+    Provider(ProviderCallId),
+}
+```
+
+`ProviderCallId` resolves to a validated declaration containing the ABI contract — not to a bare
+symbol, because every invariant below is checked against the declaration rather than reconstructed
+at the call site.
+
+**Verifier invariants, provable before code generation:**
+
+1. the selected provider exists for the compilation target;
+2. the function belongs to that provider;
+3. input ownership matches the declaration (`HandleBorrowed` / `HandleConsumed` / `HandleOut`);
+4. consumed handles are invalidated at call entry, on every path (§8's consumed-handle rule);
+5. borrowed values remain live across the call (§9's call-duration lifetime);
+6. output slots are read only on success (§11.1);
+7. returned resource types match the declaration (§11.1's `resource_type` validation);
+8. status handling has a channel-one binding, and undeclared codes route to contract violation
+   (Packet 1 §1.2);
+9. close calls occur only through valid MIR `Drop` lowering where §13 requires it.
 
 ## Compatibility impact
 
