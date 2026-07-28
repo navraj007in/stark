@@ -1,0 +1,16 @@
+trait Score { fn score(&self) -> Int32; }
+struct A { v: Int32 }
+struct B { v: Int32 }
+impl Score for A { fn score(&self) -> Int32 { self.v * 2 } }
+impl Score for B { fn score(&self) -> Int32 { self.v * 3 } }
+fn total<T: Score>(item: T, times: Int32) -> Int32 {
+    let mut sum: Int32 = 0;
+    let mut i: Int32 = 0;
+    while i < times { sum = sum + item.score(); i = i + 1; }
+    sum
+}
+fn main() {
+    let a: Int32 = total(A { v: 5 }, 100);
+    let b: Int32 = total(B { v: 5 }, 100);
+    print(a + b);
+}

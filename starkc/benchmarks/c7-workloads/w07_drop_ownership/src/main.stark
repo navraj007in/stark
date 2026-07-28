@@ -1,0 +1,16 @@
+struct Loud { id: Int32 }
+impl Drop for Loud {
+    fn drop(&mut self) { }
+}
+fn consume(l: Loud) -> Int32 { l.id }
+fn main() {
+    let mut total: Int32 = 0;
+    let mut i: Int32 = 0;
+    while i < 100 {
+        let a: Loud = Loud { id: i };
+        let b: Loud = a;
+        total = total + consume(b);
+        i = i + 1;
+    }
+    print(total);
+}

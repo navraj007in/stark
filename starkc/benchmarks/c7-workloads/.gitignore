@@ -1,0 +1,5 @@
+# Build outputs. The workloads are FROZEN SOURCE; their artefacts are measurement products and
+# must never be committed — a checked-in `target/` would make the two-path reproducibility
+# experiment compare stale bytes.
+target/
+stark.lock

@@ -60,11 +60,20 @@ impl TrapCategory {
     }
 }
 
-/// The native trap ABI: reports category and source location on stderr, then aborts with the
-/// established trap exit code. No pending Drop glue runs (§7.7) -- there is none to run yet in
-/// C5's scope (every locally-declared type so far is `Copy`); the generated crate's
-/// `panic = "abort"` profile means nothing downstream of `std::process::exit` ever runs anyway,
-/// so this needs no unwind-suppression of its own.
+/// The native trap ABI: reports category and source location on stderr, then terminates with the
+/// established trap exit code.
+///
+/// **No destructor runs, and that is a property of `exit` rather than of the build profile**
+/// (DROP-ABORT-001). `std::process::exit` terminates without unwinding, so live locals are never
+/// dropped no matter what `panic` strategy the generated crate is built with. The C7.0 baseline
+/// (CD-184) confirmed this is what makes trap semantics profile-independent, and it is why a
+/// release profile can be added without changing trap behaviour.
+///
+/// The previous wording justified the same conclusion by saying there was no Drop glue to run
+/// because "every locally-declared type so far is `Copy`". That was true in C5's scope and has been
+/// false since WP-C6.1: Drop-bearing locals are ordinary now. The reasoning was replaced rather than
+/// the sentence patched, because the old one would have become dangerous if believed -- it implied
+/// the guarantee came from the absence of destructors rather than from not unwinding.
 pub fn abort(category: TrapCategory, file: &str, line: u32, column: u32) -> ! {
     // CD-120 Contract B: emit any buffered pre-trap output before aborting, so the observable
     // stdout prefix matches the HIR/MIR interpreters (which retain their captured prefix).

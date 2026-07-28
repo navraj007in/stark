@@ -1,0 +1,17 @@
+fn build(n: Int32) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut i: Int32 = 0;
+    while i < n {
+        let mut s: String = String::from("item-");
+        s.push_str("x");
+        out.push(s);
+        i = i + 1;
+    }
+    out
+}
+fn main() {
+    let v: Vec<String> = build(200);
+    let mut total: UInt64 = 0u64;
+    for s in v.iter() { total = total + s.len(); }
+    print(total);
+}

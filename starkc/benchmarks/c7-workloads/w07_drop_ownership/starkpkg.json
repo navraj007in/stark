@@ -1,0 +1,5 @@
+{
+    "name": "w07_drop_ownership",
+    "version": "0.1.0",
+    "entry": "src/main.stark"
+}

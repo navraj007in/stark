@@ -1,0 +1,58 @@
+{
+  "frozen_at_commit": "4650d4753e831d2c7e7b09a0b5cab4b8e79d07ef",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+  "host": "host: aarch64-apple-darwin",
+  "workloads": {
+    "w01_minimal": {
+      "files": {
+        "src/main.stark": "4fb0d9b10367c06a9246d91f5abab2743bf88400f15208f6ded992406f0c44b6",
+        "starkpkg.json": "8718dac177467976dbf8ae23542a3f14ea3a4a164be3963128d1bf0dbba854d2"
+      },
+      "workload_hash": "43a8f81f21a208f6b9eded2cb7971a16c2acbf3b50248b3d40a11555c5033f61"
+    },
+    "w02_arith_control": {
+      "files": {
+        "src/main.stark": "d7c631f210405b13d5f1f20ae1c8223f94a77233d2ad260d97924c85775aa910",
+        "starkpkg.json": "9cea957fb0da7a3f4ebd3ac381b23cbe61bc36c605289d5d680f6e1c4d782c6e"
+      },
+      "workload_hash": "c5b42fe787a4f7b7e857a9e67e1d14350f218cb7df3b8b0956a97991aec53fde"
+    },
+    "w03_generic_trait": {
+      "files": {
+        "src/main.stark": "cdd246e8f2968e078de2336f88fe8758ce30496b3f37b2a68c4a844e3bf89661",
+        "starkpkg.json": "863944819ecefc724f7466fe4387cf3fa2f5dd87156a2af753e1ffbdf9e8a572"
+      },
+      "workload_hash": "854b059c26a73c3cf0ac5f0ef1e400de9d3d03f72524f502805c3f333ec94426"
+    },
+    "w04_string_vec": {
+      "files": {
+        "src/main.stark": "83cacbeee702d3e246bc374d42d287f8a7ea3e05379ecc44f97255e1ef4d35e3",
+        "starkpkg.json": "5640909976ecc525dfb9ed9a2d17710e15ef6d46fd95201fda642f150a2c9a72"
+      },
+      "workload_hash": "9cf433734bb2aee1098a0cf30d17792223be198c6fb4bb177a597bac3cf5198f"
+    },
+    "w05_hash": {
+      "files": {
+        "src/main.stark": "c275e0f8034f30cdb2fcd5f4b83aa5d9d7046344d2531b13575e8c45d41790fa",
+        "starkpkg.json": "b36fb55984e8e67c2b91981a934a519a8d50ba7ba77acc1c085ce81f0539b7a3"
+      },
+      "workload_hash": "d9dc095a530af1c04473f327c012514477ca105678404a0a09fde10580746505"
+    },
+    "w06_multi_package": {
+      "files": {
+        "app/src/main.stark": "0adad656d77df9a027c6729051ec52bf9390a410dec6b88d7bcce94d43cbc449",
+        "app/starkpkg.json": "f1edb71bd7af307a00ca11cfbe3c4a1d49e5aafa50da6cdd849a0ce169fd4ffa",
+        "lib/src/main.stark": "a46a0b605c1e4aed39317766b401c427e3483fa4dc15d5dbc539a0d790f452d4",
+        "lib/starkpkg.json": "77c5b7f1e534ef4d1e31c3838a062494f4aff2ba0acc5a44f3581173b38754a3"
+      },
+      "workload_hash": "c6600a489c984f2cd458126af9b2a08977c57c483d322539ae1d04bc1e78c422"
+    },
+    "w07_drop_ownership": {
+      "files": {
+        "src/main.stark": "468b780130277c502240ec9a610a8433a62060a2b79aca8b2b7550f8c2cd5b8e",
+        "starkpkg.json": "110af0f675ad1b41cc152efe7791f3271b9c22df94738c330d558eed9730f082"
+      },
+      "workload_hash": "6754bb53a1072aa39ebe53ac765036963fad1ca3ff02bdd4c8296d2c580e5e98"
+    }
+  }
+}

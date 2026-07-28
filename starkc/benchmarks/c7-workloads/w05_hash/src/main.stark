@@ -1,0 +1,13 @@
+fn main() {
+    let mut m: HashMap<Int32, Int32> = HashMap::new();
+    let mut i: Int32 = 0;
+    while i < 150 { m.insert(i, i * 2); i = i + 1; }
+    let mut s: HashSet<Int32> = HashSet::new();
+    let mut j: Int32 = 0;
+    while j < 150 { s.insert(j % 50); j = j + 1; }
+    let mut sum: Int32 = 0;
+    for k in m.keys() { sum = sum + *k; }
+    print(sum);
+    print("|");
+    print(s.len());
+}

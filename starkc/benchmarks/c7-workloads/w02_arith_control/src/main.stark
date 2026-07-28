@@ -1,0 +1,19 @@
+fn collatz_len(start: Int32) -> Int32 {
+    let mut n: Int32 = start;
+    let mut steps: Int32 = 0;
+    while n > 1 {
+        if n % 2 == 0 { n = n / 2; } else { n = 3 * n + 1; }
+        steps = steps + 1;
+    }
+    steps
+}
+
+fn main() {
+    let mut total: Int32 = 0;
+    let mut i: Int32 = 1;
+    while i < 300 {
+        total = total + collatz_len(i);
+        i = i + 1;
+    }
+    print(total);
+}

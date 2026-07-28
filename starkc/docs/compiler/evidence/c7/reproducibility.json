@@ -1,0 +1,159 @@
+{
+  "stark_binary_sha256": "3de2969ceb4fcb6a6f9dffdd020c0e246f3c4c2b024fc8a02c9b414f14e79d3c",
+  "reproducibility": {
+    "w01_minimal": {
+      "generated_rust": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "a07b0d6cf99091ab",
+        "b": "a07b0d6cf99091ab"
+      },
+      "generated_cargo_toml": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "7bab5c4359e9ad89",
+        "b": "7bab5c4359e9ad89"
+      },
+      "stark_lock": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "ae98b5d770d4d13c",
+        "b": "ae98b5d770d4d13c"
+      },
+      "executable": {
+        "verdict": "DIFFERS",
+        "a_bytes": 485024,
+        "b_bytes": 485344
+      }
+    },
+    "w02_arith_control": {
+      "generated_rust": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "ce34b7efce7bb220",
+        "b": "ce34b7efce7bb220"
+      },
+      "generated_cargo_toml": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "7bab5c4359e9ad89",
+        "b": "7bab5c4359e9ad89"
+      },
+      "stark_lock": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "ae98b5d770d4d13c",
+        "b": "ae98b5d770d4d13c"
+      },
+      "executable": {
+        "verdict": "DIFFERS",
+        "a_bytes": 493712,
+        "b_bytes": 494096
+      }
+    },
+    "w03_generic_trait": {
+      "generated_rust": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "4951bcde3fb76c09",
+        "b": "4951bcde3fb76c09"
+      },
+      "generated_cargo_toml": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "7bab5c4359e9ad89",
+        "b": "7bab5c4359e9ad89"
+      },
+      "stark_lock": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "ae98b5d770d4d13c",
+        "b": "ae98b5d770d4d13c"
+      },
+      "executable": {
+        "verdict": "DIFFERS",
+        "a_bytes": 492160,
+        "b_bytes": 492528
+      }
+    },
+    "w04_string_vec": {
+      "generated_rust": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "6eb51bc731bcbc54",
+        "b": "6eb51bc731bcbc54"
+      },
+      "generated_cargo_toml": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "7bab5c4359e9ad89",
+        "b": "7bab5c4359e9ad89"
+      },
+      "stark_lock": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "ae98b5d770d4d13c",
+        "b": "ae98b5d770d4d13c"
+      },
+      "executable": {
+        "verdict": "DIFFERS",
+        "a_bytes": 510720,
+        "b_bytes": 511312
+      }
+    },
+    "w05_hash": {
+      "generated_rust": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "76ab7255b52010d0",
+        "b": "76ab7255b52010d0"
+      },
+      "generated_cargo_toml": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "7bab5c4359e9ad89",
+        "b": "7bab5c4359e9ad89"
+      },
+      "stark_lock": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "ae98b5d770d4d13c",
+        "b": "ae98b5d770d4d13c"
+      },
+      "executable": {
+        "verdict": "DIFFERS",
+        "a_bytes": 537120,
+        "b_bytes": 537824
+      }
+    },
+    "w06_multi_package": {
+      "generated_rust": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "a7e98195df3b98ca",
+        "b": "a7e98195df3b98ca"
+      },
+      "generated_cargo_toml": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "7bab5c4359e9ad89",
+        "b": "7bab5c4359e9ad89"
+      },
+      "stark_lock": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "0d2c03f1c77446de",
+        "b": "0d2c03f1c77446de"
+      },
+      "executable": {
+        "verdict": "DIFFERS",
+        "a_bytes": 492016,
+        "b_bytes": 492400
+      }
+    },
+    "w07_drop_ownership": {
+      "generated_rust": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "082e516665dfa4fb",
+        "b": "082e516665dfa4fb"
+      },
+      "generated_cargo_toml": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "7bab5c4359e9ad89",
+        "b": "7bab5c4359e9ad89"
+      },
+      "stark_lock": {
+        "verdict": "BYTE-IDENTICAL",
+        "a": "ae98b5d770d4d13c",
+        "b": "ae98b5d770d4d13c"
+      },
+      "executable": {
+        "verdict": "DIFFERS",
+        "a_bytes": 503296,
+        "b_bytes": 503872
+      }
+    }
+  }
+}
