@@ -17,8 +17,8 @@ stark — package manager and builder for the STARK Core v1 language
 
 Usage:
   stark check                   Check the current package and dependencies.
-  stark build [--release] [--target <triple>] [--no-build-cache] [--locked]
-              [--offline] [--keep-generated] [--emit-rust] [--verbose]
+  stark build [--release] [--target <triple>] [--no-build-cache] [--no-mir-opt]
+              [--locked] [--offline] [--keep-generated] [--emit-rust] [--verbose]
                                  Compile a native executable. Debug by default;
                                  --release builds the optimised profile with the
                                  same STARK-observable semantics. --target names
@@ -26,6 +26,9 @@ Usage:
                                  yet supported, and is refused with its reason.
                                  --no-build-cache deletes the generated crate
                                  afterwards, which is the qualification path.
+                                 --no-mir-opt compiles MIR exactly as lowered, so
+                                 a suspected optimiser defect can be bisected
+                                 against the unoptimised program.
   stark cache status | clean     Report or clear the bounded build cache. It
                                  reuses whole content-addressed generated crates
                                  and their Cargo artefacts; it is NOT fine-grained
@@ -264,6 +267,7 @@ fn cmd_build(args: &[String]) -> ExitCode {
         match arg.as_str() {
             "--release" => options.release = true,
             "--no-build-cache" => options.no_build_cache = true,
+            "--no-mir-opt" => options.no_mir_opt = true,
             "--target" => pending_target = true,
             a if a.starts_with("--target=") => {
                 options.target = Some(a["--target=".len()..].to_string());
@@ -307,6 +311,21 @@ fn cmd_build(args: &[String]) -> ExitCode {
                 println!("[stark build] package: {}", result.package_name);
                 println!("[stark build] analysis: complete");
                 println!("[stark build] MIR bodies: {}", result.mir_bodies);
+                match &result.mir_opt {
+                    Some(stats) => println!(
+                        "[stark build] MIR optimisation: {} changes ({} rvalues, {} checked \
+                         folded, {} checked proven trapping, {} branches, {} constants, {} dead \
+                         blocks)",
+                        stats.total(),
+                        stats.rvalues_folded,
+                        stats.checked_folded,
+                        stats.checked_trapped,
+                        stats.branches_folded,
+                        stats.constants_propagated,
+                        stats.blocks_removed
+                    ),
+                    None => println!("[stark build] MIR optimisation: disabled (--no-mir-opt)"),
+                }
                 println!("[stark build] MIR verification: complete");
                 println!(
                     "[stark build] rustc: {} ({})",

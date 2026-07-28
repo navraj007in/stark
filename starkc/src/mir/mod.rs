@@ -18,6 +18,7 @@
 pub mod drop_plan;
 pub mod interp;
 pub mod lower;
+pub mod opt;
 pub mod verify;
 
 use crate::source::{SourceFile, Span};

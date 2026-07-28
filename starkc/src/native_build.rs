@@ -28,6 +28,13 @@ pub struct BuildCommandOptions {
     /// before the cache existed. This is the qualification path — a run that must not benefit from,
     /// or be influenced by, anything a previous build left behind.
     pub no_build_cache: bool,
+    /// WP-C7.4 `--no-mir-opt`: lower to MIR and hand it to the backend exactly as lowered.
+    ///
+    /// The baseline optimisations are on by default because they are required to be observationally
+    /// transparent — if one is not, that is a defect to fix, not a reason to keep the pass off. The
+    /// flag exists so a divergence can be BISECTED against unoptimised MIR, which Gate C7 makes the
+    /// higher authority, without rebuilding the compiler.
+    pub no_mir_opt: bool,
 }
 
 impl BuildCommandOptions {
@@ -56,6 +63,8 @@ pub struct BuildCommandResult {
     pub toolchain: ToolchainInfo,
     /// WP-C7.3: what the post-build LRU sweep removed, or `None` when the cache was disabled.
     pub cache_eviction: Option<crate::build_cache::EvictionReport>,
+    /// WP-C7.4: what the MIR optimiser changed, or `None` when `--no-mir-opt` was passed.
+    pub mir_opt: Option<crate::mir::opt::OptStats>,
 }
 
 #[derive(Clone, Debug)]
@@ -141,9 +150,14 @@ pub fn build_current_package(
     let tables = analysis.type_tables.as_ref().ok_or_else(|| {
         BuildCommandError::Lowering("successful analysis did not produce type tables".into())
     })?;
-    let mir = lower_program(hir, tables, analysis.root_file.clone())
+    let mut mir = lower_program(hir, tables, analysis.root_file.clone())
         .map_err(|error| BuildCommandError::Lowering(error.what))?;
     let mir_bodies = mir.bodies.len();
+    // WP-C7.4. Optimise BEFORE verifying, deliberately: the verifier then checks the program that
+    // is actually compiled and executed, rather than a form the backend never sees. An optimiser
+    // that produced ill-formed MIR would otherwise be caught only by whatever the backend happened
+    // to notice downstream.
+    let mir_opt = (!options.no_mir_opt).then(|| crate::mir::opt::optimise(&mut mir));
     let verified = verify_program(&mir).map_err(|errors| {
         BuildCommandError::MirVerification(
             errors
@@ -240,6 +254,7 @@ pub fn build_current_package(
         mir_bodies,
         toolchain,
         cache_eviction,
+        mir_opt,
     })
 }
 
