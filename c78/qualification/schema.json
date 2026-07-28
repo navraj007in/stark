@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "required_platforms": ["linux-x64", "macos-arm64", "windows-x64"],
+  "allowed_capability_states": ["pending", "implemented", "qualified", "unsupported"],
+  "provider_abi_version": "0.1",
+  "mir_runtime_surface": "0.1-A10"
+}

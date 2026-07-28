@@ -1,0 +1,18 @@
+version = 1
+
+[stark_time]
+provider_metadata = "implemented"
+native_e2e = "pending"
+
+[stark_env]
+provider_metadata = "implemented"
+native_e2e = "pending"
+
+[stark_file]
+provider_metadata = "implemented"
+native_e2e = "pending"
+
+[stark_net]
+provider_metadata = "implemented"
+loopback_provider = "implemented"
+native_e2e = "pending"

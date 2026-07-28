@@ -1,0 +1,13 @@
+[package]
+name = "stark-net-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native blocking TCP provider for STARK Native Provider ABI v0.1"
+license = "MIT"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+starkc = { path = "../../starkc" }
+stark-runtime = { path = "../../starkc/stark-runtime" }

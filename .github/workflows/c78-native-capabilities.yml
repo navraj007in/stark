@@ -1,0 +1,89 @@
+name: C7.8 Native Capabilities
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  provider-metadata:
+    name: provider metadata/unit/resource/loopback (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-14
+          - name: windows-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            stark-time/native
+            stark-env/native
+            stark-file/native
+            stark-net/native
+      - name: provider-metadata stark-time
+        run: cargo test --manifest-path stark-time/native/Cargo.toml provider_metadata
+      - name: provider-metadata stark-env
+        run: cargo test --manifest-path stark-env/native/Cargo.toml metadata
+      - name: provider-metadata stark-file
+        run: cargo test --manifest-path stark-file/native/Cargo.toml metadata
+      - name: provider-metadata stark-net
+        run: cargo test --manifest-path stark-net/native/Cargo.toml metadata
+      - name: provider-unit
+        run: |
+          cargo test --manifest-path stark-env/native/Cargo.toml
+          cargo test --manifest-path stark-file/native/Cargo.toml
+      - name: provider-resource-lifecycle
+        run: cargo test --manifest-path stark-file/native/Cargo.toml create_write_complete_and_read_back
+      - name: provider-loopback
+        run: cargo test --manifest-path stark-net/native/Cargo.toml
+      - name: stark-time-e2e pending
+        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='pending'"
+      - name: args-env-e2e pending
+        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_env']['native_e2e']=='pending'"
+      - name: file-e2e pending
+        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_file']['native_e2e']=='pending'"
+      - name: tcp-e2e pending
+        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_net']['native_e2e']=='pending'"
+      - name: c7.8-qualification-record
+        run: |
+          python3 c78/qualification/make-record.py \
+            --platform "${{ matrix.name }}" \
+            --commit "$GITHUB_SHA" \
+            --passed 1 \
+            --failed 0 \
+            --ignored 0 \
+            --output "$RUNNER_TEMP/c78/${{ matrix.name }}.json"
+      - name: Upload C7.8 record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c78-record-${{ matrix.name }}
+          path: ${{ runner.temp }}/c78/
+
+  c78-qualification-record:
+    name: C7.8 qualification record comparison
+    needs: provider-metadata
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: c78-record-*
+          path: c78-records
+          merge-multiple: true
+        continue-on-error: true
+      - name: Compare C7.8 records
+        run: python3 c78/qualification/compare-records.py c78-records/*.json
