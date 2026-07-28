@@ -36,7 +36,6 @@
 //! without the baseline moving — so the number can only go up, and it cannot go up silently.
 
 mod support;
-use support::differential::front_end;
 
 /// (impl block, method, program body). `None` = no call could be constructed; recorded, not skipped.
 fn surface() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
