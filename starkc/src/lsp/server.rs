@@ -6,7 +6,7 @@ use crate::package::{find_package_root, PackageGraph};
 use crate::source::{SourceFile, Span};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::protocol::*;
@@ -406,7 +406,15 @@ impl Server {
                 .source_map
                 .get(source)
                 .expect("published diagnostic source must exist");
-            let uri = source_uri(&record.file.name);
+            // The document the client asked about is republished under the *client's own* URI.
+            // A round trip through the source map would re-render it from the canonicalised
+            // disk path, and a workspace reached through a symlink would then get its
+            // diagnostics on a URI no open editor holds.
+            let uri = if source == root_source {
+                root_uri.to_string()
+            } else {
+                source_uri(&record.file)
+            };
             let version = (source == root_source).then_some(root_version);
             let values = diagnostics
                 .into_iter()
@@ -700,7 +708,7 @@ impl Server {
                 JsonValue::String(new_name.to_string()),
             );
             changes
-                .entry(source_uri(&record.file.name))
+                .entry(source_uri(&record.file))
                 .or_default()
                 .push(JsonValue::Object(text_edit));
         }
@@ -736,7 +744,10 @@ impl Server {
                 error: None,
             };
         };
-        let Some(source) = cached.analysis.source_map.id_for_name(uri) else {
+        // `source_id_for_uri`, not `id_for_name`: in a package build the source-map name is the
+        // package-relative path, so a URI never matches it by name — it has to fall through to
+        // the disk-path comparison, exactly as every position-based handler does.
+        let Some(source) = source_id_for_uri(&cached.analysis, uri) else {
             return Response {
                 id,
                 result: Some(JsonValue::Array(Vec::new())),
@@ -804,7 +815,8 @@ impl Server {
                 error: None,
             };
         };
-        let Some(source) = cached.analysis.source_map.id_for_name(uri) else {
+        // See `handle_document_symbol`: a package build's source-map names are package-relative.
+        let Some(source) = source_id_for_uri(&cached.analysis, uri) else {
             return Response {
                 id,
                 result: Some(semantic_tokens_result(Vec::new())),
@@ -992,7 +1004,7 @@ fn lsp_diagnostic(
                 let mut location = HashMap::new();
                 location.insert(
                     "uri".to_string(),
-                    JsonValue::String(source_uri(&source.file.name)),
+                    JsonValue::String(source_uri(&source.file)),
                 );
                 location.insert(
                     "range".to_string(),
@@ -1100,7 +1112,7 @@ fn lsp_location(
     let mut object = HashMap::new();
     object.insert(
         "uri".to_string(),
-        JsonValue::String(source_uri(&record.file.name)),
+        JsonValue::String(source_uri(&record.file)),
     );
     object.insert("range".to_string(), lsp_range(&record.file, location.span));
     Some(JsonValue::Object(object))
@@ -1322,12 +1334,73 @@ fn is_identifier_continue(ch: char) -> bool {
     ch == '_' || ch.is_alphanumeric()
 }
 
-fn source_uri(name: &str) -> String {
-    if name.contains("://") {
-        name.to_string()
-    } else {
-        format!("file://{name}")
+/// The URI an editor can open for a source file.
+///
+/// `SourceFile::name` is identity-bearing, not a location: for a package build it is
+/// `<package>/<path within the package>` and deliberately never an absolute checkout path
+/// (see `source.rs`). Formatting that name as `file://{name}` makes the *package name* the
+/// URI authority — `file://my-pkg/src/main.stark` — which no client can resolve, so
+/// diagnostics land on a phantom document and every `Location` is unopenable.
+/// `disk_path` is the field `source.rs` designates for pointing a human at a file, so
+/// prefer it; the name is only a usable location for a single-file compile, where the
+/// caller passed a path.
+fn source_uri(file: &SourceFile) -> String {
+    if let Some(path) = &file.disk_path {
+        return path_to_file_uri(path);
     }
+    if file.name.contains("://") {
+        return file.name.clone();
+    }
+    path_to_file_uri(Path::new(&file.name))
+}
+
+/// Absolutises `path` (relative names come from single-file compiles, where they are relative
+/// to the server's working directory) and renders it as a `file://` URI.
+fn path_to_file_uri(path: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|dir| dir.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    format!(
+        "file://{}",
+        percent_encode_uri_path(&absolute.to_string_lossy())
+    )
+}
+
+/// Percent-encodes the characters that are not legal unescaped in a URI path. The inverse of
+/// `percent_decode_uri_path`, which the server applies to every client-supplied URI.
+fn percent_encode_uri_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b';'
+            | b'='
+            | b':'
+            | b'@' => encoded.push(byte as char),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 fn file_uri_to_path(uri: &str) -> Option<PathBuf> {
@@ -1508,6 +1581,144 @@ mod tests {
                     && message.contains("\"code\":\"E0200\"")
             }),
             "expected package overlay diagnostic publication, got {messages:?}"
+        );
+    }
+
+    /// A package build names its sources `<package>/<path in package>` — an identity token, not
+    /// a location. Every URI the server hands back must still be one the client can open, and
+    /// every source lookup must resolve a client URI that will never match those names. Both
+    /// failed silently before: diagnostics were published to `file://app/src/main.stark`, whose
+    /// *authority* is the package name, and document symbols and semantic tokens came back empty.
+    #[test]
+    fn package_build_returns_openable_uris_and_whole_file_results() {
+        let package_dir = std::env::temp_dir().join(format!(
+            "stark-lsp-package-uri-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = package_dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            package_dir.join("starkpkg.json"),
+            r#"{"name":"app","version":"0.1.0","entry":"src/main.stark"}"#,
+        )
+        .unwrap();
+        let main_path = src_dir.join("main.stark");
+        let source = "fn helper() -> Int32 { 1 }\nfn main() { helper(); }\n";
+        std::fs::write(&main_path, source).unwrap();
+        let uri = format!("file://{}", main_path.to_string_lossy());
+
+        let mut server = Server::new();
+        let mut output = Vec::new();
+        server
+            .run(
+                std::io::Cursor::new(
+                    format!(
+                        "{}{}{}",
+                        frame(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#),
+                        frame(&did_open(&uri, 1, source)),
+                        frame(r#"{"jsonrpc":"2.0","id":2,"method":"shutdown","params":{}}"#),
+                    )
+                    .into_bytes(),
+                ),
+                &mut output,
+            )
+            .unwrap();
+        let published = decode_framed_output(&output)
+            .into_iter()
+            .find(|message| message.contains("textDocument/publishDiagnostics"))
+            .expect("package document must publish diagnostics");
+        assert!(
+            published.contains(&format!("\"uri\":\"{uri}\"")),
+            "diagnostics must be published under the client's own URI, got {published}"
+        );
+
+        let cached_uri = uri.clone();
+        let mut server = Server::new();
+        server
+            .state
+            .open_document(cached_uri.clone(), 1, source.to_string());
+        server.compile_document(&cached_uri);
+        assert!(
+            server.state.compilation_cache[&cached_uri]
+                .analysis
+                .package_graph
+                .is_some(),
+            "test must exercise package analysis, not single-file analysis"
+        );
+
+        let document = JsonValue::Object(HashMap::from([(
+            "textDocument".to_string(),
+            JsonValue::Object(HashMap::from([(
+                "uri".to_string(),
+                JsonValue::String(cached_uri.clone()),
+            )])),
+        )]));
+
+        let symbols = server.handle_document_symbol(3, &document).result.unwrap();
+        let JsonValue::Array(symbols) = symbols else {
+            panic!("documentSymbol must return an array");
+        };
+        assert!(
+            symbols.len() == 2,
+            "package document symbols must cover both functions, got {symbols:?}"
+        );
+        for symbol in &symbols {
+            let location_uri = symbol
+                .get("location")
+                .and_then(|location| location.get("uri"))
+                .and_then(JsonValue::as_str)
+                .expect("symbol must carry a location URI");
+            assert!(
+                location_uri.starts_with("file:///"),
+                "symbol URI must be an absolute file URI, got {location_uri}"
+            );
+        }
+
+        let tokens = server
+            .handle_semantic_tokens_full(4, &document)
+            .result
+            .unwrap();
+        let data = tokens
+            .get("data")
+            .and_then(|data| match data {
+                JsonValue::Array(values) => Some(values.len()),
+                _ => None,
+            })
+            .expect("semantic tokens must return a data array");
+        assert!(data > 0, "package document must produce semantic tokens");
+
+        // `helper` in the call on line 1 — definition resolves back to line 0.
+        let call_site = JsonValue::Object(HashMap::from([
+            (
+                "textDocument".to_string(),
+                JsonValue::Object(HashMap::from([(
+                    "uri".to_string(),
+                    JsonValue::String(cached_uri.clone()),
+                )])),
+            ),
+            (
+                "position".to_string(),
+                JsonValue::Object(HashMap::from([
+                    ("line".to_string(), JsonValue::Number(1.0)),
+                    ("character".to_string(), JsonValue::Number(12.0)),
+                ])),
+            ),
+        ]));
+        let definition = server.handle_definition(5, &call_site).result.unwrap();
+        let definition_uri = definition
+            .get("uri")
+            .and_then(JsonValue::as_str)
+            .expect("definition must resolve inside a package");
+        assert!(
+            definition_uri.starts_with("file:///")
+                && std::path::Path::new(&percent_decode_uri_path(
+                    definition_uri.strip_prefix("file://").unwrap()
+                ))
+                .exists(),
+            "definition URI must name a file that exists on disk, got {definition_uri}"
         );
     }
 

@@ -22,7 +22,7 @@ Usage:
                               --extension <name> enables an optional language
                               extension (Gate 4+): tensor.
   starkc lex <file.stark|file.st>  Dump the token stream (debugging aid)
-  starkc lsp                  Start LSP server on stdio (for editor integration)
+  starkc lsp [--stdio]        Start LSP server on stdio (for editor integration)
   starkc import <model.onnx> --out <model.stark> [--force]
                               Generate a deterministic STARK model declaration.
   starkc verify <model.onnx> --declaration <model.stark> [--model <Name>] [--message-format <text|json>]
@@ -191,7 +191,10 @@ fn main() -> ExitCode {
             cmd_run(&p, options)
         }
         Some((cmd, [path])) if cmd == "lex" => cmd_lex(path),
-        Some((cmd, [])) if cmd == "lsp" => cmd_lsp(),
+        // `--stdio` is the conventional transport flag every LSP client passes
+        // (vscode-languageclient appends it for `TransportKind.stdio`). stdio is
+        // the only transport, so accept and ignore it rather than exiting 2.
+        Some((cmd, rest)) if cmd == "lsp" && rest.iter().all(|arg| arg == "--stdio") => cmd_lsp(),
         Some((flag, [])) if flag == "--help" || flag == "-h" => {
             print!("{USAGE}");
             ExitCode::SUCCESS
