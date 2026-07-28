@@ -47,6 +47,13 @@ Adjust configurations in your User or Workspace `settings.json`:
 - `stark.testOnSave`: Runs `stark test` in the current file's package on save, reporting results in the **STARK Test** output channel (default: `false`).
 - `stark.lspLogLevel`: Log level for the language server output channel — `off`/`error`/`info`/`verbose` (default: `"info"`).
 
+### 6. File Icon Theme
+A **STARK Icons** file icon theme gives `.stark` files their own icon. Enable it with **Preferences: File Icon Theme** in the Command Palette (or `"workbench.iconTheme": "stark-icons"`).
+
+VS Code has no way to add a single icon to whatever theme you already use — selecting a file icon theme replaces the entire icon set. So **STARK Icons** is the built-in **Seti** theme (VS Code's default) with the one `.stark` entry added: every other file keeps the icon it already had. If you use a different icon theme, switching to this one will move you onto Seti for everything else.
+
+Regenerate it against a newer VS Code with `python3 tools/build-icon-theme.py`; only `icons/stark.svg` is hand-authored.
+
 ---
 
 ## Workspace Trust & Security

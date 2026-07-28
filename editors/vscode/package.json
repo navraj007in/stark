@@ -65,6 +65,13 @@
         "path": "./syntaxes/stark.tmLanguage.json"
       }
     ],
+    "iconThemes": [
+      {
+        "id": "stark-icons",
+        "label": "STARK Icons",
+        "path": "./icons/stark-icon-theme.json"
+      }
+    ],
     "snippets": [
       {
         "language": "stark",
