@@ -151,6 +151,29 @@ impl ProviderStatus {
     }
 }
 
+// ------------------------------------------------- contract-violation channel --
+
+/// ABI §12's **middle row**: the provider violated this contract by returning a status its package
+/// never declared.
+///
+/// This is a STARK trap, not a recoverable error. It must never become `Result::Err`, because a
+/// contract violation means the runtime's invariants can no longer be trusted — and it must never
+/// be reached by a generic `_ => SomeError::Other` fallback, which is the exact collapse the
+/// three-channel separation exists to prevent (Packet 1 §1.2).
+///
+/// The failure mode this defends is quiet: a provider and its package drift apart while remaining
+/// *physically* ABI-compatible, so nothing crashes and the meaning silently changes.
+///
+/// The diagnostic names its channel explicitly and carries no path data, per the Packet 3
+/// diagnostic contract.
+pub fn contract_violation_unknown_status(provider: &str, function: &str, status: u32) -> ! {
+    crate::output::flush_stdout();
+    eprintln!("error: provider contract violation: undeclared status");
+    eprintln!("  channel=contract-violation");
+    eprintln!("  provider={provider} function={function} status={status}");
+    std::process::exit(101);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,27 +235,4 @@ mod tests {
         // property, and it only holds while the type stays non-`Copy`.
         assert_eq!(raw.id, 1);
     }
-}
-
-// ------------------------------------------------- contract-violation channel --
-
-/// ABI §12's **middle row**: the provider violated this contract by returning a status its package
-/// never declared.
-///
-/// This is a STARK trap, not a recoverable error. It must never become `Result::Err`, because a
-/// contract violation means the runtime's invariants can no longer be trusted — and it must never
-/// be reached by a generic `_ => SomeError::Other` fallback, which is the exact collapse the
-/// three-channel separation exists to prevent (Packet 1 §1.2).
-///
-/// The failure mode this defends is quiet: a provider and its package drift apart while remaining
-/// *physically* ABI-compatible, so nothing crashes and the meaning silently changes.
-///
-/// The diagnostic names its channel explicitly and carries no path data, per the Packet 3
-/// diagnostic contract.
-pub fn contract_violation_unknown_status(provider: &str, function: &str, status: u32) -> ! {
-    crate::output::flush_stdout();
-    eprintln!("error: provider contract violation: undeclared status");
-    eprintln!("  channel=contract-violation");
-    eprintln!("  provider={provider} function={function} status={status}");
-    std::process::exit(101);
 }
