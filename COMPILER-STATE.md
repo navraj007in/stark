@@ -1,4 +1,41 @@
 # STARK Compiler STATE
+
+## Gate C6 — CLOSURE (CD-183)
+
+**Gate C6 closes with a qualified native executable subset. Of 87 audited normative
+standard-library methods, 59 have verified executable invocations and 28 are explicitly refused or
+excluded; none are unclassified. The audit establishes invocation support, not exhaustive validity
+across every usage shape. Usage interactions are qualified through the differential corpus and
+focused lifecycle regressions, including borrowed-iterator cleanup introduced by DEV-119. No claim
+of full Core or standard-library native conformance is made.**
+
+### The audit's limit, stated because the number reads stronger than it is
+
+`59 of 87` means: each of those 59 has **at least one valid invocation** that passes the front end,
+lowers to MIR, and verifies. It does **not** mean every valid use of them works. DEV-119 is the
+demonstration — `HashMap::keys`, `HashSet::iter` and `Vec::iter` all passed the invocation audit
+while an ordinary post-loop mutation failed native compilation. Fixed (CD-182), permanently covered
+by `dev119_iterator_lifetime.rs`, and generalised as the risk-based follow-on
+`WP-C7-Usage-Shape-Qualification`.
+
+### Exclusions and carried work, all explicit
+
+| | |
+| --- | --- |
+| `File` (5) | EXCLUDED — needs a host/provider contract, filesystem error semantics, and a way to compare environmental observations across engines. Deferred to the I/O gate. |
+| `Random` (4) | EXCLUDED pending a normative PRNG algorithm and cross-engine sequence contract. **Not** excluded as "nondeterministic": a seeded generator is reproducible. |
+| `String` extended (10) | CARRIED → `WP-C7-String-Surface` |
+| `HashMap` remainder (4) | CARRIED → `WP-C7-HashMap-Completion` (`with_capacity`, `get_mut`, `values`, `iter`) |
+| `Vec` remainder (3) | CARRIED → `WP-C7-Vec-Completion` |
+| DEV-118 | CARRIED — the `T: Hash + Eq` bound is unenforced for both collections. An enforcement omission all three engines share, not a differential defect. Owned by WP-C6.3. |
+
+### What C6 actually established
+
+Native execution preserves Core ownership, Drop, failure and library semantics across HIR, MIR and
+native debug, on two Tier-1 targets, at one commit, with identical per-case observation hashes —
+rather than merely running scalar examples. Seven defects were found and fixed in the process
+(DEV-111 … DEV-117, DEV-119), every one by closing a coverage gap rather than by inspection.
+
 Updated: 2026-07-25 — **Gate C5 CLOSED (CD-077). Gate C6 OPEN: entry plan APPROVED (CD-079),
 WP-C6.0 contract freeze CLOSED (CD-078), **WP-C6.1a–e (ownership and Drop parity, Track A) CLOSED
 (CD-080…CD-084) and **WP-C6.1f CLOSED (CD-099)** (general reference storage — the C5 deferral the C6

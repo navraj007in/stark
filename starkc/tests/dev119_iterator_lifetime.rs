@@ -47,14 +47,30 @@ fn mutation_after_the_loop_is_allowed(tag: &str, source: &str, expected: &str) {
     agree_completing_with_stdout(tag, source, expected);
 }
 
-/// The borrow is still live, so the mutation must be REFUSED — at the front end, before any engine.
+/// The borrow is still live, so the mutation must be REFUSED — and refused for the RIGHT REASON.
+///
+/// The first version of this helper accepted any parse, resolve or type error as proof. That is too
+/// weak to be evidence: a source with a typo would have "passed" while proving nothing about borrow
+/// checking, and these three cases are the entire safety argument for the DEV-119 fix. So the shape
+/// is pinned end to end — the program must PARSE and RESOLVE cleanly, and then be rejected by the
+/// borrow checker specifically, with `E0101`.
 fn mutation_while_borrowed_is_refused(tag: &str, source: &str) {
     let file = std::sync::Arc::new(starkc::source::SourceFile::new(
         format!("dev119_{tag}.stark"),
         source.to_string(),
     ));
     let (ast, parse_diags) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
+    assert!(
+        parse_diags.is_empty(),
+        "{tag}: the source must PARSE — a parse error would make this test pass for the wrong \
+         reason: {parse_diags:?}"
+    );
     let (hir, resolve_diags) = starkc::resolve::resolve(&ast, file.clone());
+    assert!(
+        resolve_diags.is_empty(),
+        "{tag}: the source must RESOLVE — an unresolved name would make this test pass for the \
+         wrong reason: {resolve_diags:?}"
+    );
     let checked = starkc::typecheck::analyze(&hir, file.clone());
     let errors: Vec<_> = checked
         .diagnostics
@@ -62,9 +78,18 @@ fn mutation_while_borrowed_is_refused(tag: &str, source: &str) {
         .filter(|d| d.severity == starkc::diag::Severity::Error)
         .collect();
     assert!(
-        !parse_diags.is_empty() || !resolve_diags.is_empty() || !errors.is_empty(),
+        !errors.is_empty(),
         "{tag}: mutating a collection while it is still borrowed was ACCEPTED — the DEV-119 fix \
          must shorten the CURSOR's lifetime, never relax the borrow rules"
+    );
+    assert!(
+        errors.iter().any(|d| d.code.as_deref() == Some("E0101")),
+        "{tag}: rejected, but NOT by the borrow checker. The expected diagnostic is E0101 \
+         (a conflict with an active borrow); got: {:?}",
+        errors
+            .iter()
+            .map(|d| (d.code.clone(), d.message.clone()))
+            .collect::<Vec<_>>()
     );
 }
 

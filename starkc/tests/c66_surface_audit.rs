@@ -16,6 +16,19 @@
 //! no call could be constructed. The last category is reported rather than skipped — an unprobed
 //! method is not a passing one.
 //!
+//! **What this audit does and does not establish (CD-183).** It proves each method has AT LEAST
+//! ONE valid invocation that passes the front end, lowers to MIR and verifies. It is an
+//! INVOCATION-surface audit, not an exhaustive usage-shape proof. A method counted executable here
+//! can still fail in a valid usage the probe does not exercise.
+//!
+//! DEV-119 is the demonstration, and it is why this paragraph exists rather than being assumed:
+//! `HashMap::keys`, `HashSet::iter` and `Vec::iter` all passed this audit, while an ordinary
+//! post-loop mutation failed native compilation because the cursor's borrow outlived its loop.
+//! Three methods counted executable, one usage shape broken. Fixed in CD-182 and covered
+//! permanently by `dev119_iterator_lifetime.rs`; usage interactions more broadly are covered
+//! selectively by the differential corpus and focused lifecycle regressions, and systematically by
+//! the risk-based follow-on `WP-C7-Usage-Shape-Qualification`.
+//!
 //! **Owner decisions recorded (CD-181), so no refusal here is merely undescribed.**
 //!
 //! * **`File` (5 methods) — EXCLUDED from the C6 native executable subset.** It needs an effectful
