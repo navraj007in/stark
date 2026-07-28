@@ -2027,6 +2027,36 @@ impl<'a> Interp<'a> {
                     MirValue::Unit
                 })
             }
+            HashMapRemove => {
+                let recv = args.next();
+                let key = self.deref_key_arg(args.next())?;
+                let existing = self.find_entry(key_eq, &recv, &key)?;
+                self.mutate_vec_ref(&recv, |entries| match existing {
+                    Some(index) => {
+                        // `remove`, not `swap_remove`: the surviving entries keep their order,
+                        // which the normative first-insertion iteration rule requires.
+                        let MirValue::Aggregate(kv) = entries.remove(index) else {
+                            unreachable!("HashMap entry is not a key/value pair")
+                        };
+                        let mut kv = kv;
+                        MirValue::Enum {
+                            variant: 1,
+                            fields: vec![kv.remove(1)],
+                        }
+                    }
+                    None => MirValue::Enum {
+                        variant: 0,
+                        fields: Vec::new(),
+                    },
+                })
+            }
+            HashMapClear => {
+                let recv = args.next();
+                self.mutate_vec_ref(&recv, |entries| {
+                    entries.clear();
+                    MirValue::Unit
+                })
+            }
             HashMapKeysIterNew | HashSetIterNew => {
                 // A TRUE borrowed cursor: [map-ref, cursor] — Next indexes the live map.
                 let map_ref = args
@@ -2449,6 +2479,8 @@ fn is_map_runtime(rt: RuntimeFn) -> bool {
             | HashMapContainsKey
             | HashMapKeysIterNew
             | HashMapKeysIterNext
+            | HashMapRemove
+            | HashMapClear
             // DEV-116: the set family shares the map group because it shares the representation
             // and, crucially, the `key_eq` dispatch this group threads through every operation.
             | HashSetNew

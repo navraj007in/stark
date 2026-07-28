@@ -1436,6 +1436,25 @@ impl<'a> BodyCx<'a> {
                     None
                 }
             },
+            HashMapRemove | HashMapClear => match arg_tys.first().and_then(|o| o.as_ref()) {
+                Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
+                    MirTy::Core(crate::hir::CoreType::HashMap, args) if args.len() == 2 => {
+                        Some((args[0].clone(), args[1].clone()))
+                    }
+                    other => {
+                        self.err(
+                            "MIR-0012",
+                            bi,
+                            format!("HashMap op receiver is &{other:?}, not &mut HashMap"),
+                        );
+                        None
+                    }
+                },
+                _ => {
+                    self.err("MIR-0012", bi, "HashMap op receiver is not a reference");
+                    None
+                }
+            },
             HashMapKeysIterNext => match arg_tys.first().and_then(|o| o.as_ref()) {
                 Some(MirTy::Ref { inner, .. }) => match inner.as_ref() {
                     MirTy::Core(crate::hir::CoreType::KeysIter, args) => args
@@ -1489,6 +1508,9 @@ impl<'a> BodyCx<'a> {
             ),
             HashMapGet => (vec![map_ref(&k, &v, false), sref(&k)], opt(sref(&v))),
             HashMapLen => (vec![map_ref(&k, &v, false)], MirTy::UInt64),
+            // CD-180: `remove` yields the REMOVED VALUE, mirroring `insert`'s replaced-value shape.
+            HashMapRemove => (vec![map_ref(&k, &v, true), sref(&k)], opt(v.clone())),
+            HashMapClear => (vec![map_ref(&k, &v, true)], MirTy::Unit),
             // DEV-116. `k` is the ELEMENT type for a set; `set_ref` names the receiver so the two
             // families cannot be confused by a mis-typed argument.
             HashSetNew => (Vec::new(), set_ty(&k)),
@@ -2255,6 +2277,8 @@ fn is_map_runtime_fn(rt: RuntimeFn) -> bool {
             | HashSetClear
             | HashSetIterNew
             | HashSetIterNext
+            | HashMapRemove
+            | HashMapClear
             | HashMapInsert
             | HashMapGet
             | HashMapLen
@@ -2346,9 +2370,9 @@ fn runtime_sig(rt: RuntimeFn) -> (Vec<MirTy>, MirTy) {
             unreachable!("Vec ops resolve through vec_runtime_sig, not runtime_sig")
         }
         HashMapNew | HashMapInsert | HashMapGet | HashMapLen | HashMapIsEmpty
-        | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext | HashSetNew
-        | HashSetInsert | HashSetRemove | HashSetContains | HashSetLen | HashSetIsEmpty
-        | HashSetClear | HashSetIterNew | HashSetIterNext => {
+        | HashMapContainsKey | HashMapKeysIterNew | HashMapKeysIterNext | HashMapRemove
+        | HashMapClear | HashSetNew | HashSetInsert | HashSetRemove | HashSetContains
+        | HashSetLen | HashSetIsEmpty | HashSetClear | HashSetIterNew | HashSetIterNext => {
             unreachable!("HashMap/HashSet ops resolve through map_runtime_sig, not runtime_sig")
         }
         SliceNew | SliceNewMut | SliceLen | SliceIsEmpty => {

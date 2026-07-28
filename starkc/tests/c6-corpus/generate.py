@@ -34,7 +34,7 @@ import metamorphic as metamorphic_registry
 import templates as template_registry
 
 ROOT = pathlib.Path(__file__).resolve().parent
-CORPUS_VERSION = "1.3.0"
+CORPUS_VERSION = "1.4.0"
 GENERATOR_VERSION = (ROOT / "generator-version.txt").read_text(encoding="utf-8").strip()
 DEFAULT_SEED = "c6.5-default"
 
@@ -431,6 +431,8 @@ def build_lock() -> str:
         "# corpus_version 0.4.0 (WP-C6.5-6, 2026-07-26, CD-157): 20 metamorphic groups over ten of the",
         "# twelve §13.1 families, 40 member cases. M08/M09 transform a package graph and are absent",
         "# until §15 rather than approximated single-file. Minor.",
+        "# corpus_version 1.4.0 (2026-07-28, CD-180): `HashMap::remove`/`clear` -- the parity gap",
+        "# the WP-C6.6 audit exposed, where the MAP was less capable than the SET built from it.",
         "# corpus_version 1.3.0 (2026-07-28, CD-177): DEV-116-B -- `HashSet::iter` implemented, so",
         "# the whole admitted HashSet surface is executable across HIR, MIR and native. Iteration",
         "# order is NORMATIVE (first-insertion) and pinned directly rather than via aggregates.",
@@ -475,6 +477,8 @@ def build_lock() -> str:
         "# requires; the CD-150 CE3 adds TrapCategory::InvalidExitStatus (MIR amendment A7) and native",
         "# emission for every PROC-MAIN-001 entry signature, so the entry cases become three-engine and",
         "# the out-of-range status joins as a trap case. Trap coverage 5 of 9 -> 7 of 9. Minor.",
+        "# corpus_version 1.4.0 (2026-07-28, CD-180): `HashMap::remove`/`clear` -- the parity gap",
+        "# the WP-C6.6 audit exposed, where the MAP was less capable than the SET built from it.",
         "# corpus_version 1.3.0 (2026-07-28, CD-177): DEV-116-B -- `HashSet::iter` implemented, so",
         "# the whole admitted HashSet surface is executable across HIR, MIR and native. Iteration",
         "# order is NORMATIVE (first-insertion) and pinned directly rather than via aggregates.",

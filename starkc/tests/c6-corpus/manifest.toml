@@ -16,6 +16,19 @@
 # carry its expected category).
 
 [[case]]
+case_id = "cd180__hashmap_remove_clear"
+kind = "handwritten"
+category = "calls-dispatch"
+subcategories = ["V18"]
+sources = ["cases/handwritten/cd180__hashmap_remove_clear.stark"]
+package_graph = "single-file"
+expected_outcome = "completion"
+required_engines = ["hir", "mir", "native-debug"]
+required_targets = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"]
+normative_rules = ["STD-HASH-001"]
+expected_stdout = ["1", ""]
+
+[[case]]
 case_id = "dev116__hashset_core_api"
 kind = "handwritten"
 category = "calls-dispatch"

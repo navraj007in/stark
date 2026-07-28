@@ -474,6 +474,11 @@ pub enum RuntimeFn {
     HashMapLen,
     HashMapIsEmpty,
     HashMapContainsKey,
+    /// CD-180. Parity with `HashSet`, which reached these first: `map::remove`/`map::clear` already
+    /// existed in the runtime because the set needed them, leaving the MAP less capable than the
+    /// type built from it.
+    HashMapRemove,
+    HashMapClear,
     HashMapKeysIterNew,
     HashMapKeysIterNext,
     // --- DEV-116: HashSet. `HashSet<T>` is the map at `V = Unit`, so uniqueness is decided by the

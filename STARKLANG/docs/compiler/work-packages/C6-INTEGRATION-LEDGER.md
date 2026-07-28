@@ -404,3 +404,39 @@ than amended.
 `HashSet`. Open, non-blocking, **owned by WP-C6.3**. An enforcement omission rather than a
 differential defect; all three engines accept the same programs. Pinned by
 `dev116_hashset::dev118_the_hash_bound_is_not_enforced_for_either_collection`.
+
+## WP-C6.6 — the normative surface audit and its owner decisions (2026-07-28, CD-179…CD-181)
+
+**The enumeration Gate C6's exit criterion requires.** 87 normative stdlib methods probed
+individually; the audit is a permanent ratcheted test (`c66_surface_audit.rs`), not a one-off.
+
+| | |
+| --- | --- |
+| Executable (lower + verify) | **59** |
+| Refused by MIR, explicitly enumerated | **28** |
+| Unknown | **0** |
+
+**CD-180 — `HashMap::remove` / `clear` implemented.** The clearest accidental gap the audit found:
+both runtime operations already existed, added when `HashSet` needed them, leaving the map less
+capable than the type built from it. Three-engine agreement, corpus 1.4.0.
+
+**CD-181 — owner decisions on the two host-facing types.** Neither is left as "plausibly deliberate":
+
+- **`File` (5) — EXCLUDED from the C6 native executable subset.** Requires an effectful
+  host/provider contract, filesystem error semantics, and a way to compare or control environmental
+  observations across engines. Deferred to the I/O/runtime package gate.
+- **`Random` (4) — EXCLUDED pending a normative PRNG algorithm and a cross-engine sequence
+  contract.** Deliberately NOT justified as nondeterminism: a seeded generator is perfectly
+  reproducible. Undecided are which algorithm is normative, whether identical seeds must produce
+  identical sequences, whether the implementation is language- or provider-defined, and how secure
+  randomness is separated from deterministic PRNG.
+
+**Carried method-level work** (bounded, not blocking): `WP-C7-String-Surface` (10),
+`WP-C7-HashMap-Completion` (4 — `with_capacity`, `get_mut`, `values`, `iter`),
+`WP-C7-Vec-Completion` (3), `WP-IO-File` (5), `WP-Random` (4).
+
+**DEV-119 — iterating a `HashMap`'s keys then mutating it fails the NATIVE build (E0502).**
+Pre-existing and confirmed so: the same failure reproduces using only operations that predate
+CD-180. The generated iterator's slot drop outlives its loop, holding the shared borrow past the
+mutation — the WP-C6.1g-c dispatch-loop borrow-linearisation family. HIR and MIR both accept the
+program. Open, carried, not introduced by this work.

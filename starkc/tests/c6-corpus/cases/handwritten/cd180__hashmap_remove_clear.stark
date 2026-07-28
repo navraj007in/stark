@@ -1,0 +1,44 @@
+// CD-180. `HashMap::remove` and `HashMap::clear` — the parity gap the WP-C6.6 audit exposed.
+//
+// Both runtime operations already existed (`map::remove`, `map::clear`), added when `HashSet`
+// needed them, which had left the MAP less capable than the type built from it.
+//
+// `remove` returns the removed VALUE as `Option<V>`, mirroring `insert`'s replaced-value shape, and
+// removal preserves the relative order of the survivors — 06-Standard-Library's iteration rule says
+// a removed-then-reinserted key goes to the END as a new insertion, which a swap-remove would break
+// for keys nobody touched.
+fn main() {
+    let mut m: HashMap<Int32, Int32> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+
+    // Present: the value comes back and the length drops.
+    let removed: Option<Int32> = m.remove(&2);
+    assert_eq(removed.unwrap(), 20);
+    assert_eq(m.len(), 2u64);
+    assert(!m.contains_key(&2));
+    assert(m.contains_key(&1));
+    assert(m.contains_key(&3));
+
+    // Absent: `None`, and nothing changes.
+    let missing: Option<Int32> = m.remove(&99);
+    assert(missing.is_none());
+    assert_eq(m.len(), 2u64);
+
+    // Re-inserting a removed key is a NEW insertion.
+    m.insert(2, 22);
+    assert_eq(m.len(), 3u64);
+    let again: Option<Int32> = m.remove(&2);
+    assert_eq(again.unwrap(), 22);
+
+    m.clear();
+    assert(m.is_empty());
+    assert_eq(m.len(), 0u64);
+    assert(!m.contains_key(&1));
+
+    // Usable after clearing.
+    m.insert(7, 70);
+    assert_eq(m.len(), 1u64);
+    println(m.len());
+}

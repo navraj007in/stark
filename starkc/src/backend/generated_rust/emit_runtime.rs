@@ -204,6 +204,16 @@ pub fn emit_runtime_call(
             arg(1),
             eq()?
         ),
+        HashMapRemove => wrap_option(
+            &format!(
+                "stark_runtime::map::remove({}, {}, {})",
+                arg(0),
+                arg(1),
+                eq()?
+            ),
+            dest_ty,
+        )?,
+        HashMapClear => format!("stark_runtime::map::clear({})", arg(0)),
         HashMapLen => format!("stark_runtime::map::len({})", arg(0)),
         HashMapIsEmpty => format!("stark_runtime::map::is_empty({})", arg(0)),
         // DEV-116: HashSet. The runtime models it as `StarkMap<T, ()>`, so `eq()` is the SAME

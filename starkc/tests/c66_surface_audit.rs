@@ -16,6 +16,20 @@
 //! no call could be constructed. The last category is reported rather than skipped — an unprobed
 //! method is not a passing one.
 //!
+//! **Owner decisions recorded (CD-181), so no refusal here is merely undescribed.**
+//!
+//! * **`File` (5 methods) — EXCLUDED from the C6 native executable subset.** It needs an effectful
+//!   host/provider contract, filesystem error semantics, and a way to compare or control
+//!   environmental observations across engines. Deferred to the I/O/runtime package gate.
+//! * **`Random` (4 methods) — EXCLUDED pending a normative PRNG algorithm and a cross-engine
+//!   sequence contract.** Explicitly NOT justified as "nondeterminism": a seeded generator is
+//!   perfectly reproducible. What is undecided is which algorithm is normative, whether identical
+//!   seeds must yield identical sequences, whether the implementation is language- or
+//!   provider-defined, and how secure randomness is separated from deterministic PRNG.
+//! * The remaining refusals are CARRIED method-level work, not blockers:
+//!   `WP-C7-String-Surface` (10), `WP-C7-Vec-Completion` (3), `WP-C7-HashMap-Completion` (4 —
+//!   `with_capacity`, `get_mut`, `values`, `iter`; `remove`/`clear` landed in CD-180).
+//!
 //! **This test does not fail on a refusal.** A refusal is a fact to be recorded and bounded, not a
 //! regression: several are deliberate (`File`/`Random` are IO and nondeterminism, outside the
 //! native subset). It fails when the EXECUTABLE count drops, or when the surface changes shape
@@ -111,7 +125,7 @@ fn surface() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
     ("File","open",Some("let f: Result<File, IOError> = File::open(\"p\");")),
     ("File","create",Some("let f: Result<File, IOError> = File::create(\"p\");")),
     ("File","read_to_string",Some("let mut f: File = File::open(\"p\").unwrap(); let a: Result<String, IOError> = f.read_to_string();")),
-    ("File","write",None),
+    ("File","write",Some("let a: [UInt8; 1] = [1u8]; let d = &a[0..1]; let mut f: File = File::create(\"p\").unwrap(); let r: Result<UInt64, IOError> = f.write(d);")),
     ("File","write_str",Some("let mut f: File = File::create(\"p\").unwrap(); let a: Result<UInt64, IOError> = f.write_str(\"x\");")),
     ("File","close",Some("let f: File = File::open(\"p\").unwrap(); let a: Result<Unit, IOError> = f.close();")),
     ]
@@ -185,7 +199,7 @@ fn audit() {
 
     // The ratchet. `EXECUTABLE` may only rise; `TOTAL` pins the surface so a probe silently
     // disappearing cannot make the ratio look better.
-    const EXECUTABLE: usize = 57;
+    const EXECUTABLE: usize = 59;
     const TOTAL: usize = 87;
     assert_eq!(
         total, TOTAL,

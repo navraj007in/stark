@@ -7173,6 +7173,10 @@ impl<'a> FnLowerer<'a> {
             "len" => (RuntimeFn::HashMapLen, false),
             "is_empty" => (RuntimeFn::HashMapIsEmpty, false),
             "contains_key" => (RuntimeFn::HashMapContainsKey, false),
+            // CD-180. `remove` returns `Option<V>`; like `insert`'s replaced value it is dropped by
+            // the discard-drop machinery at a visible Drop terminator when the result is unused.
+            "remove" => (RuntimeFn::HashMapRemove, true),
+            "clear" => (RuntimeFn::HashMapClear, true),
             "keys" => (RuntimeFn::HashMapKeysIterNew, false),
             _ => return unsupported(format!("HashMap::{name} (reserved — std-full)"), span),
         };
