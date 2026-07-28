@@ -14,9 +14,11 @@ artefacts in three different classes, and the executable's class depends on the 
 | generated Rust | `BYTE-REPRODUCIBLE` | two paths × both profiles, 7 workloads |
 | generated `Cargo.toml` | `SEMANTICALLY-REPRODUCIBLE` | byte-identical per machine; embeds the compiler's own runtime path, so it varies across installations |
 | `stark.lock` | `BYTE-REPRODUCIBLE` | two paths, 7 workloads |
-| executable — **release** | `BYTE-REPRODUCIBLE` | two paths, byte-identical, zero embedded build paths |
+| executable — **release**, macOS + Linux | `BYTE-REPRODUCIBLE` | two paths, byte-identical, zero embedded build paths |
+| executable — **release**, Windows | `NOT-YET-REPRODUCIBLE` | equal size, no embedded build path, contents differ — see §6 |
 | executable — **debug**, macOS | `NOT-YET-REPRODUCIBLE` | 31 embedded build-directory strings; sizes differ by the path-length delta |
-| executable — **debug**, other platforms | `UNMEASURED` | see the note below — this was wrongly generalised from the macOS measurement |
+| executable — **debug**, Linux | `BYTE-REPRODUCIBLE` | measured by CI refuting the opposite assertion |
+| executable — **debug**, Windows | `UNMEASURED` | recorded, not asserted |
 | debug symbols | `PLATFORM-METADATA-EXCLUDED` | not produced as a separate artefact today |
 
 ## 2. What was changed, and what it did not achieve
@@ -85,3 +87,26 @@ The test now asserts only on macOS, where the mechanism has been measured, and p
 `C72-DEBUG-REPRO platform=… identical=…` line on every platform so the remaining rows can be filled
 in from evidence rather than inference. Generalising one platform's measurement is exactly the error
 that produced the failure; the fix is not a looser assertion but a narrower claim.
+
+## 6. Windows release is not byte-reproducible either (CD-191)
+
+The correction in §5 fixed the debug row and left the release row saying `BYTE-REPRODUCIBLE` without
+qualification. Windows CI then refuted that too — the same mistake, one row over, found by the same
+mechanism.
+
+What was measured: two release builds of `w01_minimal` from different absolute paths produce
+binaries of **equal size** whose contents differ, and the "embeds no build or runtime path" test
+**passes** on the same platform. So this is not a path leak, and it is not the path-length
+sensitivity the size check exists to catch.
+
+What is hypothesised, and recorded as hypothesis rather than finding: a fixed-width field varying
+per link points at the PE `TimeDateStamp` and the CodeView PDB signature GUID, both of which the
+MSVC linker varies by default. If that is right, `/Brepro` is the remedy, and it is linker-level
+work of exactly the kind §4.3 already defers for macOS debug. It has not been attempted, because
+attempting a platform fix that cannot be verified locally is how the last two corrections here got
+written.
+
+The test now asserts the negative on Windows rather than failing, so a future toolchain or flag that
+makes Windows release reproduce fails the suite and forces the classification to be updated
+deliberately. Failures on any platform now report *how* the binaries differ — how many bytes and the
+first offset — so the next person to look has evidence rather than a verdict.

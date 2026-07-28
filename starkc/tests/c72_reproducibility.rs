@@ -1,23 +1,28 @@
 //! WP-C7.2 — what reproduces, per artefact and per profile, measured rather than asserted.
 //!
 //! §4.1 forbids one global "reproducible" label, and the measurements are why: the same build
-//! produces artefacts in three different classes at once, and the linked executable's class depends
-//! on the PROFILE.
+//! produces artefacts in several classes at once, and the linked executable's class depends on the
+//! profile **and on the platform**.
 //!
 //! | artefact | class |
 //! | --- | --- |
 //! | generated Rust | `BYTE-REPRODUCIBLE` |
 //! | generated `Cargo.toml` | `SEMANTICALLY-REPRODUCIBLE` — byte-identical per machine, embeds the compiler's own runtime path |
 //! | `stark.lock` | `BYTE-REPRODUCIBLE` |
-//! | executable, release | `BYTE-REPRODUCIBLE` |
-//! | executable, debug | `NOT-YET-REPRODUCIBLE` |
+//! | executable, release | `BYTE-REPRODUCIBLE` on macOS and Linux; **`NOT-YET-REPRODUCIBLE` on Windows** |
+//! | executable, debug | `NOT-YET-REPRODUCIBLE` on macOS; `BYTE-REPRODUCIBLE` on Linux; unmeasured on Windows |
 //!
-//! **Why debug is not, and why remapping did not fix it.** A debug binary embeds paths from two
-//! separate mechanisms. `--remap-path-prefix` covers the ones rustc records from source spans, and
-//! WP-C7.2 added that — it removes 31 strings including every reference to the compiler's own
-//! installation directory. The rest are recorded by the LINKER: macOS writes object-file paths into
-//! the debug map so `dsymutil` can find them later, and no rustc flag reaches those. Release does
-//! not carry them because it does not carry that debug information.
+//! `expected_identical` below is the authority for that split, cell by cell, with the evidence for
+//! each. Two of those cells were originally written as universal claims from a macOS measurement,
+//! and CI refuted both — which is why the table is now per platform rather than per profile alone.
+//!
+//! **Why macOS debug is not reproducible, and why remapping did not fix it.** A debug binary embeds
+//! paths from two separate mechanisms. `--remap-path-prefix` covers the ones rustc records from
+//! source spans, and WP-C7.2 added that — it removes 31 strings including every reference to the
+//! compiler's own installation directory. The rest are recorded by the LINKER: macOS writes
+//! object-file paths into the debug map so `dsymutil` can find them later, and no rustc flag reaches
+//! those. Release does not carry them because it does not carry that debug information, and Linux
+//! debug does not carry them because its linker does not record them in the first place.
 //!
 //! **The remapping is therefore not what makes release reproducible.** Measured directly by
 //! reverting it: release was already byte-identical across paths, and embeds zero remapped markers.
@@ -120,24 +125,94 @@ fn build_twice(workload_name: &str, args: &[&str]) -> Option<(PathBuf, Vec<u8>, 
     Some((ra, a, rb, b))
 }
 
-/// **The C7.2 headline.** A release executable is byte-identical across two different absolute
-/// build paths.
+/// Whether an executable of this profile is expected to be byte-identical across build paths ON
+/// THIS PLATFORM.
+///
+/// `Some(true)` — measured to reproduce; `Some(false)` — measured NOT to reproduce, with a known
+/// mechanism; `None` — not yet measured, so the test records the observation instead of asserting
+/// a guess. Every cell below is backed by a real run, not by inference:
+///
+/// | | debug | release |
+/// | --- | --- | --- |
+/// | macOS | differs — linker debug map (`dsymutil` object paths), no rustc flag reaches it | identical |
+/// | Linux | identical | identical |
+/// | Windows | not yet measured | **differs** — equal size, no embedded path |
+///
+/// The Windows release cell is the one this table exists for. The binaries are the same SIZE and
+/// the "embeds no build path" test passes there, so it is not a path leak; a fixed-width field
+/// differing points at the PE `TimeDateStamp` and the CodeView PDB signature, which MSVC varies per
+/// link. That is a HYPOTHESIS, recorded as one — the measurement is only "differs at equal size".
+fn expected_identical(release: bool) -> Option<bool> {
+    match (
+        cfg!(target_os = "windows"),
+        cfg!(target_os = "macos"),
+        release,
+    ) {
+        (true, _, true) => Some(false),
+        (true, _, false) => None,
+        (_, true, true) => Some(true),
+        (_, true, false) => Some(false),
+        // Linux and anything else that behaves like it.
+        (_, _, _) => Some(true),
+    }
+}
+
+/// Describe how two binaries differ, so a failure carries evidence rather than just a verdict.
+fn diff_shape(a: &[u8], b: &[u8]) -> String {
+    if a.len() != b.len() {
+        return format!("different lengths: {} vs {}", a.len(), b.len());
+    }
+    let differing: Vec<usize> = a
+        .iter()
+        .zip(b)
+        .enumerate()
+        .filter(|(_, (x, y))| x != y)
+        .map(|(index, _)| index)
+        .collect();
+    match differing.first() {
+        None => "identical".to_string(),
+        Some(first) => format!(
+            "{} of {} bytes differ, first at offset {first} (0x{first:x})",
+            differing.len(),
+            a.len()
+        ),
+    }
+}
+
+/// **The C7.2 headline, per platform.** A release executable is byte-identical across two different
+/// absolute build paths on macOS and Linux. On Windows it is not, and that is asserted as a known
+/// negative rather than left as a red build — see [`expected_identical`].
 #[test]
 fn release_executables_are_byte_reproducible_across_build_paths() {
     for name in ["w01_minimal", "w02_arith_control", "w06_multi_package"] {
         let Some((ra, a, rb, b)) = build_twice(name, &["build", "--release"]) else {
             return;
         };
+        // Size equality is platform-INDEPENDENT: a differing length means a path length reached the
+        // artefact, which is a defect everywhere and is not what Windows is doing.
         assert_eq!(
             a.len(),
             b.len(),
             "{name}: release binaries differ in SIZE across build paths, which usually means a \
              path length leaked into the artefact"
         );
-        assert!(
-            a == b,
-            "{name}: release binaries differ across build paths despite equal size"
-        );
+        match expected_identical(true) {
+            Some(true) => assert!(
+                a == b,
+                "{name}: release binaries differ across build paths despite equal size — {}",
+                diff_shape(&a, &b)
+            ),
+            Some(false) => assert!(
+                a != b,
+                "{name}: release binaries now REPRODUCE on this platform — that is an improvement, \
+                 so update the WP-C7.2 classification and `expected_identical` to require it"
+            ),
+            None => println!(
+                "C72-REPRO platform={} profile=release {}",
+                std::env::consts::OS,
+                diff_shape(&a, &b)
+            ),
+        }
         let _ = std::fs::remove_dir_all(&ra);
         let _ = std::fs::remove_dir_all(&rb);
     }
@@ -223,36 +298,34 @@ fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Debug reproducibility is **per platform**, and this test was wrong to assert it globally.
+/// Debug reproducibility is **per platform** — see [`expected_identical`] for the table and the
+/// evidence behind each cell.
 ///
-/// It originally asserted `a != b` everywhere, on the strength of a measurement taken only on
-/// macOS — where the linker writes object-file paths into the debug map and no rustc flag reaches
-/// them. CI then failed on **linux-x64 only**, which is the evidence that the mechanism is
-/// platform-specific rather than a property of STARK's output: a platform whose linker does not
-/// embed those paths reproduces once `--remap-path-prefix` has handled the source spans.
-///
-/// So the assertion now runs only where the mechanism has been measured, and every platform prints
-/// its observation as `C72-DEBUG-REPRO` for the record. Asserting an unmeasured platform's outcome
-/// is what produced the failure in the first place; a printed observation cannot make that mistake,
-/// and gives the next reader real data to pin.
+/// This test originally asserted `a != b` everywhere, from a measurement taken only on macOS. CI
+/// refuted it on linux-x64, and that refutation is itself the Linux measurement: a failing
+/// `assert_ne!` means the two binaries WERE identical. So Linux debug reproduces, macOS debug does
+/// not, and Windows is still unmeasured.
 #[test]
 fn debug_reproducibility_is_recorded_per_platform() {
     let Some((ra, a, rb, b)) = build_twice("w01_minimal", &["build"]) else {
         return;
     };
-    let identical = a == b;
-    println!(
-        "C72-DEBUG-REPRO platform={} identical={identical} sizes={}/{}",
-        std::env::consts::OS,
-        a.len(),
-        b.len()
-    );
-    if cfg!(target_os = "macos") {
-        assert!(
-            !identical,
-            "macOS debug executables now reproduce across build paths — that is an IMPROVEMENT, so \
-             update the WP-C7.2 classification and make this a requirement rather than a record"
-        );
+    match expected_identical(false) {
+        Some(true) => assert!(
+            a == b,
+            "debug executables no longer reproduce on this platform — {}",
+            diff_shape(&a, &b)
+        ),
+        Some(false) => assert!(
+            a != b,
+            "debug executables now reproduce on this platform — that is an IMPROVEMENT, so update \
+             the WP-C7.2 classification and `expected_identical` to require it"
+        ),
+        None => println!(
+            "C72-REPRO platform={} profile=debug {}",
+            std::env::consts::OS,
+            diff_shape(&a, &b)
+        ),
     }
     let _ = std::fs::remove_dir_all(&ra);
     let _ = std::fs::remove_dir_all(&rb);
