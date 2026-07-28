@@ -11,7 +11,7 @@ CD-029). It adds **one `Callee` variant** and the validated record it resolves t
 revisions of `mir-amendment-A1-strings-runtime.md`, each enumerating additional `RuntimeFn`
 members in a versioned appendix table. A10 is not that. It introduces a **distinct invocation
 category** with its own trust and verification model, which does not belong in a document whose
-subject is the string/collection runtime surface. A1's header and §11 revision log record the
+subject is the string/collection runtime surface. A1's header and revision log record the
 counter advancing to `0.1-A10` here, so the surface version stays traceable from where readers
 look for it.
 
@@ -171,7 +171,7 @@ within one workspace, and obscure a guarantee that already holds.
 
 ## 7. Surface version
 
-`MIR_RUNTIME_SURFACE` advances `0.1-A9` → `0.1-A10` (`starkc/src/mir/mod.rs:44`).
+`MIR_RUNTIME_SURFACE` advances `0.1-A9` → `0.1-A10` (`starkc/src/mir/mod.rs`, `MIR_RUNTIME_SURFACE`).
 
 A10 records both the syntax-level addition and the semantic contract:
 
@@ -227,8 +227,8 @@ A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing
 | Slice | State |
 | --- | --- |
 | C7.8.2a — MIR representation and versioning | **LANDED** |
-| C7.8.2b — provider resolution and validated call records | next |
-| C7.8.2c — verifier invariants and negative fixtures | pending |
+| C7.8.2b — provider resolution and validated call records | **LANDED** |
+| C7.8.2c — verifier invariants and negative fixtures | next |
 | C7.8.2d — generated-Rust static extern bindings | pending |
 | C7.8.2e — `stark-time` end-to-end execution | pending |
 | C7.8.2f — full A10 regression evidence | pending |
@@ -239,6 +239,18 @@ A10 provides the MIR and backend structure WP-C7.8.2 needs to begin, and nothing
 refusal at every consumer that cannot yet honour a provider call — verification (MIR-0020), the
 MIR interpreter, and generated-Rust emission. Evidence: `starkc/tests/a10_provider_call.rs`
 (9 cases).
+
+**What C7.8.2b landed.** `starkc/src/provider_resolve.rs`: `DeclaredProvider`, `ProviderSet`,
+`ResolveError`, and `ProviderCallArena`. `ProviderSet::select` runs §3's sequence — metadata
+validation, symbol-grammar validation, target applicability, cross-provider symbol uniqueness, and
+exactly-one-supplier-per-capability — returning *every* failure rather than the first.
+`ProviderSet::resolve` produces a `ValidatedProviderCall`; the arena interns them, deduplicating so
+one function called from many bodies yields one record and one id. Evidence:
+`starkc/tests/a10_provider_resolve.rs` (16 cases), including `stark-time`'s real metadata resolving
+**unmodified**, ambiguity rejected in **both** declaration orders, and invalid symbols reported
+verbatim.
+
+One finding from building it needs an owner decision — recorded in §11.
 
 **A provider call is representable but not yet admitted.** That is the intended C7.8.2a state:
 §4's invariants land in C7.8.2c, and until they do, verification refuses rather than accepting an
@@ -257,7 +269,44 @@ provider linked into it, so a host call has no meaning it could reproduce. Provi
 the native path, which makes differential comparison for provider-backed programs native-only by
 construction rather than by omission.
 
-## 11. Revision log
+## 11. Open question raised by C7.8.2b — the symbol prefix rule
+
+Packet 1 §1.3 requires the validator to reject "any symbol lacking an approved provider-identity
+prefix". **That rule as literally derived rejects the only real provider we have.**
+
+`stark-time/native/src/lib.rs` declares identity name **`stark-std-time`** and symbols
+**`stark_time_monotonic_now_ns`** / **`stark_time_unix_now`**. A prefix mechanically derived from
+the identity would be `stark_std_time_`, which neither symbol carries. Enforcing it would force a
+change to that crate's declared function names — which are ABI-facing, and therefore exactly what
+Packet 1's own exit condition forbids changing.
+
+C7.8.2b therefore implements the two rules that are exact and unambiguous, and **does not** invent
+a prefix policy:
+
+- **symbol grammar** — `[A-Za-z_][A-Za-z0-9_]*`, rejected verbatim, never sanitised;
+- **uniqueness** — no two selected providers export the same C symbol, and no provider exports one
+  twice.
+
+Note that uniqueness is the *actual* anti-collision guarantee. A prefix convention only makes
+collision unlikely; the duplicate check makes it impossible. The prefix rule's residual value is
+social (a symbol reads as belonging to its provider), not structural.
+
+Options for the owner:
+
+| | Option | Consequence |
+| --- | --- | --- |
+| A | **Drop the prefix requirement**; keep grammar + uniqueness | No provider changes. Loses a readability convention that nothing structural depended on |
+| B | **Declared, not derived** — a provider declares its own symbol prefix in metadata | Accommodates `stark-std-time` → `stark_time_`, but adds a `ProviderMetadata` field, which breaks the struct literal in `stark-time/native/src/lib.rs` and so trips the same exit condition from the other side |
+| C | **Compiler-side approved-prefix registry** for first-party providers | Matches §1.3's word "approved" exactly, needs no metadata change and no provider change. Cost: a registry the compiler carries, and a policy question for third-party providers later |
+| D | **Rename `stark-time`'s symbols** to match a derived prefix | Keeps the rule as drafted, at the cost of an ABI-facing change to the reference provider — the thing Packet 1 named as the drift signal |
+
+**Recommended: A**, with C if the readability convention is judged worth a registry. D should be
+rejected: it changes the evidence to fit the rule.
+
+This does not block C7.8.2c. Grammar and uniqueness are enforced today; only the prefix check is
+absent.
+
+## 12. Revision log
 
 **Rev. 1 (2026-07-28) — A10 approved under CE3.** Adds `Callee::Provider(ProviderCallId)` and
 `ValidatedProviderCall`; nine binding verifier invariants plus the `resource_type` rule; the
@@ -267,3 +316,8 @@ pre-verification binding sequence; backend emission prohibitions; `MIR_RUNTIME_S
 **Rev. 2 (2026-07-28) — C7.8.2a landed.** §10 records implementation state, the
 representable-but-not-admitted position, the `provider_abi` layering move and its shim, and the
 interpreter's permanent exclusion. No contract change.
+
+**Rev. 3 (2026-07-29) — C7.8.2b landed.** §10 records provider selection, resolution and the
+call arena. §11 raises the symbol-prefix conflict: Packet 1 §1.3's prefix rule, derived
+mechanically, rejects `stark-time`'s existing symbols. Grammar and uniqueness are implemented;
+the prefix check is deliberately not, pending an owner decision. No contract change.
