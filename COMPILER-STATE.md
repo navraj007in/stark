@@ -436,14 +436,19 @@ emission, ownership and the three status channels — but they are **not** sourc
 
 | capability | provider executes (hand-built MIR) | reachable from STARK source |
 | --- | --- | --- |
-| time (`stark-time`) | yes, both symbols (CD-219) | no |
-| args/env (`stark-env`) | yes (CD-214, CD-216) | no |
-| file (`stark-file`) | yes, create/write/complete/close (CD-217) | no |
-| tcp (`stark-net`) | no — resource types unbound (CD-218) | no |
+| time (`stark-time`) | yes, both symbols (CD-219) | **yes, via the compiler library** — `c788_source_time_e2e.rs` (2026-07-30); not yet via `starkc build`, see below |
+| args/env (`stark-env`) | yes (CD-214, CD-216) | no — declares recoverable statuses; needs the `Err` arm |
+| file (`stark-file`) | yes, create/write/complete/close (CD-217) | no — resource nominal, and recoverable statuses |
+| tcp (`stark-net`) | no — resource types unbound (CD-218) | no — resource nominals |
 
-**So C7.8 has NOT removed P1's host-capability precondition.** P1 is written in STARK, and no
-capability is callable from STARK. The closure statement is amended accordingly
-(`WP-C7.8-First-Party-Native-Host-Capabilities.md` §5.7).
+**AMENDED 2026-07-30.** The right-hand column is no longer uniformly "no": the source path exists
+and one capability traverses it end to end. What blocks the other three is now specific and named,
+not "lowering emits no provider call" — that was the general blocker and it is gone. `stark-env`
+needs only the `Err` arm (§16.1); `stark-file` and `stark-net` additionally need a resource-nominal
+mechanism (§3.1). P1's host-capability precondition is **partially** removed: a STARK program can
+now call a scalar capability, which the closure statement
+(`WP-C7.8-First-Party-Native-Host-Capabilities.md` §5.7) should read as narrowing rather than
+lifting the amendment.
 
 **Packet 6 / CE3 (CD-220) — Route B.** A package-declared host resource gets an explicit MIR
 representation, not an ordinary struct and not a new `CoreType`. It retains the STARK nominal *and*
@@ -459,6 +464,38 @@ synthesis of package items and resource nominals → typed HIR bindings → reso
 registry → resolution-time `MirTy::HostResource` → `Callee::Provider` lowering → close arena and
 verifier rules → **source-level monotonic-time proof**. Proven in that order on real STARK source:
 time, args/env, File, TCP bind/connect, accept, full echo. TCP sits behind this, not in front of it.
+
+**POSITION (2026-07-30): the source-to-provider gap is CLOSED for a scalar capability.**
+`c788_source_time_e2e.rs` compiles a `.stark` program that calls a manifest-bound function with
+ordinary syntax, lowers it to `Callee::Provider`, links `stark-time-native`, runs the binary and
+asserts the printed monotonic reading is nonzero. **No hand-built MIR anywhere in that path.** This
+is what CD-220 named the critical path, and what every earlier provider e2e could not demonstrate:
+`lower_program` hard-coded `provider_calls: Vec::new()`, so no STARK source could reach a provider
+at all. §16 steps 1–3, 6 and 8 are done; 4, 5 and 7 are blocked on resource nominals.
+
+Step 6 is hooked at `Res::Item` in `lower_call` — after name resolution, type checking and borrow
+checking have all seen an ordinary function, which is what keeps the front end free of provider
+special cases. `ScalarOut` becomes a zero-initialised caller-owned local passed as `&mut`; the
+call's `dest` takes the raw status code, not the STARK value; the `Result` is built afterwards from
+the slots. `lower_program_with_providers` is a new entry point rather than a parameter added to
+`lower_program`'s ~20 call sites.
+
+**Stated precisely, because CD-220 had to correct an over-claim of exactly this shape once already:
+the proof runs through the compiler *library*, not `starkc build`.** The test drives parse →
+resolve → typecheck → `lower_program_with_providers` → emit → link → run itself. The driver
+(`native_build.rs`) still calls plain `lower_program` and never invokes synthesis, so a package
+with a `provider_api` block in its manifest does not yet build from the command line. Every
+component of that path now exists and is tested; what is missing is the driver wiring — manifest →
+derive → synthesize → prepend to the compilation unit → resolve → lower-with-providers. That is
+the next slice, and it is integration rather than design.
+
+**Two refusals, deliberate.** A resource in any position (§3.1). And a **non-empty status
+vocabulary**: a declared recoverable code must become `Err(e)`, needing the package error type's
+per-code variant, which the manifest binds but nothing threads to lowering yet — emitting `Ok`
+regardless would turn a declared recoverable failure into a successful call returning an unwritten
+slot. `clock`'s vocabulary is empty, so every nonzero status is a contract violation the emitter
+aborts on, and `Ok` is the only reachable outcome by construction. `process.env` and `filesystem`
+declare codes and need the `Err` arm before their source paths open.
 
 **Position (2026-07-29): steps 1–3 done, and step 3 collapsed into step 2.** Synthesis is generated
 STARK source (`provider_synth.rs`) rather than constructed HIR, because every HIR name is a `Span`

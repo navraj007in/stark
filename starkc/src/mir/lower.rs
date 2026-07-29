@@ -24,6 +24,7 @@ use super::*;
 use crate::ast::{AssignOp, BinOp, Lit, Primitive, UnOp};
 use crate::hir::{self, Builtin, ExprId, Hir, ItemId, ItemKind, Res, StmtKind};
 use crate::literal;
+use crate::mir::provider_lower::ProviderLowering;
 use crate::source::SourceFile;
 use crate::typecheck::{Ty, TypeTables};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -76,6 +77,50 @@ fn unsupported<T>(what: impl Into<String>, span: Span) -> Result<T, LowerError> 
     Err(LowerError {
         what: what.into(),
         span,
+    })
+}
+
+/// `unsupported`'s error without the `Result` wrapper, for `ok_or_else`.
+fn unsupported_err(what: impl Into<String>, span: Span) -> LowerError {
+    LowerError {
+        what: what.into(),
+        span,
+    }
+}
+
+/// WP-C7.8.8 step 6: the `MirTy` for an ABI scalar. The ABI's `ScalarTy` is a closed set, so this
+/// is total -- there is no fallback arm to get wrong.
+fn scalar_mir_ty(t: crate::provider_abi::ScalarTy) -> MirTy {
+    use crate::provider_abi::ScalarTy as S;
+    match t {
+        S::U8 => MirTy::UInt8,
+        S::U16 => MirTy::UInt16,
+        S::U32 => MirTy::UInt32,
+        S::U64 => MirTy::UInt64,
+        S::I8 => MirTy::Int8,
+        S::I16 => MirTy::Int16,
+        S::I32 => MirTy::Int32,
+        S::I64 => MirTy::Int64,
+        S::Bool => MirTy::Bool,
+        S::F32 => MirTy::Float32,
+        S::F64 => MirTy::Float64,
+    }
+}
+
+/// The zero value an out-slot local is initialised to before its address is taken.
+fn zero_of(ty: &MirTy, span: Span) -> Result<Operand, LowerError> {
+    Ok(match ty {
+        MirTy::Bool => Operand::Const(Constant::Bool(false)),
+        MirTy::Float32 | MirTy::Float64 => Operand::Const(Constant::Float(0.0, ty.clone())),
+        MirTy::Int8
+        | MirTy::Int16
+        | MirTy::Int32
+        | MirTy::Int64
+        | MirTy::UInt8
+        | MirTy::UInt16
+        | MirTy::UInt32
+        | MirTy::UInt64 => Operand::Const(Constant::Int(0, ty.clone())),
+        _ => return unsupported("provider out-slot of a non-scalar type", span),
     })
 }
 
@@ -241,6 +286,21 @@ pub fn lower_program(
     tables: &TypeTables,
     file: Arc<SourceFile>,
 ) -> Result<MirProgram, LowerError> {
+    lower_program_with_providers(hir, tables, file, ProviderLowering::none())
+}
+
+/// WP-C7.8.8 step 6: `lower_program`, plus the provider calls the program may emit.
+///
+/// A separate entry point rather than a new parameter on `lower_program`: every existing caller
+/// binds no provider, and an added argument at ~20 sites would be churn that says nothing. The
+/// arena reaches `MirProgram::provider_calls` verbatim -- lowering performs no selection and
+/// validates no metadata, because A10 3 puts both before this point.
+pub fn lower_program_with_providers(
+    hir: &Hir,
+    tables: &TypeTables,
+    file: Arc<SourceFile>,
+    providers: &ProviderLowering,
+) -> Result<MirProgram, LowerError> {
     // C4.5f-3c: multi-file/multi-package metadata — per-item files, module paths, and the
     // full (module-nested included) item list.
     let meta = ProgramMeta::build(hir, &file)?;
@@ -267,9 +327,9 @@ pub fn lower_program(
         types: TypeContext::default(),
         mir_version: MIR_VERSION.to_string(),
         runtime_surface: MIR_RUNTIME_SURFACE.to_string(),
-        // A10: populated by provider resolution (WP-C7.8.2b). No lowering emits a provider call
-        // yet, so an empty arena is the correct state rather than a placeholder.
-        provider_calls: Vec::new(),
+        // A10: resolved before lowering (A10 3) and carried verbatim. Empty for every program
+        // that binds no provider.
+        provider_calls: providers.arena.clone(),
     };
 
     // Populate the nominal type context (struct fields, user-enum variant payloads) for every
@@ -360,7 +420,7 @@ pub fn lower_program(
     worklist.push_back(main_key);
     let mut bodies = Vec::new();
     while let Some(key) = worklist.pop_front() {
-        let mut lowerer = FnLowerer::new(hir, tables, &meta, key.clone());
+        let mut lowerer = FnLowerer::with_providers(hir, tables, &meta, key.clone(), providers);
         let body = lowerer.lower_body()?;
         // C4.5d: dtor symbols this body's drop glue dispatches through.
         program
@@ -845,6 +905,9 @@ struct DropUnit {
 struct FnLowerer<'a> {
     hir: &'a Hir,
     tables: &'a TypeTables,
+    /// WP-C7.8.8 step 6: the provider calls this program may lower. Empty for every program that
+    /// binds no provider, which is almost all of them.
+    providers: &'a ProviderLowering,
     /// f-3c: program-wide file/module metadata (per-item files and paths).
     meta: &'a ProgramMeta,
     /// The source of the file DEFINING this body's item — body spans read here.
@@ -877,6 +940,16 @@ struct FnLowerer<'a> {
 
 impl<'a> FnLowerer<'a> {
     fn new(hir: &'a Hir, tables: &'a TypeTables, meta: &'a ProgramMeta, key: FnKey) -> Self {
+        Self::with_providers(hir, tables, meta, key, ProviderLowering::none())
+    }
+
+    fn with_providers(
+        hir: &'a Hir,
+        tables: &'a TypeTables,
+        meta: &'a ProgramMeta,
+        key: FnKey,
+        providers: &'a ProviderLowering,
+    ) -> Self {
         // f-3c: the body's spans and text reads belong to the DEFINING item's file.
         let owner = match &key {
             FnKey::Top(item, _) => *item,
@@ -888,6 +961,7 @@ impl<'a> FnLowerer<'a> {
         FnLowerer {
             hir,
             tables,
+            providers,
             meta,
             src,
             file,
@@ -948,6 +1022,162 @@ impl<'a> FnLowerer<'a> {
         };
         self.blocks[self.current.0 as usize] = Some(sealed);
         self.current = next;
+    }
+
+    /// WP-C7.8.8 step 6: the `ProviderCallId` for an item, if it is a synthesized binding.
+    ///
+    /// Resolved by qualified name because bindings are computed from the manifest before parsing,
+    /// so no item id exists when they are built. The map is empty for every program that binds no
+    /// provider, so this costs one lookup against an empty `BTreeMap` in the ordinary case.
+    fn provider_call_for(&self, item: ItemId) -> Option<ProviderCallId> {
+        if self.providers.is_empty() {
+            return None;
+        }
+        let ItemKind::Fn(def) = &self.hir.item(item).kind else {
+            return None;
+        };
+        let name = self.meta.item_text(item, def.sig.name);
+        self.providers.call_for(name)
+    }
+
+    /// Lowers a call to a synthesized binding into `Callee::Provider`.
+    ///
+    /// The shape is fixed by the ABI and by what the emitter already does (`emit_provider.rs`):
+    /// out-slots are **caller-owned locals** passed as `&mut`, the call's `dest` receives the raw
+    /// `ProviderStatus` code, and the emitter writes slots back only on status zero. So the STARK
+    /// `Result<T, E>` is built here, after the call, from the slots.
+    fn lower_provider_call(
+        &mut self,
+        id: ProviderCallId,
+        args: &[ExprId],
+        dest: Place,
+        span: Span,
+    ) -> Result<(), LowerError> {
+        let call = self
+            .providers
+            .arena
+            .get(id.0 as usize)
+            .ok_or_else(|| unsupported_err("provider call id out of range", span))?
+            .clone();
+
+        // A non-empty status vocabulary means some nonzero code is a RECOVERABLE error that must
+        // become `Err(e)`. Building that arm needs the package error type's variant for each code,
+        // which the manifest binds but nothing yet threads to lowering. Refused rather than
+        // approximated: emitting `Ok` unconditionally would turn a declared, recoverable failure
+        // into a successful call returning an unwritten slot.
+        if call.status_binding.declared_codes().next().is_some() {
+            return unsupported(
+                "provider call with declared recoverable statuses (the Err arm is not yet lowered)",
+                span,
+            );
+        }
+
+        let mut ops: Vec<Operand> = Vec::with_capacity(call.function.params.len());
+        let mut slots: Vec<(LocalId, MirTy)> = Vec::new();
+        let mut next_arg = 0usize;
+
+        for param in &call.function.params {
+            match param {
+                crate::provider_abi::AbiParam::ScalarOut(ty) => {
+                    // Caller-owned slot. Initialised because MIR has no uninitialised-read story
+                    // for a local whose address is taken; the emitter's `MaybeUninit` discipline is
+                    // what actually keeps the value unread before a zero status.
+                    let mir_ty = scalar_mir_ty(*ty);
+                    let slot = self.new_temp(mir_ty.clone());
+                    self.emit(
+                        Statement::Assign(Place::local(slot), Rvalue::Use(zero_of(&mir_ty, span)?)),
+                        self.info(span),
+                    );
+                    let r = self.new_temp(MirTy::Ref {
+                        mutable: true,
+                        inner: Box::new(mir_ty.clone()),
+                    });
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(r),
+                            Rvalue::RefOf {
+                                mutable: true,
+                                place: Place::local(slot),
+                            },
+                        ),
+                        self.info(span),
+                    );
+                    ops.push(Operand::Move(Place::local(r)));
+                    slots.push((slot, mir_ty));
+                }
+                crate::provider_abi::AbiParam::HandleOut { .. }
+                | crate::provider_abi::AbiParam::HandleBorrowed { .. }
+                | crate::provider_abi::AbiParam::HandleConsumed { .. } => {
+                    // Resource nominals have no synthesis mechanism yet (design 3.1), so no source
+                    // call can carry one. Refused explicitly rather than reached by accident.
+                    return unsupported("provider call carrying a host resource", span);
+                }
+                _ => {
+                    // Every remaining form takes its value from the STARK call's own argument list,
+                    // in declaration order. Synthesis derived the signature from these same params,
+                    // so the counts agree by construction -- but a mismatch is a compiler defect
+                    // worth naming rather than an index panic.
+                    let Some(&a) = args.get(next_arg) else {
+                        return unsupported(
+                            "provider call argument count disagrees with the declaration",
+                            span,
+                        );
+                    };
+                    next_arg += 1;
+                    ops.push(self.lower_expr_to_operand(a)?);
+                }
+            }
+        }
+
+        // `dest` is the raw ProviderStatus code (see `emit_provider::emit_call`), NOT the STARK
+        // value. UInt32 because that is `ProviderStatus::code`.
+        let status = self.new_temp(MirTy::UInt32);
+        let after = self.new_block();
+        self.terminate(
+            Terminator::Call {
+                callee: Callee::Provider(id),
+                args: ops,
+                dest: Place::local(status),
+                target: after,
+            },
+            self.info(span),
+            after,
+        );
+
+        // With an empty status vocabulary every nonzero code is a contract violation, and the
+        // emitter aborts on it before returning. So control reaching here means status zero and the
+        // slots are written: `Ok` is the only outcome, and that is a fact about the emitted code,
+        // not an optimistic assumption.
+        let payload = match slots.len() {
+            0 => vec![Operand::Const(Constant::Unit)],
+            _ => slots
+                .iter()
+                .map(|(slot, ty)| self.read_place(Place::local(*slot), ty, span))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let payload = if slots.len() > 1 {
+            let tuple_ty = MirTy::Tuple(slots.iter().map(|(_, t)| t.clone()).collect());
+            let tmp = self.new_temp(tuple_ty);
+            self.emit(
+                Statement::Assign(
+                    Place::local(tmp),
+                    Rvalue::Aggregate(AggKind::Tuple, payload),
+                ),
+                self.info(span),
+            );
+            vec![Operand::Move(Place::local(tmp))]
+        } else {
+            payload
+        };
+
+        self.emit(
+            Statement::Assign(
+                dest,
+                Rvalue::Aggregate(AggKind::EnumVariant(EnumRef::CoreResult, 0), payload),
+            ),
+            self.info(span),
+        );
+        Ok(())
     }
 
     fn new_temp(&mut self, ty: MirTy) -> LocalId {
@@ -4662,6 +4892,13 @@ impl<'a> FnLowerer<'a> {
                     // C4.5c: generic callees resolve to a concrete monomorphised instance
                     // through the checker's recorded instantiation.
                     let item = *item;
+                    // WP-C7.8.8 step 6: a synthesized provider binding is an ordinary item to
+                    // everything before this point -- resolution, type checking and the borrow
+                    // checker all saw a normal function. Only here does it become a provider call,
+                    // which is what kept the front end free of provider special cases.
+                    if let Some(id) = self.provider_call_for(item) {
+                        return self.lower_provider_call(id, &args, dest, span);
+                    }
                     let instance = self.top_fn_instance(item, callee, span)?;
                     // C6.1f-b2: a parameter is an expected-type boundary, so `&mut T` weakens to
                     // `&T` here. The checker's grounded signature supplies the expected types.

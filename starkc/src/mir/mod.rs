@@ -19,6 +19,7 @@ pub mod drop_plan;
 pub mod interp;
 pub mod lower;
 pub mod opt;
+pub mod provider_lower;
 pub mod provider_sig;
 pub mod verify;
 

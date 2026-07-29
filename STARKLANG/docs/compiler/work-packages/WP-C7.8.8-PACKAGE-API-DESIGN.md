@@ -1,8 +1,21 @@
 # WP-C7.8.8 step 2 — package API declaration design
 
-**Status:** rev. 4 — **fully dispositioned (CD-224, CD-225)**. No open questions. Implementation
-proceeds in the order recorded in §16. No parser, HIR or MIR implementation until the
-declaration shape and A11's MIR-version disposition are both approved.
+**Status:** rev. 5 — **fully dispositioned (CD-224, CD-225)**, and **partially implemented**.
+Implementation proceeds in the order recorded in §16; steps 1–3, 6 and 8 are done, and the monotonic
+clock now executes from ordinary STARK source (§16, `c788_source_time_e2e.rs`).
+
+Rev. 5 adds three implementation findings and corrects two sections against them. The design's
+decisions all stand; what changed is *how* two of them are realised, and each correction is marked
+inline rather than by silent edit:
+
+- **§3.1** — synthesis is generated source text, not constructed HIR, and **resource nominals
+  cannot use it**. This blocks §16 steps 4, 5 and 7.
+- **§16.1** — what step 6 lowers, and its two deliberate refusals (resources; non-empty status
+  vocabularies).
+- **§16.2** — the `starkc build` driver is **not** wired; the proof runs through the compiler
+  library.
+- **§10 and §11 carry correction notices**: the binding is a side table rather than an HIR field,
+  and the status→`Result` construction happens in lowering rather than in the synthesized body.
 **Governs:** step 2 of WP-C7.8.8 — binding source-level functions and resource types to provider
 capabilities, symbols and provider resource names.
 **Inputs:** Packet 4 (no Core change), Packet 5 (admission and trust boundary), Packet 6 (Route B
@@ -460,6 +473,17 @@ HirItem::Nominal + HostResourceBinding  { capability, resource }
 Both are **carried, not consulted**, until lowering. Name resolution and type checking see ordinary
 items with ordinary signatures, which is what keeps steps 3 and 4 of WP-C7.8.8 free of special cases.
 
+> **CORRECTED at implementation (2026-07-30).** The binding is **not** a field on the HIR item. §3.1
+> forced synthesis to be generated source, so HIR is built by the ordinary parser and carries no
+> provider vocabulary at all — adding a `ProviderBinding` field would mean the parser producing a
+> field it has no input for. The binding rides in a **side table** instead
+> (`SynthesizedLayer::bindings`, item path → `(capability, symbol)`), which lowering resolves to
+> item ids once, up front (`mir/provider_lower.rs`).
+>
+> "Carried, not consulted" survives intact, and is in fact stronger: the front end does not merely
+> decline to consult the binding, it never sees one. The `HostResourceBinding` row is unimplemented
+> — resource nominals have no mechanism yet (§3.1).
+
 A nominal with a `HostResourceBinding` is **opaque in the type system**: it has no fields, so field
 access fails by ordinary name resolution rather than by a special rule, and it is never `Copy` or
 `Clone`, so ordinary move checking rejects reuse after a consuming call.
@@ -476,6 +500,22 @@ access fails by ordinary name resolution rather than by a special rule, and it i
 The status→`Result` construction is the **binding layer's**, not MIR's: MIR carries the raw status,
 and the derived item's body — synthesized alongside its declaration — performs the three-channel
 dispatch A10 §5 specifies. That keeps channel policy in one place and out of the type system.
+
+> **CORRECTED at implementation (2026-07-30).** The synthesized body cannot do this, and the reason
+> is structural rather than incidental. For the body to dispatch on a status, the body would have to
+> *contain* the provider call — and the call is what lowering emits at the **call site** from the
+> binding. A body that also called the provider would mean either two calls or a body that lowers to
+> the very thing it is supposed to wrap. So the body stays `panic(…)` and is never lowered (§3.1),
+> and the `Result` is constructed **in lowering**, immediately after the call terminator, from the
+> out-slot locals.
+>
+> Channel policy is still in one place, just not the place this paragraph named: the **emitter**
+> owns it (`emit_provider.rs` — slots written back only on status zero, declared codes matched,
+> undeclared codes aborted). Lowering builds the `Ok` arm from the slots; for a capability with a
+> non-empty status vocabulary it currently **refuses** rather than guessing the `Err` arm (§16.1).
+>
+> The third row of the table above is therefore right about *what* MIR carries — the `UInt32` status
+> destination plus out-slot destinations — and wrong only about who turns it into a `Result`.
 
 ## 12. Diagnostics
 
@@ -584,11 +624,17 @@ Nothing here changes the ABI, the runtime surface, or any Core specification doc
    **resource nominals blocked**, see §3.1;
 3. typed HIR bindings — **done**, subsumed by step 2: synthesis emits source, so the front end
    builds the HIR itself and the binding rides alongside as `SynthesizedLayer::bindings`;
-4. resource-name-to-nominal registry;
-5. resolution-time construction of `MirTy::HostResource`;
-6. `Callee::Provider` lowering;
-7. close-arena population and verifier rules;
-8. **source-level monotonic-time proof** before any resource capability.
+4. resource-name-to-nominal registry — **blocked**, see §3.1;
+5. resolution-time construction of `MirTy::HostResource` — **blocked**, see §3.1;
+6. `Callee::Provider` lowering — **done for scalar signatures**
+   (`mir/provider_lower.rs`, `mir/lower.rs`); resource and recoverable-status forms refused
+   explicitly, see §16.1;
+7. close-arena population and verifier rules — **blocked**, see §3.1;
+8. **source-level monotonic-time proof** — **DONE** (`c788_source_time_e2e.rs`): a `.stark`
+   program calls the bound function with ordinary syntax, is compiled by the ordinary front end,
+   lowered to `Callee::Provider`, linked against `stark-time-native`, executed, and the printed
+   nanosecond reading is asserted nonzero. Through the compiler **library**; the `starkc build`
+   driver is not yet wired (§16.2).
 
 Numbering is fixed; steps are annotated rather than renumbered, because CD-225 approved this order
 by number. Completed steps are implementation under that approval and mint no new decision IDs.
@@ -600,5 +646,60 @@ a failure in that test is a failure in the source path itself rather than in any
 
 §3.1's finding makes that ordering load-bearing rather than convenient: steps 4–7 all touch resource
 nominals, which have no mechanism yet, while step 8's target needs none. The remaining path to the
-proof is therefore **step 6 alone** — lowering a call to a synthesized item into `Callee::Provider`,
-which the emitter and linker already execute (`a10_stark_time_e2e.rs`, from hand-built MIR).
+proof was therefore **step 6 alone** — lowering a call to a synthesized item into `Callee::Provider`,
+which the emitter and linker already execute (`a10_stark_time_e2e.rs`, from hand-built MIR). That is
+now closed, and **the source path is proven end to end for a scalar capability**.
+
+### 16.1 What step 6 lowers, and what it refuses
+
+Lowering is hooked at `Res::Item` in `lower_call`, after name resolution, type checking and borrow
+checking have all seen an **ordinary function**. That placement is the design's claim made
+operational: nothing before lowering knows a provider exists.
+
+The emitted shape follows what `emit_provider.rs` already does, rather than a parallel convention:
+
+| `AbiParam` | lowered as |
+| --- | --- |
+| `ScalarIn`, `ScalarInOut`, `BufferIn`, `BufferInOut` | the STARK call's own argument, in order |
+| `ScalarOut(t)` | a caller-owned local, zero-initialised, passed as `&mut` |
+| `HandleBorrowed`, `HandleConsumed`, `HandleOut` | **refused** — §3.1 |
+
+The call's `dest` receives the raw `ProviderStatus` code, **not** the STARK value; the emitter writes
+out-slots back only on status zero and aborts on any undeclared code. So the `Result` is built after
+the call from the slots: no slots → `Ok(Unit)`, one → `Ok(v)`, several → `Ok((v1, …))`.
+
+**Two refusals, stated rather than approximated.**
+
+- A **resource** in any position, per §3.1.
+- A **non-empty status vocabulary**. A declared recoverable code must become `Err(e)`, which needs
+  the package error type's variant for each code — bound by the manifest, but not yet threaded to
+  lowering. Emitting `Ok` unconditionally would turn a declared, recoverable failure into a
+  successful call returning an unwritten slot, which is worse than not compiling.
+
+`clock` has an empty vocabulary, so for it every nonzero status is a contract violation the emitter
+aborts on. Control reaching the code after the call therefore *means* status zero and written slots
+— `Ok` is the only reachable outcome, which is a fact about the emitted Rust, not an optimistic
+assumption. `process.env` and `filesystem` declare recoverable codes and need the `Err` arm before
+their source paths open.
+
+### 16.2 The driver is not wired yet
+
+The step 8 proof drives the pipeline through the compiler **library**: it parses, resolves,
+typechecks, calls `lower_program_with_providers`, emits, links and runs. `native_build.rs` — what
+`starkc build` actually uses — still calls plain `lower_program` and never invokes synthesis at all.
+So a package with a `provider_api` block in its manifest does **not** build from the command line.
+
+Recorded rather than glossed, because CD-220 had to correct an over-claim of exactly this shape:
+"executes natively" had meant *hand-built MIR runs*, which was true and was not what a reader took
+it to mean. "Reachable from STARK source" must not now quietly mean *reachable if you drive the
+compiler as a library*.
+
+What remains is integration, not design — every component exists and is tested:
+
+1. read `provider_api` from the manifest (`package.rs`, done);
+2. `derive_all` against the selected provider's validated metadata (done);
+3. `synthesize` the raw layer (done);
+4. prepend it to the package's compilation unit — **the only genuinely new piece**, and the place to
+   decide how a generated unit reports spans in diagnostics;
+5. `ProviderLowering::build` from the bindings (done);
+6. call `lower_program_with_providers` instead of `lower_program`.

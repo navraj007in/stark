@@ -78,7 +78,15 @@ fn stark_time_provider() -> DeclaredProvider {
                 FunctionDecl {
                     name: "stark_time_unix_now".to_string(),
                     capability: "clock".to_string(),
-                    params: vec![AbiParam::ScalarOut(ScalarTy::I64)],
+                    // TWO out-slots: seconds and nanoseconds, matching the provider crate and
+                    // `provider_registry`. This mirror said one slot until now. It did not fail,
+                    // because this test never calls `unix_now` through it -- which is precisely how
+                    // a wrong mirror survives: nothing checks a declaration nobody calls. CD-219 is
+                    // the same defect where it *was* called, and it aborted at the boundary.
+                    params: vec![
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::U32),
+                    ],
                     is_close_for: None,
                     may_block: false,
                 },

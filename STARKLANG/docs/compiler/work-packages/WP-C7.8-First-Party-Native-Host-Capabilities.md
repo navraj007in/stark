@@ -412,6 +412,22 @@ by hand-built MIR, which is why it is replaced:
 **Until the source-to-provider lowering path exists, C7.8 has not removed P1's host-capability
 precondition** — regardless of whether a provider can be executed from hand-built MIR.
 
+**Narrowed 2026-07-30.** That path now exists. `c788_source_time_e2e.rs` compiles a `.stark`
+program calling a manifest-bound function with ordinary syntax, lowers it to `Callee::Provider`,
+links `stark-time-native`, executes it and asserts the printed monotonic reading is nonzero. The
+general blocker — `lower_program` emitting no provider call at all — is gone.
+
+Stated as precisely as this section's own correction demands: that path runs through the compiler
+**library**. `native_build.rs` still calls plain `lower_program` and never invokes synthesis, so
+`starkc build` on a package with a `provider_api` block does not yet work. Every component exists
+and is tested; the driver wiring is the gap.
+
+The precondition is **narrowed, not lifted**, and the claim above still requires *each mandatory*
+capability. What remains is now specific per capability rather than architectural: `stark-env` needs
+the recoverable-status `Err` arm (design §16.1); `stark-file` and `stark-net` additionally need a
+resource-nominal mechanism (design §3.1). Cross-platform verification of the source path is
+C7.8.7's, and one capability on one host is not it.
+
 It does **not** claim P1 is complete, and it does **not** close Gate C7.
 
 **Hand-authored MIR tests are not source-language capability completion.** They remain backend and
@@ -546,10 +562,11 @@ representation Packet 6 dispositioned, which the source path needs anyway.
 numbered steps, and the authority for status. The outline above is the *shape* of the path and
 deliberately does not renumber against it; where the two are read together, §16 governs.
 
-Position: outline step 1 done (CD-213); §16 steps 1–3 done, with step 3 collapsed into step 2
-because synthesis emits STARK source and the ordinary front end builds the HIR (design §3.1). §16
-steps 4–7 are blocked on a resource-nominal mechanism; step 8, the monotonic-time proof, is not —
-see §3.1 and `COMPILER-STATE.md`.
+Position (2026-07-30): outline step 1 done (CD-213); §16 steps 1–3, **6 and 8 done** — the
+monotonic clock executes from ordinary STARK source with no hand-built MIR
+(`c788_source_time_e2e.rs`). Step 3 collapsed into step 2, because synthesis emits STARK source and
+the ordinary front end builds the HIR (design §3.1). §16 steps 4, 5 and 7 remain blocked on a
+resource-nominal mechanism. See design §3.1 and §16.1, and `COMPILER-STATE.md`.
 
 ### Proof order, by increasing complexity
 

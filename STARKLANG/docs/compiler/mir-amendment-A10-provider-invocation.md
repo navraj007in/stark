@@ -279,6 +279,15 @@ consumed-resource invalidation, output-slot discipline and channel discipline al
 consuming call — and no lowering produces that structure yet. C7.8.2d-1 builds the structure they
 will be checked against.
 
+> **Update 2026-07-30 (WP-C7.8.8 step 6).** Lowering now does produce provider calls from ordinary
+> STARK source — `mir::lower::lower_program_with_providers`, proven end to end by
+> `c788_source_time_e2e.rs`. This covers **scalar** signatures only: out-slots become caller-owned
+> locals passed as `&mut`, and the `Result` is built after the call from those locals. Calls
+> carrying a resource, and capabilities with a non-empty status vocabulary, are still refused at
+> lowering, so invariants 6–9 remain unexercised by source-generated MIR. See
+> `WP-C7.8.8-PACKAGE-API-DESIGN.md` §16.1 for the two refusals and why they are refusals rather
+> than approximations.
+
 **MIR-0024, stated narrowly.** Resource-bearing provider calls are structurally defined but remain
 inadmissible until a provider resource type is **bound to a concrete MIR type**. It does not say
 MIR cannot support resources. The diagnostic therefore **outlives the empty registry**: once
