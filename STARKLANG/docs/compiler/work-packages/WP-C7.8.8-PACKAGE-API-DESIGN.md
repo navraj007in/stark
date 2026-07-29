@@ -100,6 +100,32 @@ The alternative — the package declaring a signature that the compiler then rep
 it requires a bodyless function form (CE1 grammar) and creates two sources of truth for the
 signature, which can disagree.
 
+### 3.1 The mechanism is source text, and functions only (implementation finding, step 3)
+
+Injection is implemented as **generated STARK source** (`starkc/src/provider_synth.rs`), parsed by
+the ordinary front end. This is forced rather than chosen: every name in HIR is a `Span` into a
+`SourceFile` (`hir::FnSig::name`, `ItemKind::Struct::name`), so an item constructed directly would
+carry either a fabricated span — surfacing in every diagnostic that touches it — or a second name
+representation threaded through the whole front end. Generating source makes §3's claim *literally*
+true instead of approximately: the items are ordinary because the ordinary parser built them.
+
+A generated body is `panic("provider binding not lowered")` — type `!`, so it satisfies any return
+type — with **no trailing semicolon**, since `panic(…);` is a statement and would give the block
+value `Unit`. Lowering never reaches the body; it emits `Callee::Provider` from the binding (step 6).
+
+**Resource nominals cannot use this mechanism.** Every source form that declares a nominal is
+constructible — `struct S;` and `struct S {}` both admit a value at a use site — and a host resource
+must be opaque (§6, A11 §6). Generating source for one would hand programs a way to forge a handle
+no provider produced, and `from_raw_checked` would not catch it: the `resource_type` would be
+whatever the forger wrote.
+
+`synthesize()` therefore **refuses** any signature carrying a receiver or a resource type, rather
+than emitting something weaker. The consequence for §16's order: steps 1–3 and 8 are reachable for
+`clock` (scalar-only, and both its signatures compile), and steps 4–7 need a resource-nominal
+mechanism decided first — either a compiler-injected opaque item form, or a source form the checker
+refuses to construct. This is why CD-225 put the monotonic-time proof before resource capabilities;
+the finding confirms that order was load-bearing, not merely convenient.
+
 ---
 
 ## 4. The signature contract, which is the hard part
@@ -551,16 +577,28 @@ Nothing here changes the ABI, the runtime surface, or any Core specification doc
 
 ## 16. Implementation order (CD-225)
 
-1. manifest parsing and validation for `provider_api`;
-2. synthesis of private package items and resource nominals;
-3. typed HIR bindings;
+1. manifest parsing and validation for `provider_api` — **done**
+   (`package.rs`; `c788_provider_api_manifest.rs`);
+2. synthesis of private package items and resource nominals — **functions done**
+   (`provider_derive.rs`, `provider_synth.rs`; `c788_derive.rs`, `c788_synth.rs`);
+   **resource nominals blocked**, see §3.1;
+3. typed HIR bindings — **done**, subsumed by step 2: synthesis emits source, so the front end
+   builds the HIR itself and the binding rides alongside as `SynthesizedLayer::bindings`;
 4. resource-name-to-nominal registry;
 5. resolution-time construction of `MirTy::HostResource`;
 6. `Callee::Provider` lowering;
 7. close-arena population and verifier rules;
 8. **source-level monotonic-time proof** before any resource capability.
 
+Numbering is fixed; steps are annotated rather than renumbered, because CD-225 approved this order
+by number. Completed steps are implementation under that approval and mint no new decision IDs.
+
 **TCP is not first, and neither is `File`.** The first acceptance test compiles an ordinary STARK
 source call through package resolution, typed HIR and `Callee::Provider`, then links and executes
 the time provider — **with no hand-built MIR**. Time has no resource, no buffer and one out-slot, so
 a failure in that test is a failure in the source path itself rather than in anything it carries.
+
+§3.1's finding makes that ordering load-bearing rather than convenient: steps 4–7 all touch resource
+nominals, which have no mechanism yet, while step 8's target needs none. The remaining path to the
+proof is therefore **step 6 alone** — lowering a call to a synthesized item into `Callee::Provider`,
+which the emitter and linker already execute (`a10_stark_time_e2e.rs`, from hand-built MIR).

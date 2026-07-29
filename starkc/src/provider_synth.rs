@@ -1,0 +1,159 @@
+//! WP-C7.8.8 step 3 — synthesizing the raw binding layer as STARK source.
+//!
+//! **Why source text rather than constructed HIR.** Every name in HIR is a `Span` into a
+//! `SourceFile` (`hir::FnSig::name`, `ItemKind::Struct::name`, …). A synthesized item with no source
+//! has no span, so constructing HIR directly would mean either fabricating spans that point
+//! nowhere — and surface in every diagnostic that touches them — or threading an alternative name
+//! representation through the whole front end.
+//!
+//! Generating source instead means name resolution, type checking and visibility are **ordinary**.
+//! That was the design's claim (§3: "by the time they run, these are ordinary items"), and this is
+//! what makes it literally true rather than approximately.
+//!
+//! **The body is never lowered.** A generated function's body is `panic(…)`, which has type `!` and
+//! so satisfies any return type. Lowering ignores it and emits `Callee::Provider` from the binding
+//! (step 6). The body exists because Core v1 has no bodyless-`fn` grammar and adding one would be
+//! the CE1 grammar change Packet 4 avoids — not because anything runs it.
+//!
+//! **Resource nominals are not synthesized here**, and cannot be by this mechanism. See
+//! [`RESOURCE_SYNTHESIS_LIMIT`].
+
+use crate::provider_abi::ScalarTy;
+use crate::provider_derive::{DerivedSignature, DerivedTy};
+use std::collections::BTreeMap;
+
+/// Why resource nominals need a different mechanism from functions.
+///
+/// A host resource must be **opaque**: no fields, no constructor (design §6, A11 §6). Every source
+/// form that declares a nominal is constructible — `struct S;` and `struct S {}` both admit `S` or
+/// `S {}` at a use site — so generating source for a resource would hand programs a way to forge a
+/// handle that no provider ever produced.
+///
+/// Function synthesis has no such problem: a generated `fn` is called, never constructed.
+///
+/// So resource nominals are deferred to the slice that needs them (`File`, then TCP), and will need
+/// either a compiler-injected opaque item form or a source form the checker refuses to construct.
+/// **This is recorded rather than worked around**, because a forged handle reaching
+/// `from_raw_checked` would pass its `resource_type` check — the id would be whatever the forger
+/// wrote — and the ABI's validation would not save it.
+pub const RESOURCE_SYNTHESIS_LIMIT: &str =
+    "host-resource nominals cannot be synthesized as ordinary source: every source nominal form is \
+     constructible, and a host resource must not be";
+
+/// A package's synthesized raw layer: the source text, and the binding each item carries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SynthesizedLayer {
+    /// STARK source for the raw layer. Empty when the package binds nothing.
+    pub source: String,
+    /// Item path → `(capability, symbol)`, for lowering to consult (step 6).
+    ///
+    /// A side table rather than a field on the HIR item, because HIR is built by the ordinary
+    /// parser from the source above and carries no provider vocabulary. The binding is **carried,
+    /// not consulted**, until lowering — which is what keeps name resolution and type checking free
+    /// of special cases.
+    pub bindings: BTreeMap<String, (String, String)>,
+}
+
+fn scalar_src(s: ScalarTy) -> &'static str {
+    match s {
+        ScalarTy::U8 => "UInt8",
+        ScalarTy::U16 => "UInt16",
+        ScalarTy::U32 => "UInt32",
+        ScalarTy::U64 => "UInt64",
+        ScalarTy::I8 => "Int8",
+        ScalarTy::I16 => "Int16",
+        ScalarTy::I32 => "Int32",
+        ScalarTy::I64 => "Int64",
+        ScalarTy::Bool => "Bool",
+        ScalarTy::F32 => "Float32",
+        ScalarTy::F64 => "Float64",
+    }
+}
+
+fn ty_src(t: &DerivedTy) -> String {
+    match t {
+        DerivedTy::Scalar(s) => scalar_src(*s).to_string(),
+        DerivedTy::ScalarSlot(s) => format!("&mut {}", scalar_src(*s)),
+        DerivedTy::SharedBytes => "&[UInt8]".to_string(),
+        DerivedTy::ExclusiveBytes => "&mut [UInt8]".to_string(),
+        DerivedTy::SharedResource { nominal } => format!("&{nominal}"),
+        DerivedTy::OwnedResource { nominal } => nominal.clone(),
+    }
+}
+
+/// The function name from an item path: `Instant::now_ns` → `now_ns`.
+fn leaf(item_path: &str) -> &str {
+    item_path.rsplit_once("::").map_or(item_path, |(_, n)| n)
+}
+
+/// Generates the raw layer for a set of derived signatures.
+///
+/// Free functions only for now: associated placement (CD-225 §7.1) needs the receiver's nominal to
+/// exist, and resource nominals are not synthesizable (see [`RESOURCE_SYNTHESIS_LIMIT`]). A
+/// signature with a receiver is therefore **refused** rather than emitted as a free function with a
+/// silently different call shape.
+pub fn synthesize(signatures: &[DerivedSignature]) -> Result<SynthesizedLayer, String> {
+    if signatures.is_empty() {
+        return Ok(SynthesizedLayer::default());
+    }
+
+    let mut source = String::from(
+        "// GENERATED by the STARK compiler (WP-C7.8.8). The raw provider binding layer.\n\
+         // Package-private: a package exports its own API over this, never this itself.\n\
+         // Bodies are never lowered -- a provider call is emitted from the binding (CD-225).\n",
+    );
+    let mut bindings = BTreeMap::new();
+
+    for sig in signatures {
+        if sig.receiver.is_some() {
+            return Err(format!("{}: {RESOURCE_SYNTHESIS_LIMIT}", sig.item_path));
+        }
+        if sig.params.iter().chain(sig.results.iter()).any(|t| {
+            matches!(
+                t,
+                DerivedTy::SharedResource { .. } | DerivedTy::OwnedResource { .. }
+            )
+        }) {
+            return Err(format!("{}: {RESOURCE_SYNTHESIS_LIMIT}", sig.item_path));
+        }
+
+        let params = sig
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("a{i}: {}", ty_src(t)))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let ok = match sig.results.len() {
+            0 => "Unit".to_string(),
+            1 => ty_src(&sig.results[0]),
+            _ => format!(
+                "({})",
+                sig.results
+                    .iter()
+                    .map(ty_src)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+
+        // `panic` has type `!`, so it satisfies any return type -- which is what lets a body exist
+        // without being meaningful. Lowering never reaches it.
+        //
+        // **No trailing semicolon.** `panic(...)` as a statement makes the block's value `Unit` and
+        // the body stops typechecking; only as the tail expression does `!` reach the return type.
+        source.push_str(&format!(
+            "fn {}({params}) -> Result<{ok}, {}> {{ panic(\"provider binding not lowered\") }}\n",
+            leaf(&sig.item_path),
+            sig.error
+        ));
+
+        bindings.insert(
+            sig.item_path.clone(),
+            (sig.capability.clone(), sig.symbol.clone()),
+        );
+    }
+
+    Ok(SynthesizedLayer { source, bindings })
+}

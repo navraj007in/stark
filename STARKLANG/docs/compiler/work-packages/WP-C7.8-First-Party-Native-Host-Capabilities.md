@@ -531,18 +531,25 @@ The path from STARK source to a native provider call. **This is the critical pat
 sits behind it rather than in front of it: `tcp_listener`/`tcp_stream` need the host-resource
 representation Packet 6 dispositioned, which the source path needs anyway.
 
-### The seven steps
+### The path, in outline
 
-1. package manifest declares required capabilities;
-2. package API declarations bind source-level functions and resource types to provider
+1. the package manifest declares required capabilities;
+2. a package API declaration binds source-level functions and resource types to provider
    capabilities, symbols and provider resource names;
-3. type checking resolves the normal package call;
-4. HIR preserves the provider binding;
+3. type checking resolves an ordinary package call;
+4. the provider binding survives to lowering;
 5. lowering creates `ValidatedProviderCall` and emits `Callee::Provider`;
-6. package resource nominals lower to the new MIR host-resource representation (Packet 6);
+6. package resource nominals lower to the MIR host-resource representation (Packet 6);
 7. generated Rust uses `OwnedResourceHandle`.
 
-Step 1 is done (CD-213). Steps 2–7 are open.
+**The implementation order is `WP-C7.8.8-PACKAGE-API-DESIGN.md` §16, approved as CD-225** — eight
+numbered steps, and the authority for status. The outline above is the *shape* of the path and
+deliberately does not renumber against it; where the two are read together, §16 governs.
+
+Position: outline step 1 done (CD-213); §16 steps 1–3 done, with step 3 collapsed into step 2
+because synthesis emits STARK source and the ordinary front end builds the HIR (design §3.1). §16
+steps 4–7 are blocked on a resource-nominal mechanism; step 8, the monotonic-time proof, is not —
+see §3.1 and `COMPILER-STATE.md`.
 
 ### Proof order, by increasing complexity
 

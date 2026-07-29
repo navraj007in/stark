@@ -453,10 +453,30 @@ Rust `Drop`, MIR-owned exactly-once close, `resource_type` validated on `HandleO
 special case obliges every consumer to remember it, and the first that forgets emits fields where a
 handle belongs.
 
-**WP-C7.8.8 — source/package provider integration** is now the critical path. Seven steps (manifest
-capabilities → package API bindings → type check → HIR binding → lowering to `Callee::Provider` →
-resource nominals → `OwnedResourceHandle`), proven in order on real STARK source: time, args/env,
-File, TCP bind/connect, accept, full echo. TCP sits behind this, not in front of it.
+**WP-C7.8.8 — source/package provider integration** is now the critical path. **Eight steps**, the
+order CD-225 approved and the design's §16 carries verbatim: manifest `provider_api` parsing →
+synthesis of package items and resource nominals → typed HIR bindings → resource-name-to-nominal
+registry → resolution-time `MirTy::HostResource` → `Callee::Provider` lowering → close arena and
+verifier rules → **source-level monotonic-time proof**. Proven in that order on real STARK source:
+time, args/env, File, TCP bind/connect, accept, full echo. TCP sits behind this, not in front of it.
+
+**Position (2026-07-29): steps 1–3 done, and step 3 collapsed into step 2.** Synthesis is generated
+STARK source (`provider_synth.rs`) rather than constructed HIR, because every HIR name is a `Span`
+into a `SourceFile` — so there is no separate "typed HIR binding" step to do; the ordinary front end
+builds the HIR and the binding rides alongside in a side table. `c788_synth.rs` compiles the
+generated layer through parse → resolve → typecheck rather than inspecting it as text, which is how
+it caught the body needing to be a tail expression: `panic(…);` with a semicolon types as `Unit`.
+
+**Finding — resource nominals have no mechanism yet (design §3.1).** Every source form that declares
+a nominal is constructible, and a host resource must be opaque, so generating source for one would
+let a program forge a handle no provider produced — `from_raw_checked` would not catch it, because
+the `resource_type` would be whatever the forger wrote. Synthesis therefore **refuses** any signature
+with a receiver or resource type rather than emitting something weaker. Steps 4–7 all touch resource
+nominals and are blocked on deciding that mechanism (compiler-injected opaque item form, or a source
+form the checker refuses to construct). **Step 8's target needs none**, so the remaining path to the
+monotonic-time proof is step 6 alone — lowering a call to a synthesized item into `Callee::Provider`,
+which the emitter and linker already execute from hand-built MIR (`a10_stark_time_e2e.rs`). CD-225's
+"time before resource capabilities" ordering was load-bearing, not merely convenient.
 
 **CD-224 dispositions — A11 APPROVED, and three rules that outlive it.**
 

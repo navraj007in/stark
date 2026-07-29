@@ -44,6 +44,10 @@ pub enum DerivedTy {
 pub struct DerivedSignature {
     /// The item path this is synthesized at, e.g. `Instant::now_ns`.
     pub item_path: String,
+    /// The capability this call belongs to.
+    pub capability: String,
+    /// The provider symbol, verbatim. Carried so synthesis and lowering never re-derive it.
+    pub symbol: String,
     /// The receiver type, when the path is associated and the declaration borrows or consumes it.
     pub receiver: Option<DerivedTy>,
     /// Parameters after the receiver, in declared order.
@@ -217,6 +221,8 @@ pub fn derive(
 
     Ok(DerivedSignature {
         item_path: item_path.to_string(),
+        capability: capability.to_string(),
+        symbol: decl.name.clone(),
         receiver,
         params,
         results,
