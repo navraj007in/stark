@@ -16,6 +16,7 @@ fi
 
 rm -f "$prefix/bin/stark" "$prefix/bin/starkc" "$prefix/bin/starkide"
 rm -rf "$prefix/lib/stark/stark-runtime"
+rm -rf "$prefix/lib/stark/stark-provider-abi"
 rm -f "$prefix/lib/stark/uninstall.sh"
 rmdir "$prefix/lib/stark" 2>/dev/null || true
 

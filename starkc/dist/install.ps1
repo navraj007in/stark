@@ -11,15 +11,18 @@ $ErrorActionPreference = "Stop"
 $PackageDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageBin = Join-Path $PackageDir "bin"
 $PackageRuntime = Join-Path $PackageDir "lib\stark\stark-runtime"
+$PackageProviderAbi = Join-Path $PackageDir "lib\stark\stark-provider-abi"
 
 if (-not (Test-Path (Join-Path $PackageBin "stark.exe") -PathType Leaf) -or
-    -not (Test-Path (Join-Path $PackageRuntime "Cargo.toml") -PathType Leaf)) {
+    -not (Test-Path (Join-Path $PackageRuntime "Cargo.toml") -PathType Leaf) -or
+    -not (Test-Path (Join-Path $PackageProviderAbi "Cargo.toml") -PathType Leaf)) {
     throw "install.ps1 must be run from an extracted STARK release package"
 }
 
 $InstallBin = Join-Path $Prefix "bin"
 $InstallLib = Join-Path $Prefix "lib\stark"
 $InstallRuntime = Join-Path $InstallLib "stark-runtime"
+$InstallProviderAbi = Join-Path $InstallLib "stark-provider-abi"
 New-Item -ItemType Directory -Force -Path $InstallBin, $InstallLib | Out-Null
 
 Copy-Item (Join-Path $PackageBin "stark.exe") $InstallBin -Force
@@ -28,7 +31,11 @@ Copy-Item (Join-Path $PackageBin "starkide.exe") $InstallBin -Force
 if (Test-Path $InstallRuntime) {
     Remove-Item $InstallRuntime -Recurse -Force
 }
+if (Test-Path $InstallProviderAbi) {
+    Remove-Item $InstallProviderAbi -Recurse -Force
+}
 Copy-Item $PackageRuntime $InstallRuntime -Recurse
+Copy-Item $PackageProviderAbi $InstallProviderAbi -Recurse
 Copy-Item (Join-Path $PackageDir "uninstall.ps1") $InstallLib -Force
 
 if (-not $NoPathUpdate) {

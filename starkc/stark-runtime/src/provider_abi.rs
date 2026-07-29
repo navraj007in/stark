@@ -25,21 +25,9 @@
 //! *leaked*. That is precisely the property MIR verification exists to exclude, and precisely the
 //! property that would become unfalsifiable if a Rust destructor papered over it.
 
-/// The raw, C-compatible handle (§7, amended). `Copy` because it crosses the FFI boundary as a
-/// scalar and has to be — this is the boundary-confined form, not the one generated code holds.
-///
-/// Fields are `pub` because a provider implementation compiles against this type and must be able
-/// to construct one. Generated STARK code must never read or write them directly (§4.9's
-/// boundary-helper requirement): every raw↔owned conversion goes through the helpers on
-/// [`OwnedResourceHandle`], which is where resource-type validation lives.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RawResourceHandle {
-    pub id: u64,
-    /// A compiler-assigned index into the provider's declared resource-type list — not a pointer
-    /// and not a provider-chosen tag.
-    pub resource_type: u32,
-}
+pub use stark_provider_abi::{
+    BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawResourceHandle,
+};
 
 /// The owning handle generated STARK code holds (§7/§8, amended). Not `Copy`, not `Clone`, no
 /// `Drop` — see the module docs for why each of those three is deliberate.
@@ -103,51 +91,6 @@ impl OwnedResourceHandle {
     /// generated code has any business performing — it never sees `id` at all.
     pub fn resource_type(&self) -> u32 {
         self.0.resource_type
-    }
-}
-
-/// §9: a borrowed immutable view, valid only for the duration of the call that received it.
-/// **Never an ownership transfer** (amendment §3.1) — §8 governs handles only.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct BorrowedBuffer {
-    pub ptr: *const u8,
-    pub len: usize,
-}
-
-/// §9: a borrowed mutable view (admitted in v0.1 so a `read`-shaped function has somewhere to
-/// write), same call-duration-only lifetime contract as [`BorrowedBuffer`].
-///
-/// Caller-initialised and caller-owned across the call (§4.7): the caller allocates it, the
-/// provider fills or modifies it, and **the caller reads it afterward**. That last part is why
-/// calling this an ownership transfer was wrong — reading your own buffer after the call is the
-/// entire purpose of the type, not a use-after-transfer.
-#[repr(C)]
-#[derive(Debug)]
-pub struct BorrowedBufferMut {
-    pub ptr: *mut u8,
-    pub len: usize,
-}
-
-/// §11: every provider function returns this, never a value directly; results come back through
-/// an explicit output channel. `code == 0` is success; nonzero meaning is defined per-provider
-/// (§12: an ordinary provider error, distinct from a STARK trap or a host failure).
-///
-/// One exception, and it is not an exception to the *representation*: a **close** function's
-/// nonzero status cannot become a recoverable `Result::Err`, because MIR's `Drop` terminator has
-/// no result destination (§4.8). It is a fatal provider-close/host failure — abort, do not retry,
-/// treat the handle as consumed, and run no further pending Drop glue.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProviderStatus {
-    pub code: u32,
-}
-
-impl ProviderStatus {
-    pub const SUCCESS: ProviderStatus = ProviderStatus { code: 0 };
-
-    pub fn is_success(self) -> bool {
-        self.code == 0
     }
 }
 

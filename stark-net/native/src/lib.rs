@@ -8,50 +8,24 @@ use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+pub use stark_provider_abi::{
+    BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawResourceHandle,
+};
+
 pub const TCP_LISTENER_RESOURCE_TYPE: u32 = 0;
 pub const TCP_STREAM_RESOURCE_TYPE: u32 = 1;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProviderStatus {
-    pub code: u32,
-}
-
-impl ProviderStatus {
-    pub const SUCCESS: Self = Self { code: 0 };
-    pub const CONNECTION_REFUSED: Self = Self { code: 1 };
-    pub const TIMED_OUT: Self = Self { code: 2 };
-    pub const NOT_FOUND: Self = Self { code: 3 };
-    pub const PERMISSION_DENIED: Self = Self { code: 4 };
-    pub const ADDRESS_IN_USE: Self = Self { code: 5 };
-    pub const INVALID_INPUT: Self = Self { code: 6 };
-    pub const CONNECTION_RESET: Self = Self { code: 7 };
-    pub const BROKEN_PIPE: Self = Self { code: 8 };
-    pub const WOULD_BLOCK: Self = Self { code: 9 };
-    pub const UNSUPPORTED: Self = Self { code: 10 };
-    pub const OTHER_DECLARED: Self = Self { code: 11 };
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RawResourceHandle {
-    pub id: u64,
-    pub resource_type: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct BorrowedBuffer {
-    pub ptr: *const u8,
-    pub len: usize,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct BorrowedBufferMut {
-    pub ptr: *mut u8,
-    pub len: usize,
-}
+pub const STATUS_CONNECTION_REFUSED: ProviderStatus = ProviderStatus { code: 1 };
+pub const STATUS_TIMED_OUT: ProviderStatus = ProviderStatus { code: 2 };
+pub const STATUS_NOT_FOUND: ProviderStatus = ProviderStatus { code: 3 };
+pub const STATUS_PERMISSION_DENIED: ProviderStatus = ProviderStatus { code: 4 };
+pub const STATUS_ADDRESS_IN_USE: ProviderStatus = ProviderStatus { code: 5 };
+pub const STATUS_INVALID_INPUT: ProviderStatus = ProviderStatus { code: 6 };
+pub const STATUS_CONNECTION_RESET: ProviderStatus = ProviderStatus { code: 7 };
+pub const STATUS_BROKEN_PIPE: ProviderStatus = ProviderStatus { code: 8 };
+pub const STATUS_WOULD_BLOCK: ProviderStatus = ProviderStatus { code: 9 };
+pub const STATUS_UNSUPPORTED: ProviderStatus = ProviderStatus { code: 10 };
+pub const STATUS_OTHER_DECLARED: ProviderStatus = ProviderStatus { code: 11 };
 
 struct Table {
     next: u64,
@@ -97,28 +71,26 @@ unsafe fn write_scalar<T: Copy>(out: *mut T, value: T) {
 fn address_from_buffer(buffer: BorrowedBuffer) -> Result<String, ProviderStatus> {
     let bytes = unsafe { read_buffer(buffer) };
     if bytes.is_empty() || bytes.contains(&0) {
-        return Err(ProviderStatus::INVALID_INPUT);
+        return Err(STATUS_INVALID_INPUT);
     }
     std::str::from_utf8(bytes)
         .map(str::to_owned)
-        .map_err(|_| ProviderStatus::INVALID_INPUT)
+        .map_err(|_| STATUS_INVALID_INPUT)
 }
 
 fn map_io_error(error: &std::io::Error) -> ProviderStatus {
     match error.kind() {
-        std::io::ErrorKind::ConnectionRefused => ProviderStatus::CONNECTION_REFUSED,
-        std::io::ErrorKind::TimedOut => ProviderStatus::TIMED_OUT,
-        std::io::ErrorKind::NotFound => ProviderStatus::NOT_FOUND,
-        std::io::ErrorKind::PermissionDenied => ProviderStatus::PERMISSION_DENIED,
-        std::io::ErrorKind::AddrInUse => ProviderStatus::ADDRESS_IN_USE,
-        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => {
-            ProviderStatus::INVALID_INPUT
-        }
-        std::io::ErrorKind::ConnectionReset => ProviderStatus::CONNECTION_RESET,
-        std::io::ErrorKind::BrokenPipe => ProviderStatus::BROKEN_PIPE,
-        std::io::ErrorKind::WouldBlock => ProviderStatus::WOULD_BLOCK,
-        std::io::ErrorKind::Unsupported => ProviderStatus::UNSUPPORTED,
-        _ => ProviderStatus::OTHER_DECLARED,
+        std::io::ErrorKind::ConnectionRefused => STATUS_CONNECTION_REFUSED,
+        std::io::ErrorKind::TimedOut => STATUS_TIMED_OUT,
+        std::io::ErrorKind::NotFound => STATUS_NOT_FOUND,
+        std::io::ErrorKind::PermissionDenied => STATUS_PERMISSION_DENIED,
+        std::io::ErrorKind::AddrInUse => STATUS_ADDRESS_IN_USE,
+        std::io::ErrorKind::InvalidInput | std::io::ErrorKind::InvalidData => STATUS_INVALID_INPUT,
+        std::io::ErrorKind::ConnectionReset => STATUS_CONNECTION_RESET,
+        std::io::ErrorKind::BrokenPipe => STATUS_BROKEN_PIPE,
+        std::io::ErrorKind::WouldBlock => STATUS_WOULD_BLOCK,
+        std::io::ErrorKind::Unsupported => STATUS_UNSUPPORTED,
+        _ => STATUS_OTHER_DECLARED,
     }
 }
 
@@ -511,6 +483,37 @@ mod tests {
             && chars.all(|c| matches!(c, b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'))
     }
 
+    mod linked {
+        use super::{BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawResourceHandle};
+
+        unsafe extern "C" {
+            pub fn stark_tcp_listener_bind(
+                address: BorrowedBuffer,
+                out_handle: *mut RawResourceHandle,
+            ) -> ProviderStatus;
+            pub fn stark_tcp_listener_accept(
+                listener: RawResourceHandle,
+                out_stream: *mut RawResourceHandle,
+            ) -> ProviderStatus;
+            pub fn stark_tcp_stream_connect(
+                address: BorrowedBuffer,
+                out_stream: *mut RawResourceHandle,
+            ) -> ProviderStatus;
+            pub fn stark_tcp_stream_read(
+                stream: RawResourceHandle,
+                out_buffer: BorrowedBufferMut,
+                out_written: *mut u64,
+            ) -> ProviderStatus;
+            pub fn stark_tcp_stream_write(
+                stream: RawResourceHandle,
+                data: BorrowedBuffer,
+                out_accepted: *mut u64,
+            ) -> ProviderStatus;
+            pub fn stark_tcp_listener_close(handle: RawResourceHandle) -> ProviderStatus;
+            pub fn stark_tcp_stream_close(handle: RawResourceHandle) -> ProviderStatus;
+        }
+    }
+
     #[test]
     fn metadata_validates_and_symbols_match() {
         let metadata = provider_metadata();
@@ -531,9 +534,33 @@ mod tests {
     }
 
     #[test]
+    fn physical_abi_types_are_from_shared_crate_with_pinned_layout() {
+        assert_eq!(
+            std::mem::size_of::<ProviderStatus>(),
+            std::mem::size_of::<stark_provider_abi::ProviderStatus>()
+        );
+        assert_eq!(
+            std::mem::align_of::<ProviderStatus>(),
+            std::mem::align_of::<stark_provider_abi::ProviderStatus>()
+        );
+        assert_eq!(
+            std::mem::size_of::<RawResourceHandle>(),
+            std::mem::size_of::<stark_provider_abi::RawResourceHandle>()
+        );
+        assert_eq!(
+            std::mem::size_of::<BorrowedBuffer>(),
+            std::mem::size_of::<stark_provider_abi::BorrowedBuffer>()
+        );
+        assert_eq!(
+            std::mem::size_of::<BorrowedBufferMut>(),
+            std::mem::size_of::<stark_provider_abi::BorrowedBufferMut>()
+        );
+    }
+
+    #[test]
     fn status_zero_means_success_and_declared_errors_are_stable() {
         assert_eq!(ProviderStatus::SUCCESS.code, 0);
-        assert_eq!(ProviderStatus::OTHER_DECLARED.code, 11);
+        assert_eq!(STATUS_OTHER_DECLARED.code, 11);
     }
 
     #[test]
@@ -574,7 +601,9 @@ mod tests {
             resource_type: TCP_LISTENER_RESOURCE_TYPE,
         };
         assert_eq!(
-            unsafe { stark_tcp_listener_bind(buf(address_text.as_bytes()), &mut listener_handle) },
+            unsafe {
+                linked::stark_tcp_listener_bind(buf(address_text.as_bytes()), &mut listener_handle)
+            },
             ProviderStatus::SUCCESS
         );
         let accept_thread = thread::spawn(move || {
@@ -583,7 +612,7 @@ mod tests {
                 resource_type: TCP_STREAM_RESOURCE_TYPE,
             };
             assert_eq!(
-                unsafe { stark_tcp_listener_accept(listener_handle, &mut accepted) },
+                unsafe { linked::stark_tcp_listener_accept(listener_handle, &mut accepted) },
                 ProviderStatus::SUCCESS
             );
             accepted
@@ -593,13 +622,13 @@ mod tests {
             resource_type: TCP_STREAM_RESOURCE_TYPE,
         };
         assert_eq!(
-            unsafe { stark_tcp_stream_connect(buf(address_text.as_bytes()), &mut client) },
+            unsafe { linked::stark_tcp_stream_connect(buf(address_text.as_bytes()), &mut client) },
             ProviderStatus::SUCCESS
         );
         let accepted = accept_thread.join().unwrap();
         let mut written = 0;
         assert_eq!(
-            unsafe { stark_tcp_stream_write(client, buf(b"abc\0def"), &mut written) },
+            unsafe { linked::stark_tcp_stream_write(client, buf(b"abc\0def"), &mut written) },
             ProviderStatus::SUCCESS
         );
         assert_eq!(written, 7);
@@ -607,7 +636,7 @@ mod tests {
         let mut read = 0;
         assert_eq!(
             unsafe {
-                stark_tcp_stream_read(
+                linked::stark_tcp_stream_read(
                     accepted,
                     BorrowedBufferMut {
                         ptr: out.as_mut_ptr(),
@@ -620,15 +649,15 @@ mod tests {
         );
         assert_eq!(&out[..read as usize], b"abc\0def");
         assert_eq!(
-            unsafe { stark_tcp_stream_close(client) },
+            unsafe { linked::stark_tcp_stream_close(client) },
             ProviderStatus::SUCCESS
         );
         assert_eq!(
-            unsafe { stark_tcp_stream_close(accepted) },
+            unsafe { linked::stark_tcp_stream_close(accepted) },
             ProviderStatus::SUCCESS
         );
         assert_eq!(
-            unsafe { stark_tcp_listener_close(listener_handle) },
+            unsafe { linked::stark_tcp_listener_close(listener_handle) },
             ProviderStatus::SUCCESS
         );
     }
@@ -640,14 +669,15 @@ mod tests {
             resource_type: TCP_STREAM_RESOURCE_TYPE,
         };
         assert_eq!(
-            unsafe { stark_tcp_stream_connect(buf(b"not a socket address"), &mut handle) },
-            ProviderStatus::INVALID_INPUT
+            unsafe { linked::stark_tcp_stream_connect(buf(b"not a socket address"), &mut handle) },
+            STATUS_INVALID_INPUT
         );
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
-        let status =
-            unsafe { stark_tcp_stream_connect(buf(address.to_string().as_bytes()), &mut handle) };
+        let status = unsafe {
+            linked::stark_tcp_stream_connect(buf(address.to_string().as_bytes()), &mut handle)
+        };
         assert!(matches!(status.code, 1 | 11));
     }
 }

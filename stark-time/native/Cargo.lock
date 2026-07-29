@@ -72,13 +72,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "stark-provider-abi"
+version = "0.1.0"
+
+[[package]]
 name = "stark-runtime"
 version = "0.1.0"
+dependencies = [
+ "stark-provider-abi",
+]
 
 [[package]]
 name = "stark-time-native"
 version = "0.1.0"
 dependencies = [
+ "stark-provider-abi",
  "stark-runtime",
  "starkc",
 ]
@@ -88,6 +96,7 @@ name = "starkc"
 version = "0.1.0"
 dependencies = [
  "sha2",
+ "stark-provider-abi",
  "stark-runtime",
 ]
 

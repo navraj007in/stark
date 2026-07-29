@@ -5,46 +5,20 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::sync::{Mutex, OnceLock};
 
+pub use stark_provider_abi::{
+    BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawResourceHandle,
+};
+
 pub const FILE_RESOURCE_TYPE: u32 = 0;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProviderStatus {
-    pub code: u32,
-}
-
-impl ProviderStatus {
-    pub const SUCCESS: Self = Self { code: 0 };
-    pub const NOT_FOUND: Self = Self { code: 1 };
-    pub const PERMISSION_DENIED: Self = Self { code: 2 };
-    pub const INVALID_INPUT: Self = Self { code: 3 };
-    pub const INVALID_ENCODING: Self = Self { code: 4 };
-    pub const IS_DIRECTORY: Self = Self { code: 5 };
-    pub const ALREADY_EXISTS: Self = Self { code: 6 };
-    pub const UNSUPPORTED: Self = Self { code: 7 };
-    pub const OTHER_DECLARED: Self = Self { code: 8 };
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RawResourceHandle {
-    pub id: u64,
-    pub resource_type: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct BorrowedBuffer {
-    pub ptr: *const u8,
-    pub len: usize,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct BorrowedBufferMut {
-    pub ptr: *mut u8,
-    pub len: usize,
-}
+pub const STATUS_NOT_FOUND: ProviderStatus = ProviderStatus { code: 1 };
+pub const STATUS_PERMISSION_DENIED: ProviderStatus = ProviderStatus { code: 2 };
+pub const STATUS_INVALID_INPUT: ProviderStatus = ProviderStatus { code: 3 };
+pub const STATUS_INVALID_ENCODING: ProviderStatus = ProviderStatus { code: 4 };
+pub const STATUS_IS_DIRECTORY: ProviderStatus = ProviderStatus { code: 5 };
+pub const STATUS_ALREADY_EXISTS: ProviderStatus = ProviderStatus { code: 6 };
+pub const STATUS_UNSUPPORTED: ProviderStatus = ProviderStatus { code: 7 };
+pub const STATUS_OTHER_DECLARED: ProviderStatus = ProviderStatus { code: 8 };
 
 struct Table {
     next: u64,
@@ -79,11 +53,11 @@ unsafe fn read_buffer(buffer: BorrowedBuffer) -> &'static [u8] {
 fn path_from_buffer(buffer: BorrowedBuffer) -> Result<String, ProviderStatus> {
     let bytes = unsafe { read_buffer(buffer) };
     if bytes.contains(&0) {
-        return Err(ProviderStatus::INVALID_INPUT);
+        return Err(STATUS_INVALID_INPUT);
     }
     std::str::from_utf8(bytes)
         .map(str::to_owned)
-        .map_err(|_| ProviderStatus::INVALID_ENCODING)
+        .map_err(|_| STATUS_INVALID_ENCODING)
 }
 
 unsafe fn write_scalar<T: Copy>(out: *mut T, value: T) {
@@ -97,12 +71,12 @@ unsafe fn write_scalar<T: Copy>(out: *mut T, value: T) {
 
 fn map_io_error(error: &std::io::Error) -> ProviderStatus {
     match error.kind() {
-        std::io::ErrorKind::NotFound => ProviderStatus::NOT_FOUND,
-        std::io::ErrorKind::PermissionDenied => ProviderStatus::PERMISSION_DENIED,
-        std::io::ErrorKind::InvalidInput => ProviderStatus::INVALID_INPUT,
-        std::io::ErrorKind::AlreadyExists => ProviderStatus::ALREADY_EXISTS,
-        std::io::ErrorKind::Unsupported => ProviderStatus::UNSUPPORTED,
-        _ => ProviderStatus::OTHER_DECLARED,
+        std::io::ErrorKind::NotFound => STATUS_NOT_FOUND,
+        std::io::ErrorKind::PermissionDenied => STATUS_PERMISSION_DENIED,
+        std::io::ErrorKind::InvalidInput => STATUS_INVALID_INPUT,
+        std::io::ErrorKind::AlreadyExists => STATUS_ALREADY_EXISTS,
+        std::io::ErrorKind::Unsupported => STATUS_UNSUPPORTED,
+        _ => STATUS_OTHER_DECLARED,
     }
 }
 
@@ -138,7 +112,7 @@ pub unsafe extern "C" fn stark_file_open(
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
-            return ProviderStatus::IS_DIRECTORY
+            return STATUS_IS_DIRECTORY
         }
         Err(error) => return map_io_error(&error),
     };
@@ -158,7 +132,7 @@ pub unsafe extern "C" fn stark_file_create(
     let file = match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::IsADirectory => {
-            return ProviderStatus::IS_DIRECTORY
+            return STATUS_IS_DIRECTORY
         }
         Err(error) => return map_io_error(&error),
     };
@@ -351,6 +325,34 @@ mod tests {
             && chars.all(|c| matches!(c, b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'))
     }
 
+    mod linked {
+        use super::{BorrowedBuffer, BorrowedBufferMut, ProviderStatus, RawResourceHandle};
+
+        unsafe extern "C" {
+            pub fn stark_file_open(
+                path: BorrowedBuffer,
+                out_handle: *mut RawResourceHandle,
+            ) -> ProviderStatus;
+            pub fn stark_file_create(
+                path: BorrowedBuffer,
+                out_handle: *mut RawResourceHandle,
+            ) -> ProviderStatus;
+            pub fn stark_file_read(
+                handle: RawResourceHandle,
+                out_buffer: BorrowedBufferMut,
+                out_written: *mut u64,
+                out_eof: *mut bool,
+            ) -> ProviderStatus;
+            pub fn stark_file_write(
+                handle: RawResourceHandle,
+                data: BorrowedBuffer,
+                out_accepted: *mut u64,
+            ) -> ProviderStatus;
+            pub fn stark_file_complete(handle: RawResourceHandle) -> ProviderStatus;
+            pub fn stark_file_close(handle: RawResourceHandle) -> ProviderStatus;
+        }
+    }
+
     #[test]
     fn metadata_validates_and_symbols_match() {
         let metadata = provider_metadata();
@@ -378,9 +380,93 @@ mod tests {
     }
 
     #[test]
+    fn physical_abi_types_are_from_shared_crate_with_pinned_layout() {
+        assert_eq!(
+            std::mem::size_of::<ProviderStatus>(),
+            std::mem::size_of::<stark_provider_abi::ProviderStatus>()
+        );
+        assert_eq!(
+            std::mem::align_of::<ProviderStatus>(),
+            std::mem::align_of::<stark_provider_abi::ProviderStatus>()
+        );
+        assert_eq!(
+            std::mem::size_of::<RawResourceHandle>(),
+            std::mem::size_of::<stark_provider_abi::RawResourceHandle>()
+        );
+        assert_eq!(
+            std::mem::size_of::<BorrowedBuffer>(),
+            std::mem::size_of::<stark_provider_abi::BorrowedBuffer>()
+        );
+        assert_eq!(
+            std::mem::size_of::<BorrowedBufferMut>(),
+            std::mem::size_of::<stark_provider_abi::BorrowedBufferMut>()
+        );
+    }
+
+    #[test]
+    fn declared_symbols_are_externally_linkable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("linked.bin");
+        let path = path.to_string_lossy();
+        let mut handle = RawResourceHandle {
+            id: 0,
+            resource_type: FILE_RESOURCE_TYPE,
+        };
+        assert_eq!(
+            unsafe { linked::stark_file_create(buf(path.as_bytes()), &mut handle) },
+            ProviderStatus::SUCCESS
+        );
+        let mut accepted = 0;
+        assert_eq!(
+            unsafe { linked::stark_file_write(handle, buf(b"x"), &mut accepted) },
+            ProviderStatus::SUCCESS
+        );
+        assert_eq!(accepted, 1);
+        assert_eq!(
+            unsafe { linked::stark_file_complete(handle) },
+            ProviderStatus::SUCCESS
+        );
+        assert_eq!(
+            unsafe { linked::stark_file_close(handle) },
+            ProviderStatus::SUCCESS
+        );
+
+        let mut read_handle = RawResourceHandle {
+            id: 0,
+            resource_type: FILE_RESOURCE_TYPE,
+        };
+        assert_eq!(
+            unsafe { linked::stark_file_open(buf(path.as_bytes()), &mut read_handle) },
+            ProviderStatus::SUCCESS
+        );
+        let mut out = [0u8; 1];
+        let mut written = 0;
+        let mut eof = false;
+        assert_eq!(
+            unsafe {
+                linked::stark_file_read(
+                    read_handle,
+                    BorrowedBufferMut {
+                        ptr: out.as_mut_ptr(),
+                        len: out.len(),
+                    },
+                    &mut written,
+                    &mut eof,
+                )
+            },
+            ProviderStatus::SUCCESS
+        );
+        assert_eq!(written, 1);
+        assert_eq!(
+            unsafe { linked::stark_file_close(read_handle) },
+            ProviderStatus::SUCCESS
+        );
+    }
+
+    #[test]
     fn status_zero_means_success_and_declared_errors_are_stable() {
         assert_eq!(ProviderStatus::SUCCESS.code, 0);
-        assert_eq!(ProviderStatus::OTHER_DECLARED.code, 8);
+        assert_eq!(STATUS_OTHER_DECLARED.code, 8);
     }
 
     #[test]
@@ -459,11 +545,11 @@ mod tests {
         };
         assert_eq!(
             unsafe { stark_file_open(buf(missing.as_bytes()), &mut handle) },
-            ProviderStatus::NOT_FOUND
+            STATUS_NOT_FOUND
         );
         assert_eq!(
             unsafe { stark_file_open(buf(b"bad\0path"), &mut handle) },
-            ProviderStatus::INVALID_INPUT
+            STATUS_INVALID_INPUT
         );
         let dir_path = dir.path().to_string_lossy();
         let status = unsafe { stark_file_open(buf(dir_path.as_bytes()), &mut handle) };
@@ -501,7 +587,7 @@ mod tests {
         };
         assert_eq!(
             unsafe { stark_file_create(buf(path.as_bytes()), &mut handle) },
-            ProviderStatus::ALREADY_EXISTS
+            STATUS_ALREADY_EXISTS
         );
     }
 }

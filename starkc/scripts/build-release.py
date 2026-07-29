@@ -30,6 +30,7 @@ REPO_DIR = CRATE_DIR.parent
 BINARIES = ("stark", "starkc", "starkide")
 RUNTIME_FILES = ("Cargo.toml",)
 RUNTIME_DIRS = ("src",)
+RUNTIME_PATH_DEPENDENCIES = ("stark-provider-abi",)
 
 
 def run(command: list[str], *, capture: bool = False) -> str:
@@ -180,6 +181,14 @@ def package_release(
             shutil.copy2(runtime_source / filename, runtime_destination / filename)
         for dirname in RUNTIME_DIRS:
             shutil.copytree(runtime_source / dirname, runtime_destination / dirname)
+        for crate_name in RUNTIME_PATH_DEPENDENCIES:
+            source = CRATE_DIR / crate_name
+            destination = staging / "lib" / "stark" / crate_name
+            destination.mkdir(parents=True)
+            for filename in RUNTIME_FILES:
+                shutil.copy2(source / filename, destination / filename)
+            for dirname in RUNTIME_DIRS:
+                shutil.copytree(source / dirname, destination / dirname)
 
         dist_dir = CRATE_DIR / "dist"
         for installer_name in entry.installers:
@@ -197,6 +206,7 @@ def package_release(
                     f"Rust target: {target}",
                     "Included binaries: stark, starkc, starkide",
                     "Installed runtime: lib/stark/stark-runtime",
+                    "Installed provider ABI: lib/stark/stark-provider-abi",
                     "These binaries are unsigned development releases.",
                     "",
                 ]

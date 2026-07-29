@@ -77,6 +77,9 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertTrue(
                 (package_root / "lib/stark/stark-runtime/src/lib.rs").is_file()
             )
+            self.assertTrue(
+                (package_root / "lib/stark/stark-provider-abi/src/lib.rs").is_file()
+            )
             if os.name != "nt":
                 prefix = root / "prefix with spaces"
                 subprocess.run(
@@ -86,6 +89,9 @@ class ReleasePackageTests(unittest.TestCase):
                 self.assertTrue((prefix / "bin/stark").is_file())
                 self.assertTrue(
                     (prefix / "lib/stark/stark-runtime/src/lib.rs").is_file()
+                )
+                self.assertTrue(
+                    (prefix / "lib/stark/stark-provider-abi/src/lib.rs").is_file()
                 )
                 subprocess.run(
                     [
@@ -97,6 +103,7 @@ class ReleasePackageTests(unittest.TestCase):
                 )
                 self.assertFalse((prefix / "bin/stark").exists())
                 self.assertFalse((prefix / "lib/stark/stark-runtime").exists())
+                self.assertFalse((prefix / "lib/stark/stark-provider-abi").exists())
 
     def test_windows_package_has_runner_runtime_and_powershell_installers(self) -> None:
         with tempfile.TemporaryDirectory(prefix="stark-release-test-") as temporary:
@@ -119,6 +126,9 @@ class ReleasePackageTests(unittest.TestCase):
                 )
                 self.assertIn(
                     f"{package_root}/lib/stark/stark-runtime/src/lib.rs", names
+                )
+                self.assertIn(
+                    f"{package_root}/lib/stark/stark-provider-abi/src/lib.rs", names
                 )
                 self.assertIn(f"{package_root}/install.ps1", names)
                 self.assertIn(f"{package_root}/uninstall.ps1", names)

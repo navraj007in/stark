@@ -15,6 +15,7 @@ Remove-Item (Join-Path $InstallBin "stark.exe") -Force -ErrorAction SilentlyCont
 Remove-Item (Join-Path $InstallBin "starkc.exe") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $InstallBin "starkide.exe") -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $InstallLib "stark-runtime") -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $InstallLib "stark-provider-abi") -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $InstallLib "uninstall.ps1") -Force -ErrorAction SilentlyContinue
 
 if (-not $KeepPath) {

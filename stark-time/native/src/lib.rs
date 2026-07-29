@@ -13,22 +13,10 @@
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-/// §11: every provider function returns this, never a value directly. Structurally identical to
-/// `stark_runtime::provider_abi::ProviderStatus` (a dev-only dependency here -- see
-/// `tests::provider_metadata` for the crate that actually owns this shape); defined locally so
-/// the provider functions below have zero non-dev dependencies, matching §16's "no third-party
-/// dependency" for the shipped provider.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProviderStatus {
-    pub code: u32,
-}
+pub use stark_provider_abi::ProviderStatus;
 
-impl ProviderStatus {
-    pub const SUCCESS: ProviderStatus = ProviderStatus { code: 0 };
-    pub const CLOCK_UNAVAILABLE: ProviderStatus = ProviderStatus { code: 1 };
-    pub const OUT_OF_RANGE: ProviderStatus = ProviderStatus { code: 2 };
-}
+pub const STATUS_CLOCK_UNAVAILABLE: ProviderStatus = ProviderStatus { code: 1 };
+pub const STATUS_OUT_OF_RANGE: ProviderStatus = ProviderStatus { code: 2 };
 
 static ORIGIN: OnceLock<Instant> = OnceLock::new();
 
@@ -58,7 +46,7 @@ pub unsafe extern "C" fn stark_time_monotonic_now_ns(out_ns: *mut u64) -> Provid
     };
 
     let Some(elapsed_ns) = computed else {
-        return ProviderStatus::OUT_OF_RANGE;
+        return STATUS_OUT_OF_RANGE;
     };
 
     if out_ns.is_null() {
@@ -116,7 +104,7 @@ pub unsafe extern "C" fn stark_time_unix_now(
     };
 
     let Some((seconds, nanos)) = computed else {
-        return ProviderStatus::OUT_OF_RANGE;
+        return STATUS_OUT_OF_RANGE;
     };
 
     if out_seconds.is_null() || out_nanos.is_null() {
@@ -176,10 +164,22 @@ mod tests {
 
     // ------------------------------------------------------------- ABI boundary (FFI) --
 
+    mod linked {
+        use super::ProviderStatus;
+
+        unsafe extern "C" {
+            pub fn stark_time_monotonic_now_ns(out_ns: *mut u64) -> ProviderStatus;
+            pub fn stark_time_unix_now(
+                out_seconds: *mut i64,
+                out_nanos: *mut u32,
+            ) -> ProviderStatus;
+        }
+    }
+
     #[test]
     fn ffi_monotonic_writes_output_only_on_success() {
         let mut out: u64 = 0xDEAD_BEEF_DEAD_BEEF;
-        let status = unsafe { stark_time_monotonic_now_ns(&mut out as *mut u64) };
+        let status = unsafe { linked::stark_time_monotonic_now_ns(&mut out as *mut u64) };
         assert_eq!(status, ProviderStatus::SUCCESS);
         assert_ne!(out, 0xDEAD_BEEF_DEAD_BEEF, "output must have been written");
     }
@@ -189,11 +189,11 @@ mod tests {
         let mut a: u64 = 0;
         let mut b: u64 = 0;
         assert_eq!(
-            unsafe { stark_time_monotonic_now_ns(&mut a as *mut u64) },
+            unsafe { linked::stark_time_monotonic_now_ns(&mut a as *mut u64) },
             ProviderStatus::SUCCESS
         );
         assert_eq!(
-            unsafe { stark_time_monotonic_now_ns(&mut b as *mut u64) },
+            unsafe { linked::stark_time_monotonic_now_ns(&mut b as *mut u64) },
             ProviderStatus::SUCCESS
         );
         assert!(b >= a);
@@ -203,8 +203,9 @@ mod tests {
     fn ffi_unix_now_writes_canonical_output() {
         let mut seconds: i64 = 0;
         let mut nanos: u32 = 0xFFFF_FFFF;
-        let status =
-            unsafe { stark_time_unix_now(&mut seconds as *mut i64, &mut nanos as *mut u32) };
+        let status = unsafe {
+            linked::stark_time_unix_now(&mut seconds as *mut i64, &mut nanos as *mut u32)
+        };
         assert_eq!(status, ProviderStatus::SUCCESS);
         assert!(nanos < 1_000_000_000);
     }
@@ -214,6 +215,15 @@ mod tests {
     #[test]
     fn provider_status_is_repr_c_and_four_bytes() {
         assert_eq!(std::mem::size_of::<ProviderStatus>(), 4);
+        assert_eq!(std::mem::align_of::<ProviderStatus>(), 4);
+        assert_eq!(
+            std::mem::size_of::<ProviderStatus>(),
+            std::mem::size_of::<stark_provider_abi::ProviderStatus>()
+        );
+        assert_eq!(
+            std::mem::align_of::<ProviderStatus>(),
+            std::mem::align_of::<stark_provider_abi::ProviderStatus>()
+        );
         assert_eq!(ProviderStatus::SUCCESS.code, 0);
     }
 

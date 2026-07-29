@@ -12,10 +12,11 @@ rust-version = "1.85"
 # rather than at the repo root so CI's existing `working-directory: starkc` continues to cover
 # it with no workflow changes.
 [workspace]
-members = [".", "stark-runtime"]
+members = [".", "stark-provider-abi", "stark-runtime"]
 
 [dependencies]
 sha2 = { version = "0.11.0", default-features = false }
+stark-provider-abi = { path = "stark-provider-abi" }
 stark-runtime = { path = "stark-runtime" }
 
 [dev-dependencies]

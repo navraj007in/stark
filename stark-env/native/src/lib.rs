@@ -1,32 +1,11 @@
 //! Native process args/env provider for Native Provider ABI v0.1.
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProviderStatus {
-    pub code: u32,
-}
+pub use stark_provider_abi::{BorrowedBuffer, BorrowedBufferMut, ProviderStatus};
 
-impl ProviderStatus {
-    pub const SUCCESS: Self = Self { code: 0 };
-    pub const INVALID_NAME: Self = Self { code: 1 };
-    pub const INVALID_ENCODING: Self = Self { code: 2 };
-    pub const BUFFER_TOO_SMALL: Self = Self { code: 3 };
-    pub const UNSUPPORTED: Self = Self { code: 4 };
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct BorrowedBuffer {
-    pub ptr: *const u8,
-    pub len: usize,
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct BorrowedBufferMut {
-    pub ptr: *mut u8,
-    pub len: usize,
-}
+pub const STATUS_INVALID_NAME: ProviderStatus = ProviderStatus { code: 1 };
+pub const STATUS_INVALID_ENCODING: ProviderStatus = ProviderStatus { code: 2 };
+pub const STATUS_BUFFER_TOO_SMALL: ProviderStatus = ProviderStatus { code: 3 };
+pub const STATUS_UNSUPPORTED: ProviderStatus = ProviderStatus { code: 4 };
 
 fn abort_contract() -> ! {
     std::process::abort()
@@ -53,7 +32,7 @@ unsafe fn write_scalar<T: Copy>(out: *mut T, value: T) {
 
 unsafe fn write_bytes(out: BorrowedBufferMut, bytes: &[u8]) -> ProviderStatus {
     if bytes.len() > out.len {
-        return ProviderStatus::BUFFER_TOO_SMALL;
+        return STATUS_BUFFER_TOO_SMALL;
     }
     if !bytes.is_empty() && out.ptr.is_null() {
         abort_contract();
@@ -69,9 +48,7 @@ unsafe fn write_bytes(out: BorrowedBufferMut, bytes: &[u8]) -> ProviderStatus {
 fn args_bytes() -> Result<Vec<u8>, ProviderStatus> {
     let mut encoded = Vec::new();
     for (idx, arg) in std::env::args_os().enumerate() {
-        let arg = arg
-            .into_string()
-            .map_err(|_| ProviderStatus::INVALID_ENCODING)?;
+        let arg = arg.into_string().map_err(|_| STATUS_INVALID_ENCODING)?;
         if idx > 0 {
             encoded.push(0);
         }
@@ -82,9 +59,9 @@ fn args_bytes() -> Result<Vec<u8>, ProviderStatus> {
 
 fn validate_env_name(bytes: &[u8]) -> Result<&str, ProviderStatus> {
     if bytes.is_empty() || bytes.contains(&b'=') || bytes.contains(&0) {
-        return Err(ProviderStatus::INVALID_NAME);
+        return Err(STATUS_INVALID_NAME);
     }
-    std::str::from_utf8(bytes).map_err(|_| ProviderStatus::INVALID_ENCODING)
+    std::str::from_utf8(bytes).map_err(|_| STATUS_INVALID_ENCODING)
 }
 
 #[no_mangle]
@@ -94,7 +71,7 @@ pub unsafe extern "C" fn stark_env_args_len(out_required_len: *mut u64) -> Provi
         Err(status) => return status,
     };
     let Ok(len) = u64::try_from(bytes.len()) else {
-        return ProviderStatus::UNSUPPORTED;
+        return STATUS_UNSUPPORTED;
     };
     unsafe { write_scalar(out_required_len, len) };
     ProviderStatus::SUCCESS
@@ -114,7 +91,7 @@ pub unsafe extern "C" fn stark_env_args_fill(
         return status;
     }
     let Ok(written) = u64::try_from(bytes.len()) else {
-        return ProviderStatus::UNSUPPORTED;
+        return STATUS_UNSUPPORTED;
     };
     unsafe { write_scalar(out_written, written) };
     ProviderStatus::SUCCESS
@@ -134,10 +111,10 @@ pub unsafe extern "C" fn stark_env_var_len(
         Some(value) => {
             let value = match value.into_string() {
                 Ok(value) => value,
-                Err(_) => return ProviderStatus::INVALID_ENCODING,
+                Err(_) => return STATUS_INVALID_ENCODING,
             };
             let Ok(len) = u64::try_from(value.len()) else {
-                return ProviderStatus::UNSUPPORTED;
+                return STATUS_UNSUPPORTED;
             };
             unsafe {
                 write_scalar(out_present, true);
@@ -168,14 +145,14 @@ pub unsafe extern "C" fn stark_env_var_fill(
     };
     let value = match value.into_string() {
         Ok(value) => value,
-        Err(_) => return ProviderStatus::INVALID_ENCODING,
+        Err(_) => return STATUS_INVALID_ENCODING,
     };
     let status = unsafe { write_bytes(out_buffer, value.as_bytes()) };
     if status != ProviderStatus::SUCCESS {
         return status;
     }
     let Ok(written) = u64::try_from(value.len()) else {
-        return ProviderStatus::UNSUPPORTED;
+        return STATUS_UNSUPPORTED;
     };
     unsafe { write_scalar(out_written, written) };
     ProviderStatus::SUCCESS
@@ -251,6 +228,28 @@ mod tests {
             && chars.all(|c| matches!(c, b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'))
     }
 
+    mod linked {
+        use super::{BorrowedBuffer, BorrowedBufferMut, ProviderStatus};
+
+        unsafe extern "C" {
+            pub fn stark_env_args_len(out_required_len: *mut u64) -> ProviderStatus;
+            pub fn stark_env_args_fill(
+                out_buffer: BorrowedBufferMut,
+                out_written: *mut u64,
+            ) -> ProviderStatus;
+            pub fn stark_env_var_len(
+                name: BorrowedBuffer,
+                out_present: *mut bool,
+                out_required_len: *mut u64,
+            ) -> ProviderStatus;
+            pub fn stark_env_var_fill(
+                name: BorrowedBuffer,
+                out_buffer: BorrowedBufferMut,
+                out_written: *mut u64,
+            ) -> ProviderStatus;
+        }
+    }
+
     #[test]
     fn metadata_validates_against_real_abi() {
         assert_eq!(
@@ -281,12 +280,82 @@ mod tests {
     }
 
     #[test]
+    fn physical_abi_types_are_from_shared_crate_with_pinned_layout() {
+        assert_eq!(
+            std::mem::size_of::<ProviderStatus>(),
+            std::mem::size_of::<stark_provider_abi::ProviderStatus>()
+        );
+        assert_eq!(
+            std::mem::align_of::<ProviderStatus>(),
+            std::mem::align_of::<stark_provider_abi::ProviderStatus>()
+        );
+        assert_eq!(
+            std::mem::size_of::<BorrowedBuffer>(),
+            std::mem::size_of::<stark_provider_abi::BorrowedBuffer>()
+        );
+        assert_eq!(
+            std::mem::size_of::<BorrowedBufferMut>(),
+            std::mem::size_of::<stark_provider_abi::BorrowedBufferMut>()
+        );
+    }
+
+    #[test]
+    fn declared_symbols_are_externally_linkable() {
+        let mut required = 0;
+        assert_eq!(
+            unsafe { linked::stark_env_args_len(&mut required) },
+            ProviderStatus::SUCCESS
+        );
+        let mut buffer = vec![0u8; required as usize];
+        let mut written = u64::MAX;
+        assert_eq!(
+            unsafe {
+                linked::stark_env_args_fill(
+                    BorrowedBufferMut {
+                        ptr: buffer.as_mut_ptr(),
+                        len: buffer.len(),
+                    },
+                    &mut written,
+                )
+            },
+            ProviderStatus::SUCCESS
+        );
+        assert_eq!(written, required);
+
+        let name = BorrowedBuffer {
+            ptr: b"STARK_ENV_NATIVE_LINK_ABSENT".as_ptr(),
+            len: 28,
+        };
+        let mut present = true;
+        let mut len = u64::MAX;
+        assert_eq!(
+            unsafe { linked::stark_env_var_len(name, &mut present, &mut len) },
+            ProviderStatus::SUCCESS
+        );
+        assert!(!present);
+        let mut written = u64::MAX;
+        assert_eq!(
+            unsafe {
+                linked::stark_env_var_fill(
+                    name,
+                    BorrowedBufferMut {
+                        ptr: std::ptr::null_mut(),
+                        len: 0,
+                    },
+                    &mut written,
+                )
+            },
+            ProviderStatus::SUCCESS
+        );
+    }
+
+    #[test]
     fn status_zero_means_success_and_errors_are_declared() {
         assert_eq!(ProviderStatus::SUCCESS.code, 0);
-        assert_eq!(ProviderStatus::INVALID_NAME.code, 1);
-        assert_eq!(ProviderStatus::INVALID_ENCODING.code, 2);
-        assert_eq!(ProviderStatus::BUFFER_TOO_SMALL.code, 3);
-        assert_eq!(ProviderStatus::UNSUPPORTED.code, 4);
+        assert_eq!(STATUS_INVALID_NAME.code, 1);
+        assert_eq!(STATUS_INVALID_ENCODING.code, 2);
+        assert_eq!(STATUS_BUFFER_TOO_SMALL.code, 3);
+        assert_eq!(STATUS_UNSUPPORTED.code, 4);
     }
 
     #[test]
@@ -321,7 +390,7 @@ mod tests {
         };
         assert_eq!(
             unsafe { stark_env_var_len(invalid, &mut present, &mut len) },
-            ProviderStatus::INVALID_NAME
+            STATUS_INVALID_NAME
         );
     }
 
@@ -345,7 +414,7 @@ mod tests {
                     &mut written,
                 )
             },
-            ProviderStatus::BUFFER_TOO_SMALL
+            STATUS_BUFFER_TOO_SMALL
         );
         assert_eq!(out, [0xAA; 3]);
         assert_eq!(written, 77);

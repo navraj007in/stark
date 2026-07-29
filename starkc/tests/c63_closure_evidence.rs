@@ -37,13 +37,25 @@ fn rustc_available() -> bool {
 /// and nothing else — no `target/`, no `.git`, no stray files the checkout happens to carry.
 fn install_runtime_into(dest: &Path) {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime");
+    let abi_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-provider-abi");
+    let abi_dest = dest.parent().unwrap().join("stark-provider-abi");
     std::fs::create_dir_all(dest.join("src")).expect("create install dir");
+    std::fs::create_dir_all(abi_dest.join("src")).expect("create provider ABI install dir");
     std::fs::copy(source.join("Cargo.toml"), dest.join("Cargo.toml")).expect("copy Cargo.toml");
+    std::fs::copy(abi_source.join("Cargo.toml"), abi_dest.join("Cargo.toml"))
+        .expect("copy provider ABI Cargo.toml");
     for entry in std::fs::read_dir(source.join("src")).expect("read runtime src") {
         let entry = entry.expect("runtime src entry");
         if entry.path().extension().is_some_and(|e| e == "rs") {
             std::fs::copy(entry.path(), dest.join("src").join(entry.file_name()))
                 .expect("copy runtime module");
+        }
+    }
+    for entry in std::fs::read_dir(abi_source.join("src")).expect("read provider ABI src") {
+        let entry = entry.expect("provider ABI src entry");
+        if entry.path().extension().is_some_and(|e| e == "rs") {
+            std::fs::copy(entry.path(), abi_dest.join("src").join(entry.file_name()))
+                .expect("copy provider ABI module");
         }
     }
 }
@@ -107,6 +119,7 @@ fn generated_crate_builds_against_an_installed_runtime_offline() {
         rustc: PathBuf::from("rustc"),
         cargo: PathBuf::from("cargo"),
         runtime_crate: installed.clone(),
+        provider_crates: std::collections::BTreeMap::new(),
     };
     let artifact = emit_native_debug_with_toolchain(
         &verified,

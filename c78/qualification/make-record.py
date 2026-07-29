@@ -8,6 +8,13 @@ import tomllib
 from pathlib import Path
 
 ALLOWED = {"pending", "implemented", "qualified", "unsupported"}
+EVIDENCE = {
+    "provider_metadata": "pass",
+    "provider_unit": "pass",
+    "resource_lifecycle": "pass",
+    "loopback": "pass",
+    "native_e2e": "pending",
+}
 
 
 def run(args):
@@ -45,18 +52,59 @@ def capability_summary(manifest):
     }
 
 
+def load_schema(path):
+    schema = json.loads(path.read_text())
+    if schema.get("schema_version") != 1:
+        raise SystemExit("qualification schema version must be 1")
+    return schema
+
+
+def validate_record(record, schema):
+    required = {
+        "schema_version",
+        "commit",
+        "platform",
+        "host",
+        "rustc",
+        "cargo",
+        "provider_abi_version",
+        "mir_runtime_surface",
+        "capabilities",
+        "evidence",
+    }
+    missing = required - set(record)
+    if missing:
+        raise SystemExit(f"record missing required fields: {sorted(missing)}")
+    if record["schema_version"] != schema["schema_version"]:
+        raise SystemExit("record schema_version does not match schema")
+    if record["provider_abi_version"] != schema["provider_abi_version"]:
+        raise SystemExit("record provider ABI version does not match schema")
+    if record["mir_runtime_surface"] != schema["mir_runtime_surface"]:
+        raise SystemExit("record MIR runtime surface does not match schema")
+    allowed_capabilities = set(schema["allowed_capability_states"])
+    for key, state in record["capabilities"].items():
+        if state not in allowed_capabilities:
+            raise SystemExit(f"record capability {key} has invalid state {state!r}")
+    required_evidence = set(schema["required_evidence"])
+    if set(record["evidence"]) != required_evidence:
+        raise SystemExit("record evidence keys do not match schema")
+    allowed_evidence = set(schema["allowed_evidence_states"])
+    for key, state in record["evidence"].items():
+        if state not in allowed_evidence:
+            raise SystemExit(f"record evidence {key} has invalid state {state!r}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--platform", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--manifest", default="c78/capabilities.toml")
+    parser.add_argument("--schema", default="c78/qualification/schema.json")
     parser.add_argument("--output", required=True)
-    parser.add_argument("--passed", type=int, default=0)
-    parser.add_argument("--failed", type=int, default=0)
-    parser.add_argument("--ignored", type=int, default=0)
     args = parser.parse_args()
 
     manifest = load_manifest(Path(args.manifest))
+    schema = load_schema(Path(args.schema))
     record = {
         "schema_version": 1,
         "commit": args.commit,
@@ -67,12 +115,9 @@ def main():
         "provider_abi_version": "0.1",
         "mir_runtime_surface": "0.1-A10",
         "capabilities": capability_summary(manifest),
-        "tests": {
-            "passed": args.passed,
-            "failed": args.failed,
-            "ignored": args.ignored,
-        },
+        "evidence": EVIDENCE,
     }
+    validate_record(record, schema)
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 

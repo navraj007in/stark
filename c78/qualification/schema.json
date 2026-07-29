@@ -2,6 +2,14 @@
   "schema_version": 1,
   "required_platforms": ["linux-x64", "macos-arm64", "windows-x64"],
   "allowed_capability_states": ["pending", "implemented", "qualified", "unsupported"],
+  "allowed_evidence_states": ["pass", "pending", "unsupported"],
+  "required_evidence": [
+    "provider_metadata",
+    "provider_unit",
+    "resource_lifecycle",
+    "loopback",
+    "native_e2e"
+  ],
   "provider_abi_version": "0.1",
   "mir_runtime_surface": "0.1-A10"
 }

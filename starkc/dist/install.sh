@@ -17,7 +17,8 @@ fi
 package_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 if [ ! -x "$package_dir/bin/stark" ] ||
-   [ ! -f "$package_dir/lib/stark/stark-runtime/Cargo.toml" ]; then
+   [ ! -f "$package_dir/lib/stark/stark-runtime/Cargo.toml" ] ||
+   [ ! -f "$package_dir/lib/stark/stark-provider-abi/Cargo.toml" ]; then
     echo "error: install.sh must be run from an extracted STARK release package" >&2
     exit 1
 fi
@@ -33,6 +34,11 @@ rm -rf "$runtime_dest"
 mkdir -p "$runtime_dest"
 cp "$package_dir/lib/stark/stark-runtime/Cargo.toml" "$runtime_dest/Cargo.toml"
 cp -R "$package_dir/lib/stark/stark-runtime/src" "$runtime_dest/src"
+abi_dest="$prefix/lib/stark/stark-provider-abi"
+rm -rf "$abi_dest"
+mkdir -p "$abi_dest"
+cp "$package_dir/lib/stark/stark-provider-abi/Cargo.toml" "$abi_dest/Cargo.toml"
+cp -R "$package_dir/lib/stark/stark-provider-abi/src" "$abi_dest/src"
 cp "$package_dir/uninstall.sh" "$prefix/lib/stark/uninstall.sh"
 chmod 755 "$prefix/lib/stark/uninstall.sh"
 
