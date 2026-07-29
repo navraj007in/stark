@@ -63,12 +63,7 @@ jobs:
       - name: tcp-e2e pending
         run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_net']['native_e2e']=='pending'"
       - name: c7.8-qualification-record
-        shell: bash
-        run: |
-          python c78/qualification/make-record.py \
-            --platform "${{ matrix.name }}" \
-            --commit "$GITHUB_SHA" \
-            --output "$RUNNER_TEMP/c78/${{ matrix.name }}.json"
+        run: python c78/qualification/make-record.py --platform "${{ matrix.name }}" --commit "${{ github.sha }}" --output "${{ runner.temp }}/c78/${{ matrix.name }}.json"
       - name: Upload C7.8 record
         if: always()
         uses: actions/upload-artifact@v4
