@@ -306,7 +306,50 @@ fn stark_time_monotonic_clock_executes_natively() {
         "the monotonic clock returned {nanos}, which means the output slot was never written"
     );
 
+    // WP-C6.4c §10.7's property, checked against the REAL lock rather than a string builder.
+    //
+    // Its unit test was removed when the hand-authored lock was: that lock assumed a two-package
+    // path-only graph, and it broke every native build the moment `stark-runtime` itself gained a
+    // dependency. Cargo resolves the lock now, so the property has to be asserted on Cargo's
+    // output -- which is stronger, because it is the file the build actually used.
+    let lock = find_generated_lock(&target_dir).expect("the generated crate must have a lock");
+    let lock_text = std::fs::read_to_string(&lock).expect("reading the generated lock");
+    assert!(
+        lock_text.contains("name = \"stark-time-native\""),
+        "the provider must appear in the lock:\n{lock_text}"
+    );
+    // A path-only graph has no registry source and no checksum -- which is what makes the
+    // `--offline` build provably network-free rather than warm-cache-dependent.
+    assert!(!lock_text.contains("source = "), "{lock_text}");
+    assert!(!lock_text.contains("checksum = "), "{lock_text}");
+
     let _ = std::fs::remove_dir_all(&target_dir);
+}
+
+/// The generated crate's `Cargo.lock`, wherever under the build root it landed.
+fn find_generated_lock(root: &std::path::Path) -> Option<PathBuf> {
+    walk(root)
+        .into_iter()
+        .find(|entry| entry.file_name().is_some_and(|n| n == "Cargo.lock"))
+}
+
+fn walk(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
 }
 
 /// Point 4, checked on the artefact's own generated source: the declared symbol appears verbatim.
