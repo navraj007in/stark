@@ -16,6 +16,7 @@ inline rather than by silent edit:
   library.
 - **§10 and §11 carry correction notices**: the binding is a side table rather than an HIR field,
   and the status→`Result` construction happens in lowering rather than in the synthesized body.
+
 **Governs:** step 2 of WP-C7.8.8 — binding source-level functions and resource types to provider
 capabilities, symbols and provider resource names.
 **Inputs:** Packet 4 (no Core change), Packet 5 (admission and trust boundary), Packet 6 (Route B
@@ -617,27 +618,37 @@ Nothing here changes the ABI, the runtime surface, or any Core specification doc
 
 ## 16. Implementation order (CD-225)
 
-1. manifest parsing and validation for `provider_api` — **done**
+1. manifest parsing and validation for `provider_api` — **done, CD-226**
    (`package.rs`; `c788_provider_api_manifest.rs`);
-2. synthesis of private package items and resource nominals — **functions done**
+2. synthesis of private package items and resource nominals — **functions done, CD-227**
    (`provider_derive.rs`, `provider_synth.rs`; `c788_derive.rs`, `c788_synth.rs`);
    **resource nominals blocked**, see §3.1;
-3. typed HIR bindings — **done**, subsumed by step 2: synthesis emits source, so the front end
-   builds the HIR itself and the binding rides alongside as `SynthesizedLayer::bindings`;
+3. typed HIR bindings — **done, CD-228**, subsumed by step 2: synthesis emits source, so the front
+   end builds the HIR itself and the binding rides alongside as `SynthesizedLayer::bindings`;
 4. resource-name-to-nominal registry — **blocked**, see §3.1;
 5. resolution-time construction of `MirTy::HostResource` — **blocked**, see §3.1;
-6. `Callee::Provider` lowering — **done for scalar signatures**
+6. `Callee::Provider` lowering — **done for scalar signatures, CD-229**
    (`mir/provider_lower.rs`, `mir/lower.rs`); resource and recoverable-status forms refused
    explicitly, see §16.1;
 7. close-arena population and verifier rules — **blocked**, see §3.1;
-8. **source-level monotonic-time proof** — **DONE** (`c788_source_time_e2e.rs`): a `.stark`
+8. **source-level monotonic-time proof** — **DONE, CD-229** (`c788_source_time_e2e.rs`): a `.stark`
    program calls the bound function with ordinary syntax, is compiled by the ordinary front end,
    lowered to `Callee::Provider`, linked against `stark-time-native`, executed, and the printed
    nanosecond reading is asserted nonzero. Through the compiler **library**; the `starkc build`
    driver is not yet wired (§16.2).
 
 Numbering is fixed; steps are annotated rather than renumbered, because CD-225 approved this order
-by number. Completed steps are implementation under that approval and mint no new decision IDs.
+by number.
+
+> **Decision-ID correction (2026-07-30).** The commits landing steps 3, 6 and 8 were written with
+> subjects `CD-196` and `CD-197`, which are **already taken** — CD-196 is "WP-C7.8 REVISE" (4419d6c)
+> and CD-197 is "Packet 3 dispositioned under CE2" (9aa7482). Their correct identities are
+> **CD-228** (step 3, commit cdba7c8) and **CD-229** (steps 6 and 8, commit ee85652), and this
+> document is the authority for that mapping.
+>
+> The commit subjects are **not** rewritten: they are pushed, a parallel session works the same
+> repository, and force-pushing shared history to fix a label risks losing that session's work —
+> a worse outcome than a subject line that needs this note to read correctly.
 
 **TCP is not first, and neither is `File`.** The first acceptance test compiles an ordinary STARK
 source call through package resolution, typed HIR and `Callee::Provider`, then links and executes

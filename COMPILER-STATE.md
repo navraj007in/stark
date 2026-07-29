@@ -465,6 +465,19 @@ registry → resolution-time `MirTy::HostResource` → `Callee::Provider` loweri
 verifier rules → **source-level monotonic-time proof**. Proven in that order on real STARK source:
 time, args/env, File, TCP bind/connect, accept, full echo. TCP sits behind this, not in front of it.
 
+**DECISION-ID CORRECTION (2026-07-30).** Two commits landed with **already-used** CD subjects:
+`cdba7c8` says `CD-196` and `ee85652` says `CD-197`, but CD-196 is "WP-C7.8 REVISE" (`4419d6c`) and
+CD-197 is "Packet 3 dispositioned under CE2" (`9aa7482`). Their correct identities are **CD-228**
+(step 3) and **CD-229** (steps 6 and 8). This entry and
+`WP-C7.8.8-PACKAGE-API-DESIGN.md` §16 are the authority for the mapping.
+
+The subjects are **not** rewritten. They are pushed, a parallel session works this repository, and
+force-pushing shared history to correct a label risks destroying that session's work — a strictly
+worse outcome than a subject line that needs this note. Cause: the CD sequence is allocated by
+decision, not by commit order, so the last commit on `main` at session start (`CD-195`) was not a
+reliable high-water mark. **Read the maximum from `git log --all | grep -oE "CD-[0-9]+"`, not from
+`HEAD`.**
+
 **POSITION (2026-07-30): the source-to-provider gap is CLOSED for a scalar capability.**
 `c788_source_time_e2e.rs` compiles a `.stark` program that calls a manifest-bound function with
 ordinary syntax, lowers it to `Callee::Provider`, links `stark-time-native`, runs the binary and
