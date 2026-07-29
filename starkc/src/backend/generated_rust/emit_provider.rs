@@ -16,6 +16,7 @@
 //! contract-violation channel rather than becoming any STARK value.
 
 use super::emit_bodies::{emit_assignment, emit_operand};
+use super::emit_places::emit_place_to_borrow;
 use super::emit_places::TyEnv;
 use super::BackendDiagnostic;
 use crate::mir::{MirProgram, Operand, Place, ValidatedProviderCall};
@@ -185,8 +186,33 @@ pub fn emit_provider_call(
     let mut writebacks: Vec<String> = Vec::new();
 
     // Named bindings for every argument, first, so every borrow outlives the call statement.
+    //
+    // A `&mut`-shaped argument is REBORROWED rather than read out of its place. `&mut T` is not
+    // `Copy`, so emitting the ordinary operand form moves out of the local and rustc rejects it
+    // (E0507) -- the defect a real build found, and one no text-level assertion could have. `&mut
+    // *place` produces the same pointer without disturbing the local, which is also what the
+    // caller-owned contract requires: §11.1's in/out storage stays the caller's across the call.
+    let mut_shaped: std::collections::BTreeSet<usize> = call
+        .function
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            matches!(
+                p,
+                AbiParam::ScalarOut(_) | AbiParam::ScalarInOut(_) | AbiParam::BufferInOut
+            )
+        })
+        .map(|(i, _)| i)
+        .collect();
+
     for (i, arg) in args.iter().enumerate() {
-        let value = emit_operand(arg, env)?;
+        let value = match arg {
+            Operand::Copy(place) | Operand::Move(place) if mut_shaped.contains(&i) => {
+                format!("&mut *{}", emit_place_to_borrow(place, env)?)
+            }
+            other => emit_operand(other, env)?,
+        };
         out.push_str(&format!("{indent}let __prov_a{i} = {value};\n"));
     }
 
