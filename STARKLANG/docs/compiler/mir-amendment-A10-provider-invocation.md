@@ -281,12 +281,19 @@ will be checked against.
 
 > **Update 2026-07-30 (WP-C7.8.8 step 6).** Lowering now does produce provider calls from ordinary
 > STARK source — `mir::lower::lower_program_with_providers`, proven end to end by
-> `c788_source_time_e2e.rs`. This covers **scalar** signatures only: out-slots become caller-owned
-> locals passed as `&mut`, and the `Result` is built after the call from those locals. Calls
-> carrying a resource, and capabilities with a non-empty status vocabulary, are still refused at
-> lowering, so invariants 6–9 remain unexercised by source-generated MIR. See
-> `WP-C7.8.8-PACKAGE-API-DESIGN.md` §16.1 for the two refusals and why they are refusals rather
-> than approximations.
+> `c788_source_time_e2e.rs`. This covers **scalar** signatures: out-slots become caller-owned locals
+> passed as `&mut`, and the `Result` is built after the call from those locals.
+>
+> **Invariant 9 (channel discipline) is now exercised by source-generated MIR.** A capability with a
+> declared status vocabulary lowers to a `SwitchInt` on the status — zero builds `Ok`, one arm per
+> declared code builds `Err`, and `otherwise` is **`Unreachable`**, because an undeclared code has
+> already aborted inside the emitted call. That is this amendment's three-channel separation
+> expressed as control flow rather than as a comment.
+>
+> **Invariants 6–8 remain unexercised**, since a call carrying a resource is still refused at
+> lowering: resource nominals have no synthesis mechanism (`WP-C7.8.8-PACKAGE-API-DESIGN.md` §3.1),
+> which is now the *only* refusal. See §16.1 there for what is lowered and §16.3 for the one backend
+> change it required.
 
 **MIR-0024, stated narrowly.** Resource-bearing provider calls are structurally defined but remain
 inadmissible until a provider resource type is **bound to a concrete MIR type**. It does not say

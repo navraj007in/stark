@@ -8,12 +8,28 @@
 //! compile, which is the class of defect the whole C7.8 e2e sequence kept finding.
 
 use starkc::provider_abi::ScalarTy;
+use starkc::provider_bind::StatusBinding;
 use starkc::provider_derive::{derive, DerivedSignature, DerivedTy};
 use starkc::provider_registry;
 use starkc::provider_synth::{synthesize, RESOURCE_SYNTHESIS_LIMIT};
 use starkc::source::SourceFile;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// A vocabulary for each capability the test's signatures use. `codes` empty means "no recoverable
+/// status", which generates an uninhabited raw error type.
+fn vocab(entries: &[(&str, &[(u32, &str)])]) -> BTreeMap<String, StatusBinding> {
+    entries
+        .iter()
+        .map(|(cap, codes)| {
+            let mut b = StatusBinding::new();
+            for (code, name) in codes.iter() {
+                b.declare(*code, *name);
+            }
+            (cap.to_string(), b)
+        })
+        .collect()
+}
 
 fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -50,10 +66,14 @@ fn time_signatures() -> Vec<DerivedSignature> {
         .collect()
 }
 
-/// Compiles the raw layer alongside a minimal error type and entry point, through the **ordinary**
-/// front end, and returns any errors.
+/// Compiles the raw layer plus an entry point, through the **ordinary** front end, and returns any
+/// errors.
+///
+/// The layer declares its own raw error type now (§7.2 — the compiler owns it, since the manifest
+/// carries no code→variant table), so nothing is prepended here. Prepending one would be a duplicate
+/// definition and would also hide whether synthesis emitted the type at all.
 fn compile(raw_layer: &str) -> Vec<String> {
-    let program = format!("enum RawTimeError {{ Failed }}\n{raw_layer}\nfn main() {{ }}\n");
+    let program = format!("{raw_layer}\nfn main() {{ }}\n");
     let file = Arc::new(SourceFile::new("synth.stark", program));
 
     let (ast, parse_diags) = starkc::parser::parse(&file, starkc::parser::ParseMode::Program);
@@ -84,7 +104,7 @@ fn compile(raw_layer: &str) -> Vec<String> {
 /// STARK — no special case anywhere in the front end.
 #[test]
 fn the_synthesized_layer_is_ordinary_stark() {
-    let layer = synthesize(&time_signatures()).expect("synthesizes");
+    let layer = synthesize(&time_signatures(), &vocab(&[("clock", &[])])).expect("synthesizes");
     let errors = compile(&layer.source);
     assert!(
         errors.is_empty(),
@@ -97,7 +117,7 @@ fn the_synthesized_layer_is_ordinary_stark() {
 /// This is CD-219's case reaching actual STARK.
 #[test]
 fn derived_shapes_reach_the_generated_source() {
-    let layer = synthesize(&time_signatures()).expect("synthesizes");
+    let layer = synthesize(&time_signatures(), &vocab(&[("clock", &[])])).expect("synthesizes");
     assert!(
         layer
             .source
@@ -119,7 +139,7 @@ fn derived_shapes_reach_the_generated_source() {
 /// binding is carried, not consulted, until step 6.
 #[test]
 fn the_binding_table_carries_capability_and_symbol() {
-    let layer = synthesize(&time_signatures()).expect("synthesizes");
+    let layer = synthesize(&time_signatures(), &vocab(&[("clock", &[])])).expect("synthesizes");
     assert_eq!(
         layer.bindings.get("time::monotonic_now_ns"),
         Some(&(
@@ -136,7 +156,7 @@ fn the_binding_table_carries_capability_and_symbol() {
 /// A package binding nothing synthesizes nothing — no source, no table, no trace.
 #[test]
 fn a_package_binding_nothing_synthesizes_nothing() {
-    let layer = synthesize(&[]).expect("synthesizes");
+    let layer = synthesize(&[], &BTreeMap::new()).expect("synthesizes");
     assert!(layer.source.is_empty());
     assert!(layer.bindings.is_empty());
 }
@@ -153,7 +173,7 @@ fn buffer_and_slot_forms_reach_the_generated_source() {
         &map(&[("process.env", "RawEnvError")]),
     )
     .expect("derives");
-    let layer = synthesize(&[sig]).expect("synthesizes");
+    let layer = synthesize(&[sig], &vocab(&[("process.env", &[])])).expect("synthesizes");
 
     assert!(
         layer
@@ -166,11 +186,11 @@ fn buffer_and_slot_forms_reach_the_generated_source() {
     // And the form must be real STARK, not merely the right text. `&[UInt8]` is the shape the whole
     // buffer capability rests on; if Core v1 does not admit it, that is a finding for step 3, not a
     // detail for whoever first compiles `stark-env`.
-    let program = layer.source.replace("RawEnvError", "RawTimeError");
-    let errors = compile(&program);
+    let errors = compile(&layer.source);
     assert!(
         errors.is_empty(),
-        "the buffer raw layer must compile:\n{program}\n\nerrors: {errors:#?}"
+        "the buffer raw layer must compile:\n{}\n\nerrors: {errors:#?}",
+        layer.source
     );
 }
 
@@ -193,7 +213,8 @@ fn a_signature_touching_a_resource_is_refused() {
     )
     .expect("derives");
 
-    let e = synthesize(&[file_open]).expect_err("a resource result must be refused");
+    let e = synthesize(&[file_open], &vocab(&[("filesystem", &[])]))
+        .expect_err("a resource result must be refused");
     assert!(e.contains(RESOURCE_SYNTHESIS_LIMIT), "{e}");
     assert!(e.contains("file::open_raw"), "{e}");
 }
@@ -211,7 +232,8 @@ fn a_signature_with_a_receiver_is_refused() {
     )
     .expect("derives");
 
-    let e = synthesize(&[read]).expect_err("a receiver must be refused");
+    let e = synthesize(&[read], &vocab(&[("filesystem", &[])]))
+        .expect_err("a receiver must be refused");
     assert!(e.contains(RESOURCE_SYNTHESIS_LIMIT), "{e}");
 }
 
@@ -232,15 +254,201 @@ fn scalar_only_capabilities_are_unaffected() {
         );
         assert!(sig.receiver.is_none());
     }
-    assert!(synthesize(&time_signatures()).is_ok());
+    assert!(synthesize(&time_signatures(), &vocab(&[("clock", &[])])).is_ok());
 }
 
 /// Generation is deterministic: the same signatures produce byte-identical source, so nothing about
 /// iteration order reaches generated code or the build key.
 #[test]
 fn generation_is_deterministic() {
-    let a = synthesize(&time_signatures()).expect("synthesizes");
-    let b = synthesize(&time_signatures()).expect("synthesizes");
+    let a = synthesize(&time_signatures(), &vocab(&[("clock", &[])])).expect("synthesizes");
+    let b = synthesize(&time_signatures(), &vocab(&[("clock", &[])])).expect("synthesizes");
     assert_eq!(a, b);
     let _ = ScalarTy::U64;
+}
+
+// ------------------------------------------------- raw error types (§7.2) --
+
+/// **An empty status vocabulary generates an UNINHABITED enum**, and that is the point.
+///
+/// `clock` declares no recoverable status, so `RawTimeError` has no values and the `Err` arm of
+/// `Result<UInt64, RawTimeError>` cannot be constructed at all. The type system then says exactly
+/// what Packet 1 §1.2 says: every nonzero status from that provider is a contract violation, and no
+/// package code runs on it.
+#[test]
+fn an_empty_vocabulary_generates_an_uninhabited_error_type() {
+    let layer = synthesize(&time_signatures(), &vocab(&[("clock", &[])])).expect("synthesizes");
+    assert!(
+        layer.source.contains("enum RawTimeError { }"),
+        "{}",
+        layer.source
+    );
+    assert_eq!(
+        layer.error_variants.get("RawTimeError"),
+        Some(&BTreeMap::new()),
+        "an uninhabited type has no code→variant entries"
+    );
+    assert!(compile(&layer.source).is_empty(), "{}", layer.source);
+}
+
+/// A declared vocabulary becomes one variant per status code, **code-ordered**, and the variant
+/// index table matches the generated declaration order — the thing lowering builds `Err` from.
+#[test]
+fn a_declared_vocabulary_becomes_one_variant_per_code() {
+    let sig = derive(
+        "env::var_fill",
+        "process.env",
+        &decl("stark-std-env", "stark_env_var_fill"),
+        &map(&[]),
+        &map(&[("process.env", "RawEnvError")]),
+    )
+    .expect("derives");
+
+    // Declared out of code order on purpose: the generated order must come from the code, not from
+    // the order they were declared in.
+    let layer = synthesize(
+        &[sig],
+        &vocab(&[("process.env", &[(7, "TooLong"), (3, "NotFound")])]),
+    )
+    .expect("synthesizes");
+
+    assert!(
+        layer
+            .source
+            .contains("enum RawEnvError { NotFound, TooLong }"),
+        "{}",
+        layer.source
+    );
+    assert_eq!(
+        layer.error_variants.get("RawEnvError"),
+        Some(&BTreeMap::from([(3, 0), (7, 1)])),
+        "code 3 is variant 0 and code 7 is variant 1, matching the declaration"
+    );
+    assert!(compile(&layer.source).is_empty(), "{}", layer.source);
+}
+
+/// Two capabilities may share a raw error type while they agree; a **disagreement is refused**.
+/// Silently keeping one name would give a single status code two meanings in one enum.
+#[test]
+fn conflicting_names_for_one_status_code_are_refused() {
+    let a = derive(
+        "env::var_fill",
+        "process.env",
+        &decl("stark-std-env", "stark_env_var_fill"),
+        &map(&[]),
+        &map(&[("process.env", "Shared")]),
+    )
+    .expect("derives");
+    let b = derive(
+        "time::monotonic_now_ns",
+        "clock",
+        &decl("stark-std-time", "stark_time_monotonic_now_ns"),
+        &map(&[]),
+        &map(&[("clock", "Shared")]),
+    )
+    .expect("derives");
+
+    let e = synthesize(
+        &[a, b],
+        &vocab(&[
+            ("process.env", &[(3, "NotFound")]),
+            ("clock", &[(3, "Skewed")]),
+        ]),
+    )
+    .expect_err("a code with two names must be refused");
+    assert!(e.contains("Shared"), "{e}");
+    assert!(e.contains('3'), "{e}");
+}
+
+/// A capability with no vocabulary entry at all is refused rather than defaulted to empty: "no
+/// recoverable statuses" and "nobody told us the vocabulary" are different claims, and defaulting
+/// would silently turn the second into the first.
+#[test]
+fn a_missing_vocabulary_is_refused() {
+    let e = synthesize(&time_signatures(), &BTreeMap::new())
+        .expect_err("a missing vocabulary must be refused");
+    assert!(e.contains("clock"), "{e}");
+}
+
+/// Status 0 is success, so declaring it as a **recoverable error** is refused.
+///
+/// Tolerating it would fail twice over without naming the mistake: `ProviderBindingPlan::classify`
+/// tests success first, so the declaration would be silently shadowed, and lowering would emit two
+/// `SwitchInt` arms for the same value.
+#[test]
+fn declaring_status_zero_as_an_error_is_refused() {
+    let e = synthesize(
+        &time_signatures(),
+        &vocab(&[("clock", &[(0, "NotReally")])]),
+    )
+    .expect_err("status 0 must not be declarable as a recoverable error");
+    assert!(e.contains("SUCCESS"), "{e}");
+    assert!(e.contains("RawTimeError"), "{e}");
+}
+
+/// **The real `stark-env` vocabulary, not a hand-made one.**
+///
+/// The registry declares its codes as qualified *public* error paths —
+/// `"ProcessError::InvalidName"` — because a vocabulary names the package-facing error a status
+/// corresponds to. `ProcessError` is the public type package code maps the raw result *to* (§7.2), so
+/// the raw variant is the final segment.
+///
+/// This is the test that matters, because every hand-written vocabulary in this file uses bare names
+/// and would never have exposed the qualified form. Emitting it verbatim would produce
+/// `enum RawEnvError { ProcessError::InvalidName, … }`, which does not parse.
+#[test]
+fn the_real_env_vocabulary_generates_a_compilable_error_type() {
+    let provider = provider_registry::first_party()
+        .into_iter()
+        .find(|p| p.metadata.identity.name == "stark-std-env")
+        .expect("stark-env is a first-party provider");
+
+    let sig = derive(
+        "env::var_fill",
+        "process.env",
+        &decl("stark-std-env", "stark_env_var_fill"),
+        &map(&[]),
+        &map(&[("process.env", "RawEnvError")]),
+    )
+    .expect("derives");
+
+    let vocabularies =
+        BTreeMap::from([("process.env".to_string(), provider.status_binding.clone())]);
+    let layer = synthesize(&[sig], &vocabularies).expect("the env layer must synthesize");
+
+    // Final segments only, code-ordered.
+    assert!(
+        layer.source.contains(
+            "enum RawEnvError { InvalidName, InvalidEncoding, BufferTooSmall, Unsupported }"
+        ),
+        "{}",
+        layer.source
+    );
+    assert_eq!(
+        layer.error_variants.get("RawEnvError"),
+        Some(&BTreeMap::from([(1, 0), (2, 1), (3, 2), (4, 3)])),
+        "each declared code maps to its variant index"
+    );
+
+    // And it must be real STARK. This is the assertion a string check could not make.
+    let errors = compile(&layer.source);
+    assert!(
+        errors.is_empty(),
+        "the env raw layer must compile:\n{}\n\nerrors: {errors:#?}",
+        layer.source
+    );
+}
+
+/// A vocabulary name whose final segment is not a legal identifier is **refused**, pointing at the
+/// vocabulary rather than emitting source that fails to parse somewhere downstream.
+#[test]
+fn an_unusable_vocabulary_name_is_refused() {
+    for bad in ["Process Error", "9Lives", "Err::", "Err::has-dash", ""] {
+        let e = synthesize(&time_signatures(), &vocab(&[("clock", &[(1, bad)])]))
+            .expect_err("an illegal variant name must be refused");
+        assert!(
+            e.contains("not a legal STARK variant name"),
+            "for {bad:?}: {e}"
+        );
+    }
 }

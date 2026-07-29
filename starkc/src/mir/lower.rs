@@ -1061,13 +1061,20 @@ impl<'a> FnLowerer<'a> {
             .clone();
 
         // A non-empty status vocabulary means some nonzero code is a RECOVERABLE error that must
-        // become `Err(e)`. Building that arm needs the package error type's variant for each code,
-        // which the manifest binds but nothing yet threads to lowering. Refused rather than
-        // approximated: emitting `Ok` unconditionally would turn a declared, recoverable failure
-        // into a successful call returning an unwritten slot.
-        if call.status_binding.declared_codes().next().is_some() {
+        // become `Err(e)`. That needs the raw error enum's variant for each code, which synthesis
+        // derived from the same vocabulary the emitter dispatches on. If the vocabulary is non-empty
+        // and no mapping reached lowering, refuse rather than approximate: emitting `Ok` regardless
+        // would turn a declared, recoverable failure into a successful call returning an unwritten
+        // slot.
+        let declares_recoverable = call.status_binding.declared_codes().next().is_some();
+        let error_mapping: Option<(String, BTreeMap<u32, u32>)> = self
+            .providers
+            .error_mapping_for(id)
+            .map(|(ty, v)| (ty.to_string(), v.clone()));
+        if declares_recoverable && error_mapping.is_none() {
             return unsupported(
-                "provider call with declared recoverable statuses (the Err arm is not yet lowered)",
+                "provider call declares recoverable statuses but no raw error mapping reached \
+                 lowering",
                 span,
             );
         }
@@ -1144,10 +1151,96 @@ impl<'a> FnLowerer<'a> {
             after,
         );
 
-        // With an empty status vocabulary every nonzero code is a contract violation, and the
-        // emitter aborts on it before returning. So control reaching here means status zero and the
-        // slots are written: `Ok` is the only outcome, and that is a fact about the emitted code,
-        // not an optimistic assumption.
+        // With an EMPTY vocabulary, every nonzero code is a contract violation the emitter aborts on
+        // before returning. Control reaching here therefore means status zero and written slots:
+        // `Ok` is the only outcome, and that is a fact about the emitted Rust rather than optimism.
+        // No branch is emitted, because there is no other reachable arm to branch to.
+        let Some((error_ty, variant_of_code)) = error_mapping else {
+            self.assign_provider_ok(dest, &slots, span)?;
+            return Ok(());
+        };
+
+        // A non-empty vocabulary means the status has to be examined. `SwitchInt` rather than a
+        // chain of comparisons, because the arms ARE a closed set of declared integer codes.
+        let error_item = self.nominal_item_by_name(&error_ty).ok_or_else(|| {
+            unsupported_err(
+                format!("raw error type `{error_ty}` is not among the program's items"),
+                span,
+            )
+        })?;
+
+        let ok_block = self.new_block();
+        let join = self.new_block();
+        // One block per declared code. Distinct blocks rather than one shared block, because each
+        // constructs a DIFFERENT variant -- merging them is the channel collapse Packet 1 1.2
+        // forbids in the emitter, for the same reason.
+        let mut arms: Vec<(u128, BlockId)> = Vec::new();
+        let mut to_fill: Vec<(BlockId, Option<u32>)> = Vec::new();
+        for (code, variant) in &variant_of_code {
+            let b = self.new_block();
+            arms.push((u128::from(*code), b));
+            to_fill.push((b, Some(*variant)));
+        }
+        arms.push((u128::from(crate::provider_bind::STATUS_SUCCESS), ok_block));
+        to_fill.push((ok_block, None));
+
+        // `otherwise` is UNREACHABLE, never a fallback error. An undeclared nonzero code already
+        // aborted inside the emitted call, so no value flows here -- and a `_ =>` arm mapped to some
+        // generic package error is exactly the collapse the three-channel rule exists to prevent.
+        let unreachable_block = self.new_block();
+        self.terminate(
+            Terminator::SwitchInt {
+                scrut: Operand::Copy(Place::local(status)),
+                arms,
+                otherwise: unreachable_block,
+            },
+            self.info(span),
+            unreachable_block,
+        );
+        self.terminate(Terminator::Unreachable, self.info(span), to_fill[0].0);
+
+        for i in 0..to_fill.len() {
+            let variant = to_fill[i].1;
+            match variant {
+                Some(v) => {
+                    let raw = self.new_temp(MirTy::Enum(EnumRef::User(error_item), Vec::new()));
+                    self.emit(
+                        Statement::Assign(
+                            Place::local(raw),
+                            Rvalue::Aggregate(
+                                AggKind::EnumVariant(EnumRef::User(error_item), v),
+                                Vec::new(),
+                            ),
+                        ),
+                        self.info(span),
+                    );
+                    self.emit(
+                        Statement::Assign(
+                            dest.clone(),
+                            Rvalue::Aggregate(
+                                AggKind::EnumVariant(EnumRef::CoreResult, 1),
+                                vec![Operand::Move(Place::local(raw))],
+                            ),
+                        ),
+                        self.info(span),
+                    );
+                }
+                None => self.assign_provider_ok(dest.clone(), &slots, span)?,
+            }
+            let next = to_fill.get(i + 1).map_or(join, |(b, _)| *b);
+            self.terminate(Terminator::Goto { target: join }, self.info(span), next);
+        }
+
+        Ok(())
+    }
+
+    /// `dest = Ok(<out-slots>)`: unit for none, the value for one, a tuple for several.
+    fn assign_provider_ok(
+        &mut self,
+        dest: Place,
+        slots: &[(LocalId, MirTy)],
+        span: Span,
+    ) -> Result<(), LowerError> {
         let payload = match slots.len() {
             0 => vec![Operand::Const(Constant::Unit)],
             _ => slots
@@ -1169,7 +1262,6 @@ impl<'a> FnLowerer<'a> {
         } else {
             payload
         };
-
         self.emit(
             Statement::Assign(
                 dest,
@@ -1178,6 +1270,21 @@ impl<'a> FnLowerer<'a> {
             self.info(span),
         );
         Ok(())
+    }
+
+    /// The `ItemId` of a top-level nominal by source name — resolves a synthesized raw error enum,
+    /// whose name lowering knows from the manifest but whose id only the parser assigned.
+    fn nominal_item_by_name(&self, name: &str) -> Option<ItemId> {
+        self.meta
+            .all_items
+            .iter()
+            .copied()
+            .find(|&item| match &self.hir.item(item).kind {
+                ItemKind::Enum { name: n, .. } | ItemKind::Struct { name: n, .. } => {
+                    self.meta.item_text(item, *n) == name
+                }
+                _ => false,
+            })
     }
 
     fn new_temp(&mut self, ty: MirTy) -> LocalId {

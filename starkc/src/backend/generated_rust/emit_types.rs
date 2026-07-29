@@ -397,6 +397,22 @@ pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendD
                 fields?.join(", ")
             ));
         }
+        if variants.is_empty() {
+            // An UNINHABITED STARK enum (zero variants) still needs an inhabited Rust
+            // representation, because the CFG dispatch loop default-initialises every local
+            // EAGERLY -- so a local of this type demands a value before any branch runs, and an
+            // aborting expression would fire on entry rather than on misuse.
+            //
+            // This placeholder exists only for that. It is invisible to STARK: the front end sees
+            // zero variants, so no STARK program can construct or match one, and MIR never reads a
+            // local of this type. WP-C7.8.8 makes these reachable -- a capability declaring no
+            // recoverable status synthesizes `enum RawE { }`, which is exactly the claim that its
+            // `Err` arm cannot be built.
+            out.push_str(&format!(
+                "    // uninhabited in STARK; present so a local can be default-initialised.\n    {}(),\n",
+                variant_name(0)
+            ));
+        }
         out.push_str("}\n\n");
     }
 
@@ -433,6 +449,22 @@ pub fn emit_nominal_definitions(program: &MirProgram) -> Result<String, BackendD
                 "    {}({}),\n",
                 variant_name(v as u32),
                 fields?.join(", ")
+            ));
+        }
+        if variants.is_empty() {
+            // An UNINHABITED STARK enum (zero variants) still needs an inhabited Rust
+            // representation, because the CFG dispatch loop default-initialises every local
+            // EAGERLY -- so a local of this type demands a value before any branch runs, and an
+            // aborting expression would fire on entry rather than on misuse.
+            //
+            // This placeholder exists only for that. It is invisible to STARK: the front end sees
+            // zero variants, so no STARK program can construct or match one, and MIR never reads a
+            // local of this type. WP-C7.8.8 makes these reachable -- a capability declaring no
+            // recoverable status synthesizes `enum RawE { }`, which is exactly the claim that its
+            // `Err` arm cannot be built.
+            out.push_str(&format!(
+                "    // uninhabited in STARK; present so a local can be default-initialised.\n    {}(),\n",
+                variant_name(0)
             ));
         }
         out.push_str("}\n\n");
@@ -606,12 +638,28 @@ pub fn default_value_expr(ty: &MirTy, types: &TypeContext) -> Result<String, Bac
             let variants = variant_payloads(enum_ref, args, types).ok_or_else(|| {
                 BackendDiagnostic::Unsupported(format!("no variant table for enum instance {ty:?}"))
             })?;
-            let payload = variants.first().cloned().ok_or_else(|| {
-                BackendDiagnostic::Unsupported(format!("enum instance {ty:?} declares no variants"))
-            })?;
             let name = nominal_type_name(ty).ok_or_else(|| {
                 BackendDiagnostic::Unsupported(format!("no generated name for {ty:?}"))
             })?;
+            // An UNINHABITED enum has no values, so it has no default -- the same situation as
+            // `FnPtr` below, and it takes the same answer: an ABORTING sentinel, not a fabricated
+            // value, because there is no value to fabricate.
+            //
+            // These are reachable now that WP-C7.8.8 synthesizes a raw provider error type from the
+            // validated status vocabulary: a capability declaring no recoverable status gets
+            // `enum RawE { }`, which is precisely the claim that its `Err` arm cannot be
+            // constructed. A program may still *bind* one (`Err(e) => …`), and the CFG dispatch loop
+            // default-initialises every local, so a default is demanded for a type that has none.
+            //
+            // Aborting is correct rather than merely convenient: MIR liveness guarantees the local
+            // is never read, so if this expression is ever evaluated, liveness is wrong and stopping
+            // is the only safe response.
+            let Some(payload) = variants.first().cloned() else {
+                // Uninhabited in STARK: the only value is the placeholder its Rust declaration
+                // carries (see `emit_nominal_declarations`). Never read -- MIR liveness guarantees
+                // it -- but the eager default-init needs something to write.
+                return Ok(format!("{name}::{}()", variant_name(0)));
+            };
             let mut parts = Vec::with_capacity(payload.len());
             for field_ty in &payload {
                 parts.push(default_value_expr(field_ty, types)?);

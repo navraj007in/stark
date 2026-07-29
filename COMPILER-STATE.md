@@ -437,15 +437,16 @@ emission, ownership and the three status channels — but they are **not** sourc
 | capability | provider executes (hand-built MIR) | reachable from STARK source |
 | --- | --- | --- |
 | time (`stark-time`) | yes, both symbols (CD-219) | **yes, via the compiler library** — `c788_source_time_e2e.rs` (2026-07-30); not yet via `starkc build`, see below |
-| args/env (`stark-env`) | yes (CD-214, CD-216) | no — declares recoverable statuses; needs the `Err` arm |
-| file (`stark-file`) | yes, create/write/complete/close (CD-217) | no — resource nominal, and recoverable statuses |
-| tcp (`stark-net`) | no — resource types unbound (CD-218) | no — resource nominals |
+| args/env (`stark-env`) | yes (CD-214, CD-216) | **no blocker left in lowering** — recoverable statuses lower as of 2026-07-30; needs its manifest binding written and an e2e |
+| file (`stark-file`) | yes, create/write/complete/close (CD-217) | no — resource nominal (§3.1) |
+| tcp (`stark-net`) | no — resource types unbound (CD-218) | no — resource nominals (§3.1) |
 
 **AMENDED 2026-07-30.** The right-hand column is no longer uniformly "no": the source path exists
 and one capability traverses it end to end. What blocks the other three is now specific and named,
 not "lowering emits no provider call" — that was the general blocker and it is gone. `stark-env`
-needs only the `Err` arm (§16.1); `stark-file` and `stark-net` additionally need a resource-nominal
-mechanism (§3.1). P1's host-capability precondition is **partially** removed: a STARK program can
+has no lowering blocker left (recoverable statuses lower as of 2026-07-30) and needs only its
+manifest binding and an e2e; `stark-file` and `stark-net` still need a resource-nominal mechanism
+(§3.1). P1's host-capability precondition is **partially** removed: a STARK program can
 now call a scalar capability, which the closure statement
 (`WP-C7.8-First-Party-Native-Host-Capabilities.md` §5.7) should read as narrowing rather than
 lifting the amendment.
@@ -503,13 +504,30 @@ component of that path now exists and is tested; what is missing is the driver w
 derive → synthesize → prepend to the compilation unit → resolve → lower-with-providers. That is
 the next slice, and it is integration rather than design.
 
-**Two refusals, deliberate.** A resource in any position (§3.1). And a **non-empty status
-vocabulary**: a declared recoverable code must become `Err(e)`, needing the package error type's
-per-code variant, which the manifest binds but nothing threads to lowering yet — emitting `Ok`
-regardless would turn a declared recoverable failure into a successful call returning an unwritten
-slot. `clock`'s vocabulary is empty, so every nonzero status is a contract violation the emitter
-aborts on, and `Ok` is the only reachable outcome by construction. `process.env` and `filesystem`
-declare codes and need the `Err` arm before their source paths open.
+**ONE refusal remains: a resource in any position (§3.1).**
+
+**Recoverable statuses now lower (2026-07-30).** A capability with a declared vocabulary gets a
+`SwitchInt` on the status: zero builds `Ok` from the out-slots, one arm per declared code builds
+`Err(RawE::V)`, and `otherwise` is **`Unreachable`** — never a fallback error, because an undeclared
+nonzero code already aborted inside the emitted call and a `_ =>` mapped to a generic package error
+is the channel collapse Packet 1 §1.2 forbids. Each declared code gets its own block, since each
+constructs a different variant.
+
+**§7.2 clarified: the compiler generates the raw error enum.** That section says the manifest carries
+"only the minimum raw error identity" with **no** code→variant table, and that the compiler
+"produces the raw typed result" — together those leave no way for a package-declared enum to say
+which variant means status 3. One variant per declared code, named by the vocabulary, ordered by
+code. An empty vocabulary yields an **uninhabited** enum (`enum RawTimeError { }`), so `clock`'s
+`Err` arm cannot be constructed at all: the type system now states what the three-channel rule states
+in prose. Two capabilities may share a raw error type while they agree; a disagreement on any code is
+refused.
+
+**One backend change (§16.3).** An uninhabited enum had no generated-Rust representation, and it
+surfaced as soon as a program bound one (`Err(e) => …`), because the CFG dispatch loop
+default-initialises locals **eagerly** — so an aborting expression fires on entry rather than on
+misuse, unlike the named `FnPtr` sentinel it sits beside. A zero-variant enum's Rust declaration now
+carries a single placeholder variant. It is invisible to STARK: the front end sees zero variants, so
+nothing can construct or match one, and MIR never reads such a local.
 
 **Position (2026-07-29): steps 1–3 done, and step 3 collapsed into step 2.** Synthesis is generated
 STARK source (`provider_synth.rs`) rather than constructed HIR, because every HIR name is a `Span`

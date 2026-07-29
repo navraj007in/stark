@@ -27,6 +27,19 @@ pub struct ProviderLowering {
     /// before any source is parsed, so no item ids exist yet. Lowering resolves names to ids once,
     /// up front, and the per-call-site path is an id lookup.
     pub by_item_name: BTreeMap<String, ProviderCallId>,
+    /// Raw error type name → status code → variant index, from
+    /// [`crate::provider_synth::SynthesizedLayer::error_variants`].
+    ///
+    /// Lowering resolves the type name to an `ItemId` once, then builds `Err(RawE::V)` for a
+    /// declared code as an ordinary enum aggregate. Carried by name for the same reason the call
+    /// bindings are: this is computed from the manifest and the provider vocabulary, before any
+    /// source exists to have item ids.
+    pub error_variants: BTreeMap<String, BTreeMap<u32, u32>>,
+    /// Provider call id → the raw error type its `Result` uses.
+    ///
+    /// Kept beside the arena rather than on [`ValidatedProviderCall`]: that record is A10's
+    /// *validated ABI contract*, and a package's choice of STARK error type name is not part of it.
+    pub error_ty_for_call: BTreeMap<u32, String>,
 }
 
 impl ProviderLowering {
@@ -37,6 +50,23 @@ impl ProviderLowering {
     /// plumbing: `provider_resolve` owns selection, and this owns only the lowering input.
     pub fn build<F>(
         bindings: &BTreeMap<String, (String, String)>,
+        resolve: F,
+    ) -> Result<Self, String>
+    where
+        F: FnMut(&str, &str) -> Result<ValidatedProviderCall, String>,
+    {
+        Self::build_with_errors(bindings, &BTreeMap::new(), &BTreeMap::new(), resolve)
+    }
+
+    /// `build`, plus the raw error types the derived signatures return.
+    ///
+    /// `error_ty_by_item` maps an item path to its raw error type name — taken from the derived
+    /// signatures, so lowering and synthesis cannot disagree about which enum a call's `Err` arm
+    /// constructs.
+    pub fn build_with_errors<F>(
+        bindings: &BTreeMap<String, (String, String)>,
+        error_variants: &BTreeMap<String, BTreeMap<u32, u32>>,
+        error_ty_by_item: &BTreeMap<String, String>,
         mut resolve: F,
     ) -> Result<Self, String>
     where
@@ -44,6 +74,7 @@ impl ProviderLowering {
     {
         let mut arena = Vec::new();
         let mut by_item_name = BTreeMap::new();
+        let mut error_ty_for_call = BTreeMap::new();
         // `bindings` is a `BTreeMap`, so iteration is name-ordered and arena indices are a
         // deterministic function of the manifest -- not of hash order. MIR is compared byte-for-byte
         // by the reproducibility suites, so this is a correctness property, not tidiness.
@@ -52,11 +83,24 @@ impl ProviderLowering {
             let id = ProviderCallId(arena.len() as u32);
             arena.push(call);
             by_item_name.insert(leaf(item_path).to_string(), id);
+            if let Some(ty) = error_ty_by_item.get(item_path) {
+                error_ty_for_call.insert(id.0, ty.clone());
+            }
         }
         Ok(Self {
             arena,
             by_item_name,
+            error_variants: error_variants.clone(),
+            error_ty_for_call,
         })
+    }
+
+    /// The `(error type name, code → variant index)` for a call, when it has a raw error type with
+    /// declared recoverable statuses.
+    pub fn error_mapping_for(&self, id: ProviderCallId) -> Option<(&str, &BTreeMap<u32, u32>)> {
+        let ty = self.error_ty_for_call.get(&id.0)?;
+        let variants = self.error_variants.get(ty)?;
+        (!variants.is_empty()).then_some((ty.as_str(), variants))
     }
 
     /// The shared empty set, so `FnLowerer::new` can hand out a borrow without every caller

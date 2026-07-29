@@ -424,8 +424,8 @@ and is tested; the driver wiring is the gap.
 
 The precondition is **narrowed, not lifted**, and the claim above still requires *each mandatory*
 capability. What remains is now specific per capability rather than architectural: `stark-env` needs
-the recoverable-status `Err` arm (design §16.1); `stark-file` and `stark-net` additionally need a
-resource-nominal mechanism (design §3.1). Cross-platform verification of the source path is
+only its manifest binding and an e2e -- the recoverable-status `Err` arm lowers as of 2026-07-30
+(design §16.1); `stark-file` and `stark-net` still need a resource-nominal mechanism (design §3.1). Cross-platform verification of the source path is
 C7.8.7's, and one capability on one host is not it.
 
 It does **not** claim P1 is complete, and it does **not** close Gate C7.

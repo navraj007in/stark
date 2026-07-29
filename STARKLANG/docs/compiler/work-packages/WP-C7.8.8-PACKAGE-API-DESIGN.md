@@ -6,16 +6,21 @@ Implementation proceeds in the order recorded in §16. Steps 1, 3, 6 and 8 are d
 that same gap. The monotonic clock now executes from ordinary STARK source
 (`c788_source_time_e2e.rs`).
 
-Rev. 5 adds three implementation findings and corrects two sections against them. The design's
-decisions all stand; what changed is *how* two of them are realised, and each correction is marked
-inline rather than by silent edit:
+Rev. 5 adds implementation findings and corrects three sections against them. The design's decisions
+all stand; what changed is *how* some of them are realised, and each correction is marked inline
+rather than by silent edit:
 
 - **§3.1** — synthesis is generated source text, not constructed HIR, and **resource nominals
-  cannot use it**. This blocks §16 steps 4, 5 and 7.
-- **§16.1** — what step 6 lowers, and its two deliberate refusals (resources; non-empty status
-  vocabularies).
+  cannot use it**. This blocks §16 steps 4, 5 and 7, and is the only remaining refusal in lowering.
+- **§16.1** — what step 6 lowers. Recoverable statuses **are** lowered, via a `SwitchInt` whose
+  `otherwise` edge is `Unreachable` rather than a fallback error.
 - **§16.2** — the `starkc build` driver is **not** wired; the proof runs through the compiler
   library.
+- **§16.3** — the one backend change required: a zero-variant enum's Rust representation carries a
+  placeholder variant, because locals are default-initialised eagerly.
+- **§7.2 carries a clarification**: the compiler generates the raw error enum itself, since the
+  manifest deliberately carries no code→variant table. An empty vocabulary yields an *uninhabited*
+  type, so `Err` cannot be constructed.
 - **§10 and §11 carry correction notices**: the binding is a side table rather than an HIR field,
   and the status→`Result` construction happens in lowering rather than in the synthesized body.
 
@@ -288,6 +293,45 @@ The division this preserves:
 - **the compiler** validates physical status declarations and produces the raw typed result;
 - **package code** owns public error semantics, grouping and convenience behaviour.
 
+> **CLARIFIED at implementation (2026-07-30): the compiler generates the raw error enum itself.**
+> This section says the manifest carries "only the minimum raw error identity" and **no**
+> status-code→variant table, and that the compiler "produces the raw typed result". Those leave no
+> way for a *package-declared* enum to tell the compiler which variant means status 3 — so the raw
+> type has to be derived from the same validated vocabulary the emitter dispatches on. The division
+> is unchanged: the compiler owns the raw type, package code maps it to a public `IOError` or
+> `ProcessError` in ordinary STARK.
+>
+> One variant per declared status code, named by the vocabulary and ordered by code, so generated
+> source and the variant indices are a function of the vocabulary alone.
+>
+> **An empty vocabulary generates an uninhabited enum** — `enum RawTimeError { }` — and that is the
+> point rather than a degenerate case. `clock` declares no recoverable status, so `Err` **cannot be
+> constructed**, and the type system states what this section's last paragraph states in prose.
+>
+> Two capabilities may share a raw error type while they agree on every code; a disagreement is
+> refused, since it would give one status code two meanings in one enum.
+>
+> **Declaring status 0 as a recoverable error is refused**, because 0 is success (ABI §11).
+> Tolerating it would fail twice without naming the mistake: `ProviderBindingPlan::classify` tests
+> success first, so the declaration would be silently shadowed, and §16.1's `SwitchInt` would carry
+> two arms for the same value.
+>
+> A capability with **no vocabulary entry at all** is also refused rather than defaulted to empty.
+> "No recoverable statuses" and "nobody supplied the vocabulary" are different claims, and
+> defaulting would quietly convert the second into the first.
+>
+> **The variant name is the vocabulary name's final segment.** A vocabulary names a status with the
+> *package-facing* error it corresponds to, and the first-party registry writes those qualified —
+> `stark-env` declares code 1 as `ProcessError::InvalidName`. `ProcessError` is, by this section's own
+> account, the **public** type package code maps the raw result *to*, so the raw variant is
+> `InvalidName`. Emitting the qualified form verbatim would generate
+> `enum RawEnvError { ProcessError::InvalidName, … }`, which does not parse.
+>
+> Because that is interpretation rather than data, the derived name is **validated**: a final segment
+> that is not a legal STARK identifier is refused at synthesis, where the offending vocabulary entry
+> can be named, instead of producing source that fails to parse with nothing pointing back to its
+> cause.
+
 **Only declared recoverable statuses reach the mapping layer.** Ordinary STARK cannot see, catch, or
 reinterpret a contract violation or a host failure — those channels abort, and no package code runs
 on them. That is Packet 1 §1.2's three-channel separation surviving into the source language: a
@@ -515,7 +559,7 @@ dispatch A10 §5 specifies. That keeps channel policy in one place and out of th
 > Channel policy is still in one place, just not the place this paragraph named: the **emitter**
 > owns it (`emit_provider.rs` — slots written back only on status zero, declared codes matched,
 > undeclared codes aborted). Lowering builds the `Ok` arm from the slots; for a capability with a
-> non-empty status vocabulary it currently **refuses** rather than guessing the `Err` arm (§16.1).
+> non-empty status vocabulary it builds the `Err` arm from §7.2's generated raw error enum (§16.1).
 >
 > The third row of the table above is therefore right about *what* MIR carries — the `UInt32` status
 > destination plus out-slot destinations — and wrong only about who turns it into a `Result`.
@@ -681,19 +725,24 @@ The call's `dest` receives the raw `ProviderStatus` code, **not** the STARK valu
 out-slots back only on status zero and aborts on any undeclared code. So the `Result` is built after
 the call from the slots: no slots → `Ok(Unit)`, one → `Ok(v)`, several → `Ok((v1, …))`.
 
-**Two refusals, stated rather than approximated.**
+**One refusal remains: a resource in any position, per §3.1.**
 
-- A **resource** in any position, per §3.1.
-- A **non-empty status vocabulary**. A declared recoverable code must become `Err(e)`, which needs
-  the package error type's variant for each code — bound by the manifest, but not yet threaded to
-  lowering. Emitting `Ok` unconditionally would turn a declared, recoverable failure into a
-  successful call returning an unwritten slot, which is worse than not compiling.
+**Recoverable statuses are lowered (2026-07-30).** A capability with a declared vocabulary gets a
+`SwitchInt` on the status: the zero arm builds `Ok` from the out-slots, one arm per declared code
+builds `Err(RawE::V)` from §7.2's generated enum, and `otherwise` is **`Unreachable`** — never a
+fallback error. An undeclared nonzero code has already aborted inside the emitted call, so no value
+reaches that edge, and a `_ =>` arm mapped to some generic package error is exactly the channel
+collapse Packet 1 §1.2 forbids. Each declared code gets its **own** block, because each constructs a
+different variant.
 
-`clock` has an empty vocabulary, so for it every nonzero status is a contract violation the emitter
-aborts on. Control reaching the code after the call therefore *means* status zero and written slots
-— `Ok` is the only reachable outcome, which is a fact about the emitted Rust, not an optimistic
-assumption. `process.env` and `filesystem` declare recoverable codes and need the `Err` arm before
-their source paths open.
+If the vocabulary is non-empty and no error mapping reached lowering, the call is still refused:
+emitting `Ok` regardless would turn a declared recoverable failure into a successful call returning
+an unwritten slot.
+
+`clock` has an empty vocabulary, so no branch is emitted at all — every nonzero status is a contract
+violation the emitter aborts on, control reaching the code after the call *means* status zero and
+written slots, and `Ok` is the only reachable outcome. That is a fact about the emitted Rust rather
+than an optimistic assumption, and §7.2's uninhabited `RawTimeError` states it in the type system too.
 
 ### 16.2 The driver is not wired yet
 
@@ -716,3 +765,19 @@ What remains is integration, not design — every component exists and is tested
    decide how a generated unit reports spans in diagnostics;
 5. `ProviderLowering::build` from the bindings (done);
 6. call `lower_program_with_providers` instead of `lower_program`.
+
+### 16.3 One backend change was required
+
+An uninhabited STARK enum previously had no generated-Rust representation: `default_value_expr`
+rejected a zero-variant enum, because it has no value to default a local to. That surfaced the moment
+§7.2's uninhabited raw error type met a program binding it (`Err(e) => …`), since the CFG dispatch
+loop default-initialises every local **eagerly**.
+
+An aborting expression does not work here — unlike the `FnPtr` sentinel it sits beside, which is a
+named aborting *function*, an aborting expression would fire on function entry rather than on misuse.
+So a zero-variant enum's Rust declaration now carries a single placeholder variant, and that is its
+default.
+
+The placeholder is invisible to STARK: the front end sees zero variants, so no STARK program can
+construct or match one, and MIR never reads a local of the type. It exists solely so the eager
+default-init has something to write.

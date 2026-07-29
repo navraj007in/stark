@@ -17,6 +17,7 @@
 
 use starkc::mir::provider_lower::ProviderLowering;
 use starkc::mir::{self, Callee, Terminator};
+use starkc::provider_bind::StatusBinding;
 use starkc::provider_derive::derive;
 use starkc::provider_registry;
 use starkc::provider_resolve::ProviderSet;
@@ -52,7 +53,15 @@ fn binding() -> (String, String, String) {
 
 /// Derives the signature and synthesizes the raw layer — steps 2 and 3, used as a library rather
 /// than re-stated, so this test cannot pass against a synthesis its own suite would reject.
-fn raw_layer() -> (String, BTreeMap<String, (String, String)>) {
+///
+/// Returns the source, the call bindings, and the raw-error variant table (empty for `clock`).
+type Layer = (
+    String,
+    BTreeMap<String, (String, String)>,
+    BTreeMap<String, BTreeMap<u32, u32>>,
+);
+
+fn raw_layer() -> Layer {
     let (item_path, capability, symbol) = binding();
 
     let decl = provider_registry::first_party()
@@ -69,8 +78,18 @@ fn raw_layer() -> (String, BTreeMap<String, (String, String)>) {
     let sig = derive(&item_path, &capability, &decl, &BTreeMap::new(), &errors)
         .expect("the clock signature must derive");
 
-    let layer = synthesize(&[sig]).expect("the clock layer must synthesize");
-    (layer.source, layer.bindings)
+    // `clock` declares NO recoverable status, so its vocabulary is empty and synthesis generates an
+    // uninhabited `enum RawTimeError { }`. The program below therefore does not declare that type
+    // itself: the compiler owns it, which is what makes the `Err` arm provably unreachable rather
+    // than merely unused.
+    let vocabularies = BTreeMap::from([(capability.clone(), StatusBinding::new())]);
+    let layer = synthesize(&[sig], &vocabularies).expect("the clock layer must synthesize");
+    assert!(
+        layer.source.contains("enum RawTimeError { }"),
+        "an empty vocabulary must generate an uninhabited raw error type:\n{}",
+        layer.source
+    );
+    (layer.source, layer.bindings, layer.error_variants)
 }
 
 /// The whole program: the generated raw layer, the package's raw error type, and an application
@@ -92,8 +111,7 @@ fn program_source(raw: &str) -> String {
     // arm type `Never`, which the generated-Rust backend cannot represent (C5.3a) -- so the arms
     // assign into a pre-declared local instead of yielding a value.
     format!(
-        "enum RawTimeError {{ Failed }}\n\
-         {raw}\n\
+        "{raw}\n\
          fn main() {{\n\
          \x20   let mut first: UInt64 = 0;\n\
          \x20   match monotonic_now_ns() {{\n\
@@ -116,7 +134,7 @@ fn program_source(raw: &str) -> String {
 /// **The proof.** Source → front end → lowering → generated Rust → link → execute.
 #[test]
 fn the_monotonic_clock_is_reachable_from_stark_source() {
-    let (raw, bindings) = raw_layer();
+    let (raw, bindings, error_variants) = raw_layer();
     let source = program_source(&raw);
 
     // ---- ordinary front end. No provider vocabulary reaches it. ----
@@ -152,9 +170,16 @@ fn the_monotonic_clock_is_reachable_from_stark_source() {
     )
     .expect("stark-time must select for the host target");
 
-    let providers = ProviderLowering::build(&bindings, |cap, symbol| {
-        set.resolve(cap, symbol).map_err(|e| format!("{e:?}"))
-    })
+    let error_ty_by_item = BTreeMap::from([(
+        "time::monotonic_now_ns".to_string(),
+        "RawTimeError".to_string(),
+    )]);
+    let providers = ProviderLowering::build_with_errors(
+        &bindings,
+        &error_variants,
+        &error_ty_by_item,
+        |cap, symbol| set.resolve(cap, symbol).map_err(|e| format!("{e:?}")),
+    )
     .expect("the binding must resolve to a validated call");
     assert_eq!(providers.arena.len(), 1);
 
