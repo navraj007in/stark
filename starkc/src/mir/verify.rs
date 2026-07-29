@@ -1141,6 +1141,25 @@ impl<'a> BodyCx<'a> {
         }
     }
 
+    /// A10: which argument positions of a provider call are `HandleOut` destinations.
+    ///
+    /// Empty for every non-provider callee, and for a provider call whose record is missing — the
+    /// dangling-id check reports that separately, and this pass must not also panic on it.
+    fn provider_handle_out_positions(&self, callee: &Callee) -> std::collections::BTreeSet<usize> {
+        let Callee::Provider(id) = callee else {
+            return std::collections::BTreeSet::new();
+        };
+        let Some(call) = self.program.provider_call(*id) else {
+            return std::collections::BTreeSet::new();
+        };
+        call.function
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| matches!(p, crate::provider_abi::AbiParam::HandleOut { .. }))
+            .map(|(i, _)| i)
+            .collect()
+    }
     /// Simulate one block. Returns (moved-out set, successors). When `report`, emit MIR-0007
     /// on any read of a possibly-moved place.
     fn flow_block(
@@ -1197,7 +1216,18 @@ impl<'a> BodyCx<'a> {
                 if let Callee::FnValue(op) = callee {
                     self.flow_operand(op, &mut moved, bi, report);
                 }
-                for arg in args {
+                // A10: a `HandleOut` argument names the DESTINATION the provider writes, so it is
+                // an initialising write, not a read or a move. Treating it as a move would mark the
+                // resource possibly-moved from the moment it is created, and every later use of the
+                // file -- read, write, close -- would be rejected as a use-after-move.
+                let out_positions = self.provider_handle_out_positions(callee);
+                for (i, arg) in args.iter().enumerate() {
+                    if out_positions.contains(&i) {
+                        if let Operand::Copy(place) | Operand::Move(place) = arg {
+                            self.flow_reinit(place, &mut moved, bi, report);
+                        }
+                        continue;
+                    }
                     self.flow_operand(arg, &mut moved, bi, report);
                 }
                 self.flow_reinit(dest, &mut moved, bi, report);

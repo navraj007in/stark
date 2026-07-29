@@ -284,6 +284,12 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
                 iter_lifetime_args(at, Some(emit_ty_at(single_arg(args, "KeysIter")?, at)?))
             )
         }
+        // WP-C7.8.4: a host resource is the ABI's OWNING handle -- not Copy, not Clone, and with
+        // no Rust `Drop`, because exactly-once release belongs to MIR's Drop terminator (CE4
+        // Amendment 1). Nothing here may add a destructor.
+        MirTy::Core(crate::hir::CoreType::File, _) => {
+            "stark_runtime::provider_abi::OwnedResourceHandle".to_string()
+        }
         MirTy::Core(crate::hir::CoreType::CharsIter, _) => {
             format!(
                 "stark_runtime::string::CharsIter{lt2}",

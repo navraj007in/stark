@@ -84,16 +84,12 @@ pub fn param_ty(
         // A bound resource type maps to its registered MIR type; `HandleOut` is `&mut` to it,
         // matching §6.1's `*mut RawResourceHandle`, while borrowed and consumed handles cross by
         // value.
-        AbiParam::HandleBorrowed { resource_type } | AbiParam::HandleConsumed { resource_type } => {
-            registry.lookup(resource_type).cloned().ok_or_else(|| {
-                UnmappedParam::UnboundResourceType {
-                    index,
-                    resource_type: resource_type.clone(),
-                }
-            })?
-        }
-        AbiParam::HandleOut { resource_type } => MirTy::Ref {
-            mutable: true,
+        // §8: a BORROWED handle leaves ownership with the caller, so MIR must carry a shared
+        // reference. Typing it as the bare resource would force the argument to be a move, and the
+        // caller would lose the file it is supposed to keep using -- a `read` that consumed its own
+        // file. A CONSUMED handle is by value, because ownership genuinely transfers at call entry.
+        AbiParam::HandleBorrowed { resource_type } => MirTy::Ref {
+            mutable: false,
             inner: Box::new(registry.lookup(resource_type).cloned().ok_or_else(|| {
                 UnmappedParam::UnboundResourceType {
                     index,
@@ -101,6 +97,28 @@ pub fn param_ty(
                 }
             })?),
         },
+        AbiParam::HandleConsumed { resource_type } => registry
+            .lookup(resource_type)
+            .cloned()
+            .ok_or_else(|| UnmappedParam::UnboundResourceType {
+                index,
+                resource_type: resource_type.clone(),
+            })?,
+        // A `HandleOut` argument is the **destination place itself**, typed as the resource, not a
+        // `&mut` to it.
+        //
+        // The `&mut` shape works for `ScalarOut` and cannot work here. A non-`Copy` resource local
+        // is slot-backed, and a slot becomes live by being *written* — taking `&mut` of one that
+        // nothing has written yet is "mutable access to a dead slot", which the runtime refuses
+        // before the call even happens. Passing the place lets emission perform the ordinary
+        // initialising assignment on the success arm, which is what makes the slot live.
+        AbiParam::HandleOut { resource_type } => registry
+            .lookup(resource_type)
+            .cloned()
+            .ok_or_else(|| UnmappedParam::UnboundResourceType {
+                index,
+                resource_type: resource_type.clone(),
+            })?,
     })
 }
 

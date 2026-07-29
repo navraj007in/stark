@@ -206,7 +206,21 @@ pub fn emit_provider_call(
         .map(|(i, _)| i)
         .collect();
 
+    let handle_out: std::collections::BTreeSet<usize> = call
+        .function
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| matches!(p, AbiParam::HandleOut { .. }))
+        .map(|(i, _)| i)
+        .collect();
+
     for (i, arg) in args.iter().enumerate() {
+        // A HandleOut argument names the destination; binding it would read a slot that is still
+        // dead, which is the whole reason it is a place rather than a reference.
+        if handle_out.contains(&i) {
+            continue;
+        }
         let value = match arg {
             Operand::Copy(place) | Operand::Move(place) if mut_shaped.contains(&i) => {
                 format!("&mut *{}", emit_place_to_borrow(place, env)?)
@@ -271,6 +285,16 @@ pub fn emit_provider_call(
                 ));
             }
             ProviderOutputPlan::Handle { type_id, .. } => {
+                // The argument is the destination PLACE (see `provider_sig`), so the handle is
+                // written with an ordinary assignment -- the write that makes a slot live. Anything
+                // else would have to borrow a slot nothing has written yet.
+                let Some(Operand::Move(dest_place) | Operand::Copy(dest_place)) = args.get(i)
+                else {
+                    return Err(BackendDiagnostic::Unsupported(format!(
+                        "provider call `{}`: a HandleOut argument must be a place",
+                        call.symbol()
+                    )));
+                };
                 out.push_str(&format!(
                     "{indent}let mut __prov_o{i} = \
                      std::mem::MaybeUninit::<{ABI}::RawResourceHandle>::uninit();\n"
@@ -280,16 +304,16 @@ pub fn emit_provider_call(
                 // check lives in `from_raw_checked` so it cannot be skipped, and a mismatch is a
                 // contract violation rather than a recoverable error -- wrapping a mistyped handle
                 // would hand generated code an owning value for a resource of unknown kind.
+                let checked = format!(
+                    "match {ABI}::OwnedResourceHandle::from_raw_checked(__prov_raw{i}, \
+                     {type_id}u32) {{ Ok(handle) => handle, Err(mismatch) => \
+                     {ABI}::contract_violation_resource_type({provider_lit}, {symbol_lit}, \
+                     mismatch.expected, mismatch.found) }}"
+                );
                 writebacks.push(format!(
                     "{indent}        let __prov_raw{i} = unsafe {{ __prov_o{i}.assume_init() }};\n\
-                     {indent}        *__prov_a{i} = match {ABI}::OwnedResourceHandle::\
-                     from_raw_checked(__prov_raw{i}, {type_id}u32) {{\n\
-                     {indent}            Ok(handle) => handle,\n\
-                     {indent}            Err(mismatch) => {ABI}::contract_violation_resource_type(\n\
-                     {indent}                {provider_lit},\n{indent}                \
-                     {symbol_lit},\n{indent}                mismatch.expected,\n\
-                     {indent}                mismatch.found,\n{indent}            ),\n\
-                     {indent}        }};\n"
+                     {indent}        {}\n",
+                    emit_assignment(dest_place, &checked, env)?
                 ));
             }
         }
