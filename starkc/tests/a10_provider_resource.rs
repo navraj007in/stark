@@ -224,25 +224,29 @@ fn a_consumed_handle_is_not_a_borrow() {
 
 // ------------------------------------------------- the registry stays empty --
 
-/// **The load-bearing negative.** The compiler's own registry binds nothing, so a real program
-/// carrying a resource type is still refused. `File` is not supported by this slice, and nothing
-/// here should be read as saying it is.
+/// **The load-bearing negative, updated by C7.8.4.** The compiler's registry binds `"file"` and
+/// nothing else, so an unknown resource type is still refused.
+///
+/// The property this guards did not change when the first entry landed — it sharpened. Before
+/// C7.8.4 every resource was refused; now refusal is *specific*, and a provider inventing a
+/// resource type the compiler does not know still cannot build.
 #[test]
-fn the_builtin_registry_admits_no_resource_type() {
-    assert!(ResourceRegistry::builtin().is_empty());
+fn the_builtin_registry_admits_only_bound_resource_types() {
+    let registry = ResourceRegistry::builtin();
+    assert!(registry.lookup("file").is_some(), "C7.8.4 binds `file`");
 
-    for name in ["file", "File", SYNTH, "custom-db-session"] {
+    for name in ["File", SYNTH, "custom-db-session", "socket"] {
+        assert!(
+            registry.lookup(name).is_none(),
+            "{name} must not be bound -- binding is per type, and case-sensitive"
+        );
+
         let mut call = call_with(vec![AbiParam::HandleOut {
             resource_type: name.to_string(),
         }]);
         call.provider_resource_types = vec![name.to_string()];
 
-        match plan(
-            ProviderCallId(0),
-            &call,
-            &ResourceRegistry::builtin(),
-            StatusBinding::new(),
-        ) {
+        match plan(ProviderCallId(0), &call, &registry, StatusBinding::new()) {
             Err(PlanError::UnboundResourceType { resource_type, .. }) => {
                 assert_eq!(resource_type, name);
             }

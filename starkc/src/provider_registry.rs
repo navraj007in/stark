@@ -44,7 +44,7 @@ pub fn known_capabilities() -> Vec<String> {
 /// that "which providers can this compiler link?" has one answer in one place rather than being a
 /// property of the filesystem it runs on.
 pub fn first_party() -> Vec<DeclaredProvider> {
-    vec![stark_time(), stark_env()]
+    vec![stark_time(), stark_env(), stark_file()]
 }
 
 /// Resolves a provider crate name to its location on this machine.
@@ -57,6 +57,7 @@ pub fn crate_location(crate_name: &str, repo_root: &std::path::Path) -> Option<P
     match crate_name {
         "stark-time-native" => Some(repo_root.join("stark-time").join("native")),
         "stark-env-native" => Some(repo_root.join("stark-env").join("native")),
+        "stark-file-native" => Some(repo_root.join("stark-file").join("native")),
         _ => None,
     }
 }
@@ -177,6 +178,125 @@ fn stark_env() -> DeclaredProvider {
         },
         crate_name: "stark-env-native".to_string(),
         origin: "stark-env/native/Cargo.toml".to_string(),
+        status_binding: status,
+    }
+}
+
+/// `stark-file` — file I/O (WP-C7.8.4). The first provider with a **resource type**.
+///
+/// Its shape is Packet 3's close semantics made concrete. `stark_file_complete` is the recoverable
+/// completion operation, taking a *borrowed* handle so it can fail and be handled; `stark_file_close`
+/// is the ABI close, taking a **consumed** handle and declared `is_close_for: Some("file")`. That
+/// separation is exactly ABI §13.1's rule that anything fallible and argument-bearing must be a
+/// distinct call made *before* Drop — the close itself has nowhere to put a result.
+///
+/// Packet 4 holds: this provider supplies the Core `File` surface's needs without adding a Core
+/// symbol. `read`/`write` are the byte primitives package conveniences layer over.
+fn stark_file() -> DeclaredProvider {
+    // Codes 1-8 as `stark-file/native/src/lib.rs` declares them. `IOError` has five variants
+    // (STD-IO-001) and this vocabulary has eight, which is not a contradiction: the package binding
+    // maps codes to Core's variants, and `Other(String)` is where the surplus lands. The compiler
+    // treats every name here as opaque.
+    let mut status = StatusBinding::new();
+    status.declare(1, "IOError::NotFound");
+    status.declare(2, "IOError::PermissionDenied");
+    status.declare(3, "IOError::InvalidInput");
+    status.declare(4, "IOError::Other(invalid encoding)");
+    status.declare(5, "IOError::Other(is a directory)");
+    status.declare(6, "IOError::AlreadyExists");
+    status.declare(7, "IOError::Other(unsupported)");
+    status.declare(8, "IOError::Other");
+
+    let file = "file".to_string();
+    DeclaredProvider {
+        metadata: ProviderMetadata {
+            identity: ProviderIdentity {
+                name: "stark-std-file".to_string(),
+                semver: (0, 1, 0),
+                abi_version: crate::provider_abi::ABI_VERSION.to_string(),
+            },
+            target_triples: vec![
+                "aarch64-apple-darwin".to_string(),
+                "x86_64-apple-darwin".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-pc-windows-msvc".to_string(),
+            ],
+            capabilities: vec!["filesystem".to_string()],
+            resource_types: vec![file.clone()],
+            functions: vec![
+                FunctionDecl {
+                    name: "stark_file_open".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: file.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_file_create".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: file.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_file_read".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: file.clone(),
+                        },
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_file_write".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: file.clone(),
+                        },
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_file_complete".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::HandleBorrowed {
+                        resource_type: file.clone(),
+                    }],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_file_close".to_string(),
+                    capability: "filesystem".to_string(),
+                    params: vec![AbiParam::HandleConsumed {
+                        resource_type: file.clone(),
+                    }],
+                    is_close_for: Some(file),
+                    may_block: true,
+                },
+            ],
+        },
+        crate_name: "stark-file-native".to_string(),
+        origin: "stark-file/native/Cargo.toml".to_string(),
         status_binding: status,
     }
 }

@@ -232,15 +232,19 @@ fn no_environment_mutating_function_is_declared() {
     }
 }
 
-/// No provider in the C7.8 set declares a resource type yet — `File` is C7.8.4's, and until then
-/// the registry's providers are all scalar-and-buffer only.
+/// Every resource type any registered provider declares must be **bound** in the compiler's
+/// registry. A provider declaring one the compiler cannot type would fail at plan time with
+/// MIR-0024 rather than at review, so this catches the mismatch where it is cheap.
 #[test]
-fn no_registered_provider_declares_a_resource_type_yet() {
+fn every_declared_resource_type_is_bound() {
+    let registry = starkc::provider_bind::ResourceRegistry::builtin();
     for provider in provider_registry::first_party() {
-        assert!(
-            provider.metadata.resource_types.is_empty(),
-            "{} declares resource types before C7.8.4",
-            provider.metadata.identity.name
-        );
+        for resource in &provider.metadata.resource_types {
+            assert!(
+                registry.lookup(resource).is_some(),
+                "{} declares resource type `{resource}`, which the compiler does not bind",
+                provider.metadata.identity.name
+            );
+        }
     }
 }

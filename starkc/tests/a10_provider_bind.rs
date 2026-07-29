@@ -36,7 +36,10 @@ fn call_with(params: Vec<AbiParam>) -> ValidatedProviderCall {
         // §7 handle ids are indices into THIS list, so a resource-carrying fixture must declare
         // the types it uses — an undeclared one has no id to assign.
         provider_crate: "test-provider-native".to_string(),
-        provider_resource_types: vec!["synthetic-session".to_string()],
+        provider_resource_types: vec![
+            "synthetic-session".to_string(),
+            "custom-db-session".to_string(),
+        ],
         provider_target_triples: vec![LINUX.to_string()],
     }
 }
@@ -145,21 +148,29 @@ fn borrow_obligations_attach_to_the_pointer_forms_only() {
 
 // ------------------------------------------------------------------ resources --
 
-/// The registry is empty in C7.8.2d, so every resource-carrying form is unbound — and the error
-/// names the *resource type*, not "resources are unsupported".
+/// An **unbound** resource type is refused in every carrying form, and the error names the
+/// *resource type* rather than saying resources are unsupported.
+///
+/// C7.8.4 bound `"file"`, so this uses a type the compiler does not know. That is the durable
+/// property: MIR-0024 discriminates between bound and unbound types, rather than marking a phase
+/// during which all resources were refused.
 #[test]
-fn resource_forms_are_unbound_while_the_registry_is_empty() {
-    assert!(ResourceRegistry::builtin().is_empty());
+fn an_unbound_resource_type_is_refused_in_every_form() {
+    let unknown = "custom-db-session";
+    assert!(
+        ResourceRegistry::builtin().lookup(unknown).is_none(),
+        "the fixture must use a type the compiler does not know"
+    );
 
     for param in [
         AbiParam::HandleBorrowed {
-            resource_type: "file".to_string(),
+            resource_type: unknown.to_string(),
         },
         AbiParam::HandleConsumed {
-            resource_type: "file".to_string(),
+            resource_type: unknown.to_string(),
         },
         AbiParam::HandleOut {
-            resource_type: "file".to_string(),
+            resource_type: unknown.to_string(),
         },
     ] {
         match empty_plan(vec![param]) {
@@ -168,7 +179,7 @@ fn resource_forms_are_unbound_while_the_registry_is_empty() {
                 resource_type,
             }) => {
                 assert_eq!(index, 0);
-                assert_eq!(resource_type, "file");
+                assert_eq!(resource_type, unknown);
             }
             other => panic!("expected UnboundResourceType, got {other:#?}"),
         }

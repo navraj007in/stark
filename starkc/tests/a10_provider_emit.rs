@@ -162,10 +162,11 @@ fn declarations_are_deduplicated_and_order_independent() {
 /// builtin registry binds nothing.
 #[test]
 fn resource_declarations_are_shape_only_and_refusal_lives_in_planning() {
+    // Uses an UNBOUND type: C7.8.4 bound `file`, so it is no longer an example of refusal.
     let call = call_named(
         "p",
         vec![AbiParam::HandleConsumed {
-            resource_type: "file".to_string(),
+            resource_type: "custom-db-session".to_string(),
         }],
     );
 
@@ -176,11 +177,11 @@ fn resource_declarations_are_shape_only_and_refusal_lives_in_planning() {
         src.contains("a0: stark_runtime::provider_abi::RawResourceHandle"),
         "{src}"
     );
-    assert!(!src.contains("\"file\""), "{src}");
+    assert!(!src.contains("custom-db-session"), "{src}");
 
     // Planning: refused, because the builtin registry binds no resource type.
     let mut declared = call;
-    declared.provider_resource_types = vec!["file".to_string()];
+    declared.provider_resource_types = vec!["custom-db-session".to_string()];
     assert!(
         matches!(
             starkc::provider_bind::plan(

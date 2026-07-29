@@ -35,19 +35,28 @@ use std::collections::BTreeMap;
 
 /// Binds a provider's declared `resource_type` string to the MIR type that represents it.
 ///
-/// **Empty in C7.8.2d.** The first entry arrives with C7.8.4, which will register
-/// `"file" → MirTy::Core(CoreType::File, [])`. Until a resource type is bound, a call carrying one
-/// is inadmissible (MIR-0024) — structurally defined, but not yet mappable to a STARK type, so
-/// ABI §11.1's `resource_type` validation would have nothing to check against.
+/// A resource type with no entry is inadmissible (MIR-0024) — structurally defined, but not
+/// mappable to a STARK type, so ABI §11.1's `resource_type` validation would have nothing to check
+/// against. Binding is **per type, never a global switch**: `"file"` being bound says nothing about
+/// any other resource type.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceRegistry {
     map: BTreeMap<String, MirTy>,
 }
 
 impl ResourceRegistry {
-    /// The compiler's built-in bindings. Deliberately empty until C7.8.4 registers `File`.
+    /// The compiler's built-in bindings.
+    ///
+    /// `"file"` is bound as of WP-C7.8.4. The entry is the *entire* act of admitting a resource
+    /// type — the framework that carries it landed in C7.8.2d-4 and was proven with a synthetic
+    /// type, so turning `File` on is a registration rather than new machinery.
+    ///
+    /// MIR-0024 does not disappear with the first entry; it starts **discriminating**. A provider
+    /// declaring `"file"` now plans, while one declaring `"custom-db-session"` is still refused.
     pub fn builtin() -> Self {
-        Self::default()
+        let mut registry = Self::default();
+        registry.register("file", MirTy::Core(crate::hir::CoreType::File, Vec::new()));
+        registry
     }
 
     pub fn register(&mut self, resource_type: impl Into<String>, mir_type: MirTy) {
