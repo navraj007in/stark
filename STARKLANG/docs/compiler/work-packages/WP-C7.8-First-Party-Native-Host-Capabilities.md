@@ -87,7 +87,14 @@ C7.8.4  File I/O
 C7.8.5  Monotonic time and sleep
 C7.8.6  TCP listener and stream
 C7.8.7  Cross-platform verification and P1 unblock assessment
+C7.8.8  Source/package provider integration   <- the critical path to P1 (CD-220)
 ```
+
+**C7.8.8 was not in the original structure, and its absence was the plan's largest error.** Slices
+2e through 6 proved the backend and ABI by hand-building MIR. None of them made a capability
+reachable from STARK source: `lower.rs` produces no `Callee::Provider` at all. A capability that
+only a hand-authored MIR body can call is backend evidence, not a language feature, and P1 is
+written in STARK.
 
 C7.8.0 and C7.8.1 gate everything, and both are **closed**. C7.8.2 gates C7.8.3 onward. Within C7.8.3–C7.8.6, file
 ownership and destruction must be proven before TCP — file I/O is the simpler resource-lifecycle
@@ -395,12 +402,21 @@ frontend-supported, HIR-supported, MIR-lowered, native-runtime-supported, and cr
 verified. A single "supported" column would reproduce exactly the over-claiming C7.2 was corrected
 for.
 
-**The closure claim is bounded and must be stated as such:**
+**The closure claim, amended 2026-07-29 (CD-220).** The original wording would have been satisfied
+by hand-built MIR, which is why it is replaced:
 
-> P1 is no longer blocked by missing native host capabilities for arguments, environment, file
-> I/O, monotonic time, sleep, TCP listening, accepting connections, and stream I/O.
+> The native backend and provider ABI support the host capabilities required by P1, and each
+> mandatory capability is reachable from ordinary STARK source through a package API, typed HIR,
+> provider MIR lowering and native execution on macOS, Linux and Windows.
+
+**Until the source-to-provider lowering path exists, C7.8 has not removed P1's host-capability
+precondition** — regardless of whether a provider can be executed from hand-built MIR.
 
 It does **not** claim P1 is complete, and it does **not** close Gate C7.
+
+**Hand-authored MIR tests are not source-language capability completion.** They remain backend and
+ABI evidence, and C7.8.7 must report them as such rather than counting them toward capability
+coverage.
 
 ---
 
@@ -454,6 +470,7 @@ Ownership boundaries, written down rather than assumed:
 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | 3 — **DISPOSITIONED 2026-07-28** |
 | CE1 | Normative surface placement for the five capabilities | 4 — **DISPOSITIONED 2026-07-29** |
 | CE9 | File, environment and network trust boundaries; provider linking | 5 — **DISPOSITIONED 2026-07-29** |
+| CE3 | MIR representation for package-declared host resources (Route B) | 6 — **DISPOSITIONED 2026-07-29** |
 
 Packet 4 was dispositioned as the option requiring **no** CE1 change. That was still a CE1 decision:
 the alternatives were Core changes, and declining them is the ruling. Packet 5's boundary table
@@ -504,3 +521,44 @@ admits inbound TCP explicitly rather than letting P1's requirements imply it.
 > onto the ABI's three failure channels. The admitted surface is verified on macOS, Linux and
 > Windows. P1 is no longer blocked by missing native host capability. P1 is not complete and Gate
 > C7 does not close.
+
+
+---
+
+## 11. WP-C7.8.8 — Source/package provider integration (CD-220)
+
+The path from STARK source to a native provider call. **This is the critical path to P1**, and TCP
+sits behind it rather than in front of it: `tcp_listener`/`tcp_stream` need the host-resource
+representation Packet 6 dispositioned, which the source path needs anyway.
+
+### The seven steps
+
+1. package manifest declares required capabilities;
+2. package API declarations bind source-level functions and resource types to provider
+   capabilities, symbols and provider resource names;
+3. type checking resolves the normal package call;
+4. HIR preserves the provider binding;
+5. lowering creates `ValidatedProviderCall` and emits `Callee::Provider`;
+6. package resource nominals lower to the new MIR host-resource representation (Packet 6);
+7. generated Rust uses `OwnedResourceHandle`.
+
+Step 1 is done (CD-213). Steps 2–7 are open.
+
+### Proof order, by increasing complexity
+
+Each is a STARK **source** program, compiled and run:
+
+1. time;
+2. args/env;
+3. `File` create/write/close;
+4. TCP bind/connect;
+5. accept;
+6. full native echo.
+
+### What does not count
+
+**Hand-authored MIR does not demonstrate source-language capability.** The existing e2e suites
+(`a10_stark_time_e2e`, `c783_env_e2e`, `c784_file_e2e`, `c78_buffer_e2e`, `c785_time_closeout`) are
+backend and ABI evidence and stay valuable as such — they are what proved the emission, ownership
+and channel rules. They must not be counted toward capability completion, and C7.8.7 must keep the
+two columns apart.

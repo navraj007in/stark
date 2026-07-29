@@ -4,7 +4,8 @@ Five dispositions required before any WP-C7.8 implementation begins (2026-07-28)
 cause, normative requirement, choices, recommendation (replaced by a disposition once ruled),
 compatibility impact, implementation surface and required regression evidence.
 
-**Status: 5 of 5 dispositioned. All escalations recorded; C7.8.3–C7.8.6 are unblocked.**
+**Status: 6 of 6 dispositioned.** Packets 1–5 unblocked C7.8.3–C7.8.6. Packet 6 (CE3) opens the
+source-to-provider path, which is now the critical path to P1.
 
 | Packet | Class | Subject | Status |
 | --- | --- | --- | --- |
@@ -13,6 +14,7 @@ compatibility impact, implementation surface and required regression evidence.
 | 3 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | **DISPOSITIONED 2026-07-28** — option A, both texts unchanged, seven binding conditions |
 | 4 | CE1 | Normative surface placement for the five capabilities | **DISPOSITIONED 2026-07-29** — option A, no Core specification change |
 | 5 | CE9 | File, environment and network trust boundaries | **DISPOSITIONED 2026-07-29** — explicit boundary table, inbound TCP admitted via explicit `bind` only |
+| 6 | CE3 | MIR representation for package-declared host resources | **DISPOSITIONED 2026-07-29** — Route B, an explicit `MirTy::HostResource`-style form |
 
 These packets replace §5 ("Required design decisions") of the superseded root-level
 `WP-C7.8-Native-Host-Capability-Foundation.md`. That document's §5.1 presented the native
@@ -952,3 +954,72 @@ public surface of C7.8.3 through C7.8.6.
 
 Evidence for these packets comes from hosted CI on all three Tier-1 platforms, not from local
 runs — the cross-platform claims in WP-C7.8's exit criteria cannot be established any other way.
+
+
+---
+
+# Packet 6 — CE3: a MIR representation for package-declared host resources
+
+## Root cause
+
+`File` executes because `MirTy::Core(CoreType::File, [])` already existed and emission could map it
+to `OwnedResourceHandle`. `tcp_listener` and `tcp_stream` have no such type, and Packet 4 makes them
+**package**-owned, so there is nothing in Core to point at.
+
+That leaves a gap with no in-scope answer: a package-declared resource has a STARK nominal identity
+and a provider resource identity, and MIR can represent neither. Binding it to an ordinary
+`MirTy::Struct` is worse than nothing — a package struct emits as a generated Rust struct with
+fields, `Copy`/`Clone` derives and Rust-owned drop, which is the exact opposite of every property
+CE4 Amendment 1 established for a host handle.
+
+**This blocks more than TCP.** No lowering anywhere produces a `Callee::Provider` — `lower.rs`
+hard-codes `provider_calls: Vec::new()`, and all four capability e2e tests hand-build MIR. So no
+capability is reachable from STARK source, and the resource representation is the first thing the
+source path needs.
+
+## Choices
+
+| | Option | Consequence |
+| --- | --- | --- |
+| A | Add `CoreType::TcpListener`/`TcpStream` | Smallest change, TCP executes within a slice — and reverses Packet 4 for exactly the reason Packet 4 anticipated. Puts networking types in Core permanently to unblock a demo, and answers nothing for the next package resource |
+| B | An explicit MIR host-resource representation | Answers the general question once. Costs a MIR shape addition and the HIR/type-check work to carry a binding through |
+| C | Mark ordinary `Struct` nominals as host resources | No new MIR form, but the marking is invisible at the type level, so every consumer must remember to check it — a hidden special case on the most common nominal form |
+
+## DISPOSITION — owner ruling, 2026-07-29: **B.**
+
+**Do not add `CoreType::TcpListener` or `CoreType::TcpStream`. Packet 4 remains intact: TCP stays
+package-owned.**
+
+Introduce an explicit MIR representation for a package-declared host resource rather than emitting
+it as an ordinary struct. It must retain **both** identities — the STARK nominal and the provider
+resource name — and emit natively as `OwnedResourceHandle` with:
+
+- no structural fields;
+- no `Copy`, no `Clone`;
+- no Rust `Drop`;
+- MIR-owned exactly-once close;
+- resource-type validation on `HandleOut`;
+- provider close selection from validated package/provider metadata.
+
+**Package declaration and compiler marking are one design.** A package nominal becomes a host
+resource because its binding is carried explicitly through HIR and MIR — not because a checker
+recognises a name. Option C is rejected: a hidden special case on ordinary structs puts the
+obligation on every consumer to remember it, and the first one that forgets emits a struct with
+fields where a handle belongs.
+
+## Compatibility impact
+
+- A MIR **shape** addition, so `MIR_VERSION` is in scope, not only the runtime surface. The
+  amendment must say which.
+- No Core specification change; `06-Standard-Library.md` is untouched, and Packet 4 stands.
+- `File` keeps its `CoreType` binding. The two representations coexist deliberately: `File` is
+  normative Core (STD-IO-001), package resources are not.
+
+## Required regression evidence
+
+- A package-declared resource nominal round-trips: source declaration → HIR binding → MIR
+  host-resource form → `OwnedResourceHandle` in generated Rust.
+- The emitted type has no fields, no `Copy`/`Clone`, and no `Drop` impl.
+- Exactly-once close is MIR-owned, and the close function is selected from validated metadata.
+- A `HandleOut` of a package resource validates its `resource_type` before the owning value exists.
+- An ordinary `Struct` nominal is **unaffected** — it still emits as a struct with its fields.

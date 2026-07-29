@@ -428,10 +428,41 @@ qualification. Raw descriptors are never exposed. Contract violations and host f
 outside package error enums. Dynamic loading, sandboxing, allowlists and deployment policy are
 deferred.
 
+**CORRECTION (CD-220), because the earlier entries overstated this.** "Executes natively" has meant
+*a hand-built MIR body calling the provider compiles, links and runs*. It has **not** meant a STARK
+programmer can use the capability: `lower.rs` produces no `Callee::Provider` at all, and every
+capability e2e hand-builds MIR. Those tests are backend and ABI evidence — they are what proved
+emission, ownership and the three status channels — but they are **not** source-language capability.
+
+| capability | provider executes (hand-built MIR) | reachable from STARK source |
+| --- | --- | --- |
+| time (`stark-time`) | yes, both symbols (CD-219) | no |
+| args/env (`stark-env`) | yes (CD-214, CD-216) | no |
+| file (`stark-file`) | yes, create/write/complete/close (CD-217) | no |
+| tcp (`stark-net`) | no — resource types unbound (CD-218) | no |
+
+**So C7.8 has NOT removed P1's host-capability precondition.** P1 is written in STARK, and no
+capability is callable from STARK. The closure statement is amended accordingly
+(`WP-C7.8-First-Party-Native-Host-Capabilities.md` §5.7).
+
+**Packet 6 / CE3 (CD-220) — Route B.** A package-declared host resource gets an explicit MIR
+representation, not an ordinary struct and not a new `CoreType`. It retains the STARK nominal *and*
+the provider resource identity, and emits as `OwnedResourceHandle`: no fields, no `Copy`/`Clone`, no
+Rust `Drop`, MIR-owned exactly-once close, `resource_type` validated on `HandleOut`. Packet 4 stands
+— TCP is not moved into Core to unblock a demo. Marking ordinary structs was rejected: a hidden
+special case obliges every consumer to remember it, and the first that forgets emits fields where a
+handle belongs.
+
+**WP-C7.8.8 — source/package provider integration** is now the critical path. Seven steps (manifest
+capabilities → package API bindings → type check → HIR binding → lowering to `Callee::Provider` →
+resource nominals → `OwnedResourceHandle`), proven in order on real STARK source: time, args/env,
+File, TCP bind/connect, accept, full echo. TCP sits behind this, not in front of it.
+
 **Remaining in C7.8:** CLI/package-manifest capability declarations and provider selection; C7.8.3
-args/env; C7.8.4 File (registering `file` in the resource registry); C7.8.5 close-out with
-`stark-time/BLOCKERS.md` discharged; C7.8.6 TCP; C7.8.7 three-platform qualification and the P1
-unblock assessment. **Cross-platform architecture claims stay unticked until C7.8.7 evidence
+args/env; C7.8.4 File (registering `file` in the resource registry); C7.8.5 close-out (**done**, CD-219);
+C7.8.6 TCP (**registered**, CD-218; execution blocked on Packet 6); **C7.8.8 source/package provider
+integration (the critical path)**; C7.8.7 three-platform qualification and the P1 unblock
+assessment, which must report backend evidence and source capability as separate columns. **Cross-platform architecture claims stay unticked until C7.8.7 evidence
 exists** — work to date is proven on one host plus CI, not on a three-platform record.
 
 | | |
