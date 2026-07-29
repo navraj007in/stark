@@ -90,7 +90,15 @@ fn stark_time() -> DeclaredProvider {
                 FunctionDecl {
                     name: "stark_time_unix_now".to_string(),
                     capability: "clock".to_string(),
-                    params: vec![AbiParam::ScalarOut(ScalarTy::I64)],
+                    // TWO out-slots: seconds and nanoseconds. Mirrored wrong once (one slot), which
+                    // generated a call passing a single pointer -- the provider found its second
+                    // argument null and aborted, exactly as it is written to. Only execution caught
+                    // it; metadata validation cannot, because a one-slot declaration is internally
+                    // consistent and simply describes a different function.
+                    params: vec![
+                        AbiParam::ScalarOut(ScalarTy::I64),
+                        AbiParam::ScalarOut(ScalarTy::U32),
+                    ],
                     is_close_for: None,
                     may_block: false,
                 },

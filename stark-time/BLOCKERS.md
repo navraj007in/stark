@@ -2,7 +2,26 @@
 
 ## Classification
 
-READY_PACKAGE_PROVIDER
+**DISCHARGED 2026-07-29 (CD-219) — was READY_PACKAGE_PROVIDER.**
+
+The blocker below is resolved at its own terms. The provider-execution seam it waited on exists
+(WP-C7.8, CE4 disposition CD-198: statically linked, ABI-semantic), and **both** named symbols are
+called from generated STARK code and observed through their output slots — evidence in
+`starkc/tests/c785_time_closeout.rs`, which builds, links this crate unmodified, runs the binary and
+reads the values back.
+
+**What is NOT discharged**, and is recorded here rather than left to inference: §24.1's note that
+`Instant::now`, `UnixTimestamp::now` and `Instant::elapsed` are not implemented still holds. Those
+are STARK-level package APIs, and no package surface generates provider calls yet. The *seam* is
+proven; the *package API* is not. This crate's own constraint (WP-TIME-A §1.1) is unchanged — it
+still may not invent that surface.
+
+One defect surfaced while discharging this: the compiler's registry mirrored
+`stark_time_unix_now` with a single output slot when this crate declares two (seconds and
+nanoseconds). The generated call passed one pointer, and this provider's null check aborted rather
+than writing through it — the defensive check earning its place. Metadata validation could not have
+caught it, because a one-slot declaration is internally consistent and simply describes a different
+function; only execution could.
 
 ## Repository head
 
