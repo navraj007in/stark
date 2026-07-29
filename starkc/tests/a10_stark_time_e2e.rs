@@ -85,6 +85,7 @@ fn stark_time_provider() -> DeclaredProvider {
             ],
         },
         crate_name: "stark-time-native".to_string(),
+        status_binding: starkc::provider_bind::StatusBinding::new(),
         origin: "stark-time/native/Cargo.toml".to_string(),
     }
 }

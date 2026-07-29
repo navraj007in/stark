@@ -38,6 +38,12 @@ pub struct DeclaredProvider {
     /// for the same reason `origin` is: `ProviderMetadata` is a struct literal in provider crates,
     /// and adding a field would break every one of them.
     pub crate_name: String,
+    /// The package's declared recoverable status vocabulary (Packet 1 §1.2).
+    ///
+    /// Lives here rather than in `ProviderMetadata` for the same reason: the ABI deliberately does
+    /// not carry code meanings, because they are a *package* concern. Empty is meaningful — it
+    /// says every nonzero status from this provider is a contract violation.
+    pub status_binding: crate::provider_bind::StatusBinding,
     /// Human-readable provenance for diagnostics, e.g. a manifest path. Never load-bearing for
     /// selection — two providers with identical origins still conflict, and one with no
     /// meaningful origin still resolves.
@@ -402,9 +408,9 @@ impl ProviderSet {
             provider_crate: provider.crate_name.clone(),
             provider_resource_types: provider.metadata.resource_types.clone(),
             provider_target_triples: provider.metadata.target_triples.clone(),
-            // Empty until a package declares its status vocabulary (C7.8.3+). Empty is not
-            // "unknown": it means every nonzero status is a contract violation.
-            status_binding: crate::provider_bind::StatusBinding::new(),
+            // The provider's declared vocabulary, carried onto every call site resolved from it.
+            // Empty is not "unknown": it means every nonzero status is a contract violation.
+            status_binding: provider.status_binding.clone(),
         })
     }
 }

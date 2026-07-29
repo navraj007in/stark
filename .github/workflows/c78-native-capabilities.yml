@@ -56,8 +56,8 @@ jobs:
         run: |
           python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='implemented'"
           cargo test --manifest-path starkc/Cargo.toml --test a10_stark_time_e2e
-      - name: args-env-e2e pending
-        run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_env']['native_e2e']=='pending'"
+      - name: args-env-e2e implemented
+        run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_env']['native_e2e']=='implemented'"
       - name: file-e2e pending
         run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_file']['native_e2e']=='pending'"
       - name: tcp-e2e pending

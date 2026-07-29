@@ -22,6 +22,7 @@
 //! validates against this repository's ABI validator, which is what keeps the mirror honest.
 
 use crate::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity, ProviderMetadata, ScalarTy};
+use crate::provider_bind::StatusBinding;
 use crate::provider_resolve::DeclaredProvider;
 use std::path::PathBuf;
 
@@ -43,7 +44,7 @@ pub fn known_capabilities() -> Vec<String> {
 /// that "which providers can this compiler link?" has one answer in one place rather than being a
 /// property of the filesystem it runs on.
 pub fn first_party() -> Vec<DeclaredProvider> {
-    vec![stark_time()]
+    vec![stark_time(), stark_env()]
 }
 
 /// Resolves a provider crate name to its location on this machine.
@@ -55,6 +56,7 @@ pub fn first_party() -> Vec<DeclaredProvider> {
 pub fn crate_location(crate_name: &str, repo_root: &std::path::Path) -> Option<PathBuf> {
     match crate_name {
         "stark-time-native" => Some(repo_root.join("stark-time").join("native")),
+        "stark-env-native" => Some(repo_root.join("stark-env").join("native")),
         _ => None,
     }
 }
@@ -94,5 +96,87 @@ fn stark_time() -> DeclaredProvider {
         },
         crate_name: "stark-time-native".to_string(),
         origin: "stark-time/native/Cargo.toml".to_string(),
+        // stark-time declares NO recoverable status. Empty is the meaningful value: every nonzero
+        // status from it is a contract violation.
+        status_binding: StatusBinding::new(),
+    }
+}
+
+/// `stark-env` — process arguments and environment (WP-C7.8.3).
+///
+/// Both capabilities are **read-only** (Packet 5): there is no environment-mutating function, and
+/// none may be added in C7.8.
+///
+/// The two-call shape — `_len` then `_fill` — is what ABI §9's borrowed buffers require. A provider
+/// cannot allocate for the caller, so the caller asks how much room it needs, allocates, and passes
+/// a `BufferInOut` for the provider to write into. `stark_env_var_len` additionally reports
+/// presence through a `ScalarOut(Bool)`, so "absent" is distinguishable from "present and empty"
+/// without a sentinel length.
+fn stark_env() -> DeclaredProvider {
+    // Codes 1-4 as `stark-env/native/src/lib.rs` declares them. This is the first provider with a
+    // non-empty vocabulary, so it is the first place channel one is real rather than vacuous.
+    let mut status = StatusBinding::new();
+    status.declare(1, "ProcessError::InvalidName");
+    status.declare(2, "ProcessError::InvalidEncoding");
+    status.declare(3, "ProcessError::BufferTooSmall");
+    status.declare(4, "ProcessError::Unsupported");
+
+    DeclaredProvider {
+        metadata: ProviderMetadata {
+            identity: ProviderIdentity {
+                name: "stark-std-env".to_string(),
+                semver: (0, 1, 0),
+                abi_version: crate::provider_abi::ABI_VERSION.to_string(),
+            },
+            target_triples: vec![
+                "aarch64-apple-darwin".to_string(),
+                "x86_64-apple-darwin".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-pc-windows-msvc".to_string(),
+            ],
+            capabilities: vec!["process.args".to_string(), "process.env".to_string()],
+            resource_types: vec![],
+            functions: vec![
+                FunctionDecl {
+                    name: "stark_env_args_len".to_string(),
+                    capability: "process.args".to_string(),
+                    params: vec![AbiParam::ScalarOut(ScalarTy::U64)],
+                    is_close_for: None,
+                    may_block: false,
+                },
+                FunctionDecl {
+                    name: "stark_env_args_fill".to_string(),
+                    capability: "process.args".to_string(),
+                    params: vec![AbiParam::BufferInOut, AbiParam::ScalarOut(ScalarTy::U64)],
+                    is_close_for: None,
+                    may_block: false,
+                },
+                FunctionDecl {
+                    name: "stark_env_var_len".to_string(),
+                    capability: "process.env".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::Bool),
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: false,
+                },
+                FunctionDecl {
+                    name: "stark_env_var_fill".to_string(),
+                    capability: "process.env".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: false,
+                },
+            ],
+        },
+        crate_name: "stark-env-native".to_string(),
+        origin: "stark-env/native/Cargo.toml".to_string(),
+        status_binding: status,
     }
 }

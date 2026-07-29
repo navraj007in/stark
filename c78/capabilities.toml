@@ -6,7 +6,7 @@ native_e2e = "implemented"
 
 [stark_env]
 provider_metadata = "implemented"
-native_e2e = "pending"
+native_e2e = "implemented"
 
 [stark_file]
 provider_metadata = "implemented"
