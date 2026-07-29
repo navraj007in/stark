@@ -400,13 +400,39 @@ closed with a real per-unit operation: `HelperOp::Drop` wrappers over
 **Process note:** full-workspace test runs are now reserved for WP/gate closure points,
 not every intermediate change, per owner feedback.
 
-## WP-C7.8 — APPROVED, PRE-IMPLEMENTATION (CD-201)
+## WP-C7.8 — IN PROGRESS (CD-212)
 
-**Owner resolved the C7.7 scope question in favour of a preceding native-capability work package.
-Packets 1/CE4, 2/CE3 and 3/CE2 are dispositioned. Packets 4/CE1 and 5/CE9 remain open. C7.8.2 may
-begin now that C7.8.0 admission is committed; C7.8.3 onward remains gated by the open packets.**
+**All five packets are dispositioned. C7.8.0–C7.8.2 are closed: MIR represents provider calls,
+verification enforces invariants 1–5, the binding plan and emission close 6, 8 and 9, the resource
+framework structures 7, and `stark-time` executes natively through the ABI (CD-210). C7.8.3–C7.8.6
+are unblocked.**
 
-Not `IN PROGRESS` — no implementation has started.
+**Packet 4 / CE1 (CD-212) — no Core specification change.** The normative Core `File` surface stays
+exactly as specified; arguments, environment, time, sleep and TCP are package capabilities;
+`IOError` stays file-I/O-only; `NetworkError`/`ProcessError` are package-owned. No Core
+`File::read`, `read_to_end`, `write_all`, `flush`, or networking API. Where a package byte-read
+cannot be built over Core `File`, the package binding invokes the **provider** byte-read primitive
+directly — reaching past Core to a provider it already owns, which adds no Core symbol.
+Package conveniences must preserve short-read, short-write and successful-zero-write rules.
+
+**Packet 5 / CE9 (CD-212) — explicit trust boundary.** Providers are admitted only through
+package-declared capability requirements and target-compatible validated metadata: no implicit
+discovery, no fallback, no priority rule, no dynamic loading, and **`stark build` fails when a
+required capability has no unique selected provider**. Arguments and environment are read-only; no
+environment mutation. Paths pass to the provider **verbatim** — no normalisation, shell/tilde/env
+expansion, or hidden working-directory changes; relative paths resolve against the launched
+process's working directory. Outbound TCP needs an explicit call and address. Inbound TCP is
+admitted **only** via an explicit `TcpListener::bind(address)` — no hidden default, no implicit
+`0.0.0.0`, no listener as a side effect of package loading. Loopback is mandatory for
+qualification. Raw descriptors are never exposed. Contract violations and host failures stay
+outside package error enums. Dynamic loading, sandboxing, allowlists and deployment policy are
+deferred.
+
+**Remaining in C7.8:** CLI/package-manifest capability declarations and provider selection; C7.8.3
+args/env; C7.8.4 File (registering `file` in the resource registry); C7.8.5 close-out with
+`stark-time/BLOCKERS.md` discharged; C7.8.6 TCP; C7.8.7 three-platform qualification and the P1
+unblock assessment. **Cross-platform architecture claims stay unticked until C7.8.7 evidence
+exists** — work to date is proven on one host plus CI, not on a three-platform record.
 
 | | |
 | --- | --- |

@@ -4,15 +4,15 @@ Five dispositions required before any WP-C7.8 implementation begins (2026-07-28)
 cause, normative requirement, choices, recommendation (replaced by a disposition once ruled),
 compatibility impact, implementation surface and required regression evidence.
 
-**Status: 3 of 5 dispositioned.**
+**Status: 5 of 5 dispositioned. All escalations recorded; C7.8.3–C7.8.6 are unblocked.**
 
 | Packet | Class | Subject | Status |
 | --- | --- | --- | --- |
 | 1 | CE4 | First-party provider invocation model | **DISPOSITIONED 2026-07-28, FULLY** — B (statically linked, ABI-semantic); all four sub-decisions confirmed with two clarifications |
 | 2 | CE3 | MIR runtime surface `0.1-A9` → `0.1-A10` | **DISPOSITIONED 2026-07-28** — distinct `Callee::Provider` form; amendment at `mir-amendment-A10-provider-invocation.md` |
 | 3 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | **DISPOSITIONED 2026-07-28** — option A, both texts unchanged, seven binding conditions |
-| 4 | CE1 | Normative surface placement for the five capabilities | OPEN — recommends the option requiring no Core change |
-| 5 | CE9 | File, environment and network trust boundaries | OPEN |
+| 4 | CE1 | Normative surface placement for the five capabilities | **DISPOSITIONED 2026-07-29** — option A, no Core specification change |
+| 5 | CE9 | File, environment and network trust boundaries | **DISPOSITIONED 2026-07-29** — explicit boundary table, inbound TCP admitted via explicit `bind` only |
 
 These packets replace §5 ("Required design decisions") of the superseded root-level
 `WP-C7.8-Native-Host-Capability-Foundation.md`. That document's §5.1 presented the native
@@ -802,6 +802,26 @@ rule can reject non-UTF-8 platform arguments, `args()` is fallible; if the polic
 replacement, it is infallible. Decide that in C7.8.3 and record it — do not leave it implied by a
 signature.
 
+## DISPOSITION — owner ruling, 2026-07-29: **A. No Core specification change.**
+
+Binding Core/package placement for C7.8.3–C7.8.6:
+
+- the normative Core `File` surface stays **exactly** as specified;
+- arguments, environment, time, sleep and TCP are **package capabilities**, never Core additions;
+- `IOError` stays limited to file I/O; `NetworkError` and `ProcessError` are package-owned;
+- **do not** add Core `File::read`, `read_to_end`, `write_all`, `flush`, or any networking API.
+
+**The byte-read gap is resolved without enlarging Core.** Core exposes no byte-oriented read —
+`read_to_string` is UTF-8-validating and whole-file — so a package `read_to_end` cannot be built
+over Core's `File` alone. The package binding may therefore **invoke the provider byte-read
+primitive directly**. That is a package reaching past Core to the provider it already owns, not a
+widening of Core: no Core symbol is added, and `06-Standard-Library.md` is untouched.
+
+Package conveniences (`read_to_end`, `write_all`, `copy`, buffered I/O) layer over provider and Core
+primitives and **must preserve the primitive contracts they are built on**: short reads, short
+writes, and the successful-zero-write rule (a successful zero-byte write with bytes remaining is an
+error, never a retry — the alternative is an unbounded loop).
+
 ## Compatibility impact
 
 - **No spec edit, no `build-core-spec.py` regeneration, no fixture re-triage** under A.
@@ -872,6 +892,36 @@ Not an either/or. The disposition records the boundary; the question is where ea
 Record the table above as the CE9 disposition for WP-C7.8, with **inbound TCP explicitly
 admitted** — that is the substantive change from the superseded document, and it should be an
 owner decision rather than a consequence of P1's requirements.
+
+## DISPOSITION — owner ruling, 2026-07-29: **the explicit boundary table, adopted.**
+
+**Provider admission.** Provider crates are admitted only through package-declared capability
+requirements and target-compatible validated metadata. No implicit discovery, no fallback provider,
+no priority rule, no dynamic loading. **`stark build` must fail when a required capability has no
+unique selected provider** — the ambiguity and unavailability errors are build failures, not
+warnings resolved by a default.
+
+**Process.** Arguments and environment are explicit, **read-only** capabilities. No environment
+mutation in C7.8.
+
+**Paths.** File paths are passed to the provider **verbatim**. No compiler or runtime path
+normalisation, shell expansion, tilde expansion, environment expansion, or hidden
+working-directory changes. Relative paths resolve against the launched process's working directory
+unless a later explicit sandbox policy overrides that.
+
+**Network.** Outbound TCP requires an explicit program call with an explicit address. Inbound TCP is
+**admitted** for C7.8/P1, but only through an explicit `TcpListener::bind(address)` call — no hidden
+bind address, no implicit `0.0.0.0`, no automatically selected public interface, and no listener
+created as a side effect of package loading. Loopback is **mandatory for qualification**;
+non-loopback addresses are permitted only when explicitly supplied by the program and supported by
+the host.
+
+**Descriptors.** Raw OS descriptors and sockets are never exposed.
+
+**Errors.** Contract violations and host failures remain **outside** package error enums — Packet 1
+§1.2's three channels, restated as a trust rule rather than only a typing rule.
+
+**Deferred, explicitly:** dynamic loading, capability sandboxing, allowlists, and deployment policy.
 
 ## Compatibility impact
 

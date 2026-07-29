@@ -1,10 +1,11 @@
 # WP-C7.8 — First-Party Native Host Capabilities
 
-**Status:** APPROVED — PRE-IMPLEMENTATION (CD-201). C7.8.0 and C7.8.1 closed; C7.8.2 authorised.
+**Status:** IN PROGRESS (CD-212). C7.8.0–C7.8.2 closed; all five packets dispositioned;
+C7.8.3–C7.8.6 unblocked.
 **Parent gate:** C7
 **Supersedes:** `WP-C7.8-Native-Host-Capability-Foundation.md` (repo root), dispositioned
 **REVISE — conflicts with approved CE4 Native Provider ABI v0.1 and does not fully unblock P1.**
-**Decisions:** `WP-C7.8.1-DECISION-PACKETS.md` (five packets — CE4, CE3, CE2 dispositioned; CE1, CE9 open)
+**Decisions:** `WP-C7.8.1-DECISION-PACKETS.md` — **all five dispositioned** (CE4, CE3, CE2 on 2026-07-28; CE1, CE9 on 2026-07-29)
 **MIR amendment:** `mir-amendment-A10-provider-invocation.md` (rev. 1, surface `0.1-A10`)
 **Primary targets:** macOS, Linux, Windows
 
@@ -451,11 +452,12 @@ Ownership boundaries, written down rather than assumed:
 | CE4 | First-party provider invocation model and ABI application | 1 — **DISPOSITIONED 2026-07-28** |
 | CE3 | New MIR runtime surface (`0.1-A9` → `0.1-A10`) | 2 — **DISPOSITIONED 2026-07-28** |
 | CE2 | STD-IO-001 drop-close versus ABI §13.2 | 3 — **DISPOSITIONED 2026-07-28** |
-| CE1 | Normative surface placement for the five capabilities | 4 — OPEN |
-| CE9 | File, environment and network trust boundaries; provider linking | 5 — OPEN |
+| CE1 | Normative surface placement for the five capabilities | 4 — **DISPOSITIONED 2026-07-29** |
+| CE9 | File, environment and network trust boundaries; provider linking | 5 — **DISPOSITIONED 2026-07-29** |
 
-Packet 4 recommends the option that requires **no** CE1 change, but the disposition must still be
-recorded — the alternative options are CE1, and choosing not to take them is itself the decision.
+Packet 4 was dispositioned as the option requiring **no** CE1 change. That was still a CE1 decision:
+the alternatives were Core changes, and declining them is the ruling. Packet 5's boundary table
+admits inbound TCP explicitly rather than letting P1's requirements imply it.
 
 ## 9. Exit criteria
 
@@ -463,8 +465,7 @@ recorded — the alternative options are CE1, and choosing not to take them is i
 
 - [x] C7.8 present in `COMPILER-ROADMAP.md` and `COMPILER-STATE.md` (CD-201).
 - [x] The `WP-C7.7-GATE-EXIT.md` §6 open question is answered by a recorded owner decision (CD-201).
-- [ ] All five packets dispositioned; CE1 and CE9 each recorded.
-      (CE4, CE3 and CE2 — Packets 1, 2 and 3 — **done 2026-07-28**.)
+- [x] All five packets dispositioned (CE4, CE3, CE2 2026-07-28; CE1, CE9 2026-07-29, CD-212).
 - [x] C8 concurrency boundary written down (CD-201).
 
 **Architecture**
