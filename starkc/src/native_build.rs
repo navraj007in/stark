@@ -5,10 +5,15 @@ use crate::backend::generated_rust::{
     emit_native_debug_with_toolchain, BackendDiagnostic, NativeBuildOptions,
     NativeToolchainOptions, Profile,
 };
-use crate::mir::{lower::lower_program, verify::verify_program};
+use crate::mir::{
+    lower::lower_program_with_providers, provider_lower::ProviderLowering, verify::verify_program,
+};
 use crate::native_toolchain::{self, ToolchainError, ToolchainInfo};
 use crate::options::LanguageOptions;
 use crate::package::{find_package_root, PackageGraph};
+use crate::provider_derive::{DerivedSignature, DerivedTy};
+use crate::provider_resolve::ProviderSet;
+use crate::provider_synth::SynthesizedLayer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,22 +95,20 @@ fn required_capabilities(graph: &PackageGraph) -> Vec<String> {
 /// provider.** Ambiguity is not resolved by a priority rule, declaration order, or a fallback —
 /// each of those would make the produced binary depend on something other than what the program
 /// asked for.
-fn select_providers(
+fn select_provider_set(
     required: &[String],
     target: Option<&str>,
     toolchain: &crate::native_toolchain::ToolchainInfo,
+) -> Result<ProviderSet, BuildCommandError> {
+    let triple = target.unwrap_or(toolchain.host_triple.as_str());
+    ProviderSet::select(crate::provider_registry::first_party(), triple, required)
+        .map_err(|errors| BuildCommandError::Capability(render_capability_errors(&errors, triple)))
+}
+
+fn provider_crates_for_set(
+    set: &ProviderSet,
     package_root: &Path,
 ) -> Result<std::collections::BTreeMap<String, PathBuf>, BuildCommandError> {
-    let triple = target.unwrap_or(toolchain.host_triple.as_str());
-    let set = crate::provider_resolve::ProviderSet::select(
-        crate::provider_registry::first_party(),
-        triple,
-        required,
-    )
-    .map_err(|errors| BuildCommandError::Capability(render_capability_errors(&errors, triple)))?;
-
-    // A crate location is resolved for every selected provider up front: an unlocatable provider
-    // must fail here, with the provider named, rather than as an unresolved symbol from the linker.
     let repo_root = provider_repo_root(package_root);
     let mut out = std::collections::BTreeMap::new();
     for provider in set.providers() {
@@ -125,6 +128,192 @@ fn select_providers(
         out.insert(name.clone(), path);
     }
     Ok(out)
+}
+
+struct ProviderBuildLayer {
+    overlays: HashMap<PathBuf, String>,
+    lowering: ProviderLowering,
+}
+
+fn provider_layer_for_build(
+    graph: &PackageGraph,
+    set: Option<&ProviderSet>,
+) -> Result<ProviderBuildLayer, BuildCommandError> {
+    let Some(set) = set else {
+        return Ok(ProviderBuildLayer {
+            overlays: HashMap::new(),
+            lowering: ProviderLowering::default(),
+        });
+    };
+
+    let mut overlays = HashMap::new();
+    let mut bindings = std::collections::BTreeMap::new();
+    let mut error_variants = std::collections::BTreeMap::new();
+    let mut error_ty_by_item = std::collections::BTreeMap::new();
+
+    let mut package_names: Vec<_> = graph.packages.keys().cloned().collect();
+    package_names.sort();
+    for package_name in package_names {
+        let package = &graph.packages[&package_name];
+        let api = &package.provider_api;
+        if api.functions.is_empty() && api.resources.is_empty() {
+            continue;
+        }
+
+        let resource_nominal: std::collections::BTreeMap<String, String> = api
+            .resources
+            .iter()
+            .map(|r| (r.resource.clone(), r.nominal.clone()))
+            .collect();
+        let errors: std::collections::BTreeMap<String, String> =
+            api.errors.iter().cloned().collect();
+        let mut raw_bindings = Vec::new();
+        let mut vocabularies = std::collections::BTreeMap::new();
+
+        for binding in &api.functions {
+            let call = set
+                .resolve(&binding.capability, &binding.symbol)
+                .map_err(|error| BuildCommandError::Capability(format!("{error:?}")))?;
+            if call.function.params.iter().any(is_resource_abi_param) {
+                return Err(BuildCommandError::Capability(format!(
+                    "provider_api for package `{package_name}` binds `{}` to a resource-bearing \
+                     provider signature. Synthesis and lowering handle host resources as of \
+                     CD-234/CD-235 -- the nominal is a zero-variant enum and the type is \
+                     MirTy::HostResource -- but the close arena and the Drop-terminator close are \
+                     not implemented, so a resource obtained here could never be released. Refused \
+                     until that lands rather than built with a leak.",
+                    binding.item_path
+                )));
+            }
+            raw_bindings.push((
+                binding.item_path.clone(),
+                binding.capability.clone(),
+                call.function.clone(),
+            ));
+            vocabularies.insert(binding.capability.clone(), call.status_binding.clone());
+        }
+
+        let signatures =
+            crate::provider_derive::derive_all(&raw_bindings, &resource_nominal, &errors).map_err(
+                |errors| {
+                    BuildCommandError::Capability(format!(
+                        "provider_api for package `{package_name}` cannot be derived: {errors:?}"
+                    ))
+                },
+            )?;
+        reject_resource_signatures(&package_name, &signatures)?;
+
+        let layer =
+            crate::provider_synth::synthesize(&signatures, &vocabularies).map_err(|error| {
+                BuildCommandError::Capability(format!(
+                    "provider_api for package `{package_name}` cannot be synthesized: {error}"
+                ))
+            })?;
+        merge_layer(
+            &package_name,
+            package.entry.clone(),
+            &mut overlays,
+            &mut bindings,
+            &mut error_variants,
+            &mut error_ty_by_item,
+            &signatures,
+            layer,
+        )?;
+    }
+
+    let lowering = ProviderLowering::build_with_errors(
+        &bindings,
+        &error_variants,
+        &error_ty_by_item,
+        |capability, symbol| {
+            set.resolve(capability, symbol)
+                .map_err(|error| format!("{error:?}"))
+        },
+    )
+    .map_err(BuildCommandError::Capability)?;
+
+    Ok(ProviderBuildLayer { overlays, lowering })
+}
+
+fn reject_resource_signatures(
+    package_name: &str,
+    signatures: &[DerivedSignature],
+) -> Result<(), BuildCommandError> {
+    for sig in signatures {
+        if sig.receiver.as_ref().is_some_and(is_resource_ty)
+            || sig.params.iter().any(is_resource_ty)
+            || sig.results.iter().any(is_resource_ty)
+        {
+            return Err(BuildCommandError::Capability(format!(
+                "provider_api for package `{package_name}` binds `{}` to a resource-bearing \
+                 provider signature. Refused because the close arena and the Drop-terminator close \
+                 are not implemented yet (CD-234/CD-235 gave the nominal and the type, not the \
+                 lifecycle), so a resource obtained here could never be released.",
+                sig.item_path
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn is_resource_ty(ty: &DerivedTy) -> bool {
+    matches!(
+        ty,
+        DerivedTy::SharedResource { .. } | DerivedTy::OwnedResource { .. }
+    )
+}
+
+fn is_resource_abi_param(param: &crate::provider_abi::AbiParam) -> bool {
+    matches!(
+        param,
+        crate::provider_abi::AbiParam::HandleBorrowed { .. }
+            | crate::provider_abi::AbiParam::HandleConsumed { .. }
+            | crate::provider_abi::AbiParam::HandleOut { .. }
+    )
+}
+
+fn merge_layer(
+    package_name: &str,
+    entry: PathBuf,
+    overlays: &mut HashMap<PathBuf, String>,
+    bindings: &mut std::collections::BTreeMap<String, (String, String)>,
+    error_variants: &mut std::collections::BTreeMap<String, std::collections::BTreeMap<u32, u32>>,
+    error_ty_by_item: &mut std::collections::BTreeMap<String, String>,
+    signatures: &[DerivedSignature],
+    layer: SynthesizedLayer,
+) -> Result<(), BuildCommandError> {
+    let original = std::fs::read_to_string(&entry).map_err(|error| BuildCommandError::Io {
+        action: "reading package entry for provider synthesis".into(),
+        path: Some(entry.clone()),
+        detail: error.to_string(),
+    })?;
+    overlays.insert(entry, format!("{original}\n{}", layer.source));
+
+    for (item, binding) in layer.bindings {
+        if let Some(previous) = bindings.insert(item.clone(), binding) {
+            return Err(BuildCommandError::Capability(format!(
+                "provider_api item `{item}` is bound more than once in the package graph; previous \
+                 binding was capability `{}` symbol `{}`",
+                previous.0, previous.1
+            )));
+        }
+    }
+    for (ty, variants) in layer.error_variants {
+        if let Some(previous) = error_variants.insert(ty.clone(), variants.clone()) {
+            if previous != variants {
+                return Err(BuildCommandError::Capability(format!(
+                    "provider_api raw error type `{ty}` is synthesized with conflicting status \
+                     mappings in the package graph"
+                )));
+            }
+        }
+    }
+    for sig in signatures {
+        error_ty_by_item.insert(sig.item_path.clone(), sig.error.clone());
+    }
+
+    let _ = package_name;
+    Ok(())
 }
 
 /// Where first-party provider crates live relative to a package being built.
@@ -263,7 +452,31 @@ pub fn build_current_package(
     // pre-C7.8 one.
     let required = required_capabilities(&graph);
     validate_binary_name(&package_name).map_err(BuildCommandError::Package)?;
-    let analysis = analyze_project(ProjectInput::package(graph), LanguageOptions::CORE);
+
+    // Provider API synthesis must happen before the ordinary front end runs: generated functions
+    // are intentionally just source-level items, and lowering receives the side table that says
+    // which of those items are provider calls.
+    let toolchain = native_toolchain::discover(std::env::current_exe().ok().as_deref())
+        .map_err(BuildCommandError::Toolchain)?;
+    let provider_set = if required.is_empty() {
+        None
+    } else {
+        Some(select_provider_set(
+            &required,
+            options.target.as_deref(),
+            &toolchain,
+        )?)
+    };
+    let provider_layer = provider_layer_for_build(&graph, provider_set.as_ref())?;
+
+    let analysis = if provider_layer.overlays.is_empty() {
+        analyze_project(ProjectInput::package(graph), LanguageOptions::CORE)
+    } else {
+        analyze_project(
+            ProjectInput::package_with_overlays(graph, provider_layer.overlays),
+            LanguageOptions::CORE,
+        )
+    };
     if analysis.has_errors() {
         return Err(BuildCommandError::Analysis {
             rendered: analysis
@@ -278,8 +491,13 @@ pub fn build_current_package(
     let tables = analysis.type_tables.as_ref().ok_or_else(|| {
         BuildCommandError::Lowering("successful analysis did not produce type tables".into())
     })?;
-    let mut mir = lower_program(hir, tables, analysis.root_file.clone())
-        .map_err(|error| BuildCommandError::Lowering(error.what))?;
+    let mut mir = lower_program_with_providers(
+        hir,
+        tables,
+        analysis.root_file.clone(),
+        &provider_layer.lowering,
+    )
+    .map_err(|error| BuildCommandError::Lowering(error.what))?;
     let mir_bodies = mir.bodies.len();
     // WP-C7.4. Optimise BEFORE verifying, deliberately: the verifier then checks the program that
     // is actually compiled and executed, rather than a form the backend never sees. An optimiser
@@ -301,9 +519,6 @@ pub fn build_current_package(
         )
     })?;
 
-    // Source diagnostics deliberately precede all external tool probes.
-    let toolchain = native_toolchain::discover(std::env::current_exe().ok().as_deref())
-        .map_err(BuildCommandError::Toolchain)?;
     // WP-C7.1 (§3.4): the layout is parameterised by TARGET and PROFILE, so a debug build, a
     // release build and a cross-target build of one package cannot overwrite each other. The old
     // layout was `target/stark/debug/` with both components fixed.
@@ -317,15 +532,10 @@ pub fn build_current_package(
     // `target/stark/<profile>/`. Per-profile by construction, so a debug entry can never be reused
     // for a release build; TARGET separation comes from the build key, which carries the triple.
     let cache_root = target_root.join(profile.as_str());
-    let provider_crates = if required.is_empty() {
-        std::collections::BTreeMap::new()
+    let provider_crates = if let Some(provider_set) = provider_set.as_ref() {
+        provider_crates_for_set(provider_set, &package_root)?
     } else {
-        select_providers(
-            &required,
-            options.target.as_deref(),
-            &toolchain,
-            &package_root,
-        )?
+        std::collections::BTreeMap::new()
     };
 
     let artifact = emit_native_debug_with_toolchain(

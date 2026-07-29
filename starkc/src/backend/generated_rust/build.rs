@@ -57,6 +57,8 @@ pub fn build_and_link(
         .target_dir
         .join(options.profile.as_str())
         .join(&build_key);
+    let expected_manifest = build_manifest_json(&versions, &build_key, &layout, &selection);
+    reject_stale_artifact_version(&crate_dir, &expected_manifest)?;
     let src_dir = crate_dir.join("src");
     std::fs::create_dir_all(&src_dir)
         .map_err(|e| BackendDiagnostic::Io(format!("creating {}: {e}", src_dir.display())))?;
@@ -92,10 +94,7 @@ pub fn build_and_link(
     // lock it was given.
     generate_lockfile_offline(toolchain, &crate_dir.join("Cargo.toml"))?;
     write_file(&src_dir.join("main.rs"), &source.main_rs)?;
-    write_file(
-        &crate_dir.join("build.json"),
-        &build_manifest_json(&versions, &build_key, &layout, &selection),
-    )?;
+    write_file(&crate_dir.join("build.json"), &expected_manifest)?;
 
     // §11.3 offline rule: `stark-runtime` is dependency-free, so `--offline` never needs a
     // registry index and proves no accidental network dependency crept in. `--locked` (WP-C6.4c)
@@ -250,6 +249,25 @@ const BIN_NAME: &str = "stark_program";
 
 fn generated_binary_filename(executable_suffix: &str) -> String {
     format!("{BIN_NAME}{executable_suffix}")
+}
+
+fn reject_stale_artifact_version(
+    crate_dir: &Path,
+    expected_manifest: &str,
+) -> Result<(), BackendDiagnostic> {
+    let manifest = crate_dir.join("build.json");
+    let Ok(existing) = std::fs::read_to_string(&manifest) else {
+        return Ok(());
+    };
+    if existing == expected_manifest {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(crate_dir).map_err(|error| {
+        BackendDiagnostic::Io(format!(
+            "rejecting stale generated artifact at {}: {error}",
+            crate_dir.display()
+        ))
+    })
 }
 
 fn query_rustc_verbose(rustc: &Path) -> Result<String, BackendDiagnostic> {
@@ -1070,6 +1088,45 @@ mod tests {
                 "{label}: version axis is not in the build key"
             );
         }
+    }
+
+    #[test]
+    fn mir_02_is_part_of_the_build_key_input() {
+        let input = build_key_input(
+            &trivial(),
+            &versions(),
+            &crate::layout::TargetLayout::default(),
+        );
+        assert!(
+            input.contains("mir=0.2"),
+            "A11's MIR 0.2 shape revision must be visible in cache-key input:\n{input}"
+        );
+    }
+
+    #[test]
+    fn stale_artifact_manifest_is_rejected_before_reuse() {
+        let root =
+            std::env::temp_dir().join(format!("stark-stale-artifact-{}", std::process::id()));
+        let crate_dir = root.join("debug").join("abc");
+        std::fs::create_dir_all(crate_dir.join("src")).expect("create stale crate");
+        std::fs::write(crate_dir.join("src").join("main.rs"), "stale").expect("write stale source");
+        std::fs::write(
+            crate_dir.join("build.json"),
+            "{\n  \"build_key\": \"abc\",\n  \"mir_version\": \"0.1\"\n}\n",
+        )
+        .expect("write stale manifest");
+
+        reject_stale_artifact_version(
+            &crate_dir,
+            "{\n  \"build_key\": \"abc\",\n  \"mir_version\": \"0.2\"\n}\n",
+        )
+        .expect("stale crate must be removable");
+        assert!(
+            !crate_dir.exists(),
+            "stale generated crate must be removed before the backend can reuse it"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// WP-C5.3e (CD-067): two builds whose layout contract identity differs answer `size_of`

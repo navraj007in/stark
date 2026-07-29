@@ -56,6 +56,12 @@ jobs:
         run: |
           python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='implemented'"
           cargo test --manifest-path starkc/Cargo.toml --test a10_stark_time_e2e
+      - name: provider-api through starkc build
+        run: cargo test --manifest-path starkc/Cargo.toml --test c788_starkc_build
+      - name: bounded C6 native non-regression
+        run: |
+          cargo test --manifest-path starkc/Cargo.toml --test native_c6_2_generics_traits c62a_bounded_generic_calls_the_bound_method
+          cargo test --manifest-path starkc/Cargo.toml --test native_c5_4_linkage a_cross_package_program_links_and_runs_natively
       - name: args-env-e2e implemented
         run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_env']['native_e2e']=='implemented'"
       - name: file-e2e implemented
