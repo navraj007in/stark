@@ -25,6 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -51,17 +54,18 @@ jobs:
         run: cargo test --manifest-path stark-net/native/Cargo.toml
       - name: stark-time-e2e
         run: |
-          python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='implemented'"
+          python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='implemented'"
           cargo test --manifest-path starkc/Cargo.toml --test a10_stark_time_e2e
       - name: args-env-e2e pending
-        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_env']['native_e2e']=='pending'"
+        run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_env']['native_e2e']=='pending'"
       - name: file-e2e pending
-        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_file']['native_e2e']=='pending'"
+        run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_file']['native_e2e']=='pending'"
       - name: tcp-e2e pending
-        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_net']['native_e2e']=='pending'"
+        run: python -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_net']['native_e2e']=='pending'"
       - name: c7.8-qualification-record
+        shell: bash
         run: |
-          python3 c78/qualification/make-record.py \
+          python c78/qualification/make-record.py \
             --platform "${{ matrix.name }}" \
             --commit "$GITHUB_SHA" \
             --output "$RUNNER_TEMP/c78/${{ matrix.name }}.json"
@@ -79,10 +83,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
           pattern: c78-record-*
           path: c78-records
           merge-multiple: true
       - name: Compare C7.8 records
-        run: python3 c78/qualification/compare-records.py --commit "$GITHUB_SHA" c78-records/*.json
+        run: python c78/qualification/compare-records.py --commit "$GITHUB_SHA" c78-records/*.json
