@@ -330,6 +330,18 @@ pub fn lower_program_with_providers(
         // A10: resolved before lowering (A10 3) and carried verbatim. Empty for every program
         // that binds no provider.
         provider_calls: providers.arena.clone(),
+        // A11: sorted, so the program's identity is a function of the manifest rather than of
+        // iteration order -- the same property CD-213 gave capabilities.
+        resource_bindings: providers
+            .resource_items
+            .iter()
+            .map(|(resource, item)| {
+                (
+                    resource.clone(),
+                    crate::mir::HostResourceNominal::Item(*item),
+                )
+            })
+            .collect(),
     };
 
     // Populate the nominal type context (struct fields, user-enum variant payloads) for every
@@ -827,13 +839,16 @@ fn symbol_ty(hir: &Hir, meta: &ProgramMeta, ty: &MirTy) -> String {
         // through different providers renders differently. Both are deliberate: A11 7's negative
         // cases turn on telling those apart.
         MirTy::HostResource(r) => {
-            let name = item_name_text(hir, meta, r.nominal).unwrap_or("?");
-            format!(
-                "hostres#{}/{}@{}{name}",
-                r.provider,
-                r.resource,
-                meta.symbol_prefix(r.nominal)
-            )
+            // A11 Q5: the nominal is rendered by CONTENT PATH, never by `ItemId` -- CD-108 established
+            // that ordering-dependent indices must not reach canonical identity.
+            let nominal = match r.nominal {
+                crate::mir::HostResourceNominal::Core(c) => format!("core:{c:?}"),
+                crate::mir::HostResourceNominal::Item(item) => {
+                    let name = item_name_text(hir, meta, item).unwrap_or("?");
+                    format!("{}{name}", meta.symbol_prefix(item))
+                }
+            };
+            format!("hostres#{}/{}@{nominal}", r.provider, r.resource)
         }
         MirTy::Tuple(elems) => {
             let inner = elems
@@ -1097,6 +1112,9 @@ impl<'a> FnLowerer<'a> {
 
         let mut ops: Vec<Operand> = Vec::with_capacity(call.function.params.len());
         let mut slots: Vec<(LocalId, MirTy)> = Vec::new();
+        // A11: newly-owned handle outputs, kept apart from scalar out-slots because their liveness
+        // rule is different -- a scalar slot is merely written, a handle slot becomes OWNED.
+        let mut handle_outs: Vec<(LocalId, MirTy)> = Vec::new();
         let mut next_arg = 0usize;
 
         for param in &call.function.params {
@@ -1128,12 +1146,56 @@ impl<'a> FnLowerer<'a> {
                     ops.push(Operand::Move(Place::local(r)));
                     slots.push((slot, mir_ty));
                 }
-                crate::provider_abi::AbiParam::HandleOut { .. }
-                | crate::provider_abi::AbiParam::HandleBorrowed { .. }
-                | crate::provider_abi::AbiParam::HandleConsumed { .. } => {
-                    // Resource nominals have no synthesis mechanism yet (design 3.1), so no source
-                    // call can carry one. Refused explicitly rather than reached by accident.
-                    return unsupported("provider call carrying a host resource", span);
+                // A11/CD-234: a BORROWED handle. The caller keeps ownership, so this is `&R` and the
+                // argument is an ordinary shared borrow of the caller's place -- never a move, which
+                // would consume the resource the call only reads.
+                crate::provider_abi::AbiParam::HandleBorrowed { resource_type } => {
+                    let Some(&a) = args.get(next_arg) else {
+                        return unsupported(
+                            "provider call argument count disagrees with the declaration",
+                            span,
+                        );
+                    };
+                    next_arg += 1;
+                    let _ = resource_type;
+                    ops.push(self.lower_expr_to_operand(a)?);
+                }
+                // A11 §8: a CONSUMED handle. Ownership transfers at call entry and does not return
+                // on failure, so the argument is a move and the caller's drop flag is cleared --
+                // otherwise the implicit close would run on a handle the provider already owns.
+                crate::provider_abi::AbiParam::HandleConsumed { resource_type } => {
+                    let Some(&a) = args.get(next_arg) else {
+                        return unsupported(
+                            "provider call argument count disagrees with the declaration",
+                            span,
+                        );
+                    };
+                    next_arg += 1;
+                    let _ = resource_type;
+                    ops.push(self.lower_expr_to_operand(a)?);
+                }
+                // A11/CD-234: a NEWLY-OWNED handle out. The argument names the DESTINATION place
+                // (the WP-C7.8.4 convention: a `&mut` to a slot-backed resource cannot work, because
+                // the slot is dead until the provider writes it). The destination starts dead and
+                // becomes live only on status zero.
+                crate::provider_abi::AbiParam::HandleOut { resource_type } => {
+                    let Some(ty) = self
+                        .providers
+                        .resource_ty(resource_type, &call.provider.name)
+                    else {
+                        return unsupported(
+                            format!(
+                                "provider resource `{resource_type}` has no bound nominal, so its \
+                                 handle output has no STARK type"
+                            ),
+                            span,
+                        );
+                    };
+                    let slot = self.new_temp(ty.clone());
+                    // NO initialisation. CD-234: a host-resource slot begins dead, and no default,
+                    // aggregate or placeholder may make it live -- only this call's success does.
+                    ops.push(Operand::Move(Place::local(slot)));
+                    handle_outs.push((slot, ty));
                 }
                 _ => {
                     // Every remaining form takes its value from the STARK call's own argument list,
@@ -1166,6 +1228,12 @@ impl<'a> FnLowerer<'a> {
             self.info(span),
             after,
         );
+
+        // Handle outputs join the result payload. They are appended after the scalar out-slots,
+        // matching `provider_sig`'s derivation order, so a signature deriving
+        // `Result<(UInt64, TcpStream), E>` and the MIR that produces it agree by construction.
+        let mut slots = slots;
+        slots.extend(handle_outs.iter().cloned());
 
         // With an EMPTY vocabulary, every nonzero code is a contract violation the emitter aborts on
         // before returning. Control reaching here therefore means status zero and written slots:

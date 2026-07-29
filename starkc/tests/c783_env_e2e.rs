@@ -163,6 +163,7 @@ fn program() -> MirProgram {
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: vec![resolve("process.args", "stark_env_args_len")],
+        resource_bindings: Vec::new(),
     }
 }
 

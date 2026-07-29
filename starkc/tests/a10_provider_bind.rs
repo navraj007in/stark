@@ -192,7 +192,7 @@ fn an_unbound_resource_type_is_refused_in_every_form() {
 #[test]
 fn a_registered_resource_type_plans() {
     let mut registry = ResourceRegistry::builtin();
-    registry.register("synthetic-session", MirTy::UInt64);
+    registry.register_nominal("synthetic-session", starkc::hir::ItemId(101));
 
     let p = plan(
         ProviderCallId(0),
@@ -234,7 +234,7 @@ fn a_registered_resource_type_plans() {
 #[test]
 fn an_unregistered_type_stays_unbound_after_others_are_registered() {
     let mut registry = ResourceRegistry::builtin();
-    registry.register("file", MirTy::UInt64);
+    registry.register_nominal("file", starkc::hir::ItemId(102));
 
     let err = plan(
         ProviderCallId(0),

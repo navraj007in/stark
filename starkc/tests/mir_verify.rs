@@ -133,6 +133,7 @@ fn program_with(bodies: Vec<MirBody>) -> MirProgram {
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: Vec::new(),
+        resource_bindings: Vec::new(),
     }
 }
 

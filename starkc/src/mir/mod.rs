@@ -151,6 +151,27 @@ pub enum MirTy {
     HostResource(Box<HostResourceTy>),
 }
 
+/// **A11 §4's nominal identity, widened (CD-235).** A host resource's STARK-side identity is either a
+/// compiler-owned Core type or a package-owned item — A11's "one representation, two authorities".
+///
+/// A11 §4 wrote `nominal: ItemId`, which cannot name a Core resource: `File` resolves to
+/// `CoreType::File` (`resolve.rs`), a different enum from `ItemId`, so there is no Core *item* to
+/// point at. The widening makes §4's model expressible on both sides.
+///
+/// **Sequencing exception, not a second representation (CD-235).** Package resources use
+/// `MirTy::HostResource` immediately. Core `File` temporarily stays on its pre-A11
+/// `MirTy::Core(CoreType::File, [])` representation, which is the implemented and qualified path
+/// behind C7.8.4's evidence, pending a separately requalified migration. `Core` exists here so that
+/// migration is a registry change rather than a type change — and `V-HOSTRES-1` refuses a program
+/// that half-performs it.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum HostResourceNominal {
+    /// A compiler-owned Core resource. **Not yet produced** — see CD-235's sequencing exception.
+    Core(crate::hir::CoreType),
+    /// A package-owned resource nominal: the synthesized zero-variant enum's item (CD-234).
+    Item(crate::hir::ItemId),
+}
+
 /// A11 §4's three identities for a host resource. See [`MirTy::HostResource`] for why they are boxed.
 ///
 /// Both identities are retained, as Packet 6 requires: `nominal` is what diagnostics and the source
@@ -159,7 +180,7 @@ pub enum MirTy {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct HostResourceTy {
     /// The STARK nominal this resource is, e.g. the item for `TcpListener`.
-    pub nominal: crate::hir::ItemId,
+    pub nominal: HostResourceNominal,
     /// §2 identity of the provider that owns the resource type.
     pub provider: String,
     /// §13 resource-type name as that provider declares it, e.g. `"tcp_stream"`.
@@ -169,7 +190,7 @@ pub struct HostResourceTy {
 impl MirTy {
     /// Constructs a host-resource type from A11 §4's three identities.
     pub fn host_resource(
-        nominal: crate::hir::ItemId,
+        nominal: HostResourceNominal,
         provider: impl Into<String>,
         resource: impl Into<String>,
     ) -> Self {
@@ -799,6 +820,16 @@ pub struct MirProgram {
     /// not of any one call site. Empty for every program that makes no provider call, which is
     /// every program produced before A10.
     pub provider_calls: Vec<ValidatedProviderCall>,
+    /// **A11/CD-234: the resource-name → nominal bindings this program uses.**
+    ///
+    /// Carried on the program for the same reason `provider_calls` copies its `FunctionDecl` rather
+    /// than referencing it: a MIR program must be **self-contained**, so dumping, re-verifying or
+    /// replaying it needs no registry lookup. Without this the verifier could only see
+    /// `ResourceRegistry::builtin()` and would reject every package-declared resource as unbound.
+    ///
+    /// A `Vec` of pairs rather than a map so the serialised order is the program's own, and sorted by
+    /// name at construction so it is a function of the manifest rather than of iteration.
+    pub resource_bindings: Vec<(String, HostResourceNominal)>,
 }
 
 impl MirProgram {
@@ -986,7 +1017,11 @@ pub(crate) fn dump_ty(ty: &MirTy) -> String {
         // way (`struct#3`), and it has no program context to resolve a content path from. The
         // CANONICAL, order-stable identity A11 Q5 specifies lives in `lower::symbol_ty`, which does.
         MirTy::HostResource(r) => {
-            format!("hostres#{}/{}@#{}", r.provider, r.resource, r.nominal.0)
+            let nominal = match r.nominal {
+                HostResourceNominal::Core(c) => format!("core:{c:?}"),
+                HostResourceNominal::Item(item) => format!("#{}", item.0),
+            };
+            format!("hostres#{}/{}@{nominal}", r.provider, r.resource)
         }
         simple => format!("{simple:?}"),
     }

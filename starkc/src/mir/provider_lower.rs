@@ -35,6 +35,9 @@ pub struct ProviderLowering {
     /// bindings are: this is computed from the manifest and the provider vocabulary, before any
     /// source exists to have item ids.
     pub error_variants: BTreeMap<String, BTreeMap<u32, u32>>,
+    /// Provider resource name → the nominal's resolved `ItemId`, so lowering can build a
+    /// `MirTy::HostResource` (CD-234/CD-235). Resolved once, after the generated source is parsed.
+    pub resource_items: BTreeMap<String, crate::hir::ItemId>,
     /// Provider call id → the raw error type its `Result` uses.
     ///
     /// Kept beside the arena rather than on [`ValidatedProviderCall`]: that record is A10's
@@ -90,9 +93,24 @@ impl ProviderLowering {
         Ok(Self {
             arena,
             by_item_name,
+            resource_items: BTreeMap::new(),
             error_variants: error_variants.clone(),
             error_ty_for_call,
         })
+    }
+
+    /// The `MirTy` for a provider resource name, when its nominal has been resolved.
+    ///
+    /// Built here rather than stored, because the provider is a property of the call and the same
+    /// nominal could in principle be reached through different providers — A11 §Q5 makes those
+    /// different types deliberately.
+    pub fn resource_ty(&self, resource: &str, provider: &str) -> Option<crate::mir::MirTy> {
+        let item = self.resource_items.get(resource)?;
+        Some(crate::mir::MirTy::host_resource(
+            crate::mir::HostResourceNominal::Item(*item),
+            provider,
+            resource,
+        ))
     }
 
     /// The `(error type name, code → variant index)` for a call, when it has a raw error type with

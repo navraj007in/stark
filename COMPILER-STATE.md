@@ -497,6 +497,36 @@ an enum-variant aggregate — no constant, no discriminant, no borrow, **no copy
 `MirTy` match has a wildcard arm, so a host resource would silently have inherited ordinary-enum
 treatment. The sites that matter were made explicit deliberately, not because the compiler forced it.
 
+**CD-235 — the nominal identity is widened, and the Core side is sequenced.** A11 §4 wrote
+`nominal: ItemId`, which cannot name a Core resource: `File` resolves to `CoreType::File`, a different
+enum from `ItemId`. So `nominal` is now `HostResourceNominal::Core(CoreType) | Item(ItemId)`, and §4's
+"one representation, two authorities" is expressible on both sides.
+
+**Package resources use `MirTy::HostResource` immediately. Core `File` stays on its pre-A11
+`MirTy::Core(CoreType::File, [])` path**, which is what C7.8.4's evidence qualified. `ResourceRegistry`
+maps `file → ResourceBinding::LegacyCore(..)`, so the migration is a registry change, not a type
+change. **A sequencing exception, not a permanent second representation — and A11's Core side does not
+count as implemented until the migration and its requalification close.**
+
+`V-HOSTRES-1` / **`MIR-0027`** rejects a `HostResource` naming a Core nominal, which is what makes the
+exception safe rather than merely documented: one Core resource with two representations in one
+program means two drop-close paths for one handle kind, and the first consumer to pick the other
+closes twice. The guard is removed **by** the migration step.
+
+The named migration step carries bounded requalification: provider resolution and emission;
+create/open output initialisation; borrowed read/write/complete; consuming close; implicit `Drop`
+close; failed `HandleOut`; move and early-return lifecycle; no double close; generated representation
+stays `OwnedResourceHandle`; C7.8.4's native e2e behaviourally equivalent.
+
+**Package-resource lifecycle progress.** Synthesis emits resource nominals as zero-variant enums
+(CD-234) and refuses a signature naming a nominal the package does not bind. Lowering handles
+`HandleBorrowed` (shared borrow, never a move — the call only reads), `HandleConsumed` (move;
+ownership transfers at entry and does not return on failure) and `HandleOut` (the argument names the
+destination place, per the C7.8.4 convention, and the slot is **not** initialised — it begins dead and
+only success makes it live). Handle outputs join the `Ok` payload after the scalar out-slots, matching
+`provider_sig`'s derivation order. Still open: the close arena, the `Drop`-terminator close, drop-flag
+verifier rules, and the slot-backed generated-Rust representation.
+
 **A11 §3 and §9 disagree, and §9 is right.** §3's table claims the installed-runtime check gives
 cross-version rejection and "needs no new logic". `stark_runtime::version::check` compares only
 `runtime_version`, and that module documents the other fields as recorded-not-validated — putting

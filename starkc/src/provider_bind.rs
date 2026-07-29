@@ -41,7 +41,25 @@ use std::collections::BTreeMap;
 /// any other resource type.
 #[derive(Debug, Clone, Default)]
 pub struct ResourceRegistry {
-    map: BTreeMap<String, MirTy>,
+    map: BTreeMap<String, ResourceBinding>,
+}
+
+/// **What a resource name binds to (A11 §4, amended CD-235).**
+///
+/// A11's implementation note: the registry maps a resource name to a **nominal identity**, not to a
+/// `MirTy`, because a `HostResource` also carries the provider — and the provider is a property of
+/// the build, not of a registry entry. The `MirTy` is therefore constructed at planning time, when
+/// the selected provider is known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceBinding {
+    /// **CD-235's sequencing exception.** A Core resource still on its pre-A11 representation:
+    /// `file` plans as `MirTy::Core(CoreType::File, [])`, the implemented and qualified path behind
+    /// C7.8.4's evidence. Migrating it to `HostResource` is a separate, separately requalified step;
+    /// this variant is what makes that a one-line registry change.
+    LegacyCore(crate::hir::CoreType),
+    /// **A11 proper.** A package-declared nominal — the synthesized zero-variant enum's item
+    /// (CD-234) — planning as `MirTy::HostResource`.
+    Nominal(crate::hir::ItemId),
 }
 
 impl ResourceRegistry {
@@ -53,22 +71,77 @@ impl ResourceRegistry {
     ///
     /// MIR-0024 does not disappear with the first entry; it starts **discriminating**. A provider
     /// declaring `"file"` now plans, while one declaring `"custom-db-session"` is still refused.
+    ///
+    /// `file` is deliberately `LegacyCore` (CD-235): Core `File` keeps its pre-A11 representation
+    /// until its migration is separately requalified.
     pub fn builtin() -> Self {
         let mut registry = Self::default();
-        registry.register("file", MirTy::Core(crate::hir::CoreType::File, Vec::new()));
+        registry.register(
+            "file",
+            ResourceBinding::LegacyCore(crate::hir::CoreType::File),
+        );
         registry
     }
 
-    pub fn register(&mut self, resource_type: impl Into<String>, mir_type: MirTy) {
-        self.map.insert(resource_type.into(), mir_type);
+    pub fn register(&mut self, resource_type: impl Into<String>, binding: ResourceBinding) {
+        self.map.insert(resource_type.into(), binding);
     }
 
-    pub fn lookup(&self, resource_type: &str) -> Option<&MirTy> {
+    /// Registers a package-declared nominal (CD-234's synthesized zero-variant enum).
+    pub fn register_nominal(&mut self, resource_type: impl Into<String>, item: crate::hir::ItemId) {
+        self.register(resource_type, ResourceBinding::Nominal(item));
+    }
+
+    pub fn lookup(&self, resource_type: &str) -> Option<&ResourceBinding> {
         self.map.get(resource_type)
     }
 
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// The `MirTy` a resource name maps to, given the **selected provider**.
+    ///
+    /// The single place both `plan` and `mir::provider_sig` derive it, so they cannot disagree about
+    /// whether a resource is legacy-Core or a `HostResource`. The provider is a parameter rather than
+    /// registry state because it is a property of the build (A11 §4's implementation note).
+    pub fn resolve_ty(&self, resource_type: &str, provider: &str) -> Option<MirTy> {
+        match self.lookup(resource_type)? {
+            // CD-235: Core `File` keeps its pre-A11 representation for now.
+            ResourceBinding::LegacyCore(core) => Some(MirTy::Core(*core, Vec::new())),
+            ResourceBinding::Nominal(item) => Some(MirTy::host_resource(
+                crate::mir::HostResourceNominal::Item(*item),
+                provider,
+                resource_type,
+            )),
+        }
+    }
+
+    /// **CD-235's partial-migration guard.** A Core type must be entirely on the legacy path or
+    /// entirely on the `HostResource` path, never both within one program.
+    ///
+    /// Returns the offending Core type if any is bound both ways. Two representations for one Core
+    /// resource inside a single program would mean two drop-close paths for one kind of handle, and
+    /// the first consumer to pick the other one closes twice.
+    pub fn partially_migrated_core(&self) -> Option<crate::hir::CoreType> {
+        let legacy: Vec<crate::hir::CoreType> = self
+            .map
+            .values()
+            .filter_map(|b| match b {
+                ResourceBinding::LegacyCore(c) => Some(*c),
+                _ => None,
+            })
+            .collect();
+        // A nominal binding for a resource name that ALSO has a legacy Core binding is the
+        // half-migrated state. Keyed by name, the map cannot hold both for one name -- so the check
+        // that matters is across names mapping to the same Core type.
+        let mut seen = std::collections::BTreeSet::new();
+        for c in legacy {
+            if !seen.insert(c) {
+                return Some(c);
+            }
+        }
+        None
     }
 }
 
@@ -306,12 +379,15 @@ pub fn plan(
 
     for (index, param) in call.function.params.iter().enumerate() {
         let resolve = |resource_type: &String| -> Result<(MirTy, u32), PlanError> {
-            let mir_type = registry.lookup(resource_type).cloned().ok_or_else(|| {
-                PlanError::UnboundResourceType {
+            // The registry supplies the NOMINAL; the `MirTy` is built here, where the selected
+            // provider is known (A11 §4's implementation note). A registry entry cannot carry a
+            // provider, because the provider is a property of the build.
+            let mir_type = registry
+                .resolve_ty(resource_type, &call.provider.name)
+                .ok_or_else(|| PlanError::UnboundResourceType {
                     index,
                     resource_type: resource_type.clone(),
-                }
-            })?;
+                })?;
             // §7: the id is the index into the provider's OWN declared resource-type list, not a
             // global registry index and not a provider-chosen tag. Deriving it here means emission
             // never invents one.

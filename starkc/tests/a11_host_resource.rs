@@ -27,7 +27,11 @@ use starkc::source::{SourceFile, Span};
 use std::sync::Arc;
 
 fn resource_ty() -> MirTy {
-    MirTy::host_resource(ItemId(7), "stark-std-net", "tcp_stream")
+    MirTy::host_resource(
+        mir::HostResourceNominal::Item(ItemId(7)),
+        "stark-std-net",
+        "tcp_stream",
+    )
 }
 
 fn info() -> SourceInfo {
@@ -47,6 +51,11 @@ fn place(i: u32) -> Place {
 
 /// A one-block body whose second local is a host resource, assigned by `rvalue`.
 fn body_assigning(rvalue: Rvalue) -> MirProgram {
+    body_assigning_ty(rvalue, resource_ty())
+}
+
+/// `body_assigning`, with the local's type chosen — so the CD-235 Core-nominal case can be built.
+fn body_assigning_ty(rvalue: Rvalue, ty: MirTy) -> MirProgram {
     MirProgram {
         files: vec![Arc::new(SourceFile::new("r.stark", ""))],
         bodies: vec![MirBody {
@@ -63,11 +72,11 @@ fn body_assigning(rvalue: Rvalue) -> MirProgram {
                     kind: LocalKind::Return,
                 },
                 LocalDecl {
-                    ty: resource_ty(),
+                    ty: ty.clone(),
                     kind: LocalKind::Temp,
                 },
                 LocalDecl {
-                    ty: resource_ty(),
+                    ty,
                     kind: LocalKind::Temp,
                 },
             ],
@@ -81,6 +90,7 @@ fn body_assigning(rvalue: Rvalue) -> MirProgram {
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: Vec::new(),
+        resource_bindings: Vec::new(),
     }
 }
 
@@ -226,8 +236,12 @@ fn a_host_resource_has_no_default_value() {
 #[test]
 fn every_host_resource_emits_as_an_owned_handle() {
     let a = emit_types::emit_ty(&resource_ty()).expect("emits");
-    let b = emit_types::emit_ty(&MirTy::host_resource(ItemId(9), "stark-std-file", "file"))
-        .expect("emits");
+    let b = emit_types::emit_ty(&MirTy::host_resource(
+        mir::HostResourceNominal::Item(ItemId(9)),
+        "stark-std-file",
+        "file",
+    ))
+    .expect("emits");
 
     assert_eq!(a, "stark_runtime::provider_abi::OwnedResourceHandle");
     assert_eq!(a, b, "codegen type selection must not consult the nominal");
@@ -269,9 +283,14 @@ fn the_uninhabited_enum_placeholder_never_backs_a_resource() {
 fn identity_is_structural_over_all_three_fields() {
     let base = resource_ty();
 
-    let other_nominal = MirTy::host_resource(ItemId(8), "stark-std-net", "tcp_stream");
-    let other_provider = MirTy::host_resource(ItemId(7), "other-net", "tcp_stream");
-    let other_resource = MirTy::host_resource(ItemId(7), "stark-std-net", "tcp_listener");
+    let nom7 = mir::HostResourceNominal::Item(ItemId(7));
+    let other_nominal = MirTy::host_resource(
+        mir::HostResourceNominal::Item(ItemId(8)),
+        "stark-std-net",
+        "tcp_stream",
+    );
+    let other_provider = MirTy::host_resource(nom7, "other-net", "tcp_stream");
+    let other_resource = MirTy::host_resource(nom7, "stark-std-net", "tcp_listener");
 
     assert_ne!(base, other_nominal);
     assert_ne!(base, other_provider);
@@ -292,5 +311,61 @@ fn the_dump_carries_provider_resource_and_nominal() {
     assert!(
         dumped.contains("0.2"),
         "the dump must record MIR 0.2: {dumped}"
+    );
+}
+
+// ----------------------------------- CD-235: the Core sequencing exception --
+
+/// **MIR-0027: a Core nominal must not reach `HostResource` before its migration.**
+///
+/// Core `File` is deliberately still on `MirTy::Core(CoreType::File, [])` — the qualified path behind
+/// C7.8.4's evidence. A `HostResource` naming a Core nominal would give one Core resource two
+/// representations inside one program: two drop-close paths for one kind of handle, and the first
+/// consumer to pick the other one closes twice.
+///
+/// This is the guard that makes CD-235's sequencing exception *safe* rather than merely documented.
+/// It is removed by the migration step that requalifies the File evidence — not before.
+#[test]
+fn a_core_nominal_cannot_reach_host_resource_yet() {
+    let core_resource = MirTy::host_resource(
+        mir::HostResourceNominal::Core(starkc::hir::CoreType::File),
+        "stark-std-file",
+        "file",
+    );
+    let program = body_assigning_ty(Rvalue::Use(Operand::Move(place(2))), core_resource);
+    assert!(
+        verify_codes(&program).contains(&"MIR-0027".to_string()),
+        "a Core-nominal host resource must be rejected until the migration lands"
+    );
+}
+
+/// The registry keeps `file` on the legacy path, which is what CD-235 requires. If this flips
+/// without the requalification, `a_core_nominal_cannot_reach_host_resource_yet` is the net that
+/// catches it — but this test names the intent directly.
+#[test]
+fn the_registry_keeps_core_file_on_the_legacy_path() {
+    let registry = starkc::provider_bind::ResourceRegistry::builtin();
+    assert_eq!(
+        registry.lookup("file"),
+        Some(&starkc::provider_bind::ResourceBinding::LegacyCore(
+            starkc::hir::CoreType::File
+        )),
+        "Core File must stay on MirTy::Core until its migration is requalified (CD-235)"
+    );
+    assert!(
+        registry.partially_migrated_core().is_none(),
+        "no Core type may be bound both ways in one program"
+    );
+}
+
+/// A package nominal, by contrast, uses `HostResource` immediately — the whole point of CD-235's
+/// split. Without this the previous two tests would be consistent with nothing working at all.
+#[test]
+fn a_package_nominal_uses_host_resource_immediately() {
+    let mut registry = starkc::provider_bind::ResourceRegistry::builtin();
+    registry.register_nominal("tcp_stream", ItemId(7));
+    assert_eq!(
+        registry.lookup("tcp_stream"),
+        Some(&starkc::provider_bind::ResourceBinding::Nominal(ItemId(7)))
     );
 }

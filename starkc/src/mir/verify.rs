@@ -25,6 +25,8 @@
 //! V-STR-1/2  MIR-0015 (invalid Str constant / String|str in a structural op / bad Trap msg — A1)
 //! V-COPY-1   MIR-0016 (Copy-only runtime op on a non-Copy element type — A1; Vec ops land e-2)
 //! V-SURFACE-1 MIR-0017 (unsupported mir_version/runtime_surface — A1, program-level gate)
+//! V-HOSTRES-1 MIR-0026 (a host resource was manufactured — A11/CD-234), MIR-0027 (a Core nominal
+//!            reached HostResource before its migration — CD-235)
 //! MIR-0003   projection type mismatch (V-CFG-2's "projections type-correct step by step")
 //! ```
 //!
@@ -116,6 +118,24 @@ pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Ve
 /// missing one is a compiler defect (lowering failed to record the impl it selected), not a
 /// rejectable program. Verification is where a compiler defect must surface, ahead of either
 /// engine, rather than as a wrong result in one and a refusal in the other.
+/// The resource registry a program's own bindings describe, plus the compiler's built-ins.
+///
+/// Built from `MirProgram::resource_bindings` so verification needs **no external lookup** — the same
+/// self-containment rule that makes `ValidatedProviderCall` copy its declaration. Before this, the
+/// verifier could only see `builtin()` and rejected every package-declared resource as unbound.
+fn program_resource_registry(program: &MirProgram) -> crate::provider_bind::ResourceRegistry {
+    use crate::provider_bind::{ResourceBinding, ResourceRegistry};
+    let mut registry = ResourceRegistry::builtin();
+    for (resource, nominal) in &program.resource_bindings {
+        let binding = match nominal {
+            HostResourceNominal::Core(core) => ResourceBinding::LegacyCore(*core),
+            HostResourceNominal::Item(item) => ResourceBinding::Nominal(*item),
+        };
+        registry.register(resource.clone(), binding);
+    }
+    registry
+}
+
 fn verify_map_key_eq(program: &MirProgram, body: &MirBody, errors: &mut Vec<MirError>) {
     fn walk(ty: &MirTy, program: &MirProgram, body: &MirBody, errors: &mut Vec<MirError>) {
         match ty {
@@ -482,6 +502,32 @@ impl<'a> BodyCx<'a> {
     }
 
     fn check_rvalue_against(&mut self, expected: &MirTy, rvalue: &Rvalue, bi: u32) {
+        // **MIR-0027 / V-HOSTRES-1 (CD-235): no half-performed Core migration.**
+        //
+        // Core `File` is deliberately still on its pre-A11 `MirTy::Core(CoreType::File, [])`
+        // representation, which is the qualified path behind C7.8.4's evidence. A `HostResource`
+        // naming a Core nominal would mean one Core resource had two representations inside one
+        // program — two drop-close paths for one kind of handle, and the first consumer to pick the
+        // other one closes twice.
+        //
+        // This is a SEQUENCING guard, not a permanent rule: it is removed by the migration step that
+        // requalifies the File evidence, and until then it is what makes the exception safe rather
+        // than merely documented.
+        if let MirTy::HostResource(r) = expected {
+            if let crate::mir::HostResourceNominal::Core(core) = r.nominal {
+                self.err(
+                    "MIR-0027",
+                    bi,
+                    &format!(
+                        "host resource names the Core nominal {core:?}, but Core resources are not \
+                         migrated to HostResource yet (CD-235): they must stay entirely on the legacy \
+                         MirTy::Core path or move entirely, never both in one program"
+                    ),
+                );
+                return;
+            }
+        }
+
         // **MIR-0026 (A11 / CD-234): nothing may MANUFACTURE a host resource.**
         //
         // A `HostResource` value has exactly three admitted origins: a successful `HandleOut` (which
@@ -893,7 +939,8 @@ impl<'a> BodyCx<'a> {
                             // MIR signature, and the shared arity/type check below enforces them.
                             match provider_sig::signature(
                                 &call.function.params,
-                                &crate::provider_bind::ResourceRegistry::builtin(),
+                                &program_resource_registry(self.program),
+                                &call.provider.name,
                             ) {
                                 Ok(sig) => Some(sig),
                                 Err(unmapped) => {

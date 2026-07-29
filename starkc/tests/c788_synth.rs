@@ -452,3 +452,108 @@ fn an_unusable_vocabulary_name_is_refused() {
         );
     }
 }
+
+// ------------------------------------ CD-234: resource nominals as enums --
+
+/// **The nominal is a zero-variant enum, and it compiles.**
+///
+/// CD-234's form. Opacity is structural: there is no variant to name and no struct-literal syntax, so
+/// no expression and no pattern can manufacture a value — and no checker rule has to remember that.
+#[test]
+fn a_resource_nominal_is_a_zero_variant_enum() {
+    let layer = starkc::provider_synth::synthesize_with_resources(
+        &[],
+        &BTreeMap::new(),
+        &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+    )
+    .expect("synthesizes");
+
+    assert!(
+        layer.source.contains("enum TcpStream { }"),
+        "{}",
+        layer.source
+    );
+    assert_eq!(
+        layer.resource_nominals.get("tcp_stream"),
+        Some(&"TcpStream".to_string())
+    );
+    assert!(compile(&layer.source).is_empty(), "{}", layer.source);
+}
+
+/// **Nothing in STARK can construct or match one into existence.** This is the property the whole
+/// mechanism rests on, so it is tested against the front end rather than argued from the grammar.
+#[test]
+fn the_nominal_cannot_be_constructed_or_matched_into_existence() {
+    let layer = starkc::provider_synth::synthesize_with_resources(
+        &[],
+        &BTreeMap::new(),
+        &BTreeMap::from([("tcp_stream".to_string(), "TcpStream".to_string())]),
+    )
+    .expect("synthesizes");
+
+    for attempt in [
+        // a bare path, as a unit-struct-like value
+        "fn forge() -> TcpStream { TcpStream }",
+        // a struct literal
+        "fn forge() -> TcpStream { TcpStream {} }",
+        // a variant path that does not exist
+        "fn forge() -> TcpStream { TcpStream::V0 }",
+        // a call form
+        "fn forge() -> TcpStream { TcpStream() }",
+    ] {
+        let program = format!("{}\n{attempt}\nfn main() {{ }}\n", layer.source);
+        let errors = compile(&program);
+        assert!(
+            !errors.is_empty(),
+            "a host-resource nominal must not be constructible, but this compiled:\n{attempt}"
+        );
+    }
+}
+
+/// A signature naming a resource the package does not bind is refused — otherwise the generated
+/// source would reference a type that does not exist, surfacing as an unresolved name in code nobody
+/// wrote.
+#[test]
+fn a_signature_naming_an_unbound_nominal_is_refused() {
+    let sig = derive(
+        "file::open_raw",
+        "filesystem",
+        &decl("stark-std-file", "stark_file_open"),
+        &map(&[("file", "File")]),
+        &map(&[("filesystem", "RawIoError")]),
+    )
+    .expect("derives");
+
+    let e = starkc::provider_synth::synthesize_with_resources(
+        &[sig],
+        &vocab(&[("filesystem", &[])]),
+        &BTreeMap::new(),
+    )
+    .expect_err("an unbound nominal must be refused");
+    assert!(e.contains("File"), "{e}");
+    assert!(e.contains("does not bind"), "{e}");
+}
+
+/// With the nominal bound, the same signature synthesizes and compiles — so the refusal above is
+/// about the binding, not about resources being unsupported.
+#[test]
+fn a_bound_nominal_lets_a_resource_signature_synthesize() {
+    let sig = derive(
+        "file::open_raw",
+        "filesystem",
+        &decl("stark-std-file", "stark_file_open"),
+        &map(&[("file", "File")]),
+        &map(&[("filesystem", "RawIoError")]),
+    )
+    .expect("derives");
+
+    let layer = starkc::provider_synth::synthesize_with_resources(
+        &[sig],
+        &vocab(&[("filesystem", &[])]),
+        &BTreeMap::from([("file".to_string(), "File".to_string())]),
+    )
+    .expect("synthesizes");
+
+    assert!(layer.source.contains("enum File { }"), "{}", layer.source);
+    assert!(compile(&layer.source).is_empty(), "{}", layer.source);
+}

@@ -343,6 +343,7 @@ fn program(path: &str) -> MirProgram {
         types: TypeContext::default(),
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
+        resource_bindings: Vec::new(),
         // Order matters: the body addresses these by id.
         provider_calls: vec![
             resolve("stark_file_create"),

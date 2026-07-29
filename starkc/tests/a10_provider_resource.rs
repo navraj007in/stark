@@ -35,7 +35,7 @@ const SYNTH: &str = "synthetic-session";
 fn synth_registry() -> ResourceRegistry {
     let mut r = ResourceRegistry::builtin();
     // The MIR type a real binding would supply. `UInt64` stands in for whatever C7.8.4 registers.
-    r.register(SYNTH, MirTy::UInt64);
+    r.register_nominal(SYNTH, starkc::hir::ItemId(301));
     r
 }
 
@@ -82,6 +82,7 @@ fn program_for(call: &ValidatedProviderCall) -> MirProgram {
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: vec![call.clone()],
+        resource_bindings: Vec::new(),
     }
 }
 

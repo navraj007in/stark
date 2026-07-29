@@ -244,6 +244,7 @@ fn program() -> MirProgram {
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: vec![resolve_monotonic()],
+        resource_bindings: Vec::new(),
     }
 }
 

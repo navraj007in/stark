@@ -72,7 +72,20 @@ pub fn param_ty(
     index: usize,
     param: &AbiParam,
     registry: &ResourceRegistry,
+    provider: &str,
 ) -> Result<MirTy, UnmappedParam> {
+    // One resolver, shared with `provider_bind::plan`, so the two cannot disagree about whether a
+    // resource is legacy-Core (CD-235) or a `HostResource`. The provider is needed because a
+    // `HostResource` carries it: A11 §Q5 makes the same nominal through different providers a
+    // different type, deliberately.
+    let resolve = |resource_type: &String| -> Result<MirTy, UnmappedParam> {
+        registry.resolve_ty(resource_type, provider).ok_or_else(|| {
+            UnmappedParam::UnboundResourceType {
+                index,
+                resource_type: resource_type.clone(),
+            }
+        })
+    };
     Ok(match param {
         AbiParam::ScalarIn(t) => scalar_ty(*t),
         AbiParam::ScalarOut(t) | AbiParam::ScalarInOut(t) => MirTy::Ref {
@@ -90,20 +103,9 @@ pub fn param_ty(
         // file. A CONSUMED handle is by value, because ownership genuinely transfers at call entry.
         AbiParam::HandleBorrowed { resource_type } => MirTy::Ref {
             mutable: false,
-            inner: Box::new(registry.lookup(resource_type).cloned().ok_or_else(|| {
-                UnmappedParam::UnboundResourceType {
-                    index,
-                    resource_type: resource_type.clone(),
-                }
-            })?),
+            inner: Box::new(resolve(resource_type)?),
         },
-        AbiParam::HandleConsumed { resource_type } => registry
-            .lookup(resource_type)
-            .cloned()
-            .ok_or_else(|| UnmappedParam::UnboundResourceType {
-                index,
-                resource_type: resource_type.clone(),
-            })?,
+        AbiParam::HandleConsumed { resource_type } => resolve(resource_type)?,
         // A `HandleOut` argument is the **destination place itself**, typed as the resource, not a
         // `&mut` to it.
         //
@@ -112,13 +114,7 @@ pub fn param_ty(
         // nothing has written yet is "mutable access to a dead slot", which the runtime refuses
         // before the call even happens. Passing the place lets emission perform the ordinary
         // initialising assignment on the success arm, which is what makes the slot live.
-        AbiParam::HandleOut { resource_type } => registry
-            .lookup(resource_type)
-            .cloned()
-            .ok_or_else(|| UnmappedParam::UnboundResourceType {
-                index,
-                resource_type: resource_type.clone(),
-            })?,
+        AbiParam::HandleOut { resource_type } => resolve(resource_type)?,
     })
 }
 
@@ -126,10 +122,11 @@ pub fn param_ty(
 pub fn signature(
     params: &[AbiParam],
     registry: &ResourceRegistry,
+    provider: &str,
 ) -> Result<(Vec<MirTy>, MirTy), UnmappedParam> {
     let mut tys = Vec::with_capacity(params.len());
     for (index, p) in params.iter().enumerate() {
-        tys.push(param_ty(index, p, registry)?);
+        tys.push(param_ty(index, p, registry, provider)?);
     }
     Ok((tys, PROVIDER_STATUS_TY))
 }

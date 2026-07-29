@@ -51,13 +51,25 @@ fn planned(function: &str) -> starkc::provider_bind::ProviderBindingPlan {
 
 /// **The registration that is this slice.** `"file"` maps to the Core `File` type, so a provider
 /// call carrying it now plans where C7.8.2d-4 refused it.
+///
+/// Under A11 the registry holds a NOMINAL identity rather than a `MirTy` (the provider is a property
+/// of the build, not of a registry entry), and CD-235 keeps Core `File` on `LegacyCore` — its pre-A11
+/// `MirTy::Core` representation — until that migration is separately requalified. So both halves are
+/// asserted: the binding kind, and the type it still resolves to.
 #[test]
 fn the_file_resource_type_is_bound_to_core_file() {
     let registry = ResourceRegistry::builtin();
     assert_eq!(
         registry.lookup("file"),
-        Some(&MirTy::Core(CoreType::File, Vec::new())),
-        "`file` must bind to the Core File type, not an invented one"
+        Some(&starkc::provider_bind::ResourceBinding::LegacyCore(
+            CoreType::File
+        )),
+        "`file` must bind to the Core File nominal, not an invented one"
+    );
+    assert_eq!(
+        registry.resolve_ty("file", "stark-std-file"),
+        Some(MirTy::Core(CoreType::File, Vec::new())),
+        "and it must still RESOLVE to the pre-A11 Core representation (CD-235)"
     );
 }
 

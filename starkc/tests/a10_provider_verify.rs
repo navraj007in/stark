@@ -144,6 +144,7 @@ fn program(call: ValidatedProviderCall, body: MirBody) -> MirProgram {
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: vec![call],
+        resource_bindings: Vec::new(),
     }
 }
 

@@ -41,8 +41,8 @@ fn tcp() -> ProviderSet {
 /// point is that the machinery is complete and waiting on a *name*.
 fn registry_with_tcp_types() -> ResourceRegistry {
     let mut r = ResourceRegistry::builtin();
-    r.register("tcp_listener", MirTy::UInt64);
-    r.register("tcp_stream", MirTy::UInt64);
+    r.register_nominal("tcp_listener", starkc::hir::ItemId(201));
+    r.register_nominal("tcp_stream", starkc::hir::ItemId(202));
     r
 }
 

@@ -201,6 +201,7 @@ fn run_clock(function: &str, scalar: MirTy, printer: RuntimeFn, extra: Option<Mi
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: vec![call],
+        resource_bindings: Vec::new(),
     };
     let verified = mir::verify::verify_program(&program)
         .unwrap_or_else(|e| panic!("{function}: must verify: {e:?}"));

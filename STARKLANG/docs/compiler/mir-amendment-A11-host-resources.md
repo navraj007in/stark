@@ -298,6 +298,38 @@ generated-Rust representation, and the lifecycle negative tests CD-234 lists (ne
 not close; failed `HandleOut` does not close; successful `HandleOut` closes exactly once; move then
 drop closes only the destination; consuming close prevents a later implicit close).
 
+### The nominal identity is widened, and the Core side is sequenced (CD-235)
+
+§4 wrote `nominal: ItemId`. **That cannot name a Core resource:** `File` resolves to
+`CoreType::File` (`resolve.rs`), a different enum from `ItemId`, so there is no Core *item* to point
+at, and §4's "one representation, two authorities" was unimplementable on the Core side as written.
+
+`nominal` is therefore `HostResourceNominal::Core(CoreType) | Item(ItemId)`. §4's model is now
+expressible on both sides.
+
+**Implementation state, precisely:**
+
+> A11's nominal identity supports both Core and package authorities. Package resources use
+> `MirTy::HostResource` immediately. Core `File` temporarily remains on its pre-A11 `MirTy::Core`
+> representation pending a separately requalified migration.
+
+**This is a sequencing exception, not a permanent second representation.** `ResourceRegistry` maps
+`file → ResourceBinding::LegacyCore(CoreType::File)`, so the migration is a one-line registry change
+rather than a type change.
+
+**`V-HOSTRES-1` / `MIR-0027` prevents a half-performed migration.** A `HostResource` naming a Core
+nominal is rejected: one Core resource with two representations inside one program means two
+drop-close paths for one kind of handle, and the first consumer to pick the other one closes twice.
+The guard is what makes the exception safe rather than merely documented, and it is removed **by** the
+migration step, not before.
+
+**The Core `File` migration is its own named step**, carrying bounded requalification of the existing
+C7.8.4 evidence: provider resolution and emission; create/open output initialisation; borrowed
+read/write/complete; consuming close; implicit `Drop` close; failed `HandleOut`; move and early-return
+lifecycle; no double close; generated representation remains `OwnedResourceHandle`; and the current
+C7.8.4 native e2e remaining behaviourally equivalent. **A11's Core side does not count as implemented
+until that closes.**
+
 ### §3 and §9 disagree about consequence 3, and §9 is right
 
 §3's table says the `BuildVersions` / installed-runtime check gives cross-version rejection and "needs

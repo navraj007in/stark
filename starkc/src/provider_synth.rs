@@ -22,8 +22,8 @@
 //! declaring no recoverable status gets an **uninhabited** enum, which is the type-system statement
 //! of "every nonzero status here is a contract violation".
 //!
-//! **Resource nominals are not synthesized here**, and cannot be by this mechanism. See
-//! [`RESOURCE_SYNTHESIS_LIMIT`].
+//! **Resource nominals ARE synthesized here, as zero-variant enums** (CD-234). See
+//! [`RESOURCE_SYNTHESIS_LIMIT`] for why every other source form was unusable and why this one is not.
 
 use crate::provider_abi::ScalarTy;
 use crate::provider_bind::StatusBinding;
@@ -45,8 +45,28 @@ use std::collections::BTreeMap;
 /// `from_raw_checked` would pass its `resource_type` check — the id would be whatever the forger
 /// wrote — and the ABI's validation would not save it.
 pub const RESOURCE_SYNTHESIS_LIMIT: &str =
-    "host-resource nominals cannot be synthesized as ordinary source: every source nominal form is \
-     constructible, and a host resource must not be";
+    "host-resource nominals cannot be synthesized as an ordinary constructible nominal: every such \
+     source form admits a value at a use site, and a host resource must not";
+
+/// **CD-234's answer: a zero-variant enum.**
+///
+/// `enum TcpStream {}` is opaque *structurally* rather than by prohibition — there is no variant to
+/// name and no struct-literal form, so no expression and no pattern can manufacture a value. It is
+/// still an ordinary parsed item with real spans and ordinary name resolution, and it needs no marker
+/// that a future construction path could forget.
+///
+/// The nominal supplies **source identity only**. A provider-bound instance lowers to
+/// `MirTy::HostResource` and must never take an ordinary zero-variant enum's backend representation
+/// or default-initialisation (CD-234's soundness condition).
+fn resource_nominal_source(nominal: &str, provider_resource: &str) -> String {
+    format!(
+        "// Host resource nominal for the provider resource `{provider_resource}`.\n\
+         // ZERO VARIANTS, deliberately: no expression and no pattern can manufacture a value, so\n\
+         // opacity is structural. Instances come only from a provider call, and lower to\n\
+         // MirTy::HostResource -- never to this enum's own representation (CD-234).\n\
+         enum {nominal} {{ }}\n"
+    )
+}
 
 /// The **raw** variant name for a declared status, from the vocabulary's name for it.
 ///
@@ -94,6 +114,9 @@ pub struct SynthesizedLayer {
     /// `AggKind::EnumVariant`. Computed here because this is where the enum's declaration order is
     /// decided, and a second computation elsewhere could disagree with it.
     pub error_variants: ErrorVariants,
+    /// Provider resource name → the package nominal bound to it, for the registry to resolve to an
+    /// `ItemId` once the generated source has been parsed (A11 §4's implementation note).
+    pub resource_nominals: BTreeMap<String, String>,
 }
 
 fn scalar_src(s: ScalarTy) -> &'static str {
@@ -138,7 +161,19 @@ pub fn synthesize(
     signatures: &[DerivedSignature],
     vocabularies: &BTreeMap<String, StatusBinding>,
 ) -> Result<SynthesizedLayer, String> {
-    if signatures.is_empty() {
+    synthesize_with_resources(signatures, vocabularies, &BTreeMap::new())
+}
+
+/// `synthesize`, plus the resource nominals the package binds.
+///
+/// `resources` maps a **provider resource name** to the package **nominal** bound to it, as
+/// `provider_api.resources` declares it. Each becomes a zero-variant enum (CD-234).
+pub fn synthesize_with_resources(
+    signatures: &[DerivedSignature],
+    vocabularies: &BTreeMap<String, StatusBinding>,
+    resources: &BTreeMap<String, String>,
+) -> Result<SynthesizedLayer, String> {
+    if signatures.is_empty() && resources.is_empty() {
         return Ok(SynthesizedLayer::default());
     }
 
@@ -150,19 +185,43 @@ pub fn synthesize(
          // Bodies are never lowered -- a provider call is emitted from the binding (CD-225).\n",
     );
     source.push_str(&error_source);
+
+    // Resource nominals first: a function signature may name one, and although STARK items are
+    // order-independent, emitting them first keeps the generated unit readable. `resources` is a
+    // `BTreeMap`, so the order is name-derived rather than iteration-derived.
+    let mut resource_nominals = BTreeMap::new();
+    for (provider_resource, nominal) in resources {
+        source.push_str(&resource_nominal_source(nominal, provider_resource));
+        resource_nominals.insert(provider_resource.clone(), nominal.clone());
+    }
+
     let mut bindings = BTreeMap::new();
 
     for sig in signatures {
+        // A receiver is still refused: associated placement (CD-225 §7.1) needs an `impl` block on the
+        // nominal, and emitting the item as a free function instead would silently change the call
+        // shape a programmer writes. Resource TYPES are now fine -- CD-234 gave them a form.
         if sig.receiver.is_some() {
-            return Err(format!("{}: {RESOURCE_SYNTHESIS_LIMIT}", sig.item_path));
+            return Err(format!(
+                "{}: associated placement on a host-resource nominal is not synthesized yet; the \
+                 nominal itself is (CD-234)",
+                sig.item_path
+            ));
         }
-        if sig.params.iter().chain(sig.results.iter()).any(|t| {
-            matches!(
-                t,
-                DerivedTy::SharedResource { .. } | DerivedTy::OwnedResource { .. }
-            )
-        }) {
-            return Err(format!("{}: {RESOURCE_SYNTHESIS_LIMIT}", sig.item_path));
+        // Every resource a signature names must be a nominal this package bound. Otherwise the
+        // generated source would reference a type that does not exist -- caught here rather than as
+        // an unresolved-name diagnostic in generated code nobody wrote.
+        for t in sig.params.iter().chain(sig.results.iter()) {
+            if let DerivedTy::SharedResource { nominal } | DerivedTy::OwnedResource { nominal } = t
+            {
+                if !resource_nominals.values().any(|n| n == nominal) {
+                    return Err(format!(
+                        "{}: references host-resource nominal `{nominal}`, which this package does \
+                         not bind",
+                        sig.item_path
+                    ));
+                }
+            }
         }
 
         let params = sig
@@ -207,6 +266,7 @@ pub fn synthesize(
         source,
         bindings,
         error_variants,
+        resource_nominals,
     })
 }
 

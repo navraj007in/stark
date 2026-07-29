@@ -54,6 +54,7 @@ fn program_with(calls: Vec<ValidatedProviderCall>) -> MirProgram {
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: calls,
+        resource_bindings: Vec::new(),
     }
 }
 
