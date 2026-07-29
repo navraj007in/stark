@@ -76,14 +76,39 @@ fn raw_layer() -> (String, BTreeMap<String, (String, String)>) {
 /// The whole program: the generated raw layer, the package's raw error type, and an application
 /// `main` that calls the bound function with **ordinary syntax** and prints the reading.
 fn program_source(raw: &str) -> String {
+    // TWO readings, with real work between them, and both printed.
+    //
+    // A single reading cannot be checked. `> 0` looks like the obvious assertion and is **wrong**:
+    // this provider initialises its origin lazily on the first call, so the first reading measures
+    // the gap between two adjacent instructions. That is genuinely `0` on any clock too coarse to
+    // resolve it — which is exactly how `a10_stark_time_e2e` passed on Linux and macOS and failed on
+    // Windows CI.
+    //
+    // Two readings separated by a loop test the real property: `second > first` is false if the
+    // out-slot was never written back (both would stay at the lowering's zero-initialisation), and
+    // it is also the monotonicity a monotonic clock is *for*.
+    //
+    // `panic` stays in STATEMENT position in both arms. As a match-arm *expression* it gives the
+    // arm type `Never`, which the generated-Rust backend cannot represent (C5.3a) -- so the arms
+    // assign into a pre-declared local instead of yielding a value.
     format!(
         "enum RawTimeError {{ Failed }}\n\
          {raw}\n\
          fn main() {{\n\
+         \x20   let mut first: UInt64 = 0;\n\
          \x20   match monotonic_now_ns() {{\n\
-         \x20       Ok(ns) => {{ println(ns); }}\n\
-         \x20       Err(_e) => {{ panic(\"the clock provider failed\") }}\n\
+         \x20       Ok(ns) => {{ first = ns; }}\n\
+         \x20       Err(_e) => {{ panic(\"the clock provider failed\"); }}\n\
          \x20   }}\n\
+         \x20   let mut spin: UInt64 = 0;\n\
+         \x20   while spin < 2000000 {{ spin = spin + 1; }}\n\
+         \x20   let mut second: UInt64 = 0;\n\
+         \x20   match monotonic_now_ns() {{\n\
+         \x20       Ok(ns) => {{ second = ns; }}\n\
+         \x20       Err(_e) => {{ panic(\"the clock provider failed\"); }}\n\
+         \x20   }}\n\
+         \x20   println(first);\n\
+         \x20   println(second);\n\
          }}\n"
     )
 }
@@ -223,16 +248,30 @@ fn the_monotonic_clock_is_reachable_from_stark_source() {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
-    let printed = stdout.trim();
-    let nanos: u64 = printed
-        .parse()
-        .unwrap_or_else(|e| panic!("expected a nanosecond count, got {printed:?}: {e}"));
+    let readings: Vec<u64> = stdout
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            l.parse()
+                .unwrap_or_else(|e| panic!("expected a nanosecond count, got {l:?}: {e}"))
+        })
+        .collect();
+    assert_eq!(
+        readings.len(),
+        2,
+        "expected two clock readings, got {stdout:?}"
+    );
 
-    // A clock stuck at zero would satisfy "it compiled, linked and ran". This is the assertion that
-    // says the provider produced a reading and the success arm copied it out of the output slot.
+    // The provider produced readings AND the success arm copied them out of the output slots. If
+    // write-back never happened, both locals would still hold lowering's zero-initialisation and
+    // this comparison fails. It is also the monotonicity the clock exists to provide.
     assert!(
-        nanos > 0,
-        "the monotonic clock returned {nanos}: the output slot was never written back"
+        readings[1] > readings[0],
+        "the clock did not advance across a busy loop ({} then {}): either the output slot was \
+         never written back, or the reading is not monotonic",
+        readings[0],
+        readings[1]
     );
 
     let _ = std::fs::remove_dir_all(&target_dir);

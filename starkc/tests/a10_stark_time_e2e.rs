@@ -37,6 +37,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Seeded into the clock's output slot so "was it written?" is testable without depending on clock
+/// resolution. `u64::MAX` nanoseconds is ~584 years of uptime, so no reading can collide with it.
+const SENTINEL: u64 = u64::MAX;
+
 /// The `stark-time` provider crate, exactly where it sits in the repository.
 fn stark_time_crate() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -161,9 +165,18 @@ fn entry_body() -> MirBody {
             BasicBlock {
                 statements: vec![
                     (
+                        // Initialised to a SENTINEL, not zero. `0` is a legitimate reading -- the
+                        // provider's origin is lazily set on the first call, so the first call's
+                        // elapsed time is the gap between two adjacent instructions, and on Windows
+                        // `Instant` is coarse enough for both to land in one tick. Seeding the slot
+                        // with a value the clock cannot produce is what makes "the slot was written"
+                        // testable independently of clock resolution.
                         Statement::Assign(
                             place(1),
-                            Rvalue::Use(Operand::Const(Constant::Int(0, MirTy::UInt64))),
+                            Rvalue::Use(Operand::Const(Constant::Int(
+                                SENTINEL as i128,
+                                MirTy::UInt64,
+                            ))),
                         ),
                         info(),
                     ),
@@ -307,12 +320,18 @@ fn stark_time_monotonic_clock_executes_natively() {
         .parse()
         .unwrap_or_else(|e| panic!("expected a monotonic nanosecond count, got {printed:?}: {e}"));
 
-    // A monotonic clock that returned zero would also satisfy "it linked and ran", so the value is
-    // checked: the provider actually produced a reading, and the success arm actually copied it
-    // out of the MaybeUninit slot (points 6 and 7, observed rather than asserted on text).
-    assert!(
-        nanos > 0,
-        "the monotonic clock returned {nanos}, which means the output slot was never written"
+    // Points 6 and 7, observed rather than asserted on text: the success arm actually copied the
+    // provider's value out of the `MaybeUninit` slot.
+    //
+    // Tested against the SENTINEL rather than against zero. `nanos > 0` was the original assertion
+    // and it was wrong -- not merely fragile: zero is a value this provider genuinely returns, since
+    // its origin is initialised on the first call, so the first reading measures the gap between two
+    // adjacent instructions. It passed on Linux and macOS because their `Instant` resolves that gap,
+    // and failed on Windows CI when both calls landed in the same tick. A sentinel the clock cannot
+    // produce tests the write-back itself, which is the actual property.
+    assert_ne!(
+        nanos, SENTINEL,
+        "the output slot still holds its sentinel: the provider's write-back never reached it"
     );
 
     // WP-C6.4c §10.7's property, checked against the REAL lock rather than a string builder.
