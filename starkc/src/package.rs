@@ -454,6 +454,52 @@ pub struct Package {
     /// Sorted and deduplicated at parse time so the requirement set — and therefore the selected
     /// provider set, and therefore the generated manifest — cannot depend on JSON key order.
     pub capabilities: Vec<String>,
+    /// WP-C7.8.8 step 1 (CD-225): the package's provider API bindings, if any.
+    ///
+    /// Absent for the overwhelming majority of packages, which bind nothing.
+    pub provider_api: ProviderApi,
+}
+
+/// WP-C7.8.8: what a package binds to provider capabilities.
+///
+/// **It names a callable surface; it never mirrors a signature.** Per CD-224's standing invariant,
+/// validated provider metadata is the one authoritative signature, and a binding here carries only
+/// identity — capability, symbol, item path — so there is no second copy to drift from. CD-219 is
+/// why: a mirrored `unix_now` declared one out-slot where the provider declared two, and metadata
+/// validation could not see it because the wrong mirror was internally consistent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProviderApi {
+    /// Item path → binding. Sorted by path so manifest key order cannot reach the build key.
+    pub functions: Vec<ProviderFunctionBinding>,
+    /// Package nominal → provider resource. Sorted by nominal, same reason.
+    ///
+    /// **Core resources are never here.** `file → CoreType::File` is compiler-owned and
+    /// undeclarable by any package (CD-224): a Core type whose identity a package manifest could
+    /// redefine would put Core's authority over its own types in a package's hands.
+    pub resources: Vec<ProviderResourceBinding>,
+    /// Capability → the package's raw error type name, sorted by capability.
+    ///
+    /// The *raw* type only. CD-225 keeps the status-code→public-variant mapping in ordinary STARK,
+    /// so this is the minimum identity needed to derive a binding and nothing more.
+    pub errors: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderFunctionBinding {
+    /// The public item path this binds, e.g. `Instant::now_ns` or `env::var_len`.
+    pub item_path: String,
+    pub capability: String,
+    /// The provider symbol, verbatim. Never sanitised (Packet 1 §1.3).
+    pub symbol: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderResourceBinding {
+    /// The package nominal, e.g. `TcpStream`.
+    pub nominal: String,
+    pub capability: String,
+    /// The provider's declared resource-type name, e.g. `tcp_stream`.
+    pub resource: String,
 }
 
 impl Package {
@@ -660,6 +706,8 @@ impl Package {
             capabilities.dedup();
         }
 
+        let provider_api = parse_provider_api(obj, &capabilities, path)?;
+
         Ok(Self {
             name,
             version,
@@ -667,6 +715,7 @@ impl Package {
             manifest_path: path.to_path_buf(),
             dependencies,
             capabilities,
+            provider_api,
         })
     }
 }
@@ -1305,4 +1354,194 @@ impl Package {
 
 struct ResolvedMeta {
     sha256: String,
+}
+
+/// WP-C7.8.8 step 1: parses and validates `provider_api`.
+///
+/// Everything checkable **without** provider metadata happens here, at manifest load. The checks
+/// that need a selected provider — symbol exists, resource exists, no close bound, derived
+/// signature resolvable — happen at provider selection, because they need metadata this function
+/// does not have.
+fn parse_provider_api(
+    obj: &std::collections::HashMap<String, JsonValue>,
+    capabilities: &[String],
+    path: &Path,
+) -> Result<ProviderApi, String> {
+    let Some(api_val) = obj.get("provider_api") else {
+        return Ok(ProviderApi::default());
+    };
+    let api = api_val.as_object().ok_or_else(|| {
+        format!(
+            "'provider_api' in manifest '{}' must be a JSON object",
+            path.display()
+        )
+    })?;
+
+    // A binding is a USE of a capability, so Packet 5's admission rule applies: it must have been
+    // declared. Without this, a package could reach a provider it never required.
+    let declared = |cap: &str, what: &str| -> Result<(), String> {
+        if capabilities.iter().any(|c| c == cap) {
+            return Ok(());
+        }
+        Err(format!(
+            "{what} in manifest '{}' binds capability '{cap}', which the package does not declare; \
+             add it to \"capabilities\"",
+            path.display()
+        ))
+    };
+
+    let mut functions = Vec::new();
+    if let Some(fns_val) = api.get("functions") {
+        let fns = fns_val.as_object().ok_or_else(|| {
+            format!(
+                "'provider_api.functions' in manifest '{}' must be a JSON object",
+                path.display()
+            )
+        })?;
+        for (item_path, spec) in fns {
+            let (capability, symbol) =
+                binding_pair(spec, "symbol", item_path, "provider_api.functions", path)?;
+            declared(&capability, &format!("function binding '{item_path}'"))?;
+            functions.push(ProviderFunctionBinding {
+                item_path: item_path.clone(),
+                capability,
+                symbol,
+            });
+        }
+    }
+
+    let mut resources = Vec::new();
+    if let Some(res_val) = api.get("resources") {
+        let res = res_val.as_object().ok_or_else(|| {
+            format!(
+                "'provider_api.resources' in manifest '{}' must be a JSON object",
+                path.display()
+            )
+        })?;
+        for (nominal, spec) in res {
+            let (capability, resource) =
+                binding_pair(spec, "resource", nominal, "provider_api.resources", path)?;
+            declared(&capability, &format!("resource binding '{nominal}'"))?;
+            // CD-224: Core resources are compiler-owned. A package declaring `file` would be
+            // claiming authority over a Core type, which is exactly what the two-mechanism ruling
+            // forbids -- so it is rejected here rather than silently shadowing the built-in.
+            if crate::provider_bind::ResourceRegistry::builtin()
+                .lookup(&resource)
+                .is_some()
+            {
+                return Err(format!(
+                    "manifest '{}' binds resource '{resource}', which is a Core resource owned by \
+                     the compiler; a package may not declare it",
+                    path.display()
+                ));
+            }
+            resources.push(ProviderResourceBinding {
+                nominal: nominal.clone(),
+                capability,
+                resource,
+            });
+        }
+    }
+
+    let mut errors = Vec::new();
+    if let Some(err_val) = api.get("errors") {
+        let errs = err_val.as_object().ok_or_else(|| {
+            format!(
+                "'provider_api.errors' in manifest '{}' must be a JSON object",
+                path.display()
+            )
+        })?;
+        for (capability, ty) in errs {
+            let ty = ty.as_str().ok_or_else(|| {
+                format!(
+                    "'provider_api.errors.{capability}' in manifest '{}' must be a string",
+                    path.display()
+                )
+            })?;
+            declared(capability, &format!("error binding for '{capability}'"))?;
+            errors.push((capability.clone(), ty.to_string()));
+        }
+    }
+
+    // Two nominals bound to one resource is rejected, not warned (design §13.3): they would be
+    // distinct STARK types that are identical at the boundary, so one would satisfy the other
+    // dynamically while failing statically, and each would record its own close for one resource --
+    // breaking exactly-once.
+    let mut by_resource: HashMap<&str, Vec<&str>> = HashMap::new();
+    for r in &resources {
+        by_resource
+            .entry(r.resource.as_str())
+            .or_default()
+            .push(r.nominal.as_str());
+    }
+    let mut collisions: Vec<String> = by_resource
+        .iter()
+        .filter(|(_, noms)| noms.len() > 1)
+        .map(|(res, noms)| {
+            let mut sorted = noms.clone();
+            sorted.sort();
+            format!("'{res}' is bound by {}", sorted.join(", "))
+        })
+        .collect();
+    collisions.sort();
+    if let Some(first) = collisions.first() {
+        return Err(format!(
+            "manifest '{}' binds one provider resource to several nominals: {first}",
+            path.display()
+        ));
+    }
+
+    // Every capability with a bound function needs a raw error type: the derived signature is
+    // `Result<_, E>` and there is no E without it.
+    for f in &functions {
+        if !errors.iter().any(|(cap, _)| cap == &f.capability) {
+            return Err(format!(
+                "manifest '{}' binds '{}' for capability '{}' but declares no \
+                 'provider_api.errors' entry for it",
+                path.display(),
+                f.item_path,
+                f.capability
+            ));
+        }
+    }
+
+    // Sorted so manifest key order reaches neither the build key nor generated code -- the property
+    // CD-213 gave capabilities and CD-205 gave the status vocabulary.
+    functions.sort_by(|a, b| a.item_path.cmp(&b.item_path));
+    resources.sort_by(|a, b| a.nominal.cmp(&b.nominal));
+    errors.sort();
+    Ok(ProviderApi {
+        functions,
+        resources,
+        errors,
+    })
+}
+
+/// One `{ "capability": ..., "<key>": ... }` binding entry.
+fn binding_pair(
+    spec: &JsonValue,
+    key: &str,
+    name: &str,
+    section: &str,
+    path: &Path,
+) -> Result<(String, String), String> {
+    let obj = spec.as_object().ok_or_else(|| {
+        format!(
+            "'{section}.{name}' in manifest '{}' must be a JSON object",
+            path.display()
+        )
+    })?;
+    let field = |k: &str| -> Result<String, String> {
+        obj.get(k)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "'{section}.{name}' in manifest '{}' needs a non-empty string '{k}'",
+                    path.display()
+                )
+            })
+    };
+    Ok((field("capability")?, field(key)?))
 }
