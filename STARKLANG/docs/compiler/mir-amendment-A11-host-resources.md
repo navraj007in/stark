@@ -271,6 +271,53 @@ removed when canonical symbols stopped using `ItemId` indices.
 
 ---
 
+## 8.5 IMPLEMENTED at MIR 0.2 (CD-234, 2026-07-30)
+
+`MirTy::HostResource` exists, `MIR_VERSION` is `0.2`, and §4's form is implemented as written. What
+landed, and what did not:
+
+**Landed.** The variant with all three identity fields; structural equality/ordering over
+`(nominal, provider, resource)`; the canonical rendering in `lower::symbol_ty` as
+`hostres#<provider>/<resource>@<nominal content path>` (content path, never `ItemId` — CD-108);
+`dump_ty`'s index-based rendering, consistent with how it already renders every other nominal;
+§Q6's codegen rule that **every** host resource emits as `OwnedResourceHandle` regardless of nominal;
+and the CD-234 refusals below. Evidence: `starkc/tests/a11_host_resource.rs`.
+
+**CD-234's refusals, implemented as refusals.** `MIR-0026` rejects any rvalue targeting a
+`HostResource` other than a move out of a place — no aggregate (including an *enum-variant*
+aggregate), no constant, no discriminant, no borrow, and **no copy**, since duplicating a handle
+would give two owners of one resource and close it twice. `default_value_expr` rejects a host
+resource outright rather than fabricating a handle, because a fabricated `OwnedResourceHandle` is a
+forged one and `from_raw_checked` cannot detect it. The refusal is structural and does not rest on
+drop flags making it unreachable, as CD-234 requires.
+
+**Not yet landed** (the resource path proper): synthesis of zero-variant enum nominals,
+`ResourceRegistry`'s change from resource-name→`MirTy` to resource-name→nominal identity,
+resolution-time construction of the `HostResource`, drop-flag and close-arena rules, the slot-backed
+generated-Rust representation, and the lifecycle negative tests CD-234 lists (never-initialised does
+not close; failed `HandleOut` does not close; successful `HandleOut` closes exactly once; move then
+drop closes only the destination; consuming close prevents a later implicit close).
+
+### §3 and §9 disagree about consequence 3, and §9 is right
+
+§3's table says the `BuildVersions` / installed-runtime check gives cross-version rejection and "needs
+no new logic". That is **wrong about the mechanism**: `stark_runtime::version::check` compares only
+`runtime_version`, and that module's own documentation says the other fields "are recorded for
+diagnostics but are not this crate's authority to validate". Adding `mir_version` validation there
+would make the runtime crate an authority over a compiler-internal representation.
+
+§9 consequence 3 is satisfied by a different, existing check: **V-SURFACE-1 / `MIR-0017`** compares
+`program.mir_version` against `MIR_VERSION` for exact equality, which rejects in **both** directions —
+a `0.1` program under a `0.2` compiler and the reverse. Consequence 1 is likewise already met:
+`build.rs` folds `mir={}` into the build key, and a mutation test perturbs it.
+
+**Verified rather than assumed** (§9 consequence 5's standard): the build-cache, reproducibility,
+profile-agreement, snapshot and closure-evidence suites all pass under `0.2` with **no re-pinning
+required**, because nothing derives the version string except the synthetic C6 tier-1 fixture — which
+stays at `0.1`, exactly as §9's immutability rule requires.
+
+---
+
 ## 9. Historical evidence and requalification (CD-224)
 
 > **Historical gate evidence remains immutable and valid for the version and commit it records. A

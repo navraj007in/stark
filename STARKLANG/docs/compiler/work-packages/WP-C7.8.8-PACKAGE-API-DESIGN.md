@@ -2,16 +2,19 @@
 
 **Status:** rev. 5 — **fully dispositioned (CD-224, CD-225)**, and **partially implemented**.
 Implementation proceeds in the order recorded in §16. Steps 1, 3, 6 and 8 are done; step 2 is done
-**for functions only** (resource nominals have no mechanism — §3.1); steps 4, 5 and 7 are blocked on
-that same gap. The monotonic clock now executes from ordinary STARK source
-(`c788_source_time_e2e.rs`).
+**for functions only**; steps 4, 5 and 7 are in progress. The monotonic clock executes from ordinary
+STARK source (`c788_source_time_e2e.rs`), and the resource-nominal mechanism §3.1 was blocked on is
+**dispositioned in §3.2 (CD-234)** — a synthesized zero-variant enum, with A11's
+`MirTy::HostResource` implemented at MIR `0.2`.
 
 Rev. 5 adds implementation findings and corrects three sections against them. The design's decisions
 all stand; what changed is *how* some of them are realised, and each correction is marked inline
 rather than by silent edit:
 
-- **§3.1** — synthesis is generated source text, not constructed HIR, and **resource nominals
-  cannot use it**. This blocks §16 steps 4, 5 and 7, and is the only remaining refusal in lowering.
+- **§3.1** — synthesis is generated source text, not constructed HIR, and an ordinary nominal form
+  cannot be used for a resource. **Resolved by §3.2 (CD-234): a zero-variant enum.**
+- **§3.2** — the resource nominal is a synthesized `enum X {}`, opaque structurally rather than by a
+  checker rule, with `MirTy::HostResource` owning the MIR and native representation.
 - **§16.1** — what step 6 lowers. Recoverable statuses **are** lowered, via a `SwitchInt` whose
   `otherwise` edge is `Unreachable` rather than a fallback error.
 - **§16.2** — the `starkc build` driver is **not** wired; the proof runs through the compiler
@@ -142,10 +145,67 @@ whatever the forger wrote.
 
 `synthesize()` therefore **refuses** any signature carrying a receiver or a resource type, rather
 than emitting something weaker. The consequence for §16's order: steps 1–3 and 8 are reachable for
-`clock` (scalar-only, and both its signatures compile), and steps 4–7 need a resource-nominal
-mechanism decided first — either a compiler-injected opaque item form, or a source form the checker
-refuses to construct. This is why CD-225 put the monotonic-time proof before resource capabilities;
-the finding confirms that order was load-bearing, not merely convenient.
+`clock` (scalar-only, and both its signatures compile), and steps 4–7 needed a resource-nominal
+mechanism decided first. This is why CD-225 put the monotonic-time proof before resource
+capabilities; the finding confirms that order was load-bearing, not merely convenient.
+
+### 3.2 RESOLVED (CD-234): the nominal is a synthesized zero-variant enum
+
+The owner dispositioned §3.1's gap. Neither option §3.1 named was taken:
+
+- a **compiler-injected spanless item** is rejected — it reintroduces the fabricated spans and second
+  name representation that generating source exists to avoid;
+- an **ordinary struct plus a "do not construct this one" marker** is rejected — soundness would rest
+  on a checker rule every future construction path must remember, which is the same hidden special
+  case Packet 6 already rejected for the MIR representation question.
+
+Instead the nominal is generated as:
+
+```stark
+enum TcpStream {}
+```
+
+A **zero-variant enum** is opaque *structurally*, not by prohibition. It has no fields, no variants,
+no constructor expression, and no pattern capable of manufacturing a value — there is simply no
+variant to name and no struct-literal form. So it yields a normally parsed item with real source
+spans and ordinary name resolution and type checking, and it needs no marker that any consumer could
+forget.
+
+**The soundness condition attached to the approval:**
+
+> A synthesized zero-variant enum may provide the source-level nominal identity, but a
+> provider-bound instance of that nominal lowers to `MirTy::HostResource` and must never receive the
+> backend representation or default-initialisation behaviour of an ordinary zero-variant enum.
+
+The required split:
+
+```text
+ordinary zero-variant enum   →  ordinary enum MIR/backend representation
+                             →  placeholder permitted where local-init machinery needs one
+
+provider-bound nominal       →  MirTy::HostResource
+                             →  OwnedResourceHandle representation
+                             →  no placeholder, no default value, slot begins dead
+```
+
+A `HostResource` local becomes live **only** through a successful `HandleOut`, a move from an
+already-live resource, or an argument/return carrying one. No declaration, default initialisation,
+aggregate construction or backend placeholder may make it live.
+
+Drop flags still decide whether a *live* resource is closed, but they must not be used to excuse a
+forged placeholder existing. The guarantee is stronger than that: **a dead host-resource slot
+contains no semantically valid STARK value, and native code must never read or close it.** CD-234 is
+explicit that a placeholder-backed host-resource local is forbidden even where current drop flags
+appear to make it unreachable.
+
+This is a **CE3 clarification to A11**, not a new Core feature and not a reversal of the decision
+against marked ordinary structs. The zero-variant enum carries no hidden resource semantics through
+every compiler consumer; the provider binding causes lowering to replace its representation with the
+explicit `HostResource` form at the established boundary.
+
+Implementation status is in `mir-amendment-A11-host-resources.md` §8.5. The type, its identity, the
+codegen rule and CD-234's refusals are done (`a11_host_resource.rs`); synthesis of the nominals, the
+registry change, resolution-time construction, and the drop/close lifecycle are not.
 
 ---
 
@@ -529,7 +589,7 @@ items with ordinary signatures, which is what keeps steps 3 and 4 of WP-C7.8.8 f
 >
 > "Carried, not consulted" survives intact, and is in fact stronger: the front end does not merely
 > decline to consult the binding, it never sees one. The `HostResourceBinding` row is unimplemented
-> — resource nominals have no mechanism yet (§3.1).
+> — the `HostResourceBinding` row is dispositioned by §3.2 (CD-234) and partly implemented.
 
 A nominal with a `HostResourceBinding` is **opaque in the type system**: it has no fields, so field
 access fails by ordinary name resolution rather than by a special rule, and it is never `Copy` or
@@ -668,15 +728,15 @@ Nothing here changes the ABI, the runtime surface, or any Core specification doc
    (`package.rs`; `c788_provider_api_manifest.rs`);
 2. synthesis of private package items and resource nominals — **functions done, CD-227**
    (`provider_derive.rs`, `provider_synth.rs`; `c788_derive.rs`, `c788_synth.rs`);
-   **resource nominals blocked**, see §3.1;
+   **resource nominals dispositioned** by §3.2 (CD-234), synthesis of them not yet written;
 3. typed HIR bindings — **done, CD-228**, subsumed by step 2: synthesis emits source, so the front
    end builds the HIR itself and the binding rides alongside as `SynthesizedLayer::bindings`;
-4. resource-name-to-nominal registry — **blocked**, see §3.1;
-5. resolution-time construction of `MirTy::HostResource` — **blocked**, see §3.1;
+4. resource-name-to-nominal registry — **unblocked by §3.2**; A11's type exists, the registry change does not yet;
+5. resolution-time construction of `MirTy::HostResource` — **unblocked by §3.2**; the type and its refusals exist (A11 §8.5), construction does not yet;
 6. `Callee::Provider` lowering — **done for scalar signatures, CD-229**
    (`mir/provider_lower.rs`, `mir/lower.rs`); resource and recoverable-status forms refused
    explicitly, see §16.1;
-7. close-arena population and verifier rules — **blocked**, see §3.1;
+7. close-arena population and verifier rules — **partly done**: `MIR-0026` (nothing manufactures a resource) landed; drop-flag and close-arena rules did not;
 8. **source-level monotonic-time proof** — **DONE, CD-229** (`c788_source_time_e2e.rs`): a `.stark`
    program calls the bound function with ordinary syntax, is compiled by the ordinary front end,
    lowered to `Callee::Provider`, linked against `stark-time-native`, executed, and the printed
@@ -702,7 +762,7 @@ the time provider — **with no hand-built MIR**. Time has no resource, no buffe
 a failure in that test is a failure in the source path itself rather than in anything it carries.
 
 §3.1's finding makes that ordering load-bearing rather than convenient: steps 4–7 all touch resource
-nominals, which have no mechanism yet, while step 8's target needs none. The remaining path to the
+nominals, which had no mechanism until CD-234 (§3.2), while step 8's target needs none. The remaining path to the
 proof was therefore **step 6 alone** — lowering a call to a synthesized item into `Callee::Provider`,
 which the emitter and linker already execute (`a10_stark_time_e2e.rs`, from hand-built MIR). That is
 now closed, and **the source path is proven end to end for a scalar capability**.

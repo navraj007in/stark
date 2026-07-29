@@ -482,6 +482,32 @@ impl<'a> BodyCx<'a> {
     }
 
     fn check_rvalue_against(&mut self, expected: &MirTy, rvalue: &Rvalue, bi: u32) {
+        // **MIR-0026 (A11 / CD-234): nothing may MANUFACTURE a host resource.**
+        //
+        // A `HostResource` value has exactly three admitted origins: a successful `HandleOut` (which
+        // is a `Call` terminator's effect, not an rvalue), a move from an already-live resource, and
+        // an argument or return carrying one. So the only rvalue that may target this type is a MOVE
+        // out of a place.
+        //
+        // `Copy` is excluded too, not only `Aggregate` and constants: duplicating a handle would give
+        // two owners of one resource and close it twice, which is precisely the exactly-once
+        // guarantee the MIR `Drop` terminator exists to hold.
+        //
+        // Checked here rather than trusted from lowering because the verifier's job is to reject the
+        // program it is given: hand-built MIR, a future lowering path, or an optimiser that
+        // materialised a handle must all fail, and CD-234 requires this to hold structurally rather
+        // than because current lowering happens not to do it.
+        if matches!(expected, MirTy::HostResource { .. })
+            && !matches!(rvalue, Rvalue::Use(Operand::Move(_)))
+        {
+            self.err(
+                "MIR-0026",
+                bi,
+                "a host resource can only be produced by a move out of a place; no aggregate, \
+                 constant, discriminant, borrow, or copy may manufacture one",
+            );
+            return;
+        }
         match rvalue {
             Rvalue::Use(op) => {
                 self.check_no_fn_misuse_ok(op);

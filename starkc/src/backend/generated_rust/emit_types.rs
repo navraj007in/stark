@@ -166,6 +166,15 @@ pub fn emit_ty_at(ty: &MirTy, at: LifetimePosition) -> Result<String, BackendDia
         MirTy::Bool => "bool".to_string(),
         MirTy::Char => "char".to_string(),
         MirTy::Unit => "()".to_string(),
+        // A11 Q6: EVERY host resource emits as `OwnedResourceHandle`, whatever its nominal.
+        // Codegen type selection deliberately does NOT consult `nominal`: the nominal distinction is
+        // a STARK type-system distinction, enforced before emission, and at the ABI boundary all
+        // handles are one shape whose runtime distinction is the `resource_type` field that
+        // `from_raw_checked` validates. Static distinctness in STARK, dynamic validation at the
+        // boundary.
+        MirTy::HostResource { .. } => {
+            "stark_runtime::provider_abi::OwnedResourceHandle".to_string()
+        }
         // §6.2 offers "generated concrete tuple or named internal aggregate; choose one
         // canonical form". A Rust tuple is chosen: it needs no generated definition, no name to
         // keep deterministic, and no reachability walk to decide which shapes to emit. The cost
@@ -658,6 +667,12 @@ pub fn default_value_expr(ty: &MirTy, types: &TypeContext) -> Result<String, Bac
                 // Uninhabited in STARK: the only value is the placeholder its Rust declaration
                 // carries (see `emit_nominal_declarations`). Never read -- MIR liveness guarantees
                 // it -- but the eager default-init needs something to write.
+                //
+                // **CD-234: this path is unreachable for a host resource.** A provider-bound nominal
+                // is a zero-variant enum in SOURCE, but it lowers to `MirTy::HostResource`, which the
+                // arm above refuses outright. So the placeholder can only ever back an ORDINARY
+                // uninhabited enum -- never a resource. That separation is the whole reason
+                // `HostResource` is its own `MirTy` rather than a marked enum.
                 return Ok(format!("{name}::{}()", variant_name(0)));
             };
             let mut parts = Vec::with_capacity(payload.len());
@@ -676,6 +691,31 @@ pub fn default_value_expr(ty: &MirTy, types: &TypeContext) -> Result<String, Bac
         // whereas this one aborts if MIR liveness is ever wrong. A `FnPtr` local is Copy, so it is
         // never slot-backed and this is the only place it acquires a starting value.
         MirTy::FnPtr { .. } => mangle::fn_sentinel_name(ty),
+        // **A11 / CD-234: a host resource has NO default value, and this is a hard refusal.**
+        //
+        // The `FnPtr` arm above and the uninhabited-enum placeholder below both answer "this local
+        // needs a starting value" by inventing one. A host resource must not: an invented
+        // `OwnedResourceHandle` is a FORGED handle, and `from_raw_checked` cannot detect one because
+        // its `resource_type` would be whatever the forger wrote. Native code would then read or
+        // close a descriptor no provider ever produced.
+        //
+        // So a host-resource local starts DEAD with its drop flag clear, and becomes live only
+        // through a successful `HandleOut`, a move from an already-live resource, or an
+        // argument/return carrying one. Reaching here means some path demanded eager materialisation,
+        // which CD-234 requires emission to reject rather than satisfy.
+        //
+        // The refusal is structural and does NOT rest on drop flags making it unreachable: CD-234 is
+        // explicit that a placeholder-backed host-resource local is forbidden even if current drop
+        // flags appear to rule it out.
+        MirTy::HostResource(r) => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "host resource `{}/{}` has no default value and must never be \
+                 eagerly materialised: a fabricated OwnedResourceHandle is a forged handle \
+                 (A11 / CD-234). A host-resource local must start dead and become live only through \
+                 a successful HandleOut or a move.",
+                r.provider, r.resource
+            )))
+        }
         other => {
             return Err(BackendDiagnostic::Unsupported(format!(
                 "MirTy {other:?} has no WP-C5.3b default-value representation yet"

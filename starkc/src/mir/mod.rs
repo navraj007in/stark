@@ -29,7 +29,13 @@ use std::sync::Arc;
 
 /// Bumped whenever the MIR shape changes (contract §11). Consumers state the version they
 /// accept; mismatch is a hard error.
-pub const MIR_VERSION: &str = "0.1";
+///
+/// `0.2` (A11, CD-224 — `mir-amendment-A11-host-resources.md`): adds [`MirTy::HostResource`]. A
+/// `MirTy` variant, unlike A10's `Callee` variant, flows through every part of the compiler that
+/// reasons about types, so this is a shape change rather than a surface revision. The increment
+/// invalidates every build key, which is the point: a key that ignored a representation change
+/// would serve a cached artifact produced under different type rules.
+pub const MIR_VERSION: &str = "0.2";
 
 /// Runtime-surface revision (Amendment A1, CD-031). Additive `RuntimeFn`/String/Vec growth
 /// bumps this, not `MIR_VERSION`. Stamped onto every `MirProgram`; a consumer rejects a
@@ -121,6 +127,58 @@ pub enum MirTy {
     },
     /// Semantically opaque runtime types (Vec, Box, HashMap, …) — NOT Option/Result.
     Core(crate::hir::CoreType, Vec<MirTy>),
+    /// **A11 (CD-224, CE3): a host resource.** Established by the COMPILER for a Core resource
+    /// (`File`) or by a PACKAGE declaration for a package resource (`TcpStream`) — one
+    /// representation, two authorities.
+    ///
+    /// **This type has no values the compiler can make.** There is no default rvalue, no
+    /// `Aggregate`, no constant and no constructor that produces one (CD-234). A local of this type
+    /// starts DEAD, with its drop flag clear, and becomes live only through a successful
+    /// `HandleOut`, a move from an already-live resource, or an argument/return carrying one.
+    ///
+    /// The source-level nominal is a synthesized **zero-variant enum** (CD-234): opaque
+    /// structurally rather than by a checker rule, because a zero-variant enum has no variant to
+    /// name and no struct-literal form, so no expression and no pattern can manufacture a value.
+    /// Its ordinary zero-variant-enum backend representation — including the default-init
+    /// placeholder — **must not** apply once the nominal is classified as a host resource.
+    ///
+    /// **Boxed.** A11 §4 writes the form with inline fields; the three identities are logically
+    /// inline and the box is representation only. `MirTy` is cloned constantly throughout the
+    /// compiler, and 52 bytes of resource identity on every `MirTy` — hence on every `Rvalue` and
+    /// every `Statement` — is a cost paid by all the code that never touches a resource. Boxing a
+    /// rarely-instantiated variant's payload is the standard remedy, and `clippy::large_enum_variant`
+    /// flagged `Statement::Assign` crossing its threshold as a direct result of not doing it.
+    HostResource(Box<HostResourceTy>),
+}
+
+/// A11 §4's three identities for a host resource. See [`MirTy::HostResource`] for why they are boxed.
+///
+/// Both identities are retained, as Packet 6 requires: `nominal` is what diagnostics and the source
+/// language talk about, `provider`/`resource` is what the ABI talks about. Neither can be derived
+/// from the other, and dropping either loses something a later stage needs.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct HostResourceTy {
+    /// The STARK nominal this resource is, e.g. the item for `TcpListener`.
+    pub nominal: crate::hir::ItemId,
+    /// §2 identity of the provider that owns the resource type.
+    pub provider: String,
+    /// §13 resource-type name as that provider declares it, e.g. `"tcp_stream"`.
+    pub resource: String,
+}
+
+impl MirTy {
+    /// Constructs a host-resource type from A11 §4's three identities.
+    pub fn host_resource(
+        nominal: crate::hir::ItemId,
+        provider: impl Into<String>,
+        resource: impl Into<String>,
+    ) -> Self {
+        MirTy::HostResource(Box::new(HostResourceTy {
+            nominal,
+            provider: provider.into(),
+            resource: resource.into(),
+        }))
+    }
 }
 
 // -------------------------------------------------------------------- bodies --
@@ -924,6 +982,12 @@ pub(crate) fn dump_ty(ty: &MirTy) -> String {
             dump_ty(ret)
         ),
         MirTy::Core(core, args) => dump_generic(&format!("{core:?}"), "", args),
+        // A11: rendered by `ItemId` index here, deliberately -- `dump_ty` renders every nominal that
+        // way (`struct#3`), and it has no program context to resolve a content path from. The
+        // CANONICAL, order-stable identity A11 Q5 specifies lives in `lower::symbol_ty`, which does.
+        MirTy::HostResource(r) => {
+            format!("hostres#{}/{}@#{}", r.provider, r.resource, r.nominal.0)
+        }
         simple => format!("{simple:?}"),
     }
 }

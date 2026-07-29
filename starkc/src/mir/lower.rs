@@ -819,6 +819,22 @@ fn symbol_ty(hir: &Hir, meta: &ProgramMeta, ty: &MirTy) -> String {
         MirTy::Enum(EnumRef::CoreResult, args) => generic("Result".to_string(), args),
         MirTy::Enum(EnumRef::CoreOrdering, args) => generic("Ordering".to_string(), args),
         MirTy::Core(core, args) => generic(format!("{core:?}"), args),
+        // A11 Q5: `hostres#<provider>/<resource>@<nominal content path>`. The nominal is rendered by
+        // CONTENT PATH, never by `ItemId` -- CD-108 established that ordering-dependent indices must
+        // not reach canonical identity, and a host resource is no exception.
+        //
+        // Two nominals bound to one provider resource render differently, and one nominal bound
+        // through different providers renders differently. Both are deliberate: A11 7's negative
+        // cases turn on telling those apart.
+        MirTy::HostResource(r) => {
+            let name = item_name_text(hir, meta, r.nominal).unwrap_or("?");
+            format!(
+                "hostres#{}/{}@{}{name}",
+                r.provider,
+                r.resource,
+                meta.symbol_prefix(r.nominal)
+            )
+        }
         MirTy::Tuple(elems) => {
             let inner = elems
                 .iter()

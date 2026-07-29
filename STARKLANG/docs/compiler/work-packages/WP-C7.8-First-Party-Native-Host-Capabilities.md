@@ -563,11 +563,15 @@ numbered steps, and the authority for status. The outline above is the *shape* o
 deliberately does not renumber against it; where the two are read together, §16 governs.
 
 Position (2026-07-30): outline step 1 done (CD-213); §16 steps 1, 3, **6 and 8 done** (step 2 for
-functions only) — the
-monotonic clock executes from ordinary STARK source with no hand-built MIR
+functions only) — the monotonic clock executes from ordinary STARK source with no hand-built MIR
 (`c788_source_time_e2e.rs`). Step 3 collapsed into step 2, because synthesis emits STARK source and
-the ordinary front end builds the HIR (design §3.1). §16 steps 4, 5 and 7 remain blocked on a
-resource-nominal mechanism. See design §3.1 and §16.1, and `COMPILER-STATE.md`.
+the ordinary front end builds the HIR (design §3.1).
+
+§16 steps 4, 5 and 7 were blocked on a resource-nominal mechanism; **CD-234 dispositions it** (design
+§3.2: a synthesized zero-variant enum, opaque structurally rather than by a checker rule), and A11's
+`MirTy::HostResource` is now implemented at MIR `0.2`. What remains on that path is synthesis of the
+nominals, the registry change, resolution-time construction, and the drop/close lifecycle — see A11
+§8.5 and `COMPILER-STATE.md`.
 
 ### Proof order, by increasing complexity
 

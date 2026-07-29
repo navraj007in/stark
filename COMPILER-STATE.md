@@ -466,6 +466,57 @@ registry → resolution-time `MirTy::HostResource` → `Callee::Provider` loweri
 verifier rules → **source-level monotonic-time proof**. Proven in that order on real STARK source:
 time, args/env, File, TCP bind/connect, accept, full echo. TCP sits behind this, not in front of it.
 
+**CD-234 (2026-07-30) — the resource-nominal mechanism, and A11 IMPLEMENTED at MIR 0.2.**
+
+The owner dispositioned the §3.1 gap: a resource nominal is a synthesized **zero-variant enum**
+(`enum TcpStream {}`). Both alternatives were rejected — a compiler-injected spanless item
+(reintroduces fabricated spans) and an ordinary struct plus a do-not-construct marker (soundness
+resting on a rule every future construction path must remember, the same hidden special case Packet 6
+already rejected). A zero-variant enum is opaque **structurally**: no fields, no variants, no
+constructor expression, no pattern that can manufacture a value, and no marker to forget.
+
+Attached condition: the nominal supplies **source identity only**. A provider-bound instance lowers
+to `MirTy::HostResource` and must never receive an ordinary zero-variant enum's backend
+representation or default-initialisation. A `HostResource` local becomes live only through a
+successful `HandleOut`, a move from an already-live resource, or an argument/return carrying one.
+Drop flags still decide whether a *live* resource closes, but may not excuse a forged placeholder
+existing: **a dead host-resource slot contains no semantically valid STARK value, and native code
+must never read or close it.** Recorded as a CE3 clarification to A11, not a new Core feature.
+
+**A11 is now implemented** — it had been approved on paper since CD-224 and entirely unbuilt
+(`MirTy::HostResource` existed nowhere; `MIR_VERSION` was still `0.1`). Landed: the variant with all
+three identity fields, structural identity over `(nominal, provider, resource)`, the canonical
+`hostres#<provider>/<resource>@<content path>` rendering in `symbol_ty` (content path, never
+`ItemId` — CD-108), §Q6's rule that every host resource emits as `OwnedResourceHandle` regardless of
+nominal, and CD-234's refusals: `MIR-0026` rejects any rvalue other than a move (no aggregate — including
+an enum-variant aggregate — no constant, no discriminant, no borrow, **no copy**), and
+`default_value_expr` refuses outright rather than fabricating a handle. Evidence:
+`starkc/tests/a11_host_resource.rs` (13 tests).
+
+**Adding the variant produced ZERO compile errors, which was the risk rather than the relief.** Every
+`MirTy` match has a wildcard arm, so a host resource would silently have inherited ordinary-enum
+treatment. The sites that matter were made explicit deliberately, not because the compiler forced it.
+
+**A11 §3 and §9 disagree, and §9 is right.** §3's table claims the installed-runtime check gives
+cross-version rejection and "needs no new logic". `stark_runtime::version::check` compares only
+`runtime_version`, and that module documents the other fields as recorded-not-validated — putting
+`mir_version` there would make the runtime an authority over a compiler-internal representation. §9
+consequence 3 is instead satisfied by **V-SURFACE-1 / `MIR-0017`**, whose exact-equality check on
+`mir_version` rejects in both directions already. Consequence 1 likewise already held: `build.rs`
+folds `mir={}` into the build key, with a mutation test perturbing it.
+
+**Verified, not assumed** (§9 consequence 5): build-cache, reproducibility, profile-agreement,
+snapshot and closure-evidence suites all pass under `0.2` with **no re-pinning**, because nothing
+derives the version string except the synthetic C6 tier-1 fixture — which stays `0.1`, exactly as
+§9's immutability rule requires.
+
+**Still open on the resource path:** synthesis of the zero-variant nominals, `ResourceRegistry`'s
+change from resource-name→`MirTy` to resource-name→nominal identity, resolution-time construction of
+the `HostResource`, drop-flag/close-arena rules, the slot-backed generated-Rust representation, and
+CD-234's lifecycle negative tests (never-initialised does not close; failed `HandleOut` does not
+close; successful `HandleOut` closes exactly once; move then drop closes only the destination;
+consuming close prevents a later implicit close). `File` and TCP need those.
+
 **DECISION-ID CORRECTION (2026-07-30).** Two commits landed with **already-used** CD subjects:
 `cdba7c8` says `CD-196` and `ee85652` says `CD-197`, but CD-196 is "WP-C7.8 REVISE" (`4419d6c`) and
 CD-197 is "Packet 3 dispositioned under CE2" (`9aa7482`). Their correct identities are **CD-228**
@@ -486,7 +537,7 @@ asserts the printed monotonic reading is nonzero. **No hand-built MIR anywhere i
 is what CD-220 named the critical path, and what every earlier provider e2e could not demonstrate:
 `lower_program` hard-coded `provider_calls: Vec::new()`, so no STARK source could reach a provider
 at all. §16 steps 1, 3, 6 and 8 are done; step 2 is done **for functions only**; steps 4, 5 and 7
-are blocked on the resource-nominal gap (§3.1).
+were blocked on the resource-nominal gap, which CD-234 dispositions (design §3.2).
 
 Step 6 is hooked at `Res::Item` in `lower_call` — after name resolution, type checking and borrow
 checking have all seen an ordinary function, which is what keeps the front end free of provider
@@ -536,7 +587,7 @@ builds the HIR and the binding rides alongside in a side table. `c788_synth.rs` 
 generated layer through parse → resolve → typecheck rather than inspecting it as text, which is how
 it caught the body needing to be a tail expression: `panic(…);` with a semicolon types as `Unit`.
 
-**Finding — resource nominals have no mechanism yet (design §3.1).** Every source form that declares
+**Finding — resource nominals have no mechanism yet (design §3.1).** *[SUPERSEDED by CD-234 above: a synthesized zero-variant enum. Retained as the dated record of why the question arose.]* Every source form that declares
 a nominal is constructible, and a host resource must be opaque, so generating source for one would
 let a program forge a handle no provider produced — `from_raw_checked` would not catch it, because
 the `resource_type` would be whatever the forger wrote. Synthesis therefore **refuses** any signature
