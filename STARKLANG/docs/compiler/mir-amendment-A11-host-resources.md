@@ -1,7 +1,7 @@
 # MIR Amendment A11 — a representation for package-declared host resources
 
-**Status:** DRAFT, for owner disposition under CE3. No implementation reaches committed MIR
-artifacts until ruled on.
+**Status:** **APPROVED under CE3, 2026-07-29 (CD-224)** — `MIR_VERSION` → `0.2`, subject to §9's
+requalification. Implementation may proceed.
 **Governs:** Packet 6 / Route B (CD-220).
 **Scope class:** **MIR shape change**, not a runtime-surface revision. §1 argues why, and the
 distinction decides everything else in this document.
@@ -28,6 +28,9 @@ The set of representable **types** is the representation contract. Changing it i
 ### Disposition asked for (Q1)
 
 > **Increment `MIR_VERSION` to `0.2`.** A11 is not backward-compatible within `0.1`.
+>
+> **APPROVED (CD-224)**, conditional on §9's bounded requalification and on §3's rule that closed
+> gate evidence is not rewritten.
 
 The alternative — keeping `0.1` and relying on the runtime surface — is rejected because a
 `0.1`-era consumer would find the version string it expects, accept the artifact, and then meet a
@@ -77,7 +80,7 @@ follows from a `0.1` → `0.2` increment and must land in the same change:
 | MIR dump snapshots | any `.snap` recording a version header re-pins |
 | Frozen corpus locks (`tests/exec_snapshots`, `tests/c6-corpus`) | re-pin if they carry the version; verified at implementation, not assumed |
 | `mir.md` (CD-028, amended CD-029) | the contract document states the version it defines |
-| C6.4 tier-1 evidence | **not** rewritten — those records are historical and state what was true at their commit |
+| C6.4 tier-1 evidence | **not** rewritten — see §9 |
 
 **The cache invalidation is a feature, not a cost.** A build key that ignored a representation
 change would serve a cached artifact produced under different type rules.
@@ -89,7 +92,9 @@ change would serve a cached artifact produced under different type rules.
 ```rust
 pub enum MirTy {
     // … existing variants unchanged …
-    /// A11: a package-declared host resource.
+    /// A11: a host resource. Established by the COMPILER for a Core resource (`File`) or by a
+    /// PACKAGE declaration for a package resource (`TcpStream`) -- one representation, two
+    /// authorities (CD-224).
     HostResource {
         /// The STARK nominal this resource is, e.g. the item for `TcpListener`.
         nominal: crate::hir::ItemId,
@@ -100,6 +105,28 @@ pub enum MirTy {
     },
 }
 ```
+
+### One representation, two authorities (CD-224)
+
+A **Core** resource and a **package** resource both lower to this form. What differs is who may
+establish the binding, and that difference lives at resolution, not in the type:
+
+| | Core resource | Package resource |
+| --- | --- | --- |
+| authority | compiler / specification | package declaration |
+| declared in | `ResourceRegistry::builtin()` | `provider_api.resources` |
+| `nominal` resolves to | the Core item (`File`) | the package item (`TcpStream`) |
+| a package may redefine it | **no** | yes |
+
+`file → CoreType::File` therefore stays compiler-owned and undeclarable by any package, while
+`tcp_listener`/`tcp_stream` are package-declared. Both produce a `HostResource` whose `nominal` names
+the type the programmer wrote. Packet 4 is preserved on both sides: Core keeps authority over its
+types, packages keep authority over theirs.
+
+**Implementation note.** `ResourceRegistry` currently maps a resource name to a `MirTy` directly.
+Under A11 it maps a resource name to a **nominal identity**, and the `HostResource` is constructed at
+resolution, when the provider is known — the same point that already produces `ValidatedProviderCall`.
+A registry entry cannot carry a provider, because the provider is a property of the build.
 
 **Both identities are retained, as Packet 6 requires.** `nominal` is what diagnostics and the source
 language talk about; `provider`/`resource` is what the ABI talks about. Neither can be derived from
@@ -214,13 +241,43 @@ is exactly wrong.
 
 ## 8. Open for the owner
 
-**8.1** Q1's recommendation is `MIR_VERSION` → `0.2`. It invalidates every build cache entry and
-re-pins snapshots and corpus locks. Confirm that cost is accepted, or direct the alternative.
-
-**8.2** §3 leaves C6.4's committed tier-1 evidence untouched as historical record. Confirm, since
-those files name `mir_version` and a reader may expect them to track the current value.
+**8.1 and 8.2 are RESOLVED by CD-224** — the increment is approved and §9 records the
+immutable-evidence rule. **8.3 remains open.**
 
 **8.3** §5's `ValidatedProviderClose` adds a second program-level arena. It could instead be a field
 on the `HostResource` form — rejected here because a `ProviderCallId` inside a *type* would make two
 structurally identical resources compare unequal when resolved in different programs. Confirm the
 arena.
+
+---
+
+## 9. Historical evidence and requalification (CD-224)
+
+> **Historical gate evidence remains immutable and valid for the version and commit it records. A
+> representation-contract version increment does not retroactively reopen the gate, but current
+> compiler claims that rely on the changed representation must be requalified under the new
+> version.**
+
+**Closed C6 evidence is not rewritten, regenerated, or reinterpreted as though produced under
+`0.2`.** Those records are tied to their commit, compiler version and the MIR `0.1` contract, and
+they remain valid claims about the closed gate at that point in time.
+
+**A version bump alone is not a gate-reopening condition.** Gate C6 reopens only if the
+non-regression run below finds an actual regression in a C6 *closure claim* — not because the
+version string moved.
+
+Required consequences of the increment, all in scope for the implementing slice:
+
+1. every build key includes `mir_version = 0.2`;
+2. MIR snapshots and **current** corpus locks are re-pinned;
+3. installed-runtime and artifact consumers reject `0.1`/`0.2` mismatches **explicitly**, in both
+   directions;
+4. serializers and validators recognise the new type form;
+5. cache invalidation is **tested**, not assumed;
+6. current differential and native regression suites run under `0.2`;
+7. a **bounded C6 non-regression suite** confirms the representation change did not alter previously
+   admitted ownership, `Drop` and native semantics.
+
+Item 7 is the one that carries the claim. It is bounded — it re-runs C6's ownership/Drop/native
+behaviour under `0.2`, not the whole gate — and its purpose is to distinguish "the contract version
+moved" from "behaviour moved".

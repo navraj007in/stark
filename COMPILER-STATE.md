@@ -458,6 +458,47 @@ capabilities → package API bindings → type check → HIR binding → lowerin
 resource nominals → `OwnedResourceHandle`), proven in order on real STARK source: time, args/env,
 File, TCP bind/connect, accept, full echo. TCP sits behind this, not in front of it.
 
+**CD-224 dispositions — A11 APPROVED, and three rules that outlive it.**
+
+**MIR `0.2` is approved** for A11's new `MirTy` form. A10's surface-bump precedent does not carry: a
+`Callee` variant fails at one match site, a `MirTy` variant flows through every part of the compiler
+that reasons about types. `MIR_RUNTIME_SURFACE` stays `0.1-A10` — A11 adds no `RuntimeFn`, because a
+close is a provider call through MIR's `Drop` terminator.
+
+> **Historical gate evidence remains immutable and valid for the version and commit it records. A
+> representation-contract version increment does not retroactively reopen the gate, but current
+> compiler claims that rely on the changed representation must be requalified under the new
+> version.**
+
+Closed C6 evidence is **not** rewritten or regenerated as though produced under `0.2`. **A version
+bump alone is not a gate-reopening condition** — Gate C6 reopens only if the bounded non-regression
+run finds an actual regression in a C6 *closure claim*. Seven consequences are in scope for the
+implementing slice (build keys, re-pinned current snapshots and locks, explicit two-way version
+rejection, serializer/validator support, tested cache invalidation, current differential/native
+suites under `0.2`, and the bounded C6 ownership/Drop/native non-regression run).
+
+> **There is one authoritative callable signature: validated provider metadata. The package
+> declaration exposes and names that callable surface but does not mirror its physical or ownership
+> signature.**
+
+Package declarations name capability, provider symbol, public item identity, associated resource
+where applicable, and error mapping where not derivable — never ABI parameter types or ownership
+modes. The requested signature-mismatch diagnostic is withdrawn as structurally impossible and
+replaced by six derivation-failure cases; CD-219 is the evidence that a mirrored signature drifts.
+
+> **Application source and ordinary package APIs may name capabilities and package declarations
+> only. Provider crate identities, raw symbols and physical ABI parameter forms are not part of
+> application-visible STARK source.**
+
+**Core and package resources are distinct authorities sharing one representation.** `file →
+CoreType::File` stays compiler-owned and undeclarable by any package; `tcp_listener`/`tcp_stream`
+are package-declared. Both lower to A11's host-resource form. Packet 4 holds on both sides: `File`
+stays normative Core, TCP stays package-owned, and neither mechanism reaches into the other.
+
+Drafts: `WP-C7.8.8-PACKAGE-API-DESIGN.md` (rev. 3) and `mir-amendment-A11-host-resources.md`
+(approved). Open: design §7.1–§7.3 (item paths, error-mapping home, visibility) and A11 §8.3 (the
+close arena).
+
 **Remaining in C7.8:** CLI/package-manifest capability declarations and provider selection; C7.8.3
 args/env; C7.8.4 File (registering `file` in the resource registry); C7.8.5 close-out (**done**, CD-219);
 C7.8.6 TCP (**registered**, CD-218; execution blocked on Packet 6); **C7.8.8 source/package provider

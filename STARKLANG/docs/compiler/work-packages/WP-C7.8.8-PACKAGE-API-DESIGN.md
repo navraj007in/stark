@@ -1,6 +1,7 @@
 # WP-C7.8.8 step 2 — package API declaration design
 
-**Status:** DRAFT, rev. 2, for owner disposition. No parser, HIR or MIR implementation until the
+**Status:** rev. 3 — §4, §9.3 and §13.5 **DISPOSITIONED 2026-07-29 (CD-224)**. Remaining open
+questions are §7.1–§7.3. No parser, HIR or MIR implementation until the
 declaration shape and A11's MIR-version disposition are both approved.
 **Governs:** step 2 of WP-C7.8.8 — binding source-level functions and resource types to provider
 capabilities, symbols and provider resource names.
@@ -140,6 +141,22 @@ two out-slots, a tuple, in declared order. **That is the signature whose absence
 defect**: a hand-written mirror said one slot, and only execution disagreed. Derivation removes the
 class.
 
+### DISPOSITION (CD-224): derived, and the invariant is standing
+
+> **There is one authoritative callable signature: validated provider metadata. The package
+> declaration exposes and names that callable surface but does not mirror its physical or ownership
+> signature.**
+
+The package declaration identifies:
+
+- the **capability**;
+- the **provider symbol**;
+- the **public package function or method identity**;
+- the **associated package resource type**, where applicable;
+- the **error/status type mapping**, where it is not derivable from provider metadata.
+
+It does **not** repeat ABI parameter types or ownership modes. There is no second copy to drift.
+
 ### Why derivation rather than declaration
 
 A declared signature is a second copy of information the ABI already carries, and the two drift.
@@ -226,6 +243,12 @@ derivation, and the negative case stands as an impossibility rather than a test.
 symbol.** A program says `TcpStream::connect(addr)`. It does not name `stark-net-native`, `"tcp"`,
 or `stark_tcp_stream_connect`.
 
+**The rule, as it must be enforced:**
+
+> Application source and ordinary package APIs may name **capabilities and package declarations
+> only**. Provider crate identities, raw symbols and physical ABI parameter forms are not part of
+> application-visible STARK source.
+
 This is a validation rule, not a convention:
 
 - a `provider_api` block is only honoured in a package that **declares** the capability, so an
@@ -282,13 +305,25 @@ Deliberately unergonomic: this is the **raw binding layer**. The package writes
 `fn var(name: &str) -> Result<Option<String>, ProcessError>` over it in ordinary STARK, and that is
 the function an application calls.
 
-### 9.3 `File` — and the one place the model does not fit
+### 9.3 `File` — a **Core** resource, bound by source-function lowering only
+
+**DISPOSITIONED (CD-224): Core `File` and package resources are distinct binding mechanisms**, and
+neither changes the other's authority.
+
+`File` is normative Core (STD-IO-001). Its resource binding stays compiler/spec-owned in the
+built-in registry —
+
+```text
+file → CoreType::File          (compiler-owned; NOT declarable by any package)
+```
+
+— so `std-file`'s manifest binds **functions only**, and declares no `resources` block at all. A
+package cannot redefine what `File` is:
 
 ```json
 { "name": "std-file", "capabilities": ["filesystem"],
   "provider_api": {
     "errors": { "filesystem": "IOError" },
-    "resources": { "File": { "capability": "filesystem", "resource": "file" } },
     "functions": {
       "File::open_raw":     { "capability": "filesystem", "symbol": "stark_file_open" },
       "File::create_raw":   { "capability": "filesystem", "symbol": "stark_file_create" },
@@ -298,6 +333,8 @@ the function an application calls.
     } } }
 ```
 
+Derived, with `File` resolving to the **Core** nominal:
+
 ```stark
 fn open_raw(path: &[UInt8]) -> Result<File, IOError>;
 fn read_raw(f: &File, out: &mut [UInt8]) -> Result<(UInt64, Bool), IOError>;
@@ -305,21 +342,25 @@ fn write_raw(f: &File, data: &[UInt8]) -> Result<UInt64, IOError>;
 fn complete_raw(f: &File) -> Result<Unit, IOError>;
 ```
 
-**`stark_file_close` is absent, and must be** (§2): it is `is_close_for`, and MIR's `Drop` terminator
+`stark_file_close` is absent and must be (§2): it is `is_close_for`, and MIR's `Drop` terminator
 owns it.
 
-**The inconsistency, raised rather than papered over.** `File` is **normative Core** (STD-IO-001), not
-a package nominal. Route B's representation is for *package-declared* resources, and `File` currently
-rides `CoreType::File` through `ResourceRegistry::builtin()`. Two options:
+**So this example demonstrates source-function-to-provider lowering over an existing Core resource** —
+step 5 of WP-C7.8.8 — and deliberately *not* package nominal declaration, which §9.4/§9.5 covers.
 
-| | Consequence |
-| --- | --- |
-| **Two mechanisms** — Core `File` keeps its `CoreType` binding; `resources` binds only package nominals | Core's ownership of its own type is untouched, and the distinction stays visible. Cost: `std-file`'s manifest declares no `File` resource, and the asymmetry needs explaining to every reader |
-| **One mechanism** — Core `File` is bindable through `resources` like any other | Uniform, one code path. Cost: a Core type's representation starts depending on a package manifest, which is a Packet-4-adjacent question about who owns Core's types |
+**The two authorities, and what they share.** Both lower to the same explicit MIR host-resource
+representation (A11); what differs is who may establish the binding:
 
-**Recommended: two mechanisms.** A Core type whose identity can be redefined by a package manifest is
-a worse outcome than an asymmetry that is easy to state. Owner decision required — the block above is
-written as if `File` were bindable, and changes if the ruling goes the other way.
+| | Core resource | Package resource |
+| --- | --- | --- |
+| binding authority | compiler / specification | package declaration |
+| declared where | `ResourceRegistry::builtin()` | `provider_api.resources` |
+| validated against | provider metadata | provider metadata |
+| a package may redefine it | **no** | yes, it owns it |
+| MIR representation | A11 host-resource form | A11 host-resource form |
+
+Packet 4 is preserved exactly: `File` stays normative Core, TCP stays package-owned, and neither
+mechanism reaches into the other.
 
 ### 9.4 `TcpListener`, 9.5 `TcpStream`
 
@@ -421,12 +462,23 @@ statically, and each would record its own close for one resource — breaking ex
 different providers. Rejected: the canonical identity (A11 §5) differs, so two "same" types would not
 compare equal, and a value from one could reach the other's close.
 
-**13.5 Provider function signature disagrees with the package declaration.** *Structurally
-impossible under §4* — the package declares no signature, so there is nothing to disagree. Recorded
-here because it was requested, and because its impossibility is the design's main claim: CD-219's
-defect was exactly this disagreement, in a hand-written mirror. **The residual risk is not gone but
-moved**: a provider crate whose metadata drifts from its own `extern "C"` definitions. That is the
-provider's own test's job, and each provider crate has one.
+**13.5 Derivation failures — replacing the withdrawn signature-mismatch case (CD-224).** A package
+declares no signature, so disagreement is structurally impossible. What *can* fail is derivation
+itself, and each failure is its own diagnostic:
+
+- **13.5a** the `AbiParam` sequence cannot be mapped to an admitted STARK package signature;
+- **13.5b** an `AbiParam` form is unsupported for source lowering;
+- **13.5c** the return/error shape cannot be derived unambiguously;
+- **13.5d** the bound symbol's derived ownership form conflicts with the package API category — e.g.
+  a `HandleConsumed` receiver bound as a method on a type the call would consume, where the package
+  declared it as a borrowing operation;
+- **13.5e** the provider's status binding cannot be represented by the declared package error type;
+- **13.5f** two ABI-distinct functions derive to an ambiguous package API declaration.
+
+**The residual risk is moved, not removed.** A provider crate whose metadata drifts from its own
+`extern "C"` definitions is still possible; that is each provider crate's own test's job, and every
+first-party provider has one. What derivation eliminates is the *compiler-side* mirror that
+CD-219 proved drifts.
 
 **13.6 Package uses a capability it did not declare.** A `provider_api` entry naming `"tcp"` in a
 package whose `capabilities` omits it. Rejected — Packet 5 admits providers only through declared
