@@ -232,17 +232,64 @@ fn no_environment_mutating_function_is_declared() {
     }
 }
 
-/// Every resource type any registered provider declares must be **bound** in the compiler's
-/// registry. A provider declaring one the compiler cannot type would fail at plan time with
-/// MIR-0024 rather than at review, so this catches the mismatch where it is cheap.
+/// Every resource type any registered provider declares is either **bound**, or **refused by name**
+/// when a call carrying it is planned. What is ruled out is the middle case: a declared resource
+/// type that is silently accepted without a MIR type behind it.
+///
+/// `file` is bound (C7.8.4). `tcp_listener` and `tcp_stream` are not, and deliberately so — Packet 4
+/// makes them package types, so binding them needs a package declaration rather than a Core change.
+/// This asserts the refusal is precise rather than asserting the binding is complete.
 #[test]
-fn every_declared_resource_type_is_bound() {
-    let registry = starkc::provider_bind::ResourceRegistry::builtin();
+fn every_declared_resource_type_is_bound_or_precisely_refused() {
+    use starkc::provider_bind::{plan, PlanError, ResourceRegistry};
+    let registry = ResourceRegistry::builtin();
+
     for provider in provider_registry::first_party() {
         for resource in &provider.metadata.resource_types {
+            if registry.lookup(resource).is_some() {
+                continue;
+            }
+            // Unbound: find a function carrying it and confirm the refusal names it.
+            let carrier = provider
+                .metadata
+                .functions
+                .iter()
+                .find(|f| {
+                    f.params.iter().any(|p| match p {
+                        AbiParam::HandleBorrowed { resource_type }
+                        | AbiParam::HandleConsumed { resource_type }
+                        | AbiParam::HandleOut { resource_type } => resource_type == resource,
+                        _ => false,
+                    })
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} declares resource type `{resource}` but no function uses it",
+                        provider.metadata.identity.name
+                    )
+                });
+
+            let set = ProviderSet::select(
+                provider_registry::first_party(),
+                LINUX,
+                &provider.metadata.capabilities,
+            )
+            .expect("selects");
+            let call = set
+                .resolve(&carrier.capability, &carrier.name)
+                .expect("resolves");
+
             assert!(
-                registry.lookup(resource).is_some(),
-                "{} declares resource type `{resource}`, which the compiler does not bind",
+                matches!(
+                    plan(
+                        ProviderCallId(0),
+                        &call,
+                        &registry,
+                        call.status_binding.clone()
+                    ),
+                    Err(PlanError::UnboundResourceType { .. })
+                ),
+                "{}: `{resource}` is unbound, so a call carrying it must be refused by name",
                 provider.metadata.identity.name
             );
         }

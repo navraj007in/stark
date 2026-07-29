@@ -44,7 +44,7 @@ pub fn known_capabilities() -> Vec<String> {
 /// that "which providers can this compiler link?" has one answer in one place rather than being a
 /// property of the filesystem it runs on.
 pub fn first_party() -> Vec<DeclaredProvider> {
-    vec![stark_time(), stark_env(), stark_file()]
+    vec![stark_time(), stark_env(), stark_file(), stark_net()]
 }
 
 /// Resolves a provider crate name to its location on this machine.
@@ -58,6 +58,7 @@ pub fn crate_location(crate_name: &str, repo_root: &std::path::Path) -> Option<P
         "stark-time-native" => Some(repo_root.join("stark-time").join("native")),
         "stark-env-native" => Some(repo_root.join("stark-env").join("native")),
         "stark-file-native" => Some(repo_root.join("stark-file").join("native")),
+        "stark-net-native" => Some(repo_root.join("stark-net").join("native")),
         _ => None,
     }
 }
@@ -297,6 +298,143 @@ fn stark_file() -> DeclaredProvider {
         },
         crate_name: "stark-file-native".to_string(),
         origin: "stark-file/native/Cargo.toml".to_string(),
+        status_binding: status,
+    }
+}
+
+/// `stark-net` — blocking TCP (WP-C7.8.6).
+///
+/// **Its resource types are deliberately unbound, and that is Packet 4 working rather than a gap.**
+/// `tcp_listener` and `tcp_stream` are *package* types, so binding them needs a STARK package
+/// declaring them — there is no Core type to point at, and adding one would be the CE1 Core change
+/// Packet 4 ruled against. Every `stark-net` function carries a handle, so none of them plans yet;
+/// they report MIR-0024 naming the resource type, which is precisely the diagnostic C7.8.2d-4 built
+/// for this case.
+///
+/// What IS live: selection, target applicability, and the status vocabulary — eleven codes, the
+/// richest of the four providers, including the `bind`-specific `AddressInUse`.
+///
+/// Packet 5 admits inbound TCP only through an explicit `stark_tcp_listener_bind(address)`. There
+/// is no default address in the declaration and none may be added: a listener is created by a
+/// program calling `bind`, never as a side effect of anything else.
+fn stark_net() -> DeclaredProvider {
+    let mut status = StatusBinding::new();
+    status.declare(1, "NetworkError::ConnectionRefused");
+    status.declare(2, "NetworkError::TimedOut");
+    status.declare(3, "NetworkError::NotFound");
+    status.declare(4, "NetworkError::PermissionDenied");
+    status.declare(5, "NetworkError::AddressInUse");
+    status.declare(6, "NetworkError::InvalidInput");
+    status.declare(7, "NetworkError::ConnectionReset");
+    status.declare(8, "NetworkError::BrokenPipe");
+    status.declare(9, "NetworkError::WouldBlock");
+    status.declare(10, "NetworkError::Unsupported");
+    status.declare(11, "NetworkError::Other");
+
+    let listener = "tcp_listener".to_string();
+    let stream = "tcp_stream".to_string();
+    DeclaredProvider {
+        metadata: ProviderMetadata {
+            identity: ProviderIdentity {
+                name: "stark-std-net".to_string(),
+                semver: (0, 1, 0),
+                abi_version: crate::provider_abi::ABI_VERSION.to_string(),
+            },
+            target_triples: vec![
+                "aarch64-apple-darwin".to_string(),
+                "x86_64-apple-darwin".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-pc-windows-msvc".to_string(),
+            ],
+            capabilities: vec!["tcp".to_string()],
+            resource_types: vec![listener.clone(), stream.clone()],
+            functions: vec![
+                FunctionDecl {
+                    name: "stark_tcp_listener_bind".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: listener.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_tcp_listener_accept".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: listener.clone(),
+                        },
+                        AbiParam::HandleOut {
+                            resource_type: stream.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_tcp_stream_connect".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![
+                        AbiParam::BufferIn,
+                        AbiParam::HandleOut {
+                            resource_type: stream.clone(),
+                        },
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_tcp_stream_read".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: stream.clone(),
+                        },
+                        AbiParam::BufferInOut,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_tcp_stream_write".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![
+                        AbiParam::HandleBorrowed {
+                            resource_type: stream.clone(),
+                        },
+                        AbiParam::BufferIn,
+                        AbiParam::ScalarOut(ScalarTy::U64),
+                    ],
+                    is_close_for: None,
+                    may_block: true,
+                },
+                FunctionDecl {
+                    name: "stark_tcp_listener_close".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![AbiParam::HandleConsumed {
+                        resource_type: listener.clone(),
+                    }],
+                    is_close_for: Some(listener),
+                    may_block: false,
+                },
+                FunctionDecl {
+                    name: "stark_tcp_stream_close".to_string(),
+                    capability: "tcp".to_string(),
+                    params: vec![AbiParam::HandleConsumed {
+                        resource_type: stream.clone(),
+                    }],
+                    is_close_for: Some(stream),
+                    may_block: false,
+                },
+            ],
+        },
+        crate_name: "stark-net-native".to_string(),
+        origin: "stark-net/native/Cargo.toml".to_string(),
         status_binding: status,
     }
 }
