@@ -197,6 +197,22 @@ Rules, all enforceable before emission:
 
 Rule 4 is what keeps "exactly once" true: MIR owns the only path.
 
+### The verifier's five obligations (CD-225)
+
+Keeping the close out of the type means the verifier, not the type system, carries the guarantee. It
+must prove:
+
+1. every admitted host-resource type has **exactly one** validated close binding;
+2. the close function **consumes exactly that** resource type;
+3. the close function belongs to the **same resolved provider**;
+4. **no listener can use the stream close, or vice versa** — the paired-resource case that would
+   otherwise typecheck, since both are `HandleConsumed` of *a* resource;
+5. **no resource reaches native emission without a close binding** — a resource with no close is a
+   leak the ABI cannot detect, because the provider never learns the handle was abandoned.
+
+Obligation 4 is the one a structural check alone would miss: `stark_tcp_listener_close` and
+`stark_tcp_stream_close` have identical shapes and differ only in which resource they name.
+
 ---
 
 ## 6. What a host resource is not (Q8)
@@ -241,13 +257,17 @@ is exactly wrong.
 
 ## 8. Open for the owner
 
-**8.1 and 8.2 are RESOLVED by CD-224** — the increment is approved and §9 records the
-immutable-evidence rule. **8.3 remains open.**
+**All resolved. 8.1/8.2 by CD-224; 8.3 by CD-225.**
 
-**8.3** §5's `ValidatedProviderClose` adds a second program-level arena. It could instead be a field
-on the `HostResource` form — rejected here because a `ProviderCallId` inside a *type* would make two
-structurally identical resources compare unequal when resolved in different programs. Confirm the
-arena.
+**8.3 — the close arena stays separate (CD-225).** No `ProviderCallId` or close identity is embedded
+in `MirTy::HostResource`. The type is structurally limited to stable **semantic identity**: nominal,
+provider, provider resource. Close resolution lives in the program-owned arena (§5).
+
+A close call is an operation selected **for this resolved program**, not part of the type's
+structural identity. Embedding a program-local id in a type would make otherwise identical
+host-resource types compare unequal across programs, interfere with deterministic identity, and leak
+**arena allocation order into type equality and build evidence** — the same class of defect CD-108
+removed when canonical symbols stopped using `ItemId` indices.
 
 ---
 

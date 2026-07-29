@@ -1,7 +1,7 @@
 # WP-C7.8.8 step 2 — package API declaration design
 
-**Status:** rev. 3 — §4, §9.3 and §13.5 **DISPOSITIONED 2026-07-29 (CD-224)**. Remaining open
-questions are §7.1–§7.3. No parser, HIR or MIR implementation until the
+**Status:** rev. 4 — **fully dispositioned (CD-224, CD-225)**. No open questions. Implementation
+proceeds in the order recorded in §16. No parser, HIR or MIR implementation until the
 declaration shape and A11's MIR-version disposition are both approved.
 **Governs:** step 2 of WP-C7.8.8 — binding source-level functions and resource types to provider
 capabilities, symbols and provider resource names.
@@ -211,29 +211,58 @@ Failures are `BuildCommandError::Capability`, the class CD-213 added.
 
 ---
 
-## 7. Open questions for the owner
+## 7. Dispositioned (CD-225)
 
-**7.1 Item paths.** The worked declarations in §9 use associated placement
-(`TcpListener::bind_raw`), matching STD-IO-001's `File`. Free functions in a module would be simpler
-to synthesize. Confirm associated placement.
+### 7.1 Associated placement — approved
 
-**7.2 Error mapping.** §4 derives `Result<_, E>` with `E` named per capability, but the
-code→variant mapping is Packet 1 §1.2's "package binding layer". A manifest table is checkable; a
-STARK function over the raw layer is more flexible and keeps the compiler out of package semantics.
-**Recommended: STARK**, consistent with §4's raw-layer framing.
+Resource operations are associated with their resource type:
 
-**7.3 Visibility.** **Recommended: synthesized items are private to their package**, so the raw
-layer never becomes a package's public API by default and §9.2's ergonomic wrapper is the only
-exported surface.
+```stark
+TcpListener::bind_raw(addr)
+listener.accept_raw()
+TcpStream::connect_raw(addr)
+stream.read_raw(buf)
+```
 
-**7.4 `File` and Core.** See §9.3 — the one place this model does not fit, with two options and a
-recommendation. This one changes the design's text, so it is the ruling most worth having first.
+It matches Core `File`, keeps operations discoverable beside the type, and avoids an arbitrary
+free-function namespace.
 
-**7.5 Derived signatures versus a declared-signature mismatch diagnostic.** The requested negative
-case "provider function signature disagrees with the package declaration" is *structurally
-impossible* under §4 and is recorded as such in §13.5. Keeping the diagnostic would mean keeping
-declared signatures, which reinstates the drift class CD-219 demonstrated. **Recommended:
-derivation, and the negative case stands as an impossibility rather than a test.**
+**Associated placement is API organisation only.** It must not imply structural methods, fields,
+constructors, or ordinary nominal representation for a host resource. A host resource has no fields
+to reach and no constructor to call; §6's opacity rules are unchanged by where its operations are
+named.
+
+### 7.2 Status mapping stays in ordinary STARK — approved
+
+The manifest carries **only the minimum raw error identity** needed to derive the binding. It does
+not carry a status-code→public-variant table.
+
+The synthesized raw API exposes the validated provider status vocabulary through a **package-private
+raw error type**. The package then translates that raw result into its public `IOError`,
+`ProcessError`, `NetworkError` or other ergonomic type using ordinary STARK.
+
+The division this preserves:
+
+- **the compiler** validates physical status declarations and produces the raw typed result;
+- **package code** owns public error semantics, grouping and convenience behaviour.
+
+**Only declared recoverable statuses reach the mapping layer.** Ordinary STARK cannot see, catch, or
+reinterpret a contract violation or a host failure — those channels abort, and no package code runs
+on them. That is Packet 1 §1.2's three-channel separation surviving into the source language: a
+package chooses how to *name* a recoverable error, never whether a violation is recoverable.
+
+### 7.3 Synthesized items are package-private — approved
+
+Every synthesized provider item and synthesized host-resource nominal is **package-private**. A
+package must explicitly expose a curated wrapper API; appearing in `provider_api` never makes a
+function public.
+
+So an application calls `TcpStream::connect(addr)`, not `TcpStream::connect_raw(addr)` — unless the
+package author deliberately re-exports the raw layer.
+
+**The compiler rejects any attempt to make provider crate names, raw ABI symbols or physical ABI
+forms application-visible**, which is §8's rule enforced at the visibility boundary rather than only
+at the manifest.
 
 ---
 
@@ -516,3 +545,22 @@ capability list and CD-205 gave the status vocabulary.
 
 Dynamic loading, capability sandboxing, allowlists and deployment policy remain deferred (Packet 5).
 Nothing here changes the ABI, the runtime surface, or any Core specification document.
+
+
+---
+
+## 16. Implementation order (CD-225)
+
+1. manifest parsing and validation for `provider_api`;
+2. synthesis of private package items and resource nominals;
+3. typed HIR bindings;
+4. resource-name-to-nominal registry;
+5. resolution-time construction of `MirTy::HostResource`;
+6. `Callee::Provider` lowering;
+7. close-arena population and verifier rules;
+8. **source-level monotonic-time proof** before any resource capability.
+
+**TCP is not first, and neither is `File`.** The first acceptance test compiles an ordinary STARK
+source call through package resolution, typed HIR and `Callee::Provider`, then links and executes
+the time provider — **with no hand-built MIR**. Time has no resource, no buffer and one out-slot, so
+a failure in that test is a failure in the source path itself rather than in anything it carries.
