@@ -380,6 +380,10 @@ fn render_build_error(error: &starkc::native_build::BuildCommandError, verbose: 
     match error {
         BuildCommandError::Package(message) => eprintln!("error: {message}"),
         BuildCommandError::Target(message) => eprintln!("error: {message}"),
+        // WP-C7.8 (CD-212, Packet 5): a capability requirement that cannot be satisfied is its own
+        // failure class, reported on its own terms rather than as a missing feature, an
+        // unsupported target, or a downstream linker error.
+        BuildCommandError::Capability(message) => eprintln!("error: {message}"),
         BuildCommandError::Analysis {
             rendered,
             package_name,

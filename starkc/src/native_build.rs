@@ -67,6 +67,121 @@ pub struct BuildCommandResult {
     pub mir_opt: Option<crate::mir::opt::OptStats>,
 }
 
+/// Every capability declared across the package graph, sorted and deduplicated.
+///
+/// The union across the graph, not just the root: a dependency that needs a clock needs it whether
+/// or not the root package mentions one. Sorted so the requirement set — and therefore the
+/// selected provider set, and therefore the generated manifest — cannot depend on graph iteration
+/// order.
+fn required_capabilities(graph: &PackageGraph) -> Vec<String> {
+    let mut caps: Vec<String> = graph
+        .packages
+        .values()
+        .flat_map(|p| p.capabilities.iter().cloned())
+        .collect();
+    caps.sort();
+    caps.dedup();
+    caps
+}
+
+/// Selects the providers for the declared capabilities, or fails the build.
+///
+/// **Packet 5: `stark build` must fail when a required capability has no unique selected
+/// provider.** Ambiguity is not resolved by a priority rule, declaration order, or a fallback —
+/// each of those would make the produced binary depend on something other than what the program
+/// asked for.
+fn select_providers(
+    required: &[String],
+    target: Option<&str>,
+    toolchain: &crate::native_toolchain::ToolchainInfo,
+    package_root: &Path,
+) -> Result<std::collections::BTreeMap<String, PathBuf>, BuildCommandError> {
+    let triple = target.unwrap_or(toolchain.host_triple.as_str());
+    let set = crate::provider_resolve::ProviderSet::select(
+        crate::provider_registry::first_party(),
+        triple,
+        required,
+    )
+    .map_err(|errors| BuildCommandError::Capability(render_capability_errors(&errors, triple)))?;
+
+    // A crate location is resolved for every selected provider up front: an unlocatable provider
+    // must fail here, with the provider named, rather than as an unresolved symbol from the linker.
+    let repo_root = provider_repo_root(package_root);
+    let mut out = std::collections::BTreeMap::new();
+    for provider in set.providers() {
+        let name = &provider.crate_name;
+        let path = crate::provider_registry::crate_location(name, &repo_root).ok_or_else(|| {
+            BuildCommandError::Capability(format!(
+                "provider `{}` needs crate `{name}`, which this build has no location for",
+                provider.metadata.identity.name
+            ))
+        })?;
+        if !path.join("Cargo.toml").is_file() {
+            return Err(BuildCommandError::Capability(format!(
+                "provider crate `{name}` is not present at {}",
+                path.display()
+            )));
+        }
+        out.insert(name.clone(), path);
+    }
+    Ok(out)
+}
+
+/// Where first-party provider crates live relative to a package being built.
+///
+/// Walks up from the package looking for the checkout that contains them. Deliberately a *search
+/// for a known layout* rather than an environment variable: Packet 5 forbids implicit discovery,
+/// and an env-var override would be exactly that — a way for the environment, rather than the
+/// program's declarations, to decide which code gets linked.
+fn provider_repo_root(package_root: &Path) -> PathBuf {
+    let mut current = Some(package_root);
+    while let Some(dir) = current {
+        if dir
+            .join("stark-time")
+            .join("native")
+            .join("Cargo.toml")
+            .is_file()
+        {
+            return dir.to_path_buf();
+        }
+        current = dir.parent();
+    }
+    package_root.to_path_buf()
+}
+
+/// Renders selection failures with the remediation Packet 5's diagnostic requirement names.
+fn render_capability_errors(
+    errors: &[crate::provider_resolve::ResolveError],
+    triple: &str,
+) -> String {
+    use crate::provider_resolve::ResolveError as E;
+    let mut out = Vec::new();
+    for error in errors {
+        out.push(match error {
+            E::CapabilityUnavailable { capability, .. } => format!(
+                "no provider supplies capability `{capability}` for target `{triple}`\n  \
+                 STARK knows these capabilities: {}",
+                crate::provider_registry::known_capabilities().join(", ")
+            ),
+            E::CapabilityAmbiguous {
+                capability,
+                providers,
+                ..
+            } => format!(
+                "capability `{capability}` is supplied by more than one provider for target \
+                 `{triple}`:\n{}\n  remove one provider, or narrow its declared targets",
+                providers
+                    .iter()
+                    .map(|(name, origin)| format!("    {name} ({origin})"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            other => format!("{other:?}"),
+        });
+    }
+    out.join("\n")
+}
+
 #[derive(Clone, Debug)]
 pub enum BuildCommandError {
     Package(String),
@@ -86,6 +201,14 @@ pub enum BuildCommandError {
     /// rustc/linker failure) because §8.4 requires an unsupported target to be rejected on its
     /// own terms rather than surfacing as a downstream tool failure.
     TargetRejected(crate::target::TargetError),
+    /// WP-C7.8 (CD-212, Packet 5): a declared capability requirement could not be satisfied --
+    /// no provider supplies it for this target, two do, or a selected provider's metadata is
+    /// invalid.
+    ///
+    /// Its own variant because Packet 5 makes this a **build failure on its own terms**: a
+    /// capability with no unique provider must not be reported as a missing feature, an
+    /// unsupported target, or a downstream linker error.
+    Capability(String),
     BackendBuild(Box<NativeBackendBuildError>),
     ArtifactMissing(PathBuf),
     ArtifactInstall {
@@ -134,6 +257,11 @@ pub fn build_current_package(
     let graph = PackageGraph::load_from_root_with_modes(&manifest, options.locked, options.offline)
         .map_err(BuildCommandError::Package)?;
     let package_name = graph.root_package_name.clone();
+    // WP-C7.8 step 3 (CD-212): read the capability requirements BEFORE the graph is consumed by
+    // analysis. They come from the package manifests and nowhere else -- Packet 5 forbids implicit
+    // discovery, so a program declaring none links no provider and builds byte-identically to a
+    // pre-C7.8 one.
+    let required = required_capabilities(&graph);
     validate_binary_name(&package_name).map_err(BuildCommandError::Package)?;
     let analysis = analyze_project(ProjectInput::package(graph), LanguageOptions::CORE);
     if analysis.has_errors() {
@@ -189,6 +317,17 @@ pub fn build_current_package(
     // `target/stark/<profile>/`. Per-profile by construction, so a debug entry can never be reused
     // for a release build; TARGET separation comes from the build key, which carries the triple.
     let cache_root = target_root.join(profile.as_str());
+    let provider_crates = if required.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        select_providers(
+            &required,
+            options.target.as_deref(),
+            &toolchain,
+            &package_root,
+        )?
+    };
+
     let artifact = emit_native_debug_with_toolchain(
         &verified,
         &NativeBuildOptions {
@@ -201,7 +340,7 @@ pub fn build_current_package(
             rustc: toolchain.rustc.clone(),
             cargo: toolchain.cargo.clone(),
             runtime_crate: toolchain.runtime_crate.clone(),
-            provider_crates: std::collections::BTreeMap::new(),
+            provider_crates,
         },
     )
     .map_err(|error| map_backend_error(error, &toolchain))?;

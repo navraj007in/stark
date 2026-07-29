@@ -280,8 +280,15 @@ fn duplicate_symbols_across_selected_providers_are_rejected() {
     rival.metadata.capabilities = vec!["rival".to_string()];
     rival.metadata.functions[0].capability = "rival".to_string();
 
-    let errors = ProviderSet::select(vec![stark_time(), rival], LINUX, &clock())
-        .expect_err("a duplicate symbol must fail selection");
+    // Both capabilities are required, because Packet 5's admission rule means an unrequested
+    // provider is never selected -- and a symbol collision is only possible between providers that
+    // are actually linked together.
+    let errors = ProviderSet::select(
+        vec![stark_time(), rival],
+        LINUX,
+        &["clock".to_string(), "rival".to_string()],
+    )
+    .expect_err("a duplicate symbol must fail selection");
 
     match errors.as_slice() {
         [ResolveError::DuplicateSymbol { symbol, providers }] => {

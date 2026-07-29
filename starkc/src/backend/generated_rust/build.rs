@@ -424,17 +424,48 @@ fn generate_lockfile_offline(
     toolchain: &NativeToolchainOptions,
     manifest_path: &Path,
 ) -> Result<(), BackendDiagnostic> {
+    let command = vec![
+        toolchain.cargo.display().to_string(),
+        "generate-lockfile".to_string(),
+        "--offline".to_string(),
+        "--manifest-path".to_string(),
+        manifest_path.display().to_string(),
+    ];
+    let crate_dir = manifest_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+
+    // Failures here are reported in the SAME shape as a build failure -- summary, streams, retained
+    // directory and the exact command. Cargo runs twice now (resolve, then build), and a caller
+    // debugging a broken toolchain should not get a materially poorer diagnostic depending on
+    // which invocation failed first.
     let output = Command::new(&toolchain.cargo)
         .arg("generate-lockfile")
         .arg("--offline")
         .arg("--manifest-path")
         .arg(manifest_path)
         .output()
-        .map_err(|e| BackendDiagnostic::Io(format!("running cargo generate-lockfile: {e}")))?;
+        .map_err(|e| {
+            BackendDiagnostic::BuildFailed(Box::new(BackendBuildFailure {
+                summary: "could not start Cargo to resolve the generated crate's lock".to_string(),
+                stdout: String::new(),
+                stderr: e.to_string(),
+                build_dir: crate_dir.clone(),
+                command: command.clone(),
+                status: None,
+            }))
+        })?;
     if !output.status.success() {
-        return Err(BackendDiagnostic::Io(format!(
-            "cargo generate-lockfile failed for the provider-linked crate: {}",
-            String::from_utf8_lossy(&output.stderr)
+        return Err(BackendDiagnostic::BuildFailed(Box::new(
+            BackendBuildFailure {
+                summary: "generated-crate lock resolution failed".to_string(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                build_dir: crate_dir,
+                command,
+                status: output.status.code(),
+            },
         )));
     }
     Ok(())

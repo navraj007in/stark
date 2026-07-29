@@ -182,6 +182,14 @@ fn main() { let pair = Pair { left: 19, right: 23 }; assert_eq(pair.left + pair.
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime"),
         &runtime,
     );
+    // `stark-runtime` gained a path dependency on `stark-provider-abi` (78f9e4c), and its manifest
+    // names it as `../stark-provider-abi`. An installed runtime is only usable if that sibling is
+    // installed with it -- otherwise Cargo cannot load the dependency and the build fails before
+    // anything this test is about.
+    copy_dir(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-provider-abi"),
+        &package.root.join("stark-provider-abi"),
+    );
     let cargo_log = package.root.join("cargo-invocations.txt");
     let cargo_wrapper = package.root.join("stark-cargo-wrapper");
     std::fs::write(
@@ -259,7 +267,10 @@ fn backend_failure_reports_and_retains_exact_generated_directory() {
     let cargo_wrapper = package.root.join("failing-cargo");
     std::fs::write(
         &cargo_wrapper,
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then exec cargo \"$@\"; fi\necho intentional-backend-failure >&2\nexit 23\n",
+        // CD-211: the backend now asks Cargo to resolve the lock before building, so the wrapper
+        // has to let `generate-lockfile` through. This test is about a BUILD failure -- failing
+        // resolution instead would exercise a different path and assert a different command.
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ] || [ \"$1\" = \"generate-lockfile\" ]; then exec cargo \"$@\"; fi\necho intentional-backend-failure >&2\nexit 23\n",
     )
     .unwrap();
     std::fs::set_permissions(&cargo_wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();

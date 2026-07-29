@@ -213,6 +213,21 @@ impl ProviderSet {
             .cloned()
             .collect();
 
+        // 3b. Packet 5's ADMISSION rule: a provider is admitted if and only if it supplies a
+        //     capability some package declared. Target compatibility alone is not admission --
+        //     without this filter a provider nobody asked for would be linked into the binary
+        //     merely because it could have run there, which is the implicit discovery Packet 5
+        //     forbids. Requiring nothing therefore selects nothing.
+        let selected: Vec<DeclaredProvider> = selected
+            .into_iter()
+            .filter(|p| {
+                p.metadata
+                    .capabilities
+                    .iter()
+                    .any(|c| required_capabilities.contains(c))
+            })
+            .collect();
+
         // 4. Cross-provider symbol uniqueness over the SELECTED set (Packet 1 §1.3). Scoped to
         //    the selected set because two providers for different targets can never be linked
         //    into one binary, so their symbols cannot collide.

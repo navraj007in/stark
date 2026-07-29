@@ -19,6 +19,15 @@ impl JsonValue {
         }
     }
 
+    /// WP-C7.8: added alongside the existing accessors when `capabilities` became the first
+    /// array-valued manifest field.
+    pub fn as_array(&self) -> Option<&[JsonValue]> {
+        match self {
+            JsonValue::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
     pub fn as_object(&self) -> Option<&std::collections::HashMap<String, JsonValue>> {
         match self {
             JsonValue::Object(o) => Some(o),
@@ -435,6 +444,16 @@ pub struct Package {
     pub entry: PathBuf,
     pub manifest_path: PathBuf,
     pub dependencies: HashMap<String, Dependency>,
+    /// WP-C7.8 (CD-212, Packet 5): the host capabilities this package requires, e.g. `["clock"]`.
+    ///
+    /// **Declaration is the only admission route.** Packet 5's trust boundary forbids implicit
+    /// provider discovery, so a provider is linked if and only if some package asked for its
+    /// capability by name. An absent or empty list means the program links no provider at all,
+    /// which is the overwhelmingly common case and stays byte-identical to a pre-C7.8 build.
+    ///
+    /// Sorted and deduplicated at parse time so the requirement set — and therefore the selected
+    /// provider set, and therefore the generated manifest — cannot depend on JSON key order.
+    pub capabilities: Vec<String>,
 }
 
 impl Package {
@@ -611,12 +630,43 @@ impl Package {
             }
         }
 
+        // WP-C7.8: `"capabilities": ["clock", "env"]`. Rejected rather than ignored when
+        // malformed -- a typo'd capability that silently vanished would surface much later as a
+        // build failure naming a capability nobody could find a requirement for.
+        let mut capabilities: Vec<String> = Vec::new();
+        if let Some(caps_val) = obj.get("capabilities") {
+            let caps = caps_val.as_array().ok_or_else(|| {
+                format!(
+                    "'capabilities' in manifest '{}' must be a JSON array of strings",
+                    path.display()
+                )
+            })?;
+            for cap in caps {
+                let name = cap.as_str().ok_or_else(|| {
+                    format!(
+                        "every entry in 'capabilities' in manifest '{}' must be a string",
+                        path.display()
+                    )
+                })?;
+                if name.is_empty() {
+                    return Err(format!(
+                        "'capabilities' in manifest '{}' contains an empty capability name",
+                        path.display()
+                    ));
+                }
+                capabilities.push(name.to_string());
+            }
+            capabilities.sort();
+            capabilities.dedup();
+        }
+
         Ok(Self {
             name,
             version,
             entry,
             manifest_path: path.to_path_buf(),
             dependencies,
+            capabilities,
         })
     }
 }
