@@ -484,7 +484,8 @@ ordinary syntax, lowers it to `Callee::Provider`, links `stark-time-native`, run
 asserts the printed monotonic reading is nonzero. **No hand-built MIR anywhere in that path.** This
 is what CD-220 named the critical path, and what every earlier provider e2e could not demonstrate:
 `lower_program` hard-coded `provider_calls: Vec::new()`, so no STARK source could reach a provider
-at all. §16 steps 1–3, 6 and 8 are done; 4, 5 and 7 are blocked on resource nominals.
+at all. §16 steps 1, 3, 6 and 8 are done; step 2 is done **for functions only**; steps 4, 5 and 7
+are blocked on the resource-nominal gap (§3.1).
 
 Step 6 is hooked at `Res::Item` in `lower_call` — after name resolution, type checking and borrow
 checking have all seen an ordinary function, which is what keeps the front end free of provider

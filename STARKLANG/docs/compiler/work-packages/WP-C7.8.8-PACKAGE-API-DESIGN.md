@@ -1,8 +1,10 @@
 # WP-C7.8.8 step 2 — package API declaration design
 
 **Status:** rev. 5 — **fully dispositioned (CD-224, CD-225)**, and **partially implemented**.
-Implementation proceeds in the order recorded in §16; steps 1–3, 6 and 8 are done, and the monotonic
-clock now executes from ordinary STARK source (§16, `c788_source_time_e2e.rs`).
+Implementation proceeds in the order recorded in §16. Steps 1, 3, 6 and 8 are done; step 2 is done
+**for functions only** (resource nominals have no mechanism — §3.1); steps 4, 5 and 7 are blocked on
+that same gap. The monotonic clock now executes from ordinary STARK source
+(`c788_source_time_e2e.rs`).
 
 Rev. 5 adds three implementation findings and corrects two sections against them. The design's
 decisions all stand; what changed is *how* two of them are realised, and each correction is marked

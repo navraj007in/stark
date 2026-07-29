@@ -562,7 +562,8 @@ representation Packet 6 dispositioned, which the source path needs anyway.
 numbered steps, and the authority for status. The outline above is the *shape* of the path and
 deliberately does not renumber against it; where the two are read together, §16 governs.
 
-Position (2026-07-30): outline step 1 done (CD-213); §16 steps 1–3, **6 and 8 done** — the
+Position (2026-07-30): outline step 1 done (CD-213); §16 steps 1, 3, **6 and 8 done** (step 2 for
+functions only) — the
 monotonic clock executes from ordinary STARK source with no hand-built MIR
 (`c788_source_time_e2e.rs`). Step 3 collapsed into step 2, because synthesis emits STARK source and
 the ordinary front end builds the HIR (design §3.1). §16 steps 4, 5 and 7 remain blocked on a
