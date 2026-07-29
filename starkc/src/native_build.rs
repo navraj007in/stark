@@ -201,6 +201,7 @@ pub fn build_current_package(
             rustc: toolchain.rustc.clone(),
             cargo: toolchain.cargo.clone(),
             runtime_crate: toolchain.runtime_crate.clone(),
+            provider_crates: std::collections::BTreeMap::new(),
         },
     )
     .map_err(|error| map_backend_error(error, &toolchain))?;

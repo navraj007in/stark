@@ -55,6 +55,7 @@ fn call_with(params: Vec<AbiParam>) -> ValidatedProviderCall {
             may_block: false,
         },
         target_triple: LINUX.to_string(),
+        provider_crate: "test-provider-native".to_string(),
         provider_resource_types: vec!["other-first".to_string(), SYNTH.to_string()],
         provider_target_triples: vec![LINUX.to_string()],
         status_binding: StatusBinding::new(),

@@ -39,6 +39,7 @@ fn call_named(symbol: &str, params: Vec<AbiParam>) -> ValidatedProviderCall {
             may_block: false,
         },
         target_triple: LINUX.to_string(),
+        provider_crate: "test-provider-native".to_string(),
         provider_resource_types: Vec::new(),
         provider_target_triples: vec![LINUX.to_string()],
         status_binding: StatusBinding::new(),

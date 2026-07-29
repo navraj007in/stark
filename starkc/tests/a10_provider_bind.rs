@@ -35,6 +35,7 @@ fn call_with(params: Vec<AbiParam>) -> ValidatedProviderCall {
         status_binding: starkc::provider_bind::StatusBinding::new(),
         // §7 handle ids are indices into THIS list, so a resource-carrying fixture must declare
         // the types it uses — an undeclared one has no id to assign.
+        provider_crate: "test-provider-native".to_string(),
         provider_resource_types: vec!["synthetic-session".to_string()],
         provider_target_triples: vec![LINUX.to_string()],
     }

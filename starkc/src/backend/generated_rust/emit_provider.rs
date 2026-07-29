@@ -91,6 +91,26 @@ pub fn emit_extern_declarations(program: &MirProgram) -> Result<String, BackendD
         "// Native Provider ABI v0.1 (A10, CD-200): statically linked first-party providers.\n\
          // Symbols are the declared names VERBATIM -- never mangled, never sanitised.\n",
     );
+
+    // `extern crate` for every provider crate, and it is load-bearing rather than stylistic.
+    //
+    // An `extern "C"` block creates no Rust-level dependency edge, so rustc has no reason to link
+    // a path dependency whose only exports are `#[no_mangle]` symbols -- it drops the rlib and the
+    // link fails with an undefined symbol. Naming the crate is what pulls it in.
+    //
+    // Crate names are Cargo package names, so `-` becomes `_` exactly as Cargo does it. The alias
+    // keeps the binding unused-warning-free without an attribute.
+    let mut crates: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for call in &program.provider_calls {
+        crates.insert(call.provider_crate.as_str());
+    }
+    for name in &crates {
+        let ident = name.replace('-', "_");
+        out.push_str(&format!("extern crate {ident} as _{ident};\n"));
+    }
+    if !crates.is_empty() {
+        out.push('\n');
+    }
     out.push_str("extern \"C\" {\n");
     for (symbol, call) in &by_symbol {
         let mut params = Vec::with_capacity(call.function.params.len());

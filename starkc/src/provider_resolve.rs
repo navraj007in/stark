@@ -34,6 +34,10 @@ use crate::provider_abi::{self, AbiViolation, ProviderMetadata};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredProvider {
     pub metadata: ProviderMetadata,
+    /// Cargo package name of the crate implementing this provider. Carried alongside the metadata
+    /// for the same reason `origin` is: `ProviderMetadata` is a struct literal in provider crates,
+    /// and adding a field would break every one of them.
+    pub crate_name: String,
     /// Human-readable provenance for diagnostics, e.g. a manifest path. Never load-bearing for
     /// selection — two providers with identical origins still conflict, and one with no
     /// meaningful origin still resolves.
@@ -380,6 +384,7 @@ impl ProviderSet {
             capability: capability.to_string(),
             function: decl.clone(),
             target_triple: self.target.clone(),
+            provider_crate: provider.crate_name.clone(),
             provider_resource_types: provider.metadata.resource_types.clone(),
             provider_target_triples: provider.metadata.target_triples.clone(),
             // Empty until a package declares its status vocabulary (C7.8.3+). Empty is not

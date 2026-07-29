@@ -573,6 +573,14 @@ pub struct ValidatedProviderCall {
     /// empty vocabulary is a *meaningful* value rather than missing data: it says every nonzero
     /// status from this provider is a contract violation.
     pub status_binding: crate::provider_bind::StatusBinding,
+    /// The Cargo package name of the crate implementing this provider, e.g.
+    /// `"stark-time-native"`.
+    ///
+    /// A **name**, never a path. A path here would be an absolute filesystem location baked into
+    /// MIR and from there into build artefacts, which is exactly what §15.2's "no absolute path in
+    /// semantic identity" rule and Gate C7.2's path remapping exist to prevent. The name is
+    /// resolved to a location at build time, from `NativeToolchainOptions::provider_crates`.
+    pub provider_crate: String,
     /// §13 resource-type list the provider declares.
     ///
     /// Carried because `RawResourceHandle::resource_type` is "a compiler-assigned index into the

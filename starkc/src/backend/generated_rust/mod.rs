@@ -54,6 +54,12 @@ pub struct NativeToolchainOptions {
     pub rustc: PathBuf,
     pub cargo: PathBuf,
     pub runtime_crate: PathBuf,
+    /// A10 (C7.8.2e): Cargo package name → crate location, for every provider the build may link.
+    ///
+    /// Locations live **here**, not in MIR: a provider's path is a property of the machine doing
+    /// the build, while the name is a property of the program. Keeping them apart is what lets a
+    /// verified MIR artefact stay relocation-stable while still naming its providers.
+    pub provider_crates: std::collections::BTreeMap<String, PathBuf>,
 }
 
 impl NativeToolchainOptions {
@@ -62,6 +68,7 @@ impl NativeToolchainOptions {
             rustc: PathBuf::from("rustc"),
             cargo: PathBuf::from("cargo"),
             runtime_crate: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stark-runtime"),
+            provider_crates: std::collections::BTreeMap::new(),
         }
     }
 }

@@ -56,6 +56,7 @@ fn stark_time() -> DeclaredProvider {
                 },
             ],
         },
+        crate_name: "stark-time-native".to_string(),
         origin: "stark-time/native/Cargo.toml".to_string(),
     }
 }
@@ -81,6 +82,7 @@ fn rival_clock() -> DeclaredProvider {
                 may_block: false,
             }],
         },
+        crate_name: "rival-clock-native".to_string(),
         origin: "vendor/rival-clock/manifest.json".to_string(),
     }
 }

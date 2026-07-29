@@ -49,6 +49,7 @@ fn validated_call() -> ValidatedProviderCall {
         function: monotonic_now_decl(),
         target_triple: "x86_64-unknown-linux-gnu".to_string(),
         status_binding: starkc::provider_bind::StatusBinding::new(),
+        provider_crate: "test-provider-native".to_string(),
         provider_resource_types: Vec::new(),
         provider_target_triples: vec![
             "x86_64-unknown-linux-gnu".to_string(),
