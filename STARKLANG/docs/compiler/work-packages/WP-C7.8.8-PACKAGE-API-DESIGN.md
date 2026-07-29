@@ -1,6 +1,7 @@
 # WP-C7.8.8 step 2 — package API declaration design
 
-**Status:** DRAFT, for owner disposition. No implementation until ruled on.
+**Status:** DRAFT, rev. 2, for owner disposition. No parser, HIR or MIR implementation until the
+declaration shape and A11's MIR-version disposition are both approved.
 **Governs:** step 2 of WP-C7.8.8 — binding source-level functions and resource types to provider
 capabilities, symbols and provider resource names.
 **Inputs:** Packet 4 (no Core change), Packet 5 (admission and trust boundary), Packet 6 (Route B
@@ -195,28 +196,271 @@ Failures are `BuildCommandError::Capability`, the class CD-213 added.
 
 ## 7. Open questions for the owner
 
-**7.1 Item paths.** `"TcpListener::bind"` implies associated-function placement on a synthesized
-nominal. Is that the intended surface, or should bound functions be free functions in a module
-(`tcp::bind(listener)`)? Associated placement reads better and matches STD-IO-001's `File`; free
-functions are simpler to synthesize.
+**7.1 Item paths.** The worked declarations in §9 use associated placement
+(`TcpListener::bind_raw`), matching STD-IO-001's `File`. Free functions in a module would be simpler
+to synthesize. Confirm associated placement.
 
-**7.2 Error mapping.** §4 derives `Result<_, E>` with `E` named per capability, but the code→variant
-mapping is Packet 1 §1.2's "package binding layer". Where does *that* live — a manifest table, or
-ordinary STARK the package writes over the raw layer? A manifest table is checkable; STARK is more
-flexible and keeps the compiler out of package semantics.
+**7.2 Error mapping.** §4 derives `Result<_, E>` with `E` named per capability, but the
+code→variant mapping is Packet 1 §1.2's "package binding layer". A manifest table is checkable; a
+STARK function over the raw layer is more flexible and keeps the compiler out of package semantics.
+**Recommended: STARK**, consistent with §4's raw-layer framing.
 
-**7.3 Visibility.** Are synthesized items public by default, or private so the package must
-re-export a curated surface? Private-by-default keeps the raw layer out of a package's public API,
-which suits §4's "raw binding layer" framing.
+**7.3 Visibility.** **Recommended: synthesized items are private to their package**, so the raw
+layer never becomes a package's public API by default and §9.2's ergonomic wrapper is the only
+exported surface.
 
-**7.4 `File`.** Core already specifies `File` (STD-IO-001), so `std-file` binds an existing Core
-nominal rather than a synthesized one. Does the manifest bind `resources: { "File": … }` against the
-Core type, or is Core `File` special-cased as it is today in `ResourceRegistry::builtin()`? The
-second keeps Core and package resources visibly distinct; the first is one mechanism.
+**7.4 `File` and Core.** See §9.3 — the one place this model does not fit, with two options and a
+recommendation. This one changes the design's text, so it is the ruling most worth having first.
+
+**7.5 Derived signatures versus a declared-signature mismatch diagnostic.** The requested negative
+case "provider function signature disagrees with the package declaration" is *structurally
+impossible* under §4 and is recorded as such in §13.5. Keeping the diagnostic would mean keeping
+declared signatures, which reinstates the drift class CD-219 demonstrated. **Recommended:
+derivation, and the negative case stands as an impossibility rather than a test.**
 
 ---
 
-## 8. What this does not decide
+## 8. The application-source rule
+
+**Application source calls package APIs and never names a provider crate, a capability, or an ABI
+symbol.** A program says `TcpStream::connect(addr)`. It does not name `stark-net-native`, `"tcp"`,
+or `stark_tcp_stream_connect`.
+
+This is a validation rule, not a convention:
+
+- a `provider_api` block is only honoured in a package that **declares** the capability, so an
+  application cannot bind anything it did not first require;
+- nothing in `.stark` source can name a symbol — §1 established that there is no syntax for it;
+- the derived items carry their binding in HIR, so an application observes a signature, never a
+  linkage detail.
+
+The consequence worth stating: **a package is the only place a provider binding can exist**, which
+is what makes the capability set of a program equal to the union of its packages' declarations.
+
+## 9. Worked declarations
+
+Each shows the manifest entry and the STARK signature the compiler derives from validated metadata
+(§4). No signature is written by hand anywhere.
+
+### 9.1 Monotonic time
+
+```json
+{ "name": "std-time", "capabilities": ["clock"],
+  "provider_api": {
+    "errors": { "clock": "TimeError" },
+    "functions": {
+      "Instant::now_ns": { "capability": "clock", "symbol": "stark_time_monotonic_now_ns" },
+      "SystemTime::unix_now": { "capability": "clock", "symbol": "stark_time_unix_now" }
+    } } }
+```
+
+Provider declares `[ScalarOut(U64)]` and `[ScalarOut(I64), ScalarOut(U32)]`, so:
+
+```stark
+fn now_ns() -> Result<UInt64, TimeError>;
+fn unix_now() -> Result<(Int64, UInt32), TimeError>;
+```
+
+The tuple is not a design choice — it is the provider's two out-slots, in declared order. **This is
+the shape CD-219's hand-written mirror got wrong.**
+
+### 9.2 Environment lookup
+
+```json
+"functions": {
+  "env::var_len":  { "capability": "process.env", "symbol": "stark_env_var_len" },
+  "env::var_fill": { "capability": "process.env", "symbol": "stark_env_var_fill" }
+}
+```
+
+```stark
+fn var_len(name: &[UInt8]) -> Result<(Bool, UInt64), ProcessError>;
+fn var_fill(name: &[UInt8], out: &mut [UInt8]) -> Result<UInt64, ProcessError>;
+```
+
+Deliberately unergonomic: this is the **raw binding layer**. The package writes
+`fn var(name: &str) -> Result<Option<String>, ProcessError>` over it in ordinary STARK, and that is
+the function an application calls.
+
+### 9.3 `File` — and the one place the model does not fit
+
+```json
+{ "name": "std-file", "capabilities": ["filesystem"],
+  "provider_api": {
+    "errors": { "filesystem": "IOError" },
+    "resources": { "File": { "capability": "filesystem", "resource": "file" } },
+    "functions": {
+      "File::open_raw":     { "capability": "filesystem", "symbol": "stark_file_open" },
+      "File::create_raw":   { "capability": "filesystem", "symbol": "stark_file_create" },
+      "File::read_raw":     { "capability": "filesystem", "symbol": "stark_file_read" },
+      "File::write_raw":    { "capability": "filesystem", "symbol": "stark_file_write" },
+      "File::complete_raw": { "capability": "filesystem", "symbol": "stark_file_complete" }
+    } } }
+```
+
+```stark
+fn open_raw(path: &[UInt8]) -> Result<File, IOError>;
+fn read_raw(f: &File, out: &mut [UInt8]) -> Result<(UInt64, Bool), IOError>;
+fn write_raw(f: &File, data: &[UInt8]) -> Result<UInt64, IOError>;
+fn complete_raw(f: &File) -> Result<Unit, IOError>;
+```
+
+**`stark_file_close` is absent, and must be** (§2): it is `is_close_for`, and MIR's `Drop` terminator
+owns it.
+
+**The inconsistency, raised rather than papered over.** `File` is **normative Core** (STD-IO-001), not
+a package nominal. Route B's representation is for *package-declared* resources, and `File` currently
+rides `CoreType::File` through `ResourceRegistry::builtin()`. Two options:
+
+| | Consequence |
+| --- | --- |
+| **Two mechanisms** — Core `File` keeps its `CoreType` binding; `resources` binds only package nominals | Core's ownership of its own type is untouched, and the distinction stays visible. Cost: `std-file`'s manifest declares no `File` resource, and the asymmetry needs explaining to every reader |
+| **One mechanism** — Core `File` is bindable through `resources` like any other | Uniform, one code path. Cost: a Core type's representation starts depending on a package manifest, which is a Packet-4-adjacent question about who owns Core's types |
+
+**Recommended: two mechanisms.** A Core type whose identity can be redefined by a package manifest is
+a worse outcome than an asymmetry that is easy to state. Owner decision required — the block above is
+written as if `File` were bindable, and changes if the ruling goes the other way.
+
+### 9.4 `TcpListener`, 9.5 `TcpStream`
+
+```json
+{ "name": "std-net", "capabilities": ["tcp"],
+  "provider_api": {
+    "errors": { "tcp": "NetworkError" },
+    "resources": {
+      "TcpListener": { "capability": "tcp", "resource": "tcp_listener" },
+      "TcpStream":   { "capability": "tcp", "resource": "tcp_stream" }
+    },
+    "functions": {
+      "TcpListener::bind_raw":   { "capability": "tcp", "symbol": "stark_tcp_listener_bind" },
+      "TcpListener::accept_raw": { "capability": "tcp", "symbol": "stark_tcp_listener_accept" },
+      "TcpStream::connect_raw":  { "capability": "tcp", "symbol": "stark_tcp_stream_connect" },
+      "TcpStream::read_raw":     { "capability": "tcp", "symbol": "stark_tcp_stream_read" },
+      "TcpStream::write_raw":    { "capability": "tcp", "symbol": "stark_tcp_stream_write" }
+    } } }
+```
+
+```stark
+fn bind_raw(addr: &[UInt8]) -> Result<TcpListener, NetworkError>;
+fn accept_raw(l: &TcpListener) -> Result<TcpStream, NetworkError>;
+fn connect_raw(addr: &[UInt8]) -> Result<TcpStream, NetworkError>;
+fn read_raw(s: &TcpStream, out: &mut [UInt8]) -> Result<UInt64, NetworkError>;
+fn write_raw(s: &TcpStream, data: &[UInt8]) -> Result<UInt64, NetworkError>;
+```
+
+`accept_raw` is the shape nothing else has: it **borrows** a listener and **produces** a stream, so
+one call keeps one resource and creates another. Both closes are absent; both are `is_close_for`.
+
+Packet 5's inbound rule survives into the source language unchanged: a listener exists only because a
+program called `bind_raw` with an address it supplied.
+
+## 10. Typed HIR representation
+
+```text
+HirItem::Fn      + ProviderBinding      { capability, symbol }
+HirItem::Nominal + HostResourceBinding  { capability, resource }
+```
+
+Both are **carried, not consulted**, until lowering. Name resolution and type checking see ordinary
+items with ordinary signatures, which is what keeps steps 3 and 4 of WP-C7.8.8 free of special cases.
+
+A nominal with a `HostResourceBinding` is **opaque in the type system**: it has no fields, so field
+access fails by ordinary name resolution rather than by a special rule, and it is never `Copy` or
+`Clone`, so ordinary move checking rejects reuse after a consuming call.
+
+## 11. MIR lowering contract
+
+| HIR | MIR |
+| --- | --- |
+| call to a `ProviderBinding` fn | resolve → `ValidatedProviderCall`, intern, emit `Callee::Provider` |
+| a `HostResourceBinding` nominal type | `MirTy::HostResource { nominal, provider, resource }` (A11) |
+| the fn's `Result` return | the call's `UInt32` status destination, plus the out-slot destinations §4 derived |
+| a host-resource local going out of scope | `Terminator::Drop` → the recorded `ValidatedProviderClose` (A11 §5) |
+
+The status→`Result` construction is the **binding layer's**, not MIR's: MIR carries the raw status,
+and the derived item's body — synthesized alongside its declaration — performs the three-channel
+dispatch A10 §5 specifies. That keeps channel policy in one place and out of the type system.
+
+## 12. Diagnostics
+
+All at manifest load, before any code is generated, as `BuildCommandError::Capability`:
+
+| Case | Diagnostic |
+| --- | --- |
+| symbol outside its declared capability | names the symbol, the capability it was bound to, and the capability the provider declares for it |
+| resource absent from provider metadata | names the resource and lists the provider's declared resource types |
+| two nominals bound to one resource | names both nominals and the resource; a warning is insufficient — §13.3 explains |
+| one nominal bound through incompatible providers | names the nominal and both providers |
+| capability used but not declared | names the capability and points at the manifest's `capabilities` array |
+| binding a close | names the symbol and its `is_close_for` resource |
+| derived signature references an unbound resource | names the function, the resource, and that the package must bind it |
+
+Type-level failures — an ordinary struct where a host resource is required, or projection of a host
+resource — are ordinary type errors, reported by the existing checker with no provider vocabulary in
+them.
+
+## 13. Negative cases
+
+Each is a *test*, and the phrasing states what would happen without the check.
+
+**13.1 Function binds to a symbol outside its declared capability.** `"File::open_raw"` bound with
+`"capability": "clock"`. Rejected: the symbol is not in the clock provider's declarations. Without
+the check the build would select the wrong provider and link a function whose signature happens to
+match.
+
+**13.2 Resource name absent from provider metadata.** `"resource": "directory"` where the provider
+declares only `"file"`. Rejected at load — otherwise A11's `HostResource` would carry a resource name
+with no §7 id behind it, and `from_raw_checked` would have nothing to validate against.
+
+**13.3 Two package nominals bind to one provider resource.** `TcpStream` and `Socket` both bound to
+`"tcp_stream"`. **Rejected, not warned.** They would be distinct STARK types that are the same
+resource at the boundary: a `Socket` would satisfy a `TcpStream` parameter dynamically while failing
+statically, and each would record its own close for one resource — breaking exactly-once.
+
+**13.4 One nominal binds through incompatible providers.** `TcpStream` bound in two packages, to
+different providers. Rejected: the canonical identity (A11 §5) differs, so two "same" types would not
+compare equal, and a value from one could reach the other's close.
+
+**13.5 Provider function signature disagrees with the package declaration.** *Structurally
+impossible under §4* — the package declares no signature, so there is nothing to disagree. Recorded
+here because it was requested, and because its impossibility is the design's main claim: CD-219's
+defect was exactly this disagreement, in a hand-written mirror. **The residual risk is not gone but
+moved**: a provider crate whose metadata drifts from its own `extern "C"` definitions. That is the
+provider's own test's job, and each provider crate has one.
+
+**13.6 Package uses a capability it did not declare.** A `provider_api` entry naming `"tcp"` in a
+package whose `capabilities` omits it. Rejected — Packet 5 admits providers only through declared
+requirements, and a binding is a use.
+
+**13.7 Ordinary struct passed where a host resource is required.** An ordinary `struct Handle {}`
+passed to `read_raw(s: &TcpStream, …)`. An ordinary type error: the two are different nominals. No
+provider vocabulary appears in the message.
+
+**13.8 Host resource structurally constructed or projected.** `TcpStream { }` or `s.fd`. Rejected by
+name resolution and type checking before MIR — the nominal has no fields and no constructor — and by
+A11 §6's verifier rules if MIR is ever constructed directly. Two independent layers, deliberately.
+
+## 14. Package graph and build key
+
+**Bindings enter the graph with their package.** `PackageGraph` already loads every manifest; the
+`provider_api` block is parsed with the rest and validated (§6) after provider selection, since
+validation needs the selected provider's metadata.
+
+**Bindings enter the build key.** A changed binding changes the generated code, so the key must
+change or a stale artifact is served. The key must cover, in deterministic order:
+
+- each bound item path → `(capability, symbol)`;
+- each bound nominal → `(capability, resource)`;
+- the `errors` map;
+- the resolved provider identity and semver for every capability used.
+
+The last is what makes a provider *upgrade* invalidate the cache: the same binding against different
+metadata is a different program.
+
+Sorted by item path, so manifest key order cannot reach the key — the same property CD-213 gave the
+capability list and CD-205 gave the status vocabulary.
+
+## 15. What this does not decide
 
 Dynamic loading, capability sandboxing, allowlists and deployment policy remain deferred (Packet 5).
 Nothing here changes the ABI, the runtime surface, or any Core specification document.
