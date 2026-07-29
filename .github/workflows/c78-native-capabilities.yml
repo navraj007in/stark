@@ -49,8 +49,10 @@ jobs:
         run: cargo test --manifest-path stark-file/native/Cargo.toml create_write_complete_and_read_back
       - name: provider-loopback
         run: cargo test --manifest-path stark-net/native/Cargo.toml
-      - name: stark-time-e2e pending
-        run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='pending'"
+      - name: stark-time-e2e
+        run: |
+          python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_time']['native_e2e']=='implemented'"
+          cargo test --manifest-path starkc/Cargo.toml --test a10_stark_time_e2e
       - name: args-env-e2e pending
         run: python3 -c "import tomllib; m=tomllib.load(open('c78/capabilities.toml','rb')); assert m['stark_env']['native_e2e']=='pending'"
       - name: file-e2e pending

@@ -568,10 +568,12 @@ mod tests {
                     &mut eof,
                 )
             };
-            assert!(matches!(read_status.code, 5 | 8));
+            // Windows reports some directory-as-file reads as `PermissionDenied`; Unix-family
+            // hosts usually report `IsADirectory`. Both are declared recoverable statuses.
+            assert!(matches!(read_status.code, 2 | 5 | 8));
             assert_eq!(unsafe { stark_file_close(handle) }, ProviderStatus::SUCCESS);
         } else {
-            assert!(matches!(status.code, 5 | 8));
+            assert!(matches!(status.code, 2 | 5 | 8));
         }
     }
 
