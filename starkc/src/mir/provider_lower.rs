@@ -38,6 +38,9 @@ pub struct ProviderLowering {
     /// Provider resource name → the nominal's resolved `ItemId`, so lowering can build a
     /// `MirTy::HostResource` (CD-234/CD-235). Resolved once, after the generated source is parsed.
     pub resource_items: BTreeMap<String, crate::hir::ItemId>,
+    /// **A11 §5: the close selected for each bound resource**, copied onto
+    /// `MirProgram::provider_closes` and keyed into `TypeContext::host_resource_closes` by lowering.
+    pub closes: Vec<crate::mir::ValidatedProviderClose>,
     /// Provider call id → the raw error type its `Result` uses.
     ///
     /// Kept beside the arena rather than on [`ValidatedProviderCall`]: that record is A10's
@@ -94,6 +97,7 @@ impl ProviderLowering {
             arena,
             by_item_name,
             resource_items: BTreeMap::new(),
+            closes: Vec::new(),
             error_variants: error_variants.clone(),
             error_ty_for_call,
         })
@@ -131,6 +135,7 @@ impl ProviderLowering {
                 close: id,
             });
         }
+        self.closes = closes.clone();
         Ok(closes)
     }
 

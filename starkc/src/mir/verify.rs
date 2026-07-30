@@ -196,6 +196,30 @@ fn verify_provider_closes(program: &MirProgram, errors: &mut Vec<MirError>) {
         }
     }
 
+    // **The type context must not be an unvalidated back door into close emission.**
+    //
+    // Two tables reach a close: `provider_closes`, which the obligations below validate, and
+    // `TypeContext::host_resource_closes`, which is what `drop_plan` and native emission actually
+    // read. An entry in the second with no binding in the first would be emitted as a real close
+    // while never having been checked for provider agreement, `is_close_for`, or arity -- so the
+    // paired-resource case (§5 obligation 4) could walk straight past every guard above.
+    for (resource, close) in &program.types.host_resource_closes {
+        let matched = program
+            .provider_closes
+            .iter()
+            .any(|b| b.resource == *resource && b.close == *close);
+        if !matched {
+            push(
+                "MIR-0034",
+                format!(
+                    "the type context records a close for {} that `provider_closes` does not \
+                     validate; every emitted close must be an obligation-checked binding",
+                    crate::mir::dump_ty(resource)
+                ),
+            );
+        }
+    }
+
     for binding in &program.provider_closes {
         let Some(call) = program.provider_call(binding.close) else {
             push(

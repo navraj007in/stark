@@ -16,7 +16,7 @@
 //! Packet 5's inbound rule is asserted structurally: a listener exists only through an explicit
 //! `bind(address)`, and the declaration carries no default address for one to be created without.
 
-use starkc::mir::{MirTy, ProviderCallId};
+use starkc::mir::ProviderCallId;
 use starkc::provider_abi::{AbiParam, ScalarTy};
 use starkc::provider_bind::{
     plan, PlanError, ProviderInputPlan, ProviderOutputPlan, ResourceRegistry, StatusOutcome,

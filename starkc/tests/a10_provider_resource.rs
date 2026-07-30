@@ -19,7 +19,7 @@
 //! failure would violate ABI §8 and make exactly-once close unverifiable statically.
 
 use starkc::backend::generated_rust::emit_provider;
-use starkc::mir::{self, MirProgram, MirTy, ProviderCallId, TypeContext, ValidatedProviderCall};
+use starkc::mir::{self, MirProgram, ProviderCallId, TypeContext, ValidatedProviderCall};
 use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity, ScalarTy};
 use starkc::provider_bind::{
     plan, PlanError, ProviderBindingPlan, ProviderInputPlan, ProviderOutputPlan, ResourceRegistry,

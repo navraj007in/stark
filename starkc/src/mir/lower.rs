@@ -330,9 +330,9 @@ pub fn lower_program_with_providers(
         // A10: resolved before lowering (A10 3) and carried verbatim. Empty for every program
         // that binds no provider.
         provider_calls: providers.arena.clone(),
-        // A11 §5: populated by resolution once a resource's close is selected. Empty while no
-        // resource is bound, which is every program that touches no host resource.
-        provider_closes: Vec::new(),
+        // A11 §5: selected at RESOLUTION, carried here verbatim. Empty while no resource is bound,
+        // which is every program that touches no host resource.
+        provider_closes: providers.closes.clone(),
         // A11: sorted, so the program's identity is a function of the manifest rather than of
         // iteration order -- the same property CD-213 gave capabilities.
         resource_bindings: providers
@@ -354,6 +354,15 @@ pub fn lower_program_with_providers(
     // WP-C6.1g-a: the structural+impl Copy eligibility set, shared with the front end via
     // `ProgramMeta::copy_eligible` (computed once from `copy_eligible_types`).
     program.types.copy_eligible_items = meta.copy_eligible.iter().copied().collect();
+    // A11 §5: `drop_plan::plan_for` resolves destruction from the TYPE alone, and a host resource's
+    // destruction IS its close -- so the close has to be reachable from the type context, exactly as
+    // a nominal's `Drop` impl is.
+    for binding in &providers.closes {
+        program
+            .types
+            .host_resource_closes
+            .insert(binding.resource.clone(), binding.close);
+    }
     for &item_id in &meta.all_items {
         let probe = FnLowerer::new(hir, tables, &meta, FnKey::Top(item_id, Vec::new()));
         // A1 (CD-031): record which non-generic nominals carry an `impl Copy` (V-COPY-1).

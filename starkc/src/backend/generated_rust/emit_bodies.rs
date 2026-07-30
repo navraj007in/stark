@@ -1018,7 +1018,19 @@ fn emit_terminator(
         // The unit is marked dead BEFORE any glue runs (§7.5, via `ValueSlot::drop_with`), so a
         // destructor that itself traps cannot leave a live value the abort path might re-enter.
         Terminator::Drop { place, target } => {
-            out.push_str(&format!("                {}\n", emit_drop(place, env)?));
+            // **A11 §5: a host resource is destroyed by calling its provider's close.** Routed here
+            // rather than through `emit_drop`'s generic glue, because a close is a PROVIDER CALL --
+            // it needs the arena, the symbol and the ABI's consuming-handle shape, none of which a
+            // drop-glue expression has.
+            let place_ty = env.place_ty(place)?;
+            if matches!(place_ty, MirTy::HostResource(_)) {
+                out.push_str(&format!(
+                    "                {}\n",
+                    emit_host_resource_close(place, &place_ty, env)?
+                ));
+            } else {
+                out.push_str(&format!("                {}\n", emit_drop(place, env)?));
+            }
             out.push_str(&format!("                {}\n", mode.jump(target.0)));
         } // No catch-all: as of WP-C5.3d-0 every `Terminator` variant is handled, and keeping the
           // match exhaustive means a NEW variant stops this compiling rather than silently becoming
@@ -1166,6 +1178,55 @@ fn map_key_eq(args: &[Operand], env: &TyEnv) -> BackendKeyEq {
 /// into a whole-local drop would violate §7.6 (it would destroy a unit MIR's flags say is already
 /// gone), which is why the previous refusal was correct and why the fix is a real per-unit
 /// operation rather than a relaxation.
+/// **A11 §5: destroy a host resource by calling its provider's close, exactly once.**
+///
+/// Emitted through the slot's `drop_with`, which is the same drop-flag mechanism every non-`Copy`
+/// local uses — and that is what discharges CD-234's lifecycle rules **structurally** rather than by
+/// a separate check:
+///
+/// - a declared-but-never-initialised resource has a clear flag, so `drop_with` never runs the
+///   closure and nothing is closed;
+/// - a failed `HandleOut` never wrote the slot, so the flag stays clear and nothing is closed;
+/// - a resource moved out leaves its source dead, so only the destination closes;
+/// - a consuming provider call takes the value out of the slot, so the later implicit `Drop` finds it
+///   dead and does not close again.
+///
+/// None of those are special cases here. They are what a slot already does; the close is simply what
+/// runs in place of a destructor.
+fn emit_host_resource_close(
+    place: &crate::mir::Place,
+    ty: &MirTy,
+    env: &TyEnv,
+) -> Result<String, BackendDiagnostic> {
+    if !place.projection.is_empty() {
+        return Err(BackendDiagnostic::Unsupported(format!(
+            "sub-place Drop of a host resource ({place:?}): a resource is opaque and has no \
+             components, so a projection into one is a compiler defect"
+        )));
+    }
+    let close = env.types.host_resource_closes.get(ty).ok_or_else(|| {
+        BackendDiagnostic::Unsupported(format!(
+            "no recorded close for {}; a resource reaching emission without one is a leak the ABI \
+             cannot detect (A11 §5 obligation 5)",
+            crate::mir::dump_ty(ty)
+        ))
+    })?;
+    let call = env.provider_calls.get(close.0 as usize).ok_or_else(|| {
+        BackendDiagnostic::Unsupported(format!(
+            "close binding names provider call {}, which is not in the arena",
+            close.0
+        ))
+    })?;
+
+    // The handle is CONSUMED (ABI §13.1), so it is taken out of the slot and passed by value. Taking
+    // rather than borrowing is what makes a second close impossible: the slot is dead afterwards.
+    Ok(format!(
+        "{}.drop_with(|__v| unsafe {{ {}(__v.take_raw()); }});",
+        emit_places::local_name(place.local.0),
+        call.symbol()
+    ))
+}
+
 fn emit_drop(place: &crate::mir::Place, env: &TyEnv) -> Result<String, BackendDiagnostic> {
     let ty = env.place_ty(place)?;
     if emit_types::mir_ty_is_copy(&ty, env.types) {

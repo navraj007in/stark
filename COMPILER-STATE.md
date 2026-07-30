@@ -529,8 +529,34 @@ linked native provider, so such a program is native-only, and saying so beats a 
 drop glue refuses it too — a close is a provider call and must come from the `Drop` terminator's own
 path, which has the arena.
 
-**Still open:** populating the close arena from the driver, the `Drop`-terminator native emission, the
-slot-backed generated-Rust representation, and the source-level lifecycle e2e (never-initialised does
+**Native emission and the lifecycle rules (same slice).** `ProviderLowering` carries the selected
+closes; lowering copies them to `MirProgram::provider_closes` and keys them into
+`TypeContext::host_resource_closes`, because `drop_plan::plan_for` resolves destruction from the type
+alone and a resource's destruction *is* its close. The `Drop` terminator routes a `HostResource` to
+`emit_host_resource_close` rather than generic glue — a close needs the arena, the symbol and the
+consuming-handle shape, none of which a glue expression has.
+
+**CD-234's lifecycle rules fall out of the slot mechanism rather than needing separate checks.** The
+close is emitted through the same `drop_with` every non-`Copy` local uses, so: a
+declared-but-never-initialised resource has a clear flag and never closes; a failed `HandleOut` never
+wrote the slot, so nothing closes; a moved-out resource leaves its source dead, so only the
+destination closes; and a consuming call takes the value out, so the later implicit `Drop` finds it
+dead and cannot close twice. The handle is *taken*, not borrowed — which is what makes a second close
+impossible rather than merely unlikely.
+
+**CORRECTION — the close emission is written but NOT YET REACHABLE.** A host-resource local still
+fails earlier, at `default_value_expr`: the CFG dispatch loop default-initialises every local
+**eagerly**, and CD-234 requires a resource to have no default. So emission refuses before `Drop`
+ever runs. The parallel session's `c788_resource_lifecycle.rs` pins exactly that boundary with an
+`expect_err`, and it is right to.
+
+The missing piece is CD-234's remaining backend requirement: **generated Rust must use an
+uninitialised slot or equivalent slot-backed representation**, so a resource local is not materialised
+at all until a successful `HandleOut` writes it. Until that lands, the `Drop`→close path is dead code
+that the lifecycle tests exercise only through hand-built MIR at the emission layer.
+
+**Still open:** the slot-backed representation (the blocker above), driver-side close selection
+(`select_closes` exists and `native_build.rs` does not call it), and the source-level lifecycle e2e (never-initialised does
 not close; failed `HandleOut` does not close; successful closes exactly once; move then drop closes
 only the destination; consuming close prevents a later implicit close).
 
