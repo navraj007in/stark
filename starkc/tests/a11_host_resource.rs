@@ -615,3 +615,60 @@ fn a_recorded_close_becomes_the_drop_plan() {
     let plan = mir::drop_plan::plan_for(&resource_ty(), &types).expect("plans");
     assert_eq!(plan.host_resource_close(), Some(mir::ProviderCallId(3)));
 }
+
+// --------------------------- CD-240: never Copy, therefore slot-backed --
+
+/// **A host resource is never `Copy`, and this is a regression guard for a wildcard.**
+///
+/// `TypeContext::is_copy` ends in `_ => true`, so adding `MirTy::HostResource` silently classified it
+/// `Copy` — with three consequences, none of which announced themselves:
+///
+/// 1. `is_slot_backed` became false, so the local was declared through `default_value_expr`, which
+///    refuses a resource — emission failed before `Drop` was ever reached;
+/// 2. `emit_drop` refuses a `Copy` type outright, so the close could not have run either;
+/// 3. `Copy` is the licence to **duplicate** a handle, giving two owners of one resource and closing
+///    it twice.
+///
+/// The arm is now explicit. This test exists because the defect produced **zero compile errors** —
+/// the type checker cannot notice a new variant falling into a catch-all, so only an assertion can.
+#[test]
+fn a_host_resource_is_never_copy() {
+    let types = TypeContext::default();
+    assert!(
+        !types.is_copy(&resource_ty()),
+        "a host resource must never be Copy"
+    );
+    assert!(
+        !types.is_copy(&MirTy::host_resource(
+            mir::HostResourceNominal::Core(starkc::hir::CoreType::File),
+            "stark-std-file",
+            "file"
+        )),
+        "the Core nominal form must not be Copy either"
+    );
+}
+
+/// Being non-`Copy` is what makes a resource **slot-backed**, and a slot is what gives it
+/// `ValueSlot::dead()`. CD-234's "the slot begins dead" is then the representation itself, rather
+/// than a rule some pass has to remember to apply.
+#[test]
+fn a_host_resource_is_slot_backed() {
+    let types = TypeContext::default();
+    assert!(
+        starkc::backend::generated_rust::emit_types::is_slot_backed(&resource_ty(), &types),
+        "a host resource must be slot-backed: that is what lets it be declared dead with no default"
+    );
+}
+
+/// The two properties are not independent — the slot rule is *derived* from non-`Copy`. Pinning the
+/// derivation means a future change to either one cannot quietly decouple them.
+#[test]
+fn slot_backing_follows_from_not_being_copy() {
+    let types = TypeContext::default();
+    let ty = resource_ty();
+    assert_eq!(
+        starkc::backend::generated_rust::emit_types::is_slot_backed(&ty, &types),
+        !types.is_copy(&ty) && !matches!(ty, MirTy::Ref { .. }),
+        "slot backing must remain the stated function of Copy-ness"
+    );
+}

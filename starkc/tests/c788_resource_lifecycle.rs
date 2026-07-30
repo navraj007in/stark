@@ -140,6 +140,58 @@ fn build_driver_still_refuses_resource_lifecycle_at_the_source_boundary() {
 }
 
 #[test]
+fn build_driver_selects_closes_for_bound_resource_nominals() {
+    let root = fixture_root("driver-close-wiring");
+    let _ = std::fs::remove_dir_all(&root);
+    write_package(
+        &root,
+        r#"{
+  "name": "c788_lifecycle_close_wiring",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capabilities": ["tcp"],
+  "provider_api": {
+    "errors": { "tcp": "RawNetError" },
+    "resources": {
+      "TcpStream": { "capability": "tcp", "resource": "tcp_stream" }
+    },
+    "functions": {}
+  }
+}"#,
+        "fn main() { println(7); }\n",
+    );
+
+    let result = build_current_package(
+        &root,
+        &BuildCommandOptions {
+            emit_rust: true,
+            ..BuildCommandOptions::default()
+        },
+    )
+    .unwrap_or_else(|error| panic!("resource nominal close wiring must build: {error:?}"));
+    let output = std::process::Command::new(&result.artifact_path)
+        .output()
+        .unwrap_or_else(|error| panic!("run built binary: {error}"));
+    assert!(
+        output.status.success(),
+        "built program failed; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "7");
+
+    let generated =
+        std::fs::read_to_string(result.generated_rust.expect("generated rust retained"))
+            .expect("read generated Rust");
+    assert!(
+        generated.contains("stark_tcp_stream_close"),
+        "the driver must call ProviderLowering::select_closes so the selected close enters the \
+         provider arena:\n{generated}"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn lowering_carries_a_manually_selected_close_arena_into_mir() {
     let set = ProviderSet::select(
         provider_registry::first_party(),
@@ -237,7 +289,7 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
 }
 
 #[test]
-fn host_resource_drop_emission_is_currently_blocked_by_eager_local_materialisation() {
+fn host_resource_drop_emission_calls_the_selected_provider_close() {
     let resource = tcp_stream_ty();
     let close = tcp_call(
         "stark_tcp_stream_close",
@@ -301,7 +353,7 @@ fn host_resource_drop_emission_is_currently_blocked_by_eager_local_materialisati
         }],
     };
 
-    let error = emit_program::emit(
+    let emitted = emit_program::emit(
         &program,
         &build_versions(
             "rustc-test".to_string(),
@@ -310,22 +362,34 @@ fn host_resource_drop_emission_is_currently_blocked_by_eager_local_materialisati
         ),
         &starkc::layout::TargetLayout::default(),
     )
-    .err()
-    .expect("host-resource locals currently reach default materialisation before Drop emits");
-    let rendered = format!("{error:?}");
+    .expect("a host-resource Drop must emit its selected close")
+    .main_rs;
+
+    // **Upgraded from an `expect_err` (CD-240).** This test previously pinned the eager-default
+    // boundary and carried a tripwire saying to upgrade it once `HostResource` stopped falling
+    // through `is_copy`'s wildcard `Copy` arm. That is exactly what changed, so the boundary moved
+    // and the assertion follows it.
     assert!(
-        rendered.contains("has no default value") && rendered.contains("forged handle"),
-        "{rendered}"
+        emitted.contains("stark_tcp_stream_close(__v.take_raw())"),
+        "the Drop must call the SELECTED close, consuming the handle:\n{emitted}"
     );
     assert!(
-        TypeContext::default().is_copy(&resource),
-        "current failing point changed: HostResource no longer falls through the wildcard Copy arm; \
-         this test should be upgraded to assert close emission"
+        emitted.contains(".drop_with(|__v| unsafe"),
+        "the close must go through slot liveness, so a dead slot closes nothing:\n{emitted}"
+    );
+    assert!(
+        !TypeContext::default().is_copy(&resource),
+        "a host resource must never be Copy: Copy is the licence to duplicate a handle, and two \
+         owners of one resource close it twice"
+    );
+    assert!(
+        emitted.contains("ValueSlot::dead()"),
+        "the resource local must be declared dead, never default-materialised:\n{emitted}"
     );
 }
 
 #[test]
-fn handle_out_emission_is_currently_blocked_by_eager_local_materialisation() {
+fn handle_out_emission_writes_the_slot_only_on_success() {
     let call = tcp_call(
         "stark_tcp_stream_connect",
         vec![
@@ -412,7 +476,7 @@ fn handle_out_emission_is_currently_blocked_by_eager_local_materialisation() {
         provider_closes: Vec::new(),
     };
 
-    let error = emit_program::emit(
+    let emitted = emit_program::emit(
         &program,
         &build_versions(
             "rustc-test".to_string(),
@@ -421,16 +485,30 @@ fn handle_out_emission_is_currently_blocked_by_eager_local_materialisation() {
         ),
         &starkc::layout::TargetLayout::default(),
     )
-    .err()
-    .expect("HandleOut resource locals currently reach default materialisation first");
-    let rendered = format!("{error:?}");
+    .expect("a HandleOut resource destination must emit")
+    .main_rs;
+
+    // **Upgraded from an `expect_err` (CD-240)**, per this test's own tripwire.
+    //
+    // The destination is declared DEAD and written only under the status-zero arm. That ordering is
+    // the whole guarantee: a failed call leaves the slot dead, so the later implicit `Drop` finds
+    // nothing to close and the program cannot close a handle the provider never issued.
     assert!(
-        rendered.contains("has no default value") && rendered.contains("successful HandleOut"),
-        "{rendered}"
+        emitted.contains("ValueSlot::dead()"),
+        "the handle destination must begin dead:\n{emitted}"
+    );
+    let zero_arm = emitted
+        .find("0u32 =>")
+        .expect("the status dispatch must have a success arm");
+    let write = emitted
+        .find(".write(")
+        .expect("the destination must be written somewhere");
+    assert!(
+        write > zero_arm,
+        "the handle must be written INSIDE the success arm, not before the status is known:\n{emitted}"
     );
     assert!(
-        TypeContext::default().is_copy(&tcp_stream_ty()),
-        "current failing point changed: HostResource no longer falls through the wildcard Copy arm; \
-         this test should be upgraded to assert success-only HandleOut writeback"
+        !TypeContext::default().is_copy(&tcp_stream_ty()),
+        "a host resource must never be Copy"
     );
 }

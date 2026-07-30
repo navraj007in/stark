@@ -818,6 +818,19 @@ impl TypeContext {
             MirTy::Array(elem, _) => self.is_copy(elem),
             MirTy::Ref { mutable, .. } => !*mutable,
             MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
+            // **A11/CD-234: a host resource is NEVER `Copy`, and this arm must stay explicit.**
+            //
+            // The wildcard below classified it `Copy`, with three consequences, none of which
+            // announced themselves: `is_slot_backed` became false, so the local was declared through
+            // `default_value_expr` -- which refuses a resource -- and emission failed before `Drop`
+            // was ever reached; `emit_drop` refuses a `Copy` type outright, so the close could not
+            // have run either; and "Copy" is the licence to DUPLICATE a handle, which would give two
+            // owners of one resource and close it twice.
+            //
+            // Being non-`Copy` is what makes a resource slot-backed, and a slot is what gives it
+            // `ValueSlot::dead()` -- CD-234's "the slot begins dead" is then the representation
+            // itself rather than a rule anything has to enforce.
+            MirTy::HostResource(_) => false,
             _ => true,
         }
     }

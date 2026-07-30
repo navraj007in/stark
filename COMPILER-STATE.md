@@ -544,7 +544,31 @@ destination closes; and a consuming call takes the value out, so the later impli
 dead and cannot close twice. The handle is *taken*, not borrowed — which is what makes a second close
 impossible rather than merely unlikely.
 
-**CORRECTION — the close emission is written but NOT YET REACHABLE.** A host-resource local still
+**CD-240 — the bottleneck was one wildcard, and it is fixed.**
+
+`TypeContext::is_copy` ends in `_ => true`, so `MirTy::HostResource` was silently classified **Copy**.
+Three consequences, none of which announced themselves: `is_slot_backed` became false, so the local
+was declared through `default_value_expr` — which refuses a resource — and emission failed before
+`Drop` was reached; `emit_drop` refuses a `Copy` type outright, so the close could not have run
+either; and `Copy` is the licence to *duplicate* a handle, which gives two owners of one resource and
+closes it twice.
+
+The arm is now explicit and `is_copy(HostResource) == false`. That single change makes a resource
+local slot-backed, and a slot-backed local is already declared `ValueSlot::dead()` with **no default**
+— so CD-234's "the slot begins dead, and no placeholder may make it live" is now the representation
+itself rather than a rule anything has to enforce. The `Drop`→close path written in CD-239 is
+reachable, and the emitted form is
+`local.drop_with(|__v| unsafe { close(__v.take_raw()); })`: taken, not borrowed, so a second close is
+impossible.
+
+**This is the third time a `MirTy` catch-all has swallowed the new variant** (see the zero-compile-error
+note under CD-234). The parallel session independently diagnosed the same root cause and left tripwire
+assertions — `assert!(is_copy(&resource), "current failing point changed … upgrade this test")` — in
+the two boundary tests. Both tripped as designed and are now upgraded to assert close emission and
+success-only `HandleOut` writeback. `a11_host_resource.rs` carries the standing regression guard,
+because the defect produced no compile error and only an assertion can catch its return.
+
+**CORRECTION (superseded by CD-240 above) — the close emission is written but NOT YET REACHABLE.** A host-resource local still
 fails earlier, at `default_value_expr`: the CFG dispatch loop default-initialises every local
 **eagerly**, and CD-234 requires a resource to have no default. So emission refuses before `Drop`
 ever runs. The parallel session's `c788_resource_lifecycle.rs` pins exactly that boundary with an
