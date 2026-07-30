@@ -881,6 +881,59 @@ active. Authority is split by surface, not by file proximity:
   under their own headings. If a lease mechanism is wanted, it needs to be specified before it can
   be cited.
 
+## DEFECT-C788-LOOP-TEMP — RULING (CD-264): NON-BLOCKING C7 DEVIATION, MANDATORY NEAR-TERM FIX
+
+**Does not block Gate C7 closure. Becomes a mandatory near-term compiler defect at P1 compiler
+priority** — high priority, *not* the P1 workload; the two senses of "P1" are unrelated.
+
+Classification:
+
+> **C7 non-blocking known defect; mandatory before native resource support is declared generally
+> usable beyond the admitted P1 workload.**
+
+| question | ruling |
+| --- | --- |
+| blocks P1 qualification? | **no** |
+| blocks C7 closure? | **no** |
+| lifecycle matrix fully complete? | **no** — 8 observed, 1 unreachable, 1 blocked |
+| may remain indefinitely? | **no** |
+| must be fixed before a broad native-resource completeness claim? | **yes** |
+| must be fixed before a public release recommending resource-producing calls in loops? | **yes** |
+
+**Why not blocking.** C7's admitted closure question is whether the selected native path is usable
+and qualified for the frozen workloads. P1's 24-accept REST loop executes; its resources are held in
+user bindings whose lifecycle works; eight lifecycle cases pass; `?` propagation, early return,
+call-boundary movement and independent listener/stream closing all work; reproduction needs a
+compiler-generated temporary shape P1 does not emit. Making it blocking would retroactively change
+the gate from *prove the admitted native workload and its required resource surface* to *prove every
+valid looping shape involving resource-bearing intermediate values* — a guarantee that matters but
+was not the frozen C7/P1 criterion.
+
+**Why not a minor deferral.** The failing program is valid source (a `while` loop around
+`match connect(addr) { … }`) that aborts on its second iteration. The defect is generic — repeated
+provider operations, resource-producing expressions in loops, any future `Result<Resource, E>` or
+`Option<Resource>` API, and confidence in exactly-once lowering for reusable control-flow regions.
+TCP merely exposed it.
+
+**Safety reading.** The compiler fails closed with a compiler-defect diagnostic rather than silently
+overwriting a live resource. This is a language-correctness and availability defect, **not** a
+demonstrated silent double-close, use-after-move or ownership corruption. That fail-closed behaviour
+is the strongest reason it is admissible as a known limitation.
+
+**Fix boundary** — compiler-wide, not TCP-specific:
+
+> Every non-`Copy` compiler-generated temporary that may be assigned again must be proven dead
+> before the next assignment. If live, lowering must emit the appropriate Drop or move-out
+> transition on every predecessor edge.
+
+Eight-point investigation scope and gate wording: `c78/closure-gate-slice7.md`;
+`repeated_connect_and_release_reuses_slot_state` is the primary regression test and is unignored
+(with its `CLASSIFIED_IGNORES` entry removed) by the fixing change.
+
+**Final C7 position:** close C7 once the remaining cross-platform qualification and C7.5
+measurements pass; carry `DEFECT-C788-LOOP-TEMP` as an explicit high-priority deviation, not a
+hidden gap and not a C7 blocker.
+
 ## Gate C7 — RULING (CD-262): QUALIFICATION-BLOCKED, NOT CAPABILITY-BLOCKED
 
 **Condition 1 ("native builds usable") is MET for the admitted C7/P1 scope.** A real STARK
@@ -905,6 +958,7 @@ capability, and does not hold the gate open.
 | P1 Tier-1 qualification | PARTIAL |
 | C7.5 deferred measurements | OPEN |
 | native Core `File` support | KNOWN LIMITATION / DEFERRED |
+| `DEFECT-C788-LOOP-TEMP` | ADMITTED NON-BLOCKING DEVIATION (CD-264) |
 | **C7 overall** | **OPEN — QUALIFICATION REMAINS** |
 
 Critical path: Linux x64 P1 run; Windows x64 P1 run; C7.5 steady-state runtime; C7.5 debug/release

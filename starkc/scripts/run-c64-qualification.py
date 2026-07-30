@@ -326,7 +326,9 @@ CLASSIFIED_IGNORES = {
         "(STARK compiler defect, not a program fault)'. The generated program contains exactly "
         "one `drop_with`, on the match binding, and none for the scrutinee temp. This is a real "
         "compiler defect, not a test problem; the ignore records it rather than hiding it, and "
-        "goes with the fix."
+        "goes with the fix. Admitted as a non-blocking C7 deviation at P1 compiler priority "
+        "(CD-264) -- high priority, not the P1 workload; mandatory before native resource "
+        "support is declared generally usable beyond the admitted P1 workload."
     ),
     "real_inference_agrees_with_reference": (
         "gate-5 tensor track; downloads and links ONNX Runtime and runs Python. "

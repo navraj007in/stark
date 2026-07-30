@@ -41,6 +41,7 @@ implemented.
 | P1 Tier-1 qualification | **PARTIAL** |
 | C7.5 deferred measurements | **OPEN** |
 | native Core `File` support | **KNOWN LIMITATION / DEFERRED** |
+| `DEFECT-C788-LOOP-TEMP` | **ADMITTED NON-BLOCKING DEVIATION** (CD-264) |
 | **C7 overall** | **OPEN — QUALIFICATION REMAINS** |
 
 ### Remaining critical path
@@ -63,9 +64,40 @@ implemented.
 > Gate C7 remains open for qualification: P1 requires Linux x64 and Windows x64 execution evidence,
 > and C7.5 requires the two workload-dependent runtime measurements previously deferred.
 >
-> Resource lifecycle evidence is substantially complete: seven cases are observed against real
-> providers, one is unreachable by construction, and two remain defined but unobserved — `?`
-> propagation with a live resource and repeated connect/release.
+> Resource lifecycle evidence is substantially complete: eight cases are observed against real
+> providers, one is unreachable by construction, and one is blocked by `DEFECT-C788-LOOP-TEMP`,
+> admitted below as a non-blocking deviation.
+
+### DEFECT-C788-LOOP-TEMP — admitted non-blocking deviation (CD-264)
+
+> **DEFECT-C788-LOOP-TEMP is admitted as a non-blocking C7 deviation.** A resource-bearing
+> match-scrutinee temporary reused across loop iterations is not dropped before reassignment, causing
+> the runtime to abort on the second write to the live slot. The runtime detects the compiler
+> violation and fails closed; no silent ownership corruption has been observed.
+>
+> The defect does not invalidate the frozen P1 workload or its qualification because P1 does not
+> generate the affected temporary-reuse shape and its user-bound resources close correctly. It
+> therefore does not block Gate C7.
+>
+> The defect is nevertheless a mandatory compiler correction before STARK claims general native
+> support for repeated resource-producing expressions or recommends such expressions for application
+> use. The classified ignored regression remains committed and must be unignored by the fixing
+> change.
+
+Priority: **P1 compiler priority** — high priority, not the P1 workload. Full disposition, fix
+boundary and the eight-point investigation scope are in `c78/closure-gate-slice7.md`.
+
+The reason it is admissible rather than blocking is that the compiler **fails closed**: it does not
+silently overwrite a live resource and continue, so this is a correctness and availability defect,
+not a demonstrated double-close or ownership corruption. Making it blocking would retroactively
+widen C7 from *prove the admitted native workload and its required resource surface* to *prove
+every valid looping shape involving resource-bearing intermediate values*.
+
+### Final position
+
+> **Close C7 once the remaining cross-platform qualification and C7.5 measurements pass. Carry
+> `DEFECT-C788-LOOP-TEMP` as an explicit high-priority deviation, not as a hidden gap and not as a
+> C7 blocker.**
 
 ---
 

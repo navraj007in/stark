@@ -51,7 +51,7 @@ argued from the parts.
 | early return with a live resource | **observed** | `c788_lifecycle_e2e::an_early_return_with_a_live_resource_closes_it` |
 | resource moved through a **call** | **observed** | `c788_lifecycle_e2e::a_resource_moved_through_a_call_closes_once_in_the_callee` — the caller's local is dead after the move, so exactly one close runs, in the callee |
 | `?` propagation with a live resource | **observed** | `c788_lifecycle_e2e::question_mark_propagation_closes_a_live_resource` — a live first resource is closed on the desugared error path, which exits differently from an explicit `return` |
-| repeated connect/release | **written, and it found a defect** | `DEFECT-C788-LOOP-TEMP` — see below. Test committed `#[ignore]`d with a classification, per CD-247 |
+| repeated connect/release | **written, and it found a defect** | `DEFECT-C788-LOOP-TEMP` — see below. Test committed `#[ignore]`d with a classification, per CD-247. Admitted as a **non-blocking C7 deviation** at P1 compiler priority (CD-264) |
 | repeated open/release (`filesystem`) | defined, **and blocked by SELECT-C** | `File` is not on the `HostResource` path, so it has no A11 close arena to exercise |
 
 ### How the observed cases detect a violation
@@ -75,10 +75,10 @@ its listener/stream surface**, which P1 explicitly requires. `filesystem` reache
 through its legacy path by decision (SELECT-C), not by omission.
 
 So **C7.8 has removed P1's host-capability precondition.** The residue is not capability coverage but
-the lifecycle cases still marked `defined` — accept/release, early return with a live resource, `?`
-propagation with a live resource, and a resource moved through a call. Those are properties of
-resource *handling*, not of whether a capability is reachable, and none of them blocks P1 from being
-attempted; the P1 REST workload is already built on this surface.
+a single lifecycle case — repeated connect/release — which is blocked by `DEFECT-C788-LOOP-TEMP`.
+That is a property of resource *handling*, not of whether a capability is reachable, and it does not
+block P1: the affected shape is a compiler-generated temporary, the P1 REST workload does not emit
+it, and the workload is already built and running on this surface.
 
 ## DEFECT-C788-LOOP-TEMP — found by the last lifecycle case
 
@@ -105,6 +105,83 @@ defect needs a resource-bearing temporary re-written across iterations.
 
 Recorded as an ignore with a `CLASSIFIED_IGNORES` entry rather than deleted or left red, so C6.4
 tier-1 keeps it visible. Un-ignore with the fix.
+
+### Disposition (CD-264): non-blocking C7 deviation, mandatory near-term correction
+
+> **DEFECT-C788-LOOP-TEMP is admitted as a non-blocking C7 deviation.** A resource-bearing
+> match-scrutinee temporary reused across loop iterations is not dropped before reassignment, causing
+> the runtime to abort on the second write to the live slot. The runtime detects the compiler
+> violation and fails closed; no silent ownership corruption has been observed.
+>
+> The defect does not invalidate the frozen P1 workload or its qualification because P1 does not
+> generate the affected temporary-reuse shape and its user-bound resources close correctly. It
+> therefore does not block Gate C7.
+>
+> The defect is nevertheless a mandatory compiler correction before STARK claims general native
+> support for repeated resource-producing expressions or recommends such expressions for application
+> use. The classified ignored regression remains committed and must be unignored by the fixing
+> change.
+
+| question | ruling |
+| --- | --- |
+| blocks P1 qualification? | **no** |
+| blocks C7 closure? | **no** |
+| lifecycle matrix fully complete? | **no** — 8 observed, 1 unreachable, 1 blocked |
+| may remain indefinitely? | **no** |
+| must be fixed before a broad native-resource completeness claim? | **yes** |
+| must be fixed before a public release recommending resource-producing calls in loops? | **yes** |
+
+Priority: **P1 compiler priority** — high priority, *not* the P1 workload. The two senses of "P1"
+are unrelated and are kept distinct deliberately.
+
+**Why it does not block.** C7's admitted closure question is whether the selected native path is
+usable and qualified for the frozen workloads. Making this defect blocking would retroactively
+change the gate from *prove the admitted native workload and its required resource surface* to
+*prove every valid looping shape involving resource-bearing intermediate values*. The broader
+guarantee matters, but it was not the frozen criterion.
+
+**Why it is not a minor deferral.** The failing program is valid source:
+
+```stark
+while condition {
+    match connect(address) {
+        Ok(stream) => { use(stream); }
+        Err(error) => { handle(error); }
+    }
+}
+```
+
+A correct program aborts on its second iteration. TCP merely exposed the defect; it is generic, and
+reaches repeated provider operations, resource-producing expressions in loops, any future
+`Result<Resource, E>` or `Option<Resource>` API, and confidence in exactly-once lowering for
+reusable control-flow regions.
+
+**Safety reading.** The compiler does not silently overwrite a live resource and continue — it fails
+closed with a compiler-defect diagnostic. So this is a language-correctness and availability defect,
+**not** a demonstrated silent double-close, use-after-move or ownership corruption. That fail-closed
+behaviour is the reason it can be admitted as a known limitation rather than stopping C7.
+
+### Fix boundary
+
+Compiler-wide, not TCP-specific:
+
+> Every non-`Copy` compiler-generated temporary that may be assigned again must be proven dead
+> before the next assignment. If live, lowering must emit the appropriate Drop or move-out
+> transition on **every** predecessor edge.
+
+The investigation must examine:
+
+1. lifetime scope assigned to match scrutinee temporaries;
+2. drop scheduling at the loop back-edge;
+3. drop flags for compiler-generated locals;
+4. whether the temp is statement-scoped or loop-body-scoped;
+5. cleanup on `continue`, `break`, `return`, `?`, panic and the normal back-edge;
+6. `Option<Resource>` as well as `Result<Resource, E>`;
+7. nested matches and multiple resource temporaries;
+8. HIR/MIR/native parity.
+
+`repeated_connect_and_release_reuses_slot_state` becomes the primary regression test and is
+unignored by the fixing change (removing its `CLASSIFIED_IGNORES` entry in the same commit).
 
 ## A finding the gate should record
 
