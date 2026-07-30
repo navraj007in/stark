@@ -38,6 +38,18 @@ pub struct ProviderLowering {
     /// Provider resource name → the nominal's resolved `ItemId`, so lowering can build a
     /// `MirTy::HostResource` (CD-234/CD-235). Resolved once, after the generated source is parsed.
     pub resource_items: BTreeMap<String, crate::hir::ItemId>,
+    /// Provider resource name → the package NOMINAL name bound to it.
+    ///
+    /// Names, not `ItemId`s, because this is known from the manifest before any source exists.
+    /// Lowering resolves them once `ProgramMeta` can map an item to its file and text.
+    pub resource_nominal_names: BTreeMap<String, String>,
+    /// Provider resource name → the arena id of its close call.
+    ///
+    /// **Split from `closes` deliberately.** Selecting the close needs the provider set, which only
+    /// the driver has; building the `ValidatedProviderClose` needs the resource's `MirTy`, which
+    /// needs an `ItemId`, which only exists after parsing. So the driver records the pair here and
+    /// lowering completes it — each stage doing the part it can actually know.
+    pub pending_closes: BTreeMap<String, ProviderCallId>,
     /// **A11 §5: the close selected for each bound resource**, copied onto
     /// `MirProgram::provider_closes` and keyed into `TypeContext::host_resource_closes` by lowering.
     pub closes: Vec<crate::mir::ValidatedProviderClose>,
@@ -97,6 +109,8 @@ impl ProviderLowering {
             arena,
             by_item_name,
             resource_items: BTreeMap::new(),
+            resource_nominal_names: BTreeMap::new(),
+            pending_closes: BTreeMap::new(),
             closes: Vec::new(),
             error_variants: error_variants.clone(),
             error_ty_for_call,
@@ -109,30 +123,60 @@ impl ProviderLowering {
     /// provider's metadata is an ERROR, not an empty result: §5 obligation 5 says a resource reaching
     /// emission without a close is a leak the ABI cannot detect, because the provider never learns
     /// the handle was abandoned.
-    pub fn select_closes<F>(
-        &mut self,
-        mut close_for: F,
-    ) -> Result<Vec<crate::mir::ValidatedProviderClose>, String>
+    pub fn select_closes<F>(&mut self, mut close_for: F) -> Result<(), String>
     where
         F: FnMut(&str) -> Result<ValidatedProviderCall, String>,
     {
-        let mut closes = Vec::new();
-        // `resource_items` is a `BTreeMap`, so selection order is name-derived and the arena indices
-        // a close gets are a function of the manifest rather than of iteration.
-        let resources: Vec<String> = self.resource_items.keys().cloned().collect();
+        // Iterates the NOMINAL NAMES, which the manifest supplies, rather than `resource_items`,
+        // which is empty until lowering resolves ids. Selecting from an empty map is how this
+        // silently selected nothing.
+        let resources: Vec<String> = self.resource_nominal_names.keys().cloned().collect();
         for resource in resources {
             let call = close_for(&resource)?;
-            let provider = call.provider.name.clone();
-            let Some(resource_ty) = self.resource_ty(&resource, &provider) else {
-                return Err(format!(
-                    "resource `{resource}` has no bound nominal, so its close has nothing to close"
-                ));
-            };
             let id = ProviderCallId(self.arena.len() as u32);
             self.arena.push(call);
+            self.pending_closes.insert(resource, id);
+        }
+        Ok(())
+    }
+
+    /// Resolves nominal NAMES to `ItemId`s and completes the close bindings.
+    ///
+    /// Called by lowering, where `ProgramMeta` can map an item to its file and read its name text.
+    /// Returns the completed closes; `resource_items` is filled in place so `resource_ty` works for
+    /// the rest of lowering.
+    pub fn resolve_nominals<F>(
+        &mut self,
+        mut find_item: F,
+    ) -> Result<Vec<crate::mir::ValidatedProviderClose>, String>
+    where
+        F: FnMut(&str) -> Option<crate::hir::ItemId>,
+    {
+        for (resource, nominal) in &self.resource_nominal_names {
+            let item = find_item(nominal).ok_or_else(|| {
+                format!(
+                    "synthesized nominal `{nominal}` for resource `{resource}` is not among the \
+                     program's items"
+                )
+            })?;
+            self.resource_items.insert(resource.clone(), item);
+        }
+
+        let mut closes = Vec::new();
+        for (resource, id) in &self.pending_closes {
+            let provider = self
+                .arena
+                .get(id.0 as usize)
+                .map(|c| c.provider.name.clone())
+                .ok_or_else(|| format!("close for `{resource}` is not in the arena"))?;
+            let ty = self.resource_ty(resource, &provider).ok_or_else(|| {
+                format!(
+                    "resource `{resource}` has no bound nominal, so its close has nothing to close"
+                )
+            })?;
             closes.push(crate::mir::ValidatedProviderClose {
-                resource: resource_ty,
-                close: id,
+                resource: ty,
+                close: *id,
             });
         }
         self.closes = closes.clone();

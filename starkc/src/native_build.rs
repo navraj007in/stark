@@ -11,7 +11,7 @@ use crate::mir::{
 use crate::native_toolchain::{self, ToolchainError, ToolchainInfo};
 use crate::options::LanguageOptions;
 use crate::package::{find_package_root, PackageGraph};
-use crate::provider_derive::{DerivedSignature, DerivedTy};
+use crate::provider_derive::DerivedSignature;
 use crate::provider_resolve::ProviderSet;
 use crate::provider_synth::SynthesizedLayer;
 use std::collections::HashMap;
@@ -173,17 +173,6 @@ fn provider_layer_for_build(
             let call = set
                 .resolve(&binding.capability, &binding.symbol)
                 .map_err(|error| BuildCommandError::Capability(format!("{error:?}")))?;
-            if call.function.params.iter().any(is_resource_abi_param) {
-                return Err(BuildCommandError::Capability(format!(
-                    "provider_api for package `{package_name}` binds `{}` to a resource-bearing \
-                     provider signature. Synthesis and lowering handle host resources as of \
-                     CD-234/CD-235 -- the nominal is a zero-variant enum and the type is \
-                     MirTy::HostResource -- but the close arena and the Drop-terminator close are \
-                     not implemented, so a resource obtained here could never be released. Refused \
-                     until that lands rather than built with a leak.",
-                    binding.item_path
-                )));
-            }
             raw_bindings.push((
                 binding.item_path.clone(),
                 binding.capability.clone(),
@@ -200,7 +189,6 @@ fn provider_layer_for_build(
                     ))
                 },
             )?;
-        reject_resource_signatures(&package_name, &signatures)?;
 
         let layer = crate::provider_synth::synthesize_with_resources(
             &signatures,
@@ -221,7 +209,7 @@ fn provider_layer_for_build(
         )?;
     }
 
-    let lowering = ProviderLowering::build_with_errors(
+    let mut lowering = ProviderLowering::build_with_errors(
         &tables.bindings,
         &tables.error_variants,
         &tables.error_ty_by_item,
@@ -232,48 +220,24 @@ fn provider_layer_for_build(
     )
     .map_err(BuildCommandError::Capability)?;
 
+    // A11 §5: every bound resource needs its close selected HERE, where the provider set is, and
+    // recorded against the resource name. Lowering completes it once the nominal has an item id.
+    // A resource with no `is_close_for` function is refused rather than left closeless: §5
+    // obligation 5 -- a resource reaching emission without a close is a leak the ABI cannot detect,
+    // because the provider never learns the handle was abandoned.
+    lowering.resource_nominal_names = tables.resource_nominals.clone();
+    lowering
+        .select_closes(|resource| {
+            set.close_for(resource)
+                .map_err(|error| format!("resource `{resource}` has no usable close: {error:?}"))
+        })
+        .map_err(BuildCommandError::Capability)?;
+
     Ok(ProviderBuildLayer {
         overlays: tables.overlays,
         lowering,
         resource_nominals: tables.resource_nominals,
     })
-}
-
-fn reject_resource_signatures(
-    package_name: &str,
-    signatures: &[DerivedSignature],
-) -> Result<(), BuildCommandError> {
-    for sig in signatures {
-        if sig.receiver.as_ref().is_some_and(is_resource_ty)
-            || sig.params.iter().any(is_resource_ty)
-            || sig.results.iter().any(is_resource_ty)
-        {
-            return Err(BuildCommandError::Capability(format!(
-                "provider_api for package `{package_name}` binds `{}` to a resource-bearing \
-                 provider signature. Refused because the close arena and the Drop-terminator close \
-                 are not implemented yet (CD-234/CD-235 gave the nominal and the type, not the \
-                 lifecycle), so a resource obtained here could never be released.",
-                sig.item_path
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn is_resource_ty(ty: &DerivedTy) -> bool {
-    matches!(
-        ty,
-        DerivedTy::SharedResource { .. } | DerivedTy::OwnedResource { .. }
-    )
-}
-
-fn is_resource_abi_param(param: &crate::provider_abi::AbiParam) -> bool {
-    matches!(
-        param,
-        crate::provider_abi::AbiParam::HandleBorrowed { .. }
-            | crate::provider_abi::AbiParam::HandleConsumed { .. }
-            | crate::provider_abi::AbiParam::HandleOut { .. }
-    )
 }
 
 /// The four tables a synthesized layer contributes to, bundled.

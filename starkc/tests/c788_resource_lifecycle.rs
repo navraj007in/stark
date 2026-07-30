@@ -140,9 +140,6 @@ fn build_driver_still_refuses_resource_lifecycle_at_the_source_boundary() {
 }
 
 #[test]
-#[ignore = "pending the driver calling ProviderLowering::select_closes (WP-C7.8.8 track C). \
-The selection API exists and is unit-tested; native_build.rs does not yet call it, and that \
-wiring is in flight in a parallel session. Un-ignore with the change that makes it pass."]
 fn build_driver_selects_closes_for_bound_resource_nominals() {
     let root = fixture_root("driver-close-wiring");
     let _ = std::fs::remove_dir_all(&root);

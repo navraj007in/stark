@@ -67,6 +67,16 @@ pub enum SymbolProblem {
 /// invocation** (`WP-C5-ENTRY.md` §3.2), never as a silent downgrade (ABI §16).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError {
+    /// **A11 §5 obligation 5:** the resource has no `is_close_for` function, so a handle of it could
+    /// never be released. A leak the ABI cannot detect — the provider never learns the handle was
+    /// abandoned — so it is refused at selection rather than discovered at runtime as a leak.
+    NoCloseForResource { resource_type: String },
+    /// Two closes for one resource: two destruction paths, and choosing by order would make the
+    /// binary depend on something other than what the program declared.
+    AmbiguousClose {
+        resource_type: String,
+        functions: Vec<String>,
+    },
     /// The provider's declared metadata does not satisfy ABI v0.1 (§2–§16).
     InvalidMetadata {
         provider: String,
@@ -340,6 +350,46 @@ impl ProviderSet {
     /// what proves exactly one supplier exists. Resolving an unselected capability reports
     /// [`ResolveError::CapabilityUnavailable`] rather than searching, so a caller cannot bypass
     /// the ambiguity check by resolving directly.
+    /// **A11 §5: the close function for a resource, from validated metadata.**
+    ///
+    /// Selected here rather than searched for at drop time, which is what lets the verifier discharge
+    /// §5's five obligations before emission. A resource whose provider declares no `is_close_for`
+    /// for it is an ERROR, never an empty result: obligation 5 says a resource reaching emission
+    /// without a close is a leak the ABI cannot detect, because the provider never learns the handle
+    /// was abandoned.
+    ///
+    /// Ambiguity is refused too. Two closes for one resource would be two destruction paths, and
+    /// picking either by order would make the produced binary depend on something other than what
+    /// the program declared — the same rule provider selection already applies.
+    pub fn close_for(&self, resource_type: &str) -> Result<ValidatedProviderCall, ResolveError> {
+        let mut found: Vec<(&DeclaredProvider, &crate::provider_abi::FunctionDecl)> = Vec::new();
+        for provider in self.providers() {
+            for function in &provider.metadata.functions {
+                if function.is_close_for.as_deref() == Some(resource_type) {
+                    found.push((provider, function));
+                }
+            }
+        }
+        match found.as_slice() {
+            [(provider, function)] => {
+                self.resolve(&function.capability, &function.name)
+                    .map(|mut call| {
+                        // The capability the close belongs to is the declaring function's own, which
+                        // `resolve` already enforces (V-PROV-3); this only names the provider for clarity.
+                        call.provider = provider.metadata.identity.clone();
+                        call
+                    })
+            }
+            [] => Err(ResolveError::NoCloseForResource {
+                resource_type: resource_type.to_string(),
+            }),
+            many => Err(ResolveError::AmbiguousClose {
+                resource_type: resource_type.to_string(),
+                functions: many.iter().map(|(_, f)| f.name.clone()).collect(),
+            }),
+        }
+    }
+
     pub fn resolve(
         &self,
         capability: &str,

@@ -321,6 +321,37 @@ pub fn lower_program_with_providers(
         return unsupported("program without a `main` function", Span { lo: 0, hi: 0 });
     };
 
+    // A11: resolve the synthesized nominal NAMES to item ids, now that `meta` can map an item to its
+    // file and read its name text, and complete the close bindings the driver could only half-build.
+    // Cloned because `providers` is shared and this fills `resource_items` in place.
+    let mut providers = providers.clone();
+    let resolved_closes = if providers.resource_nominal_names.is_empty() {
+        Vec::new()
+    } else {
+        let names: Vec<(u32, String)> = meta
+            .all_items
+            .iter()
+            .filter_map(|&item| match &hir.item(item).kind {
+                ItemKind::Enum { name, .. } | ItemKind::Struct { name, .. } => {
+                    Some((item.0, meta.item_text(item, *name).to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        providers
+            .resolve_nominals(|nominal| {
+                names
+                    .iter()
+                    .find(|(_, n)| n == nominal)
+                    .map(|(id, _)| ItemId(*id))
+            })
+            .map_err(|what| LowerError {
+                what,
+                span: Span { lo: 0, hi: 0 },
+            })?
+    };
+    let providers = &providers;
+
     let mut program = MirProgram {
         files: meta.files.clone(),
         bodies: Vec::new(),
@@ -332,7 +363,7 @@ pub fn lower_program_with_providers(
         provider_calls: providers.arena.clone(),
         // A11 §5: selected at RESOLUTION, carried here verbatim. Empty while no resource is bound,
         // which is every program that touches no host resource.
-        provider_closes: providers.closes.clone(),
+        provider_closes: resolved_closes.clone(),
         // A11: sorted, so the program's identity is a function of the manifest rather than of
         // iteration order -- the same property CD-213 gave capabilities.
         resource_bindings: providers
@@ -357,7 +388,7 @@ pub fn lower_program_with_providers(
     // A11 §5: `drop_plan::plan_for` resolves destruction from the TYPE alone, and a host resource's
     // destruction IS its close -- so the close has to be reachable from the type context, exactly as
     // a nominal's `Drop` impl is.
-    for binding in &providers.closes {
+    for binding in &resolved_closes {
         program
             .types
             .host_resource_closes
