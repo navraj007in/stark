@@ -5,6 +5,42 @@
 
 ---
 
+## 0. REASSESSMENT after WP-C7.8 (CD-261, 2026-07-30)
+
+WP-C7.8 landed after this assessment was written. It changes two of the four verdicts below and
+**leaves the gate open**, for a narrower reason than before.
+
+| condition | was | now | why |
+| --- | --- | --- | --- |
+| native builds usable | PARTIAL | **PARTIAL, narrowed** | Native I/O now exists and executes from ordinary source — args/env, monotonic time, and TCP bind/accept/connect/read/write — through the provider path (`c78/closure-gate-slice7.md`). **Core `File` from source still refuses**, verbatim as §2 records |
+| reproducible | MET | MET | unchanged |
+| performance bounded by evidence | MET | MET | unchanged; the two deferred dimensions were waiting on P1, which now has a workload |
+| P1 complete | NOT MET | **NOT MET, in progress** | A native HTTP/JSON REST workload exists and self-assesses `P1 PARTIAL — Tier-1 cross-platform runs remain` (`WP-C7-P1-REST-REPORT.md`) |
+
+**§2's probe was re-run, not assumed.** A program calling `File::create` still fails with exactly
+the error quoted below. That the backend now emits `OwnedResourceHandle` for `MirTy::Core(File, ..)`
+does **not** make a source-level `File` program buildable, and inferring otherwise from the emitter
+would have been wrong — the refusal is upstream of emission.
+
+**Why `File` is still refused is now a decision, not an omission.** SELECT-C (CD-253) keeps
+`CoreType::File` on the legacy `MirTy::Core` path unconditionally, because migrating it would make a
+type's MIR identity depend on build configuration. The consequence is deliberate and recorded: `File`
+does not participate in the A11 close arena, and no source-level `File` path was built.
+
+**So the shape of the block has changed.** This assessment said P1 "is not waiting to be scheduled;
+it is waiting on native capability". That is no longer true — P1's REST workload is built on TCP and
+environment lookup and needs no `File`. What remains is qualification, not capability:
+
+1. Tier-1 cross-platform runs for the P1 workload (its own stated caveat; measurements are macOS-only);
+2. C7.5's two deferred measurements, which were blocked on P1 existing;
+3. a source-level `File` path, **if** the roadmap's "native builds usable" is read as requiring the
+   standard library's own I/O type rather than the provider capabilities P1 enumerates. That reading
+   is a judgement for the gate owner and is deliberately not made here.
+
+Item 3 is the one that decides whether condition 1 can move to MET. Items 1 and 2 are runs.
+
+---
+
 ## 1. The four exit conditions, one verdict each
 
 The roadmap: *"C7 closes when native builds are usable, reproducible to the documented degree,

@@ -881,6 +881,31 @@ active. Authority is split by surface, not by file proximity:
   under their own headings. If a lease mechanism is wanted, it needs to be specified before it can
   be cited.
 
+## Gate C7 — REASSESSED after C7.8 (CD-261): still open, for a narrower reason
+
+C7.8 changes two verdicts. **Native I/O exists and executes from ordinary source** — args/env,
+monotonic time, TCP bind/accept/connect/read/write — so the 2026-07 assessment's central claim
+("`stark-runtime/src` has no file, network, time or environment module at all") is superseded.
+
+**But its probe still holds, re-run rather than assumed.** A source-level `File::create` program
+still fails with `native build does not yet support this program: type Core(File, []) (C4.5)`. The
+backend emitting `OwnedResourceHandle` for `MirTy::Core(File, ..)` does **not** make such a program
+buildable — the refusal is upstream of emission, and I asserted otherwise from inspection before
+checking, which was wrong.
+
+That refusal is now a **decision** rather than an omission: SELECT-C (CD-253) keeps `File` on the
+legacy path unconditionally, because migrating it would make MIR identity depend on build
+configuration.
+
+**The block has changed shape.** The old assessment said P1 was "waiting on native capability".
+It is not: the P1 REST workload is built on TCP and environment lookup, needs no `File`, and
+self-assesses `P1 PARTIAL — Tier-1 cross-platform runs remain`. What remains is qualification —
+cross-platform runs for P1, and C7.5's two deferred measurements which were blocked on P1 existing.
+
+**One question is the owner's**, and is deliberately left open: whether "native builds usable"
+requires the standard library's own `File`, or is satisfied by the provider capabilities P1
+enumerates. That reading decides whether condition 1 can move to MET.
+
 ## Gate C7 — EXIT ASSESSMENT (CD-195): CANDIDATE-COMPLETE, BLOCKED BY P1
 
 **Gate C7 does NOT close.** Of its four exit conditions, two are met, one is partial, and one is not
