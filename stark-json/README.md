@@ -8,7 +8,7 @@ work package.
 Implemented and checked under the current compiler:
 
 - package manifest with no dependencies;
-- frozen public type/function names except the `JsonValue` payload variant spelling noted below;
+- frozen public type/function names, including `JsonValue::Bool` and `JsonValue::String`;
 - recursive `JsonValue` shape using ordered `Vec<JsonMember>` objects;
 - parser entry points `parse` and `parse_with_limits`;
 - byte-oriented recursive descent for primitives, numbers, arrays, objects, whitespace, duplicate
@@ -19,8 +19,8 @@ Implemented and checked under the current compiler:
 
 Current compiler/runtime blockers prevent a complete compliant implementation:
 
-- `JsonValue::Bool(Bool)` and `JsonValue::String(String)` are rejected by the frontend because
-  variant names collide with built-in type names. This package uses `BoolValue` and `StringValue`.
+- `JsonValue::Bool(Bool)` and `JsonValue::String(String)` now parse and check after the compiler
+  accepts primitive type keywords as enum variant declaration names and path segments.
 - The compiler has no supported ref-binding pattern for non-Copy enum payloads, so
   `encode(value: &JsonValue)` cannot inspect recursive `String`, `Vec`, or object payloads without
   move errors. The function currently preserves the required signature but returns `null`.

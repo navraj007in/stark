@@ -51,7 +51,7 @@ fn assert_string(input: &str, expected: &str) {
     match parse(input) {
         Ok(value) => {
             match value {
-                JsonValue::StringValue(text) => {
+                JsonValue::String(text) => {
                     if text.as_str() != expected {
                         panic("string content mismatch");
                     }

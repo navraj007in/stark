@@ -1,8 +1,8 @@
 pub enum JsonValue {
     Null,
-    BoolValue(Bool),
+    Bool(Bool),
     Number(JsonNumber),
-    StringValue(String),
+    String(String),
     Array(Vec<JsonValue>),
     Object(Vec<JsonMember>),
 }
@@ -185,13 +185,13 @@ fn parse_value(cursor: &mut Cursor, limits: &JsonLimits, depth: UInt32) -> Resul
             } else if b == LBRACKET {
                 parse_array(cursor, limits, depth)
             } else if b == QUOTE {
-                Ok(JsonValue::StringValue(parse_string(cursor, limits)?))
+                Ok(JsonValue::String(parse_string(cursor, limits)?))
             } else if b == MINUS || is_digit(b) {
                 Ok(JsonValue::Number(parse_number(cursor, limits)?))
             } else if b == 116u8 {
-                parse_literal(cursor, "true", JsonValue::BoolValue(true))
+                parse_literal(cursor, "true", JsonValue::Bool(true))
             } else if b == 102u8 {
-                parse_literal(cursor, "false", JsonValue::BoolValue(false))
+                parse_literal(cursor, "false", JsonValue::Bool(false))
             } else if b == 110u8 {
                 parse_literal(cursor, "null", JsonValue::Null)
             } else {

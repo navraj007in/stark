@@ -678,6 +678,15 @@ impl Parser<'_> {
         }
     }
 
+    fn expect_variant_name(&mut self) -> Option<Span> {
+        if self.at(TokenKind::Ident) || self.at_primitive().is_some() {
+            Some(self.bump().span)
+        } else {
+            self.expected("a variant name");
+            None
+        }
+    }
+
     /// Consume a `>` in generic-argument position, splitting `>>`, `>>=`,
     /// and `>=` (02 "Parsing Notes").
     fn eat_gt(&mut self) -> bool {
@@ -863,9 +872,9 @@ impl Parser<'_> {
         })
     }
 
-    /// One path segment. Primitive-type keywords are valid as the *first*
-    /// segment only (`String::from`, per 02's amended `PathSegment`);
-    /// `self`/`Self`/`crate` likewise; `super` may repeat at the front.
+    /// One path segment. Primitive-type keywords are valid path segments so
+    /// enum variants may share names with primitive types (`JsonValue::String`)
+    /// while primitive associated paths (`String::from`) keep working.
     fn path_segment(&mut self, first: bool, prev_super: bool) -> Option<PathSegment> {
         let token = self.peek();
         let kind = match token.kind {
@@ -874,16 +883,7 @@ impl Parser<'_> {
             TokenKind::Keyword(Kw::SelfUpper) => SegmentKind::SelfType,
             TokenKind::Keyword(Kw::Super) => SegmentKind::Super,
             TokenKind::Keyword(Kw::Crate) => SegmentKind::Crate,
-            TokenKind::Keyword(_) if self.at_primitive().is_some() => {
-                if !first {
-                    let word = self.text(token.span).to_string();
-                    self.error(
-                        format!("`{word}` is only valid as the first segment of a path"),
-                        token.span,
-                    );
-                }
-                SegmentKind::Ident
-            }
+            TokenKind::Keyword(_) if self.at_primitive().is_some() => SegmentKind::Ident,
             _ => {
                 self.expected("a path segment");
                 return None;
@@ -922,6 +922,25 @@ impl Parser<'_> {
             kind,
             TokenKind::Ident
                 | TokenKind::Keyword(Kw::SelfLower | Kw::SelfUpper | Kw::Super | Kw::Crate)
+        ) || matches!(
+            kind,
+            TokenKind::Keyword(
+                Kw::Int8
+                    | Kw::Int16
+                    | Kw::Int32
+                    | Kw::Int64
+                    | Kw::UInt8
+                    | Kw::UInt16
+                    | Kw::UInt32
+                    | Kw::UInt64
+                    | Kw::Float32
+                    | Kw::Float64
+                    | Kw::Bool
+                    | Kw::StringTy
+                    | Kw::CharTy
+                    | Kw::Unit
+                    | Kw::Str
+            )
         )
     }
 
@@ -2765,7 +2784,7 @@ impl Parser<'_> {
         self.expect(TokenKind::LBrace, "`{`");
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            let Some(vname) = self.expect_ident("a variant name") else {
+            let Some(vname) = self.expect_variant_name() else {
                 break;
             };
             let kind = if self.eat(TokenKind::LParen) {
@@ -3629,6 +3648,14 @@ mod tests {
         parse_ok("pub struct Empty { }", ParseMode::Program);
         parse_ok("enum Color { Red, Green, Blue }", ParseMode::Program);
         parse_ok("enum Option<T> { Some(T), None }", ParseMode::Program);
+        parse_ok(
+            "enum JsonValue { Bool(Bool), String(String), Char(Char), Unit(Unit) }",
+            ParseMode::Program,
+        );
+        parse_ok(
+            "enum JsonValue { Bool(Bool), String(String) }\nfn f(v: JsonValue) -> Bool { match v { JsonValue::Bool(b) => b, JsonValue::String(_) => false } }",
+            ParseMode::Program,
+        );
         parse_ok(
             "enum Shape { Circle { r: Float64 }, Dot }",
             ParseMode::Program,

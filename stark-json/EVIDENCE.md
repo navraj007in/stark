@@ -4,8 +4,8 @@
 
 - Package path: `/Users/nexper/Documents/GitHub/stark/stark-json`
 - Consumer path: `/Users/nexper/Documents/GitHub/stark/stark-json-consumer`
-- Compiler/package commit observed for evidence: `3b20f9203e924e7c65c64ffac41cca82f5bb3855`
-- Initial head observed before edits: `3a686c1c03ca1ee07f3b9790158bdb1780e67860`
+- Compiler/package commit observed for evidence: working tree based on
+  `45cd4df52699731626a1fd1a36d2360583798a39`
 - Package format: `starkpkg.json` with `name`, `version`, `entry`, `dependencies`
 - CLI commands: `stark check`, `stark test`, `stark fmt --check`, `stark build`, `stark run`
 - Toolchain: `rustc 1.93.0`, `cargo 1.93.0`
@@ -13,7 +13,7 @@
 
 ## Preconditions
 
-- Recursive enums: partial. Type declarations check, but recursive non-Copy borrow patterns block
+- Recursive enums: partial. Frozen primitive-named variant declarations check, but recursive non-Copy borrow patterns block
   compliant borrowed encoding.
 - `Vec<JsonValue>` and `Vec<JsonMember>`: partial. Declarations and basic construction check.
 - String construction and append: partial. Basic operations work; scalar-from-codepoint is missing.
@@ -75,11 +75,14 @@ pub enum JsonValue {
 
 - COMMAND: `../starkc/target/debug/stark check`
 - EXPECTED RESULT: enum variants named exactly `Bool` and `String` accepted
-- ACTUAL RESULT: frontend rejects `Bool` as a variant name
+- ACTUAL RESULT: accepted after compiler parser fix
 - REQUIRED CAPABILITY: enum variants may use names that also identify built-in types
 - NORMATIVE BASIS: frozen public API in work package Section 8
-- WORKAROUND: used `BoolValue` and `StringValue`
-- CLASSIFICATION: `FRONTEND_REJECTION`
+- WORKAROUND: removed; package uses `Bool` and `String`
+- CLASSIFICATION: `RESOLVED`
+- EVIDENCE: `stark-json` check passes with `JsonValue::Bool(Bool)` and
+  `JsonValue::String(String)`. Compiler parser regression added for declaration and use-site
+  paths using primitive-named enum variants.
 
 ### JSON-BLOCKER-002
 
@@ -100,7 +103,7 @@ fn f(e: &E) -> String {
 - REQUIRED CAPABILITY: ref-binding or equivalent borrowed payload access
 - NORMATIVE BASIS: `encode(value: &JsonValue) -> String` must inspect without consuming input
 - WORKAROUND: `encode` placeholder returns `null`
-- CLASSIFICATION: `BORROW_OR_LIFETIME`
+- CLASSIFICATION: `STILL PRESENT - BORROW_OR_LIFETIME`
 
 ### JSON-BLOCKER-003
 
@@ -111,10 +114,10 @@ fn f(e: &E) -> String {
 - NORMATIVE BASIS: string and Unicode semantics in work package Section 15
 - WORKAROUND: direct UTF-8, simple escapes, and ASCII Unicode escapes decode; non-ASCII Unicode
   escapes return `InvalidUtf8`
-- CLASSIFICATION: `RUNTIME_STRING`
+- CLASSIFICATION: `STILL PRESENT - RUNTIME_STRING`
 
 ## Final Status
 
 STATUS: `PARTIAL - WAITING_COMPILER_RUNTIME`
 
-FILES MODIFIED OUTSIDE PACKAGE: `stark-json-consumer/` only, as the cross-package consumer fixture.
+FILES MODIFIED OUTSIDE PACKAGE: `starkc/src/parser.rs` for JSON-BLOCKER-001.
