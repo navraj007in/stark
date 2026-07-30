@@ -377,20 +377,58 @@ fn generic_struct_instantiations_register_in_type_context() {
     starkc::mir::verify::verify_program(&program).expect("verifier accepts generic nominals");
 }
 
-/// WP-C4.5c: polymorphic recursion cannot be monomorphised; it must fail through the named
+/// WP-C4.5c: polymorphic recursion cannot be monomorphised; it must fail through a named
 /// compiler-resource limit — deterministically, never by memory exhaustion or stack overflow.
+///
+/// **Which limit trips is not the contract; failing through a NAMED one is** (CD-255). This asserted
+/// `LIMIT-MIR-MONO-INSTANCES` specifically, and that was the bug rather than the assertion being
+/// wrong: the instance limit bounded nesting depth only *indirectly*, one constructor per runaway
+/// instance. 512-deep nesting fits the 8 MB stack Linux and macOS give a test thread and overflows
+/// the 1 MB Windows gives one — so this test passed on two platforms and died by
+/// `STATUS_STACK_OVERFLOW` on the third, violating its own "never by stack overflow" clause.
+///
+/// `LIMIT-MIR-TYPE-DEPTH` makes the depth bound direct, so it now trips first for this program.
 #[test]
-fn polymorphic_recursion_trips_the_named_instance_limit() {
+fn polymorphic_recursion_trips_a_named_compiler_limit() {
     let src = "fn f<T>(x: T) { f((x,)); } fn main() { f(0); }";
     let front = front_end_src("polyrec.stark", src.to_string());
     match lower_program(&front.hir, &front.tables, front.file.clone()) {
         Ok(_) => panic!("polymorphic recursion must not lower"),
         Err(e) => assert!(
-            e.what.contains("LIMIT-MIR-MONO-INSTANCES"),
-            "limit failure must name the resource limit, got: {}",
+            e.what.contains("LIMIT-MIR-TYPE-DEPTH") || e.what.contains("LIMIT-MIR-MONO-INSTANCES"),
+            "limit failure must name a compiler resource limit, got: {}",
             e.what
         ),
     }
+}
+
+/// **The platform difference must not silently return.** Run on a 1 MB stack — what Windows gives a
+/// test thread — the same program must still fail through a named limit rather than overflow.
+///
+/// This is the test that would have caught the original defect on any platform, instead of only on
+/// the one with the smallest stack.
+#[test]
+fn polymorphic_recursion_fails_by_limit_even_on_a_small_stack() {
+    let handle = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(|| {
+            let src = "fn f<T>(x: T) { f((x,)); } fn main() { f(0); }";
+            let front = front_end_src("polyrec_small.stark", src.to_string());
+            match lower_program(&front.hir, &front.tables, front.file.clone()) {
+                Ok(_) => panic!("polymorphic recursion must not lower"),
+                Err(e) => {
+                    assert!(
+                        e.what.contains("LIMIT-MIR-"),
+                        "must name a compiler resource limit, got: {}",
+                        e.what
+                    );
+                }
+            }
+        })
+        .expect("spawn a small-stack thread");
+    handle
+        .join()
+        .expect("lowering must fail by LIMIT, not by overflowing a 1 MB stack");
 }
 
 /// WP-C4.5d: drop elaboration structure — DropFlag locals exist for droppable locals, Drop

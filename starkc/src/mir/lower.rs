@@ -44,6 +44,69 @@ pub struct LowerError {
 /// converters within stack budget — revisit both together if the value changes.
 pub const LIMIT_MIR_MONO_INSTANCES: usize = 512;
 
+/// LIMIT-MIR-TYPE-DEPTH — the named limit on type-constructor nesting depth.
+///
+/// `LIMIT_MIR_MONO_INSTANCES` was documented as bounding nesting depth *indirectly*, one
+/// constructor per runaway instance, "keeping the recursive type converters within stack budget".
+/// An indirect bound is exactly what breaks across platforms: 512-deep nesting fits the 8 MB stack
+/// Linux and macOS give a test thread, and overflows the 1 MB Windows gives one. So
+/// `polymorphic_recursion_trips_the_named_instance_limit` died by `STATUS_STACK_OVERFLOW` on Windows
+/// while passing elsewhere — the two limits racing, with the platform deciding the winner.
+///
+/// Its own contract says it must fail "deterministically, never by memory exhaustion or stack
+/// overflow", so the fix is to make the depth bound DIRECT rather than to give the test a bigger
+/// stack.
+///
+/// 64 is far above anything ordinary code writes — `Option<Vec<(Int32, String)>>` is 4 — and far
+/// below what any supported platform's stack cannot absorb. Like the instance limit it is a capacity
+/// choice, not semantics.
+pub const LIMIT_MIR_TYPE_DEPTH: usize = 64;
+
+/// The nesting depth of a MIR type, computed ITERATIVELY and abandoned as soon as the limit is
+/// exceeded.
+///
+/// Iterative because a recursive depth check would overflow on exactly the inputs it exists to
+/// reject — which is the whole failure being fixed — and early-exit so it stays cheap.
+fn mir_ty_depth_exceeds(ty: &MirTy, limit: usize) -> bool {
+    let mut stack = vec![(ty, 0usize)];
+    while let Some((ty, depth)) = stack.pop() {
+        if depth > limit {
+            return true;
+        }
+        match ty {
+            MirTy::Tuple(elems) => stack.extend(elems.iter().map(|e| (e, depth + 1))),
+            MirTy::Array(elem, _) | MirTy::Slice(elem) => stack.push((elem.as_ref(), depth + 1)),
+            MirTy::Ref { inner, .. } => stack.push((inner.as_ref(), depth + 1)),
+            MirTy::Struct(_, args) | MirTy::Enum(_, args) | MirTy::Core(_, args) => {
+                stack.extend(args.iter().map(|a| (a, depth + 1)))
+            }
+            MirTy::FnPtr { params, ret } => {
+                stack.extend(params.iter().map(|p| (p, depth + 1)));
+                stack.push((ret.as_ref(), depth + 1));
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The type arguments a discovered callee is monomorphised at.
+fn fn_key_type_args(key: &FnKey) -> Vec<&MirTy> {
+    match key {
+        FnKey::Top(_, args) => args.iter().collect(),
+        FnKey::ImplFn {
+            type_args,
+            method_args,
+            ..
+        } => type_args.iter().chain(method_args.iter()).collect(),
+        FnKey::TraitDefault {
+            self_args,
+            method_args,
+            ..
+        } => self_args.iter().chain(method_args.iter()).collect(),
+    }
+}
+
 /// Does `ty` mention a user struct/enum anywhere? Comparisons on such types dispatch through
 /// the user's `Eq`/`Ord` impl (C4.5e); MIR's structural `BinOp` must not be emitted for them.
 fn ty_mentions_user_nominal(ty: &MirTy) -> bool {
@@ -491,6 +554,24 @@ pub fn lower_program_with_providers(
         // WP-C6.3d: `Eq` instances the map ops dispatch key identity through.
         program.types.eq_impls.append(&mut lowerer.eq_impl_symbols);
         for callee in lowerer.discovered_callees {
+            // LIMIT-MIR-TYPE-DEPTH, checked BEFORE `key_symbol`, which renders the type
+            // RECURSIVELY (`symbol_ty`) and is the recursion that overflowed. Checking here rather
+            // than inside it keeps the guard ahead of every recursive consumer -- drop planning,
+            // dumping and the backends all walk the same type.
+            if let Some(deep) = fn_key_type_args(&callee)
+                .into_iter()
+                .find(|t| mir_ty_depth_exceeds(t, LIMIT_MIR_TYPE_DEPTH))
+            {
+                let _ = deep;
+                return Err(LowerError {
+                    what: format!(
+                        "program exceeds the compiler resource limit LIMIT-MIR-TYPE-DEPTH \
+                         ({LIMIT_MIR_TYPE_DEPTH} nested type constructors); recursive generic \
+                         instantiation cannot be compiled"
+                    ),
+                    span: Span { lo: 0, hi: 0 },
+                });
+            }
             let symbol = key_symbol(hir, &meta, &callee)?;
             if queued.insert(symbol, ()).is_none() {
                 // C4.5c: the named instance limit — polymorphic recursion or explosive
