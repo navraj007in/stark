@@ -232,14 +232,14 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
         checked.diagnostics
     );
 
-    let stream_item = hir
-        .items
-        .iter()
-        .enumerate()
-        .find_map(|(idx, item)| {
-            matches!(item.kind, ItemKind::Enum { .. }).then_some(ItemId(idx as u32))
-        })
-        .expect("the synthesized TcpStream enum nominal must be in HIR");
+    // The synthesized nominal really is in HIR as a zero-variant enum (CD-234). Lowering resolves
+    // it by name; this only asserts it is there to resolve.
+    assert!(
+        hir.items
+            .iter()
+            .any(|item| matches!(item.kind, ItemKind::Enum { .. })),
+        "the synthesized TcpStream enum nominal must be in HIR"
+    );
 
     let mut providers = ProviderLowering::build_with_errors(
         &layer.bindings,
@@ -248,10 +248,14 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
         |cap, symbol| set.resolve(cap, symbol).map_err(|e| format!("{e:?}")),
     )
     .expect("provider lowering builds");
+    // CD-248: the nominal NAME is what the manifest supplies and what `select_closes` iterates;
+    // lowering resolves it to an item id once `ProgramMeta` can read item names. Setting
+    // `resource_items` directly (as this did) left `resource_nominal_names` empty, so selection
+    // would iterate nothing and silently choose no close.
     providers
-        .resource_items
-        .insert("tcp_stream".to_string(), stream_item);
-    let closes = providers
+        .resource_nominal_names
+        .insert("tcp_stream".to_string(), "TcpStream".to_string());
+    providers
         .select_closes(|resource| {
             set.providers()[0]
                 .metadata
@@ -272,7 +276,11 @@ fn lowering_carries_a_manually_selected_close_arena_into_mir() {
                 .ok_or_else(|| format!("no close for {resource}"))
         })
         .expect("close selection succeeds");
-    assert_eq!(closes.len(), 1);
+    assert_eq!(
+        providers.pending_closes.len(),
+        1,
+        "the driver records resource -> close id; lowering completes it once the nominal resolves"
+    );
 
     let program =
         starkc::mir::lower::lower_program_with_providers(&hir, &checked.tables, file, &providers)
