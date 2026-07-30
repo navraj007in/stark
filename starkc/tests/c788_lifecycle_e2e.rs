@@ -390,3 +390,100 @@ fn a_resource_moved_through_a_call_closes_once_in_the_callee() {
     );
     let _ = accepting.join();
 }
+
+/// **`?` propagation with a live resource closes it on the error path.**
+///
+/// The case CD-262 singled out as the one to complete before closure: `?` exits through *desugaring*
+/// rather than an explicit `return`, so it takes a different path out of the function and could
+/// plausibly miss the cleanup edge that `return` gets.
+///
+/// A first connection succeeds and stays live; a second `?` fails and propagates. The live first
+/// resource must be closed on the way out. A missed cleanup edge here leaks silently — the provider
+/// is never told — which is why this asserts on generated code as well as on a clean exit.
+#[test]
+fn question_mark_propagation_closes_a_live_resource() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+    let accepting = std::thread::spawn(move || {
+        let _ = listener.accept();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    });
+
+    let (out, generated) = build_and_run(
+        "question_mark",
+        &format!(
+            "fn two_connects(good: &[UInt8], bad: &[UInt8]) -> Result<UInt64, RawNetworkError> {{\n\
+             \x20   let _live = tcp_stream_connect(good)?;\n\
+             \x20   let _second = tcp_stream_connect(bad)?;\n\
+             \x20   Ok(1)\n\
+             }}\n\
+             fn main() {{\n\
+             \x20   let good = \"{address}\".bytes();\n\
+             \x20   let bad = \"{DEAD_ADDRESS}\".bytes();\n\
+             \x20   match two_connects(good, bad) {{\n\
+             \x20       Ok(_n) => {{ println(\"unexpected-ok\"); }}\n\
+             \x20       Err(_e) => {{ println(\"propagated\"); }}\n\
+             \x20   }}\n\
+             }}\n"
+        ),
+    );
+    assert_eq!(
+        out.trim(),
+        "propagated",
+        "the second connect must fail so the `?` error path is the one taken"
+    );
+    assert!(
+        generated.contains("stark_tcp_stream_close(__v.as_raw())"),
+        "the `?` error path must close the live first resource:\n{generated}"
+    );
+    let _ = accepting.join();
+}
+
+/// **Repeated connect/release reuses slot and close state correctly across iterations.**
+///
+/// Lower risk than the cases above now that a single close, move/drop, independent listener/stream
+/// closes and early-return cleanup are all observed — but it is the only case that exercises a slot
+/// going live→dead→live, which is where `P1-COMPILER-001`-class state reuse would show up.
+///
+/// Each iteration's close must find its own handle in the provider's table; a stale or reused handle
+/// aborts.
+#[test]
+#[ignore = "DEFECT-C788-LOOP-TEMP: a temporary holding Result<Resource, E> inside a loop body is \
+never dropped, so the second iteration writes to a live slot and the runtime aborts with \
+'write to a live slot (STARK compiler defect, not a program fault)'. Generated code contains exactly \
+one drop_with -- on the match binding -- and none for the scrutinee temp. Un-ignore with the fix."]
+fn repeated_connect_and_release_reuses_slot_state() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("addr").to_string();
+    let accepting = std::thread::spawn(move || {
+        // One accept per loop iteration below, then a grace period.
+        for _ in 0..3 {
+            let _ = listener.accept();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    });
+
+    let (out, _) = build_and_run(
+        "repeated",
+        &format!(
+            "fn main() {{\n\
+             \x20   let address = \"{address}\".bytes();\n\
+             \x20   let mut i: UInt64 = 0;\n\
+             \x20   while i < 3 {{\n\
+             \x20       match tcp_stream_connect(address) {{\n\
+             \x20           Ok(_s) => {{ println(\"iteration\"); }}\n\
+             \x20           Err(_e) => {{ panic(\"connect failed\"); }}\n\
+             \x20       }}\n\
+             \x20       i = i + 1;\n\
+             \x20   }}\n\
+             \x20   println(\"done\");\n\
+             }}\n"
+        ),
+    );
+    assert_eq!(
+        out.trim().lines().collect::<Vec<_>>(),
+        vec!["iteration", "iteration", "iteration", "done"],
+        "each iteration connects and releases; a stale handle would abort the process"
+    );
+    let _ = accepting.join();
+}

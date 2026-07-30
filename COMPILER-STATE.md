@@ -881,6 +881,35 @@ active. Authority is split by surface, not by file proximity:
   under their own headings. If a lease mechanism is wanted, it needs to be specified before it can
   be cited.
 
+## Gate C7 — RULING (CD-262): QUALIFICATION-BLOCKED, NOT CAPABILITY-BLOCKED
+
+**Condition 1 ("native builds usable") is MET for the admitted C7/P1 scope.** A real STARK
+application compiles from ordinary source, uses environment and TCP capabilities, lowers through
+provider-aware MIR, links native providers and runs a non-trivial HTTP/JSON workload — stronger
+evidence than the presence of every standard-library I/O type.
+
+**The ruling separates two questions that had been conflated.** "Can native builds perform useful
+host I/O?" (yes — args, env, time, TCP) is a *usability* criterion. "Does every Core I/O abstraction
+execute natively?" (no — `File`) is a *completeness* criterion. Conflating them would silently expand
+C7 from "usable native build path" to "complete native Core library", which is not what P1 tested —
+P1 required TCP and environment, not filesystem.
+
+**Core `File` is a known scoped limitation**, intentional under SELECT-C, not an unimplemented
+capability, and does not hold the gate open.
+
+| condition | status |
+| --- | --- |
+| native builds usable for admitted workload | MET |
+| native host capability exists | MET |
+| P1 implementation | MET |
+| P1 Tier-1 qualification | PARTIAL |
+| C7.5 deferred measurements | OPEN |
+| native Core `File` support | KNOWN LIMITATION / DEFERRED |
+| **C7 overall** | **OPEN — QUALIFICATION REMAINS** |
+
+Critical path: Linux x64 P1 run; Windows x64 P1 run; C7.5 steady-state runtime; C7.5 debug/release
+comparison; final consolidation and closure ruling.
+
 ## Gate C7 — REASSESSED after C7.8 (CD-261): still open, for a narrower reason
 
 C7.8 changes two verdicts. **Native I/O exists and executes from ordinary source** — args/env,

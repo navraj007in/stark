@@ -5,7 +5,71 @@
 
 ---
 
-## 0. REASSESSMENT after WP-C7.8 (CD-261, 2026-07-30)
+## 0. RULING (CD-262): C7 is qualification-blocked, not capability-blocked
+
+**Condition 1 is MET for the admitted C7/P1 scope.** C7's usability test is no longer hypothetical:
+a real STARK application compiles from ordinary source, uses environment and TCP host capabilities,
+lowers through provider-aware MIR, links native providers, and runs a non-trivial HTTP/JSON workload.
+That is stronger evidence of usable native builds than the presence of every standard-library I/O
+type.
+
+**Two questions had been conflated**, and separating them is the substance of this ruling:
+
+1. *Can STARK native builds perform useful host I/O?* — **yes**: args, environment, time and TCP
+   execute from source.
+2. *Does every existing Core I/O abstraction execute natively?* — **no**: `File` does not.
+
+The first is a native-build **usability** criterion; the second is a native-standard-library
+**completeness** criterion. Treating them as identical would silently expand C7 from "usable native
+build path" into "complete native Core library", which is not what P1 tested. P1 confirms the
+distinction: it required TCP and environment access, not filesystem access, and the workload is
+implemented.
+
+**Core `File` is therefore a known scoped limitation, recorded rather than blocking:**
+
+> Filesystem operations through the standard-library `File` abstraction are not supported by the
+> native source build path in this revision. This is intentional under SELECT-C, not an
+> unimplemented provider capability.
+
+### Revised gate state
+
+| condition | status |
+| --- | --- |
+| native builds usable for admitted workload | **MET** |
+| native host capability exists | **MET** |
+| P1 implementation | **MET** |
+| P1 Tier-1 qualification | **PARTIAL** |
+| C7.5 deferred measurements | **OPEN** |
+| native Core `File` support | **KNOWN LIMITATION / DEFERRED** |
+| **C7 overall** | **OPEN — QUALIFICATION REMAINS** |
+
+### Remaining critical path
+
+1. Linux x64 P1 run;
+2. Windows x64 P1 run;
+3. C7.5 steady-state runtime measurement;
+4. C7.5 debug/release runtime comparison;
+5. final evidence consolidation and closure ruling.
+
+### Closure wording
+
+> **C7 is no longer blocked by absence of native host capability.** Native source builds now execute
+> environment, clock and TCP operations, and the P1 HTTP/JSON workload demonstrates a useful
+> end-to-end native application.
+>
+> Core `File` remains unsupported on the native source path by explicit SELECT-C decision. This is a
+> scoped standard-library limitation, not evidence that native builds are unusable.
+>
+> Gate C7 remains open for qualification: P1 requires Linux x64 and Windows x64 execution evidence,
+> and C7.5 requires the two workload-dependent runtime measurements previously deferred.
+>
+> Resource lifecycle evidence is substantially complete: seven cases are observed against real
+> providers, one is unreachable by construction, and two remain defined but unobserved — `?`
+> propagation with a live resource and repeated connect/release.
+
+---
+
+## 0.1 Reassessment detail after WP-C7.8 (CD-261)
 
 WP-C7.8 landed after this assessment was written. It changes two of the four verdicts below and
 **leaves the gate open**, for a narrower reason than before.

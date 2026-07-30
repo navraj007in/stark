@@ -319,6 +319,15 @@ CLASSIFIED_IGNORES = {
         "gate-4 tensor track; needs a checksum-verified ResNet50 named by "
         "STARK_GATE4_REFERENCE_ONNX. Outside the C6.4 Core-runtime matrix."
     ),
+    "repeated_connect_and_release_reuses_slot_state": (
+        "DEFECT-C788-LOOP-TEMP, found by this test (CD-263). A temporary holding "
+        "`Result<Resource, E>` inside a loop body is never dropped, so the second iteration "
+        "writes to a still-live slot and stark-runtime aborts with 'write to a live slot "
+        "(STARK compiler defect, not a program fault)'. The generated program contains exactly "
+        "one `drop_with`, on the match binding, and none for the scrutinee temp. This is a real "
+        "compiler defect, not a test problem; the ignore records it rather than hiding it, and "
+        "goes with the fix."
+    ),
     "real_inference_agrees_with_reference": (
         "gate-5 tensor track; downloads and links ONNX Runtime and runs Python. "
         "Outside the C6.4 Core-runtime matrix."

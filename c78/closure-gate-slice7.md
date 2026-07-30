@@ -50,9 +50,9 @@ argued from the parts.
 | accept/release (two resources, closed independently) | **observed** | `c788_lifecycle_e2e::accept_and_release_close_two_resources_independently` — asserts the listener closes through `stark_tcp_listener_close` and the accepted stream through `stark_tcp_stream_close`, the pairing `MIR-0030` enforces |
 | early return with a live resource | **observed** | `c788_lifecycle_e2e::an_early_return_with_a_live_resource_closes_it` |
 | resource moved through a **call** | **observed** | `c788_lifecycle_e2e::a_resource_moved_through_a_call_closes_once_in_the_callee` — the caller's local is dead after the move, so exactly one close runs, in the callee |
-| repeated connect/release | defined | Single connect/release is observed; the repeated form is not |
+| `?` propagation with a live resource | **observed** | `c788_lifecycle_e2e::question_mark_propagation_closes_a_live_resource` — a live first resource is closed on the desugared error path, which exits differently from an explicit `return` |
+| repeated connect/release | **written, and it found a defect** | `DEFECT-C788-LOOP-TEMP` — see below. Test committed `#[ignore]`d with a classification, per CD-247 |
 | repeated open/release (`filesystem`) | defined, **and blocked by SELECT-C** | `File` is not on the `HostResource` path, so it has no A11 close arena to exercise |
-| `?` propagation with a live resource | defined | |
 
 ### How the observed cases detect a violation
 
@@ -79,6 +79,32 @@ the lifecycle cases still marked `defined` — accept/release, early return with
 propagation with a live resource, and a resource moved through a call. Those are properties of
 resource *handling*, not of whether a capability is reachable, and none of them blocks P1 from being
 attempted; the P1 REST workload is already built on this surface.
+
+## DEFECT-C788-LOOP-TEMP — found by the last lifecycle case
+
+`repeated_connect_and_release_reuses_slot_state` connects and releases three times in a `while` loop.
+It aborts on the second iteration:
+
+```
+generated-code invariant violated: write to a live slot
+(MIR must Drop or move out before reassigning a live place)
+(STARK compiler defect, not a program fault)
+```
+
+The runtime classifies it itself. The generated program contains **exactly one `drop_with`** — on the
+match binding — and **none for the scrutinee temporary** holding `Result<TcpStream, E>`. That temp is
+written every iteration and never dropped, so the second write lands on a live slot.
+
+**This is the state-reuse case CD-262 predicted**, and the only one of the nine that exercises a slot
+going live → dead → live. Every other lifecycle case is straight-line or single-exit, which is why
+eight passed and this did not.
+
+Scope: it affects a **temporary**, not a user local — user bindings are drop-tracked and close
+correctly, which is why the P1 REST workload runs its 24-accept loop without tripping this. The
+defect needs a resource-bearing temporary re-written across iterations.
+
+Recorded as an ignore with a `CLASSIFIED_IGNORES` entry rather than deleted or left red, so C6.4
+tier-1 keeps it visible. Un-ignore with the fix.
 
 ## A finding the gate should record
 
