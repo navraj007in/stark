@@ -6,7 +6,10 @@
 //! command does.
 
 use starkc::native_build::{build_current_package, BuildCommandOptions};
+use std::io::Read;
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,6 +30,46 @@ fn write_package(root: &std::path::Path, manifest: &str, source: &str) {
     std::fs::create_dir_all(&src).expect("create package src dir");
     std::fs::write(root.join("starkpkg.json"), manifest).expect("write manifest");
     std::fs::write(src.join("main.stark"), source).expect("write source");
+}
+
+fn tcp_manifest(name: &str) -> String {
+    format!(
+        r#"{{
+  "name": "{name}",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capabilities": ["tcp"],
+  "provider_api": {{
+    "errors": {{ "tcp": "RawNetworkError" }},
+    "resources": {{
+      "TcpListener": {{ "capability": "tcp", "resource": "tcp_listener" }},
+      "TcpStream": {{ "capability": "tcp", "resource": "tcp_stream" }}
+    }},
+    "functions": {{
+      "tcp_listener_bind": {{
+        "capability": "tcp",
+        "symbol": "stark_tcp_listener_bind"
+      }},
+      "tcp_listener_accept": {{
+        "capability": "tcp",
+        "symbol": "stark_tcp_listener_accept"
+      }},
+      "tcp_stream_connect": {{
+        "capability": "tcp",
+        "symbol": "stark_tcp_stream_connect"
+      }},
+      "tcp_stream_read": {{
+        "capability": "tcp",
+        "symbol": "stark_tcp_stream_read"
+      }},
+      "tcp_stream_write": {{
+        "capability": "tcp",
+        "symbol": "stark_tcp_stream_write"
+      }}
+    }}
+  }}
+}}"#
+    )
 }
 
 #[test]
@@ -186,6 +229,162 @@ fn env_var_success_and_recoverable_invalid_name_execute_through_build_command() 
     );
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn tcp_bind_accept_connect_and_echo_execute_from_source_through_build_command() {
+    let probe = TcpListener::bind("127.0.0.1:0").expect("reserve loopback port");
+    let address = probe.local_addr().expect("read loopback address");
+    drop(probe);
+    let address = address.to_string();
+
+    let server_root = fixture_root("tcp-server");
+    let client_root = fixture_root("tcp-client");
+    let _ = std::fs::remove_dir_all(&server_root);
+    let _ = std::fs::remove_dir_all(&client_root);
+
+    let server_source = format!(
+        r#"fn main() {{
+    let address = "{address}".bytes();
+    let listener: TcpListener;
+    match tcp_listener_bind(address) {{
+        Ok(value) => {{ listener = value; }}
+        Err(_e) => {{ panic("tcp bind failed"); return; }}
+    }}
+    let stream: TcpStream;
+    match tcp_listener_accept(&listener) {{
+        Ok(value) => {{ stream = value; }}
+        Err(_e) => {{ panic("tcp accept failed"); return; }}
+    }}
+    let mut buffer: [UInt8; 7] = [0u8; 7];
+    {{
+        let out = &mut buffer[0..7];
+        match tcp_stream_read(&stream, out) {{
+            Ok(n) => {{ assert_eq(n, 7u64); }}
+            Err(_e) => {{ panic("tcp read failed"); }}
+        }}
+    }}
+    let echo = &buffer[0..7];
+    match tcp_stream_write(&stream, echo) {{
+        Ok(n) => {{ assert_eq(n, 7u64); }}
+        Err(_e) => {{ panic("tcp write failed"); }}
+    }}
+    println("server-done");
+}}"#
+    );
+    write_package(
+        &server_root,
+        &tcp_manifest("c788_tcp_server"),
+        server_source.as_str(),
+    );
+    let client_source = format!(
+        r#"fn main() {{
+    let address = "{address}".bytes();
+    let stream: TcpStream;
+    match tcp_stream_connect(address) {{
+        Ok(value) => {{ stream = value; }}
+        Err(_e) => {{ panic("tcp connect failed"); return; }}
+    }}
+    let payload = "stark!!".bytes();
+    match tcp_stream_write(&stream, payload) {{
+        Ok(n) => {{ assert_eq(n, 7u64); }}
+        Err(_e) => {{ panic("tcp write failed"); }}
+    }}
+    let mut buffer: [UInt8; 7] = [0u8; 7];
+    {{
+        let out = &mut buffer[0..7];
+        match tcp_stream_read(&stream, out) {{
+            Ok(n) => {{ assert_eq(n, 7u64); }}
+            Err(_e) => {{ panic("tcp read failed"); }}
+        }}
+    }}
+    println(buffer[0u64]);
+    println(buffer[1u64]);
+    println(buffer[2u64]);
+    println(buffer[3u64]);
+    println(buffer[4u64]);
+    println(buffer[5u64]);
+    println(buffer[6u64]);
+}}"#
+    );
+    write_package(
+        &client_root,
+        &tcp_manifest("c788_tcp_client"),
+        client_source.as_str(),
+    );
+
+    let options = BuildCommandOptions {
+        no_build_cache: true,
+        ..BuildCommandOptions::default()
+    };
+    let server = build_current_package(&server_root, &options)
+        .unwrap_or_else(|error| panic!("server build must succeed: {error:?}"));
+    let client = build_current_package(&client_root, &options)
+        .unwrap_or_else(|error| panic!("client build must succeed: {error:?}"));
+
+    let mut server_child = std::process::Command::new(&server.artifact_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn source-built TCP server: {error}"));
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let client_output = loop {
+        let output = std::process::Command::new(&client.artifact_path)
+            .output()
+            .unwrap_or_else(|error| panic!("run source-built TCP client: {error}"));
+        if output.status.success() {
+            break output;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "client never connected; last stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
+
+    let server_status = loop {
+        if let Some(status) = server_child
+            .try_wait()
+            .unwrap_or_else(|error| panic!("poll source-built TCP server: {error}"))
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = server_child.kill();
+            let _ = server_child.wait();
+            panic!("source-built TCP server did not exit after client completed");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let mut server_stdout = String::new();
+    if let Some(mut stdout) = server_child.stdout.take() {
+        stdout
+            .read_to_string(&mut server_stdout)
+            .expect("server stdout utf8-ish");
+    }
+    let mut server_stderr = String::new();
+    if let Some(mut stderr) = server_child.stderr.take() {
+        stderr
+            .read_to_string(&mut server_stderr)
+            .expect("server stderr utf8-ish");
+    }
+    assert!(
+        server_status.success(),
+        "source-built TCP server failed; stdout:\n{server_stdout}\nstderr:\n{server_stderr}"
+    );
+
+    let client_stdout = String::from_utf8(client_output.stdout).expect("client stdout utf8");
+    assert_eq!(
+        client_stdout.trim(),
+        "115\n116\n97\n114\n107\n33\n33",
+        "client must print the echoed bytes for `stark!!`"
+    );
+    assert_eq!(server_stdout.trim(), "server-done");
+
+    let _ = std::fs::remove_dir_all(&server_root);
+    let _ = std::fs::remove_dir_all(&client_root);
 }
 
 #[test]

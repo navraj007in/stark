@@ -5,9 +5,12 @@ over-claim: a capability can have valid provider metadata without a source-level
 API without resource lifecycle lowering, or native execution without cross-platform verification.
 
 **Every row cites evidence that is committed on `main`.** Work in a session's working tree is not
-evidence — the matrix records what a fresh clone can reproduce. That distinction is doing real work
-here: the TCP bind/accept/echo path exists and passes locally, and is deliberately *not* claimed
-below, because it is not yet on `main`.
+evidence — the matrix records what a fresh clone can reproduce.
+
+That rule did real work rather than being decorative: the TCP bind/accept/echo row sat at
+**not yet** while the path existed and passed in a working tree, and only moved once the test was
+committed (CD-258). The gap between "it works on my machine" and "the matrix may claim it" was a
+real commit, which is the point.
 
 ## What "cross-platform verified" means here
 
@@ -30,7 +33,7 @@ number of runs.
 | `process.env` (`stark-env`) | yes | yes | yes | yes | yes | `c78_buffer_e2e`; `c788_starkc_build::env_var_success_and_recoverable_invalid_name_...` — the first **executing** proof of the recoverable-status `Err` arm (CD-233) |
 | `filesystem` (`stark-file`) | n/a | n/a | legacy path | yes | yes | `c784_file_e2e`. **Not a gap — SELECT-C (CD-253).** `File` stays on `MirTy::Core`; conditional migration would make MIR identity depend on build configuration |
 | `tcp` (`stark-net`) — resource lifecycle | yes | yes | yes | yes | yes | `c788_lifecycle_e2e` (four lifecycle cases, executed against the real provider) |
-| `tcp` (`stark-net`) — bind/accept/echo | yes | yes | yes | yes | **not yet** | Exists and passes locally; **uncommitted**, so not claimed |
+| `tcp` (`stark-net`) — bind/accept/echo | yes | yes | yes | yes | yes | `c788_starkc_build::tcp_bind_accept_connect_and_echo_execute_from_source_through_build_command` (CD-258) |
 
 ## Lifecycle Set
 
@@ -45,7 +48,7 @@ argued from the parts.
 | move then drop closes only the destination | **observed** | `c788_lifecycle_e2e::move_then_drop_closes_only_the_destination` |
 | explicit close then destructor path | **unreachable by construction** | A package may not bind a close (design §2) and `MIR-0033` rejects a direct call, so MIR owns the only close path. Pinned by `a11_host_resource`'s rule-4 tests |
 | repeated connect/release | defined | Single connect/release is observed; the repeated form is not |
-| accept/release (two resources, closed independently) | defined | Needs the uncommitted TCP path |
+| accept/release (two resources, closed independently) | defined | The TCP path is now committed, so this is writable; the existing test exercises accept but does not yet assert each resource's close independently |
 | repeated open/release (`filesystem`) | defined, **and blocked by SELECT-C** | `File` is not on the `HostResource` path, so it has no A11 close arena to exercise |
 | early return with a live resource | defined | |
 | `?` propagation with a live resource | defined | |
@@ -67,13 +70,15 @@ anything.
 §5.7's claim requires each mandatory capability reachable from ordinary STARK source through a
 package API, typed HIR, provider MIR lowering and native execution on all three platforms.
 
-**Met for `clock`, `process.args`, `process.env`.** Met for `tcp`'s resource lifecycle; **not yet
-claimable for TCP's listener/stream surface**, which P1 explicitly requires — the path works but is
-uncommitted. `filesystem` reaches native execution through its legacy path by decision, not by
-omission.
+**Met for `clock`, `process.args`, `process.env`, and for `tcp` — both its resource lifecycle and
+its listener/stream surface**, which P1 explicitly requires. `filesystem` reaches native execution
+through its legacy path by decision (SELECT-C), not by omission.
 
-So C7.8 has **substantially** removed P1's host-capability precondition, and the honest residue is
-one commit plus the lifecycle cases still marked `defined`.
+So **C7.8 has removed P1's host-capability precondition.** The residue is not capability coverage but
+the lifecycle cases still marked `defined` — accept/release, early return with a live resource, `?`
+propagation with a live resource, and a resource moved through a call. Those are properties of
+resource *handling*, not of whether a capability is reachable, and none of them blocks P1 from being
+attempted; the P1 REST workload is already built on this surface.
 
 ## A finding the gate should record
 
