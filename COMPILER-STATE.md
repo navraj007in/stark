@@ -497,6 +497,43 @@ an enum-variant aggregate — no constant, no discriminant, no borrow, **no copy
 `MirTy` match has a wildcard arm, so a host resource would silently have inherited ordinary-enum
 treatment. The sites that matter were made explicit deliberately, not because the compiler forced it.
 
+**CD-237 — A11 §5's close lifecycle: selection, the five obligations, and drop planning.**
+
+`ValidatedProviderClose { resource, close }` and `MirProgram::provider_closes`. The close is selected
+at **resolution**, not at drop time (`ProviderLowering::select_closes`) — which is what lets the
+verifier discharge §5's obligations *before* emission; a close chosen at drop time could only be
+checked once the program was already being built.
+
+`DropPlan::HostResourceClose { close }`, and `plan_for` on a `HostResource` with **no** recorded close
+is an **error, never a `Noop`**: planning nothing is obligation 5's leak itself, since the provider
+never learns the handle was abandoned and nothing downstream can detect it. There is no `then` arm —
+a host resource is opaque by construction (CD-234), so nothing is inside it to destroy after.
+
+**The five obligations, all program-level** (`verify_provider_closes`): `MIR-0028` exactly one close
+per resource; `MIR-0030` the close is declared `is_close_for` *that* resource; `MIR-0031` it belongs
+to the same resolved provider; `MIR-0032` it takes exactly one `HandleConsumed` of it and no value
+output (ABI §13.1); `MIR-0029` the binding is well-formed.
+
+**`MIR-0030` is the one a structural check cannot make.** `stark_tcp_listener_close` and
+`stark_tcp_stream_close` have identical shapes — both consume one handle — and differ only in the
+resource they name, so a listener closed by the stream's close typechecks perfectly. Only comparing
+`is_close_for` against the resource catches it.
+
+**`MIR-0033` is what makes "exactly once" true** (§5 rule 4): a `Callee::Provider` naming an
+`is_close_for` declaration is rejected outright. A package cannot bind a close, so any such call site
+means another path found one — a second destruction path for a resource MIR already closes. MIR owns
+the only path.
+
+The reference interpreter refuses a host-resource close rather than pretending: closing needs a
+linked native provider, so such a program is native-only, and saying so beats a silent no-op. Generic
+drop glue refuses it too — a close is a provider call and must come from the `Drop` terminator's own
+path, which has the arena.
+
+**Still open:** populating the close arena from the driver, the `Drop`-terminator native emission, the
+slot-backed generated-Rust representation, and the source-level lifecycle e2e (never-initialised does
+not close; failed `HandleOut` does not close; successful closes exactly once; move then drop closes
+only the destination; consuming close prevents a later implicit close).
+
 **CD-235 — the nominal identity is widened, and the Core side is sequenced.** A11 §4 wrote
 `nominal: ItemId`, which cannot name a Core resource: `File` resolves to `CoreType::File`, a different
 enum from `ItemId`. So `nominal` is now `HostResourceNominal::Core(CoreType) | Item(ItemId)`, and §4's

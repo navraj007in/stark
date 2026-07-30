@@ -161,6 +161,7 @@ fn program_with_provider_call(calls: Vec<ValidatedProviderCall>, id: ProviderCal
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: calls,
         resource_bindings: Vec::new(),
+        provider_closes: Vec::new(),
     }
 }
 

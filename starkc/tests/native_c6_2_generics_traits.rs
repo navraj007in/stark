@@ -314,6 +314,7 @@ fn a_mismatched_item_is_still_rejected() {
         runtime_surface: "test".to_string(),
         provider_calls: Vec::new(),
         resource_bindings: Vec::new(),
+        provider_closes: Vec::new(),
     };
     let msg = match linkage::build(&program) {
         Ok(_) => panic!("a mismatched item must still be refused by the linkage check"),

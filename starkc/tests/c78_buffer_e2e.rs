@@ -277,6 +277,7 @@ fn program(name: &str) -> MirProgram {
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: vec![resolve("process.env", "stark_env_var_len")],
         resource_bindings: Vec::new(),
+        provider_closes: Vec::new(),
     }
 }
 

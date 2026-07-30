@@ -626,6 +626,20 @@ pub enum Callee {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct ProviderCallId(pub u32);
 
+/// **A11 §5: the validated close for one host-resource type.**
+///
+/// A `HostResource` local's `Drop` terminator must call this, exactly once. §5's rule 4 is what makes
+/// "exactly once" true: no other call site may invoke a close — a package cannot bind one, and a
+/// `Callee::Provider` whose declaration is `is_close_for` is rejected outside a `Drop`. **MIR owns the
+/// only path.**
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatedProviderClose {
+    /// The `HostResource` form this closes.
+    pub resource: MirTy,
+    /// The `is_close_for` function, already validated, in [`MirProgram::provider_calls`].
+    pub close: ProviderCallId,
+}
+
 /// A10: one provider call site's fully resolved, already-validated contract.
 ///
 /// **Resolution happens before MIR verification** (A10 §3): capability requirement → provider
@@ -761,6 +775,15 @@ pub struct TypeContext {
     /// or `String` key has no user impl and compares structurally, which for those types IS its
     /// lawful `Eq`.
     pub eq_impls: std::collections::BTreeMap<(u32, Vec<MirTy>), String>,
+    /// **A11 §5: host-resource type → its validated close** (`MirProgram::provider_closes`, keyed
+    /// for lookup).
+    ///
+    /// Lives on the type context for the same reason `drop_impls` does: `drop_plan::plan_for`
+    /// resolves destruction from the type alone, and a resource's destruction *is* its close. Keyed
+    /// by the full `HostResource` form, so a listener's close cannot be selected for a stream — §5
+    /// obligation 4, the case a structural check misses because both closes are `HandleConsumed` of
+    /// *a* resource and differ only in which one they name.
+    pub host_resource_closes: std::collections::BTreeMap<MirTy, ProviderCallId>,
     /// WP-C6.1g-a (OWN-COPY-001, amended): nominal items that are `Copy` when their type
     /// arguments are — impl-`Copy` plus structurally eligible. `is_copy` consults this and
     /// recurses on the arguments, mirroring the front end's `copy_eligible_types` so the verifier
@@ -830,6 +853,13 @@ pub struct MirProgram {
     /// A `Vec` of pairs rather than a map so the serialised order is the program's own, and sorted by
     /// name at construction so it is a function of the manifest rather than of iteration.
     pub resource_bindings: Vec<(String, HostResourceNominal)>,
+    /// **A11 §5: the close selected for each host resource, at RESOLUTION time.**
+    ///
+    /// `drop_plan` looks a resource up here and emits a provider call to the recorded id, rather
+    /// than searching provider metadata during lowering. Selecting at resolution is what lets the
+    /// verifier discharge its five obligations before emission — a close chosen at drop time could
+    /// only be checked after the program was already being built.
+    pub provider_closes: Vec<ValidatedProviderClose>,
 }
 
 impl MirProgram {

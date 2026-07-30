@@ -1216,6 +1216,17 @@ pub(super) fn emit_drop_plan(
     let mut out = String::new();
     match plan {
         DropPlan::Noop => {}
+        // **A11 §5: a host resource is destroyed by its provider's close.** Emitted by the `Drop`
+        // terminator's own path (`emit_terminator`), which has the arena the call needs -- this
+        // function only sees a plan and a value expression, so reaching here means a resource close
+        // was routed through generic drop glue instead.
+        DropPlan::HostResourceClose { close } => {
+            return Err(BackendDiagnostic::Unsupported(format!(
+                "host-resource close (provider call {}) must be emitted by the Drop terminator, not \
+                 by generic drop glue",
+                close.0
+            )))
+        }
         // The type's own destructor, taking `&mut self` -- the same receiver shape
         // `mir::interp` passes. `then` is emitted after it because the plan nests it there.
         DropPlan::Destructor { symbol, then } => {

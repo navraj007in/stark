@@ -99,6 +99,41 @@ impl ProviderLowering {
         })
     }
 
+    /// **A11 §5: selects each bound resource's close, at resolution time.**
+    ///
+    /// Returns the `(arena, closes)` additions. A resource with no `is_close_for` function in its
+    /// provider's metadata is an ERROR, not an empty result: §5 obligation 5 says a resource reaching
+    /// emission without a close is a leak the ABI cannot detect, because the provider never learns
+    /// the handle was abandoned.
+    pub fn select_closes<F>(
+        &mut self,
+        mut close_for: F,
+    ) -> Result<Vec<crate::mir::ValidatedProviderClose>, String>
+    where
+        F: FnMut(&str) -> Result<ValidatedProviderCall, String>,
+    {
+        let mut closes = Vec::new();
+        // `resource_items` is a `BTreeMap`, so selection order is name-derived and the arena indices
+        // a close gets are a function of the manifest rather than of iteration.
+        let resources: Vec<String> = self.resource_items.keys().cloned().collect();
+        for resource in resources {
+            let call = close_for(&resource)?;
+            let provider = call.provider.name.clone();
+            let Some(resource_ty) = self.resource_ty(&resource, &provider) else {
+                return Err(format!(
+                    "resource `{resource}` has no bound nominal, so its close has nothing to close"
+                ));
+            };
+            let id = ProviderCallId(self.arena.len() as u32);
+            self.arena.push(call);
+            closes.push(crate::mir::ValidatedProviderClose {
+                resource: resource_ty,
+                close: id,
+            });
+        }
+        Ok(closes)
+    }
+
     /// The `MirTy` for a provider resource name, when its nominal has been resolved.
     ///
     /// Built here rather than stored, because the provider is a property of the call and the same

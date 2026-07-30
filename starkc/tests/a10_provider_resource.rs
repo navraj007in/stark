@@ -83,6 +83,7 @@ fn program_for(call: &ValidatedProviderCall) -> MirProgram {
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
         provider_calls: vec![call.clone()],
         resource_bindings: Vec::new(),
+        provider_closes: Vec::new(),
     }
 }
 

@@ -88,6 +88,44 @@ pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Ve
             block: 0,
         }]);
     }
+    // A11 §5 RULE 4 -- what actually keeps "exactly once" true. A close may be reached ONLY through
+    // MIR's `Drop`; a package cannot bind one (design §2), so a `Callee::Provider` naming an
+    // `is_close_for` declaration means some other path found it. Every such site is a second
+    // destruction path, and the resource it closes is then closed twice.
+    //
+    // The closes recorded in `provider_closes` are exempt by construction: they are reached from a
+    // `Drop` terminator via `drop_plan`, never from a `Callee::Provider` in a body.
+    for body in &program.bodies {
+        for (bi, block) in body.blocks.iter().enumerate() {
+            if let Terminator::Call {
+                callee: Callee::Provider(id),
+                ..
+            } = &block.terminator.0
+            {
+                if let Some(call) = program.provider_call(*id) {
+                    if let Some(resource) = &call.function.is_close_for {
+                        errors.push(MirError {
+                            code: "MIR-0033",
+                            message: format!(
+                                "`{}` is declared is_close_for `{resource}` and must be reached only \
+                                 through a Drop terminator (A11 §5 rule 4); a direct call is a second \
+                                 destruction path",
+                                call.function.name
+                            ),
+                            symbol: body.instance.symbol.clone(),
+                            block: bi as u32,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // A11 §5: the close bindings are program-level, so they are discharged once, before any body.
+    // A body-level check would re-report the same defect per body and could not see obligation 1's
+    // "exactly one per resource" property at all.
+    verify_provider_closes(program, &mut errors);
+
     for body in &program.bodies {
         let mut cx = BodyCx {
             program,
@@ -123,6 +161,120 @@ pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Ve
 /// Built from `MirProgram::resource_bindings` so verification needs **no external lookup** — the same
 /// self-containment rule that makes `ValidatedProviderCall` copy its declaration. Before this, the
 /// verifier could only see `builtin()` and rejected every package-declared resource as unbound.
+/// **A11 §5's five obligations, discharged before emission.**
+///
+/// Keeping the close out of the type means the verifier, not the type system, carries the
+/// exactly-once guarantee — so these are checked here rather than assumed from resolution.
+fn verify_provider_closes(program: &MirProgram, errors: &mut Vec<MirError>) {
+    use std::collections::BTreeMap;
+
+    let mut push = |code: &'static str, what: String| {
+        errors.push(MirError {
+            code,
+            message: what,
+            // Program-level: a close binding belongs to the program's arena, not to any one body.
+            symbol: String::new(),
+            block: 0,
+        })
+    };
+
+    // Obligation 1: exactly ONE close per host-resource type. Two would be two destruction paths for
+    // one handle, and whichever ran second would close an already-closed resource.
+    let mut seen: BTreeMap<&MirTy, usize> = BTreeMap::new();
+    for binding in &program.provider_closes {
+        *seen.entry(&binding.resource).or_default() += 1;
+    }
+    for (resource, count) in &seen {
+        if *count > 1 {
+            push(
+                "MIR-0028",
+                format!(
+                    "host resource {} has {count} close bindings; A11 §5 requires exactly one",
+                    crate::mir::dump_ty(resource)
+                ),
+            );
+        }
+    }
+
+    for binding in &program.provider_closes {
+        let Some(call) = program.provider_call(binding.close) else {
+            push(
+                "MIR-0029",
+                format!(
+                    "close binding for {} names provider call {}, which is not in the arena",
+                    crate::mir::dump_ty(&binding.resource),
+                    binding.close.0
+                ),
+            );
+            continue;
+        };
+        let MirTy::HostResource(r) = &binding.resource else {
+            push(
+                "MIR-0029",
+                format!(
+                    "close binding names {}, which is not a host resource",
+                    crate::mir::dump_ty(&binding.resource)
+                ),
+            );
+            continue;
+        };
+
+        // Obligation 2 + 4: the close must be declared `is_close_for` THAT resource. This is the
+        // check a structural test misses -- `stark_tcp_listener_close` and `stark_tcp_stream_close`
+        // have identical shapes and differ only in the resource they name, so a listener could
+        // otherwise be closed by the stream's close and typecheck perfectly.
+        match &call.function.is_close_for {
+            Some(declared) if *declared == r.resource => {}
+            Some(declared) => push(
+                "MIR-0030",
+                format!(
+                    "close for resource `{}` is `{}`, which is declared is_close_for `{declared}` \
+                     -- a close must name the resource it closes",
+                    r.resource, call.function.name
+                ),
+            ),
+            None => push(
+                "MIR-0030",
+                format!(
+                    "close for resource `{}` is `{}`, which is not declared is_close_for anything",
+                    r.resource, call.function.name
+                ),
+            ),
+        }
+
+        // Obligation 3: the same resolved provider. A close from another provider would be handed a
+        // handle that provider never issued.
+        if call.provider.name != r.provider {
+            push(
+                "MIR-0031",
+                format!(
+                    "close for `{}/{}` resolves to provider `{}` -- a close must belong to the \
+                     provider that issued the handle",
+                    r.provider, r.resource, call.provider.name
+                ),
+            );
+        }
+
+        // ABI §13.1: exactly one consumed handle of that resource, and no ordinary value output.
+        let params = &call.function.params;
+        let consumes_exactly_one = params.len() == 1
+            && matches!(
+                &params[0],
+                crate::provider_abi::AbiParam::HandleConsumed { resource_type } if *resource_type == r.resource
+            );
+        if !consumes_exactly_one {
+            push(
+                "MIR-0032",
+                format!(
+                    "close `{}` must take exactly one HandleConsumed of `{}` (ABI §13.1); it \
+                     declares {:?}",
+                    call.function.name, r.resource, params
+                ),
+            );
+        }
+    }
+}
+
 fn program_resource_registry(program: &MirProgram) -> crate::provider_bind::ResourceRegistry {
     use crate::provider_bind::{ResourceBinding, ResourceRegistry};
     let mut registry = ResourceRegistry::builtin();

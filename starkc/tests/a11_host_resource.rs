@@ -89,8 +89,9 @@ fn body_assigning_ty(rvalue: Rvalue, ty: MirTy) -> MirProgram {
         types: TypeContext::default(),
         mir_version: mir::MIR_VERSION.to_string(),
         runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
-        provider_calls: Vec::new(),
         resource_bindings: Vec::new(),
+        provider_closes: Vec::new(),
+        provider_calls: Vec::new(),
     }
 }
 
@@ -368,4 +369,249 @@ fn a_package_nominal_uses_host_resource_immediately() {
         registry.lookup("tcp_stream"),
         Some(&starkc::provider_bind::ResourceBinding::Nominal(ItemId(7)))
     );
+}
+
+// ------------------------------------------ A11 §5: the close, exactly once --
+
+use starkc::mir::{ValidatedProviderCall, ValidatedProviderClose};
+use starkc::provider_abi::{AbiParam, FunctionDecl, ProviderIdentity};
+
+fn close_decl(name: &str, is_close_for: Option<&str>, params: Vec<AbiParam>) -> FunctionDecl {
+    FunctionDecl {
+        name: name.to_string(),
+        capability: "tcp".to_string(),
+        params,
+        is_close_for: is_close_for.map(|s| s.to_string()),
+        may_block: false,
+    }
+}
+
+fn call_for(decl: FunctionDecl, provider: &str) -> ValidatedProviderCall {
+    ValidatedProviderCall {
+        provider: ProviderIdentity {
+            name: provider.to_string(),
+            semver: (0, 1, 0),
+            abi_version: "0.1".to_string(),
+        },
+        capability: "tcp".to_string(),
+        function: decl,
+        target_triple: "aarch64-apple-darwin".to_string(),
+        status_binding: starkc::provider_bind::StatusBinding::new(),
+        provider_crate: "stark-net-native".to_string(),
+        provider_resource_types: vec!["tcp_listener".to_string(), "tcp_stream".to_string()],
+        provider_target_triples: vec!["aarch64-apple-darwin".to_string()],
+    }
+}
+
+/// A program with the given close arena, and no bodies — the obligations are program-level.
+fn program_with_closes(
+    calls: Vec<ValidatedProviderCall>,
+    closes: Vec<ValidatedProviderClose>,
+) -> MirProgram {
+    MirProgram {
+        files: vec![Arc::new(SourceFile::new("c.stark", ""))],
+        bodies: Vec::new(),
+        types: TypeContext::default(),
+        mir_version: mir::MIR_VERSION.to_string(),
+        runtime_surface: mir::MIR_RUNTIME_SURFACE.to_string(),
+        resource_bindings: Vec::new(),
+        provider_closes: closes,
+        provider_calls: calls,
+    }
+}
+
+/// **Obligation 4, the one a structural check misses.**
+///
+/// `stark_tcp_listener_close` and `stark_tcp_stream_close` have *identical shapes* — both consume one
+/// handle — and differ only in which resource they name. So a listener closed by the stream's close
+/// typechecks perfectly, and only the `is_close_for` comparison catches it.
+#[test]
+fn a_stream_close_cannot_close_a_listener() {
+    let stream_close = call_for(
+        close_decl(
+            "stark_tcp_stream_close",
+            Some("tcp_stream"),
+            vec![AbiParam::HandleConsumed {
+                resource_type: "tcp_stream".to_string(),
+            }],
+        ),
+        "stark-std-net",
+    );
+    let listener = MirTy::host_resource(
+        mir::HostResourceNominal::Item(ItemId(5)),
+        "stark-std-net",
+        "tcp_listener",
+    );
+
+    let program = program_with_closes(
+        vec![stream_close],
+        vec![ValidatedProviderClose {
+            resource: listener,
+            close: mir::ProviderCallId(0),
+        }],
+    );
+    let codes = verify_codes(&program);
+    assert!(
+        codes.contains(&"MIR-0030".to_string()),
+        "the stream's close must not be accepted for a listener; got {codes:?}"
+    );
+}
+
+/// Obligation 1: two closes for one resource are two destruction paths, and whichever ran second
+/// would close an already-closed handle.
+#[test]
+fn two_closes_for_one_resource_are_rejected() {
+    let decl = close_decl(
+        "stark_tcp_stream_close",
+        Some("tcp_stream"),
+        vec![AbiParam::HandleConsumed {
+            resource_type: "tcp_stream".to_string(),
+        }],
+    );
+    let stream = MirTy::host_resource(
+        mir::HostResourceNominal::Item(ItemId(6)),
+        "stark-std-net",
+        "tcp_stream",
+    );
+    let program = program_with_closes(
+        vec![
+            call_for(decl.clone(), "stark-std-net"),
+            call_for(decl, "stark-std-net"),
+        ],
+        vec![
+            ValidatedProviderClose {
+                resource: stream.clone(),
+                close: mir::ProviderCallId(0),
+            },
+            ValidatedProviderClose {
+                resource: stream,
+                close: mir::ProviderCallId(1),
+            },
+        ],
+    );
+    assert!(
+        verify_codes(&program).contains(&"MIR-0028".to_string()),
+        "exactly one close per resource (A11 §5 obligation 1)"
+    );
+}
+
+/// Obligation 3: a close from a different provider would receive a handle that provider never issued.
+#[test]
+fn a_close_from_another_provider_is_rejected() {
+    let program = program_with_closes(
+        vec![call_for(
+            close_decl(
+                "other_close",
+                Some("tcp_stream"),
+                vec![AbiParam::HandleConsumed {
+                    resource_type: "tcp_stream".to_string(),
+                }],
+            ),
+            "some-other-provider",
+        )],
+        vec![ValidatedProviderClose {
+            resource: MirTy::host_resource(
+                mir::HostResourceNominal::Item(ItemId(6)),
+                "stark-std-net",
+                "tcp_stream",
+            ),
+            close: mir::ProviderCallId(0),
+        }],
+    );
+    assert!(
+        verify_codes(&program).contains(&"MIR-0031".to_string()),
+        "a close must belong to the provider that issued the handle"
+    );
+}
+
+/// ABI §13.1: exactly one consumed handle and no ordinary output. A close taking extra outputs would
+/// return a value derived from a resource it has just destroyed.
+#[test]
+fn a_close_with_the_wrong_parameter_list_is_rejected() {
+    let program = program_with_closes(
+        vec![call_for(
+            close_decl(
+                "stark_tcp_stream_close",
+                Some("tcp_stream"),
+                vec![
+                    AbiParam::HandleConsumed {
+                        resource_type: "tcp_stream".to_string(),
+                    },
+                    AbiParam::ScalarOut(starkc::provider_abi::ScalarTy::U64),
+                ],
+            ),
+            "stark-std-net",
+        )],
+        vec![ValidatedProviderClose {
+            resource: MirTy::host_resource(
+                mir::HostResourceNominal::Item(ItemId(6)),
+                "stark-std-net",
+                "tcp_stream",
+            ),
+            close: mir::ProviderCallId(0),
+        }],
+    );
+    assert!(
+        verify_codes(&program).contains(&"MIR-0032".to_string()),
+        "a close takes exactly one HandleConsumed and no value output (ABI §13.1)"
+    );
+}
+
+/// A correctly-paired close verifies. Without this the four refusals above would be consistent with
+/// rejecting everything.
+#[test]
+fn a_correctly_paired_close_is_accepted() {
+    let program = program_with_closes(
+        vec![call_for(
+            close_decl(
+                "stark_tcp_stream_close",
+                Some("tcp_stream"),
+                vec![AbiParam::HandleConsumed {
+                    resource_type: "tcp_stream".to_string(),
+                }],
+            ),
+            "stark-std-net",
+        )],
+        vec![ValidatedProviderClose {
+            resource: MirTy::host_resource(
+                mir::HostResourceNominal::Item(ItemId(6)),
+                "stark-std-net",
+                "tcp_stream",
+            ),
+            close: mir::ProviderCallId(0),
+        }],
+    );
+    let codes = verify_codes(&program);
+    assert!(
+        !codes.iter().any(|c| c.starts_with("MIR-003")),
+        "a correctly paired close must verify; got {codes:?}"
+    );
+}
+
+/// **A11 §5 obligation 5: a resource with no close cannot be dropped.**
+///
+/// Planning `Noop` would be the leak itself — the provider never learns the handle was abandoned, so
+/// nothing downstream could detect it. It fails at planning instead.
+#[test]
+fn dropping_a_resource_with_no_recorded_close_fails() {
+    let types = TypeContext::default();
+    let err = mir::drop_plan::plan_for(&resource_ty(), &types)
+        .expect_err("a resource with no close must not plan");
+    let message = format!("{err:?}");
+    assert!(message.contains("tcp_stream"), "{message}");
+    assert!(
+        message.contains("no recorded close"),
+        "the diagnostic must name the cause: {message}"
+    );
+}
+
+/// With a close recorded, the plan is that close — not a destructor and not runtime glue.
+#[test]
+fn a_recorded_close_becomes_the_drop_plan() {
+    let mut types = TypeContext::default();
+    types
+        .host_resource_closes
+        .insert(resource_ty(), mir::ProviderCallId(3));
+    let plan = mir::drop_plan::plan_for(&resource_ty(), &types).expect("plans");
+    assert_eq!(plan.host_resource_close(), Some(mir::ProviderCallId(3)));
 }

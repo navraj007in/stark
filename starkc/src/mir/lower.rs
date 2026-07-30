@@ -330,6 +330,9 @@ pub fn lower_program_with_providers(
         // A10: resolved before lowering (A10 3) and carried verbatim. Empty for every program
         // that binds no provider.
         provider_calls: providers.arena.clone(),
+        // A11 §5: populated by resolution once a resource's close is selected. Empty while no
+        // resource is bound, which is every program that touches no host resource.
+        provider_closes: Vec::new(),
         // A11: sorted, so the program's identity is a function of the manifest rather than of
         // iteration order -- the same property CD-213 gave capabilities.
         resource_bindings: providers

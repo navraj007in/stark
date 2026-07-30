@@ -732,6 +732,17 @@ impl<'a> Interp<'a> {
     ) -> Result<(), MirRunError> {
         match plan {
             DropPlan::Noop => {}
+            // A11 §5: closing a host resource means calling into a native provider, which the
+            // reference interpreter cannot do -- it has no linked provider and no ABI boundary. A
+            // program using a host resource is a NATIVE-only program, and saying so is better than
+            // pretending the close happened.
+            DropPlan::HostResourceClose { close } => {
+                return self.internal(format!(
+                    "host-resource close (provider call {}) cannot run in the reference \
+                     interpreter: closing requires a linked native provider",
+                    close.0
+                ))
+            }
             DropPlan::Destructor { symbol, then } => {
                 let Some(&idx) = self.by_symbol.get(symbol.as_str()) else {
                     return self.internal(format!("dtor instance {symbol} not lowered"));

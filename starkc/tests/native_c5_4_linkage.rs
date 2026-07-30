@@ -51,6 +51,7 @@ fn program(bodies: Vec<MirBody>) -> MirProgram {
         runtime_surface: "test".to_string(),
         provider_calls: Vec::new(),
         resource_bindings: Vec::new(),
+        provider_closes: Vec::new(),
     }
 }
 

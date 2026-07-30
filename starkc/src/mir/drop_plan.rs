@@ -97,6 +97,14 @@ pub enum DropPlan {
     VecElements { elem: MirTy },
     /// `Box<T>`: the contained value, then the allocation (unobservable).
     BoxInner { inner: MirTy },
+    /// **A11 §5: a host resource is destroyed by calling its provider's close, exactly once.**
+    ///
+    /// The id is recorded at RESOLUTION, not searched for here — which is what lets the verifier
+    /// discharge §5's five obligations before emission rather than after.
+    ///
+    /// There is no `then`: a host resource has no components. It is opaque by construction (CD-234),
+    /// so there is nothing inside it to destroy afterwards.
+    HostResourceClose { close: crate::mir::ProviderCallId },
 }
 
 impl DropPlan {
@@ -104,6 +112,15 @@ impl DropPlan {
     /// by consumers that want to skip a whole `Drop` cheaply.
     pub fn is_noop(&self) -> bool {
         matches!(self, DropPlan::Noop)
+    }
+
+    /// Whether this plan closes a host resource. Emission needs to know, because a close is a
+    /// **provider call**, not a destructor invocation or runtime glue.
+    pub fn host_resource_close(&self) -> Option<crate::mir::ProviderCallId> {
+        match self {
+            DropPlan::HostResourceClose { close } => Some(*close),
+            _ => None,
+        }
     }
 }
 
@@ -140,6 +157,18 @@ pub fn variant_payloads(
 /// Derive the destruction plan for `ty`.
 pub fn plan_for(ty: &MirTy, types: &TypeContext) -> Result<DropPlan, DropPlanError> {
     match ty {
+        // A11 §5. A resource with NO recorded close is an error, never a `Noop`: obligation 5 says a
+        // resource reaching emission without a close is a leak the ABI cannot detect, because the
+        // provider never learns the handle was abandoned. Silently planning nothing is exactly that
+        // leak, so it fails here instead.
+        MirTy::HostResource(r) => match types.host_resource_closes.get(ty) {
+            Some(close) => Ok(DropPlan::HostResourceClose { close: *close }),
+            None => Err(DropPlanError(format!(
+                "host resource `{}/{}` has no recorded close, so dropping it would abandon the \
+                 handle without telling the provider (A11 §5 obligation 5)",
+                r.provider, r.resource
+            ))),
+        },
         MirTy::Struct(item, args) => {
             let fields = types
                 .struct_fields
