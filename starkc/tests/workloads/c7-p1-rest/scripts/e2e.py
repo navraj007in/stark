@@ -208,15 +208,33 @@ def run(binary: Path) -> None:
             process.wait()
 
 
+def default_binary(profile: str) -> Path:
+    """The built artefact for `profile`, with the platform's executable suffix.
+
+    Windows needs `.exe`; leaving it off made this script macOS/Linux-only, which is exactly the
+    portability gap that kept the workload out of CI and left P1's Tier-1 rows unrun.
+    """
+    suffix = ".exe" if sys.platform == "win32" else ""
+    return Path(__file__).parents[1] / "target/stark" / profile / f"c7-p1-rest{suffix}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "--profile",
+        choices=("debug", "release"),
+        default="debug",
+        help="which built artefact to exercise; ignored when --binary is given",
+    )
+    parser.add_argument(
         "--binary",
         type=Path,
-        default=Path(__file__).parents[1] / "target/stark/debug/c7-p1-rest",
+        default=None,
+        help="explicit path to the built artefact",
     )
     args = parser.parse_args()
-    run(args.binary.resolve())
+    binary = args.binary if args.binary is not None else default_binary(args.profile)
+    run(binary.resolve())
     print("c7-p1 e2e: 24/24 raw HTTP cases passed")
     return 0
 

@@ -2,7 +2,10 @@
 
 **Date:** 2026-07-30
 **Local qualification:** macOS arm64
-**Recommendation:** `P1 PARTIAL — Tier-1 cross-platform runs remain`
+**Recommendation:** `P1 PARTIAL — Tier-1 cross-platform runs now execute in CI; awaiting first green run`
+
+**Update, CD-271.** The Tier-1 Linux and Windows rows were framed as manual runs and had stayed
+unrun. They are now a CI job, `C7 P1 REST workload`, on all three Tier-1 platforms — see §7.
 
 ## Implementation status
 
@@ -117,3 +120,49 @@ Tier-1 Linux/Windows qualification remains.
 ```
 
 This report does not declare Gate C7 closed.
+
+---
+
+## 7. Tier-1 cross-platform qualification (CD-271)
+
+**These rows were never a research problem.** CI already ran on all three Tier-1 platforms; the
+workload simply was not wired into it, and its harness had two portability gaps that would have
+failed on Windows regardless:
+
+- `e2e.py` built its default artefact path without an `.exe` suffix;
+- `measure.py` invoked `python3`, which Windows runners do not provide (now `sys.executable`).
+
+Both are fixed, and the job runs per push:
+
+| step | why it is in the job |
+| --- | --- |
+| pure STARK tests | application logic with **no host capabilities**, so a later failure is attributable to the provider path or to the logic, not to both |
+| `stark build --no-build-cache` (debug) | the compile path, uncached |
+| **`e2e.py --profile debug`** | **executes the artefact**: 24 raw HTTP exchanges, every response compared byte-for-byte, then a bounded clean exit |
+| `stark build --release --no-build-cache` | the release compile path |
+| **`e2e.py --profile release`** | executes the release artefact under the same 24 cases |
+| `stark fmt --check` | formatting |
+
+**The job builds *and* runs, and that split is deliberate.** `stark-json`'s native evidence was
+recorded on a successful `stark build` whose binary had never been executed; when it finally was, it
+aborted immediately on a real compiler defect (`?` in a loop, CD-269). A build-only Tier-1 job would
+have reproduced that mistake on three platforms instead of one.
+
+Local dry-run of the exact sequence at `cd9405b` on macOS arm64: pure tests 7/7, debug 24/24,
+release 24/24, `fmt --check` clean. Linux and Windows are pending their first CI run — the rows move
+from PENDING to PASS on evidence, not on the job existing.
+
+## 8. Measurements
+
+Re-taken on both profiles at `cd9405b`, replacing `measurements/latest.json` — a single debug run at
+`a6964d9`, a commit predating `MIR_VERSION` 0.2 → 0.3, whose numbers describe a compiler that no
+longer exists.
+
+Executable size is a real result: **860,784 B debug vs 510,592 B release, 1.686×**.
+
+Runtime is not. `functional_run_seconds` times the `e2e.py` subprocess, and the debug/release ratio
+of **1.003×** is the proof: C7.5 measured 1.5× between profiles on startup alone. The harness floor
+— Python startup, a deliberate sleep, process spawn, 24 loopback round trips — dominates the
+microseconds of STARK compute. C7.5's two runtime dimensions therefore stay `NOT MEASURABLE`, now
+on two workloads' evidence. Detail in `measurements/README.md` and `WP-C7.5-PERFORMANCE-REPORT.md`
+§7.

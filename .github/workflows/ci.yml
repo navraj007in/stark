@@ -486,3 +486,64 @@ jobs:
           path: |
             conformance-report.json
             conformance-report.md
+
+  # ---------------------------------------------------------------- WP-C7 / P1 --
+  #
+  # The P1 native HTTP/JSON REST workload, built and EXECUTED on all three Tier-1 platforms.
+  #
+  # This job exists because P1's Linux and Windows rows were framed as manual runs and had stayed
+  # unrun, holding Gate C7 open on qualification. They were never a research problem — CI already
+  # covers all three platforms, and the workload's only portability gaps were a missing `.exe`
+  # suffix and a `python3` that Windows runners do not have.
+  #
+  # It builds AND runs. `stark-json`'s native evidence was recorded on a successful `stark build`
+  # whose binary had never been executed; when it finally was, it aborted immediately on a real
+  # compiler defect. A build step alone would repeat that mistake at Tier-1 scale.
+  p1-rest-workload:
+    name: C7 P1 REST workload (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-14
+          - name: windows-x64
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: starkc
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the compiler
+        working-directory: starkc
+        run: cargo build --release --bin stark
+      # Pure-STARK behaviour, with no host capabilities: proves the application logic independently
+      # of the provider path, so a failure below can be attributed to one or the other.
+      - name: Pure STARK tests
+        working-directory: starkc/tests/workloads/c7-p1-rest
+        run: python scripts/pure_tests.py
+      - name: Native build (debug)
+        working-directory: starkc/tests/workloads/c7-p1-rest
+        run: ../../../target/release/stark build --no-build-cache --verbose
+      # 24 raw HTTP exchanges over loopback, every response compared byte-for-byte including
+      # headers and length, then a bounded clean exit. This is the step that makes the row
+      # "executed" rather than "built".
+      - name: Native execution — 24 byte-exact HTTP cases (debug)
+        working-directory: starkc/tests/workloads/c7-p1-rest
+        run: python scripts/e2e.py --profile debug
+      - name: Native build (release)
+        working-directory: starkc/tests/workloads/c7-p1-rest
+        run: ../../../target/release/stark build --release --no-build-cache --verbose
+      - name: Native execution — 24 byte-exact HTTP cases (release)
+        working-directory: starkc/tests/workloads/c7-p1-rest
+        run: python scripts/e2e.py --profile release
+      - name: Formatting
+        working-directory: starkc/tests/workloads/c7-p1-rest
+        run: ../../../target/release/stark fmt --check

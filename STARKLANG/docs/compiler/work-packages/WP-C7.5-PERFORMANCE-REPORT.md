@@ -39,9 +39,9 @@ ratio below is a single-workload figure and is labelled as one.
 | peak compiler memory | **measured** | 148.6–156.3 MB, essentially flat |
 | executable size | **measured** | debug 482–532 KB; release 443–447 KB |
 | startup time | **measured** | 1.55 ms (release), 2.2–2.3 ms (debug) |
-| steady-state runtime | **NOT MEASURABLE** | below resolution on every workload — §1 |
+| steady-state runtime | **NOT MEASURABLE** | below resolution on every workload — §1; re-tested against P1 and still below resolution — §7 |
 | interpreter/native ratio | **measured, one workload** | ≈115× against native debug — §4 |
-| debug/release ratio | **size measured; runtime NOT MEASURABLE** | size 1.09–1.19×; runtime undefined — §5 |
+| debug/release ratio | **size measured; runtime NOT MEASURABLE** | size 1.09–1.19× (micro-workloads), 1.686× (P1); runtime undefined — §5, §7 |
 | backend maintenance complexity | **measured** | §6 |
 
 ## 3. Compile time, memory and size
@@ -139,3 +139,40 @@ forgotten:
 2. **Whether compile time is still ~0.4 s** at a realistic program size, and whether the 65–68 %
    host share C7.0 measured holds there. Both current figures are from programs of a few dozen
    lines.
+
+---
+
+## 7. Re-tested against P1 (CD-271), and the verdict does not move
+
+The two open dimensions were expected to close once a *real* workload existed, on the reasoning that
+the micro-workloads of §1 were simply too small. P1 — a native HTTP/JSON REST server, 1,152 lines of
+STARK, 24 byte-exact request/response exchanges — is that workload, and it was measured on both
+profiles at compiler commit `cd9405b`.
+
+**Executable size closes. Runtime does not.**
+
+| | debug | release | ratio |
+| --- | --- | --- | --- |
+| executable size | 860,784 B | 510,592 B | **1.686×** |
+| `functional_run_seconds` median | 66.72 ms | 66.50 ms | **1.003×** |
+
+The size row is a real measurement and a wider spread than the micro-workloads' 1.09–1.19×, which
+is what a larger program should show.
+
+**The runtime row is not a measurement of the workload, and its own value proves it.** A 1.003×
+debug/release ratio cannot describe STARK compute when §5 measured 1.5× between the profiles on
+startup alone and §4 measured ~115× between the interpreter and native. What the harness times is
+its own subprocess: ~15.7 ms of Python startup, a deliberate 10 ms sleep in the split-write case,
+a server spawn, and 24 sequential loopback round trips. Handling 24 small requests is microseconds
+of compute inside a floor of tens of milliseconds.
+
+So §1's conclusion is unchanged, and now rests on two independent workloads rather than one: **the
+generated code is fast enough that this project's measurement apparatus cannot see it.** What has
+changed is the reason — the micro-workloads were below the *process startup* floor, and P1 is below
+its *harness* floor. Neither is a statement about the backend.
+
+Closing these two dimensions needs an instrument, not a bigger program: timing inside the server or
+amortised across enough requests that a fixed floor stops mattering, and a request count above P1's
+frozen 24-accept lifecycle. Raising that count changes the workload P1 is qualified against, so it
+is an owner decision rather than a harness fix. Recorded in
+`starkc/tests/workloads/c7-p1-rest/measurements/README.md`.

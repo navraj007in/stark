@@ -1,0 +1,36 @@
+{
+  "schema": "stark.c7.p1.measurement.v1",
+  "compiler_commit": "cd9405ba78d6771eeeab0f609815b13c3f692f83",
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "rustc": "rustc 1.93.0 (254b59607 2026-01-19)\nbinary: rustc\ncommit-hash: 254b59607d4417e9dffbc307138ae5c86280fe4c\ncommit-date: 2026-01-19\nhost: aarch64-apple-darwin\nrelease: 1.93.0\nLLVM version: 21.1.8",
+  "profile": "debug",
+  "request_count": 24,
+  "concurrency": 1,
+  "source_lines": 1152,
+  "generated_rust_lines": 9056,
+  "binary_bytes": 860784,
+  "cold_build_seconds": 1.5294107499976235,
+  "no_change_build_seconds": {
+    "samples": [
+      0.877906041998358,
+      0.4072164999997767,
+      0.38205624999682186
+    ],
+    "median": 0.4072164999997767
+  },
+  "functional_run_seconds": {
+    "samples": [
+      0.46442729200134636,
+      0.06703724999897531,
+      0.059104500000103144,
+      0.06672487499963609,
+      0.05444366699884995
+    ],
+    "median": 0.06672487499963609,
+    "requests_per_second_median_run": 359.6859492075616
+  },
+  "warmup": "one cold build before three cached builds; each e2e run launches a fresh server",
+  "correctness": "every timed e2e sample validates all 24 raw responses byte-for-byte",
+  "generated_crate_preserved": true
+}

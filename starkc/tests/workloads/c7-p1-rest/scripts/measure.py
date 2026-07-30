@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import platform
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -28,12 +30,40 @@ def line_count(paths: list[Path]) -> int:
     return sum(len(path.read_text().splitlines()) for path in paths)
 
 
+def executable(path: Path) -> Path:
+    """`path` with the platform's executable suffix."""
+    return path.with_name(path.name + ".exe") if sys.platform == "win32" else path
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--profile",
+        choices=("debug", "release"),
+        default="debug",
+        help="STARK build profile to measure. C7.5's debug/release runtime ratio needs both.",
+    )
+    parser.add_argument(
+        "--compiler",
+        type=Path,
+        default=None,
+        help="path to the `stark` binary; defaults to the repo's release build",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="where to write the record; defaults to measurements/<profile>.json",
+    )
+    args = parser.parse_args()
+
     script = Path(__file__).resolve()
     package = script.parents[1]
     compiler_root = script.parents[4]
-    compiler = compiler_root / "target" / "debug" / "stark"
+    compiler = args.compiler or executable(compiler_root / "target" / "release" / "stark")
     build = [str(compiler), "build", "--emit-rust", "--verbose"]
+    if args.profile == "release":
+        build.append("--release")
 
     cold_seconds, build_output = run(build + ["--no-build-cache"], package)
     generated_line = next(
@@ -42,12 +72,12 @@ def main() -> int:
     generated_root = Path(generated_line.split("generated crate:", 1)[1].strip())
     generated_rust = generated_root / "src" / "main.rs"
     warm_samples = [run(build, package)[0] for _ in range(3)]
-    e2e_samples = [
-        run(["python3", str(package / "scripts" / "e2e.py")], package)[0]
-        for _ in range(5)
-    ]
+    # `sys.executable`, not "python3": Windows CI has no `python3` on PATH, and a measurement
+    # harness that only runs on two of three Tier-1 platforms cannot close a cross-platform row.
+    e2e = [sys.executable, str(package / "scripts" / "e2e.py"), "--profile", args.profile]
+    e2e_samples = [run(e2e, package)[0] for _ in range(5)]
     source_files = sorted((package / "src").glob("*.stark"))
-    binary = package / "target" / "stark" / "debug" / "c7-p1-rest"
+    binary = executable(package / "target" / "stark" / args.profile / "c7-p1-rest")
     git_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=compiler_root.parent,
@@ -64,7 +94,7 @@ def main() -> int:
         "platform": platform.platform(),
         "machine": platform.machine(),
         "rustc": rustc,
-        "profile": "debug",
+        "profile": args.profile,
         "request_count": 24,
         "concurrency": 1,
         "source_lines": line_count(source_files),
@@ -84,7 +114,7 @@ def main() -> int:
         "correctness": "every timed e2e sample validates all 24 raw responses byte-for-byte",
         "generated_crate_preserved": True,
     }
-    output = package / "measurements" / "latest.json"
+    output = args.output or package / "measurements" / f"{args.profile}.json"
     output.parent.mkdir(exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n")
     print(output)
