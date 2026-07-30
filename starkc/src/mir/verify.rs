@@ -323,16 +323,11 @@ fn verify_provider_closes(program: &MirProgram, errors: &mut Vec<MirError>) {
 }
 
 fn program_resource_registry(program: &MirProgram) -> crate::provider_bind::ResourceRegistry {
-    use crate::provider_bind::{ResourceBinding, ResourceRegistry};
-    let mut registry = ResourceRegistry::builtin();
-    for (resource, nominal) in &program.resource_bindings {
-        let binding = match nominal {
-            HostResourceNominal::Core(core) => ResourceBinding::LegacyCore(*core),
-            HostResourceNominal::Item(item) => ResourceBinding::Nominal(*item),
-        };
-        registry.register(resource.clone(), binding);
-    }
-    registry
+    // Delegates to the program's own derivation, shared with the backend. The two used to build
+    // this separately -- the verifier from `resource_bindings`, emission from
+    // `ResourceRegistry::builtin()` -- so a package resource verified and then failed to plan at
+    // emission with `UnboundResourceType`.
+    program.resource_registry()
 }
 
 fn verify_map_key_eq(program: &MirProgram, body: &MirBody, errors: &mut Vec<MirError>) {

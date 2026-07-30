@@ -90,6 +90,7 @@ pub fn emit(
                 &program.types,
                 layout,
                 &program.provider_calls,
+                &program.resource_registry(),
             )?);
         } else {
             let name = mangle::function_name_for_symbol(&body.instance.symbol);
@@ -100,6 +101,7 @@ pub fn emit(
                 &program.types,
                 layout,
                 &program.provider_calls,
+                &program.resource_registry(),
             )?);
         }
         main_rs.push('\n');
@@ -108,6 +110,7 @@ pub fn emit(
     Ok(GeneratedSource { main_rs })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_entry_fn(
     entry: &MirBody,
     versions: &BuildVersions,
@@ -115,6 +118,7 @@ fn emit_entry_fn(
     types: &crate::mir::TypeContext,
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
+    program_resources: &crate::provider_bind::ResourceRegistry,
 ) -> Result<String, BackendDiagnostic> {
     let mut out = String::new();
     let mut prologue = String::new();
@@ -130,7 +134,14 @@ fn emit_entry_fn(
 
     if matches!(entry.ret, MirTy::Unit) {
         // The common case is unchanged: a `Unit` entry IS Rust's `fn main()`.
-        let block = emit_bodies::emit_block_body(entry, files, types, layout, provider_calls)?;
+        let block = emit_bodies::emit_block_body(
+            entry,
+            files,
+            types,
+            layout,
+            provider_calls,
+            program_resources,
+        )?;
         out.push_str("fn main() {\n");
         out.push_str(&prologue);
         out.push_str("    ");
@@ -150,6 +161,7 @@ fn emit_entry_fn(
         types,
         layout,
         provider_calls,
+        program_resources,
     )?);
     let entry_file = files
         .first()

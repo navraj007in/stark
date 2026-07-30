@@ -879,6 +879,28 @@ impl MirProgram {
     /// A10: the validated contract behind a [`ProviderCallId`], or `None` if the id is out of
     /// range. Verification rejects a dangling id (V-PROV-1) rather than panicking, so this
     /// returns an `Option` instead of indexing.
+    /// **The resource registry this program's own bindings describe**, plus the compiler built-ins.
+    ///
+    /// One derivation shared by the verifier and the backend. They previously each built their own —
+    /// the verifier from `resource_bindings`, the backend from `ResourceRegistry::builtin()` — so a
+    /// package resource verified and then failed to plan at emission with `UnboundResourceType`.
+    /// Two consumers deriving the same thing separately is the defect class this method exists to
+    /// remove, and it is the same fix `ResourceRegistry::resolve_ty` applied to plan/`provider_sig`.
+    pub fn resource_registry(&self) -> crate::provider_bind::ResourceRegistry {
+        use crate::provider_bind::{ResourceBinding, ResourceRegistry};
+        let mut registry = ResourceRegistry::builtin();
+        for (resource, nominal) in &self.resource_bindings {
+            registry.register(
+                resource.clone(),
+                match nominal {
+                    HostResourceNominal::Core(core) => ResourceBinding::LegacyCore(*core),
+                    HostResourceNominal::Item(item) => ResourceBinding::Nominal(*item),
+                },
+            );
+        }
+        registry
+    }
+
     pub fn provider_call(&self, id: ProviderCallId) -> Option<&ValidatedProviderCall> {
         self.provider_calls.get(id.0 as usize)
     }

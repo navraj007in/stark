@@ -37,6 +37,19 @@ pub struct TyEnv<'a> {
     /// call site predates providers, and a program that calls none is the overwhelmingly common
     /// case. `with_provider_calls` is the opt-in.
     pub provider_calls: &'a [crate::mir::ValidatedProviderCall],
+    /// A11: the program's resource registry, so a call carrying a package-declared resource can be
+    /// PLANNED where it is emitted.
+    ///
+    /// A borrow, not an owned value: `TyEnv` is `Copy`. Defaults to the built-in set, which is
+    /// correct for every program that declares no package resource.
+    pub program_resources: &'a crate::provider_bind::ResourceRegistry,
+}
+
+/// The built-in-only registry, borrowed by every `TyEnv` that was given no program registry.
+fn builtin_resources() -> &'static crate::provider_bind::ResourceRegistry {
+    static BUILTIN: std::sync::OnceLock<crate::provider_bind::ResourceRegistry> =
+        std::sync::OnceLock::new();
+    BUILTIN.get_or_init(crate::provider_bind::ResourceRegistry::builtin)
 }
 
 impl<'a> TyEnv<'a> {
@@ -50,6 +63,7 @@ impl<'a> TyEnv<'a> {
             types,
             layout,
             provider_calls: &[],
+            program_resources: builtin_resources(),
         }
     }
 
@@ -59,6 +73,16 @@ impl<'a> TyEnv<'a> {
         provider_calls: &'a [crate::mir::ValidatedProviderCall],
     ) -> Self {
         self.provider_calls = provider_calls;
+        self
+    }
+
+    /// A11: the program's resource registry, paired with `with_provider_calls` at the same sites —
+    /// a program that has provider calls is exactly the one whose resources need resolving.
+    pub fn with_program_resources(
+        mut self,
+        resources: &'a crate::provider_bind::ResourceRegistry,
+    ) -> Self {
+        self.program_resources = resources;
         self
     }
 

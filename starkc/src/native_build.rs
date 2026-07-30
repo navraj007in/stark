@@ -133,6 +133,7 @@ fn provider_crates_for_set(
 struct ProviderBuildLayer {
     overlays: HashMap<PathBuf, String>,
     lowering: ProviderLowering,
+    resource_nominals: std::collections::BTreeMap<String, String>,
 }
 
 fn provider_layer_for_build(
@@ -143,6 +144,7 @@ fn provider_layer_for_build(
         return Ok(ProviderBuildLayer {
             overlays: HashMap::new(),
             lowering: ProviderLowering::default(),
+            resource_nominals: std::collections::BTreeMap::new(),
         });
     };
 
@@ -200,12 +202,16 @@ fn provider_layer_for_build(
             )?;
         reject_resource_signatures(&package_name, &signatures)?;
 
-        let layer =
-            crate::provider_synth::synthesize(&signatures, &vocabularies).map_err(|error| {
-                BuildCommandError::Capability(format!(
-                    "provider_api for package `{package_name}` cannot be synthesized: {error}"
-                ))
-            })?;
+        let layer = crate::provider_synth::synthesize_with_resources(
+            &signatures,
+            &vocabularies,
+            &resource_nominal,
+        )
+        .map_err(|error| {
+            BuildCommandError::Capability(format!(
+                "provider_api for package `{package_name}` cannot be synthesized: {error}"
+            ))
+        })?;
         merge_layer(
             &package_name,
             package.entry.clone(),
@@ -229,6 +235,7 @@ fn provider_layer_for_build(
     Ok(ProviderBuildLayer {
         overlays: tables.overlays,
         lowering,
+        resource_nominals: tables.resource_nominals,
     })
 }
 
@@ -279,6 +286,7 @@ struct ProviderLayerTables {
     bindings: std::collections::BTreeMap<String, (String, String)>,
     error_variants: std::collections::BTreeMap<String, std::collections::BTreeMap<u32, u32>>,
     error_ty_by_item: std::collections::BTreeMap<String, String>,
+    resource_nominals: std::collections::BTreeMap<String, String>,
 }
 
 fn merge_layer(
@@ -293,6 +301,7 @@ fn merge_layer(
         bindings,
         error_variants,
         error_ty_by_item,
+        resource_nominals,
     } = tables;
     let original = std::fs::read_to_string(&entry).map_err(|error| BuildCommandError::Io {
         action: "reading package entry for provider synthesis".into(),
@@ -323,9 +332,89 @@ fn merge_layer(
     for sig in signatures {
         error_ty_by_item.insert(sig.item_path.clone(), sig.error.clone());
     }
+    for (resource, nominal) in layer.resource_nominals {
+        if let Some(previous) = resource_nominals.insert(resource.clone(), nominal.clone()) {
+            if previous != nominal {
+                return Err(BuildCommandError::Capability(format!(
+                    "provider resource `{resource}` is bound to conflicting package nominals \
+                     `{previous}` and `{nominal}` in the package graph"
+                )));
+            }
+        }
+    }
 
     let _ = package_name;
     Ok(())
+}
+
+fn resolve_resource_items(
+    hir: &crate::hir::Hir,
+    file: &crate::source::SourceFile,
+    resource_nominals: &std::collections::BTreeMap<String, String>,
+) -> Result<std::collections::BTreeMap<String, crate::hir::ItemId>, BuildCommandError> {
+    let mut out = std::collections::BTreeMap::new();
+    for (resource, nominal) in resource_nominals {
+        let item = hir
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(idx, item)| match &item.kind {
+                crate::hir::ItemKind::Enum { name, .. }
+                | crate::hir::ItemKind::Struct { name, .. }
+                    if span_text(file, *name) == nominal =>
+                {
+                    Some(crate::hir::ItemId(idx as u32))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                BuildCommandError::Lowering(format!(
+                    "provider resource `{resource}` is bound to nominal `{nominal}`, but that \
+                     nominal was not found after provider API synthesis"
+                ))
+            })?;
+        out.insert(resource.clone(), item);
+    }
+    Ok(out)
+}
+
+fn span_text(file: &crate::source::SourceFile, span: crate::source::Span) -> &str {
+    &file.src[span.lo as usize..span.hi as usize]
+}
+
+fn select_provider_closes(
+    lowering: &mut ProviderLowering,
+    set: Option<&ProviderSet>,
+) -> Result<(), BuildCommandError> {
+    let Some(set) = set else {
+        return Ok(());
+    };
+    lowering
+        .select_closes(|resource| {
+            set.providers()
+                .iter()
+                .find_map(|provider| {
+                    provider
+                        .metadata
+                        .functions
+                        .iter()
+                        .find(|function| function.is_close_for.as_deref() == Some(resource))
+                        .cloned()
+                        .map(|function| crate::mir::ValidatedProviderCall {
+                            provider: provider.metadata.identity.clone(),
+                            capability: function.capability.clone(),
+                            function,
+                            target_triple: set.target().to_string(),
+                            status_binding: provider.status_binding.clone(),
+                            provider_crate: provider.crate_name.clone(),
+                            provider_resource_types: provider.metadata.resource_types.clone(),
+                            provider_target_triples: provider.metadata.target_triples.clone(),
+                        })
+                })
+                .ok_or_else(|| format!("no close provider function declared for `{resource}`"))
+        })
+        .map(|_| ())
+        .map_err(BuildCommandError::Capability)
 }
 
 /// Where first-party provider crates live relative to a package being built.
@@ -479,7 +568,7 @@ pub fn build_current_package(
             &toolchain,
         )?)
     };
-    let provider_layer = provider_layer_for_build(&graph, provider_set.as_ref())?;
+    let mut provider_layer = provider_layer_for_build(&graph, provider_set.as_ref())?;
 
     let analysis = if provider_layer.overlays.is_empty() {
         analyze_project(ProjectInput::package(graph), LanguageOptions::CORE)
@@ -503,6 +592,12 @@ pub fn build_current_package(
     let tables = analysis.type_tables.as_ref().ok_or_else(|| {
         BuildCommandError::Lowering("successful analysis did not produce type tables".into())
     })?;
+    provider_layer.lowering.resource_items = resolve_resource_items(
+        hir,
+        analysis.root_file.as_ref(),
+        &provider_layer.resource_nominals,
+    )?;
+    select_provider_closes(&mut provider_layer.lowering, provider_set.as_ref())?;
     let mut mir = lower_program_with_providers(
         hir,
         tables,

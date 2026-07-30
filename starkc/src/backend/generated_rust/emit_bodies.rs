@@ -41,6 +41,7 @@ pub fn emit_function(
     types: &TypeContext,
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
+    program_resources: &crate::provider_bind::ResourceRegistry,
 ) -> Result<String, BackendDiagnostic> {
     // WP-C6.1f "returning a reference" — OWN-RETURN-001 native encoding. When a function returns a
     // reference, Rust needs to know which input it borrows from. STARK's rule is the *shortest* of
@@ -69,7 +70,14 @@ pub fn emit_function(
     } else {
         emit_types::emit_ty(&body.ret)?
     };
-    let block = emit_block_body(body, files, types, layout, provider_calls)?;
+    let block = emit_block_body(
+        body,
+        files,
+        types,
+        layout,
+        provider_calls,
+        program_resources,
+    )?;
     Ok(format!("fn {name}{generics}({params}) -> {ret_ty} {block}"))
 }
 
@@ -152,8 +160,11 @@ pub fn emit_block_body(
     types: &TypeContext,
     layout: &crate::layout::TargetLayout,
     provider_calls: &[crate::mir::ValidatedProviderCall],
+    program_resources: &crate::provider_bind::ResourceRegistry,
 ) -> Result<String, BackendDiagnostic> {
-    let env = &TyEnv::new(body, types, layout).with_provider_calls(provider_calls);
+    let env = &TyEnv::new(body, types, layout)
+        .with_provider_calls(provider_calls)
+        .with_program_resources(program_resources);
     validate_ephemeral_references(body)?;
     let mut out = String::from("{\n");
 
@@ -928,13 +939,17 @@ fn emit_terminator(
                         id.0
                     ))
                 })?;
-                // The plan is built HERE, from the compiler's registry, so emission and
-                // verification agree on parameter classification by construction rather than by
-                // two matches staying in sync.
+                // The plan is built HERE, from the PROGRAM's registry, so emission and verification
+                // agree on parameter classification by construction rather than by two matches
+                // staying in sync.
+                //
+                // The program's registry, not `ResourceRegistry::builtin()`: a package-declared
+                // resource is bound by the program itself (A11), so the built-in set alone left every
+                // such resource unplannable at emission even though it had just verified.
                 let plan = crate::provider_bind::plan(
                     *id,
                     call,
-                    &crate::provider_bind::ResourceRegistry::builtin(),
+                    env.program_resources,
                     call.status_binding.clone(),
                 )
                 .map_err(|e| {
