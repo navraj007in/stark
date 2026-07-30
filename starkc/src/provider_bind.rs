@@ -52,7 +52,19 @@ pub struct ResourceRegistry {
 /// the selected provider is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceBinding {
-    /// **CD-235's sequencing exception.** A Core resource still on its pre-A11 representation:
+    /// **SELECT-C: a Core resource retained ENTIRELY on the legacy path, not a temporary state.**
+    ///
+    /// `CoreType::File` lowers unconditionally to `MirTy::Core(File, ..)` — independent of capability
+    /// declaration, provider selection, or build configuration. That invariant is the point: a type
+    /// must not change MIR identity according to how the build was configured.
+    ///
+    /// Migrating it would require the provider name at type-conversion time, which is only known
+    /// after selection — so the representation would depend on whether the program declared the
+    /// capability. `MIR-0027` rejects the result. Reconsidering the migration needs either an
+    /// explicit Core decision making `File` capability-gated, or an A11 model with
+    /// provider-independent nominals bound later; neither is required here.
+    ///
+    /// Both paths emit `OwnedResourceHandle`, so there is no backend benefit to trade against that.
     /// `file` plans as `MirTy::Core(CoreType::File, [])`, the implemented and qualified path behind
     /// C7.8.4's evidence. Migrating it to `HostResource` is a separate, separately requalified step;
     /// this variant is what makes that a one-line registry change.

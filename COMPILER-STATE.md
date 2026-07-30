@@ -584,6 +584,39 @@ that the lifecycle tests exercise only through hand-built MIR at the emission la
 not close; failed `HandleOut` does not close; successful closes exactly once; move then drop closes
 only the destination; consuming close prevents a later implicit close).
 
+**SELECT-C (CD-253) — Core `File` remains entirely on the legacy MIR resource path.**
+
+`CoreType::File` lowers unconditionally to `MirTy::Core(File, ..)`, independent of capability
+declaration, provider selection, or build configuration. **Backend representation equivalence does
+not establish MIR identity equivalence**: both the legacy and A11 paths emit `OwnedResourceHandle`,
+which is precisely why the difference has to be enforced in the verifier rather than noticed
+downstream.
+
+**The invariant is broader than `File`: a type must not change MIR identity according to how the
+build was configured.** Migrating `File` needs the provider name at type-conversion time, and that
+is known only after selection — so its representation would depend on whether the program declared
+the capability, giving one type two identities and violating CD-235's no-mixed-migration rule.
+
+Rejected alternatives, both for reasons larger than this work package. **Capability-gating `File`**
+would couple type *availability* to provider binding, so `let f: File;` would become invalid in
+generic, unreachable or declaration-only code that performs no host I/O — a Core typing change
+affecting library APIs, generic signatures, tooling and conformance fixtures. **A provider-less
+`HostResource`** would move provider resolution from type construction into linking and raises its
+own model questions (may unresolved resources reach verified MIR? which pass binds them? is provider
+identity part of MIR equality? can cached MIR be reused under a different selection?). Either may be
+right later; neither is required now.
+
+**The loss is narrow and explicit: `File` does not participate in the A11 close arena in this
+revision.** `MIR-0033` continues to exempt it — and the exemption exists because `File` is retained
+as a *complete legacy resource path*, not because mixed representations are tolerated.
+
+Closure conditions implemented: the mapping is frozen; **`MIR-0027` now rejects a Core-owned
+resource as a `HostResource` by ANY route** — checking only the nominal was too weak, since
+`resource: "file"` under an *Item* nominal is the same mixed identity; both build configurations are
+tested to produce identical MIR identity; and legacy affinity is verified separately (non-`Copy`, so
+moves invalidate the source, and the same owning handle in generated Rust). Evidence:
+`a11_host_resource.rs` (34 tests).
+
 **CD-235 — the nominal identity is widened, and the Core side is sequenced.** A11 §4 wrote
 `nominal: ItemId`, which cannot name a Core resource: `File` resolves to `CoreType::File`, a different
 enum from `ItemId`. So `nominal` is now `HostResourceNominal::Core(CoreType) | Item(ItemId)`, and §4's

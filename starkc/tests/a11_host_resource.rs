@@ -823,3 +823,97 @@ fn a_copy_of_a_resource_is_rejected_wherever_it_came_from() {
     let moved = body_assigning(Rvalue::Use(Operand::Move(place(2))));
     assert!(!verify_codes(&moved).contains(&"MIR-0026".to_string()));
 }
+
+// ---------------- SELECT-C: Core `File` stays entirely on the legacy path --
+
+/// **Condition 1 — the mapping is frozen.** `CoreType::File` lowers to `MirTy::Core(File, ..)`
+/// unconditionally: independent of capability declaration, provider selection, or build
+/// configuration.
+///
+/// The invariant being protected is broader than `File`: **a type must not change MIR identity
+/// according to how the build was configured.** Migrating `File` would need the provider name at
+/// type-conversion time, which is known only after selection — so its representation would depend on
+/// whether the program declared the capability.
+#[test]
+fn select_c_core_file_resolves_to_the_legacy_mir_type() {
+    let registry = starkc::provider_bind::ResourceRegistry::builtin();
+    assert_eq!(
+        registry.resolve_ty("file", "stark-std-file"),
+        Some(MirTy::Core(starkc::hir::CoreType::File, Vec::new())),
+        "File must resolve to its legacy Core type"
+    );
+}
+
+/// **Condition 4 — the same type has the same MIR identity in both build configurations.**
+///
+/// Provider selection may change which provider calls are emitted; it must not change the TYPE. The
+/// two lookups differ only in the provider name, which is the thing a migrated `File` would have
+/// baked into its identity.
+#[test]
+fn select_c_file_identity_does_not_depend_on_the_provider() {
+    let registry = starkc::provider_bind::ResourceRegistry::builtin();
+    let with_one = registry.resolve_ty("file", "stark-std-file");
+    let with_another = registry.resolve_ty("file", "some-other-filesystem-provider");
+    assert_eq!(
+        with_one, with_another,
+        "File's MIR identity must not vary with the selected provider"
+    );
+    assert_eq!(
+        with_one,
+        Some(MirTy::Core(starkc::hir::CoreType::File, Vec::new()))
+    );
+}
+
+/// **Condition 2 — `MIR-0027` rejects a Core-owned resource as a `HostResource` at all**, whatever
+/// nominal form it names.
+///
+/// Checking only the nominal was too weak: `resource: "file"` with an *Item* nominal is the same
+/// mixed identity by another route. Both paths emit `OwnedResourceHandle`, so backend equivalence
+/// would never reveal it — which is why the verifier has to.
+#[test]
+fn select_c_a_core_resource_cannot_be_a_host_resource_by_any_route() {
+    // Via a Core nominal.
+    let by_core = MirTy::host_resource(
+        mir::HostResourceNominal::Core(starkc::hir::CoreType::File),
+        "stark-std-file",
+        "file",
+    );
+    assert!(verify_codes(&body_assigning_ty(
+        Rvalue::Use(Operand::Move(place(2))),
+        by_core
+    ))
+    .contains(&"MIR-0027".to_string()));
+
+    // And via an Item nominal, which the earlier nominal-only check would have missed.
+    let by_item = MirTy::host_resource(
+        mir::HostResourceNominal::Item(ItemId(42)),
+        "stark-std-file",
+        "file",
+    );
+    assert!(
+        verify_codes(&body_assigning_ty(
+            Rvalue::Use(Operand::Move(place(2))),
+            by_item
+        ))
+        .contains(&"MIR-0027".to_string()),
+        "naming a Core resource from an Item nominal is the same mixed identity"
+    );
+}
+
+/// **Condition 5 — legacy affinity holds independently.** If the legacy path could not keep these,
+/// C would stop being safe — and the answer would still not be conditional migration.
+#[test]
+fn select_c_the_legacy_file_path_is_still_affine() {
+    let types = TypeContext::default();
+    let file = MirTy::Core(starkc::hir::CoreType::File, Vec::new());
+    assert!(
+        !types.is_copy(&file),
+        "the legacy File type must be non-Copy, so moves invalidate the source"
+    );
+    assert_eq!(
+        starkc::backend::generated_rust::emit_types::emit_ty(&file).ok(),
+        Some("stark_runtime::provider_abi::OwnedResourceHandle".to_string()),
+        "and it emits the same owning handle a migrated one would -- which is why migrating buys \
+         no backend benefit to trade against the identity invariant"
+    );
+}

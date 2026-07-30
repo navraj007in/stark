@@ -708,6 +708,33 @@ impl<'a> BodyCx<'a> {
         // requalifies the File evidence, and until then it is what makes the exception safe rather
         // than merely documented.
         if let MirTy::HostResource(r) = expected {
+            // **SELECT-C, condition 2: a Core-owned resource may not be a `HostResource` AT ALL in
+            // this phase**, whatever nominal form it names.
+            //
+            // Checking only the nominal was too weak: a `HostResource` carrying `resource: "file"`
+            // with an *Item* nominal is the same mixed identity by another route. `File` lowers
+            // unconditionally to `MirTy::Core(File, ..)`, so any `HostResource` naming it is by
+            // construction a second identity for one type.
+            //
+            // Backend representation equivalence does not establish MIR identity equivalence: both
+            // paths emit `OwnedResourceHandle`, which is exactly why this is checked here rather
+            // than noticed downstream.
+            if matches!(
+                crate::provider_bind::ResourceRegistry::builtin().lookup(&r.resource),
+                Some(crate::provider_bind::ResourceBinding::LegacyCore(_))
+            ) {
+                self.err(
+                    "MIR-0027",
+                    bi,
+                    format!(
+                        "`{}` is a Core-owned resource retained on the legacy MirTy::Core path \
+                         (SELECT-C); representing it as a HostResource would give one type two MIR \
+                         identities",
+                        r.resource
+                    ),
+                );
+                return;
+            }
             if let crate::mir::HostResourceNominal::Core(core) = r.nominal {
                 self.err(
                     "MIR-0027",
