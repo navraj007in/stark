@@ -9980,23 +9980,44 @@ impl<'a> FnLowerer<'a> {
         mode: MatchMode,
         span: Span,
     ) -> Result<(), LowerError> {
-        if mode == MatchMode::ByRef && !self.is_copy(ty) {
-            return unsupported(
-                "binding a non-Copy payload through a shared reference (front-end move-out-of-borrow gap)",
-                span,
-            );
-        }
+        // CE1: a non-`Copy` field matched through a shared reference binds BY REFERENCE, exactly as
+        // the named form does in `bind_field_local`. This used to refuse instead, and the
+        // asymmetry was invisible while the front end refused the same programs first: once
+        // typecheck started binding them by reference, `Wrap { h: h }` lowered and `Wrap { h }`
+        // did not — the same program, written two ways, with only one of them compiling.
+        let bind_by_ref = mode == MatchMode::ByRef && !self.is_copy(ty);
+        let local_ty = if bind_by_ref {
+            MirTy::Ref {
+                mutable: false,
+                inner: Box::new(ty.clone()),
+            }
+        } else {
+            ty.clone()
+        };
         self.locals.push(LocalDecl {
-            ty: ty.clone(),
+            ty: local_ty,
             kind: LocalKind::User(name),
         });
         let bound = LocalId((self.locals.len() - 1) as u32);
         self.local_map.insert(hir_local.0, bound);
-        let value = self.read_place(place.clone(), ty, span)?;
-        self.emit(
-            Statement::Assign(Place::local(bound), Rvalue::Use(value)),
-            self.synthetic(span, SyntheticKind::MatchDesugar),
-        );
+        if bind_by_ref {
+            self.emit(
+                Statement::Assign(
+                    Place::local(bound),
+                    Rvalue::RefOf {
+                        mutable: false,
+                        place: place.clone(),
+                    },
+                ),
+                self.synthetic(span, SyntheticKind::MatchDesugar),
+            );
+        } else {
+            let value = self.read_place(place.clone(), ty, span)?;
+            self.emit(
+                Statement::Assign(Place::local(bound), Rvalue::Use(value)),
+                self.synthetic(span, SyntheticKind::MatchDesugar),
+            );
+        }
         // DEV-081 (WP-C4.7-8.3b): a shorthand binding owns the moved-in value exactly as a named
         // one does, and must drop at arm-scope end. This registration was missing entirely, so
         // `match p { P { a, b } => … }` over droppable fields moved them out and then destroyed

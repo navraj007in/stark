@@ -1222,8 +1222,15 @@ fn alias_cycles_direct_value_recursion_and_bare_unsized_types_are_rejected() {
 /// before — patterns were not inspected at the `match` at all — while MIR lowering refused it, so
 /// the two engines disagreed about whether the program was legal. The oracle's legacy clone
 /// semantics hid the unsoundness at runtime by consuming the clone rather than the referent.
+/// **SUPERSEDED by CE1.** This asserted `E0101` for a non-`Copy` payload bound through a shared
+/// reference. That refusal is gone: such a binding now binds by shared reference, which is a
+/// deliberate Core-language rule, not an accident of the commit it arrived in.
+///
+/// Kept as an acceptance fixture at the same source, so the change of verdict is visible here rather
+/// than only in a deleted test. The full semantics matrix — positive, negative, and the one
+/// three-engine divergence — is `ce1_borrowed_payload_binding.rs`.
 #[test]
-fn binding_a_non_copy_payload_through_a_reference_is_rejected() {
+fn binding_a_non_copy_payload_through_a_reference_is_accepted_ce1() {
     let source = "\
         enum Holder { Empty, Val(String) }\n\
         impl Holder {\n\
@@ -1241,11 +1248,14 @@ fn binding_a_non_copy_payload_through_a_reference_is_rejected() {
     "
     .to_string();
     let diagnostics = analyze("moveoutofborrow.stark", source);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
-        diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0101")),
-        "expected E0101 (move out of a borrow via a match binding), got {diagnostics:?}"
+        errors.is_empty(),
+        "CE1: matching through a shared reference binds the payload by reference, so this is no \
+         longer a move out of a borrow. Got {errors:?}"
     );
 }
 
