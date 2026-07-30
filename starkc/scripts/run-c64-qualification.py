@@ -323,6 +323,14 @@ CLASSIFIED_IGNORES = {
         "gate-5 tensor track; downloads and links ONNX Runtime and runs Python. "
         "Outside the C6.4 Core-runtime matrix."
     ),
+    "build_driver_selects_closes_for_bound_resource_nominals": (
+        "WP-C7.8.8 track C. Asserts `starkc build` puts a selected close in the provider "
+        "arena. ProviderLowering::select_closes exists and is unit-tested; native_build.rs "
+        "does not call it yet, and cannot usefully until the driver stops refusing "
+        "resource-bearing provider APIs -- which waits on the source-level lifecycle proof "
+        "(CD-234's negative cases). Un-ignore with the change that makes it pass; this entry "
+        "goes with it."
+    ),
 }
 
 
