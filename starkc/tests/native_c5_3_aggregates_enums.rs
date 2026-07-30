@@ -127,8 +127,12 @@ fn main() {
     // WP-C6.1g-a (OWN-COPY-001, amended): an all-`Copy`-field, non-`Drop` struct is now
     // structurally `Copy`, so BOTH `Point` and `Wrapper` derive `Clone, Copy` — one derive per
     // definition. (Before structural Copy this asserted neither derived.)
+    // Matched by PREFIX, not by the exact derive line. The property under test is "derives Copy";
+    // which *other* traits are derived alongside it is a separate decision, and pinning the whole
+    // line made this test fail when `PartialEq` was added for non-reference Copy types (b99514d)
+    // even though Copy-ness was unchanged.
     assert_eq!(
-        generated.matches("#[derive(Clone, Copy)]").count(),
+        generated.matches("#[derive(Clone, Copy").count(),
         2,
         "both all-Copy-field structs are structurally Copy and must derive:\n{generated}"
     );
@@ -160,8 +164,9 @@ fn main() {
 "#;
     let (generated, run) = build(source, "copyimpl").expect("must build");
     assert_eq!(run.status.code(), Some(0));
+    // Prefix match, for the reason given above: this asserts Copy-ness, not the derive list.
     assert_eq!(
-        generated.matches("#[derive(Clone, Copy)]").count(),
+        generated.matches("#[derive(Clone, Copy").count(),
         1,
         "the structurally-Copy type derives; the Drop-bearing Move type does not:\n{generated}"
     );
