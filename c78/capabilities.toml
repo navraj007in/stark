@@ -19,14 +19,17 @@ native_e2e = "implemented"
 source_build_e2e = "implemented"
 
 [closure_gate]
-slice7_matrix = "c78/closure-gate-slice7.md"
-# The five layers C7.8.7 requires the matrix to separate. "filled" means every capability row has a
-# value with committed evidence behind it, not merely that the column exists.
-frontend_supported_column = "filled"
-hir_supported_column = "filled"
-mir_lowered_column = "filled"
-native_runtime_supported_column = "filled"
-cross_platform_verified_column = "filled"
-# Four of CD-234's runtime cases are OBSERVED against a real provider; one is unreachable by
-# construction; the rest remain defined-but-unrun. Deliberately not "complete".
-lifecycle_set = "partially_observed"
+# This file is a STATE table with a fixed vocabulary (pending|implemented|qualified|unsupported),
+# validated by c78/qualification/make-record.py. Prose and paths belong in `_reason` keys, which the
+# validator skips, or in the matrix document itself -- not in a state field.
+frontend_supported_column = "implemented"
+hir_supported_column = "implemented"
+mir_lowered_column = "implemented"
+native_runtime_supported_column = "implemented"
+cross_platform_verified_column = "implemented"
+# Deliberately NOT "implemented": four of CD-234's runtime cases are observed against a real
+# provider and one is unreachable by construction, but accept/release, early return with a live
+# resource, `?` propagation with a live resource, and a resource moved through a call boundary
+# remain defined-but-unrun.
+lifecycle_set = "pending"
+lifecycle_set_reason = "4 observed, 1 unreachable by construction, 4 defined; see c78/closure-gate-slice7.md"
