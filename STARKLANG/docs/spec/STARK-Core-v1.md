@@ -1690,6 +1690,9 @@ shared reference, or a compound/nominal type whose stored fields are recursively
 
 Copy eligibility may be derived structurally for nominal user types (struct and
 enum) only when:
+- **the nominal has at least one field-bearing form**: a struct always qualifies
+  (a fieldless struct has exactly one value), but an **enum with zero variants is
+  never structurally `Copy`**;
 - every stored field/payload is recursively `Copy`;
 - no field is an owned non-`Copy` resource (`Box`, `Vec`, `String`, maps, sets);
 - no field requires `Drop` glue;
@@ -1697,6 +1700,21 @@ enum) only when:
 - no field is a mutable reference (exclusive references are never `Copy`; they
   would participate only if the core type system explicitly admitted them, which
   it does not).
+
+**On the zero-variant enum clause (amended, prompted by CD-234).** Without it the
+rule reaches the wrong answer by vacuous truth: "every payload of every variant is
+`Copy`" is trivially satisfied when there are no variants. That reasoning silently
+assumes every value of the type arose from one of those variants.
+
+A zero-variant enum is used precisely as an **opaque nominal whose values may enter
+from outside the source language** — no expression and no pattern can manufacture
+one, which is what makes it opaque. Once such a value exists, duplicating it is
+observable and unsound: for a host resource it means two owners of one handle and a
+close that runs twice.
+
+The clause is a general language rule, not a resource-specific exception. It costs
+nothing elsewhere: no program can rely on copying a value of an uninhabited type,
+because no program can obtain one by ordinary construction.
 
 Generic nominals are `Copy` per-instance under the corresponding `T: Copy`
 obligations: `struct H<T>` is `Copy` when instantiated at a `Copy` `T` and not

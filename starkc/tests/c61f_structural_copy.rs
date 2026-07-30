@@ -203,3 +203,75 @@ fn c61g_mixed_copy_and_non_copy_fields_stays_move() {
         "M { n: 1, s: String::new() }",
     );
 }
+
+// ------------------- OWN-COPY-001 amended: zero-variant enums (CD-251) --
+
+/// **A zero-variant enum is never structurally `Copy`**, and this is a GENERAL language rule rather
+/// than a host-resource exception — so it is tested here, with an ordinary enum no provider touches.
+///
+/// The unamended rule reached the wrong answer by vacuous truth: "every payload of every variant is
+/// `Copy`" is trivially true when there are no variants. That silently assumes every value of the
+/// type arose from one of those variants, which is false for a nominal whose values enter from
+/// outside the source language.
+#[test]
+fn c251_a_zero_variant_enum_is_not_structurally_copy() {
+    let hir_of = |src: &str| {
+        let file = Arc::new(SourceFile::new("copy251.stark", src.to_string()));
+        let (ast, pd) = parse(&file, ParseMode::Program);
+        assert!(pd.is_empty(), "{pd:?}");
+        let (hir, rd) = resolve(&ast, file);
+        assert!(rd.is_empty(), "{rd:?}");
+        hir
+    };
+
+    // An ORDINARY zero-variant enum, nothing to do with providers.
+    let hir = hir_of("enum Void { }\nfn main() { }\n");
+    let eligible = starkc::typecheck::copy_eligible_types(&hir);
+    let void = hir
+        .items
+        .iter()
+        .position(|i| matches!(i.kind, starkc::hir::ItemKind::Enum { .. }))
+        .expect("the enum is in HIR");
+    assert!(
+        !eligible.contains(&starkc::hir::ItemId(void as u32)),
+        "a zero-variant enum must not be structurally Copy"
+    );
+
+    // The rule is narrow: an INHABITED all-Copy enum stays Copy, so this did not simply disable
+    // structural Copy for enums.
+    let hir = hir_of("enum Flag { On, Off }\nfn main() { }\n");
+    let eligible = starkc::typecheck::copy_eligible_types(&hir);
+    let flag = hir
+        .items
+        .iter()
+        .position(|i| matches!(i.kind, starkc::hir::ItemKind::Enum { .. }))
+        .expect("the enum is in HIR");
+    assert!(
+        eligible.contains(&starkc::hir::ItemId(flag as u32)),
+        "an inhabited all-Copy enum must remain structurally Copy"
+    );
+}
+
+/// Structs are unaffected: a fieldless struct has exactly one value and stays `Copy`. The amendment
+/// is about *uninhabited* types, not about emptiness.
+#[test]
+fn c251_a_fieldless_struct_is_still_copy() {
+    let file = Arc::new(SourceFile::new(
+        "copy251b.stark",
+        "struct Marker { }\nfn main() { }\n".to_string(),
+    ));
+    let (ast, pd) = parse(&file, ParseMode::Program);
+    assert!(pd.is_empty(), "{pd:?}");
+    let (hir, rd) = resolve(&ast, file);
+    assert!(rd.is_empty(), "{rd:?}");
+    let eligible = starkc::typecheck::copy_eligible_types(&hir);
+    let marker = hir
+        .items
+        .iter()
+        .position(|i| matches!(i.kind, starkc::hir::ItemKind::Struct { .. }))
+        .expect("the struct is in HIR");
+    assert!(
+        eligible.contains(&starkc::hir::ItemId(marker as u32)),
+        "a fieldless struct has one value and stays Copy; the rule targets uninhabited enums"
+    );
+}

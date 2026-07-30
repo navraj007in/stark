@@ -594,6 +594,11 @@ pub fn build_current_package(
     // to notice downstream.
     let mir_opt = (!options.no_mir_opt).then(|| crate::mir::opt::optimise(&mut mir));
     let verified = verify_program(&mir).map_err(|errors| {
+        {
+            if std::env::var("STARK_DUMP_MIR_ON_VERIFY_FAIL").is_ok() {
+                eprintln!("{}", mir.dump());
+            }
+        }
         BuildCommandError::MirVerification(
             errors
                 .into_iter()

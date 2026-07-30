@@ -50,6 +50,14 @@ pub struct ProviderLowering {
     /// needs an `ItemId`, which only exists after parsing. So the driver records the pair here and
     /// lowering completes it — each stage doing the part it can actually know.
     pub pending_closes: BTreeMap<String, ProviderCallId>,
+    /// Synthesized nominal `ItemId` → the `HostResource` it lowers to.
+    ///
+    /// **CD-234's "the binding replaces its representation at the established boundary."** The
+    /// nominal is a zero-variant enum in SOURCE — that is what makes it opaque — but it must not
+    /// stay one in MIR, or the same type gets two representations: `Enum(User(id))` wherever the
+    /// ordinary type path saw it, and `HostResource` wherever a provider signature did. Those then
+    /// fail to unify at every call boundary between them.
+    pub nominal_types: BTreeMap<u32, crate::mir::MirTy>,
     /// **A11 §5: the close selected for each bound resource**, copied onto
     /// `MirProgram::provider_closes` and keyed into `TypeContext::host_resource_closes` by lowering.
     pub closes: Vec<crate::mir::ValidatedProviderClose>,
@@ -111,6 +119,7 @@ impl ProviderLowering {
             resource_items: BTreeMap::new(),
             resource_nominal_names: BTreeMap::new(),
             pending_closes: BTreeMap::new(),
+            nominal_types: BTreeMap::new(),
             closes: Vec::new(),
             error_variants: error_variants.clone(),
             error_ty_for_call,
@@ -160,6 +169,25 @@ impl ProviderLowering {
                 )
             })?;
             self.resource_items.insert(resource.clone(), item);
+        }
+
+        // Every bound nominal gets its MIR representation recorded, so the ordinary type path can
+        // replace the enum shell with the resource form. Derived from the close's provider, which is
+        // the same provider the resource's own calls resolve against (A11 §5 obligation 3).
+        for (resource, id) in &self.pending_closes {
+            let Some(provider) = self
+                .arena
+                .get(id.0 as usize)
+                .map(|c| c.provider.name.clone())
+            else {
+                continue;
+            };
+            if let (Some(item), Some(ty)) = (
+                self.resource_items.get(resource).copied(),
+                self.resource_ty(resource, &provider),
+            ) {
+                self.nominal_types.insert(item.0, ty);
+            }
         }
 
         let mut closes = Vec::new();

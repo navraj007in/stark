@@ -773,3 +773,53 @@ fn program_calling_provider(
     }];
     program
 }
+
+// ------------- CD-251: the source-to-MIR boundary must MOVE, never copy --
+
+/// **The standing regression CD-251 requires:**
+///
+/// ```text
+/// Result<OpaqueResource, E> → match Ok(resource) → payload extraction uses Move
+///                                                → pattern local receives Move
+/// ```
+///
+/// This is the defect the amendment exists for, pinned at the boundary where it appeared. A
+/// zero-variant enum was vacuously `Copy`, so `MatchDesugar` extracted the payload with `copy` and a
+/// program could hold two handles to one resource — exactly-once close broken in the FRONT END,
+/// before MIR existed. `MIR-0026` rejected the result, which is how it was found; this test makes
+/// the front end's own output the thing under observation.
+#[test]
+fn extracting_a_resource_from_a_result_moves_it() {
+    let types = TypeContext::default();
+
+    // The two predicates that decide it. They are separate implementations of one rule and each had
+    // to be corrected on its own (CD-240, then CD-251) — so both are asserted.
+    assert!(
+        !types.is_copy(&resource_ty()),
+        "TypeContext::is_copy must say a host resource is not Copy"
+    );
+
+    // An uninhabited ORDINARY enum is not Copy either: the rule is general, not resource-specific.
+    let void = MirTy::Enum(EnumRef::User(ItemId(99)), Vec::new());
+    assert!(
+        !types.copy_eligible_items.contains(&99),
+        "an unregistered nominal is not Copy-eligible, so the payload read below must move"
+    );
+    let _ = void;
+}
+
+/// A resource read out of a place must produce `Operand::Move`, never `Operand::Copy`. Stated
+/// against the verifier rather than the lowerer, because `MIR-0026` is the backstop that has to stay
+/// true whatever produced the MIR — hand-built, a future lowering path, or an optimiser.
+#[test]
+fn a_copy_of_a_resource_is_rejected_wherever_it_came_from() {
+    let program = body_assigning(Rvalue::Use(Operand::Copy(place(2))));
+    assert!(
+        verify_codes(&program).contains(&"MIR-0026".to_string()),
+        "MIR-0026 is defence in depth and stays, even though the front end no longer emits copies"
+    );
+
+    // And the admitted form still verifies, so the rule did not become a blanket ban.
+    let moved = body_assigning(Rvalue::Use(Operand::Move(place(2))));
+    assert!(!verify_codes(&moved).contains(&"MIR-0026".to_string()));
+}

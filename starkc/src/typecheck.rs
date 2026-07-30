@@ -8749,6 +8749,25 @@ pub fn copy_eligible_types(hir: &Hir) -> HashSet<ItemId> {
             }
             let field_tys: Vec<TypeId> = match &item.kind {
                 hir::ItemKind::Struct { fields, .. } => fields.iter().map(|f| f.ty).collect(),
+                // **OWN-COPY-001, amended (CD-251): a ZERO-VARIANT enum is never structurally
+                // `Copy`.**
+                //
+                // The unamended rule reached the wrong answer by vacuous truth: "every payload of
+                // every variant is `Copy`" is trivially true when there are no variants. That
+                // reasoning silently assumes a value of the type arose from one of those variants.
+                //
+                // CD-234 makes that assumption false. A host-resource nominal is deliberately a
+                // zero-variant enum -- opaque because nothing in source can construct one -- but its
+                // values enter from an external provider. Vacuous `Copy` then made those values
+                // freely duplicable, so `MatchDesugar` extracted a payload with `copy` and
+                // exactly-once close was broken in the FRONT END, before MIR existed. (`MIR-0026`
+                // rejected the result, which is how this was found.)
+                //
+                // General rule, not a provider marker: an enum is structurally `Copy` only if it has
+                // at least one variant AND every payload of every variant is `Copy`. No existing
+                // program can be affected, because no existing program could obtain a value of an
+                // uninhabited type to copy.
+                hir::ItemKind::Enum { variants, .. } if variants.is_empty() => continue,
                 hir::ItemKind::Enum { variants, .. } => variants
                     .iter()
                     .flat_map(|v| match &v.kind {

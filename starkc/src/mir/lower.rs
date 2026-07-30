@@ -395,7 +395,13 @@ pub fn lower_program_with_providers(
             .insert(binding.resource.clone(), binding.close);
     }
     for &item_id in &meta.all_items {
-        let probe = FnLowerer::new(hir, tables, &meta, FnKey::Top(item_id, Vec::new()));
+        let probe = FnLowerer::with_providers(
+            hir,
+            tables,
+            &meta,
+            FnKey::Top(item_id, Vec::new()),
+            providers,
+        );
         // A1 (CD-031): record which non-generic nominals carry an `impl Copy` (V-COPY-1).
         if matches!(
             &hir.item(item_id).kind,
@@ -509,7 +515,7 @@ pub fn lower_program_with_providers(
     program.bodies = bodies;
     // C4.5c: register every generic nominal instantiation reachable from the lowered bodies
     // in the type context, so the verifier and backends can resolve its projections.
-    register_reachable_nominal_instances(hir, tables, &meta, &mut program)?;
+    register_reachable_nominal_instances(hir, tables, &meta, &mut program, providers)?;
     Ok(program)
 }
 
@@ -525,10 +531,18 @@ fn nominal_instance_fields(
     meta: &ProgramMeta,
     item: ItemId,
     args: &[MirTy],
+    providers: &ProviderLowering,
 ) -> Result<NominalFields, LowerError> {
     let span0 = Span { lo: 0, hi: 0 };
     // The probe is keyed to the nominal itself, so field-type spans read in ITS file (f-3c).
-    let mut probe = FnLowerer::new(hir, tables, meta, FnKey::Top(item, Vec::new()));
+    //
+    // **Provider-aware (CD-234).** This probe builds the variant-payload table, and a provider-blind
+    // one recorded `Result<TcpStream, E>`'s payload as the enum SHELL while the body lowered the same
+    // type as a `HostResource` -- MIR-0004 at every construction and MIR-0005 at every call between
+    // them. The binding has to be visible everywhere a nominal's representation is decided, not only
+    // where bodies are lowered.
+    let mut probe =
+        FnLowerer::with_providers(hir, tables, meta, FnKey::Top(item, Vec::new()), providers);
     let generics = match &hir.item(item).kind {
         ItemKind::Struct { generics, .. } | ItemKind::Enum { generics, .. } => generics,
         _ => return unsupported("nominal instance of a non-nominal item", span0),
@@ -580,6 +594,7 @@ fn register_reachable_nominal_instances(
     tables: &TypeTables,
     meta: &ProgramMeta,
     program: &mut MirProgram,
+    providers: &ProviderLowering,
 ) -> Result<(), LowerError> {
     use std::collections::BTreeSet;
     let mut visit: Vec<MirTy> = Vec::new();
@@ -609,7 +624,7 @@ fn register_reachable_nominal_instances(
                 if args.is_empty() || !seen.insert((item.0, args.clone())) {
                     continue;
                 }
-                match nominal_instance_fields(hir, tables, meta, item, &args)? {
+                match nominal_instance_fields(hir, tables, meta, item, &args, providers)? {
                     NominalFields::Struct(tys) => {
                         for t in &tys {
                             visit.push(t.clone());
@@ -1451,6 +1466,13 @@ impl<'a> FnLowerer<'a> {
                     .map(|a| self.mir_ty(a, span))
                     .collect::<Result<Vec<_>, _>>()?,
             ),
+            // **CD-234: a provider-bound nominal is its HostResource here too.** This is the main
+            // typed-expression path, and the one that decided `Result<TcpStream, E>`'s payload --
+            // so leaving it produced the shell wherever the checker's type flowed and the resource
+            // form wherever a provider signature did, failing to unify at every boundary between.
+            Ty::Enum(item, _) if self.providers.nominal_types.contains_key(&item.0) => {
+                self.providers.nominal_types[&item.0].clone()
+            }
             Ty::Enum(item, args) => MirTy::Enum(
                 EnumRef::User(*item),
                 args.iter()
@@ -1642,6 +1664,16 @@ impl<'a> FnLowerer<'a> {
                     };
                     match &self.hir.item(*item).kind {
                         ItemKind::Struct { .. } => Ok(MirTy::Struct(*item, converted_args)),
+                        // **CD-234: a provider-bound nominal is a HostResource, not its shell.**
+                        // The zero-variant enum exists so the source form is opaque; the moment it
+                        // has a binding, MIR must see the resource. Without this the same type is
+                        // `Enum(User(id))` here and `HostResource` in a provider signature, and every
+                        // boundary between them fails to unify (MIR-0004/MIR-0005).
+                        ItemKind::Enum { .. }
+                            if self.providers.nominal_types.contains_key(&item.0) =>
+                        {
+                            Ok(self.providers.nominal_types[&item.0].clone())
+                        }
                         ItemKind::Enum { .. } => {
                             Ok(MirTy::Enum(EnumRef::User(*item), converted_args))
                         }
@@ -1777,6 +1809,20 @@ impl<'a> FnLowerer<'a> {
             MirTy::Array(elem, _) => self.is_copy(elem),
             MirTy::Ref { mutable, .. } => !*mutable,
             MirTy::Slice(_) | MirTy::Core(..) | MirTy::String => false,
+            // **A11/CD-234: a host resource is never `Copy`** -- the FOURTH `MirTy` catch-all to
+            // swallow this variant, after `dump_ty`, `emit_ty`, `default_value_expr` and
+            // `TypeContext::is_copy` (CD-240).
+            //
+            // This one made `read_place` emit `Operand::Copy` for a resource, so `MatchDesugar`
+            // extracted `Ok(stream)`'s payload with `copy` and a program could hold two handles to
+            // one resource. `MIR-0026` rejected the result, which is how it surfaced.
+            //
+            // **The duplication is the real defect.** This predicate and `TypeContext::is_copy` are
+            // two implementations of one rule that must agree, and each had to be fixed separately.
+            // They are left separate here only because they read different eligibility sets
+            // (`meta.copy_eligible` vs `types.copy_eligible_items`); unifying them is worth doing
+            // and is not this change.
+            MirTy::HostResource(_) => false,
             _ => true,
         }
     }
@@ -1830,8 +1876,14 @@ impl<'a> FnLowerer<'a> {
                 if self.type_has_drop_impl(*item) {
                     true
                 } else {
-                    let fields =
-                        nominal_instance_fields(self.hir, self.tables, self.meta, *item, args)?;
+                    let fields = nominal_instance_fields(
+                        self.hir,
+                        self.tables,
+                        self.meta,
+                        *item,
+                        args,
+                        self.providers,
+                    )?;
                     let NominalFields::Struct(tys) = fields else {
                         return unsupported("struct item with enum fields shape", span);
                     };
@@ -1846,8 +1898,14 @@ impl<'a> FnLowerer<'a> {
                 if self.type_has_drop_impl(*item) {
                     true
                 } else {
-                    let fields =
-                        nominal_instance_fields(self.hir, self.tables, self.meta, *item, args)?;
+                    let fields = nominal_instance_fields(
+                        self.hir,
+                        self.tables,
+                        self.meta,
+                        *item,
+                        args,
+                        self.providers,
+                    )?;
                     let NominalFields::Enum(variants) = fields else {
                         return unsupported("enum item with struct fields shape", span);
                     };
@@ -1908,8 +1966,14 @@ impl<'a> FnLowerer<'a> {
         }
         match ty {
             MirTy::Struct(item, args) if !self.type_has_drop_impl(*item) => {
-                let fields =
-                    nominal_instance_fields(self.hir, self.tables, self.meta, *item, args)?;
+                let fields = nominal_instance_fields(
+                    self.hir,
+                    self.tables,
+                    self.meta,
+                    *item,
+                    args,
+                    self.providers,
+                )?;
                 let NominalFields::Struct(tys) = fields else {
                     return unsupported("struct item with enum fields shape", span);
                 };
@@ -2125,7 +2189,14 @@ impl<'a> FnLowerer<'a> {
                         self.discovered_callees.push(key);
                     }
                 }
-                match nominal_instance_fields(self.hir, self.tables, self.meta, item, &args)? {
+                match nominal_instance_fields(
+                    self.hir,
+                    self.tables,
+                    self.meta,
+                    item,
+                    &args,
+                    self.providers,
+                )? {
                     NominalFields::Struct(tys) => {
                         for t in &tys {
                             self.discover_drop_impls_guarded(t, visited)?;
@@ -2445,6 +2516,12 @@ impl<'a> FnLowerer<'a> {
 
     /// Concrete MirTy for a nominal item (struct or enum).
     fn nominal_ty(&self, item: ItemId, span: Span) -> Result<MirTy, LowerError> {
+        // CD-234: a provider-bound nominal is its HostResource everywhere, not only in the type
+        // path. Two sites construct the enum shell and BOTH must consult the binding -- patching one
+        // left the variant-payload table disagreeing with the provider signature.
+        if let Some(ty) = self.providers.nominal_types.get(&item.0) {
+            return Ok(ty.clone());
+        }
         match &self.hir.item(item).kind {
             ItemKind::Struct { .. } => Ok(MirTy::Struct(item, Vec::new())),
             ItemKind::Enum { .. } => Ok(MirTy::Enum(EnumRef::User(item), Vec::new())),
@@ -7698,6 +7775,7 @@ impl<'a> FnLowerer<'a> {
                         MirTy::Struct(_, a) | MirTy::Enum(_, a) => a,
                         _ => unreachable!(),
                     },
+                    self.providers,
                 ) {
                     Ok(NominalFields::Struct(tys)) => tys.iter().any(|t| self.ty_has_user_drop(t)),
                     Ok(NominalFields::Enum(vs)) => vs
@@ -9321,6 +9399,7 @@ impl<'a> FnLowerer<'a> {
                             self.meta,
                             item,
                             &args,
+                            self.providers,
                         )? {
                             NominalFields::Struct(tys) => tys,
                             NominalFields::Enum(_) => {
@@ -9492,6 +9571,7 @@ impl<'a> FnLowerer<'a> {
                                 self.meta,
                                 item,
                                 &args,
+                                self.providers,
                             )? {
                                 NominalFields::Struct(tys) => tys,
                                 NominalFields::Enum(_) => {
@@ -9670,6 +9750,7 @@ impl<'a> FnLowerer<'a> {
                             self.meta,
                             item,
                             &args,
+                            self.providers,
                         )? {
                             NominalFields::Struct(tys) => tys,
                             NominalFields::Enum(_) => {
@@ -9877,7 +9958,14 @@ impl<'a> FnLowerer<'a> {
             // A2 (CE3): Ordering's three variants are all fieldless.
             EnumRef::CoreOrdering => Ok(Vec::new()),
             EnumRef::User(item) => {
-                match nominal_instance_fields(self.hir, self.tables, self.meta, item, scrut_args)? {
+                match nominal_instance_fields(
+                    self.hir,
+                    self.tables,
+                    self.meta,
+                    item,
+                    scrut_args,
+                    self.providers,
+                )? {
                     NominalFields::Enum(variants) => {
                         Ok(variants.get(variant as usize).cloned().unwrap_or_default())
                     }

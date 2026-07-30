@@ -1778,14 +1778,32 @@ values), a shared reference, or a compound/nominal type whose stored
 fields are recursively <code>Copy</code> and whose type has no
 <code>Drop</code> behavior.</p>
 <p>Copy eligibility may be derived structurally for nominal user types
-(struct and enum) only when: - every stored field/payload is recursively
-<code>Copy</code>; - no field is an owned non-<code>Copy</code> resource
-(<code>Box</code>, <code>Vec</code>, <code>String</code>, maps, sets); -
-no field requires <code>Drop</code> glue; - the nominal itself has no
-<code>Drop</code> implementation or destructor behavior; - no field is a
-mutable reference (exclusive references are never <code>Copy</code>;
-they would participate only if the core type system explicitly admitted
-them, which it does not).</p>
+(struct and enum) only when: - <strong>the nominal has at least one
+field-bearing form</strong>: a struct always qualifies (a fieldless
+struct has exactly one value), but an <strong>enum with zero variants is
+never structurally <code>Copy</code></strong>; - every stored
+field/payload is recursively <code>Copy</code>; - no field is an owned
+non-<code>Copy</code> resource (<code>Box</code>, <code>Vec</code>,
+<code>String</code>, maps, sets); - no field requires <code>Drop</code>
+glue; - the nominal itself has no <code>Drop</code> implementation or
+destructor behavior; - no field is a mutable reference (exclusive
+references are never <code>Copy</code>; they would participate only if
+the core type system explicitly admitted them, which it does not).</p>
+<p><strong>On the zero-variant enum clause (amended, prompted by
+CD-234).</strong> Without it the rule reaches the wrong answer by
+vacuous truth: “every payload of every variant is <code>Copy</code>” is
+trivially satisfied when there are no variants. That reasoning silently
+assumes every value of the type arose from one of those variants.</p>
+<p>A zero-variant enum is used precisely as an <strong>opaque nominal
+whose values may enter from outside the source language</strong> — no
+expression and no pattern can manufacture one, which is what makes it
+opaque. Once such a value exists, duplicating it is observable and
+unsound: for a host resource it means two owners of one handle and a
+close that runs twice.</p>
+<p>The clause is a general language rule, not a resource-specific
+exception. It costs nothing elsewhere: no program can rely on copying a
+value of an uninhabited type, because no program can obtain one by
+ordinary construction.</p>
 <p>Generic nominals are <code>Copy</code> per-instance under the
 corresponding <code>T: Copy</code> obligations:
 <code>struct H&lt;T&gt;</code> is <code>Copy</code> when instantiated at
