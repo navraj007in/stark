@@ -104,6 +104,29 @@ pub fn verify_program(program: &MirProgram) -> Result<VerifiedMirProgram<'_>, Ve
             {
                 if let Some(call) = program.provider_call(*id) {
                     if let Some(resource) = &call.function.is_close_for {
+                        // **Scoped to resources actually on the A11 path (CD-235).**
+                        //
+                        // Rule 4 says MIR owns the only path to a close -- but MIR owns it only for a
+                        // resource whose destruction MIR performs: one represented as `HostResource`
+                        // and closed by a `Drop` terminator. Core `File` is deliberately still on its
+                        // pre-A11 `MirTy::Core` representation, so no `Drop` will ever close it, and
+                        // forbidding the direct call leaves it with NO legal close -- forbidden one
+                        // way, unreachable the other. That is CD-235's half-migration hazard arriving
+                        // from the opposite direction: not two representations for one resource, but
+                        // one rule applied to a representation that cannot satisfy it.
+                        //
+                        // Derived from THIS PROGRAM's close bindings rather than from a named
+                        // exemption, for two reasons. It tightens automatically -- the moment a
+                        // resource gains a `HostResource` close, its direct calls become violations,
+                        // with nothing to remember to delete. And a named exemption keyed to the
+                        // builtin registry would still exempt a program that HAD migrated, which is
+                        // the very state the guard exists to catch.
+                        let on_the_a11_path = program.provider_closes.iter().any(|b| {
+                            matches!(&b.resource, MirTy::HostResource(r) if r.resource == *resource)
+                        });
+                        if !on_the_a11_path {
+                            continue;
+                        }
                         errors.push(MirError {
                             code: "MIR-0033",
                             message: format!(

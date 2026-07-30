@@ -20,8 +20,8 @@
 use starkc::backend::generated_rust::emit_types;
 use starkc::hir::ItemId;
 use starkc::mir::{
-    self, AggKind, BasicBlock, Constant, EnumRef, LocalDecl, LocalKind, MirBody, MirProgram, MirTy,
-    Operand, Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
+    self, AggKind, BasicBlock, Callee, Constant, EnumRef, LocalDecl, LocalKind, MirBody,
+    MirProgram, MirTy, Operand, Place, Rvalue, SourceInfo, Statement, Terminator, TypeContext,
 };
 use starkc::source::{SourceFile, Span};
 use std::sync::Arc;
@@ -671,4 +671,105 @@ fn slot_backing_follows_from_not_being_copy() {
         !types.is_copy(&ty) && !matches!(ty, MirTy::Ref { .. }),
         "slot backing must remain the stated function of Copy-ness"
     );
+}
+
+/// **Rule 4 applies only to resources actually on the A11 path (CD-235).**
+///
+/// A close for a resource still on the legacy `MirTy::Core` representation stays directly callable:
+/// no `Drop` terminator will ever close it, so forbidding the direct call would leave it forbidden
+/// one way and unreachable the other. That is exactly what broke `c784_file_e2e` when rule 4 was
+/// applied globally.
+#[test]
+fn a_legacy_core_close_may_still_be_called_directly() {
+    let close = call_for(
+        close_decl(
+            "stark_file_close",
+            Some("file"),
+            vec![AbiParam::HandleConsumed {
+                resource_type: "file".to_string(),
+            }],
+        ),
+        "stark-std-file",
+    );
+    // No `provider_closes` entry for `file`: it is not on the A11 path.
+    let program = program_calling_provider(vec![close], Vec::new());
+    assert!(
+        !verify_codes(&program).contains(&"MIR-0033".to_string()),
+        "a legacy Core resource's close must remain directly callable until it migrates"
+    );
+}
+
+/// **And the guard tightens automatically.** The same direct call becomes a violation the moment the
+/// resource has a `HostResource` close binding — nothing has to be remembered and deleted at
+/// migration time, which is why this is derived from the program rather than from a named exemption.
+#[test]
+fn the_same_close_becomes_a_violation_once_the_resource_is_migrated() {
+    let close = call_for(
+        close_decl(
+            "stark_file_close",
+            Some("file"),
+            vec![AbiParam::HandleConsumed {
+                resource_type: "file".to_string(),
+            }],
+        ),
+        "stark-std-file",
+    );
+    let migrated = MirTy::host_resource(
+        mir::HostResourceNominal::Item(ItemId(11)),
+        "stark-std-file",
+        "file",
+    );
+    let program = program_calling_provider(
+        vec![close],
+        vec![ValidatedProviderClose {
+            resource: migrated,
+            close: mir::ProviderCallId(0),
+        }],
+    );
+    assert!(
+        verify_codes(&program).contains(&"MIR-0033".to_string()),
+        "once a resource is on the A11 path, MIR owns the only close and a direct call is a second \
+         destruction path"
+    );
+}
+
+/// A body whose sole terminator is a direct `Callee::Provider` call to `calls[0]`.
+fn program_calling_provider(
+    calls: Vec<ValidatedProviderCall>,
+    closes: Vec<ValidatedProviderClose>,
+) -> MirProgram {
+    let mut program = program_with_closes(calls, closes);
+    program.bodies = vec![MirBody {
+        instance: mir::Instance {
+            item: ItemId(0),
+            type_args: Vec::new(),
+            symbol: "main@[]".to_string(),
+        },
+        params: Vec::new(),
+        ret: MirTy::Unit,
+        locals: vec![LocalDecl {
+            ty: MirTy::Unit,
+            kind: LocalKind::Return,
+        }],
+        blocks: vec![
+            BasicBlock {
+                statements: Vec::new(),
+                terminator: (
+                    Terminator::Call {
+                        callee: Callee::Provider(mir::ProviderCallId(0)),
+                        args: Vec::new(),
+                        dest: place(0),
+                        target: mir::BlockId(1),
+                    },
+                    info(),
+                ),
+            },
+            BasicBlock {
+                statements: Vec::new(),
+                terminator: (Terminator::Return, info()),
+            },
+        ],
+        entry: mir::BlockId(0),
+    }];
+    program
 }
