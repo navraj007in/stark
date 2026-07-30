@@ -176,11 +176,19 @@ fn golden_mini_dump() {
     // Note the real shapes this pins: integer literals default to Int32 (Core inference), the
     // Add is a Checked terminator on Int32, and println's Int64 runtime signature forces an
     // explicit (infallible, still Checked) widening Cast -- uniform checked casts per contract.
-    // The surface is interpolated rather than written out: it is a REVISION counter that grows
-    // whenever a `RuntimeFn` is added, so pinning it literally here makes an unrelated additive
-    // change fail this golden dump instead of the thing it exists to pin (the lowered shapes).
+    //
+    // The version AND the surface are both interpolated rather than written out. Each is a counter
+    // that moves for reasons unrelated to what this golden exists to pin -- the lowered SHAPES: the
+    // surface grows whenever a `RuntimeFn` is added, and the version whenever the MirTy shape changes
+    // (A11 took it to `0.2` for `HostResource`, which failed this test on a header line no lowered
+    // shape depends on).
+    //
+    // Neither goes unchecked as a result: `a11_host_resource::mir_version_is_0_2_for_a11` asserts
+    // both constants directly, which is where a deliberate bump belongs. A golden dump that also
+    // pinned them would be duplicating that test and failing for its reasons.
     let expected = format!(
-        "// STARK MIR v0.1 (runtime-surface {})\n",
+        "// STARK MIR v{} (runtime-surface {})\n",
+        starkc::mir::MIR_VERSION,
         starkc::mir::MIR_RUNTIME_SURFACE
     ) + "
 fn main@[] {

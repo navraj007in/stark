@@ -557,16 +557,25 @@ pub fn build_current_package(
     // Provider API synthesis must happen before the ordinary front end runs: generated functions
     // are intentionally just source-level items, and lowering receives the side table that says
     // which of those items are provider calls.
-    let toolchain = native_toolchain::discover(std::env::current_exe().ok().as_deref())
-        .map_err(BuildCommandError::Toolchain)?;
+    //
+    // **The toolchain is probed only if a capability actually needs it**, and this ordering is
+    // load-bearing rather than an optimisation. `source_errors_precede_toolchain_probes_...` pins
+    // it: a program with a syntax error must report the syntax error, not "rustc not found". Probing
+    // unconditionally here -- which is what synthesis needing a target triple quietly introduced --
+    // makes every source error on a machine without a Rust toolchain come back as a toolchain error.
+    //
+    // A package declaring no capability needs no provider set, so it needs no triple, so it needs no
+    // probe until the actual build below. That is the pre-C7.8 ordering restored for exactly the
+    // programs that had it.
+    let mut probed: Option<ToolchainInfo> = None;
     let provider_set = if required.is_empty() {
         None
     } else {
-        Some(select_provider_set(
-            &required,
-            options.target.as_deref(),
-            &toolchain,
-        )?)
+        let toolchain = native_toolchain::discover(std::env::current_exe().ok().as_deref())
+            .map_err(BuildCommandError::Toolchain)?;
+        let set = select_provider_set(&required, options.target.as_deref(), &toolchain)?;
+        probed = Some(toolchain);
+        Some(set)
     };
     let mut provider_layer = provider_layer_for_build(&graph, provider_set.as_ref())?;
 
@@ -586,6 +595,15 @@ pub fn build_current_package(
             package_name,
         });
     }
+    // The build itself needs the toolchain whether or not a capability did. Reuse the probe if
+    // provider selection already made one -- probing twice would be wasteful and could, on a machine
+    // whose PATH changes mid-build, disagree with itself.
+    let toolchain = match probed {
+        Some(toolchain) => toolchain,
+        None => native_toolchain::discover(std::env::current_exe().ok().as_deref())
+            .map_err(BuildCommandError::Toolchain)?,
+    };
+
     let hir = analysis.hir.as_ref().ok_or_else(|| {
         BuildCommandError::Lowering("successful analysis did not produce HIR".into())
     })?;
