@@ -820,7 +820,10 @@ explicit implementation is required. An explicit `Copy` implementation, where
 supported, MUST NOT admit any type that fails this same recursive eligibility
 predicate. A type that IS `Copy` remains usable after assignment, argument
 passing, return, or pattern binding; a type that is NOT `Copy` is moved by those
-operations unless borrowed.
+operations unless borrowed. Pattern binding is the one case where "unless
+borrowed" is decided by the *scrutinee* rather than by the pattern: a component
+matched through a reference is borrowed, not moved — see `PAT-BIND-001` in
+`04-Semantic-Analysis.md`.
 
 - `Copy` may be implemented for a type only if **all** of its fields are
   `Copy`. Violations are compile-time errors.

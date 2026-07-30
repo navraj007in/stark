@@ -4315,16 +4315,31 @@ impl<'a> FnLowerer<'a> {
     /// enclosing function's own Option/Result, after dropping live scopes.
     fn lower_try(&mut self, inner: ExprId, span: Span) -> Result<Operand, LowerError> {
         let inner_ty = self.expr_mir_ty(inner)?;
-        let (enum_ref, ok_variant, payload_ty) = match &inner_ty {
-            MirTy::Enum(er @ EnumRef::CoreOption, args) => {
-                (*er, 1u32, args.first().cloned().unwrap_or(MirTy::Unit))
-            }
-            MirTy::Enum(er @ EnumRef::CoreResult, args) => {
-                (*er, 0u32, args.first().cloned().unwrap_or(MirTy::Unit))
-            }
+        // `err_payload_ty` is `None` for `Option`, whose `None` variant carries nothing. It decides
+        // the A12 storage-end reason on the propagating path, below.
+        let (enum_ref, ok_variant, payload_ty, err_payload_ty) = match &inner_ty {
+            MirTy::Enum(er @ EnumRef::CoreOption, args) => (
+                *er,
+                1u32,
+                args.first().cloned().unwrap_or(MirTy::Unit),
+                None,
+            ),
+            MirTy::Enum(er @ EnumRef::CoreResult, args) => (
+                *er,
+                0u32,
+                args.first().cloned().unwrap_or(MirTy::Unit),
+                Some(args.get(1).cloned().unwrap_or(MirTy::Unit)),
+            ),
             other => {
                 return unsupported(format!("`?` on a non-Option/Result type {other:?}"), span)
             }
+        };
+        // A12: which storage end a path needs, given what it moved out of the scrutinee temp. A
+        // non-`Copy` move leaves the storage partially moved; a `Copy` read or no read at all
+        // leaves it whole, holding a value whose active variant owns nothing.
+        let storage_end_after = |lower: &Self, moved: Option<&MirTy>| match moved {
+            Some(ty) if !lower.is_copy(ty) => StorageEnd::Accounted,
+            _ => StorageEnd::OwnsNothing,
         };
         // The enclosing function's return type (Local(0)) — the propagated shape.
         let ret_ty = self.locals[0].ty.clone();
@@ -4383,6 +4398,12 @@ impl<'a> FnLowerer<'a> {
             Statement::Assign(Place::local(LocalId(0)), propagated),
             self.info(span),
         );
+        // A12: the scrutinee temp is spent — `Err`'s payload was moved into the propagated value,
+        // or `None` carried nothing. This path returns, so it is not the one that reused a live
+        // slot; it is ended anyway, because leaving one path's storage state to depend on the fact
+        // that nothing happens afterwards is how the reused path came to be missed.
+        let reason = storage_end_after(self, err_payload_ty.as_ref());
+        self.emit_storage_dead(scrut.0, reason, span);
         self.emit_scope_drops_from(0, span);
         // Seal the err block with Return and continue lowering in the Ok/Some block (Return
         // has no CFG edge, so `ok_block` is only the continuation point, not a successor).
@@ -4393,8 +4414,26 @@ impl<'a> FnLowerer<'a> {
             local: scrut,
             projection: vec![Projection::VariantField(ok_variant, 0)],
         };
-        let out = self.read_place(payload_place, &payload_ty, span)?;
-        Ok(out)
+        // A12 / the stark-json requalification finding: **this** is the path that reused a live
+        // slot. `?` builds its own scrutinee temp rather than going through `lower_match`, so
+        // `consume_variant_payload`'s storage end never covered it — and the Ok path continues
+        // executing, so inside a loop the next `?` on the same expression wrote over a partially
+        // moved slot and the runtime refused it. `stark-json`'s parser is built on `?` in loops,
+        // which is why requalifying it found this and none of the sixteen match shapes did.
+        //
+        // The payload is materialised into a temp FIRST. `read_place` returns an *operand*, and the
+        // move it describes does not happen until the caller consumes it — so ending the storage
+        // straight after the call put the storage end BEFORE the move, and the slot was still whole
+        // when it ran. Forcing the move into a statement here makes the order the code claims.
+        let read = self.read_place(payload_place, &payload_ty, span)?;
+        let payload = self.new_temp(payload_ty.clone());
+        self.emit(
+            Statement::Assign(Place::local(payload), Rvalue::Use(read)),
+            self.info(span),
+        );
+        let reason = storage_end_after(self, Some(&payload_ty));
+        self.emit_storage_dead(scrut.0, reason, span);
+        self.read_place(Place::local(payload), &payload_ty, span)
     }
 
     fn lower_lit(&mut self, expr: ExprId, lit: &Lit) -> Result<Operand, LowerError> {

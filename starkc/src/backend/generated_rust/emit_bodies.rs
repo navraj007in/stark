@@ -1496,6 +1496,19 @@ pub(super) fn emit_storage_dead(
     {
         return Ok(None);
     }
+    // A no-drop slot is written with `reinit`, which has no dead-slot check to satisfy (see
+    // `emit_assignment`). Ending its storage would therefore assert something the write path never
+    // asks about — and `finish_partial` would *fail* on such a local whenever it is still whole,
+    // which is exactly what happened to `?` over a `Result<String, E>` before this symmetry was
+    // restored. Storage ends exist to keep `write` satisfiable; where `write` is not used, there is
+    // nothing to keep.
+    let ty = env.local_ty(place.local.0)?;
+    if crate::mir::drop_plan::plan_for(&ty, env.types)
+        .map(|plan| plan.is_noop())
+        .unwrap_or(false)
+    {
+        return Ok(None);
+    }
     let name = emit_places::local_name(place.local.0);
     Ok(Some(match reason {
         crate::mir::StorageEnd::Accounted => format!("{name}.finish_partial();"),

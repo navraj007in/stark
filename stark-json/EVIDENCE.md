@@ -1,5 +1,52 @@
 # stark-json v0.1 Evidence
 
+## Requalification, 2026-07-31 (CD-269) — after MIR amendment A12 and the CE1 binding rule
+
+Re-run against the compiler at `1029350`+, because both changes touch this package: A12 changed how
+a place's storage is ended, and CE1 is the borrowed-payload binding this parser is built on.
+
+| command | package | result |
+| --- | --- | --- |
+| `stark check` | stark-json | PASS — `stark-json: OK` |
+| `stark test` | stark-json | PASS — 10 passed, 0 failed |
+| `stark fmt --check` | stark-json | PASS |
+| `stark check` | stark-json-consumer | PASS |
+| `stark run` | stark-json-consumer | PASS — `{"name":"stark","items":[1,true,null],"unicode":"😀"}` |
+| `stark fmt --check` | stark-json-consumer | PASS |
+| `stark build --no-build-cache` | stark-json-consumer | PASS |
+| **executing the built binary** | stark-json-consumer | **PASS — first time actually observed** |
+
+### What requalification found
+
+**The previous native evidence did not hold, and the record could not have shown that.** `NATIVE-001`
+was recorded PASS on `stark build --no-build-cache` succeeding. Building is not running: the binary
+had never been executed. When it was, it aborted immediately:
+
+```
+generated-code invariant violated: write to a live slot
+(MIR must Drop or move out before reassigning a live place)
+(STARK compiler defect, not a program fault)
+```
+
+This was a surviving instance of `DEFECT-C788-LOOP-TEMP`, in the one shape A12's matrix did not
+contain: **`?` inside a loop**. `lower_try` builds its own scrutinee temporary rather than going
+through `lower_match`, so the storage end added for match arms never covered it — and unlike a
+propagating path, the `Ok` path keeps executing, so the next iteration wrote over a partially moved
+slot. This parser is `?` in loops throughout, which is why it failed on its first parse and why
+sixteen deliberately chosen `match` shapes had not.
+
+Fixed under CD-269; the regression is `starkc/tests/a12_storage_end_shapes.rs`, whose `?` cases were
+added from this finding rather than from further matrix design.
+
+The interpreter path (`stark run`) passed throughout, before and after. That is the point worth
+carrying: **an interpreter pass is not native evidence**, and neither is a successful build. Only
+executing the artefact is.
+
+### Status change
+
+`NATIVE-001` moves from PASS-by-build to PASS-by-execution. No other row changes. Tier-1 Linux x64
+and Windows x64 remain unrun, as before.
+
 ## Audit
 
 - Package path: `/Users/nexper/Documents/GitHub/stark/stark-json`

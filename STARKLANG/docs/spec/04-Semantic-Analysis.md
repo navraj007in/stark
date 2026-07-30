@@ -276,10 +276,49 @@ Pattern legality:
 For an owned scrutinee, a `Copy` component gives its binding the component
 type by copy and a non-`Copy` component gives it that type by move. Moves from
 indexed places, borrowed places, or fields of a type implementing `Drop` are
-rejected. For `&T`/`&mut T` scrutinees, bindings receive shared/exclusive
-reference projections and never move the referent. Their regions and
-provenance follow the C2.8 ownership rules in `03-Type-System.md`; runtime
-creation and destruction order is `PAT-OWN-001`/`PAT-DROP-001`.
+rejected. Regions and provenance follow the C2.8 ownership rules in
+`03-Type-System.md`; runtime creation and destruction order is
+`PAT-OWN-001`/`PAT-DROP-001`.
+
+**PAT-BIND-001 (binding mode).** A `match` scrutinee is *read through a
+reference* when it is a dereference (`*r`), or a field/tuple-field access whose
+base has reference type, or such an access nested inside one. In that case a
+binding to a **non-`Copy`** component receives type `&C` for component type
+`C`, borrowing the component in place; the referent is never moved. A `Copy`
+component is unaffected and still binds by value, because a `Copy` read moves
+nothing.
+
+For every other scrutinee — including a scrutinee that merely *has* reference
+type — the owned rule above applies unchanged.
+
+Four consequences are normative rather than incidental:
+
+- **The mode is decided per `match`, from that `match`'s own scrutinee.** It is
+  not inherited. A binding produced by PAT-BIND-001 has reference type, and a
+  reference-typed scrutinee is not matchable (below), so inspecting such a
+  binding requires an explicit dereference. Nested by-reference matching is
+  therefore written `match *inner { .. }` at each level.
+- **A reference-typed scrutinee is not matched against constructor patterns.**
+  A struct/variant path must name the scrutinee's *normalized nominal* type,
+  and `&T` is not a nominal type, so `match r { E::V(x) => .. }` for `r: &E` is
+  a type error. This is why the rule is stated over the *place read*, not over
+  the scrutinee's type.
+- **The rule is uniform over pattern forms**, not specific to enum payloads: a
+  variant payload, a struct field (named or shorthand), and a tuple element all
+  bind the same way. It has no effect outside `match`, which is Core v1's only
+  pattern position with a scrutinee.
+- **Bindings are shared even through `&mut`.** Matching through an exclusive
+  reference still produces `&C`, never `&mut C`. In-place mutation of a matched
+  component is consequently not expressible in Core v1. This is a deliberate
+  floor: granting exclusive bindings is a later decision, and reserving it now
+  keeps that decision from arriving as an implementation detail.
+
+**Compatibility.** PAT-BIND-001 accepts source that earlier revisions rejected:
+binding a non-`Copy` component through a reference was reported as a move out
+of a borrow (`E0101`). No previously accepted program changes meaning — the
+owned rule is untouched, and the newly accepted programs had no prior behaviour
+to preserve. Moving such a binding's referent remains rejected, now because the
+binding's type is `&C` rather than `C`.
 
 **PAT-USEFUL-001.** Arms are examined in source order with the same pattern-
 matrix algorithm. An arm is useful only if it covers at least one value not

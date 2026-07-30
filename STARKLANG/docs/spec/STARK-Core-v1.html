@@ -1815,7 +1815,11 @@ user nominals; no explicit implementation is required. An explicit
 type that fails this same recursive eligibility predicate. A type that
 IS <code>Copy</code> remains usable after assignment, argument passing,
 return, or pattern binding; a type that is NOT <code>Copy</code> is
-moved by those operations unless borrowed.</p>
+moved by those operations unless borrowed. Pattern binding is the one
+case where “unless borrowed” is decided by the <em>scrutinee</em> rather
+than by the pattern: a component matched through a reference is
+borrowed, not moved — see <code>PAT-BIND-001</code> in
+<code>04-Semantic-Analysis.md</code>.</p>
 <ul>
 <li><code>Copy</code> may be implemented for a type only if
 <strong>all</strong> of its fields are <code>Copy</code>. Violations are
@@ -2317,12 +2321,58 @@ implements <code>Eq</code>;</li>
 <p>For an owned scrutinee, a <code>Copy</code> component gives its
 binding the component type by copy and a non-<code>Copy</code> component
 gives it that type by move. Moves from indexed places, borrowed places,
-or fields of a type implementing <code>Drop</code> are rejected. For
-<code>&amp;T</code>/<code>&amp;mut T</code> scrutinees, bindings receive
-shared/exclusive reference projections and never move the referent.
-Their regions and provenance follow the C2.8 ownership rules in
+or fields of a type implementing <code>Drop</code> are rejected. Regions
+and provenance follow the C2.8 ownership rules in
 <code>03-Type-System.md</code>; runtime creation and destruction order
 is <code>PAT-OWN-001</code>/<code>PAT-DROP-001</code>.</p>
+<p><strong>PAT-BIND-001 (binding mode).</strong> A <code>match</code>
+scrutinee is <em>read through a reference</em> when it is a dereference
+(<code>*r</code>), or a field/tuple-field access whose base has
+reference type, or such an access nested inside one. In that case a
+binding to a <strong>non-<code>Copy</code></strong> component receives
+type <code>&amp;C</code> for component type <code>C</code>, borrowing
+the component in place; the referent is never moved. A <code>Copy</code>
+component is unaffected and still binds by value, because a
+<code>Copy</code> read moves nothing.</p>
+<p>For every other scrutinee — including a scrutinee that merely
+<em>has</em> reference type — the owned rule above applies
+unchanged.</p>
+<p>Four consequences are normative rather than incidental:</p>
+<ul>
+<li><strong>The mode is decided per <code>match</code>, from that
+<code>match</code>’s own scrutinee.</strong> It is not inherited. A
+binding produced by PAT-BIND-001 has reference type, and a
+reference-typed scrutinee is not matchable (below), so inspecting such a
+binding requires an explicit dereference. Nested by-reference matching
+is therefore written <code>match *inner { .. }</code> at each
+level.</li>
+<li><strong>A reference-typed scrutinee is not matched against
+constructor patterns.</strong> A struct/variant path must name the
+scrutinee’s <em>normalized nominal</em> type, and <code>&amp;T</code> is
+not a nominal type, so <code>match r { E::V(x) =&gt; .. }</code> for
+<code>r: &amp;E</code> is a type error. This is why the rule is stated
+over the <em>place read</em>, not over the scrutinee’s type.</li>
+<li><strong>The rule is uniform over pattern forms</strong>, not
+specific to enum payloads: a variant payload, a struct field (named or
+shorthand), and a tuple element all bind the same way. It has no effect
+outside <code>match</code>, which is Core v1’s only pattern position
+with a scrutinee.</li>
+<li><strong>Bindings are shared even through
+<code>&amp;mut</code>.</strong> Matching through an exclusive reference
+still produces <code>&amp;C</code>, never <code>&amp;mut C</code>.
+In-place mutation of a matched component is consequently not expressible
+in Core v1. This is a deliberate floor: granting exclusive bindings is a
+later decision, and reserving it now keeps that decision from arriving
+as an implementation detail.</li>
+</ul>
+<p><strong>Compatibility.</strong> PAT-BIND-001 accepts source that
+earlier revisions rejected: binding a non-<code>Copy</code> component
+through a reference was reported as a move out of a borrow
+(<code>E0101</code>). No previously accepted program changes meaning —
+the owned rule is untouched, and the newly accepted programs had no
+prior behaviour to preserve. Moving such a binding’s referent remains
+rejected, now because the binding’s type is <code>&amp;C</code> rather
+than <code>C</code>.</p>
 <p><strong>PAT-USEFUL-001.</strong> Arms are examined in source order
 with the same pattern- matrix algorithm. An arm is useful only if it
 covers at least one value not covered by earlier arms. A wholly subsumed

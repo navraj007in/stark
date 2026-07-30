@@ -18,10 +18,16 @@
 | FMT-001 | FORMATTER | `stark fmt --check` | canonical formatting | formatter | PASS |
 | FIX-001 | FIXTURES | `fixtures/valid` | 17 classified valid cases | checked in | PASS |
 | FIX-002 | FIXTURES | `fixtures/invalid` | 32 classified invalid cases | checked in | PASS |
-| NATIVE-001 | THREE_ENGINE | `stark build --no-build-cache` on consumer | native evidence | native build | PASS |
+| NATIVE-001 | THREE_ENGINE | `stark build --no-build-cache` on consumer, **then execute the binary** | native evidence | native build + run | PASS |
 | TIER1-001 | PLATFORM | macOS arm64 | check/test/fmt/native consumer | local | PASS |
 | TIER1-002 | PLATFORM | Linux x64 | check/test/fmt/native consumer | not run | PENDING |
 | TIER1-003 | PLATFORM | Windows x64 | check/test/fmt/native consumer | not run | PENDING |
 
 The frozen package behavior is implemented and locally qualified on macOS arm64. The complete
 work-package matrix remains open until Linux x64 and Windows x64 Tier-1 runs are recorded.
+
+**NATIVE-001 was amended on requalification (CD-269).** It had asserted a successful
+`stark build`, and a successful build is not native evidence — the binary had never been run. When
+it was, it aborted on a surviving `DEFECT-C788-LOOP-TEMP` instance (`?` inside a loop, fixed under
+CD-269). The row now requires executing the artefact and comparing its output, which is what the
+THREE_ENGINE category was always meant to mean. See `EVIDENCE.md`.
