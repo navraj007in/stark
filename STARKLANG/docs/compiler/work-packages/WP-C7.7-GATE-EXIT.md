@@ -41,7 +41,7 @@ implemented.
 | P1 Tier-1 qualification | **PARTIAL** |
 | C7.5 deferred measurements | **OPEN** |
 | native Core `File` support | **KNOWN LIMITATION / DEFERRED** |
-| `DEFECT-C788-LOOP-TEMP` | **ADMITTED NON-BLOCKING DEVIATION** (CD-264) |
+| `DEFECT-C788-LOOP-TEMP` | **DISCHARGED** — fixed by A12 (CD-265); it was an admitted non-blocking deviation under CD-264 |
 | **C7 overall** | **OPEN — QUALIFICATION REMAINS** |
 
 ### Remaining critical path
@@ -64,11 +64,11 @@ implemented.
 > Gate C7 remains open for qualification: P1 requires Linux x64 and Windows x64 execution evidence,
 > and C7.5 requires the two workload-dependent runtime measurements previously deferred.
 >
-> Resource lifecycle evidence is substantially complete: eight cases are observed against real
-> providers, one is unreachable by construction, and one is blocked by `DEFECT-C788-LOOP-TEMP`,
-> admitted below as a non-blocking deviation.
+> Resource lifecycle evidence is complete: nine cases are observed against real providers and one
+> is unreachable by construction. It read "eight observed, one blocked" until A12 (CD-265) fixed
+> `DEFECT-C788-LOOP-TEMP`, which had been admitted below as a non-blocking deviation.
 
-### DEFECT-C788-LOOP-TEMP — admitted non-blocking deviation (CD-264)
+### DEFECT-C788-LOOP-TEMP — admitted non-blocking deviation (CD-264), since DISCHARGED (CD-265)
 
 > **DEFECT-C788-LOOP-TEMP is admitted as a non-blocking C7 deviation.** A resource-bearing
 > match-scrutinee temporary reused across loop iterations is not dropped before reassignment, causing
@@ -98,6 +98,21 @@ every valid looping shape involving resource-bearing intermediate values*.
 > **Close C7 once the remaining cross-platform qualification and C7.5 measurements pass. Carry
 > `DEFECT-C788-LOOP-TEMP` as an explicit high-priority deviation, not as a hidden gap and not as a
 > C7 blocker.**
+
+**Discharged (CD-265).** The deviation no longer needs carrying: A12
+(`mir-amendment-A12-storage-end.md`) fixed the defect, and the regression test came off `#[ignore]`
+with the fix. The rulings above are kept as written rather than edited away — they were correct when
+made, and the disposition they set is what let the fix be sequenced deliberately instead of in a
+scramble.
+
+The fix did correct one thing they recorded. "P1 does not generate the affected temporary-reuse
+shape and its user-bound resources close correctly" is true of P1, so the non-blocking verdict
+stands — but the general claim behind it was not: a **user local** with one field moved out inside a
+loop failed identically, with no `match` in the program. The defect was about any place whose storage
+is emptied piecewise, not about temporaries. See `c78/closure-gate-slice7.md`, "What the fix
+corrected".
+
+C7's critical path is unchanged: the two cross-platform P1 runs and C7.5's two measurements.
 
 ---
 

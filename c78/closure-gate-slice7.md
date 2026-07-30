@@ -32,7 +32,7 @@ number of runs.
 | `process.args` (`stark-env`) | yes | yes | yes | yes | yes | `c783_env_e2e`, `c788_starkc_build::args_len_executes_from_source_through_build_command` |
 | `process.env` (`stark-env`) | yes | yes | yes | yes | yes | `c78_buffer_e2e`; `c788_starkc_build::env_var_success_and_recoverable_invalid_name_...` — the first **executing** proof of the recoverable-status `Err` arm (CD-233) |
 | `filesystem` (`stark-file`) | n/a | n/a | legacy path | yes | yes | `c784_file_e2e`. **Not a gap — SELECT-C (CD-253).** `File` stays on `MirTy::Core`; conditional migration would make MIR identity depend on build configuration |
-| `tcp` (`stark-net`) — resource lifecycle | yes | yes | yes | yes | yes | `c788_lifecycle_e2e` (four lifecycle cases, executed against the real provider) |
+| `tcp` (`stark-net`) — resource lifecycle | yes | yes | yes | yes | yes | `c788_lifecycle_e2e` (nine lifecycle cases, executed against the real provider) |
 | `tcp` (`stark-net`) — bind/accept/echo | yes | yes | yes | yes | yes | `c788_starkc_build::tcp_bind_accept_connect_and_echo_execute_from_source_through_build_command` (CD-258) |
 
 ## Lifecycle Set
@@ -51,7 +51,7 @@ argued from the parts.
 | early return with a live resource | **observed** | `c788_lifecycle_e2e::an_early_return_with_a_live_resource_closes_it` |
 | resource moved through a **call** | **observed** | `c788_lifecycle_e2e::a_resource_moved_through_a_call_closes_once_in_the_callee` — the caller's local is dead after the move, so exactly one close runs, in the callee |
 | `?` propagation with a live resource | **observed** | `c788_lifecycle_e2e::question_mark_propagation_closes_a_live_resource` — a live first resource is closed on the desugared error path, which exits differently from an explicit `return` |
-| repeated connect/release | **written, and it found a defect** | `DEFECT-C788-LOOP-TEMP` — see below. Test committed `#[ignore]`d with a classification, per CD-247. Admitted as a **non-blocking C7 deviation** at P1 compiler priority (CD-264) |
+| repeated connect/release | **observed** (found the defect, then closed it) | `c788_lifecycle_e2e::repeated_connect_and_release_reuses_slot_state` — un-ignored by A12 (CD-265), which fixed `DEFECT-C788-LOOP-TEMP`. The suite is 9 passed, 0 ignored |
 | repeated open/release (`filesystem`) | defined, **and blocked by SELECT-C** | `File` is not on the `HostResource` path, so it has no A11 close arena to exercise |
 
 ### How the observed cases detect a violation
@@ -74,13 +74,18 @@ package API, typed HIR, provider MIR lowering and native execution on all three 
 its listener/stream surface**, which P1 explicitly requires. `filesystem` reaches native execution
 through its legacy path by decision (SELECT-C), not by omission.
 
-So **C7.8 has removed P1's host-capability precondition.** The residue is not capability coverage but
-a single lifecycle case — repeated connect/release — which is blocked by `DEFECT-C788-LOOP-TEMP`.
-That is a property of resource *handling*, not of whether a capability is reachable, and it does not
-block P1: the affected shape is a compiler-generated temporary, the P1 REST workload does not emit
-it, and the workload is already built and running on this surface.
+So **C7.8 has removed P1's host-capability precondition.** Since A12 (CD-265) there is no lifecycle
+residue either: nine cases are observed against a real provider and the tenth is unreachable by
+construction. The one remaining `defined` row is `filesystem`'s repeated open/release, which has no
+A11 close arena to exercise by SELECT-C decision, not by omission.
 
-## DEFECT-C788-LOOP-TEMP — found by the last lifecycle case
+## DEFECT-C788-LOOP-TEMP — found by the last lifecycle case, and FIXED (A12, CD-265)
+
+**Status: closed.** The account below is the diagnosis as it stood when CD-264 admitted the defect
+as a non-blocking deviation. A12 (`mir-amendment-A12-storage-end.md`) fixed it, and the fix found
+the recorded scope to be **too narrow** — see "What the fix corrected" at the end of this section.
+The deviation is therefore discharged rather than carried.
+
 
 `repeated_connect_and_release_reuses_slot_state` connects and releases three times in a `while` loop.
 It aborts on the second iteration:
@@ -95,7 +100,7 @@ The runtime classifies it itself. The generated program contains **exactly one `
 match binding — and **none for the scrutinee temporary** holding `Result<TcpStream, E>`. That temp is
 written every iteration and never dropped, so the second write lands on a live slot.
 
-**This is the state-reuse case CD-262 predicted**, and the only one of the nine that exercises a slot
+**This was the state-reuse case CD-262 predicted**, and the only one of the nine that exercises a slot
 going live → dead → live. Every other lifecycle case is straight-line or single-exit, which is why
 eight passed and this did not.
 
@@ -126,7 +131,7 @@ tier-1 keeps it visible. Un-ignore with the fix.
 | --- | --- |
 | blocks P1 qualification? | **no** |
 | blocks C7 closure? | **no** |
-| lifecycle matrix fully complete? | **no** — 8 observed, 1 unreachable, 1 blocked |
+| lifecycle matrix fully complete? | **yes, since A12 (CD-265)** — 9 observed, 1 unreachable by construction. It read "no — 8 observed, 1 unreachable, 1 blocked" while the defect stood |
 | may remain indefinitely? | **no** |
 | must be fixed before a broad native-resource completeness claim? | **yes** |
 | must be fixed before a public release recommending resource-producing calls in loops? | **yes** |
@@ -182,6 +187,41 @@ The investigation must examine:
 
 `repeated_connect_and_release_reuses_slot_state` becomes the primary regression test and is
 unignored by the fixing change (removing its `CLASSIFIED_IGNORES` entry in the same commit).
+
+### What the fix corrected (A12, CD-265)
+
+All eight investigation points were examined and the fix is compiler-wide, as the boundary required.
+Two findings are worth carrying, because both contradict what was recorded above.
+
+**1. The scope was wrong: user locals are affected too.** CD-263/264 recorded that the defect
+"affects a *temporary*, not a user local — user bindings are drop-tracked and close correctly". That
+is true only of *whole-value* bindings. Measured during the fix:
+
+```stark
+while condition {
+    let t: (Res, Int32) = pair(i);   // no match anywhere in this program
+    let a: Res = t.0;                // one field moved out
+}
+```
+
+aborts identically on the second iteration. The defect was never about temporaries — it was about
+**any place whose storage is emptied piecewise**, which the record generalised from one instance.
+
+That does not change CD-264's ruling. P1's resources are whole-value bindings, so the workload still
+does not emit an affected shape, and "non-blocking" stands on the same evidence. But the *reason*
+recorded for it being non-blocking was narrower than the truth, and a reader would have drawn a
+false boundary from it.
+
+**2. Three shapes were failing, needing two opposite remedies.** A scrutinee temp whose arm moves a
+non-`Copy` payload out is left *partially moved*; one whose arm moves nothing out is left *whole*.
+The first needs its storage released; the second needs it ended without running any destructor —
+because a whole-value drop would run the enum's glue for **every** variant, including one holding a
+host resource the arm never had. That is the `Err` arm of every `Result<Resource, E>`, so a single
+unconditional remedy broke `a_failed_handle_out_does_not_close` before the distinction was made.
+
+The fix keeps the storage check that surfaced the defect rather than relaxing it: one form still
+refuses a whole slot, the other still requires one. Full argument in
+`STARKLANG/docs/compiler/mir-amendment-A12-storage-end.md` §4.
 
 ## A finding the gate should record
 

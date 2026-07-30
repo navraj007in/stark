@@ -881,6 +881,28 @@ active. Authority is split by surface, not by file proximity:
   under their own headings. If a lease mechanism is wanted, it needs to be specified before it can
   be cited.
 
+## DEFECT-C788-LOOP-TEMP — FIXED (CD-265, MIR amendment A12)
+
+**Closed.** `Statement::StorageDead(Place, StorageEnd)` ends a local's storage where lowering knows
+its units are all accounted for; `MIR_VERSION` `0.2` → `0.3`, runtime surface unchanged. Sixteen
+shapes probed for MIR/native agreement and destructor counts, all agreeing.
+`repeated_connect_and_release_reuses_slot_state` is un-ignored, its `CLASSIFIED_IGNORES` entry
+removed, and `c788_lifecycle_e2e` is 9 passed / 0 ignored. Full argument:
+`STARKLANG/docs/compiler/mir-amendment-A12-storage-end.md`.
+
+**The recorded scope was too narrow, and the fix corrected it.** CD-263/264 said the defect affected
+a temporary and not user locals. Measured: a user local with one field moved out inside a loop aborts
+identically, with no `match` in the program. The root cause is any place whose storage is emptied
+piecewise — a sub-place move or a field-precise drop — which nothing then finished. CD-264's
+non-blocking verdict is unaffected (P1 uses whole-value bindings), but its stated reason was
+narrower than the truth.
+
+**Open for the owner:** A12 was implemented without a prior ruling, under CD-264's commission to fix
+the defect "compiler-wide rather than TCP-specific". The charter records that changes to common MIR
+enums require coordination because C8 compiles against them. C8 does not match on `Statement`
+exhaustively today, so nothing breaks — but whether A12 should carry a retrospective CE-numbered
+approval is a governance question, not an engineering one. See the amendment's §8.
+
 ## DEFECT-C788-LOOP-TEMP — RULING (CD-264): NON-BLOCKING C7 DEVIATION, MANDATORY NEAR-TERM FIX
 
 **Does not block Gate C7 closure. Becomes a mandatory near-term compiler defect at P1 compiler
@@ -895,7 +917,7 @@ Classification:
 | --- | --- |
 | blocks P1 qualification? | **no** |
 | blocks C7 closure? | **no** |
-| lifecycle matrix fully complete? | **no** — 8 observed, 1 unreachable, 1 blocked |
+| lifecycle matrix fully complete? | **yes, since A12 (CD-265)** — 9 observed, 1 unreachable by construction |
 | may remain indefinitely? | **no** |
 | must be fixed before a broad native-resource completeness claim? | **yes** |
 | must be fixed before a public release recommending resource-producing calls in loops? | **yes** |
@@ -958,7 +980,7 @@ capability, and does not hold the gate open.
 | P1 Tier-1 qualification | PARTIAL |
 | C7.5 deferred measurements | OPEN |
 | native Core `File` support | KNOWN LIMITATION / DEFERRED |
-| `DEFECT-C788-LOOP-TEMP` | ADMITTED NON-BLOCKING DEVIATION (CD-264) |
+| `DEFECT-C788-LOOP-TEMP` | DISCHARGED — fixed by A12 (CD-265) |
 | **C7 overall** | **OPEN — QUALIFICATION REMAINS** |
 
 Critical path: Linux x64 P1 run; Windows x64 P1 run; C7.5 steady-state runtime; C7.5 debug/release

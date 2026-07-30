@@ -27,8 +27,8 @@ hir_supported_column = "implemented"
 mir_lowered_column = "implemented"
 native_runtime_supported_column = "implemented"
 cross_platform_verified_column = "implemented"
-# Deliberately NOT "implemented": eight of CD-234's runtime cases are observed against a real
-# provider and one is unreachable by construction, but repeated connect/release found a real
-# compiler defect (DEFECT-C788-LOOP-TEMP) and is ignored pending its fix.
-lifecycle_set = "pending"
-lifecycle_set_reason = "8 observed, 1 unreachable by construction, 1 blocked by DEFECT-C788-LOOP-TEMP, which CD-264 admits as a non-blocking C7 deviation at P1 compiler priority; see c78/closure-gate-slice7.md"
+# "implemented" since A12 (CD-265). It read "pending" while repeated connect/release was ignored:
+# that case found a real compiler defect rather than a test problem, and the flag stayed honest
+# about it until the defect was fixed rather than until the test was made to pass.
+lifecycle_set = "implemented"
+lifecycle_set_reason = "9 observed against a real provider, 1 unreachable by construction. DEFECT-C788-LOOP-TEMP, which had blocked the tenth, is fixed by A12 (CD-265); see c78/closure-gate-slice7.md"
