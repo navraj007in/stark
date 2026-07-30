@@ -881,6 +881,46 @@ active. Authority is split by surface, not by file proximity:
   under their own headings. If a lease mechanism is wanted, it needs to be specified before it can
   be cited.
 
+## GATE C7 — CLOSED (CD-274, final owner ruling)
+
+Full consolidation: `STARKLANG/docs/compiler/GATE-C7-CLOSURE.md`.
+
+```text
+GATE C7: CLOSED
+P1: TIER-1 QUALIFIED
+C7.5 SIZE: MEASURED
+C7.5 RUNTIME: NOT MEASURABLE — NO CLAIM
+NATIVE PATH: USABLE FOR THE ADMITTED WORKLOAD
+FULL CORE/NATIVE CONFORMANCE: NOT CLAIMED
+```
+
+**Two commits, two evidentiary roles.** `d735b35` qualifies the P1 execution matrix — six rows,
+three platforms, debug and release. `c5a97bfd918a3af1e293a4b5d0114d0ea8cbf084` (`c5a97bf`) qualifies the complete C7 tree.
+`d735b35` is not the gate-qualifying commit and must not be cited as one.
+
+**The supported claim**, and nothing wider:
+
+> STARK has a usable generated-Rust native build path for its admitted workload. It builds and
+> executes in debug and release on Linux x64, macOS arm64 and Windows x64; supports the first-party
+> process, time and synchronous TCP capabilities required by the frozen P1 HTTP/JSON REST workload;
+> preserves MIR-owned move-only resource lifecycle; and passes six Tier-1 P1 execution rows
+> consisting of byte-exact HTTP exchanges and bounded clean exit. Executable-size profile effects
+> are measured. No steady-state runtime, throughput, complete Core-library, unrestricted host-I/O or
+> universal native-conformance claim is made.
+
+**Not claimed:** steady-state runtime or throughput; native Core `File`; TLS/HTTP2/HTTP3/UDP/async
+I/O/event loop/DNS/unrestricted FFI; universal Core-to-native conformance; usage-shape qualification
+for reference-returning and borrow-retaining APIs (separately owned, and **not** retroactively
+absorbed).
+
+**Gate transition.** C7 no longer blocks roadmap work. The performance instrument is follow-on work,
+not gate repair. `stark-io` and further host packages go through their own provider/package
+qualification. WP-C7.9 continues to govern three-engine adversarial corrections. Future native
+capability claims must retain the evidence distinctions this gate established: a build is not
+execution evidence; a green component test is not whole-path evidence; cross-platform support is not
+inferred from one host; and a runtime number is not a backend-performance result when fixed harness
+costs dominate it.
+
 ## Gate C7 — RULING (CD-273): CLOSES WITHOUT A STEADY-STATE PERFORMANCE CLAIM
 
 **P1 is Tier-1 qualified.** All six execution rows are green at `d735b35` — linux-x64, macos-arm64

@@ -1,7 +1,13 @@
 # WP-C7.7 — Gate C7 exit assessment
 
-**Outcome:** `CANDIDATE-COMPLETE — BLOCKED BY P1`. Gate C7 does not close.
+**Outcome (superseded):** `CANDIDATE-COMPLETE — BLOCKED BY P1`. Gate C7 does not close.
 **Assessed at:** this change, after WP-C7.0 through WP-C7.6.
+
+> **SUPERSEDED — Gate C7 is CLOSED (CD-274).** The final consolidation and closure ruling is
+> `../GATE-C7-CLOSURE.md`. This document is retained as the assessment history that led there: it
+> is where the gate was first found blocked, where the block was re-diagnosed as qualification
+> rather than capability (CD-262), and where the `File` and loop-temporary dispositions were argued.
+> Nothing below is edited to match the outcome — the reasoning is the record.
 
 ---
 

@@ -1273,6 +1273,12 @@ WP-C7.8 does not close Gate C7. It removes P1's native-capability precondition; 
 `CANDIDATE-COMPLETE-BLOCKED-BY-P1` until P1's own exit criteria (§4.2) are met, at which point
 WP-C7.4, WP-C7.5 and WP-C7.6 re-open per WP-C7.7 §6.
 
+> **Gate C7 is now CLOSED (CD-274).** P1's exit criteria were met — six Tier-1 execution rows, three
+> platforms in debug and release — and C7.5 re-opened and closed with executable size measured and
+> steady-state runtime explicitly not measurable. The ruling, the exit-condition table and the
+> bounded claim are in `GATE-C7-CLOSURE.md`. The paragraph above is retained as the plan of record
+> that got there.
+
 ---
 
 ## GATE C8 — Semantic Language Services
