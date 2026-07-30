@@ -507,11 +507,19 @@ jobs:
         include:
           - name: linux-x64
             os: ubuntu-latest
+            exe: ''
           - name: macos-arm64
             os: macos-14
+            exe: ''
           - name: windows-x64
             os: windows-latest
+            exe: '.exe'
     runs-on: ${{ matrix.os }}
+    # `bash` on every platform so one relative path works everywhere, and `matrix.exe` rather than
+    # relying on a shell to guess the suffix. The harness scripts resolve `.exe` themselves.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -531,7 +539,7 @@ jobs:
         run: python scripts/pure_tests.py
       - name: Native build (debug)
         working-directory: starkc/tests/workloads/c7-p1-rest
-        run: ../../../target/release/stark build --no-build-cache --verbose
+        run: ../../../target/release/stark${{ matrix.exe }} build --no-build-cache --verbose
       # 24 raw HTTP exchanges over loopback, every response compared byte-for-byte including
       # headers and length, then a bounded clean exit. This is the step that makes the row
       # "executed" rather than "built".
@@ -540,10 +548,10 @@ jobs:
         run: python scripts/e2e.py --profile debug
       - name: Native build (release)
         working-directory: starkc/tests/workloads/c7-p1-rest
-        run: ../../../target/release/stark build --release --no-build-cache --verbose
+        run: ../../../target/release/stark${{ matrix.exe }} build --release --no-build-cache --verbose
       - name: Native execution — 24 byte-exact HTTP cases (release)
         working-directory: starkc/tests/workloads/c7-p1-rest
         run: python scripts/e2e.py --profile release
       - name: Formatting
         working-directory: starkc/tests/workloads/c7-p1-rest
-        run: ../../../target/release/stark fmt --check
+        run: ../../../target/release/stark${{ matrix.exe }} fmt --check
