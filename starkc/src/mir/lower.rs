@@ -1028,10 +1028,6 @@ struct FnLowerer<'a> {
 }
 
 impl<'a> FnLowerer<'a> {
-    fn new(hir: &'a Hir, tables: &'a TypeTables, meta: &'a ProgramMeta, key: FnKey) -> Self {
-        Self::with_providers(hir, tables, meta, key, ProviderLowering::none())
-    }
-
     fn with_providers(
         hir: &'a Hir,
         tables: &'a TypeTables,
