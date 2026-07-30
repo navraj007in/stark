@@ -1,0 +1,358 @@
+use super::bytes::append_bytes;
+use super::bytes::append_decimal;
+use super::bytes::parse_u64;
+use super::bytes::range_eq;
+use super::bytes::range_eq_ascii_case;
+pub struct Request {
+    pub method: UInt8,
+    pub path_start: UInt64,
+    pub path_end: UInt64,
+    pub body_start: UInt64,
+    pub body_end: UInt64,
+}
+
+pub enum ParseResult {
+    Incomplete,
+    BadRequest,
+    MethodNotAllowed,
+    Complete(Request),
+}
+
+pub struct Response { pub status: UInt16, pub body: Vec<UInt8> }
+
+fn find_crlf(input: &[UInt8], start: UInt64, limit: UInt64) -> UInt64 {
+    let mut position = start;
+    while position + 1u64 < input.len() && position - start <= limit {
+        if input[position] == 13u8 && input[position + 1u64] == 10u8 {
+            return position;
+        }
+        if input[position] == 10u8 {
+            return 18446744073709551615u64;
+        }
+        position = position + 1u64;
+    }
+    if position - start > limit {
+        18446744073709551615u64
+    } else {
+        input.len()
+    }
+}
+
+fn trim_ascii(input: &[UInt8], start: &mut UInt64, end: &mut UInt64) {
+    while *start < *end && (input[*start] == 32u8 || input[*start] == 9u8) {
+        *start = *start + 1u64;
+    }
+    while *end > *start && (input[*end - 1u64] == 32u8 || input[*end - 1u64] == 9u8) {
+        *end = *end - 1u64;
+    }
+}
+
+pub fn parse(input: &[UInt8]) -> ParseResult {
+    let request_line_end = find_crlf(&input[0u64..input.len()], 0u64, 2048u64);
+    if request_line_end == input.len() {
+        return ParseResult::Incomplete;
+    }
+    if request_line_end == 18446744073709551615u64 {
+        return ParseResult::BadRequest;
+    }
+
+    let mut first_space = request_line_end;
+    let mut second_space = request_line_end;
+    let mut i = 0u64;
+    while i < request_line_end {
+        if input[i] == 32u8 {
+            if first_space == request_line_end {
+                first_space = i;
+            } else if second_space == request_line_end {
+                second_space = i;
+            } else {
+                return ParseResult::BadRequest;
+            }
+        }
+        i = i + 1u64;
+    }
+    if first_space == 0u64 || second_space <= first_space + 1u64 || second_space + 1u64 >= request_line_end {
+        return ParseResult::BadRequest;
+    }
+
+    let mut method = 1u8;
+    if range_eq(&input[0u64..input.len()], 0u64, first_space, "GET".bytes()) {
+        method = 1u8;
+    } else if range_eq(&input[0u64..input.len()], 0u64, first_space, "POST".bytes()) {
+        method = 2u8;
+    } else {
+        return ParseResult::MethodNotAllowed;
+    }
+    let path_start = first_space + 1u64;
+    let path_end = second_space;
+    if path_end - path_start > 1024u64 || input[path_start] != 47u8 {
+        return ParseResult::BadRequest;
+    }
+    if !range_eq(
+        &input[0u64..input.len()],
+        second_space + 1u64,
+        request_line_end,
+        "HTTP/1.1".bytes(),
+    ) {
+        return ParseResult::BadRequest;
+    }
+
+    let mut position = request_line_end + 2u64;
+    let header_start = position;
+    let mut header_count = 0u64;
+    let mut host = false;
+    let mut has_length = false;
+    let mut content_length = 0u64;
+    while true {
+        if position - header_start > 8192u64 {
+            return ParseResult::BadRequest;
+        }
+        let line_end = find_crlf(&input[0u64..input.len()], position, 8192u64);
+        if line_end == input.len() {
+            return ParseResult::Incomplete;
+        }
+        if line_end == 18446744073709551615u64 {
+            return ParseResult::BadRequest;
+        }
+        if line_end == position {
+            position = position + 2u64;
+            break;
+        }
+        header_count = header_count + 1u64;
+        if header_count > 32u64 {
+            return ParseResult::BadRequest;
+        }
+        let mut colon = line_end;
+        i = position;
+        while i < line_end {
+            if input[i] == 58u8 {
+                colon = i;
+                break;
+            }
+            i = i + 1u64;
+        }
+        if colon == position || colon == line_end {
+            return ParseResult::BadRequest;
+        }
+        let mut value_start = colon + 1u64;
+        let mut value_end = line_end;
+        trim_ascii(&input[0u64..input.len()], &mut value_start, &mut value_end);
+        if range_eq_ascii_case(&input[0u64..input.len()], position, colon, "Host".bytes()) {
+            if value_start == value_end {
+                return ParseResult::BadRequest;
+            }
+            host = true;
+        } else if range_eq_ascii_case(
+            &input[0u64..input.len()],
+            position,
+            colon,
+            "Content-Length".bytes(),
+        ) {
+            let mut parsed = 0u64;
+            {
+                let valid_length = parse_u64(
+                    &input[0u64..input.len()],
+                    value_start,
+                    value_end,
+                    &mut parsed,
+                );
+                if !valid_length {
+                    return ParseResult::BadRequest;
+                }
+            }
+            if parsed > 65536u64 {
+                return ParseResult::BadRequest;
+            }
+            if has_length && parsed != content_length {
+                return ParseResult::BadRequest;
+            }
+            has_length = true;
+            content_length = parsed;
+        } else if range_eq_ascii_case(
+            &input[0u64..input.len()],
+            position,
+            colon,
+            "Transfer-Encoding".bytes(),
+        ) {
+            return ParseResult::BadRequest;
+        }
+        position = line_end + 2u64;
+    }
+    if !host {
+        return ParseResult::BadRequest;
+    }
+    if method == 2u8 && !has_length {
+        return ParseResult::BadRequest;
+    }
+    if content_length > input.len() - position {
+        return ParseResult::Incomplete;
+    }
+    if input.len() != position + content_length {
+        return ParseResult::BadRequest;
+    }
+    ParseResult::Complete(
+        Request {
+            method: method,
+            path_start: path_start,
+            path_end: path_end,
+            body_start: position,
+            body_end: position + content_length,
+        },
+    )
+}
+
+pub fn framing_ready(input: &[UInt8]) -> Bool {
+    let request_line_end = find_crlf(&input[0u64..input.len()], 0u64, 2048u64);
+    if request_line_end == 18446744073709551615u64 {
+        return true;
+    }
+    if request_line_end == input.len() {
+        return false;
+    }
+    let mut position = request_line_end + 2u64;
+    let mut content_length = 0u64;
+    let mut has_length = false;
+    while true {
+        let line_end = find_crlf(&input[0u64..input.len()], position, 8192u64);
+        if line_end == input.len() {
+            return false;
+        }
+        if line_end == 18446744073709551615u64 {
+            return true;
+        }
+        if line_end == position {
+            position = position + 2u64;
+            return input.len() >= position + content_length;
+        }
+        let mut colon = line_end;
+        let mut i = position;
+        while i < line_end {
+            if input[i] == 58u8 {
+                colon = i;
+                break;
+            }
+            i = i + 1u64;
+        }
+        if colon < line_end && range_eq_ascii_case(
+            &input[0u64..input.len()],
+            position,
+            colon,
+            "Content-Length".bytes(),
+        ) {
+            let mut value_start = colon + 1u64;
+            let mut value_end = line_end;
+            trim_ascii(&input[0u64..input.len()], &mut value_start, &mut value_end);
+            let mut parsed = 0u64;
+            {
+                let valid = parse_u64(
+                    &input[0u64..input.len()],
+                    value_start,
+                    value_end,
+                    &mut parsed,
+                );
+                if !valid {
+                    return true;
+                }
+            }
+            if parsed > 65536u64 {
+                return true;
+            }
+            if has_length && parsed != content_length {
+                return true;
+            }
+            has_length = true;
+            content_length = parsed;
+        }
+        position = line_end + 2u64;
+    }
+    false
+}
+
+pub fn encode(response: &Response) -> Vec<UInt8> {
+    let mut output: Vec<UInt8> = Vec::new();
+    output = append_bytes(output, "HTTP/1.1 ".bytes());
+    output = append_decimal(output, response.status as UInt64);
+    output.push(32u8);
+    if response.status == 200u16 {
+        output = append_bytes(output, "OK".bytes());
+    } else if response.status == 201u16 {
+        output = append_bytes(output, "Created".bytes());
+    } else if response.status == 404u16 {
+        output = append_bytes(output, "Not Found".bytes());
+    } else if response.status == 405u16 {
+        output = append_bytes(output, "Method Not Allowed".bytes());
+    } else {
+        output = append_bytes(output, "Bad Request".bytes());
+    }
+    output = append_bytes(
+        output,
+        "\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ".bytes(),
+    );
+    output = append_decimal(output, response.body.len());
+    output = append_bytes(output, "\r\n\r\n".bytes());
+    output = append_bytes(output, &response.body[0u64..response.body.len()]);
+    output
+}
+
+fn test_http_parser_complete_and_fragmented() {
+    let request = "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".bytes();
+    match parse(&request[0u64..request.len()]) {
+        ParseResult::Complete(_parsed) => {}
+        _ => {
+            panic("expected complete request");
+        }
+    }
+    let fragment = "GET /health HTTP/1.".bytes();
+    match parse(fragment) {
+        ParseResult::Incomplete => {}
+        _ => {
+            panic("fragment must be incomplete");
+        }
+    }
+}
+
+fn test_http_parser_rejections() {
+    match parse("GET /health HTTP/1.1\nHost: x\n\n".bytes()) {
+        ParseResult::BadRequest => {}
+        _ => {
+            panic("bare LF must be rejected");
+        }
+    }
+    match parse("GET /health HTTP/1.0\r\nHost: x\r\n\r\n".bytes()) {
+        ParseResult::BadRequest => {}
+        _ => {
+            panic("version must be rejected");
+        }
+    }
+    match parse("GET /health HTTP/1.1\r\n\r\n".bytes()) {
+        ParseResult::BadRequest => {}
+        _ => {
+            panic("Host is required");
+        }
+    }
+    match parse("PUT /health HTTP/1.1\r\nHost: x\r\n\r\n".bytes()) {
+        ParseResult::MethodNotAllowed => {}
+        _ => {
+            panic("method must be rejected");
+        }
+    }
+    match parse("POST /items HTTP/1.1\r\nHost: x\r\n\r\n".bytes()) {
+        ParseResult::BadRequest => {}
+        _ => {
+            panic("POST length is required");
+        }
+    }
+}
+
+fn test_response_content_length() {
+    let mut body: Vec<UInt8> = Vec::new();
+    body = append_bytes(body, "{\"status\":\"ok\"}".bytes());
+    let encoded = encode(&Response { status: 200u16, body: body });
+    let expected = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}".bytes();
+    assert_eq(encoded.len(), expected.len());
+    let mut i = 0u64;
+    while i < expected.len() {
+        assert_eq(encoded[i], expected[i]);
+        i = i + 1u64;
+    }
+}

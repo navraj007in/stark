@@ -1,0 +1,96 @@
+pub fn ascii_lower(byte: UInt8) -> UInt8 {
+    if byte >= 65u8 && byte <= 90u8 {
+        byte + 32u8
+    } else {
+        byte
+    }
+}
+
+pub fn range_eq(input: &[UInt8], start: UInt64, end: UInt64, expected: &[UInt8]) -> Bool {
+    if end < start || end - start != expected.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < expected.len() {
+        if input[start + i] != expected[i] {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn range_eq_ascii_case(input: &[UInt8], start: UInt64, end: UInt64, expected: &[UInt8]) -> Bool {
+    if end < start || end - start != expected.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < expected.len() {
+        if ascii_lower(input[start + i]) != ascii_lower(expected[i]) {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    true
+}
+
+pub fn append_bytes(mut out: Vec<UInt8>, input: &[UInt8]) -> Vec<UInt8> {
+    let mut i = 0u64;
+    while i < input.len() {
+        out.push(input[i]);
+        i = i + 1u64;
+    }
+    out
+}
+
+pub fn append_decimal(mut out: Vec<UInt8>, value: UInt64) -> Vec<UInt8> {
+    let digits = "0123456789".bytes();
+    if value == 0u64 {
+        out.push(48u8);
+    } else {
+        let mut divisor = 10000000000000000000u64;
+        let mut started = false;
+        while divisor > 0u64 {
+            let digit = value / divisor % 10u64;
+            if digit != 0u64 || started {
+                out.push(digits[digit]);
+                started = true;
+            }
+            divisor = divisor / 10u64;
+        }
+    }
+    out
+}
+
+pub fn parse_u64(input: &[UInt8], start: UInt64, end: UInt64, out: &mut UInt64) -> Bool {
+    if start >= end {
+        return false;
+    }
+    let mut value = 0u64;
+    let mut i = start;
+    while i < end {
+        let byte = input[i];
+        if byte < 48u8 || byte > 57u8 {
+            return false;
+        }
+        let digit = (byte - 48u8) as UInt64;
+        if value > (18446744073709551615u64 - digit) / 10u64 {
+            return false;
+        }
+        value = value * 10u64 + digit;
+        i = i + 1u64;
+    }
+    *out = value;
+    true
+}
+
+fn test_decimal_parser_boundaries() {
+    let mut value = 0u64;
+    assert(parse_u64("0".bytes(), 0u64, 1u64, &mut value));
+    assert_eq(value, 0u64);
+    assert(parse_u64("18446744073709551615".bytes(), 0u64, 20u64, &mut value));
+    assert_eq(value, 18446744073709551615u64);
+    assert(!parse_u64("18446744073709551616".bytes(), 0u64, 20u64, &mut value));
+    assert(!parse_u64("-1".bytes(), 0u64, 2u64, &mut value));
+    assert(!parse_u64("".bytes(), 0u64, 0u64, &mut value));
+}

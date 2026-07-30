@@ -1,0 +1,133 @@
+pub mod bytes;
+pub mod http;
+pub mod json;
+pub mod router;
+pub mod server;
+
+fn bind_listener() -> Result<TcpListener, Bool> {
+    let variable = "STARK_P1_BIND".bytes();
+    match var_len(variable) {
+        Ok(result) => {
+            if result.0 && result.1 > 0u64 && result.1 <= 64u64 {
+                let length = result.1;
+                let mut address: [UInt8; 64] = [0u8; 64];
+                let mut filled = false;
+                {
+                    let output = &mut address[0u64..length];
+                    match var_fill(variable, output) {
+                        Ok(written) => {
+                            filled = written == length;
+                        }
+                        Err(_error) => {}
+                    }
+                }
+                if filled {
+                    let requested = &address[0u64..length];
+                    match tcp_listener_bind(requested) {
+                        Ok(listener) => {
+                            return Ok(listener);
+                        }
+                        Err(_error) => {
+                            return Err(false);
+                        }
+                    }
+                }
+            }
+        }
+        Err(_error) => {}
+    }
+    match tcp_listener_bind("127.0.0.1:39091".bytes()) {
+        Ok(listener) => Ok(listener),
+        Err(_error) => Err(false),
+    }
+}
+
+fn write_once(stream: &TcpStream, data: &[UInt8]) -> UInt64 {
+    match tcp_stream_write(stream, data) {
+        Ok(count) => count,
+        Err(_error) => 0u64,
+    }
+}
+
+fn write_all(stream: &TcpStream, data: &[UInt8]) -> Bool {
+    let mut written = 0u64;
+    while written < data.len() {
+        let remaining = &data[written..data.len()];
+        let count = write_once(stream, remaining);
+        if count == 0u64 {
+            return false;
+        }
+        written = written + count;
+    }
+    true
+}
+
+fn read_once(stream: &TcpStream, output: &mut [UInt8]) -> UInt64 {
+    match tcp_stream_read(stream, output) {
+        Ok(count) => count,
+        Err(_error) => 0u64,
+    }
+}
+
+fn try_respond(stream: &TcpStream, request: &[UInt8]) -> Bool {
+    match server::respond(&request[0u64..request.len()]) {
+        Some(response) => {
+            let encoded = http::encode(&response);
+            let bytes = &encoded[0u64..encoded.len()];
+            write_all(stream, bytes)
+        }
+        None => false,
+    }
+}
+
+fn serve_connection(stream: &TcpStream) {
+    let mut buffer: [UInt8; 73728] = [0u8; 73728];
+    let mut used = 0u64;
+    while used < 73728u64 {
+        {
+            let request = &buffer[0u64..used];
+            if http::framing_ready(&request[0u64..request.len()]) {
+                try_respond(stream, &request[0u64..request.len()]);
+                return;
+            }
+        }
+        let output = &mut buffer[used..73728u64];
+        let count = read_once(stream, output);
+        if count == 0u64 {
+            return;
+        }
+        used = used + count;
+    }
+}
+
+fn serve_next(listener: &TcpListener) -> Bool {
+    match tcp_listener_accept(listener) {
+        Ok(stream) => {
+            serve_connection(&stream);
+            true
+        }
+        Err(_error) => false,
+    }
+}
+
+fn main() {
+    let listener: TcpListener;
+    match bind_listener() {
+        Ok(value) => {
+            listener = value;
+        }
+        Err(_error) => {
+            panic("STARK P1 failed to bind loopback address");
+            return;
+        }
+    }
+    println("c7-p1-ready");
+    let mut handled = 0u64;
+    while handled < 24u64 {
+        if !serve_next(&listener) {
+            panic("STARK P1 accept failed");
+            return;
+        }
+        handled = handled + 1u64;
+    }
+}

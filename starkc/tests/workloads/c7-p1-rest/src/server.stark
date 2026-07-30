@@ -1,0 +1,23 @@
+use super::bytes::append_bytes;
+use super::http::ParseResult;
+use super::http::Response;
+use super::router::route;
+
+fn error_response(status: UInt16, body: &[UInt8]) -> Response {
+    let mut output: Vec<UInt8> = Vec::new();
+    output = append_bytes(output, body);
+    Response { status: status, body: output }
+}
+
+pub fn respond(input: &[UInt8]) -> Option<Response> {
+    match super::http::parse(&input[0u64..input.len()]) {
+        ParseResult::Incomplete => None,
+        ParseResult::BadRequest => {
+            Some(error_response(400u16, "{\"error\":\"bad_request\"}".bytes()))
+        }
+        ParseResult::MethodNotAllowed => {
+            Some(error_response(405u16, "{\"error\":\"method_not_allowed\"}".bytes()))
+        }
+        ParseResult::Complete(request) => Some(route(&input[0u64..input.len()], &request)),
+    }
+}

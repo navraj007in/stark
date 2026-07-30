@@ -1,0 +1,426 @@
+pub struct PostDocument { pub name_token_start: UInt64, pub name_token_end: UInt64 }
+
+fn skip_ws(input: &[UInt8], position: &mut UInt64) {
+    while *position < input.len() {
+        let byte = input[*position];
+        if byte == 32u8 || byte == 9u8 || byte == 10u8 || byte == 13u8 {
+            *position = *position + 1u64;
+        } else {
+            return;
+        }
+    }
+}
+
+fn hex_value(byte: UInt8, out: &mut UInt32) -> Bool {
+    if byte >= 48u8 && byte <= 57u8 {
+        *out = (byte - 48u8) as UInt32;
+        true
+    } else if byte >= 65u8 && byte <= 70u8 {
+        *out = (byte - 65u8 + 10u8) as UInt32;
+        true
+    } else if byte >= 97u8 && byte <= 102u8 {
+        *out = (byte - 97u8 + 10u8) as UInt32;
+        true
+    } else {
+        false
+    }
+}
+
+fn parse_hex4(input: &[UInt8], position: &mut UInt64, code: &mut UInt32) -> Bool {
+    if input.len() - *position < 4u64 {
+        return false;
+    }
+    let mut value = 0u32;
+    let mut i = 0u64;
+    while i < 4u64 {
+        let mut digit = 0u32;
+        if !hex_value(input[*position], &mut digit) {
+            return false;
+        }
+        value = value * 16u32 + digit;
+        *position = *position + 1u64;
+        i = i + 1u64;
+    }
+    *code = value;
+    true
+}
+
+fn parse_string(input: &[UInt8], position: &mut UInt64, decoded: &mut UInt64) -> Bool {
+    if *position >= input.len() || input[*position] != 34u8 {
+        return false;
+    }
+    *position = *position + 1u64;
+    let mut length = 0u64;
+    while *position < input.len() {
+        let byte = input[*position];
+        if byte == 34u8 {
+            *position = *position + 1u64;
+            *decoded = length;
+            return true;
+        }
+        if byte < 32u8 {
+            return false;
+        }
+        if byte == 92u8 {
+            *position = *position + 1u64;
+            if *position >= input.len() {
+                return false;
+            }
+            let escaped = input[*position];
+            if escaped == 34u8 || escaped == 92u8 || escaped == 47u8 || escaped == 98u8 || escaped == 102u8 || escaped == 110u8 || escaped == 114u8 || escaped == 116u8 {
+                length = length + 1u64;
+                *position = *position + 1u64;
+            } else if escaped == 117u8 {
+                *position = *position + 1u64;
+                let mut code = 0u32;
+                if !parse_hex4(&input[0u64..input.len()], position, &mut code) {
+                    return false;
+                }
+                if code >= 55296u32 && code <= 57343u32 {
+                    return false;
+                }
+                if code <= 127u32 {
+                    length = length + 1u64;
+                } else if code <= 2047u32 {
+                    length = length + 2u64;
+                } else {
+                    length = length + 3u64;
+                }
+            } else {
+                return false;
+            }
+        } else if byte < 128u8 {
+            length = length + 1u64;
+            *position = *position + 1u64;
+        } else {
+            let mut width = 0u64;
+            if byte >= 194u8 && byte <= 223u8 {
+                width = 2u64;
+            } else if byte >= 224u8 && byte <= 239u8 {
+                width = 3u64;
+            } else if byte >= 240u8 && byte <= 244u8 {
+                width = 4u64;
+            } else {
+                return false;
+            }
+            if input.len() - *position < width {
+                return false;
+            }
+            let second = input[*position + 1u64];
+            if byte == 224u8 && second < 160u8 {
+                return false;
+            }
+            if byte == 237u8 && second > 159u8 {
+                return false;
+            }
+            if byte == 240u8 && second < 144u8 {
+                return false;
+            }
+            if byte == 244u8 && second > 143u8 {
+                return false;
+            }
+            let mut i = 1u64;
+            while i < width {
+                let continuation = input[*position + i];
+                if continuation < 128u8 || continuation > 191u8 {
+                    return false;
+                }
+                i = i + 1u64;
+            }
+            length = length + width;
+            *position = *position + width;
+        }
+        if length > 16384u64 {
+            return false;
+        }
+    }
+    false
+}
+
+fn decoded_key_is_name(input: &[UInt8], start: UInt64, end: UInt64) -> Bool {
+    let expected = "name".bytes();
+    let mut position = start;
+    let mut matched = 0u64;
+    while position < end {
+        let mut byte = input[position];
+        position = position + 1u64;
+        if byte == 92u8 {
+            if position >= end {
+                return false;
+            }
+            let escaped = input[position];
+            position = position + 1u64;
+            if escaped == 117u8 {
+                if end - position < 4u64 {
+                    return false;
+                }
+                let mut code = 0u32;
+                {
+                    let valid_hex = parse_hex4(&input[0u64..input.len()], &mut position, &mut code);
+                    if !valid_hex {
+                        return false;
+                    }
+                }
+                if code > 127u32 {
+                    return false;
+                }
+                byte = code as UInt8;
+            } else if escaped == 34u8 || escaped == 92u8 || escaped == 47u8 {
+                byte = escaped;
+            } else {
+                return false;
+            }
+        }
+        if matched >= expected.len() || byte != expected[matched] {
+            return false;
+        }
+        matched = matched + 1u64;
+    }
+    matched == expected.len()
+}
+
+fn parse_number(input: &[UInt8], position: &mut UInt64) -> Bool {
+    if *position < input.len() && input[*position] == 45u8 {
+        *position = *position + 1u64;
+    }
+    if *position >= input.len() {
+        return false;
+    }
+    if input[*position] == 48u8 {
+        *position = *position + 1u64;
+        if *position < input.len() && input[*position] >= 48u8 && input[*position] <= 57u8 {
+            return false;
+        }
+        return true;
+    }
+    if input[*position] < 49u8 || input[*position] > 57u8 {
+        return false;
+    }
+    while *position < input.len() && input[*position] >= 48u8 && input[*position] <= 57u8 {
+        *position = *position + 1u64;
+    }
+    true
+}
+
+fn consume_literal(input: &[UInt8], position: &mut UInt64, literal: &[UInt8]) -> Bool {
+    if input.len() - *position < literal.len() {
+        return false;
+    }
+    let mut i = 0u64;
+    while i < literal.len() {
+        if input[*position + i] != literal[i] {
+            return false;
+        }
+        i = i + 1u64;
+    }
+    *position = *position + literal.len();
+    true
+}
+
+fn parse_value(input: &[UInt8], position: &mut UInt64, depth: UInt32) -> Bool {
+    if depth > 32u32 {
+        return false;
+    }
+    skip_ws(&input[0u64..input.len()], position);
+    if *position >= input.len() {
+        return false;
+    }
+    let byte = input[*position];
+    if byte == 34u8 {
+        let mut decoded = 0u64;
+        parse_string(&input[0u64..input.len()], position, &mut decoded)
+    } else if byte == 123u8 {
+        parse_object(&input[0u64..input.len()], position, depth + 1u32)
+    } else if byte == 91u8 {
+        parse_array(&input[0u64..input.len()], position, depth + 1u32)
+    } else if byte == 116u8 {
+        consume_literal(&input[0u64..input.len()], position, "true".bytes())
+    } else if byte == 102u8 {
+        consume_literal(&input[0u64..input.len()], position, "false".bytes())
+    } else if byte == 110u8 {
+        consume_literal(&input[0u64..input.len()], position, "null".bytes())
+    } else {
+        parse_number(&input[0u64..input.len()], position)
+    }
+}
+
+fn parse_array(input: &[UInt8], position: &mut UInt64, depth: UInt32) -> Bool {
+    *position = *position + 1u64;
+    skip_ws(&input[0u64..input.len()], position);
+    if *position < input.len() && input[*position] == 93u8 {
+        *position = *position + 1u64;
+        return true;
+    }
+    while true {
+        if !parse_value(&input[0u64..input.len()], position, depth) {
+            return false;
+        }
+        skip_ws(&input[0u64..input.len()], position);
+        if *position >= input.len() {
+            return false;
+        }
+        if input[*position] == 93u8 {
+            *position = *position + 1u64;
+            return true;
+        }
+        if input[*position] != 44u8 {
+            return false;
+        }
+        *position = *position + 1u64;
+        skip_ws(&input[0u64..input.len()], position);
+    }
+    false
+}
+
+fn parse_object(input: &[UInt8], position: &mut UInt64, depth: UInt32) -> Bool {
+    *position = *position + 1u64;
+    skip_ws(&input[0u64..input.len()], position);
+    if *position < input.len() && input[*position] == 125u8 {
+        *position = *position + 1u64;
+        return true;
+    }
+    while true {
+        let mut decoded = 0u64;
+        if !parse_string(&input[0u64..input.len()], position, &mut decoded) {
+            return false;
+        }
+        skip_ws(&input[0u64..input.len()], position);
+        if *position >= input.len() || input[*position] != 58u8 {
+            return false;
+        }
+        *position = *position + 1u64;
+        if !parse_value(&input[0u64..input.len()], position, depth) {
+            return false;
+        }
+        skip_ws(&input[0u64..input.len()], position);
+        if *position >= input.len() {
+            return false;
+        }
+        if input[*position] == 125u8 {
+            *position = *position + 1u64;
+            return true;
+        }
+        if input[*position] != 44u8 {
+            return false;
+        }
+        *position = *position + 1u64;
+        skip_ws(&input[0u64..input.len()], position);
+    }
+    false
+}
+
+pub fn validate(input: &[UInt8]) -> Bool {
+    let mut position = 0u64;
+    if !parse_value(&input[0u64..input.len()], &mut position, 0u32) {
+        return false;
+    }
+    skip_ws(&input[0u64..input.len()], &mut position);
+    position == input.len()
+}
+
+pub fn parse_post_document(input: &[UInt8]) -> Option<PostDocument> {
+    let mut position = 0u64;
+    skip_ws(&input[0u64..input.len()], &mut position);
+    if position >= input.len() || input[position] != 123u8 {
+        return None;
+    }
+    position = position + 1u64;
+    skip_ws(&input[0u64..input.len()], &mut position);
+    let mut count = 0u64;
+    let mut token_start = 0u64;
+    let mut token_end = 0u64;
+    while position < input.len() && input[position] != 125u8 {
+        if input[position] != 34u8 {
+            return None;
+        }
+        position = position + 1u64;
+        let key_start = position;
+        let mut key_decoded = 0u64;
+        if !parse_string_after_open(&input[0u64..input.len()], &mut position, &mut key_decoded) {
+            return None;
+        }
+        let key_end = position - 1u64;
+        let is_name = decoded_key_is_name(&input[0u64..input.len()], key_start, key_end);
+        skip_ws(&input[0u64..input.len()], &mut position);
+        if position >= input.len() || input[position] != 58u8 {
+            return None;
+        }
+        position = position + 1u64;
+        skip_ws(&input[0u64..input.len()], &mut position);
+        if is_name {
+            count = count + 1u64;
+            if position >= input.len() || input[position] != 34u8 {
+                return None;
+            }
+            token_start = position;
+            let mut name_decoded = 0u64;
+            {
+                let valid_name = parse_string(
+                    &input[0u64..input.len()],
+                    &mut position,
+                    &mut name_decoded,
+                );
+                if !valid_name {
+                    return None;
+                }
+            }
+            if name_decoded == 0u64 {
+                return None;
+            }
+            token_end = position;
+        } else if !parse_value(&input[0u64..input.len()], &mut position, 1u32) {
+            return None;
+        }
+        skip_ws(&input[0u64..input.len()], &mut position);
+        if position >= input.len() {
+            return None;
+        }
+        if input[position] == 44u8 {
+            position = position + 1u64;
+            skip_ws(&input[0u64..input.len()], &mut position);
+        } else if input[position] != 125u8 {
+            return None;
+        }
+    }
+    if position >= input.len() || input[position] != 125u8 {
+        return None;
+    }
+    position = position + 1u64;
+    skip_ws(&input[0u64..input.len()], &mut position);
+    if position != input.len() || count != 1u64 {
+        None
+    } else {
+        Some(PostDocument { name_token_start: token_start, name_token_end: token_end })
+    }
+}
+
+fn parse_string_after_open(input: &[UInt8], position: &mut UInt64, decoded: &mut UInt64) -> Bool {
+    *position = *position - 1u64;
+    parse_string(&input[0u64..input.len()], position, decoded)
+}
+
+fn test_json_positive_corpus() {
+    assert(validate("{}".bytes()));
+    assert(validate("[]".bytes()));
+    assert(validate("{\"a\":[null,true,false,-12]}".bytes()));
+    assert(validate("\"\\\"\\\\\\/\\b\\f\\n\\r\\t\"".bytes()));
+    assert(validate("{\"name\":\"gamma\"}".bytes()));
+}
+
+fn test_json_negative_corpus() {
+    assert(!validate("\"unterminated".bytes()));
+    assert(!validate("\"\\x\"".bytes()));
+    assert(!validate("01".bytes()));
+    assert(!validate("[1,]".bytes()));
+    assert(!validate("{\"a\" 1}".bytes()));
+    assert(!validate("true false".bytes()));
+}
+
+fn test_post_name_rules() {
+    assert(parse_post_document("{\"name\":\"gamma\"}".bytes()).is_some());
+    assert(parse_post_document("{\"name\":\"\"}".bytes()).is_none());
+    assert(parse_post_document("{\"other\":1}".bytes()).is_none());
+    assert(parse_post_document("{\"name\":\"a\",\"name\":\"b\"}".bytes()).is_none());
+    assert(parse_post_document("{\"name\":\"a\",\"na\\u006de\":\"b\"}".bytes()).is_none());
+    assert(parse_post_document("{\"name\":3}".bytes()).is_none());
+}

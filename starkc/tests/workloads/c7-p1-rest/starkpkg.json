@@ -1,0 +1,42 @@
+{
+  "name": "c7-p1-rest",
+  "version": "0.1.0",
+  "entry": "src/main.stark",
+  "capabilities": ["tcp", "process.env"],
+  "provider_api": {
+    "errors": {
+      "tcp": "RawNetworkError",
+      "process.env": "RawEnvError"
+    },
+    "resources": {
+      "TcpListener": { "capability": "tcp", "resource": "tcp_listener" },
+      "TcpStream": { "capability": "tcp", "resource": "tcp_stream" }
+    },
+    "functions": {
+      "tcp_listener_bind": {
+        "capability": "tcp",
+        "symbol": "stark_tcp_listener_bind"
+      },
+      "tcp_listener_accept": {
+        "capability": "tcp",
+        "symbol": "stark_tcp_listener_accept"
+      },
+      "tcp_stream_read": {
+        "capability": "tcp",
+        "symbol": "stark_tcp_stream_read"
+      },
+      "tcp_stream_write": {
+        "capability": "tcp",
+        "symbol": "stark_tcp_stream_write"
+      },
+      "var_len": {
+        "capability": "process.env",
+        "symbol": "stark_env_var_len"
+      },
+      "var_fill": {
+        "capability": "process.env",
+        "symbol": "stark_env_var_fill"
+      }
+    }
+  }
+}

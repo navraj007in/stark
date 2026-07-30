@@ -1,0 +1,110 @@
+use super::bytes::append_bytes;
+use super::bytes::parse_u64;
+use super::bytes::range_eq;
+use super::http::Request;
+use super::http::Response;
+use super::json::parse_post_document;
+
+fn fixed_response(status: UInt16, body: &[UInt8]) -> Response {
+    let mut output: Vec<UInt8> = Vec::new();
+    output = append_bytes(output, body);
+    Response { status: status, body: output }
+}
+
+fn item_id(input: &[UInt8], request: &Request, out: &mut UInt64) -> Bool {
+    let prefix = "/items/".bytes();
+    if request.path_end - request.path_start <= prefix.len() {
+        return false;
+    }
+    if !range_eq(
+        &input[0u64..input.len()],
+        request.path_start,
+        request.path_start + prefix.len(),
+        prefix,
+    ) {
+        return false;
+    }
+    parse_u64(&input[0u64..input.len()], request.path_start + prefix.len(), request.path_end, out)
+}
+
+pub fn route(input: &[UInt8], request: &Request) -> Response {
+    if request.method == 1u8 {
+        if range_eq(
+            &input[0u64..input.len()],
+            request.path_start,
+            request.path_end,
+            "/health".bytes(),
+        ) {
+            return fixed_response(200u16, "{\"status\":\"ok\"}".bytes());
+        }
+        let item_prefix = "/items/".bytes();
+        if request.path_end >= request.path_start + item_prefix.len() && range_eq(
+            &input[0u64..input.len()],
+            request.path_start,
+            request.path_start + item_prefix.len(),
+            item_prefix,
+        ) {
+            let mut id = 0u64;
+            if !item_id(&input[0u64..input.len()], request, &mut id) {
+                return fixed_response(400u16, "{\"error\":\"bad_request\"}".bytes());
+            }
+            if id == 1u64 {
+                return fixed_response(200u16, "{\"id\":1,\"name\":\"alpha\"}".bytes());
+            }
+            if id == 2u64 {
+                return fixed_response(200u16, "{\"id\":2,\"name\":\"beta\"}".bytes());
+            }
+            return fixed_response(404u16, "{\"error\":\"not_found\"}".bytes());
+        }
+        fixed_response(404u16, "{\"error\":\"not_found\"}".bytes())
+    } else {
+        if !range_eq(
+            &input[0u64..input.len()],
+            request.path_start,
+            request.path_end,
+            "/items".bytes(),
+        ) {
+            return fixed_response(404u16, "{\"error\":\"not_found\"}".bytes());
+        }
+        let body = &input[request.body_start..request.body_end];
+        match parse_post_document(&body[0u64..body.len()]) {
+            None => fixed_response(400u16, "{\"error\":\"bad_request\"}".bytes()),
+            Some(document) => {
+                let mut output: Vec<UInt8> = Vec::new();
+                output = append_bytes(output, "{\"id\":3,\"name\":".bytes());
+                output = append_bytes(
+                    output,
+                    &body[document.name_token_start..document.name_token_end],
+                );
+                output.push(125u8);
+                Response { status: 201u16, body: output }
+            }
+        }
+    }
+}
+
+fn request(method: UInt8, path: &str, body_start: UInt64, body_end: UInt64) -> Request {
+    Request {
+        method: method,
+        path_start: 0u64,
+        path_end: path.len(),
+        body_start: body_start,
+        body_end: body_end,
+    }
+}
+
+fn route_examples() {
+    let health = "/health".bytes();
+    assert_eq(route(health, &request(1u8, "/health", 7u64, 7u64)).status, 200u16);
+    let one = "/items/1".bytes();
+    assert_eq(route(one, &request(1u8, "/items/1", 8u64, 8u64)).status, 200u16);
+    let absent = "/items/999".bytes();
+    assert_eq(route(absent, &request(1u8, "/items/999", 10u64, 10u64)).status, 404u16);
+    let bad = "/items/nope".bytes();
+    assert_eq(route(bad, &request(1u8, "/items/nope", 11u64, 11u64)).status, 400u16);
+
+    let post_input = "/items{\"name\":\"gamma\"}".bytes();
+    let post_request = request(2u8, "/items", 6u64, post_input.len());
+    let response = route(post_input, &post_request);
+    assert_eq(response.status, 201u16);
+}
